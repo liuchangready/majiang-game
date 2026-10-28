@@ -86,21 +86,36 @@ namespace Mahjong.TableRuntime.Tests
         }
 
         [Fact]
-        public async Task CheckpointZeroTailOpenKanRecoveryInstallsAndContinues()
+        public async Task OpenKanRecoveryInstallsAndContinuesAtBothAnchors()
         {
             await AssertRealRecovery(OpenKanScript(), checkpointAtEnd: false);
+            await AssertRealRecovery(OpenKanScript(), checkpointAtEnd: true);
         }
 
         [Fact]
-        public async Task CheckpointZeroTailClosedKanRecoveryInstallsAndContinues()
+        public async Task ClosedKanRecoveryInstallsAndContinuesAtBothAnchors()
         {
             await AssertRealRecovery(ClosedKanScript(), checkpointAtEnd: false);
+            await AssertRealRecovery(ClosedKanScript(), checkpointAtEnd: true);
         }
 
         [Fact]
-        public async Task CheckpointZeroTailAddedKanChankanPassRecoveryInstallsAndContinues()
+        public async Task AddedKanChankanPassRecoveryInstallsAndContinuesAtBothAnchors()
         {
             await AssertRealRecovery(AddedKanScript(chankan: true), checkpointAtEnd: false);
+            await AssertRealRecovery(AddedKanScript(chankan: true), checkpointAtEnd: true);
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task LastLiveWallOpenKanRecoveryThenExhaustiveDraw(bool checkpointAtEnd)
+        {
+            Script script = LastLiveWallOpenKanScript();
+            Assert.Equal(0, script.Round.Tiles.WallRemaining);
+            Assert.Equal(RoundPhase.Draw, script.Round.Phase);
+            Assert.Contains(script.Round.Events, value => value.Type == RoundEventType.WallExhausted);
+            await AssertRealRecovery(script, checkpointAtEnd);
         }
 
         [Fact]
@@ -117,21 +132,17 @@ namespace Mahjong.TableRuntime.Tests
         }
 
         [Fact]
-        public async Task CheckpointZeroTailChankanRonRecoveryInstallsTerminal()
+        public async Task ChankanRonRecoveryInstallsTerminalAtBothAnchors()
         {
             await AssertRealRecovery(AddedKanRonScript(), checkpointAtEnd: false);
+            await AssertRealRecovery(AddedKanRonScript(), checkpointAtEnd: true);
         }
 
         [Fact]
-        public async Task CheckpointZeroTailMultiKanRecoveryInstallsAndContinues()
+        public async Task MultiKanRecoveryInstallsAndContinuesAtBothAnchors()
         {
             await AssertRealRecovery(MultiKanScript(), checkpointAtEnd: false);
-        }
-
-        [Fact]
-        public async Task FinalCheckpointOpenKanRecoveryInstallsAndContinues()
-        {
-            await AssertRealRecovery(OpenKanScript(), checkpointAtEnd: true);
+            await AssertRealRecovery(MultiKanScript(), checkpointAtEnd: true);
         }
 
         [Fact]
@@ -636,6 +647,10 @@ namespace Mahjong.TableRuntime.Tests
                 TableRecoveryBaseline baseline = recovered.Baseline!;
                 Assert.Equal((ulong)script.Commands.Count, baseline.StateVersion.Value);
                 Assert.Equal(script.Round.SourceFingerprint, baseline.Round.SourceFingerprint);
+                Assert.Equal(script.Round.Events.Count, baseline.Round.Events.Count);
+                Assert.Equal(script.Round.IsFinished, recovered.Report!.Terminal);
+                Assert.NotNull(baseline.ProjectionFacts);
+                Assert.NotEmpty(baseline.ProjectionFacts!.EventFacts);
                 ConservationReport conservation = TilePositionMap.Validate(baseline.Round.Tiles);
                 Assert.True(conservation.IsValid, conservation.ToString());
                 Assert.Equal(136, conservation.AssignedCount);
@@ -671,25 +686,46 @@ namespace Mahjong.TableRuntime.Tests
                     RoundStateMachine round = baseline.Round;
                     if (!round.IsFinished)
                     {
-                        int seat = round.CurrentSeat;
-                        TileId tile = round.Tiles.TilesInZone(TileZone.Hand, seat)[0];
-                        var decision = new PendingDecision(
-                            new DecisionKey(round.RoundId, seat, "post-recovery"),
-                            0L,
-                            new[] { new LegalActionOption(LegalActionKind.Discard, seat, tile) },
-                            tile);
-                        Assert.Equal(
-                            TableOperationStatus.Configured,
-                            (await second.OpenDecisionAsync(
-                                decision,
-                                TestContext.Current.CancellationToken)).Status);
-                        TableOperationResult applied = await second.SubmitAsync(Envelope(
-                            RoundCommand.Discard(round.RoundId, seat, tile),
-                            script.Commands.Count,
-                            "post-recovery",
-                            baseline.OwnerEpoch.Value,
-                            1L,
-                            "post-recovery"));
+                        TableOperationResult applied;
+                        if (round.Phase == RoundPhase.Draw && round.Tiles.WallRemaining == 0)
+                        {
+                            var settlement = new RoundSettlement(
+                                "post-recovery-exhaustive",
+                                RoundOutcome.ExhaustiveDraw(Array.Empty<int>()),
+                                round.Scores.ToArray(),
+                                round.RiichiSticks,
+                                new PersistedUtcTime(DateTimeOffset.UnixEpoch),
+                                1000L);
+                            applied = await second.SubmitAsync(Envelope(
+                                RoundCommand.ExhaustiveDraw(round.RoundId, settlement),
+                                script.Commands.Count,
+                                "post-recovery",
+                                baseline.OwnerEpoch.Value,
+                                1L));
+                        }
+                        else
+                        {
+                            int seat = round.CurrentSeat;
+                            TileId tile = round.Tiles.TilesInZone(TileZone.Hand, seat)[0];
+                            var decision = new PendingDecision(
+                                new DecisionKey(round.RoundId, seat, "post-recovery"),
+                                0L,
+                                new[] { new LegalActionOption(LegalActionKind.Discard, seat, tile) },
+                                tile);
+                            Assert.Equal(
+                                TableOperationStatus.Configured,
+                                (await second.OpenDecisionAsync(
+                                    decision,
+                                    TestContext.Current.CancellationToken)).Status);
+                            applied = await second.SubmitAsync(Envelope(
+                                RoundCommand.Discard(round.RoundId, seat, tile),
+                                script.Commands.Count,
+                                "post-recovery",
+                                baseline.OwnerEpoch.Value,
+                                1L,
+                                "post-recovery"));
+                        }
+
                         Assert.True(
                             applied.Status == TableOperationStatus.Accepted,
                             applied.ReasonCode + ": " + applied.Detail);
@@ -697,6 +733,25 @@ namespace Mahjong.TableRuntime.Tests
                             (ulong)(script.Commands.Count + 1),
                             (await second.GetSnapshotAsync(
                                 TestContext.Current.CancellationToken)).StateVersion.Value);
+                    }
+                    else
+                    {
+                        int seat = round.CurrentSeat;
+                        IReadOnlyList<TileId> hand = round.Tiles.TilesInZone(TileZone.Hand, seat);
+                        bool submitted = false;
+                        if (hand.Count > 0)
+                        {
+                            TableOperationResult revived = await second.SubmitAsync(Envelope(
+                                RoundCommand.Discard(round.RoundId, seat, hand[0]),
+                                script.Commands.Count,
+                                "terminal-revival",
+                                baseline.OwnerEpoch.Value,
+                                1L));
+                            Assert.Equal(TableOperationStatus.Rejected, revived.Status);
+                            submitted = true;
+                        }
+
+                        Assert.True(submitted || round.IsFinished);
                     }
                 }
                 finally
@@ -904,6 +959,14 @@ namespace Mahjong.TableRuntime.Tests
                             fu: 30U,
                             score: 1000L);
                         break;
+                    case RoundEventType.ExhaustiveDraw:
+                    case RoundEventType.AbortiveDraw:
+                        RoundResult drawResult = request.Round.Result ??
+                            throw new InvalidOperationException("A draw event requires a committed result.");
+                        values = new TableProjectionEventFacts(
+                            turnNumber: turn,
+                            tenpaiPlayers: drawResult.Outcome.TenpaiSeats);
+                        break;
                     case RoundEventType.RoundEnded:
                         values = new TableProjectionEventFacts(
                             turnNumber: turn,
@@ -1085,6 +1148,14 @@ namespace Mahjong.TableRuntime.Tests
                             han: 1U,
                             fu: 30U,
                             score: 1000L);
+                        break;
+                    case RoundEventType.ExhaustiveDraw:
+                    case RoundEventType.AbortiveDraw:
+                        RoundResult drawResult = script.Round.Result ??
+                            throw new InvalidOperationException("A draw event requires a committed result.");
+                        values = new TableProjectionEventFacts(
+                            turnNumber: turn,
+                            tenpaiPlayers: drawResult.Outcome.TenpaiSeats);
                         break;
                     case RoundEventType.RoundEnded:
                         values = new TableProjectionEventFacts(
@@ -1305,10 +1376,75 @@ namespace Mahjong.TableRuntime.Tests
             return script;
         }
 
-        private static RoundStateMachine BuildDealt(
+        private static Script LastLiveWallOpenKanScript()
+        {
+            TileId target = Dragon(1, 3);
+            RoundStateMachine initial = BuildDealt(
+                "r3-last-live-kan",
+                new Dictionary<int, TileId[]>
+                {
+                    [0] = new[] { target },
+                    [1] = new[] { Dragon(1, 0), Dragon(1, 1), Dragon(1, 2) }
+                },
+                Man(9, 3));
+            var script = new Script(initial);
+            for (int guard = 0; script.Round.Tiles.WallRemaining > 1 && guard < 200; guard++)
+            {
+                RoundStateMachine round = script.Round;
+                TileId tile = round.Tiles.DrawnTile!.Value.Tile;
+                if (tile == target)
+                {
+                    tile = round.Tiles.TilesInZone(TileZone.Hand, round.CurrentSeat)
+                        .First(value => value != target);
+                }
+
+                Execute(script, RoundCommand.Discard(round.RoundId, round.CurrentSeat, tile));
+            }
+
+            Assert.Equal(0, script.Round.CurrentSeat);
+            Assert.Equal(1, script.Round.Tiles.WallRemaining);
+            Execute(
+                script,
+                RoundCommand.Discard(script.Round.RoundId, 0, target, new[] { 1 }));
+            Execute(
+                script,
+                RoundCommand.OpenKan(
+                    script.Round.RoundId,
+                    1,
+                    target,
+                    Dragon(1, 0),
+                    Dragon(1, 1),
+                    Dragon(1, 2)),
+                new MeldView(
+                    ProtocolMeldType.OpenKan,
+                    new uint[] { 124, 125, 126, 127 },
+                    127,
+                    0));
+            Assert.Equal(0, script.Round.Tiles.WallRemaining);
+            Assert.Equal(1, script.Round.Tiles.RinshanPointer);
+            Execute(
+                script,
+                RoundCommand.Discard(
+                    script.Round.RoundId,
+                    1,
+                    script.Round.Tiles.DrawnTile!.Value.Tile));
+            return script;
+        }
+
+        internal static RoundStateMachine BuildDealt(
             string roundId,
             IReadOnlyDictionary<int, TileId[]> hands,
             TileId drawn)
+        {
+            return BuildDealtWithLimits(roundId, hands, drawn, 0, 0);
+        }
+
+        internal static RoundStateMachine BuildDealtWithLimits(
+            string roundId,
+            IReadOnlyDictionary<int, TileId[]> hands,
+            TileId drawn,
+            int kanCount,
+            int rinshanPointer)
         {
             var placements = new TilePlacement[TileId.Count];
             var used = new bool[TileId.Count];
@@ -1369,7 +1505,14 @@ namespace Mahjong.TableRuntime.Tests
                 }
             }
 
-            for (int slot = 0; slot < 14; slot++)
+            for (int slot = 0; slot < rinshanPointer; slot++)
+            {
+                TileId tile = NextUnused();
+                placements[tile.Value] = new TilePlacement(tile, TilePosition.DeadWallReplacement(slot));
+                placed[tile.Value] = true;
+            }
+
+            for (int slot = rinshanPointer; slot < 14; slot++)
             {
                 TileId tile = NextUnused();
                 placements[tile.Value] = new TilePlacement(tile, TilePosition.DeadWall(slot));
@@ -1404,12 +1547,12 @@ namespace Mahjong.TableRuntime.Tests
                 placements,
                 wallPointer: 0,
                 wallEndExclusive: wallCount,
-                rinshanPointer: 0,
+                rinshanPointer: rinshanPointer,
                 lastDiscard: null,
                 revision: 0,
                 rinshanDraw: null,
                 doraIndicators: new[] { dora },
-                kanCount: 0,
+                kanCount: kanCount,
                 drawnTile: new DrawnTileEvidence(drawn, 0, DrawSource.Wall));
             var spec = new RoundSpec(
                 roundId,

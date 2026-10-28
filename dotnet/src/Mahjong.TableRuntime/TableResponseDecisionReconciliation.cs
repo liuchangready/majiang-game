@@ -137,11 +137,83 @@ namespace Mahjong.TableRuntime
                 return false;
             }
 
-            // A current-turn decision must be anchored in a turn/settlement action. A stale
-            // response set can contain Kan/Pass (and even Pon/Chi) while no window exists; Kan
-            // alone is deliberately not a turn anchor because the real host always offers the
-            // turn's discard candidates alongside closed/added kan.
-            return HasTurnAnchor(decision.Candidates);
+            // A current-turn decision can be a normal discard/settlement decision, or a real
+            // closed/added kan decision whose candidate set is Kan-only. A stale response set
+            // can also contain Kan (OpenKan) alongside Pass; the Domain state distinguishes the
+            // two: only a current seat with the actual four-hand-tile closed-kan shape or an
+            // existing pon plus the fourth tile can execute a turn kan without a window.
+            return HasTurnAnchor(decision.Candidates) ||
+                   HasLegalTurnKan(round, decision);
+        }
+
+        private static bool HasLegalTurnKan(
+            RoundStateMachine round,
+            TableRecoveredDecision decision)
+        {
+            if (round.Phase != RoundPhase.CheatWindow &&
+                round.Phase != RoundPhase.Discard)
+            {
+                return false;
+            }
+
+            // A response set normally carries Pass. Real turn decisions do not; keeping a
+            // [Kan,Pass] pair would reintroduce the closed-window OpenKan response.
+            for (int i = 0; i < decision.Candidates.Count; i++)
+            {
+                if (decision.Candidates[i].Kind == LegalActionKind.Pass)
+                {
+                    return false;
+                }
+            }
+
+            if (round.Tiles.KanCount >= 4 ||
+                round.Tiles.RinshanPointer >= 4 ||
+                round.Tiles.WallRemaining <= 0)
+            {
+                return false;
+            }
+
+            int seat = decision.Key.Seat;
+            IReadOnlyList<TileId> hand = round.Tiles.TilesInZone(TileZone.Hand, seat);
+            for (int i = 0; i < decision.Candidates.Count; i++)
+            {
+                LegalActionOption candidate = decision.Candidates[i];
+                if (candidate.Kind != LegalActionKind.Kan || !candidate.Tile.HasValue)
+                {
+                    continue;
+                }
+
+                int type = candidate.Tile.Value.TypeIndex;
+                int handCopies = 0;
+                for (int h = 0; h < hand.Count; h++)
+                {
+                    if (hand[h].TypeIndex == type)
+                    {
+                        handCopies++;
+                    }
+                }
+
+                if (handCopies == 4)
+                {
+                    return true;
+                }
+
+                if (handCopies >= 1)
+                {
+                    for (int m = 0; m < round.Melds.Count; m++)
+                    {
+                        RoundMeld meld = round.Melds[m];
+                        if (meld.Seat == seat &&
+                            meld.Kind == RoundMeldKind.Pon &&
+                            meld.Tiles[0].TypeIndex == type)
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+
+            return false;
         }
 
         private static bool HasTurnAnchor(IReadOnlyList<LegalActionOption> candidates)

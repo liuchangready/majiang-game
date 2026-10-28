@@ -20,6 +20,9 @@ namespace Mahjong.TableRuntime.Tests
     {
         private static TileId Man(int rank, int copy) => TileId.FromTypeIndex(rank - 1, copy);
 
+        private static TileId Dragon(int rank, int copy) =>
+            TileId.FromTypeIndex(30 + rank, copy);
+
         [Fact]
         public async Task ClaimKeepsPeersWhileWindowIsOpenAndConsumesTheirCommit()
         {
@@ -177,6 +180,247 @@ namespace Mahjong.TableRuntime.Tests
             Assert.Equal(RoundPhase.Discard, (await harness.GetSnapshotAsync()).Phase);
             TableTimingSnapshot timing = await harness.GetTimingSnapshotAsync();
             Assert.All(timing.Seats, seat => Assert.Null(seat.PendingKey));
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task CurrentLegalClosedKanSurvivesRecovery(bool includeDiscard)
+        {
+            RoundStateMachine round = TableKanRecoveryEvidenceTests.BuildDealt(
+                "r2-current-kan",
+                new Dictionary<int, TileId[]>
+                {
+                    [0] = new[] { Dragon(2, 0), Dragon(2, 1), Dragon(2, 2), Dragon(2, 3) }
+                },
+                Man(9, 3));
+            RoundCommand command = RoundCommand.ClosedKan(
+                round.RoundId,
+                0,
+                Dragon(2, 0),
+                Dragon(2, 1),
+                Dragon(2, 2),
+                Dragon(2, 3));
+            Assert.True(round.Execute(command).IsAccepted);
+            var options = new List<LegalActionOption>
+            {
+                new LegalActionOption(LegalActionKind.Kan, 0, Dragon(2, 0))
+            };
+            if (includeDiscard)
+            {
+                options.Add(new LegalActionOption(
+                    LegalActionKind.Discard,
+                    0,
+                    round.Tiles.DrawnTile!.Value.Tile));
+            }
+
+            var key = new DecisionKey(round.RoundId, 0, "legal-closed-kan");
+            await using ActorHarness harness = CreateActor(round);
+            Assert.Equal(
+                TableOperationStatus.Configured,
+                (await harness.OpenDecisionAsync(new PendingDecision(
+                    key,
+                    0L,
+                    options,
+                    round.Tiles.DrawnTile!.Value.Tile))).Status);
+            Assert.Equal(key, (await harness.GetTimingSnapshotAsync()).Seats[0].PendingKey);
+
+            await harness.BeginRecoveryAsync("same-legal-turn");
+            TableOperationResult recovered = await harness.CompleteRecoveryAsync(
+                SimpleRecoveryBaseline(round, new TableRecoveredDecision(
+                    key,
+                    0L,
+                    options,
+                    round.Tiles.DrawnTile!.Value.Tile,
+                    1000L,
+                    0L,
+                    0L)));
+            Assert.Equal(TableOperationStatus.Configured, recovered.Status);
+            TableTimingSnapshot timing = await harness.GetTimingSnapshotAsync();
+            Assert.Equal(key, timing.Seats[0].PendingKey);
+            Assert.NotNull(timing.Seats[0].Timing);
+
+            TableOperationResult applied = await harness.SubmitAsync(P31Fixtures.Command(
+                command,
+                0,
+                "after-recovery-kan",
+                new DecisionId(key.DecisionId),
+                recoveryGeneration: 1L));
+            Assert.Equal(TableOperationStatus.Accepted, applied.Status);
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task CurrentLegalAddedKanSurvivesRecovery(bool includeDiscard)
+        {
+            RoundStateMachine opening = TableKanRecoveryEvidenceTests.BuildDealt(
+                "r2-current-added-kan",
+                new Dictionary<int, TileId[]>
+                {
+                    [1] = new[] { Dragon(1, 0), Dragon(1, 1), Dragon(1, 2) }
+                },
+                Dragon(1, 3));
+            TileId target = Dragon(1, 3);
+            RoundTransition window = opening.Execute(
+                RoundCommand.Discard(opening.RoundId, 0, target, new[] { 1 }));
+            Assert.True(window.IsAccepted, window.Error?.ToString());
+            RoundTransition pon = window.State!.Execute(
+                RoundCommand.Pon(opening.RoundId, 1, target, Dragon(1, 0), Dragon(1, 1)));
+            Assert.True(pon.IsAccepted, pon.Error?.ToString());
+            RoundStateMachine round = pon.State!;
+            RoundCommand command = RoundCommand.AddedKan(round.RoundId, 1, Dragon(1, 2));
+            Assert.True(round.Execute(command).IsAccepted);
+
+            var options = new List<LegalActionOption>
+            {
+                new LegalActionOption(LegalActionKind.Kan, 1, Dragon(1, 2))
+            };
+            if (includeDiscard)
+            {
+                options.Add(new LegalActionOption(
+                    LegalActionKind.Discard,
+                    1,
+                    round.Tiles.TilesInZone(TileZone.Hand, 1)[0]));
+            }
+
+            var key = new DecisionKey(round.RoundId, 1, "legal-added-kan");
+            await using ActorHarness harness = CreateActor(round);
+            Assert.Equal(
+                TableOperationStatus.Configured,
+                (await harness.OpenDecisionAsync(new PendingDecision(
+                    key,
+                    0L,
+                    options,
+                    null))).Status);
+            await harness.BeginRecoveryAsync("same-legal-added-kan");
+            TableOperationResult recovered = await harness.CompleteRecoveryAsync(
+                SimpleRecoveryBaseline(round, new TableRecoveredDecision(
+                    key,
+                    0L,
+                    options,
+                    null,
+                    1000L,
+                    0L,
+                    0L)));
+            Assert.Equal(TableOperationStatus.Configured, recovered.Status);
+            TableTimingSnapshot timing = await harness.GetTimingSnapshotAsync();
+            Assert.Equal(key, timing.Seats[1].PendingKey);
+            Assert.NotNull(timing.Seats[1].Timing);
+
+            TableOperationResult applied = await harness.SubmitAsync(P31Fixtures.Command(
+                command,
+                0,
+                "after-recovery-added-kan",
+                new DecisionId(key.DecisionId),
+                recoveryGeneration: 1L));
+            Assert.Equal(TableOperationStatus.Accepted, applied.Status);
+        }
+
+        [Fact]
+        public async Task WallZeroClosedKanRejectedWithoutConsumption()
+        {
+            var plan = new SettlementPlan(RoundPhase.CheatWindow)
+            {
+                WallTiles = 0,
+                FillRemainingIntoWall = false
+            };
+            plan.AddDora(39);
+            plan.AddHand(
+                0,
+                Dragon(2, 0), Dragon(2, 1), Dragon(2, 2), Dragon(2, 3),
+                Man(1, 0), Man(1, 1), Man(1, 2), Man(1, 3),
+                Man(2, 0), Man(2, 1), Man(2, 2), Man(2, 3),
+                Man(3, 0));
+            RoundStateMachine round = plan.Build(new RoundSpec(
+                "r3-wall-zero-kan",
+                0,
+                1,
+                0,
+                0,
+                new long[] { 25000, 25000, 25000, 25000 },
+                0));
+            Assert.Equal(0, round.Tiles.WallRemaining);
+            RoundCommand command = RoundCommand.ClosedKan(
+                round.RoundId,
+                0,
+                Dragon(2, 0),
+                Dragon(2, 1),
+                Dragon(2, 2),
+                Dragon(2, 3));
+            Assert.False(round.Execute(command).IsAccepted);
+
+            await using ActorHarness harness = CreateActor(round);
+            var key = new DecisionKey(round.RoundId, 0, "wall-zero-kan");
+            var pending = new PendingDecision(
+                key,
+                0L,
+                new[] { new LegalActionOption(LegalActionKind.Kan, 0, Dragon(2, 0)) },
+                null);
+            Assert.Equal(
+                TableOperationStatus.Configured,
+                (await harness.OpenDecisionAsync(pending)).Status);
+            TableTimingSnapshot before = await harness.GetTimingSnapshotAsync();
+            TableOperationResult result = await harness.SubmitAsync(P31Fixtures.Command(
+                command,
+                0,
+                "wall-zero-kan",
+                new DecisionId(key.DecisionId)));
+            Assert.Equal(TableOperationStatus.Rejected, result.Status);
+            Assert.Equal(0UL, (await harness.GetSnapshotAsync()).StateVersion.Value);
+            Assert.Empty(harness.CommitPort.Requests);
+            TableTimingSnapshot after = await harness.GetTimingSnapshotAsync();
+            Assert.Equal(key, after.Seats[0].PendingKey);
+            Assert.Equal(before.Seats[0].Timing!.DeadlineMillis, after.Seats[0].Timing!.DeadlineMillis);
+            Assert.Equal(before.Seats[0].RemainingReserveMillis, after.Seats[0].RemainingReserveMillis);
+        }
+
+        [Theory]
+        [InlineData(4, 0)]
+        [InlineData(0, 4)]
+        public async Task KanLimitRejectedWithoutConsumption(int kanCount, int rinshanPointer)
+        {
+            RoundStateMachine round = TableKanRecoveryEvidenceTests.BuildDealtWithLimits(
+                "r3-kan-limit-" + kanCount + "-" + rinshanPointer,
+                new Dictionary<int, TileId[]>
+                {
+                    [0] = new[] { Dragon(2, 0), Dragon(2, 1), Dragon(2, 2), Dragon(2, 3) }
+                },
+                Man(9, 3),
+                kanCount,
+                rinshanPointer);
+            RoundCommand command = RoundCommand.ClosedKan(
+                round.RoundId,
+                0,
+                Dragon(2, 0),
+                Dragon(2, 1),
+                Dragon(2, 2),
+                Dragon(2, 3));
+            Assert.False(round.Execute(command).IsAccepted);
+
+            await using ActorHarness harness = CreateActor(round);
+            var key = new DecisionKey(round.RoundId, 0, "kan-limit");
+            var pending = new PendingDecision(
+                key,
+                0L,
+                new[] { new LegalActionOption(LegalActionKind.Kan, 0, Dragon(2, 0)) },
+                null);
+            Assert.Equal(
+                TableOperationStatus.Configured,
+                (await harness.OpenDecisionAsync(pending)).Status);
+            TableTimingSnapshot before = await harness.GetTimingSnapshotAsync();
+            TableOperationResult result = await harness.SubmitAsync(P31Fixtures.Command(
+                command,
+                0,
+                "kan-limit",
+                new DecisionId(key.DecisionId)));
+            Assert.Equal(TableOperationStatus.Rejected, result.Status);
+            Assert.Equal(0UL, (await harness.GetSnapshotAsync()).StateVersion.Value);
+            Assert.Empty(harness.CommitPort.Requests);
+            TableTimingSnapshot after = await harness.GetTimingSnapshotAsync();
+            Assert.Equal(key, after.Seats[0].PendingKey);
+            Assert.Equal(before.Seats[0].Timing!.DeadlineMillis, after.Seats[0].Timing!.DeadlineMillis);
+            Assert.Equal(before.Seats[0].RemainingReserveMillis, after.Seats[0].RemainingReserveMillis);
         }
 
         [Fact]
@@ -483,6 +727,23 @@ namespace Mahjong.TableRuntime.Tests
                 round,
                 new StateVersion(2),
                 new EventSeq(3),
+                new OwnerEpoch(1),
+                new TableControlRecoveryBaseline(control, 0L),
+                new TableRecoveryTiming(new[] { decision }, new long[] { 0L, 0L, 0L, 0L }));
+        }
+
+        private static TableRecoveryBaseline SimpleRecoveryBaseline(
+            RoundStateMachine round,
+            TableRecoveredDecision decision)
+        {
+            ControlRegistrySnapshot control = P31Fixtures.ControlSnapshot(
+                Enumerable.Range(0, 4)
+                    .Select(seat => P31Fixtures.Connected(SeatControllerKind.Computer, 0L, seat))
+                    .ToArray());
+            return new TableRecoveryBaseline(
+                round,
+                new StateVersion(0),
+                new EventSeq(0),
                 new OwnerEpoch(1),
                 new TableControlRecoveryBaseline(control, 0L),
                 new TableRecoveryTiming(new[] { decision }, new long[] { 0L, 0L, 0L, 0L }));
