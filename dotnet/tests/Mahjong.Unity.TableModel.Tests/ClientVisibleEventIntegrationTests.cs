@@ -23,6 +23,64 @@ namespace Mahjong.Unity.TableModel.Tests
     /// </summary>
     public sealed class ClientVisibleEventIntegrationTests
     {
+        [Theory]
+        [InlineData(Role.Player)]
+        [InlineData(Role.Spectator)]
+        public async Task AuthorityUsesCurrentRoleRoundWhenOtherRoleCacheHasDifferentRound(Role role)
+        {
+            using var channel = new ScriptedTableChannel { AutoHandshake = false };
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            var session = new TableSession(channel, new InMemoryOutboxStore());
+            TableSnapshotChangedEventArgs? accepted = null;
+            session.SnapshotChanged += (_, args) => accepted = args;
+            int seat = role == Role.Player ? 0 : -1;
+            channel.OnSend = outbound =>
+            {
+                if (outbound.MessageType == MessageType.Hello)
+                {
+                    Envelope welcome = P43TestData.Welcome(seat: seat);
+                    welcome.Welcome.Role = role;
+                    welcome.Welcome.Scope.Role = role;
+                    channel.EnqueueInbound(WireCodec.Encode(welcome));
+                }
+                else if (outbound.MessageType == MessageType.SyncRequest)
+                {
+                    Envelope sync = P43TestData.SyncResponse(outbound.CorrelationId, seat: seat);
+                    if (role == Role.Spectator)
+                    {
+                        sync.SyncResponse.Target = SyncTarget.PublicStream;
+                        sync.SyncResponse.Public = P43TestData.PublicSnapshot();
+                    }
+                    channel.EnqueueInbound(WireCodec.Encode(sync));
+                }
+                return true;
+            };
+            await session.OpenAsync(new TableSessionOpenRequest("ticket-role-round", "build-role-round"), timeout.Token);
+            await session.PumpOnceAsync(timeout.Token);
+            await session.PumpOnceAsync(timeout.Token);
+            Assert.Equal(TableConnectionState.Ready, session.State);
+            Assert.NotNull(accepted);
+            TableVisibleEventBatch batch = accepted!.VisibleEventBatch;
+            Assert.Equal(role == Role.Player ? ProtocolRole.Player : ProtocolRole.Spectator, batch.Role);
+
+            // Both caches deliberately exist and disagree. The inactive role's
+            // snapshot must never supply the round or private authorization.
+            PlayerSnapshot player = P43TestData.PlayerSnapshot(roundId: "player-round");
+            PublicSnapshot publicSnapshot = P43TestData.PublicSnapshot(roundId: "spectator-round");
+            var view = new SessionViewState(1, TableConnectionState.Ready, session.Binding,
+                player, publicSnapshot, null, null, null, visibleEventBatch: batch, acceptanceSequence: 7);
+            SessionAuthority fromAccepted = SessionAuthority.FromAccepted(7, batch, player, publicSnapshot, TableConnectionState.Ready);
+            SessionAuthority fromView = SessionAuthority.FromView(view);
+            string expectedRound = role == Role.Player ? "player-round" : "spectator-round";
+            Assert.Equal(expectedRound, fromAccepted.RoundId);
+            Assert.Equal(expectedRound, fromView.RoundId);
+            Assert.Equal(role == Role.Player, fromAccepted.IsPrivateAuthorized);
+            Assert.Equal(role == Role.Player, fromView.IsPrivateAuthorized);
+            Assert.Equal(seat, fromAccepted.Seat);
+            Assert.Equal(seat, fromView.Seat);
+            Assert.True(fromAccepted.Matches(view));
+        }
+
         private sealed class Captured
         {
             public Captured(TableSnapshotChangedEventArgs args)
