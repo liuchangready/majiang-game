@@ -142,7 +142,7 @@ A  doc/v5-重构/V5-PG-SUPPLEMENT-REPAIR-DELIVERY-20261028.md
 
 ### 4.2 资源与连接证据
 
-- 原始失败前后，宿主机存在 8 个非本任务的 `D:\Git\usr\bin\sh.exe -c "while :; do :; done"` 进程，启动时间均为 **2026-10-27 15:04:09**（早于 2026-10-28 06:24 的失败），到本轮结束时每个进程累计用户态 CPU 约 695,000s；这是持续的多核占用，不是本任务创建，也未由本任务终止。
+- 原始失败前后，宿主机存在 8 个非本任务的 `D:\Git\usr\bin\sh.exe -c "while :; do :; done"` 进程，启动时间均为 **2026-10-27 15:04:09**（早于 2026-10-28 06:24 的失败），到本轮结束时每个进程累计用户态 CPU 约 69,500s（约 19.3 小时）；这是持续的多核占用，不是本任务创建，也未由本任务终止。
 - 本轮 final run 的 2s 采样（277 个有效样本）最低可用物理内存 **400.5MB**；原始失败时同样处于低内存区间。final run 仍 40/40 通过，说明低内存本身不足以证明确定性产品缺陷。
 - final run 中 PostgreSQL backend 峰值 **21**，TCP TIME_WAIT 峰值 **260**；没有接近默认 `max_connections=100`，也没有端口耗尽迹象。连接建立超时不是连接数/端口耗尽。
 - 原始 PG 日志在失败窗口只记录“could not receive data from client / aborted”，没有 `FATAL: too many clients`、没有 postmaster crash/recovery、没有数据库断言错误；与“客户端在认证/连接建立阶段超时”一致。
