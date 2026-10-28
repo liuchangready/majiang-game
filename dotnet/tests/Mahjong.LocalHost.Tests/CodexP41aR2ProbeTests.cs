@@ -229,9 +229,13 @@ namespace Mahjong.LocalHost.Tests
                 Assert.Equal(1, chankanCalc.Outcome.LoserSeat);
                 Assert.NotNull(chankanCalc.Breakdown);
                 Assert.Contains(chankanCalc.Breakdown.Yaku, y => y.Yaku.Code == "CHANKAN");
-                Assert.True(chankanCalc.Breakdown.TotalPoints > 0);
-                Assert.True(chankanCalc.Payments.Deltas[0] > 0);
-                Assert.True(chankanCalc.Payments.Deltas[1] < 0);
+                Assert.Equal(1, chankanCalc.Breakdown.TotalYakuHan);
+                Assert.Equal(40, chankanCalc.Breakdown.Fu.FinalFu);
+                Assert.Equal(2000L, chankanCalc.Breakdown.TotalPoints);
+                Assert.Equal(2000L, chankanCalc.Payments.Deltas[0]);
+                Assert.Equal(-2000L, chankanCalc.Payments.Deltas[1]);
+                Assert.Equal(0L, chankanCalc.Payments.Deltas[2]);
+                Assert.Equal(0L, chankanCalc.Payments.Deltas[3]);
 
                 pumpCts.Cancel();
                 await pump;

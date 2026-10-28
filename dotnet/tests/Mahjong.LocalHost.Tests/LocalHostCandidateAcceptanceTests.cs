@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -1679,6 +1679,7 @@ namespace Mahjong.LocalHost.Tests
                     discardResolved.Task,
                     pumpCts.Token);
                 Assert.Equal(ReceiptStatus.Applied, discardReceipt.Resolution.ReceiptStatus);
+                // debug removed
 
                 // Seat 1 (AI) must NOT Ron (no yaku). Instead, AI takes its normal turn, draws 130 and discards it smoothly!
                 // Wait for Seat 1 to have discarded a tile without getting stuck or entering illegal terminal ron
@@ -1695,6 +1696,208 @@ namespace Mahjong.LocalHost.Tests
                 }
 
                 Assert.True(aiTurnAdvanced, "AI smoothly completed turn without getting stuck on illegal Ron.");
+                Assert.NotEqual(GamePhase.RoundEnd, session.PlayerSnapshot!.PublicView.Board.Phase);
+
+                pumpCts.Cancel();
+                await pump;
+            }
+            finally
+            {
+                await session.CloseAsync("TEST_DONE", CancellationToken.None);
+                await channel.CloseAsync(new TableChannelCloseReason("TEST_DONE", true), CancellationToken.None);
+            }
+        }
+
+        [Fact]
+        public async Task ChiOrPonAfterCallDoesNotOfferTsumoAndDiscardSucceedsTest()
+        {
+            await using var harness = new P41Harness();
+            CancellationToken ct = TestContext.Current.CancellationToken;
+
+            // Dealer = 1 (Seat 1 is AI East, Seat 0 is human South).
+            // Seat 0 initial hand: [124, 125, 0, 4, 8, 12, 16, 20, 24, 28, 32, 108, 109]
+            // Slots for Seat 0 when dealer = 1: [12, 13, 14, 15, 28, 29, 30, 31, 44, 45, 46, 47, 51]
+            int[] seat0Tiles = { 124, 125, 0, 4, 8, 12, 16, 20, 24, 28, 32, 108, 109 };
+            int[] seat0Slots = { 12, 13, 14, 15, 28, 29, 30, 31, 44, 45, 46, 47, 51 };
+
+            var specific = new Dictionary<int, int>();
+            for (int i = 0; i < seat0Slots.Length; i++)
+            {
+                specific[seat0Slots[i]] = seat0Tiles[i];
+            }
+
+            // Slot 52 is the dealer's 14th tile. Dealer is Seat 1.
+            // Seat 1 draws 126 and discards 126 on turn 1!
+            specific[52] = 126;
+
+            harness.Options.InitialRound = BuildRoundWithSpecificSlots(specific, dealer: 1);
+
+            (ITableChannel channel, TableSession session) = await OpenAsync(harness, ct);
+            try
+            {
+                using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                pumpCts.CancelAfter(TimeSpan.FromSeconds(25));
+                Task pump = StartPump(session, pumpCts.Token);
+
+                // 1. Seat 1 (AI dealer) discards 126. Seat 0 (human) receives DeclarePon!
+                PlayerSnapshot ponSnapshot = await WaitForActionTypeAsync(
+                    session,
+                    ProtocolActionType.DeclarePon,
+                    pumpCts.Token);
+                Assert.NotNull(ponSnapshot.PrivateView.Decision);
+                DecisionView ponDecision = ponSnapshot.PrivateView.Decision;
+
+                LegalActionView? ponAction = ponDecision.Actions.FirstOrDefault(
+                    a => a.ActionType == (uint)ProtocolActionType.DeclarePon);
+                Assert.NotNull(ponAction);
+
+                var ponResolved = new TaskCompletionSource<TableReceiptResolvedEventArgs>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                session.ReceiptResolved += (_, args) =>
+                {
+                    if (args.Command.Key.RequestId.Value == "seat0-pon-white-1")
+                    {
+                        ponResolved.TrySetResult(args);
+                    }
+                };
+
+                BusinessPayload ponPayload = CommandPayloadFactory.SubmitAction(
+                    ponSnapshot.RoundId,
+                    ponDecision.DecisionId,
+                    ponDecision.ControlEpoch,
+                    ProtocolActionType.DeclarePon,
+                    tileIds: ponAction.TileIds.ToArray());
+                var ponCommand = new ProtocolCommand(
+                    CommandKind.SubmitAction,
+                    ponPayload,
+                    new RequestId("seat0-pon-white-1"),
+                    session.Binding!.Scope.ScopeId,
+                    new StateVersion(session.PlayerSnapshot!.StateVersion),
+                    new RoundId(ponSnapshot.RoundId),
+                    decisionId: new DecisionId(ponDecision.DecisionId),
+                    controlEpoch: new ControlEpoch(ponDecision.ControlEpoch));
+
+                await session.SubmitAsync(ponCommand, pumpCts.Token);
+                TableReceiptResolvedEventArgs ponReceipt = await LocalHostCommandTests.WithTimeoutAsync(
+                    ponResolved.Task,
+                    pumpCts.Token);
+                Assert.Equal(ReceiptStatus.Applied, ponReceipt.Resolution.ReceiptStatus);
+
+                // 2. Seat 0 is now in Discard phase with concealed hand: 1-9m + Hatsu pair.
+                // Although the hand shape looks like a winning hand (CanWin=true), DrawnTile is null!
+                // CRITICAL ASSERTION: Must NOT offer DeclareTsumo!
+                PlayerSnapshot afterPonSnapshot = await WaitForActionTypeAsync(
+                    session,
+                    ProtocolActionType.DiscardTile,
+                    pumpCts.Token);
+                Assert.NotNull(afterPonSnapshot.PrivateView.Decision);
+                DecisionView afterPonDecision = afterPonSnapshot.PrivateView.Decision;
+
+                Assert.DoesNotContain(afterPonDecision.Actions,
+                    a => a.ActionType == (uint)ProtocolActionType.DeclareTsumo);
+                Assert.Contains(afterPonDecision.Actions,
+                    a => a.ActionType == (uint)ProtocolActionType.DiscardTile);
+
+                // 3. Submitting one of the DiscardTile candidates succeeds!
+                LegalActionView discardAction = afterPonDecision.Actions.First(
+                    a => a.ActionType == (uint)ProtocolActionType.DiscardTile && a.TileIds.Contains(109u));
+
+                var discardResolved = new TaskCompletionSource<TableReceiptResolvedEventArgs>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                session.ReceiptResolved += (_, args) =>
+                {
+                    if (args.Command.Key.RequestId.Value == "seat0-discard-after-call")
+                    {
+                        discardResolved.TrySetResult(args);
+                    }
+                };
+
+                BusinessPayload discardPayload = CommandPayloadFactory.SubmitAction(
+                    afterPonSnapshot.RoundId,
+                    afterPonDecision.DecisionId,
+                    afterPonDecision.ControlEpoch,
+                    ProtocolActionType.DiscardTile,
+                    tileIds: discardAction.TileIds.ToArray());
+                var discardCommand = new ProtocolCommand(
+                    CommandKind.SubmitAction,
+                    discardPayload,
+                    new RequestId("seat0-discard-after-call"),
+                    session.Binding!.Scope.ScopeId,
+                    new StateVersion(session.PlayerSnapshot!.StateVersion),
+                    new RoundId(afterPonSnapshot.RoundId),
+                    decisionId: new DecisionId(afterPonDecision.DecisionId),
+                    controlEpoch: new ControlEpoch(afterPonDecision.ControlEpoch));
+
+                await session.SubmitAsync(discardCommand, pumpCts.Token);
+                TableReceiptResolvedEventArgs discardReceipt = await LocalHostCommandTests.WithTimeoutAsync(
+                    discardResolved.Task,
+                    pumpCts.Token);
+                Assert.Equal(ReceiptStatus.Applied, discardReceipt.Resolution.ReceiptStatus);
+                // debug removed
+
+                // Confirm Seat 0's discard is committed onto public board
+                Assert.Contains(session.PlayerSnapshot!.PublicView.Board.Players[0].Discards, d => d.TileId == 109u);
+
+                pumpCts.Cancel();
+                await pump;
+            }
+            finally
+            {
+                await session.CloseAsync("TEST_DONE", CancellationToken.None);
+                await channel.CloseAsync(new TableChannelCloseReason("TEST_DONE", true), CancellationToken.None);
+            }
+        }
+
+        [Fact]
+        public async Task AiChiOrPonDiscardsNormallyWithoutLoopingOnIllegalTsumoTest()
+        {
+            await using var harness = new P41Harness();
+            CancellationToken ct = TestContext.Current.CancellationToken;
+
+            // Dealer = 1 (Seat 1 is AI East, Seat 2 is AI South).
+            // Seat 1 starts with tile 126 at slot 52 and discards it.
+            // Seat 2 (AI South) has hand with two White dragons (124, 125) and disjoint tiles.
+            // Slots for Seat 2 when dealer = 1: [4, 5, 6, 7, 20, 21, 22, 23, 36, 37, 38, 39, 49]
+            int[] seat2Tiles = { 124, 125, 0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80 };
+            int[] seat2Slots = { 4, 5, 6, 7, 20, 21, 22, 23, 36, 37, 38, 39, 49 };
+
+            var specific = new Dictionary<int, int>();
+            for (int i = 0; i < seat2Slots.Length; i++)
+            {
+                specific[seat2Slots[i]] = seat2Tiles[i];
+            }
+            // Slot 52 is Seat 1's 14th tile. Seat 1 discards 126!
+            specific[52] = 126;
+
+            harness.Options.InitialRound = BuildRoundWithSpecificSlots(specific, dealer: 1);
+
+            (ITableChannel channel, TableSession session) = await OpenAsync(harness, ct);
+            try
+            {
+                using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                pumpCts.CancelAfter(TimeSpan.FromSeconds(25));
+                Task pump = StartPump(session, pumpCts.Token);
+
+                // Seat 1 (AI East) discards 126.
+                // Seat 2 (AI South) calls Pon on 126.
+                // After Pon, Seat 2 (AI) has concealed 11 tiles (CanWin=false, DrawnTile=null).
+                // With our fix, AI does NOT attempt illegal Tsumo, but smoothly discards a tile!
+                bool aiDiscarded = false;
+                for (int i = 0; i < 60; i++)
+                {
+                    PlayerSnapshot? current = session.PlayerSnapshot;
+                    if (current != null &&
+                        current.PublicView.Board.Players[2].Melds.Count > 0 &&
+                        current.PublicView.Board.Players[2].Discards.Count > 0)
+                    {
+                        aiDiscarded = true;
+                        break;
+                    }
+
+                    await Task.Delay(50, pumpCts.Token);
+                }
+
+                Assert.True(aiDiscarded, "AI smoothly called Pon and completed its discard without attempting invalid Tsumo.");
                 Assert.NotEqual(GamePhase.RoundEnd, session.PlayerSnapshot!.PublicView.Board.Phase);
 
                 pumpCts.Cancel();
@@ -1811,7 +2014,9 @@ namespace Mahjong.LocalHost.Tests
             return BuildRoundWithSpecificSlots(map);
         }
 
-        private static RoundStateMachine BuildRoundWithSpecificSlots(IReadOnlyDictionary<int, int> specific)
+        private static RoundStateMachine BuildRoundWithSpecificSlots(
+            IReadOnlyDictionary<int, int> specific,
+            int dealer = 0)
         {
             var used = new HashSet<int>(specific.Values);
             var remaining = new Queue<int>(Enumerable.Range(0, TileId.Count).Where(id => !used.Contains(id)));
@@ -1830,10 +2035,10 @@ namespace Mahjong.LocalHost.Tests
 
             var tiles = order.Select(id => new TileId(id)).ToArray();
             RecordedRandomDraw wall = RecordedRandomDraw.Create("test-wall", tiles);
-            TilePositionMap dealt = TilePositionMap.CreateDealt(wall, 0);
+            TilePositionMap dealt = TilePositionMap.CreateDealt(wall, dealer);
             var spec = new RoundSpec(
                 "test-round",
-                0,
+                dealer,
                 1,
                 0,
                 0,

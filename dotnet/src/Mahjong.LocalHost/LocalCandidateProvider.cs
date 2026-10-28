@@ -429,9 +429,14 @@ namespace Mahjong.LocalHost
             }
 
             // 2. Tsumo (Standard, Chiitoitsu, Kokushi Musou, Rinshan Kaihou)
-            if (hand.Count % 3 == 2 && HandDecomposer.CanWin(hand))
+            if (round.CurrentSeat == seat &&
+                round.Tiles.DrawnTile.HasValue &&
+                round.Tiles.DrawnTile.Value.Seat == seat &&
+                (round.Phase == RoundPhase.Draw || round.Phase == RoundPhase.CheatWindow || round.Phase == RoundPhase.Discard || round.Phase == RoundPhase.KanDraw) &&
+                hand.Count % 3 == 2 &&
+                HandDecomposer.CanWin(hand))
             {
-                TileId drawn = round.Tiles.DrawnTile?.Seat == seat ? round.Tiles.DrawnTile.Value.Tile : hand[hand.Count - 1];
+                TileId drawn = round.Tiles.DrawnTile.Value.Tile;
                 if (HasWinningYaku(round, seat, hand, drawn, isTsumo: true))
                 {
                     candidates.Add(new LegalActionOption(LegalActionKind.Tsumo, seat, drawn, tiles: new[] { drawn }));
