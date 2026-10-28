@@ -362,6 +362,16 @@ function Test-SharedPluginMsBuildCondition {
     throw "Unsupported MSBuild Condition '$Condition' in $Context; the provenance boundary cannot evaluate it"
 }
 
+function Assert-SharedPluginNoDeclaredInputs {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $xml = New-Object System.Xml.XmlDocument
+    $xml.Load($Path)
+    $nodes = $xml.SelectNodes('//*[local-name()="Compile" or local-name()="Protobuf" or local-name()="EmbeddedResource" or local-name()="ProjectReference" or local-name()="Import"]')
+    if ($nodes -and $nodes.Count -gt 0) {
+        throw "Non-effective Directory.Packages.props '$Path' declares build inputs; the boundary cannot prove MSBuild does not import it"
+    }
+}
+
 function Get-SharedPluginEffectiveBuildFile {
     param(
         [Parameter(Mandatory = $true)][string]$RepoRoot,
@@ -518,6 +528,30 @@ function Get-SharedPluginInputClosure {
                 & $addFile $effective
                 Add-SharedPluginMsBuildDeclaredInputs -ConfigPath $effective -RepoRoot $root -AddFile $addFile -ProjectDirectory $projectDir -ProjectName $project -AllowProjectDirectory $true
             }
+        }
+
+        # Directory.Packages.props is auto-imported by the SDK/NuGet hierarchy.
+        # Parse the effective nearest file in the consuming project context, and
+        # apply the same boundary to every listed repository level. A
+        # non-effective central file may not silently declare inputs.
+        $effectiveCentral = Get-SharedPluginEffectiveBuildFile -RepoRoot $root -ProjectDirectory $projectDir -FileName 'Directory.Packages.props'
+        if ($effectiveCentral) {
+            Assert-SharedPluginMsBuildConfigBoundary $effectiveCentral
+            Assert-SharedPluginNoCustomOutputLayout $effectiveCentral
+            & $addFile $effectiveCentral
+            Add-SharedPluginMsBuildDeclaredInputs -ConfigPath $effectiveCentral -RepoRoot $root -AddFile $addFile -ProjectDirectory $projectDir -ProjectName $project -AllowProjectDirectory $true
+        }
+        foreach ($centralLevel in @(
+            (Join-Path $root 'Directory.Packages.props'),
+            (Join-Path $root 'dotnet\Directory.Packages.props'),
+            (Join-Path $root 'dotnet\src\Directory.Packages.props')
+        )) {
+            if (-not (Test-Path -LiteralPath $centralLevel -PathType Leaf)) { continue }
+            if ($effectiveCentral -and ($centralLevel -ieq $effectiveCentral)) { continue }
+            Assert-SharedPluginMsBuildConfigBoundary $centralLevel
+            Assert-SharedPluginNoCustomOutputLayout $centralLevel
+            Assert-SharedPluginNoDeclaredInputs $centralLevel
+            & $addFile $centralLevel
         }
 
         $files = Get-ChildItem -LiteralPath $projectDir -Recurse -File -Force

@@ -67,6 +67,10 @@
 - **问题**：仅字符串 `StartsWith` 无法阻止 `build/<junction>/run` 写到物理 build 外。
 - **修复**：入口在写入前遍历 repo 根到 EvidenceRoot 的每级已存在路径，发现 reparse point/junction 即拒绝；fixture 创建与递归清理同样检查；清理仍只用 `Remove-Item -LiteralPath`。
 - **验证**：本树 `build/<junction>` 指向 `artifacts/`，`-EvidenceRoot build/<junction>/run` exit 1，目标 `run/` 未创建；junction 以 .NET 非递归 `Directory.Delete` 移除，目标未删。原有 4 个路径负例、空格路径正例保持。
+### D-R3-01（MAJOR，本轮新增）Directory.Packages.props 中央输入
+- **问题**：上一轮为修正项目相对语义，移除了对根/dotnet/dotnet/src `Directory.Packages.props` 的解析；SDK/NuGet 自动导入的中央 props 可声明 Compile，真实源码变化会漏收。
+- **修复**：按消费项目求最近生效 `Directory.Packages.props`，在项目上下文解析 Compile/Protobuf/EmbeddedResource/ProjectReference（普通相对按项目目录、`$(MSBuildThisFileDirectory)` 按文件目录、窄 Condition）；root/dotnet/dotnet/src 全部存在层级统一做 Import/输出布局边界检查；非生效中央 props 若声明编译输入/Import 则 fail closed，避免“未导入即可绕过”。
+- **验证**：P40 真实中央 Compile 输入写入 manifest；改真实 `central-linked.cs` → `SOURCE_CHANGED`；P41 根级中央 Import、P42 dotnet/src 级中央 Import 均在 build/check 前拒绝。caller 的 `caller-du01-r3-central-probe` 在本树 fixture 用 716fa19 工具复跑后 Before=0、After=1（SOURCE_CHANGED）。
 ## 4. 验证（本轮实际）
 
 ### 4.1 完整矩阵
@@ -77,7 +81,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/test-shared-
   -EvidenceRoot build/d-r1-matrix6-d260f3d32ee7 -UnityTimeoutSeconds 600 -BuildTimeoutSeconds 900
 ```
 
-结果：**39/39 PASS，0 FAIL，0 NOT_RUN**，wrapper exit 0；JUnit `tests=39 failures=0 skipped=0 partial=false time=548.280`。覆盖 P01–P15b/P16/P17/P18/P19/P20/P21/P22/P24–P39，包括：
+结果：**42/42 PASS，0 FAIL，0 NOT_RUN**，wrapper exit 0；JUnit `tests=42 failures=0 skipped=0 partial=false time=5859.055`。覆盖 P01–P15b/P16/P17/P18/P19/P20/P21/P22/P24–P42，包括：
 - 保留旧 mtime 的非法源码真实编译失败、无记录；保留旧 mtime 的合法语义变更生成新 DLL；
 - props 级 linked `Compile`/`EmbeddedResource` 纳入并检测源码变化；
 - 根 NuGet.config / dotnet/src NuGet.config 的 added/changed/removed；
@@ -86,16 +90,16 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/test-shared-
 - 缺证据真实 BuildPlayer 阻断（native 1）、坏 DLL 真实 BuildPlayer 阻断（PLUGIN_CORRUPT）、缺证据真实 Play 取消（native 42）、有效同步真实 Play 进入（native 0）。
 
 ### 4.2 partial 真实运行
-`-SkipUnity -SkipFixtureBuild`（未加 `-AllowPartial`）：exit **1**；`tests=39 pass=25 fail=0 not_run=14 partial=true`；XML `skipped=14`、14 个 `<skipped/>`、`partial=true`。默认完整运行 0 NOT_RUN。
+`-SkipUnity -SkipFixtureBuild`（未加 `-AllowPartial`）：exit **1**；`tests=42 pass=25 fail=0 not_run=17 partial=true`；XML `skipped=17`、17 个 `<skipped/>`、`partial=true`。默认完整运行 0 NOT_RUN。
 
 ### 4.3 路径边界负例
 `-EvidenceRoot` 分别指向 `%TEMP%\du01-outside`、`<repo>\buildfoo`、仓库根、`<repo>\build`：均在写入前 exit 1，外部目录未创建。
 
 ### 4.4 真实 fresh shared/Player/smoke/boundary
-本轮 acceptance（与最终代码同一工作树；证据根 `build/d-r2-matrix-d44b1f2abd74/`）：
+本轮 acceptance（与最终代码同一工作树；证据根 `build/d-r3-matrix-b80b32fe821c/`）：
 - 删除 7 工程 Release 输出后 `build-shared -Configuration Release`：exit 0，0 warning/0 error，copied 19，inputs 131 / outputs 19 / packages 5；
 - checker：exit 0，7/7 自有 DLL 与 fresh bin 一致，5/5 包闭包一致；
-- 真实 Unity `-buildWindows64Player`：exit 0，114.7s，`Build Finished, Result: Success.`，Mono，6 levels；
+- 真实 Unity `-buildWindows64Player`：exit 0，182.5s，`Build Finished, Result: Success.`，Mono，6 levels；
 - Player managed 7/7 与 fresh 源码逐字节一致；
 - 既有 `run-player-smoke.ps1`：Player native exit 0，4 张 PNG；
 - `check-unity-boundaries.ps1 -StrictCompiled`：exit 0，`Passed=true`，`asmdef_dag=PASS`，`metadata_direct_refs=PASS`。

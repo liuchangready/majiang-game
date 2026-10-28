@@ -940,6 +940,23 @@ try {
         [System.IO.File]::WriteAllText($decoyLinked, "// Not a compiler input. Exposes props-relative resolution.`r`n", $utf8)
         [System.IO.File]::WriteAllText($targetsLinked, "namespace CallerProbe { public class TargetsLinked { public const int Value = 1; } }`r`n", $utf8)
 
+        # D-R3-01: Directory.Packages.props is auto-imported by the SDK/NuGet
+        # hierarchy. Its effective Compile input must be recorded and drift must
+        # fail; hashing only the props file is not sufficient.
+        $centralProps = Join-Path $fixtureRepo 'dotnet\Directory.Packages.props'
+        $centralSource = Join-Path $fixtureRepo 'central-linked.cs'
+        [System.IO.File]::WriteAllText($centralProps, "<Project>`r`n  <ItemGroup Condition=`"'`$(MSBuildProjectName)' == 'Mahjong.Ai'`">`r`n    <Compile Include=`"`$(MSBuildThisFileDirectory)../central-linked.cs`" />`r`n  </ItemGroup>`r`n</Project>`r`n", $utf8)
+        [System.IO.File]::WriteAllText($centralSource, "namespace CallerCentralProbe { public class Linked { public const int Value = 1; } }`r`n", $utf8)
+        $centralBuild = & $fixtureBuildRun 'P40-central-packages-build'
+        $centralManifest = if (Test-Path -LiteralPath $fixtureEvidence) { Get-Content -LiteralPath $fixtureEvidence -Raw | ConvertFrom-Json } else { $null }
+        $centralInput = if ($centralManifest) { @($centralManifest.inputs | Where-Object { ([string]$_.Path) -eq 'central-linked.cs' }).Count } else { 0 }
+        [System.IO.File]::WriteAllText($centralSource, "namespace CallerCentralProbe { public class Linked { public const int Value = 2; } }`r`n", $utf8)
+        $centralCheck = & $fixtureCheckRun 'P40b-central-source-changed'
+        $centralOk = ($centralBuild.ExitCode -eq 0) -and ($centralInput -eq 1) -and
+                     ($centralCheck.ExitCode -ne 0) -and ($centralCheck.Output -match 'SOURCE_CHANGED')
+        [System.IO.File]::WriteAllText($centralSource, "namespace CallerCentralProbe { public class Linked { public const int Value = 1; } }`r`n", $utf8)
+        Add-TestCase -Id 'P40' -Name 'central Directory.Packages.props Compile input is recorded and drift fails' -Status $(if ($centralOk) { 'PASS' } else { 'FAIL' }) -Detail "build=$($centralBuild.ExitCode); centralInput=$centralInput; changedExit=$($centralCheck.ExitCode)" -LogPath $centralBuild.LogPath -Seconds 0
+
         # A recorded repository NuGet.config deletion fails; restoring passes.
         Remove-Item -LiteralPath $fixtureNuGet -Force
         $nugetRemoved = & $fixtureCheckRun 'P34-nuget-removed'
@@ -1001,6 +1018,32 @@ try {
         Add-TestCase -Id 'P39' -Name 'custom IntermediateOutputPath fails closed before PASS' -Status $(if ($customOk) { 'PASS' } else { 'FAIL' }) -Detail "buildExit=$($customBuild.ExitCode); noEvidence=$customNoEvidence; checkExit=$($customCheck.ExitCode); marker=$([bool]($customBuild.Output -match 'Unsupported custom MSBuild output layout'))" -LogPath $customBuild.LogPath -Seconds 0
 
         [System.IO.File]::WriteAllText($fixtureProps, $linkedProps, $utf8)
+
+        # Central props at the other listed repository levels cannot become an
+        # Import bypass. The root file is non-effective here; the dotnet/src
+        # file is the effective nearest file.
+        $rootCentral = Join-Path $fixtureRepo 'Directory.Packages.props'
+        $srcCentral = Join-Path $fixtureRepo 'dotnet\src\Directory.Packages.props'
+        [System.IO.File]::WriteAllText($rootCentral, "<Project>`r`n  <Import Project=`"does-not-exist.props`" />`r`n</Project>`r`n", $utf8)
+        $rootCentralBuild = & $fixtureBuildRun 'P41-root-central-import'
+        $rootCentralNoEvidence = -not (Test-Path -LiteralPath $fixtureEvidence)
+        $rootCentralCheck = & $fixtureCheckRun 'P41b-root-central-check'
+        $rootCentralOk = ($rootCentralBuild.ExitCode -ne 0) -and $rootCentralNoEvidence -and
+                         ($rootCentralBuild.Output -match 'Unsupported MSBuild import|Non-effective Directory.Packages.props') -and
+                         ($rootCentralCheck.ExitCode -ne 0)
+        Remove-Item -LiteralPath $rootCentral -Force
+        Add-TestCase -Id 'P41' -Name 'root Directory.Packages.props Import is rejected' -Status $(if ($rootCentralOk) { 'PASS' } else { 'FAIL' }) -Detail "buildExit=$($rootCentralBuild.ExitCode); noEvidence=$rootCentralNoEvidence; checkExit=$($rootCentralCheck.ExitCode)" -LogPath $rootCentralBuild.LogPath -Seconds 0
+
+        [System.IO.File]::WriteAllText($srcCentral, "<Project>`r`n  <Import Project=`"does-not-exist.props`" />`r`n</Project>`r`n", $utf8)
+        $srcCentralBuild = & $fixtureBuildRun 'P42-src-central-import'
+        $srcCentralNoEvidence = -not (Test-Path -LiteralPath $fixtureEvidence)
+        $srcCentralCheck = & $fixtureCheckRun 'P42b-src-central-check'
+        $srcCentralOk = ($srcCentralBuild.ExitCode -ne 0) -and $srcCentralNoEvidence -and
+                        ($srcCentralBuild.Output -match 'Unsupported MSBuild import') -and
+                        ($srcCentralCheck.ExitCode -ne 0)
+        Remove-Item -LiteralPath $srcCentral -Force
+        Add-TestCase -Id 'P42' -Name 'dotnet/src Directory.Packages.props Import is rejected' -Status $(if ($srcCentralOk) { 'PASS' } else { 'FAIL' }) -Detail "buildExit=$($srcCentralBuild.ExitCode); noEvidence=$($srcCentralNoEvidence); checkExit=$($srcCentralCheck.ExitCode)" -LogPath $srcCentralBuild.LogPath -Seconds 0
+
         $finalFixtureBuild = & $fixtureBuildRun 'P37b-final-fixture-rebuild'
         $finalFixtureCheck = & $fixtureCheckRun 'P37c-final-fixture-check'
         Add-TestCase -Id 'P37' -Name 'props ProjectReference outside the seven projects fails closed' -Status $(if ($outsideOk) { 'PASS' } else { 'FAIL' }) -Detail "buildExit=$($outsideBuild.ExitCode); noEvidence=$outsideNoEvidence" -LogPath $outsideBuild.LogPath -Seconds 0
@@ -1051,6 +1094,9 @@ try {
         Add-TestCase -Id 'P37' -Name 'props ProjectReference outside the seven projects' -Status 'NOT_RUN' -Detail 'skipped by -SkipFixtureBuild' -LogPath $null -Seconds 0
         Add-TestCase -Id 'P38' -Name 'root NuGet.config added to an unrecorded baseline' -Status 'NOT_RUN' -Detail 'skipped by -SkipFixtureBuild' -LogPath $null -Seconds 0
         Add-TestCase -Id 'P39' -Name 'custom IntermediateOutputPath fails closed' -Status 'NOT_RUN' -Detail 'skipped by -SkipFixtureBuild' -LogPath $null -Seconds 0
+        Add-TestCase -Id 'P40' -Name 'central Directory.Packages.props Compile input' -Status 'NOT_RUN' -Detail 'skipped by -SkipFixtureBuild' -LogPath $null -Seconds 0
+        Add-TestCase -Id 'P41' -Name 'root Directory.Packages.props Import rejection' -Status 'NOT_RUN' -Detail 'skipped by -SkipFixtureBuild' -LogPath $null -Seconds 0
+        Add-TestCase -Id 'P42' -Name 'dotnet/src Directory.Packages.props Import rejection' -Status 'NOT_RUN' -Detail 'skipped by -SkipFixtureBuild' -LogPath $null -Seconds 0
     }
 
     # -----------------------------------------------------------------------
