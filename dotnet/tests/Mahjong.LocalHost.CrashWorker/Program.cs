@@ -81,6 +81,43 @@ namespace Mahjong.LocalHost.CrashWorker
                 return 0;
             }
 
+            if (mode == "control-receipt-read")
+            {
+                // Cold-process evidence: a separate OS process opens the committed save,
+                // hydrates the real store, and reads a persisted control receipt by its
+                // original account/scope/request key.
+                if (args.Length < 9)
+                {
+                    Console.Error.WriteLine(
+                        "control-receipt-read requires <account> <scopeId> <requestId> after the clock arguments.");
+                    return 2;
+                }
+
+                ITableClock readClock = options.Environment?.ResolveClock() ?? SystemTableClock.Instance;
+                using (LocalTableStore controlStore = await LocalTableStore.OpenAsync(
+                    options,
+                    readClock,
+                    null,
+                    CancellationToken.None))
+                {
+                    LocalControlRecord? control = controlStore.GetControlResult(
+                        args[6],
+                        new RequestScopeId(args[7]),
+                        new RequestId(args[8]));
+                    File.WriteAllLines(marker, new[]
+                    {
+                        control == null ? "<null>" : control.Digest,
+                        control == null ? "<null>" : control.Kind,
+                        (control?.EvaluatedStateVersion ?? 0UL).ToString(
+                            System.Globalization.CultureInfo.InvariantCulture),
+                        controlStore.ControlVersionForTest.ToString(
+                            System.Globalization.CultureInfo.InvariantCulture)
+                    });
+                }
+
+                return 0;
+            }
+
             if (mode == "settlement")
             {
                 var clock = SystemTableClock.Instance;

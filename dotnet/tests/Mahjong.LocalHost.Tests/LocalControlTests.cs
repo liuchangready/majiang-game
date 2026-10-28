@@ -225,6 +225,10 @@ namespace Mahjong.LocalHost.Tests
             string digest = submission.Command.DigestSha256;
 
             await WaitUntilAsync(
+                () => dropper != null && dropper.DroppedCount == 1,
+                "the first control receipt to be dropped",
+                ct);
+            await WaitUntilAsync(
                 () => live.Runtime.StoreForTest.GetControlResult(SeatAccount, scope, new RequestId(requestId)) != null,
                 "the dropped-receipt control result to commit",
                 ct);
@@ -315,6 +319,10 @@ namespace Mahjong.LocalHost.Tests
                 Assert.True(submission.Sent);
                 string digest = submission.Command.DigestSha256;
                 await WaitUntilAsync(
+                    () => dropper != null && dropper.DroppedCount == 1,
+                    "the first cold-restart control receipt to be dropped",
+                    ct);
+                await WaitUntilAsync(
                     () => first.Runtime.StoreForTest.GetControlResult(SeatAccount, scope, new RequestId(requestId)) != null,
                     "the dropped-receipt ClaimControl result to commit",
                     ct);
@@ -360,6 +368,179 @@ namespace Mahjong.LocalHost.Tests
             {
                 await first.DisposeAsync();
             }
+        }
+
+        [Fact]
+        public async Task ControlReceiptIsReadableByASeparateColdProcess()
+        {
+            await using var harness = new P41Harness();
+            // Match the crash worker's fixed owner so the save can be hydrated by it.
+            harness.Options.OwnerInstanceId = "crash-owner";
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            string outboxPath = System.IO.Path.Combine(harness.Root, "control-outbox-process");
+            var outbox = new FileOutboxStore(outboxPath);
+            DropFirstControlReceiptChannel? dropper = null;
+            LiveSession live = await LiveSession.OpenAsync(
+                harness,
+                outbox,
+                ct,
+                inner =>
+                {
+                    dropper = new DropFirstControlReceiptChannel(inner, 1);
+                    return dropper;
+                });
+
+            const string requestId = "process-claim";
+            RequestScopeId scope = live.Scope;
+            string digest;
+            string kind;
+            ulong evaluated;
+            try
+            {
+                CommandSubmission submission = await live.SubmitControlAsync(
+                    CommandKind.ClaimControl,
+                    0,
+                    requestId,
+                    decisionId: null,
+                    ct);
+                Assert.True(submission.Sent);
+                digest = submission.Command.DigestSha256;
+                await WaitUntilAsync(
+                    () => dropper != null && dropper.DroppedCount == 1,
+                    "the first process control receipt to be dropped",
+                    ct);
+                await WaitUntilAsync(
+                    () => live.Runtime.StoreForTest.GetControlResult(SeatAccount, scope, new RequestId(requestId)) != null,
+                    "the dropped-receipt process ClaimControl result to commit",
+                    ct);
+                Assert.NotNull(dropper);
+                Assert.Equal(1, dropper!.DroppedCount);
+                LocalControlRecord record = live.Runtime.StoreForTest.GetControlResult(
+                    SeatAccount,
+                    scope,
+                    new RequestId(requestId))!;
+                Assert.Equal(digest, record.Digest);
+                kind = record.Kind;
+                evaluated = record.EvaluatedStateVersion;
+                Assert.Equal("ClaimControl", kind);
+                Assert.Equal(0L, live.Runtime.StoreForTest.ControlVersionForTest);
+            }
+            finally
+            {
+                await live.DisposeAsync();
+            }
+
+            string workerDll = System.IO.Path.Combine(
+                P41Harness.FindRepositoryRoot(),
+                "dotnet",
+                "tests",
+                "Mahjong.LocalHost.CrashWorker",
+                "bin",
+                "Release",
+                "net8.0",
+                "Mahjong.LocalHost.CrashWorker.dll");
+            Assert.True(File.Exists(workerDll), "CrashWorker was not built: " + workerDll);
+            string marker = System.IO.Path.Combine(harness.Root, "control-process-marker.txt");
+            System.Diagnostics.ProcessStartInfo start = CreateWorkerStartInfo(
+                workerDll,
+                harness.Options.SaveDirectory,
+                P41Harness.RoomId,
+                marker,
+                harness.Clock.MonotonicMillis,
+                harness.Clock.UtcNowMs,
+                SeatAccount,
+                scope.Value,
+                requestId);
+            using (System.Diagnostics.Process process = System.Diagnostics.Process.Start(start)!)
+            {
+                using var waitCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                waitCts.CancelAfter(TimeSpan.FromSeconds(30));
+                Task<string> stdout = process.StandardOutput.ReadToEndAsync(waitCts.Token);
+                Task<string> stderr = process.StandardError.ReadToEndAsync(waitCts.Token);
+                try
+                {
+                    await process.WaitForExitAsync(waitCts.Token);
+                    await Task.WhenAll(stdout, stderr);
+                }
+                catch (OperationCanceledException)
+                {
+                    process.Kill(true);
+                    throw new TimeoutException("The cold-process control receipt reader did not exit in time.");
+                }
+
+                Assert.True(
+                    process.ExitCode == 0,
+                    "The cold-process control receipt reader failed: exit=" + process.ExitCode +
+                    " stderr=" + await stderr);
+            }
+
+            string[] lines = File.ReadAllLines(marker);
+            Assert.Equal(4, lines.Length);
+            Assert.Equal(digest, lines[0]);
+            Assert.Equal(kind, lines[1]);
+            Assert.Equal(evaluated.ToString(System.Globalization.CultureInfo.InvariantCulture), lines[2]);
+            Assert.Equal("0", lines[3]);
+        }
+
+        private static System.Diagnostics.ProcessStartInfo CreateWorkerStartInfo(
+            string workerDll,
+            string saveDirectory,
+            string roomId,
+            string markerPath,
+            long monotonicMillis,
+            long utcNowMs,
+            string account,
+            string scopeId,
+            string requestId)
+        {
+            string dotnet = ResolveDotnetPath();
+            string args =
+                "\"" + workerDll + "\" \"" + saveDirectory + "\" \"" + roomId + "\" \"" + markerPath + "\"" +
+                " control-receipt-read " +
+                monotonicMillis.ToString(System.Globalization.CultureInfo.InvariantCulture) + " " +
+                utcNowMs.ToString(System.Globalization.CultureInfo.InvariantCulture) + " " +
+                "\"" + account + "\" \"" + scopeId + "\" \"" + requestId + "\"";
+            var startInfo = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = dotnet,
+                Arguments = args,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            string? dotnetRoot = Environment.GetEnvironmentVariable("DOTNET_ROOT");
+            if (string.IsNullOrEmpty(dotnetRoot) && File.Exists("D:/Unity/dotnet/dotnet.exe"))
+            {
+                dotnetRoot = "D:/Unity/dotnet";
+            }
+
+            if (!string.IsNullOrEmpty(dotnetRoot))
+            {
+                startInfo.Environment["DOTNET_ROOT"] = dotnetRoot!;
+            }
+
+            return startInfo;
+        }
+
+        private static string ResolveDotnetPath()
+        {
+            string? dotnetRoot = Environment.GetEnvironmentVariable("DOTNET_ROOT");
+            if (!string.IsNullOrEmpty(dotnetRoot))
+            {
+                string candidate = System.IO.Path.Combine(dotnetRoot!, "dotnet.exe");
+                if (File.Exists(candidate))
+                {
+                    return candidate;
+                }
+            }
+
+            if (File.Exists("D:/Unity/dotnet/dotnet.exe"))
+            {
+                return "D:/Unity/dotnet/dotnet.exe";
+            }
+
+            return "dotnet";
         }
 
         [Fact]
