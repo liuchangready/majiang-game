@@ -3118,6 +3118,132 @@ namespace Mahjong.Unity.Tests.PlayMode
         }
 
         [UnityTest]
+        public IEnumerator B2bFormalProbe34_ReverseRolePendingCapture()
+        {
+            yield return RunReverseRoleScenario(holdCapture: true);
+        }
+
+        [UnityTest]
+        public IEnumerator B2bFormalProbe35_ReverseRolePublishedUndispatched()
+        {
+            yield return RunReverseRoleScenario(holdCapture: false);
+        }
+
+        private IEnumerator RunReverseRoleScenario(bool holdCapture)
+        {
+            yield return LoadAndBindTableSceneAsync();
+            _presenter!.enabled = false;
+
+            yield return ReconnectBinding("room_table_1", Role.Spectator, -1, 2, 2, 2, null);
+            Assert.AreEqual(TableConnectionState.Ready, _session!.State);
+            Assert.IsNotNull(_session.PublicSnapshot);
+            Assert.AreEqual(Mahjong.Contracts.ProtocolRole.Spectator, _session.Binding!.Role);
+            Assert.AreEqual(PlayerTableRole.Spectator, _presenter.LatestView!.Identity.Role);
+            Assert.IsFalse(_presenter.LatestView.Identity.IsPrivateAuthorized);
+
+            SessionCoordinator seed = _coordinator!;
+            var controlled = new MainThreadDispatcher(64);
+            var gate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            int captures = 0;
+            var coordinator = new SessionCoordinator(
+                _session, _queue, _channel, controlled, new AppConfig(), 1,
+                async () =>
+                {
+                    int call = Interlocked.Increment(ref captures);
+                    if (call == 1 && holdCapture) await gate.Task;
+                    return await _queue!.CaptureAsync(CancellationToken.None);
+                });
+            _coordinator = coordinator;
+            _presenter.Bind(coordinator, _mockNav, coordinator);
+            coordinator.Publish(1, seed.Current);
+            for (int i = 0; i < 20; i++) { controlled.Update(1, 1000f); yield return null; }
+            Assert.AreEqual(PlayerTableRole.Spectator, _presenter.LatestView!.Identity.Role);
+            Assert.IsNull(_presenter.LatestView.Own);
+
+            Envelope oldPush = PlayModeScriptedTableChannel.CreatePublicPush(
+                "session_table_1", "room_table_1", 2, 67, 3, 3, 103);
+            oldPush.PublicUpdate.Snapshot.View.Board.Players[1].Discards.Add(
+                new DiscardView { TileId = 44, TurnNumber = 3, Tsumogiri = false });
+            oldPush.PublicUpdate.VisibleEvents.Add(new PublicEventEnvelope
+            {
+                EventSchemaVersion = ProtocolConstants.EventSchemaVersion,
+                EventSeq = 103,
+                EventOrdinal = 0,
+                CommandVersion = 3,
+                EventType = WireEventType.TileDiscarded,
+                Visibility = EventVisibility.Public,
+                TileDiscarded = new TileDiscarded { TurnNumber = 3, Player = 1, TileId = 44 }
+            });
+            _channel!.EnqueueEnvelope(oldPush);
+            var oldPump = _session.PumpOnceAsync(CancellationToken.None);
+            while (!oldPump.IsCompleted) yield return null;
+            Assert.IsFalse(oldPump.IsFaulted, oldPump.Exception?.ToString());
+            for (int i = 0; i < 40 && Volatile.Read(ref captures) < 1; i++) yield return null;
+            Assert.AreEqual(1, Volatile.Read(ref captures));
+            if (holdCapture)
+            {
+                Assert.AreEqual(2UL, coordinator.Current.PublicSnapshot!.StateVersion);
+                Assert.AreEqual(0, controlled.PendingCount);
+            }
+            else
+            {
+                for (int i = 0; i < 40 && coordinator.Current.PublicSnapshot?.StateVersion != 3; i++) yield return null;
+                Assert.AreEqual(3UL, coordinator.Current.PublicSnapshot!.StateVersion);
+                Assert.GreaterOrEqual(controlled.PendingCount, 1);
+            }
+
+            yield return ReconnectBinding("room_table_1", Role.Player, 0, 3, 3, 3, null, dispatch: false);
+            Assert.AreEqual(TableConnectionState.Ready, _session.State);
+            Assert.IsNotNull(_session.PlayerSnapshot!.PrivateView);
+            for (int i = 0; i < 40 && coordinator.Current.Binding?.Role != (int)Mahjong.Contracts.ProtocolRole.Player; i++) yield return null;
+            Assert.AreEqual((int)Mahjong.Contracts.ProtocolRole.Player, coordinator.AcceptedAuthority!.Role);
+            Assert.IsTrue(coordinator.AcceptedAuthority.IsPrivateAuthorized);
+            Assert.AreEqual((int)Mahjong.Contracts.ProtocolRole.Player, coordinator.Current.Binding!.Role);
+            Assert.GreaterOrEqual(controlled.PendingCount, holdCapture ? 1 : 2);
+            gate.TrySetResult(true);
+            var banner = FormalField<TextMeshProUGUI>("_animationBannerText");
+            for (int i = 0; i < 40; i++)
+            {
+                controlled.Update(1, 1000f);
+                Assert.AreEqual(0, _presenter.AnimationQueue.PendingCount,
+                    "old spectator callback must not animate after player acceptance");
+                typeof(TablePresenter).GetMethod("UpdateAnimationBanner", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(_presenter, null);
+                Assert.IsFalse(banner.gameObject.activeSelf);
+                yield return null;
+            }
+            Assert.AreEqual(PlayerTableRole.Player, _presenter.LatestView!.Identity.Role);
+            Assert.IsTrue(_presenter.LatestView.Identity.IsPrivateAuthorized);
+
+            PlayerSnapshot fresh = _session.PlayerSnapshot.Clone();
+            fresh.StateVersion = 6;
+            fresh.EventSeq = 106;
+            fresh.Cursor = new Mahjong.Contracts.Wire.StreamCursor { StreamVersion = 1, ProjectionSeq = 2 };
+            fresh.PrivateView.DrawnTileId = 31;
+            Envelope freshPush = B2bTypedPush(fresh, 1, 2, false,
+                B2bEvent(106, 0, WireEventType.TileDrawn, EventVisibility.Private, 6,
+                    e => e.TileDrawn = new TileDrawn { TurnNumber = 6, Player = 0, TileId = 31, WallRemaining = 67 }));
+            freshPush.BindingEpoch = 3;
+            _channel.EnqueueEnvelope(freshPush);
+            var freshPump = _session.PumpOnceAsync(CancellationToken.None);
+            while (!freshPump.IsCompleted) yield return null;
+            Assert.IsFalse(freshPump.IsFaulted, freshPump.Exception?.ToString());
+            for (int i = 0; i < 40; i++) { controlled.Update(1, 1000f); yield return null; }
+            Assert.IsTrue(_presenter.LastVisibleEventMapping!.Accepted, _presenter.LastVisibleEventMapping.Code);
+            Assert.AreEqual(1, _presenter.AnimationQueue.PendingCount,
+                "newly authorized private draw must animate once");
+            typeof(TablePresenter).GetMethod("UpdateAnimationBanner", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(_presenter, null);
+            Assert.IsTrue(banner.gameObject.activeSelf);
+            Assert.IsNotEmpty(banner.text);
+            Assert.AreEqual(0, _presenter.AnimationQueue.PendingCount);
+            _channel.EnqueueEnvelope(freshPush);
+            var duplicatePump = _session.PumpOnceAsync(CancellationToken.None);
+            while (!duplicatePump.IsCompleted) yield return null;
+            for (int i = 0; i < 20; i++) { controlled.Update(1, 1000f); yield return null; }
+            Assert.AreEqual(0, _presenter.AnimationQueue.PendingCount,
+                "duplicate private frame must not requeue");
+        }
+
+        [UnityTest]
         public IEnumerator B2bFormalProbe06_DelayedCaptureWithNewBindingMustNotRebaseOldBatch()
         {
             yield return LoadAndBindTableSceneAsync();
