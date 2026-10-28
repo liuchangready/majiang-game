@@ -592,3 +592,46 @@ limitations          2（同一 direct-XML 事实在两个 run 各一次）
   用这两个绿 run 宣称关闭。
 - 11 个 direct runner 的 XML test-case 节点仍是 **BLOCKED**；这是本报告唯一未满足的
   验收子项，不能写成 XML 已验证。
+
+---
+
+## 13. Caller 独立验收（2026-10-28）
+
+任务账本：`thread_20261028_111456_1e14`，沿用原 callerSessionId；未新建任务或转派。
+caller 实际在本工作区完成以下验证，均为 native exit **0**：
+
+| 验证 | 实际结果 |
+|---|---|
+| 重跑交付审计脚本 | **649 checks / 0 failures / 2 limitations**；两个 limitation 均为已披露的 direct XML 缺失 |
+| 独立重算原 manifest | **494 files / 30,551,823 bytes / 0 mismatches**；manifest SHA 与 §11 一致 |
+| 独立比较 ZIP 原始条目与解压文件 | 两包各 **226/226**，合计 **452/452** 字节长度与 SHA256 一致 |
+| 重新读取 GitHub artifact API | 两个 artifact ID、SHA256 digest 与下载元数据及 ZIP 实算值一致 |
+| `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/ci/test-v5-native-exit.ps1` | **6/6 PASS**，实际 0/1/2/17/timeout/forced-writer；强杀为 -1 |
+| `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/verify-v5-companion-fixtures.ps1` | **4/4 fixtures、47 cases PASS**；historical git pins 仍为 NOT_RUN |
+| PR checkout 对象及全树比较 | 再次确认 `303d224` 的两个 parent 与 §2 一致，`git diff --quiet 392b973 303d224` exit 0 |
+| 范围与空白检查 | 冻结源码以来仅本报告一个 tracked 文件；`git diff --check 392b973..HEAD` exit 0 |
+
+caller 证据根：
+
+```text
+D:\majiang-wt\pr20-ci-392b973-ds-20261028\build\caller-review-392b973-1793159387214
+```
+
+审计复跑命令为 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File <caller证据根>\audit-rerun.ps1 -Root <§3原始证据根>`。
+复跑副本仅将结果输出位置从原始证据根改到 caller 证据根，检查逻辑未改；原始
+`audit.ps1`、结果、日志及 manifest 均保留。另运行同目录的 `verify-manifest.ps1`
+与 `verify-zip.ps1`（均传相同 `-Root`）完成独立文件校验。
+
+新六项反证证据位于 `artifacts\native-exit-7aa2783ec7c244bea7aa441c69871cf2`。
+`<caller证据根>\caller-manifest.csv` 覆盖 caller 检查脚本、日志、结果、重新取得的
+API 元数据和本次 native-exit 产物，共 **34 files**；自身不纳入清单，SHA256 为：
+
+```text
+3E4C8CCC2D601C582AE1DBDDA8C465DEFB51F44A73A8A34DC3E411B6215D2A92
+```
+
+**caller 结论：本任务的只读证据审查交付物通过，未发现需返修的 material defect。**
+这不将缺失的逐 runner XML 子项改判为 PASS；原有 BLOCKED/NOT_RUN 和 G2–G5 边界继续有效。
+本次未重跑远端 CI、Unity 或 PG；本地审计验证的是已冻结两份 run 的原始证据，不能冒充
+后续报告提交的 CI 结果。收口沿用现有唯一 draft PR20（`feat/v5-post-g1-batch` → `v5`），
+不合入尚未独立验收的其它任务，也不把它们的在途状态作为本任务返修理由。
