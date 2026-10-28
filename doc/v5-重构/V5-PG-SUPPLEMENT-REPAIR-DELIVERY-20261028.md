@@ -336,3 +336,219 @@ writer pid 52340 在 durable commit 后、publication 前强杀；PG immediate r
 本任务沿用 `thread_20261028_154729_a893` 与既有调用者会话，由调用者批准后统一推送现有唯一草稿 [PR20](https://github.com/liuchangready/majiang-game/pull/20)，源分支 `feat/v5-post-g1-batch`，目标 `v5`。本轮检查时同批已接受任务均已同步；其余三项仍返修，未纳入。未新建任务/会话或转派，没有额外子任务 MR。
 
 本文 §1–7 的“未 push”描述 receiver 交付时状态；最终推送 SHA、PR 同步结果由 bridge `record_merge_request` 记录。新头远端 CI 须按其自身运行验证，当前本地结果不把新 CI 标为通过。G1 不重开，G2–G5 保持未批准；V4 仍生产，181 classified 缺口和所有设备/跨物理网络缺口保留。未合并 `v5`、未部署、未改 scheduler 或 `complete.flag`。
+
+---
+
+## 9. 后续返修：D-CI-DELAY-01 exact-head 远端 CI 的计时边界（2026-10-28，新任务）
+
+### 9.1 任务来源与边界
+
+本线程 `thread_20261028_154729_a893` 的 PG 补验已在 `8a0c8cb` 接受并归档。桥接 `rework-controller.js` 明令 completed terminal、禁止晚到 rework 复活，因此本任务是**新信息后续**而非原 PG 补验的复制：接受后首次对 exact head 跑远端双 CI，才暴露下述 1999ms 计时边界。原始接受记录、原始失败证据和原线程结论均保留，不重做 D-PG-SUP-02 归因、旧 CI 审查或 LocalHost。
+
+工作树：`D:/majiang-wt/pg-delay-followup-ds-20261028-1822`
+分支：`wt/v5-pg-delay-followup-ds-20261028-1822`
+冻结基线：`8a0c8cbf73f30fe3bd943e3965bbef40224f49aa`（已审查 PR20 发布头）
+上游：`origin/v5 = 8fd7c6cb701dfbb41c28938de4186749bdd1d6c7`（基线祖先，HEAD 领先 120、落后 0）
+本轮代码提交：`9be3ec5236b33b744583fe52636cd6f1dacc8e73`
+
+本轮只改 `expectedFiles` 中的两个 Infrastructure 测试/fixture 文件，并在本报告追记；没有额外路径：
+
+```text
+M  dotnet/tests/Mahjong.Infrastructure.Tests/P52TestSupport.cs
+M  dotnet/tests/Mahjong.Infrastructure.Tests/PostgresSupplementRegressionTests.cs
+M  doc/v5-重构/V5-PG-SUPPLEMENT-REPAIR-DELIVERY-20261028.md
+```
+
+未修改生产 Infrastructure、SQL、TableRuntime、Domain、Client、Wire、统一 verifier/CI、csproj/sln、Unity 或二进制；未 push、未建 PR/MR、未合并 `v5`、未改 scheduler/`complete.flag`、未部署。P4.1c/d 的 paused 与 P4.1a HTTP500 failed 保留原状，本任务不恢复、不复制、不绕过。
+
+### 9.2 冻结核实
+
+- `HEAD = 8a0c8cb...`、`branch = wt/v5-pg-delay-followup-ds-20261028-1822`、tracked status 干净。
+- `git merge-base --is-ancestor origin/v5 HEAD` 为真；`8fd7c6cb..HEAD = 120`，`HEAD..origin/v5 = 0`。
+- 工作树确从 `origin/v5` 建立并 ff-only 到已审查 PR20 发布头；未更换基线、未覆盖其它工作树。
+- 冻结记录写入 ignored 的 `artifacts/freeze-baseline.json`。
+
+### 9.3 缺陷记录
+
+```text
+[ID] D-CI-DELAY-01
+严重级别：MAJOR
+位置：dotnet/tests/Mahjong.Infrastructure.Tests/PostgresSupplementRegressionTests.cs:31
+      PostgresSupplementRegressionTests.DelayedScopePreparation_EstablishesScopeAfterPreparationAndCommits
+      dotnet/tests/Mahjong.Infrastructure.Tests/P52TestSupport.cs:540 附近
+      P52Fixture.CreateAsync 的 scopePreparationDelay / afterScopeIssueDelay
+复现：exact head 8a0c8cb 的远端双 CI：
+      https://github.com/liuchangready/majiang-game/actions/runs/40665584740 (pull_request)
+      https://github.com/liuchangready/majiang-game/actions/runs/40665578400 (push)
+      本地受控提前唤醒探针与去掉单调补足的负变体（见 9.6）。
+实际：PR run 的 PG 为 Total 40 / Passed 39 / Failed 1 / native 1；
+      push run 的首轮 PG 40/40、target 13/13、crash/restart/reader/backup restore PASS，
+      统一阶段 Infrastructure 39/40，最终 native 1。
+      两份 XML 的唯一失败为同一方法、同一原始 message：
+      The fixture did not actually delay preparation: preparationMs=1999
+      stack 指向 8a0c8cb 的 PostgresSupplementRegressionTests.cs:31。
+期望：fixture 以单调 Stopwatch 真实测得准备至少 2.000s；scope 只在准备完成之后签发；
+      issue 后至少 1.100s 的合法调度仍提交成功；过期/撤销边界仍拒绝且零副作用；
+      scope-before-preparation 变体仍红。
+证据：本树 `artifacts/caller-evidence/`：PR tests.xml、push unified direct-results.xml、
+      两个 log-failed、sha256.csv；更完整只读 bundle：
+      `D:/majiang-wt/codex-p54b-review-20261028-1818/artifacts/caller-p54b-review/ci-40665584740`
+      与 `.../ci-40665578400`。SHA256 见 9.8。
+修复要求：不得仅把 1999 放宽为允许值；不得删掉严格因果/有效期断言；不得把展示 ms 加 1
+      或四舍五入冒充真实 elapsed；不得固定扩超时、任意 sleep、伪造 Stopwatch 或跳过负例。
+验收断言：真实 PG full 42/42；新增提前唤醒不能提前签发 scope；取消可结束；
+      准备前取 issued 变体仍红；事务冻结时钟变体仍红；targeted 13/13、crash/restart/
+      reader/backup restore 与统一 verifier 全 PASS。
+```
+
+### 9.4 1999ms 与 fixture 代码的机制
+
+`P52Fixture.CreateAsync` 在慢准备处使用 `await Task.Delay(scopePreparationDelay)`，测试再用一层 `Stopwatch` 量该段并断言 `ScopePreparationElapsed >= 2s`。`Task.Delay` 是计时器通知，不是精确时长保证；续体可以在 Stopwatch 读到 2.000s 之前被唤醒，实测值落在 `[1999, 2000)` ms，`(long)TotalMilliseconds` 显示 1999，严格下界因此失败。这是**测试 fixture 的测量边界**，不是生产计时、租约或 scope 逻辑的缺陷，也不能据此称远端已绿、不能拿历史 6b6a5f9 绿色覆盖 8a 的失败，更不能无证据称 flaky。
+
+同一类边界还存在于 `afterScopeIssueDelay`：旧实现同样只 `Task.Delay(1100)` 且不测量，后面只断言 scope age `>= 1000`，等于默许最多 100ms 的提前返回。该路径本轮一并收紧。
+
+本地没有把“原样 `Task.Delay(2000)` 是否稳定复现 1999”当作通过条件；机制由远端原始 XML 和**受控提前唤醒**测试确定性证明，未复现的部分如实保留为未复现，不写成 PASS。
+
+### 9.5 修复与断言映射
+
+`P52TestSupport.cs` 新增 `DelayAtLeastAsync`：
+
+1. 启动单调 `Stopwatch`；
+2. 每次计算 `remaining = minimum - watch.Elapsed`，不足则继续 `await wait(remaining, ct)`；
+3. 每次 await 不超过剩余下界、可取消；达到下界才返回；
+4. 默认 `wait = Task.Delay`，测试可注入受控提前唤醒源，但最小 elapsed 始终由真实 Stopwatch 守住。
+
+两个 delay 都改走该 helper，并分别暴露真实测量值 `ScopePreparationElapsed` 与 `AfterScopeIssueElapsed`。主用例保留并加强：
+
+| 原义务 | 当前断言 |
+|---|---|
+| 实际至少 2s 准备 | `ScopePreparationElapsed >= 2s`（单调测量，不足继续 await） |
+| issue 在 preparation 之后 | `Scope.IssuedAtUtcMs >= ScopePreparationCompletedAtUtcMs` |
+| 至少 1.1s issue 后调度 | `AfterScopeIssueElapsed >= 1.1s` 且外层 `elapsed >= 3.1s`，scope age `>= 1s` |
+| 有效 scope 真实提交 | `result.IsCommitted`、`state_version=1`、event count 一致 |
+| 过期/撤销零副作用 | 原 expiry/revocation 边界用例与 `AssertNoSideEffectsAsync` 保留 |
+
+`PostgresSupplementRegressionTests.cs` 新增两项正式用例（只在本文件）：
+
+- `EarlyWakePreparationDelay_CannotIssueScopeBeforeMinimumElapsed`：前五次计时通知立即返回（受控提前唤醒），断言 fixture 仍测得准备/后置延迟下界，且 scope 只在 preparation 完成后签发。若 guard 被移除，该用例确定性失败，而不是依赖机器快慢。
+- `DelayAtLeast_IsCancellableBeforeTheFullMinimumElapses`：30s 下界在取消后迅速结束，证明有界等待可取消；10s 只是活性上界，不是性能门槛。
+
+没有把 1999 改为允许值、没有加 1ms/四舍五入、没有固定加 sleep、没有改生产计时，也没有放宽 scope-before-prepare 或 expiry 断言。
+
+### 9.6 负例矩阵（真实 PG，逐项实跑）
+
+三个负变体均从 `9be3ec5` 的 `git archive` 隔离副本运行，只修改声明的目标文件，主工作树未被改动；另以同 HEAD 的 pristine `git archive` 逐文件比较，除声明的目标文件外无差异（`artifacts/mutants-source-comparison.txt`），运行后 wrapper 均 `ownership-verified cluster removed`。
+
+| 场景 | 修改 | 结果 | 失败证据 |
+|---|---|---:|---|
+| A. 去掉单调补足（回到单次 `Task.Delay`） | `P52TestSupport.cs` 的 `DelayAtLeastAsync` 只 await 一次 | **41/42，1 failed** | `EarlyWake...`：`An early timer notification shortened preparation: preparationMs=0` |
+| B. 准备前捕获 issued | `CreateAsync` 在准备前取 `issuedBeforePreparation`，准备后仍使用它 | **40/42，2 failed** | `EarlyWake...`：issued=1793185128437 < prepared=1793185128741；`Delayed...`：issued=1793185129307 < prepared=1793185131319 |
+| C. 事务冻结数据库时钟 | 生产 `PostgresTableStore.State.cs` 的 `DbNowMsAsync` 与 `Commit.cs` 的 scopeBoundary 由 `clock_timestamp()` 改为 `now()` | **40/42，2 failed** | 两个 expiry 用例均为 `Expected: ScopeRejected` / `Actual: Committed` |
+| 正常修复 | 无 | **42/42** | 见 9.7 |
+| 过期/撤销 | 无 | PASS 且零副作用 | 原边界用例保留 |
+| 取消 | 无 | PASS | 30s wait 在取消后结束 |
+
+变体 A 的 0ms 与远端 1999ms 是同一缺陷类：把一次计时器通知当作已满足时长。A 证明新用例能确定性抓住该缺陷；C 证明新修复没有放行事务冻结时钟；B 证明因果断言仍有效。三个变体都只跑到 tests 阶段即按预期失败，targeted/crash/unified 对变体为 **NOT_RUN**，不冒充通过。
+
+### 9.7 本轮真实运行与计数
+
+环境：`D:/Unity/dotnet/dotnet.exe` 8.0.426；PG zip `D:/majiang-pg-tmp/cache/postgresql-16.10-1-windows-x64-binaries.zip`，SHA256 `EBB3B6AF4FA69DEA9951B66855BC4D42DC04E56CCB9AA7024CE3C58BD89D6B0C`；真实 PostgreSQL 16.10；表端口 55864，Lobby 端口 55865，均 loopback 独占。
+
+fresh Release build（最终 wrapper 的 fresh-build 阶段执行同形命令）：
+
+```powershell
+& D:/Unity/dotnet/dotnet.exe build `
+  dotnet/tests/Mahjong.Infrastructure.Tests/Mahjong.Infrastructure.Tests.csproj `
+  -c Release --no-incremental --nologo -v:minimal
+```
+
+实际 exit 0，0 warnings / 0 errors；测试 DLL SHA256 `E56B70FECE952DC5425653682E4AADC9AA63150FA9C4E32160F18CA331B00D55`。
+
+最终统一入口（未改脚本）：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File tools/ci/verify-v5-table-postgres.ps1 `
+  -Configuration Release -DotnetPath D:/Unity/dotnet/dotnet.exe `
+  -Port 55864 -Root artifacts/pg-delay-final/pg `
+  -LogDir artifacts/pg-delay-final/logs `
+  -PgZipPath D:/majiang-pg-tmp/cache/postgresql-16.10-1-windows-x64-binaries.zip `
+  -RunUnifiedVerification -UnifiedLogDir artifacts/pg-delay-final/logs/unified `
+  -LobbyRoot D:/majiang-pg-tmp/ds-pg-delay-final-lobby-55865 -LobbyPort 55865
+```
+
+实际最外层 `P52-TABLE-POSTGRES-PASS`，native exit 0，全部 stage PASS：
+
+| 阶段 | selected | passed | failed | skipped | errors | not-run | native exit |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Infrastructure full（原 40 + 新 2） | 42 | 42 | 0 | 0 | 0 | 0 | 0 |
+| 原 targeted（PostgresTableStoreTests） | 13 | 13 | 0 | 0 | 0 | 0 | 0 |
+| 统一 11 个测试工程 | 2299 | 2299 | 0 | 0 | 0 | 0 | 0 |
+| companion fixtures | 4 | 4 | 0 | 0 | 0 | 0 | 0 |
+
+统一分项：80 + 400 + 444 + 92 + 182 + 140 + 149 + 89 + 529 + 152 + 42 = **2299**（原 2294 + 5，未删分母）。solution build 0 warnings / 0 errors；12 个 DLL 的 Unity plugin closure PASS；companion 4/4。
+
+恢复与清理：
+
+- crash writer pid **50368** 在 durable commit 后、publication 前强杀；marker `stateVersion=1,lastEventSeq=2,eventCount=2`。
+- PG immediate restart 的 postmaster 时间 `10:38:06.951973Z -> 10:39:45.027256Z`，automatic recovery 3 行。
+- cold reader：`recovered=true,stateVersion=1,lastEventSeq=2,terminal=true,receiptStatus=Applied,cheatVersion=1,recoveryOwnerEpoch=2`。
+- 空库 restore：`events=2,recovered=true,receiptStatus=Applied,recoveryOwnerEpoch=3`。
+- 表集群与 Lobby 集群均经 ownership marker 停止并删除；55864/55865 最终无监听，目录不存在。运行期间未触碰其它 caller 的 57541–57544、Unity 集群、共享 DB 或未知进程；本机现存 `codex-integrated-r3-20261024` 的 postgres 进程不属本任务，未操作。
+
+**被取代的预跑（不计验收）**：最终断言修订前另有一次同代码树 42/42 的 unified 预跑（`artifacts/pg-delay-followup`）。该预跑仍含 `delayCalls >= 6` 的调用次数下界，理论受极慢调度影响；已改为只以单调 elapsed 为下界并完成上表的最终重跑。预跑只作过程留痕，不用于验收。
+
+### 9.8 关键证据与 SHA256
+
+最终证据根：`D:/majiang-wt/pg-delay-followup-ds-20261028-1822/artifacts/pg-delay-final/`。
+
+| 证据 | 路径 | SHA256 |
+|---|---|---|
+| final full XML（42/42） | `logs/tests.xml` | `D6FA5895E5AFE5A96474F20160522759181F30653D116C98F80A8170F524D998` |
+| final targeted XML（13/13） | `logs/tests-targeted.xml` | `8CF5362FE6F82C816B0CC86C87D0E3C6E2A57FAFC8B0D2ABF22DEECF7D55F60E` |
+| wrapper summary | `logs/wrapper-summary.json` | `E7C2F42ADE7F4A6592A537303C0F2F90C71A4ABDBB74BB2D2C80DFCD0F83F965` |
+| full console | `logs/tests.log` | `2DF91FAC04D7FBA0B8A6C0BB0FC55E8F7D09340EECC3179B559719D7471C296B` |
+| PG log | `logs/pg/postgres.log` | `A8496F1574540C86EE58825540A27EC52AC3172571F2304A9A5B335207040D75` |
+| unified summary（2299/2299） | `logs/unified/summary.log` | `FEC9287E71BC9B39DD821C68376389F25D45469BB9E9CEA12548C0B6363A0AD2` |
+| unified Infrastructure direct XML（42/42） | `logs/unified/direct-xml/Mahjong.Infrastructure.Tests/direct-results.xml` | `2E3D4106F88B3E215E47E6DB02407145D227F3D760E8F901BD71342422F5D1E4` |
+| crash marker | `logs/crash-commit-marker.json` | `C10BC3598B8B20EE41D20A0441DB2F67436829473EA21744BCD486C157D035A6` |
+| crash reader | `logs/crash-reader-result.json` | `C879E5C627EBC0D174E3A98F826F38A40007C9DDD3C1BA5214378FE063B121B4` |
+| restore reader | `logs/restore-reader-result.json` | `B0D075D5336AFC4B5720781FBDEC3E08D9641D8236111460F75BB83D19FCCA86` |
+| fresh test build log | `logs/build-tests.log` | `DC586F21B290D3D507F3D656266AE704C508A1327ECDB24C35FA4525B2976915` |
+| solution build log | `logs/unified/sln-build.log` | `7E0F642494415C32BE5370D19D03681F0D8BB862D2B8658FC5A69FBCE2A89364` |
+| 12-DLL plugin closure | `logs/unified/plugin-copy.log` | `7092E6FE3A181AB0E6AC8E45DB0D56B5B9F21E81C133716ACFEC82F0CA8BBA57` |
+| companion meta（4/4） | `logs/unified/companion-fixtures.meta.txt` | `400ED7A6A7B138F69544B8355B499DE64DDE8885270D3C070FA9787BD3638EC7` |
+| 外层 console | `artifacts/pg-delay-final-console.log` | `D843AE3B80C94E473907624D5D588173AD4BB14D212305C238FAB022BD842022` |
+
+原始远端证据（本树副本）：
+
+| 证据 | SHA256 |
+|---|---|
+| `artifacts/caller-evidence/pr-pg-tests.xml` | `43E233FD0B356F8865475085B0F55F957B02F27DF27EA801E36B9A3C4384A25B` |
+| `artifacts/caller-evidence/push-unified-infrastructure.xml` | `0061EFED054D7879EBA02847322DD3D6C0D1409C04599601B46AA07A629E7EE5` |
+| `artifacts/caller-evidence/ci-40665584740-failed.log` | `43FDB01AEBDA9C37DE0336AC8B3B8A5C30AA9E7CAC8BFF2CBFAC3A24C98F4C22` |
+| `artifacts/caller-evidence/ci-40665578400-failed.log` | `18B2945E7EF0FEB05DCABBAD9B535CD8F584B3C9A49A1486025CAD932538F965` |
+
+负变体证据（`D:/majiang-pg-tmp/` 短路径隔离副本；主树未改）：
+
+| 变体 | 证据 | SHA256 |
+|---|---|---|
+| A guard-removed | `ds-pg-delay-guard-20261028/artifacts/run/logs/tests.xml` | `A4D704187B09AF8B9533F82F708141974C48870FE831050C16551A34FF795BE7` |
+| A guard-removed | `ds-pg-delay-guard-20261028/P52TestSupport.cs.diff` | `497DB47AC392ECF654117B9E99F3244AB22FC9579C7EF59D2F0547E570FB556D` |
+| B issued-before-prep | `ds-pg-delay-issued-20261028/artifacts/run/logs/tests.xml` | `D973A7D9B8D7771092ED6B681C124D89CF20A1C3556B806200470D978282F8B9` |
+| B issued-before-prep | `ds-pg-delay-issued-20261028/P52TestSupport.cs.diff` | `295E3B78F8B76BB10126B27ED8BF5457B3EA1E45A794702E75EFCB2DB8E59D57` |
+| C frozen clock | `ds-pg-delay-clock-20261028/artifacts/run/logs/tests.xml` | `CFC7C096F432E9C2135B58CB5E4D302E3142586123BC0F0654E391B7445214AB` |
+| C frozen clock | `ds-pg-delay-clock-20261028/PostgresTableStore.State.cs.diff` | `A90B883E95B798FA9A21F7A9CAF2769D669BC658ECDF00E522E3478D544488BE` |
+| C frozen clock | `ds-pg-delay-clock-20261028/PostgresTableStore.Commit.cs.diff` | `B1AE10080CBAA5785CEF10872234DEAAC1D0E283D110BB20D916FA32742C7593` |
+| 变异副本逐文件比较（仅声明文件） | `artifacts/mutants-source-comparison.txt` | `EC5790272BCF1E01BA219CBFC5B1CC2A08D53DE5B23E7FA2A554334A0BB7C33D` |
+
+### 9.9 修复映射与结论
+
+| 缺陷 | 状态 | 根因/修复 | 验收 |
+|---|---|---|---|
+| D-CI-DELAY-01 | **CLOSED** | fixture 把一次 `Task.Delay` 通知当精确 2s；改为单调 Stopwatch 下界 + 继续有界可取消 await；后置延迟同样测量并断言 1.1s | final 42/42；受控提前唤醒 PASS；取消 PASS；guard-removed 41/42；issued-before-prep 40/42；frozen-clock 40/42；targeted 13/13；unified 2299/2299 |
+| D-PG-SUP-01 | 保持 CLOSED | 原接受记录不变 | 本轮 full 42/42 再次覆盖原边界用例 |
+| D-PG-SUP-02 | **UNRESOLVED** | 未重做归因，未改生产、未 retry、未抬 timeout | 原始失败与本报告 §2/§4 保留 |
+| D-R1-01 / D-R1-02 | 保持 CLOSED（报告） | 原接受记录不变 | 未重做 |
+
+结论：本轮修复的是一个**测试测量边界**，不是生产计时变更；严格“实际至少 2s 准备 + 至少 1.1s issue 后调度 + issue 在 preparation 之后 + 有效 scope 真实提交 + 过期/撤销零副作用”的原义务全部保留并加强。远端 8a0c8cb 的失败是真实失败，已由新代码修复；但**本轮没有发远端 CI**，远端 CI 为 **NOT_RUN**，receiver 未 push、未重跑 CI。G1 保持 APPROVED；G2–G5 未批准；V4 仍生产；181 classified 缺口保留；未合并 `v5`、未部署、未改 scheduler/`complete.flag`。最终 tracked HEAD 与 `git diff --check 8a0c8cb..HEAD` 由提交后 `git rev-parse HEAD` / `git diff --check` 核验，要求 tracked clean 且 exit 0。
