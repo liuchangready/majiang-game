@@ -325,9 +325,14 @@ namespace Mahjong.Unity.App
                 return false;
             }
 
-            ulong? stateVersion = player?.StateVersion ?? publicSnapshot?.StateVersion;
-            ulong? eventSeq = player?.EventSeq ?? publicSnapshot?.EventSeq;
-            string? roundId = player?.RoundId ?? publicSnapshot?.RoundId;
+            // The Client intentionally retains the old PlayerSnapshot when the
+            // binding becomes Spectator. Validate against the snapshot owned by
+            // the accepted batch role, never another role's cache.
+            PlayerSnapshot? rolePlayer = batch.Role == ProtocolRole.Player ? player : null;
+            PublicSnapshot? rolePublic = batch.Role == ProtocolRole.Spectator ? publicSnapshot : null;
+            ulong? stateVersion = rolePlayer?.StateVersion ?? rolePublic?.StateVersion;
+            ulong? eventSeq = rolePlayer?.EventSeq ?? rolePublic?.EventSeq;
+            string? roundId = rolePlayer?.RoundId ?? rolePublic?.RoundId;
             if (stateVersion.HasValue && stateVersion.Value != batch.StateVersion)
             {
                 return false;

@@ -180,13 +180,13 @@ namespace Mahjong.Unity.UI.Session
         public static SessionAuthority FromView(SessionViewState view)
         {
             SessionBindingView? binding = view.Binding;
-            string roundId = view.PlayerSnapshot?.RoundId ??
-                             view.PublicSnapshot?.RoundId ??
-                             string.Empty;
+            bool playerRole = binding?.Role == (int)ProtocolRole.Player;
+            string roundId = playerRole
+                ? view.PlayerSnapshot?.RoundId ?? string.Empty
+                : view.PublicSnapshot?.RoundId ?? string.Empty;
             int seat = binding?.SeatId ?? -1;
             bool privateAuthorized = view.State == TableConnectionState.Ready &&
-                                     binding != null &&
-                                     binding.Role == (int)ProtocolRole.Player &&
+                                     playerRole &&
                                      view.PlayerSnapshot?.PrivateView != null &&
                                      view.PlayerSnapshot.PrivateView.Seat == seat;
             return new SessionAuthority(
@@ -213,8 +213,9 @@ namespace Mahjong.Unity.UI.Session
             TableConnectionState state)
         {
             int seat = batch.Seat;
+            bool playerRole = batch.Role == ProtocolRole.Player;
             bool privateAuthorized = state == TableConnectionState.Ready &&
-                                     batch.Role == ProtocolRole.Player &&
+                                     playerRole &&
                                      player?.PrivateView != null &&
                                      player.PrivateView.Seat == seat;
             return new SessionAuthority(
@@ -228,7 +229,9 @@ namespace Mahjong.Unity.UI.Session
                 batch.ConnectionEpoch,
                 batch.OwnerEpoch,
                 batch.ScopeId,
-                player?.RoundId ?? publicSnapshot?.RoundId ?? string.Empty,
+                playerRole
+                    ? player?.RoundId ?? string.Empty
+                    : publicSnapshot?.RoundId ?? string.Empty,
                 privateAuthorized,
                 state);
         }
