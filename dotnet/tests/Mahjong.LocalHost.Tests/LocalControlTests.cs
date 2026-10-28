@@ -371,7 +371,7 @@ namespace Mahjong.LocalHost.Tests
         }
 
         [Fact]
-        public async Task ControlReceiptIsReadableByASeparateColdProcess()
+        public async Task ControlOutboxIsReconciledByASeparateColdProcess()
         {
             await using var harness = new P41Harness();
             // Match the crash worker's fixed owner so the save can be hydrated by it.
@@ -395,6 +395,7 @@ namespace Mahjong.LocalHost.Tests
             string digest;
             string kind;
             ulong evaluated;
+            long controlVersion;
             try
             {
                 CommandSubmission submission = await live.SubmitControlAsync(
@@ -422,8 +423,9 @@ namespace Mahjong.LocalHost.Tests
                 Assert.Equal(digest, record.Digest);
                 kind = record.Kind;
                 evaluated = record.EvaluatedStateVersion;
+                controlVersion = live.Runtime.StoreForTest.ControlVersionForTest;
                 Assert.Equal("ClaimControl", kind);
-                Assert.Equal(0L, live.Runtime.StoreForTest.ControlVersionForTest);
+                Assert.Equal(0L, controlVersion);
             }
             finally
             {
@@ -446,15 +448,17 @@ namespace Mahjong.LocalHost.Tests
                 harness.Options.SaveDirectory,
                 P41Harness.RoomId,
                 marker,
-                harness.Clock.MonotonicMillis,
-                harness.Clock.UtcNowMs,
+                "control-outbox-reconcile",
+                harness.Clock.MonotonicMillis.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                harness.Clock.UtcNowMs.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                outboxPath,
                 SeatAccount,
                 scope.Value,
                 requestId);
             using (System.Diagnostics.Process process = System.Diagnostics.Process.Start(start)!)
             {
                 using var waitCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                waitCts.CancelAfter(TimeSpan.FromSeconds(30));
+                waitCts.CancelAfter(TimeSpan.FromSeconds(45));
                 Task<string> stdout = process.StandardOutput.ReadToEndAsync(waitCts.Token);
                 Task<string> stderr = process.StandardError.ReadToEndAsync(waitCts.Token);
                 try
@@ -465,21 +469,39 @@ namespace Mahjong.LocalHost.Tests
                 catch (OperationCanceledException)
                 {
                     process.Kill(true);
-                    throw new TimeoutException("The cold-process control receipt reader did not exit in time.");
+                    throw new TimeoutException("The cold-process control outbox reader did not exit in time.");
                 }
 
                 Assert.True(
                     process.ExitCode == 0,
-                    "The cold-process control receipt reader failed: exit=" + process.ExitCode +
+                    "The cold-process control outbox reader failed: exit=" + process.ExitCode +
                     " stderr=" + await stderr);
             }
 
             string[] lines = File.ReadAllLines(marker);
-            Assert.Equal(4, lines.Length);
-            Assert.Equal(digest, lines[0]);
-            Assert.Equal(kind, lines[1]);
-            Assert.Equal(evaluated.ToString(System.Globalization.CultureInfo.InvariantCulture), lines[2]);
-            Assert.Equal("0", lines[3]);
+            string resolution = Assert.Single(
+                lines,
+                line => line.StartsWith("RESOLUTION|" + requestId + "|", StringComparison.Ordinal));
+            string[] parts = resolution.Split('|');
+            Assert.Equal(8, parts.Length);
+            Assert.Equal("Recorded", parts[2]);
+            Assert.Equal(ControlReason, parts[3]);
+            Assert.Equal(digest, parts[4]);
+            Assert.Equal("1", parts[5]);
+            Assert.Equal(CommandKind.ClaimControl.ToString(), parts[6]);
+            Assert.Equal(evaluated.ToString(System.Globalization.CultureInfo.InvariantCulture), parts[7]);
+            Assert.Equal("STATE|Ready", Assert.Single(lines, line => line.StartsWith("STATE|", StringComparison.Ordinal)));
+            Assert.Equal("PENDING|0", Assert.Single(lines, line => line.StartsWith("PENDING|", StringComparison.Ordinal)));
+            Assert.Equal(
+                "RECORD|" + digest + "|" + kind + "|" +
+                evaluated.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                Assert.Single(lines, line => line.StartsWith("RECORD|", StringComparison.Ordinal)));
+            Assert.Equal(
+                "CONTROLVERSION|" + controlVersion.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                Assert.Single(lines, line => line.StartsWith("CONTROLVERSION|", StringComparison.Ordinal)));
+
+            var rebound = new FileOutboxStore(outboxPath);
+            Assert.Empty(await rebound.LoadUnresolvedAsync(ct));
         }
 
         private static System.Diagnostics.ProcessStartInfo CreateWorkerStartInfo(
@@ -487,23 +509,27 @@ namespace Mahjong.LocalHost.Tests
             string saveDirectory,
             string roomId,
             string markerPath,
-            long monotonicMillis,
-            long utcNowMs,
-            string account,
-            string scopeId,
-            string requestId)
+            string mode,
+            params string[] arguments)
         {
             string dotnet = ResolveDotnetPath();
-            string args =
-                "\"" + workerDll + "\" \"" + saveDirectory + "\" \"" + roomId + "\" \"" + markerPath + "\"" +
-                " control-receipt-read " +
-                monotonicMillis.ToString(System.Globalization.CultureInfo.InvariantCulture) + " " +
-                utcNowMs.ToString(System.Globalization.CultureInfo.InvariantCulture) + " " +
-                "\"" + account + "\" \"" + scopeId + "\" \"" + requestId + "\"";
+            var parts = new List<string>
+            {
+                Quote(workerDll),
+                Quote(saveDirectory),
+                Quote(roomId),
+                Quote(markerPath),
+                mode
+            };
+            for (int i = 0; i < arguments.Length; i++)
+            {
+                parts.Add(Quote(arguments[i]));
+            }
+
             var startInfo = new System.Diagnostics.ProcessStartInfo
             {
                 FileName = dotnet,
-                Arguments = args,
+                Arguments = string.Join(" ", parts),
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 RedirectStandardOutput = true,
@@ -521,6 +547,11 @@ namespace Mahjong.LocalHost.Tests
             }
 
             return startInfo;
+        }
+
+        private static string Quote(string value)
+        {
+            return "\"" + value + "\"";
         }
 
         private static string ResolveDotnetPath()

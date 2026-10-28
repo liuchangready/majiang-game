@@ -81,40 +81,152 @@ namespace Mahjong.LocalHost.CrashWorker
                 return 0;
             }
 
-            if (mode == "control-receipt-read")
+            if (mode == "control-outbox-reconcile")
             {
-                // Cold-process evidence: a separate OS process opens the committed save,
-                // hydrates the real store, and reads a persisted control receipt by its
-                // original account/scope/request key.
-                if (args.Length < 9)
+                // Cold-process evidence: a separate OS process opens a fresh local runtime
+                // from the committed save, loads the unresolved durable client outbox, runs
+                // the real baseline+RECEIPT_QUERY reconciliation, and reports both the
+                // resolution and the durable control record it reads back.
+                if (args.Length < 10)
                 {
                     Console.Error.WriteLine(
-                        "control-receipt-read requires <account> <scopeId> <requestId> after the clock arguments.");
+                        "control-outbox-reconcile requires <outboxPath> <account> <scopeId> <requestId>.");
                     return 2;
                 }
 
-                ITableClock readClock = options.Environment?.ResolveClock() ?? SystemTableClock.Instance;
+                string outboxPath = args[6];
+                string account = args[7];
+                string scopeId = args[8];
+                string requestId = args[9];
+                var controlLines = new List<string>();
+                ITableChannel? controlChannel = null;
+                TableSession? controlSession = null;
+                try
+                {
+                    controlChannel = await LocalTableHost.CreateChannelAsync(options, CancellationToken.None);
+                    string controlChannelTicket = LocalTableHost.IssueTicket(options);
+                    await controlChannel.OpenAsync(
+                        new TableChannelConnectRequest(controlChannelTicket, "crash-worker", null),
+                        CancellationToken.None);
+                    controlSession = new TableSession(controlChannel, new FileOutboxStore(outboxPath));
+                    var resolutions = new List<TableReceiptResolvedEventArgs>();
+                    controlSession.ReceiptResolved += (_, args2) =>
+                    {
+                        lock (resolutions)
+                        {
+                            resolutions.Add(args2);
+                        }
+                    };
+                    string controlSessionTicket = LocalTableHost.IssueTicket(options);
+                    await controlSession.OpenAsync(
+                        new TableSessionOpenRequest(controlSessionTicket, "crash-worker"),
+                        CancellationToken.None);
+                    using (var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20)))
+                    {
+                        while (!timeout.IsCancellationRequested)
+                        {
+                            bool done;
+                            lock (resolutions)
+                            {
+                                done = controlSession.State == TableConnectionState.Ready &&
+                                       controlSession.PendingCommands.Count == 0 &&
+                                       resolutions.Count > 0;
+                            }
+
+                            if (done)
+                            {
+                                break;
+                            }
+
+                            try
+                            {
+                                await controlSession.PumpOnceAsync(timeout.Token);
+                            }
+                            catch (OperationCanceledException)
+                            {
+                                break;
+                            }
+                            catch (TableChannelClosedException)
+                            {
+                                break;
+                            }
+                            catch (InvalidOperationException)
+                            {
+                                break;
+                            }
+                        }
+                    }
+
+                    lock (resolutions)
+                    {
+                        for (int i = 0; i < resolutions.Count; i++)
+                        {
+                            TableReceiptResolvedEventArgs resolved = resolutions[i];
+                            controlLines.Add(
+                                "RESOLUTION|" + resolved.Command.RequestId + "|" +
+                                resolved.Resolution.Disposition + "|" +
+                                resolved.Resolution.ReasonCode + "|" +
+                                resolved.Resolution.CanonicalPayloadSha256 + "|" +
+                                (resolved.Resolution.FromReceiptLookup ? "1" : "0") + "|" +
+                                resolved.Command.Kind + "|" +
+                                resolved.Resolution.EvaluatedStateVersion.Value.ToString(
+                                    System.Globalization.CultureInfo.InvariantCulture));
+                        }
+                    }
+
+                    controlLines.Add("STATE|" + controlSession.State);
+                    controlLines.Add("PENDING|" + controlSession.PendingCommands.Count);
+                }
+                finally
+                {
+                    if (controlSession != null)
+                    {
+                        try
+                        {
+                            await controlSession.CloseAsync("WORKER_DONE", CancellationToken.None);
+                        }
+                        catch
+                        {
+                        }
+                    }
+
+                    if (controlChannel != null)
+                    {
+                        try
+                        {
+                            await controlChannel.CloseAsync(
+                                new TableChannelCloseReason("WORKER_DONE", true),
+                                CancellationToken.None);
+                        }
+                        catch
+                        {
+                        }
+                    }
+                }
+
+                ITableClock recordClock = options.Environment?.ResolveClock() ?? SystemTableClock.Instance;
                 using (LocalTableStore controlStore = await LocalTableStore.OpenAsync(
                     options,
-                    readClock,
+                    recordClock,
                     null,
                     CancellationToken.None))
                 {
                     LocalControlRecord? control = controlStore.GetControlResult(
-                        args[6],
-                        new RequestScopeId(args[7]),
-                        new RequestId(args[8]));
-                    File.WriteAllLines(marker, new[]
-                    {
-                        control == null ? "<null>" : control.Digest,
-                        control == null ? "<null>" : control.Kind,
+                        account,
+                        new RequestScopeId(scopeId),
+                        new RequestId(requestId));
+                    controlLines.Add(
+                        "RECORD|" +
+                        (control == null ? "<null>" : control.Digest) + "|" +
+                        (control == null ? "<null>" : control.Kind) + "|" +
                         (control?.EvaluatedStateVersion ?? 0UL).ToString(
-                            System.Globalization.CultureInfo.InvariantCulture),
-                        controlStore.ControlVersionForTest.ToString(
-                            System.Globalization.CultureInfo.InvariantCulture)
-                    });
+                            System.Globalization.CultureInfo.InvariantCulture));
+                    controlLines.Add(
+                        "CONTROLVERSION|" + controlStore.ControlVersionForTest.ToString(
+                            System.Globalization.CultureInfo.InvariantCulture));
                 }
 
+                File.WriteAllLines(marker, controlLines);
                 return 0;
             }
 
