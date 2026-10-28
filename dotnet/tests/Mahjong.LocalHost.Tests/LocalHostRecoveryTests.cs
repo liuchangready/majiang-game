@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -13,7 +13,10 @@ using Xunit;
 
 namespace Mahjong.LocalHost.Tests
 {
-    using PlayerSnapshot = Mahjong.Contracts.Wire.PlayerSnapshot;
+using PlayerSnapshot = Mahjong.Contracts.Wire.PlayerSnapshot;
+    using DecisionView = Mahjong.Contracts.Wire.DecisionView;
+    using LegalActionView = Mahjong.Contracts.Wire.LegalActionView;
+    using MeldType = Mahjong.Contracts.Wire.MeldType;
 
     public sealed class LocalHostRecoveryTests
     {
@@ -794,6 +797,183 @@ namespace Mahjong.LocalHost.Tests
             }
 
             return "dotnet";
+        }
+
+        [Fact]
+        public async Task PendingChiCandidateSurvivesColdRecoveryAndSubmitsSuccessfully()
+        {
+            await using var harness = new P41Harness();
+            CancellationToken ct = TestContext.Current.CancellationToken;
+
+            int[] hand = { 0, 4, 12, 16, 20, 24, 28, 36, 40, 44, 48, 52, 56, 132 };
+            int[] slots = { 0, 1, 2, 3, 16, 17, 18, 19, 32, 33, 34, 35, 48, 52 };
+            var map = new Dictionary<int, int>();
+            for (int i = 0; i < slots.Length; i++) map[slots[i]] = hand[i];
+            map[53] = 133; map[54] = 134; map[55] = 8;
+            map[100] = 9; map[101] = 10; map[102] = 11;
+
+            var used = new HashSet<int>(map.Values);
+            var rest = new Queue<int>(Enumerable.Range(0, 136).Where(id => !used.Contains(id)));
+            var wall = Enumerable.Range(0, 136).Select(i => new TileId(map.TryGetValue(i, out int id) ? id : rest.Dequeue())).ToArray();
+            var tiles = TilePositionMap.CreateDealt(RecordedRandomDraw.Create("review-wall", wall), 0);
+            harness.Options.InitialRound = RoundStateMachine.CreateDealt(new RoundSpec("chi-rec-round", 0, 1, 1, 0,
+                new long[] { 25000, 25000, 25000, 25000 }, 0), tiles, RoundPhase.CheatWindow);
+
+            (ITableChannel channel, TableSession session) = await OpenSessionAsync(harness, ct);
+            using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            pumpCts.CancelAfter(TimeSpan.FromSeconds(20));
+            Task pump = Task.Run(async () =>
+            {
+                try
+                {
+                    while (!pumpCts.IsCancellationRequested)
+                    {
+                        await session.PumpOnceAsync(pumpCts.Token);
+                    }
+                }
+                catch (Exception ex) when (ex is OperationCanceledException || ex is TableChannelClosedException)
+                {
+                }
+            }, pumpCts.Token);
+
+            LegalActionView? chiBefore = null;
+            try
+            {
+                for (int i = 0; i < 50 && (session.PlayerSnapshot?.PrivateView?.Decision == null || session.PlayerSnapshot.PrivateView.Decision.Actions.Count == 0); i++)
+                {
+                    await Task.Delay(20, pumpCts.Token);
+                }
+                PlayerSnapshot initial = session.PlayerSnapshot!;
+                Assert.NotNull(initial.PrivateView?.Decision);
+                var d = initial.PrivateView.Decision;
+
+                var discardResolved = new TaskCompletionSource<TableReceiptResolvedEventArgs>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                session.ReceiptResolved += (_, args) =>
+                {
+                    if (args.Command.Key.RequestId.Value == "cold-rec-discard-132")
+                    {
+                        discardResolved.TrySetResult(args);
+                    }
+                };
+
+                var payload = CommandPayloadFactory.SubmitAction(initial.RoundId, d.DecisionId, d.ControlEpoch,
+                    ProtocolActionType.DiscardTile, tileIds: new uint[] { 132u });
+                await session.SubmitAsync(new ProtocolCommand(CommandKind.SubmitAction, payload,
+                    new RequestId("cold-rec-discard-132"), session.Binding!.Scope.ScopeId,
+                    new StateVersion(initial.StateVersion), new RoundId(initial.RoundId),
+                    decisionId: new DecisionId(d.DecisionId), controlEpoch: new ControlEpoch(d.ControlEpoch)), pumpCts.Token);
+                await LocalHostCommandTests.WithTimeoutAsync(discardResolved.Task, pumpCts.Token);
+
+                for (int i = 0; i < 50; i++)
+                {
+                    var dec = session.PlayerSnapshot?.PrivateView?.Decision;
+                    if (dec != null && dec.Actions.Any(a => a.ActionType == (uint)ProtocolActionType.DeclareChi))
+                    {
+                        chiBefore = dec.Actions.First(a => a.ActionType == (uint)ProtocolActionType.DeclareChi);
+                        break;
+                    }
+                    await Task.Delay(20, pumpCts.Token);
+                }
+                Assert.NotNull(chiBefore);
+                Assert.Contains(0u, chiBefore.TileIds);
+                Assert.Contains(4u, chiBefore.TileIds);
+                Assert.Contains(8u, chiBefore.TileIds);
+            }
+            finally
+            {
+                pumpCts.Cancel();
+                await pump;
+                await CloseAsync(session, channel);
+            }
+
+            (ITableChannel reopened, TableSession restored) = await OpenSessionAsync(harness, ct);
+            using var pumpCts2 = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            pumpCts2.CancelAfter(TimeSpan.FromSeconds(20));
+            Task pump2 = Task.Run(async () =>
+            {
+                try
+                {
+                    while (!pumpCts2.IsCancellationRequested)
+                    {
+                        await restored.PumpOnceAsync(pumpCts2.Token);
+                    }
+                }
+                catch (Exception ex) when (ex is OperationCanceledException || ex is TableChannelClosedException)
+                {
+                }
+            }, pumpCts2.Token);
+
+            try
+            {
+                for (int i = 0; i < 50 && (restored.PlayerSnapshot?.PrivateView?.Decision == null || restored.PlayerSnapshot.PrivateView.Decision.Actions.Count == 0); i++)
+                {
+                    await Task.Delay(20, pumpCts2.Token);
+                }
+
+                PlayerSnapshot restoredSnapshot = restored.PlayerSnapshot!;
+                Assert.NotNull(restoredSnapshot.PrivateView?.Decision);
+                DecisionView restoredDecision = restoredSnapshot.PrivateView.Decision;
+                LegalActionView? chiAfter = restoredDecision.Actions.FirstOrDefault(
+                    a => a.ActionType == (uint)ProtocolActionType.DeclareChi);
+                Assert.NotNull(chiAfter);
+                Assert.Equal(3, chiAfter.TileIds.Count);
+                Assert.Contains(0u, chiAfter.TileIds);
+                Assert.Contains(4u, chiAfter.TileIds);
+                Assert.Contains(8u, chiAfter.TileIds);
+
+                var chiResolved = new TaskCompletionSource<TableReceiptResolvedEventArgs>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                restored.ReceiptResolved += (_, args) =>
+                {
+                    if (args.Command.Key.RequestId.Value == "restored-chi-submission")
+                    {
+                        chiResolved.TrySetResult(args);
+                    }
+                };
+
+                BusinessPayload chiPayload = CommandPayloadFactory.SubmitAction(
+                    restoredSnapshot.RoundId,
+                    restoredDecision.DecisionId,
+                    restoredDecision.ControlEpoch,
+                    ProtocolActionType.DeclareChi,
+                    optionId: chiAfter.OptionId,
+                    tileIds: chiAfter.TileIds.ToArray());
+                var chiCommand = new ProtocolCommand(
+                    CommandKind.SubmitAction,
+                    chiPayload,
+                    new RequestId("restored-chi-submission"),
+                    restored.Binding!.Scope.ScopeId,
+                    new StateVersion(restoredSnapshot.StateVersion),
+                    new RoundId(restoredSnapshot.RoundId),
+                    decisionId: new DecisionId(restoredDecision.DecisionId),
+                    controlEpoch: new ControlEpoch(restoredDecision.ControlEpoch));
+
+                await restored.SubmitAsync(chiCommand, pumpCts2.Token);
+                TableReceiptResolvedEventArgs receipt = await LocalHostCommandTests.WithTimeoutAsync(
+                    chiResolved.Task, pumpCts2.Token);
+                Assert.Equal(ReceiptStatus.Applied, receipt.Resolution.ReceiptStatus);
+
+                for (int i = 0; i < 30 && restored.PlayerSnapshot!.PublicView.Board.Players[0].Melds.Count == 0; i++)
+                {
+                    await Task.Delay(20, pumpCts2.Token);
+                }
+
+                Assert.Single(restored.PlayerSnapshot!.PublicView.Board.Players[0].Melds);
+                var meld = restored.PlayerSnapshot.PublicView.Board.Players[0].Melds[0];
+                Assert.Equal(MeldType.Chi, meld.Type);
+                Assert.Equal(3, meld.TileIds.Count);
+                Assert.Contains(8u, meld.TileIds);
+                Assert.Contains(0u, meld.TileIds);
+                Assert.Contains(4u, meld.TileIds);
+
+                pumpCts2.Cancel();
+                await pump2;
+            }
+            finally
+            {
+                await CloseAsync(restored, reopened);
+            }
         }
     }
 }

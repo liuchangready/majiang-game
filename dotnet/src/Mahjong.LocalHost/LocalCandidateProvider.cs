@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Mahjong.Domain;
@@ -244,7 +244,8 @@ namespace Mahjong.LocalHost
             int seat,
             IReadOnlyList<TileId> hand,
             TileId winTile,
-            bool isTsumo)
+            bool isTsumo,
+            bool? isChankan = null)
         {
             Meld[] melds = BuildMeldsForSeat(round, seat);
             bool isClosed = melds.All(m => !m.IsOpen);
@@ -259,7 +260,7 @@ namespace Mahjong.LocalHost
                              round.Tiles.DrawnTile.Value.Source == DrawSource.Rinshan;
             bool isHaitei = isTsumo && !isRinshan && round.Tiles.WallRemaining == 0;
             bool isHoutei = !isTsumo && round.Tiles.WallRemaining == 0;
-            bool isChankan = !isTsumo && round.Window != null && round.Window.IsChankan;
+            bool chankanEffective = isChankan ?? (!isTsumo && round.Window != null && round.Window.IsChankan);
 
             PlayerHand playerHand;
             if (isTsumo)
@@ -292,7 +293,7 @@ namespace Mahjong.LocalHost
                 isRinshan: isRinshan,
                 isHaitei: isHaitei,
                 isHoutei: isHoutei,
-                isChankan: isChankan);
+                isChankan: chankanEffective);
 
             return WinningScoreEvaluator.CanWinWithYaku(playerHand, context, isDealer);
         }
@@ -303,7 +304,8 @@ namespace Mahjong.LocalHost
             IReadOnlyList<TileId> hand,
             TileId targetTile,
             bool[]? tempFuriten,
-            bool[]? riichiFuriten)
+            bool[]? riichiFuriten,
+            bool? isChankan = null)
         {
             if (IsFuriten(round, seat, tempFuriten, riichiFuriten))
             {
@@ -318,7 +320,7 @@ namespace Mahjong.LocalHost
                 return false;
             }
 
-            return HasWinningYaku(round, seat, hand, targetTile, isTsumo: false);
+            return HasWinningYaku(round, seat, hand, targetTile, isTsumo: false, isChankan: isChankan);
         }
 
         public static IReadOnlyList<int> DeriveEligibleSeatsForDiscard(
@@ -380,7 +382,7 @@ namespace Mahjong.LocalHost
                     continue;
                 }
 
-                if (CanRon(round, seat, hand, addedTile, tempFuriten, riichiFuriten))
+                if (CanRon(round, seat, hand, addedTile, tempFuriten, riichiFuriten, isChankan: true))
                 {
                     eligible.Add(seat);
                 }
@@ -568,7 +570,7 @@ namespace Mahjong.LocalHost
             var candidates = new List<LegalActionOption>();
 
             // 1. Ron
-            if (CanRon(round, seat, hand, window.TargetTile, tempFuriten, riichiFuriten))
+            if (CanRon(round, seat, hand, window.TargetTile, tempFuriten, riichiFuriten, isChankan: window.IsChankan))
             {
                 candidates.Add(new LegalActionOption(LegalActionKind.Ron, seat, window.TargetTile, tiles: new[] { window.TargetTile }));
             }

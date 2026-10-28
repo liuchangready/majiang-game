@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -335,9 +335,16 @@ namespace Mahjong.LocalHost.Tests
                 Assert.Equal(RoundOutcomeKind.Tsumo, kanCalc.Outcome.Kind);
                 Assert.Equal(0, kanCalc.Outcome.WinnerSeat);
                 Assert.NotNull(kanCalc.Breakdown);
+                Assert.Equal(4, kanCalc.Breakdown.TotalYakuHan);
+                Assert.Equal(60, kanCalc.Breakdown.Fu.FinalFu);
+                Assert.Equal(12000L, kanCalc.Breakdown.TotalPoints);
                 Assert.Contains(kanCalc.Breakdown.Yaku, y => y.Yaku.Code == "RINSHAN");
-                Assert.True(kanCalc.Breakdown.TotalPoints > 0);
-                Assert.True(kanCalc.Payments.Deltas[0] > 0);
+                Assert.Contains(kanCalc.Breakdown.Yaku, y => y.Yaku.Code == "MENZEN_TSUMO");
+                Assert.Contains(kanCalc.Breakdown.Yaku, y => y.Yaku.Code == "ITTSU");
+                Assert.Equal(12000L, kanCalc.Payments.Deltas[0]);
+                Assert.Equal(-4000L, kanCalc.Payments.Deltas[1]);
+                Assert.Equal(-4000L, kanCalc.Payments.Deltas[2]);
+                Assert.Equal(-4000L, kanCalc.Payments.Deltas[3]);
 
                 pumpCts.Cancel();
                 await pump;
@@ -870,8 +877,15 @@ namespace Mahjong.LocalHost.Tests
                 Assert.Equal(RoundOutcomeKind.Ron, ronCalc.Outcome.Kind);
                 Assert.Equal(0, ronCalc.Outcome.WinnerSeat);
                 Assert.Equal(1, ronCalc.Outcome.LoserSeat);
-                Assert.True(ronCalc.Payments.Deltas[0] > 0);
-                Assert.True(ronCalc.Payments.Deltas[1] < 0);
+                Assert.NotNull(ronCalc.Breakdown);
+                Assert.Equal(2, ronCalc.Breakdown.TotalYakuHan);
+                Assert.Equal(40, ronCalc.Breakdown.Fu.FinalFu);
+                Assert.Equal(3900L, ronCalc.Breakdown.TotalPoints);
+                Assert.Contains(ronCalc.Breakdown.Yaku, y => y.Yaku.Code == "ITTSU");
+                Assert.Equal(3900L, ronCalc.Payments.Deltas[0]);
+                Assert.Equal(-3900L, ronCalc.Payments.Deltas[1]);
+                Assert.Equal(0L, ronCalc.Payments.Deltas[2]);
+                Assert.Equal(0L, ronCalc.Payments.Deltas[3]);
 
                 pumpCts.Cancel();
                 await pump;
@@ -1138,9 +1152,17 @@ namespace Mahjong.LocalHost.Tests
                 Assert.Equal(RoundOutcomeKind.Tsumo, kanCalc.Outcome.Kind);
                 Assert.Equal(0, kanCalc.Outcome.WinnerSeat);
                 Assert.NotNull(kanCalc.Breakdown);
+                Assert.Equal(10, kanCalc.Breakdown.TotalYakuHan);
+                Assert.Equal(60, kanCalc.Breakdown.Fu.FinalFu);
+                Assert.Equal(24000L, kanCalc.Breakdown.TotalPoints);
                 Assert.Contains(kanCalc.Breakdown.Yaku, y => y.Yaku.Code == "RINSHAN");
-                Assert.True(kanCalc.Breakdown.TotalPoints > 0);
-                Assert.True(kanCalc.Payments.Deltas[0] > 0);
+                Assert.Contains(kanCalc.Breakdown.Yaku, y => y.Yaku.Code == "TOITOI");
+                Assert.Contains(kanCalc.Breakdown.Yaku, y => y.Yaku.Code == "SAN_ANKOU");
+                Assert.Contains(kanCalc.Breakdown.Yaku, y => y.Yaku.Code == "CHINITSU");
+                Assert.Equal(24000L, kanCalc.Payments.Deltas[0]);
+                Assert.Equal(-8000L, kanCalc.Payments.Deltas[1]);
+                Assert.Equal(-8000L, kanCalc.Payments.Deltas[2]);
+                Assert.Equal(-8000L, kanCalc.Payments.Deltas[3]);
 
                 pumpCts.Cancel();
                 await pump;
@@ -1229,10 +1251,11 @@ namespace Mahjong.LocalHost.Tests
                 await LocalHostCommandTests.WithTimeoutAsync(discardResolved.Task, pumpCts.Token);
 
                 // 2. Seat 0 draws tile 84 (4s) on turn 2, completing 2-3-4s (reaches Tenpai), discards 130
-                PlayerSnapshot turn2Snapshot = await WaitForActionTypeAsync(
+                PlayerSnapshot turn2Snapshot = await WaitForActionTypeVersionAsync(
                     session,
                     ProtocolActionType.DiscardTile,
-                    pumpCts.Token);
+                    pumpCts.Token,
+                    snapshot.StateVersion + 1);
                 DecisionView turn2Decision = turn2Snapshot.PrivateView.Decision!;
 
                 var discard2Resolved = new TaskCompletionSource<TableReceiptResolvedEventArgs>(
@@ -1333,10 +1356,15 @@ namespace Mahjong.LocalHost.Tests
                 Assert.Equal(0, chankanCalc.Outcome.WinnerSeat);
                 Assert.Equal(1, chankanCalc.Outcome.LoserSeat);
                 Assert.NotNull(chankanCalc.Breakdown);
+                Assert.Equal(2, chankanCalc.Breakdown.TotalYakuHan);
+                Assert.Equal(30, chankanCalc.Breakdown.Fu.FinalFu);
+                Assert.Equal(2900L, chankanCalc.Breakdown.TotalPoints);
                 Assert.Contains(chankanCalc.Breakdown.Yaku, y => y.Yaku.Code == "CHANKAN");
-                Assert.True(chankanCalc.Breakdown.TotalPoints > 0);
-                Assert.True(chankanCalc.Payments.Deltas[0] > 0);
-                Assert.True(chankanCalc.Payments.Deltas[1] < 0);
+                Assert.Contains(chankanCalc.Breakdown.Yaku, y => y.Yaku.Code == "PINFU");
+                Assert.Equal(2900L, chankanCalc.Payments.Deltas[0]);
+                Assert.Equal(-2900L, chankanCalc.Payments.Deltas[1]);
+                Assert.Equal(0L, chankanCalc.Payments.Deltas[2]);
+                Assert.Equal(0L, chankanCalc.Payments.Deltas[3]);
 
                 pumpCts.Cancel();
                 await pump;
@@ -1439,6 +1467,246 @@ namespace Mahjong.LocalHost.Tests
             }
         }
 
+        [Fact]
+        public async Task RiichiAfterClosedKanClientSubmissionTest()
+        {
+            await using var harness = new P41Harness();
+            CancellationToken ct = TestContext.Current.CancellationToken;
+
+            // Hand: 4x 1m (0, 1, 2, 3), 1-9p (36, 40, 44, 48, 52, 56, 60, 64, 68), 1s (72).
+            // Rinshan slot 122 (DeadWall(0)) is 132 (Chun).
+            int[] handTiles = { 0, 1, 2, 3, 36, 40, 44, 48, 52, 56, 60, 64, 68, 72 };
+            int[] dealerSlots = { 0, 1, 2, 3, 16, 17, 18, 19, 32, 33, 34, 35, 48, 52 };
+            var specificSlots = new Dictionary<int, int>();
+            for (int i = 0; i < dealerSlots.Length; i++)
+            {
+                specificSlots[dealerSlots[i]] = handTiles[i];
+            }
+
+            specificSlots[122] = 132; // Rinshan draw
+
+            harness.Options.InitialRound = BuildRoundWithSpecificSlots(specificSlots);
+
+            (ITableChannel channel, TableSession session) = await OpenAsync(harness, ct);
+            try
+            {
+                using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                pumpCts.CancelAfter(TimeSpan.FromSeconds(25));
+                Task pump = StartPump(session, pumpCts.Token);
+
+                PlayerSnapshot snapshot = await WaitForDecisionAsync(session, pumpCts.Token);
+                Assert.NotNull(snapshot.PrivateView.Decision);
+                DecisionView decision = snapshot.PrivateView.Decision;
+
+                LegalActionView? kanAction = decision.Actions.FirstOrDefault(
+                    a => a.ActionType == (uint)ProtocolActionType.DeclareKan &&
+                         a.OptionId.StartsWith("closed-kan-", StringComparison.Ordinal));
+                Assert.NotNull(kanAction);
+
+                // 1. Submit ClosedKan
+                var kanResolved = new TaskCompletionSource<TableReceiptResolvedEventArgs>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                session.ReceiptResolved += (_, args) =>
+                {
+                    if (args.Command.Key.RequestId.Value == "closed-kan-riichi-1")
+                    {
+                        kanResolved.TrySetResult(args);
+                    }
+                };
+
+                BusinessPayload kanPayload = CommandPayloadFactory.SubmitAction(
+                    snapshot.RoundId,
+                    decision.DecisionId,
+                    decision.ControlEpoch,
+                    ProtocolActionType.DeclareKan,
+                    optionId: kanAction.OptionId,
+                    tileIds: kanAction.TileIds.ToArray(),
+                    meldType: 4u);
+                var kanCommand = new ProtocolCommand(
+                    CommandKind.SubmitAction,
+                    kanPayload,
+                    new RequestId("closed-kan-riichi-1"),
+                    session.Binding!.Scope.ScopeId,
+                    new StateVersion(snapshot.StateVersion),
+                    new RoundId(snapshot.RoundId),
+                    decisionId: new DecisionId(decision.DecisionId),
+                    controlEpoch: new ControlEpoch(decision.ControlEpoch));
+
+                await session.SubmitAsync(kanCommand, pumpCts.Token);
+                TableReceiptResolvedEventArgs kanReceipt = await LocalHostCommandTests.WithTimeoutAsync(
+                    kanResolved.Task,
+                    pumpCts.Token);
+                Assert.Equal(ReceiptStatus.Applied, kanReceipt.Resolution.ReceiptStatus);
+
+                // 2. Rinshan draw draws 132; client receives DeclareRiichi candidate!
+                PlayerSnapshot? riichiSnapshot = null;
+                for (int i = 0; i < 50; i++)
+                {
+                    PlayerSnapshot? s = session.PlayerSnapshot;
+                    if (s?.PrivateView?.Decision != null &&
+                        s.StateVersion > snapshot.StateVersion &&
+                        s.PrivateView.Decision.Actions.Any(a => a.OptionId == "riichi-132"))
+                    {
+                        riichiSnapshot = s;
+                        break;
+                    }
+                    await Task.Delay(20, pumpCts.Token);
+                }
+                Assert.NotNull(riichiSnapshot);
+                DecisionView riichiDecision = riichiSnapshot.PrivateView.Decision!;
+                LegalActionView? riichiAction = riichiDecision.Actions.FirstOrDefault(
+                    a => a.ActionType == (uint)ProtocolActionType.DeclareRiichi &&
+                         a.OptionId == "riichi-132");
+                Assert.NotNull(riichiAction);
+                Assert.Contains(132u, riichiAction.TileIds);
+
+                // 3. Submit DeclareRiichi discarding tile 132
+                var riichiResolved = new TaskCompletionSource<TableReceiptResolvedEventArgs>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                session.ReceiptResolved += (_, args) =>
+                {
+                    if (args.Command.Key.RequestId.Value == "riichi-after-closed-kan-1")
+                    {
+                        riichiResolved.TrySetResult(args);
+                    }
+                };
+
+                BusinessPayload riichiPayload = CommandPayloadFactory.SubmitAction(
+                    riichiSnapshot.RoundId,
+                    riichiDecision.DecisionId,
+                    riichiDecision.ControlEpoch,
+                    ProtocolActionType.DeclareRiichi,
+                    optionId: riichiAction.OptionId,
+                    tileIds: new uint[] { 132u });
+                var riichiCommand = new ProtocolCommand(
+                    CommandKind.SubmitAction,
+                    riichiPayload,
+                    new RequestId("riichi-after-closed-kan-1"),
+                    session.Binding!.Scope.ScopeId,
+                    new StateVersion(session.PlayerSnapshot!.StateVersion),
+                    new RoundId(riichiSnapshot.RoundId),
+                    decisionId: new DecisionId(riichiDecision.DecisionId),
+                    controlEpoch: new ControlEpoch(riichiDecision.ControlEpoch));
+
+                await session.SubmitAsync(riichiCommand, pumpCts.Token);
+                TableReceiptResolvedEventArgs riichiReceipt = await LocalHostCommandTests.WithTimeoutAsync(
+                    riichiResolved.Task,
+                    pumpCts.Token);
+                Assert.Equal(ReceiptStatus.Applied, riichiReceipt.Resolution.ReceiptStatus);
+
+                // Verify Riichi took effect in public board view and round state
+                for (int i = 0; i < 20 && !session.PlayerSnapshot!.PublicView.Board.Players[0].Riichi; i++)
+                {
+                    await Task.Delay(20, pumpCts.Token);
+                }
+                Assert.True(session.PlayerSnapshot!.PublicView.Board.Players[0].Riichi);
+                RoundStateMachine currentRound = ((LocalTableChannel)channel).RuntimeForMatch!.ActorForTest.GetRoundStateForHost();
+                Assert.True(currentRound.IsRiichi(0));
+                Assert.Equal(24000L, currentRound.Scores[0]); // 25000 - 1000 riichi deposit
+
+                pumpCts.Cancel();
+                await pump;
+            }
+            finally
+            {
+                await session.CloseAsync("TEST_DONE", CancellationToken.None);
+                await channel.CloseAsync(new TableChannelCloseReason("TEST_DONE", true), CancellationToken.None);
+            }
+        }
+
+        [Fact]
+        public async Task NoYakuAiDoesNotGetStuckOnIllegalRonTest()
+        {
+            await using var harness = new P41Harness();
+            CancellationToken ct = TestContext.Current.CancellationToken;
+
+            // Seat 0 (human) has tile 52 (5p) and discards it on turn 1.
+            // Seat 1 (AI) holds: 123m 456p 789s 234p EE, waiting on 5p.
+            // Shape is 4 melds + 1 honor pair (EE prevents pinfu, no other yaku -> no yaku!).
+            int[] seat0Tiles = { 52, 4, 8, 12, 16, 20, 24, 28, 32, 60, 64, 68, 72, 76 };
+            int[] seat1Tiles = { 0, 1, 2, 48, 56, 96, 100, 104, 40, 44, 49, 108, 109 };
+            int[] seat0Slots = { 0, 1, 2, 3, 16, 17, 18, 19, 32, 33, 34, 35, 48, 52 };
+            int[] seat1Slots = { 4, 5, 6, 7, 20, 21, 22, 23, 36, 37, 38, 39, 43 };
+
+            var specific = new Dictionary<int, int>();
+            for (int i = 0; i < seat0Slots.Length; i++) specific[seat0Slots[i]] = seat0Tiles[i];
+            for (int i = 0; i < seat1Slots.Length; i++) specific[seat1Slots[i]] = seat1Tiles[i];
+
+            // Seat 1 draws 130 on turn 1 draw (slot 53)
+            specific[53] = 130;
+
+            harness.Options.InitialRound = BuildRoundWithSpecificSlots(specific);
+
+            (ITableChannel channel, TableSession session) = await OpenAsync(harness, ct);
+            try
+            {
+                using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                pumpCts.CancelAfter(TimeSpan.FromSeconds(25));
+                Task pump = StartPump(session, pumpCts.Token);
+
+                // Seat 0 discards tile 52 (which completes seat 1's hand shape, but seat 1 has no yaku)
+                PlayerSnapshot snapshot = await WaitForDecisionAsync(session, pumpCts.Token);
+                DecisionView decision = snapshot.PrivateView.Decision!;
+
+                var discardResolved = new TaskCompletionSource<TableReceiptResolvedEventArgs>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                session.ReceiptResolved += (_, args) =>
+                {
+                    if (args.Command.Key.RequestId.Value == "seat0-discard-5p")
+                    {
+                        discardResolved.TrySetResult(args);
+                    }
+                };
+
+                BusinessPayload discardPayload = CommandPayloadFactory.SubmitAction(
+                    snapshot.RoundId,
+                    decision.DecisionId,
+                    decision.ControlEpoch,
+                    ProtocolActionType.DiscardTile,
+                    tileIds: new uint[] { 52u });
+                var discardCommand = new ProtocolCommand(
+                    CommandKind.SubmitAction,
+                    discardPayload,
+                    new RequestId("seat0-discard-5p"),
+                    session.Binding!.Scope.ScopeId,
+                    new StateVersion(snapshot.StateVersion),
+                    new RoundId(snapshot.RoundId),
+                    decisionId: new DecisionId(decision.DecisionId),
+                    controlEpoch: new ControlEpoch(decision.ControlEpoch));
+
+                await session.SubmitAsync(discardCommand, pumpCts.Token);
+                TableReceiptResolvedEventArgs discardReceipt = await LocalHostCommandTests.WithTimeoutAsync(
+                    discardResolved.Task,
+                    pumpCts.Token);
+                Assert.Equal(ReceiptStatus.Applied, discardReceipt.Resolution.ReceiptStatus);
+
+                // Seat 1 (AI) must NOT Ron (no yaku). Instead, AI takes its normal turn, draws 130 and discards it smoothly!
+                // Wait for Seat 1 to have discarded a tile without getting stuck or entering illegal terminal ron
+                bool aiTurnAdvanced = false;
+                for (int i = 0; i < 50; i++)
+                {
+                    PlayerSnapshot? current = session.PlayerSnapshot;
+                    if (current != null && current.PublicView.Board.Players[1].Discards.Count > 0)
+                    {
+                        aiTurnAdvanced = true;
+                        break;
+                    }
+                    await Task.Delay(50, pumpCts.Token);
+                }
+
+                Assert.True(aiTurnAdvanced, "AI smoothly completed turn without getting stuck on illegal Ron.");
+                Assert.NotEqual(GamePhase.RoundEnd, session.PlayerSnapshot!.PublicView.Board.Phase);
+
+                pumpCts.Cancel();
+                await pump;
+            }
+            finally
+            {
+                await session.CloseAsync("TEST_DONE", CancellationToken.None);
+                await channel.CloseAsync(new TableChannelCloseReason("TEST_DONE", true), CancellationToken.None);
+            }
+        }
+
         private static Task StartPump(TableSession session, CancellationToken token)
         {
             return Task.Run(async () =>
@@ -1478,15 +1746,25 @@ namespace Mahjong.LocalHost.Tests
             throw new TimeoutException("Player snapshot did not receive an open decision in time.");
         }
 
-        private static async Task<PlayerSnapshot> WaitForActionTypeAsync(
+        private static Task<PlayerSnapshot> WaitForActionTypeAsync(
             TableSession session,
             ProtocolActionType actionType,
             CancellationToken cancellationToken)
+        {
+            return WaitForActionTypeVersionAsync(session, actionType, cancellationToken, 0);
+        }
+
+        private static async Task<PlayerSnapshot> WaitForActionTypeVersionAsync(
+            TableSession session,
+            ProtocolActionType actionType,
+            CancellationToken cancellationToken,
+            ulong minStateVersion)
         {
             for (int i = 0; i < 50; i++)
             {
                 PlayerSnapshot? snapshot = session.PlayerSnapshot;
                 if (snapshot?.PrivateView?.Decision != null &&
+                    snapshot.StateVersion >= minStateVersion &&
                     snapshot.PrivateView.Decision.Actions.Any(a => a.ActionType == (uint)actionType))
                 {
                     return snapshot;

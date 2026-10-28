@@ -1,3 +1,4 @@
+﻿using System.IO;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -364,6 +365,122 @@ namespace Mahjong.TableRuntime.Tests
             var ex = Assert.Throws<TableProjectionException>(() =>
                 TableVisibilityProjection.ValidateRecoveredEventFacts(history, tamperedFacts, policy, round));
             Assert.Contains("wallRemaining", ex.Message);
+
+            // 3. Checkpoint validation level: verify TableCheckpointValidator rejects tampered checkpoint
+            TableCheckpoint goodCheckpoint = CreateCheckpoint(round);
+            Assert.True(TableCheckpointValidator.TryValidate(goodCheckpoint, out string goodReason, out _), goodReason);
+
+            RoundRecoveryState captured = RoundRecoveryCodec.Decode(goodCheckpoint.StatePayload);
+            var tamperedState = new RoundRecoveryState(
+                captured.Spec,
+                captured.Version,
+                captured.Phase,
+                captured.CurrentSeat,
+                captured.Tiles,
+                captured.Window,
+                captured.Result,
+                captured.Events,
+                captured.SourceFingerprint,
+                captured.Scores,
+                captured.RiichiSticks + 1,
+                captured.RiichiDeclared,
+                captured.Melds,
+                captured.PendingKanDoraCount);
+            TableCheckpoint corrupted = WithStatePayload(goodCheckpoint, RoundRecoveryCodec.Encode(tamperedState));
+            Assert.False(TableCheckpointValidator.TryValidate(corrupted, out string reason, out _));
+            Assert.Equal(TableRuntimeReasonCode.CheckpointInvalid, reason);
+        }
+
+        [Fact]
+        public void TableTimingCheckpointCodec_AllCandidateKindsRoundtrip()
+        {
+            var candidates = new List<LegalActionOption>
+            {
+                new LegalActionOption(LegalActionKind.Discard, 0, new TileId(1), "discard-1", new[] { new TileId(1) }),
+                new LegalActionOption(LegalActionKind.Tsumo, 0, new TileId(2), "tsumo", new[] { new TileId(2) }),
+                new LegalActionOption(LegalActionKind.Chi, 0, new TileId(8), "chi-0-4", new[] { new TileId(8), new TileId(0), new TileId(4) }),
+                new LegalActionOption(LegalActionKind.Pon, 0, new TileId(12), "pon-13-14", new[] { new TileId(12), new TileId(13), new TileId(14) }),
+                new LegalActionOption(LegalActionKind.Kan, 0, new TileId(20), "open-kan-20", new[] { new TileId(20), new TileId(21), new TileId(22), new TileId(23) }),
+                new LegalActionOption(LegalActionKind.Kan, 0, null, "closed-kan-1m", new[] { new TileId(0), new TileId(1), new TileId(2), new TileId(3) }),
+                new LegalActionOption(LegalActionKind.Kan, 0, new TileId(0), "added-kan-1m", new[] { new TileId(3), new TileId(0), new TileId(1), new TileId(2) }),
+                new LegalActionOption(LegalActionKind.Riichi, 0, new TileId(132), "riichi-132", new[] { new TileId(132) }),
+                new LegalActionOption(LegalActionKind.Pass, 0, null, "pass", Array.Empty<TileId>()),
+                new LegalActionOption(LegalActionKind.Ron, 0, new TileId(5), "ron-5", new[] { new TileId(5) })
+            };
+
+            var decision = new TableRecoveredDecision(
+                new DecisionKey("round-all-kinds", 0, "dec-1"),
+                42L,
+                candidates,
+                new TileId(1),
+                3000L,
+                20000L,
+                0L,
+                500L,
+                false);
+
+            var checkpoint = new TableTimingCheckpoint(
+                "round-all-kinds",
+                new long[] { 25000L, 25000L, 25000L, 25000L },
+                new[] { decision },
+                123456789UL,
+                987654321L,
+                "boot-all-kinds");
+
+            byte[] bytes = TableTimingCheckpointCodec.Encode(checkpoint);
+            TableTimingCheckpoint recovered = TableTimingCheckpointCodec.Decode(bytes);
+
+            Assert.Equal(checkpoint.RoundId, recovered.RoundId);
+            Assert.Equal(checkpoint.BootId, recovered.BootId);
+            Assert.Equal(checkpoint.CapturedAtUtcMs, recovered.CapturedAtUtcMs);
+            Assert.Equal(checkpoint.CapturedMonotonicMillis, recovered.CapturedMonotonicMillis);
+            Assert.Single(recovered.Decisions);
+
+            TableRecoveredDecision recDec = recovered.Decisions[0];
+            Assert.Equal(decision.Key, recDec.Key);
+            Assert.Equal(decision.ControlEpoch, recDec.ControlEpoch);
+            Assert.Equal(decision.DrawnTile, recDec.DrawnTile);
+            Assert.Equal(decision.RemainingBaseMillis, recDec.RemainingBaseMillis);
+            Assert.Equal(decision.RemainingReserveMillis, recDec.RemainingReserveMillis);
+            Assert.Equal(candidates.Count, recDec.Candidates.Count);
+
+            for (int i = 0; i < candidates.Count; i++)
+            {
+                LegalActionOption expected = candidates[i];
+                LegalActionOption actual = recDec.Candidates[i];
+
+                Assert.Equal(expected.Kind, actual.Kind);
+                Assert.Equal(expected.Seat, actual.Seat);
+                Assert.Equal(expected.Tile, actual.Tile);
+                Assert.Equal(expected.OptionId, actual.OptionId);
+                Assert.Equal(expected.Tiles.Select(t => t.Value), actual.Tiles.Select(t => t.Value));
+            }
+        }
+
+        [Fact]
+        public void TableTimingCheckpointCodec_NegativeValidationsRejectCorruptedPayloads()
+        {
+            var option = new LegalActionOption(LegalActionKind.Chi, 0, new TileId(8), "chi-1", new[] { new TileId(8), new TileId(0), new TileId(4) });
+            var decision = new TableRecoveredDecision(new DecisionKey("r", 0, "d"), 1, new[] { option }, null, 3000, 20000, 0);
+            var checkpoint = new TableTimingCheckpoint("r", new long[] { 20000, 20000, 20000, 20000 }, new[] { decision });
+            byte[] valid = TableTimingCheckpointCodec.Encode(checkpoint);
+
+            // 1. Truncated
+            Assert.Throws<InvalidDataException>(() => TableTimingCheckpointCodec.Decode(new byte[4]));
+
+            // 2. Corrupt Magic
+            byte[] badMagic = (byte[])valid.Clone();
+            badMagic[0] = 0;
+            Assert.Throws<InvalidDataException>(() => TableTimingCheckpointCodec.Decode(badMagic));
+
+            // 3. Unsupported schema (schema 1 or 99)
+            byte[] badSchema = (byte[])valid.Clone();
+            badSchema[4] = 99;
+            Assert.Throws<InvalidDataException>(() => TableTimingCheckpointCodec.Decode(badSchema));
+
+            // 4. Trailing bytes
+            byte[] trailing = valid.Concat(new byte[] { 0xFF }).ToArray();
+            Assert.Throws<InvalidDataException>(() => TableTimingCheckpointCodec.Decode(trailing));
         }
     }
 }
