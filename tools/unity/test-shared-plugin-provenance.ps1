@@ -53,6 +53,11 @@
 
 .PARAMETER BuildTimeoutSeconds
     Bound for each build-shared invocation. Defaults to 900 seconds.
+
+.PARAMETER AllowPartial
+    Explicitly allow a partial run (SkipUnity / SkipFixtureBuild). The default
+    full matrix fails if any case is NOT_RUN. Partial runs still report the
+    correct JUnit skipped count and Partial=true.
 #>
 [CmdletBinding()]
 param(
@@ -60,6 +65,7 @@ param(
     [string]$EvidenceRoot,
     [switch]$SkipUnity,
     [switch]$SkipFixtureBuild,
+    [switch]$AllowPartial,
     [int]$UnityTimeoutSeconds = 600,
     [int]$BuildTimeoutSeconds = 900
 )
@@ -83,11 +89,20 @@ if (-not (Test-Path -LiteralPath $UnityExe -PathType Leaf) -and -not $SkipUnity)
     throw "Unity executable not found: $UnityExe"
 }
 
+$buildRoot = Resolve-SharedPluginFullPath (Join-Path $repoRoot 'build')
 if (-not $EvidenceRoot) {
     $suffix = [guid]::NewGuid().ToString('N').Substring(0, 16)
-    $EvidenceRoot = Join-Path $repoRoot "build\shared-plugin-provenance-ds-20261028-$suffix"
+    $EvidenceRoot = Join-Path $buildRoot "shared-plugin-provenance-ds-20261028-$suffix"
 }
 $EvidenceRoot = Resolve-SharedPluginFullPath $EvidenceRoot
+# Fault injection and deletion are only allowed in this repository's ignored
+# build/ tree, in a directory strictly below build/ (not build/ itself, not a
+# sibling such as buildfoo).
+if (($EvidenceRoot -ieq $buildRoot) -or
+    (-not $EvidenceRoot.StartsWith($buildRoot + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase))) {
+    throw "EvidenceRoot must be a dedicated directory under $buildRoot; refusing '$EvidenceRoot' before any write/delete."
+}
+$runId = [guid]::NewGuid().ToString('N').Substring(0, 12)
 New-Item -ItemType Directory -Force -Path $EvidenceRoot | Out-Null
 $logsDir = Join-Path $EvidenceRoot 'logs'
 $backupDir = Join-Path $EvidenceRoot 'backups'
@@ -178,19 +193,24 @@ function Invoke-CapturedProcess {
     if (-not $process.Start()) {
         throw "Failed to start process: $FilePath"
     }
-    # Read both streams concurrently to avoid pipe-buffer deadlocks.
+    # Drain both pipes while the process runs, but never block forever on EOF:
+    # Unity can spawn a child (adb) that inherits the pipe and survives a kill.
     $stdoutTask = $process.StandardOutput.ReadToEndAsync()
     $stderrTask = $process.StandardError.ReadToEndAsync()
     if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
         $timedOut = $true
         try { $process.Kill() } catch { }
         try { [void]$process.WaitForExit(5000) } catch { }
+        try { $process.StandardOutput.Close() } catch { }
+        try { $process.StandardError.Close() } catch { }
     }
     else {
         $process.WaitForExit()
     }
     $exitCode = if ($timedOut) { 'TIMEOUT' } else { $process.ExitCode }
-    $combined = $stdoutTask.Result + $stderrTask.Result
+    $stdout = if ($stdoutTask.Wait(10000)) { $stdoutTask.Result } else { '' }
+    $stderr = if ($stderrTask.Wait(10000)) { $stderrTask.Result } else { '' }
+    $combined = [string]$stdout + [string]$stderr
     $elapsed = ((Get-Date) - $startedAt).TotalSeconds
 
     $header = "COMMAND: $FilePath $argumentString`r`nNATIVE_EXIT: $exitCode`r`nELAPSED_SECONDS: $([math]::Round($elapsed, 3))`r`n`r`n"
@@ -279,18 +299,23 @@ function Assert-CheckContains {
 }
 
 function Write-JUnitXml {
-    param([string]$Path)
+    param([string]$Path, [object[]]$Cases = @())
     $builderXml = New-Object System.Text.StringBuilder
     [void]$builderXml.AppendLine('<?xml version="1.0" encoding="utf-8"?>')
-    $failed = @($script:cases | Where-Object { $_.Status -eq 'FAIL' }).Count
+    $failed = @($Cases | Where-Object { $_.Status -eq 'FAIL' }).Count
+    $skipped = @($Cases | Where-Object { $_.Status -eq 'NOT_RUN' }).Count
     $elapsed = ([DateTime]::UtcNow - $script:overallStart).TotalSeconds
-    [void]$builderXml.AppendLine(('<testsuite name="shared-plugin-provenance" tests="{0}" failures="{1}" skipped="0" time="{2}">' -f $script:cases.Count, $failed, [math]::Round($elapsed, 3)))
-    foreach ($case in $script:cases) {
+    [void]$builderXml.AppendLine(('<testsuite name="shared-plugin-provenance" tests="{0}" failures="{1}" skipped="{2}" partial="{3}" time="{4}">' -f $Cases.Count, $failed, $skipped, ($skipped -gt 0).ToString().ToLowerInvariant(), [math]::Round($elapsed, 3)))
+    foreach ($case in $Cases) {
         $name = [System.Security.SecurityElement]::Escape("$($case.Id) $($case.Name)")
         [void]$builderXml.AppendLine(('  <testcase classname="shared-plugin-provenance" name="{0}" time="{1}">' -f $name, $case.Seconds))
         if ($case.Status -eq 'FAIL') {
             $message = [System.Security.SecurityElement]::Escape($case.Detail)
             [void]$builderXml.AppendLine(('    <failure message="{0}" />' -f $message))
+        }
+        elseif ($case.Status -eq 'NOT_RUN') {
+            $message = [System.Security.SecurityElement]::Escape($case.Detail)
+            [void]$builderXml.AppendLine(('    <skipped message="{0}" />' -f $message))
         }
         [void]$builderXml.AppendLine('  </testcase>')
     }
@@ -622,12 +647,114 @@ try {
     Add-TestCase -Id 'P20' -Name 'tampered recorded input hash fails closed' -Status $(if ($ok) { 'PASS' } else { 'FAIL' }) -Detail "exit=$($run.ExitCode)" -LogPath $run.LogPath -Seconds $watch.Elapsed.TotalSeconds
 
     # -----------------------------------------------------------------------
+    # P24-P29 - evidence structure, build metadata, configuration and runtime
+    # closure cannot be trusted from the record alone.
+    # -----------------------------------------------------------------------
+    $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    $record = Get-Content -LiteralPath $defaultEvidence -Raw | ConvertFrom-Json
+    $record.build.exitCode = 42
+    [System.IO.File]::WriteAllText($defaultEvidence, ($record | ConvertTo-Json -Depth 12), $utf8)
+    $run = Invoke-Checker -Id 'P24-build-exit-42'
+    $ok = ($run.ExitCode -ne 0) -and ($run.Output -match 'EVIDENCE_BUILD_FAILED')
+    Restore-File $defaultEvidence
+    $watch.Stop()
+    Add-TestCase -Id 'P24' -Name 'failed-build evidence (exitCode 42) fails closed' -Status $(if ($ok) { 'PASS' } else { 'FAIL' }) -Detail "exit=$($run.ExitCode)" -LogPath $run.LogPath -Seconds $watch.Elapsed.TotalSeconds
+
+    $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    $record = Get-Content -LiteralPath $defaultEvidence -Raw | ConvertFrom-Json
+    $record.PSObject.Properties.Remove('build')
+    [System.IO.File]::WriteAllText($defaultEvidence, ($record | ConvertTo-Json -Depth 12), $utf8)
+    $run = Invoke-Checker -Id 'P25-build-missing'
+    $ok = ($run.ExitCode -ne 0) -and ($run.Output -match 'EVIDENCE_BUILD_MISSING')
+    Restore-File $defaultEvidence
+    $watch.Stop()
+    Add-TestCase -Id 'P25' -Name 'missing build metadata fails closed' -Status $(if ($ok) { 'PASS' } else { 'FAIL' }) -Detail "exit=$($run.ExitCode)" -LogPath $run.LogPath -Seconds $watch.Elapsed.TotalSeconds
+
+    $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    $record = Get-Content -LiteralPath $defaultEvidence -Raw | ConvertFrom-Json
+    $record.build.copiedFileCount = [int]$record.build.copiedFileCount - 1
+    [System.IO.File]::WriteAllText($defaultEvidence, ($record | ConvertTo-Json -Depth 12), $utf8)
+    $run = Invoke-Checker -Id 'P26-copied-count-mismatch'
+    $ok = ($run.ExitCode -ne 0) -and ($run.Output -match 'EVIDENCE_BUILD_COPIED_COUNT_MISMATCH')
+    Restore-File $defaultEvidence
+    $watch.Stop()
+    Add-TestCase -Id 'P26' -Name 'copiedFileCount/output mismatch fails closed' -Status $(if ($ok) { 'PASS' } else { 'FAIL' }) -Detail "exit=$($run.ExitCode)" -LogPath $run.LogPath -Seconds $watch.Elapsed.TotalSeconds
+
+    $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    $record = Get-Content -LiteralPath $defaultEvidence -Raw | ConvertFrom-Json
+    $runtimeVictim = 'System.Numerics.Vectors.dll'
+    $record.packages = @($record.packages | Where-Object { $_.Assembly -ne $runtimeVictim })
+    $record.outputs = @($record.outputs | Where-Object { $_.Name -ne $runtimeVictim })
+    $record.build.copiedFileCount = @($record.outputs).Count
+    [System.IO.File]::WriteAllText($defaultEvidence, ($record | ConvertTo-Json -Depth 12), $utf8)
+    $runtimePath = Join-Path $pluginDir $runtimeVictim
+    Remove-Item -LiteralPath $runtimePath -Force
+    try {
+        $run = Invoke-Checker -Id 'P27-missing-runtime-dependency'
+        $ok = ($run.ExitCode -ne 0) -and ($run.Output -match 'RUNTIME_CLOSURE_MISSING')
+    }
+    finally {
+        Restore-File $runtimePath
+        Restore-File $defaultEvidence
+    }
+    $watch.Stop()
+    Add-TestCase -Id 'P27' -Name 'omitted non-Protobuf runtime dependency fails closed' -Status $(if ($ok) { 'PASS' } else { 'FAIL' }) -Detail "exit=$($run.ExitCode)" -LogPath $run.LogPath -Seconds $watch.Elapsed.TotalSeconds
+
+    $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    $record = Get-Content -LiteralPath $defaultEvidence -Raw | ConvertFrom-Json
+    $record.packages[0].Sha256 = ('0' * 64)
+    [System.IO.File]::WriteAllText($defaultEvidence, ($record | ConvertTo-Json -Depth 12), $utf8)
+    $run = Invoke-Checker -Id 'P28-package-output-mismatch'
+    $ok = ($run.ExitCode -ne 0) -and (($run.Output -match 'EVIDENCE_PACKAGE_HASH_MISMATCH') -or ($run.Output -match 'RUNTIME_CLOSURE_MISMATCH'))
+    Restore-File $defaultEvidence
+    $watch.Stop()
+    Add-TestCase -Id 'P28' -Name 'package/output hash inconsistency fails closed' -Status $(if ($ok) { 'PASS' } else { 'FAIL' }) -Detail "exit=$($run.ExitCode)" -LogPath $run.LogPath -Seconds $watch.Elapsed.TotalSeconds
+
+    $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    $record = Get-Content -LiteralPath $defaultEvidence -Raw | ConvertFrom-Json
+    $record.configuration = 'Debug'
+    [System.IO.File]::WriteAllText($defaultEvidence, ($record | ConvertTo-Json -Depth 12), $utf8)
+    $run = Invoke-Checker -Id 'P29-configuration-mismatch'
+    $ok = ($run.ExitCode -ne 0) -and ($run.Output -match 'CONFIGURATION_MISMATCH')
+    Restore-File $defaultEvidence
+    $watch.Stop()
+    Add-TestCase -Id 'P29' -Name 'requested Release with recorded Debug fails closed' -Status $(if ($ok) { 'PASS' } else { 'FAIL' }) -Detail "exit=$($run.ExitCode)" -LogPath $run.LogPath -Seconds $watch.Elapsed.TotalSeconds
+
+    # -----------------------------------------------------------------------
+    # P30 - a real Debug scratch record is rejected by Release and accepted by
+    # Debug (configuration is a requested-vs-recorded comparison, not a mirror).
+    # -----------------------------------------------------------------------
+    $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    $debugScratch = Join-Path $EvidenceRoot 'debug-scratch'
+    $debugBuild = Invoke-CapturedProcess -FilePath $powershell -Arguments @(
+        '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+        '-File', $builder, '-Configuration', 'Debug', '-PluginOutputDir', $debugScratch
+    ) -LogPath (Join-Path $logsDir 'P30-debug-scratch-build.log') -TimeoutSeconds $BuildTimeoutSeconds
+    $debugEvidence = Join-Path $debugScratch 'shared-plugin-provenance.json'
+    if (Test-Path -LiteralPath $debugEvidence -PathType Leaf) {
+        $releaseOnDebug = Invoke-Checker -Id 'P30a-release-on-debug' -ExtraArguments @('-PluginDir', $debugScratch, '-EvidencePath', $debugEvidence)
+        $debugOnDebug = Invoke-Checker -Id 'P30b-debug-on-debug' -ExtraArguments @('-Configuration', 'Debug', '-PluginDir', $debugScratch, '-EvidencePath', $debugEvidence)
+        $ok = ($debugBuild.ExitCode -eq 0) -and
+              ($releaseOnDebug.ExitCode -ne 0) -and ($releaseOnDebug.Output -match 'CONFIGURATION_MISMATCH') -and
+              ($debugOnDebug.ExitCode -eq 0)
+    }
+    else {
+        $ok = $false
+        $releaseOnDebug = [pscustomobject]@{ ExitCode = 'NO_DEBUG_EVIDENCE'; LogPath = $null }
+        $debugOnDebug = $releaseOnDebug
+    }
+    $watch.Stop()
+    Add-TestCase -Id 'P30' -Name 'real Debug scratch record rejected by Release, accepted by Debug' -Status $(if ($ok) { 'PASS' } else { 'FAIL' }) -Detail "build=$($debugBuild.ExitCode); release=$($releaseOnDebug.ExitCode); debug=$($debugOnDebug.ExitCode)" -LogPath $releaseOnDebug.LogPath -Seconds $watch.Elapsed.TotalSeconds
+
+    # -----------------------------------------------------------------------
     # P14 - isolated fixture: build failure leaves no PASS, mid-build drift rejected
     # -----------------------------------------------------------------------
     if (-not $SkipFixtureBuild) {
         $watch = [System.Diagnostics.Stopwatch]::StartNew()
-        $fixtureRepo = Join-Path $EvidenceRoot 'fixture-repo'
-        if (Test-Path -LiteralPath $fixtureRepo) { Remove-Item -LiteralPath $fixtureRepo -Recurse -Force }
+        $fixtureRepo = Join-Path $EvidenceRoot "fixture-repo-$runId"
+        if (-not (Test-SharedPluginPathWithin -Path $fixtureRepo -Root $EvidenceRoot) -or (Test-Path -LiteralPath $fixtureRepo)) {
+            throw "Refusing to use a fixture directory that is outside this run's evidence root or already exists: $fixtureRepo"
+        }
         New-Item -ItemType Directory -Force -Path (Join-Path $fixtureRepo 'tools\unity'), (Join-Path $fixtureRepo 'unity\Mahjong.Unity\Assets\Plugins\Mahjong') | Out-Null
         foreach ($file in @(Get-ChildItem -LiteralPath (Join-Path $repoRoot 'dotnet') -Recurse -File)) {
             $relative = $file.FullName.Substring((Join-Path $repoRoot 'dotnet').Length).TrimStart('\')
@@ -659,6 +786,150 @@ try {
             '-ProjectRoot', $fixtureRepo
         ) -LogPath (Join-Path $logsDir 'P14b-fixture-check.log') -TimeoutSeconds 300
         $fixturePositive = ($fixtureBuild.ExitCode -eq 0) -and ($fixtureCheck.ExitCode -eq 0) -and (Test-Path -LiteralPath $fixtureEvidence)
+
+        # -------------------------------------------------------------------
+        # D-R1-01 regressions: forced compile (preserved mtime), props-linked
+        # inputs, repository NuGet.config, unsupported expressions and
+        # ProjectReference boundaries.
+        # -------------------------------------------------------------------
+        $fixtureBuildScript = Join-Path $fixtureRepo 'tools\unity\build-shared.ps1'
+        $fixtureCheckScript = Join-Path $fixtureRepo 'tools\unity\check-shared-plugins.ps1'
+        $fixtureProps = Join-Path $fixtureRepo 'dotnet\Directory.Build.props'
+        $fixturePropsOriginal = [System.IO.File]::ReadAllText($fixtureProps)
+        $fixtureAiSource = Join-Path $fixtureRepo 'dotnet\src\Mahjong.Ai\AiDecision.cs'
+        $fixtureAiBytes = [System.IO.File]::ReadAllBytes($fixtureAiSource)
+        $fixtureAiTime = (Get-Item -LiteralPath $fixtureAiSource).LastWriteTimeUtc
+        $fixtureAiDll = Join-Path $fixtureRepo 'dotnet\src\Mahjong.Ai\bin\Release\netstandard2.1\Mahjong.Ai.dll'
+
+        $fixtureBuildRun = {
+            param([string]$id)
+            Invoke-CapturedProcess -FilePath $powershell -Arguments @(
+                '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+                '-File', $fixtureBuildScript, '-Configuration', 'Release', '-DotnetPath', 'D:\Unity\dotnet\dotnet.exe'
+            ) -LogPath (Join-Path $logsDir "$id.log") -TimeoutSeconds $BuildTimeoutSeconds
+        }
+        $fixtureCheckRun = {
+            param([string]$id)
+            Invoke-CapturedProcess -FilePath $powershell -Arguments @(
+                '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+                '-File', $fixtureCheckScript, '-ProjectRoot', $fixtureRepo
+            ) -LogPath (Join-Path $logsDir "$id.log") -TimeoutSeconds 300
+        }
+
+        # Preserved mtime + invalid C#: the forced clean-output build must fail
+        # and must not leave a green record.
+        try {
+            $invalidText = [System.Text.Encoding]::UTF8.GetString($fixtureAiBytes) + "`r`nTHIS_IS_INTENTIONALLY_INVALID_CSHARP`r`n"
+            [System.IO.File]::WriteAllText($fixtureAiSource, $invalidText, $utf8)
+            (Get-Item -LiteralPath $fixtureAiSource).LastWriteTimeUtc = $fixtureAiTime
+            $invalidMtimeBuild = & $fixtureBuildRun 'P31-invalid-preserved-mtime'
+            $invalidMtimeNoEvidence = -not (Test-Path -LiteralPath $fixtureEvidence)
+        }
+        finally {
+            [System.IO.File]::WriteAllBytes($fixtureAiSource, $fixtureAiBytes)
+            (Get-Item -LiteralPath $fixtureAiSource).LastWriteTimeUtc = $fixtureAiTime
+        }
+        $invalidMtimeOk = ($invalidMtimeBuild.ExitCode -ne 0) -and $invalidMtimeNoEvidence
+        Add-TestCase -Id 'P31' -Name 'preserved-mtime invalid source really compiles (fail, no record)' -Status $(if ($invalidMtimeOk) { 'PASS' } else { 'FAIL' }) -Detail "buildExit=$($invalidMtimeBuild.ExitCode); noEvidence=$invalidMtimeNoEvidence" -LogPath $invalidMtimeBuild.LogPath -Seconds 0
+
+        $recoverBuild = & $fixtureBuildRun 'P31b-recover-after-invalid'
+        $preSemanticHash = if (Test-Path -LiteralPath $fixtureAiDll) { Get-SharedPluginFileSha256 $fixtureAiDll } else { $null }
+        try {
+            $semanticText = [System.Text.Encoding]::UTF8.GetString($fixtureAiBytes) + "`r`nnamespace Mahjong.Ai { public static class ProvenanceMtimeProbe { public const string Value = `"semantic-v2`"; } }`r`n"
+            [System.IO.File]::WriteAllText($fixtureAiSource, $semanticText, $utf8)
+            (Get-Item -LiteralPath $fixtureAiSource).LastWriteTimeUtc = $fixtureAiTime
+            $semanticBuild = & $fixtureBuildRun 'P32-valid-preserved-mtime'
+            $semanticCheck = & $fixtureCheckRun 'P32-check'
+            $postSemanticHash = if (Test-Path -LiteralPath $fixtureAiDll) { Get-SharedPluginFileSha256 $fixtureAiDll } else { $null }
+        }
+        finally {
+            [System.IO.File]::WriteAllBytes($fixtureAiSource, $fixtureAiBytes)
+            (Get-Item -LiteralPath $fixtureAiSource).LastWriteTimeUtc = $fixtureAiTime
+        }
+        $semanticOk = ($recoverBuild.ExitCode -eq 0) -and ($semanticBuild.ExitCode -eq 0) -and ($semanticCheck.ExitCode -eq 0) -and
+                      $preSemanticHash -and $postSemanticHash -and ($preSemanticHash -ne $postSemanticHash)
+        Add-TestCase -Id 'P32' -Name 'preserved-mtime valid semantic change produces a new DLL' -Status $(if ($semanticOk) { 'PASS' } else { 'FAIL' }) -Detail "pre=$preSemanticHash; post=$postSemanticHash; build=$($semanticBuild.ExitCode); check=$($semanticCheck.ExitCode)" -LogPath $semanticBuild.LogPath -Seconds 0
+
+        # Supported props-level Compile/EmbeddedResource includes become inputs;
+        # changing the linked source invalidates the record.
+        $linkedDir = Join-Path $fixtureRepo 'linked'
+        $linkedSource = Join-Path $linkedDir 'ProvenanceLinked.cs'
+        $linkedData = Join-Path $linkedDir 'provenance-data.txt'
+        $fixtureNuGet = Join-Path $fixtureRepo 'dotnet\src\NuGet.config'
+        $rootNuGet = Join-Path $fixtureRepo 'NuGet.config'
+        New-Item -ItemType Directory -Force -Path $linkedDir | Out-Null
+        [System.IO.File]::WriteAllText($linkedSource, "namespace Mahjong.Ai { internal static class ProvenanceLinked { } }`r`n", $utf8)
+        [System.IO.File]::WriteAllText($linkedData, "provenance-data`r`n", $utf8)
+        [System.IO.File]::WriteAllText($fixtureNuGet, "<configuration>`r`n</configuration>`r`n", $utf8)
+        [System.IO.File]::WriteAllText($rootNuGet, "<configuration>`r`n</configuration>`r`n", $utf8)
+        $linkedProps = $fixturePropsOriginal.Replace('</Project>', '  <ItemGroup>' + "`r`n" + '    <Compile Include="$(MSBuildThisFileDirectory)../linked/ProvenanceLinked.cs" />' + "`r`n" + '    <EmbeddedResource Include="$(MSBuildThisFileDirectory)../linked/provenance-data.txt" />' + "`r`n" + '  </ItemGroup>' + "`r`n" + '</Project>')
+        [System.IO.File]::WriteAllText($fixtureProps, $linkedProps, $utf8)
+        $linkedBuild = & $fixtureBuildRun 'P33-props-linked-build'
+        $linkedManifest = if (Test-Path -LiteralPath $fixtureEvidence) { Get-Content -LiteralPath $fixtureEvidence -Raw | ConvertFrom-Json } else { $null }
+        $linkedInput = if ($linkedManifest) { @($linkedManifest.inputs | Where-Object { ([string]$_.Path) -eq 'linked/ProvenanceLinked.cs' }).Count } else { 0 }
+        $resourceInput = if ($linkedManifest) { @($linkedManifest.inputs | Where-Object { ([string]$_.Path) -eq 'linked/provenance-data.txt' }).Count } else { 0 }
+        [System.IO.File]::WriteAllText($linkedSource, "namespace Mahjong.Ai { internal static class ProvenanceLinked { public const int Value = 2; } }`r`n", $utf8)
+        $linkedChanged = & $fixtureCheckRun 'P33b-linked-source-changed'
+        $linkedChangedOk = (($linkedChanged.ExitCode -ne 0) -and (($linkedChanged.Output -match 'SOURCE_CHANGED') -or ($linkedChanged.Output -match 'INPUT_CHANGED')))
+        $linkedOk = ($linkedBuild.ExitCode -eq 0) -and ($linkedInput -eq 1) -and ($resourceInput -eq 1) -and $linkedChangedOk
+        Add-TestCase -Id 'P33' -Name 'props-linked Compile/EmbeddedResource inputs are recorded and drift fails' -Status $(if ($linkedOk) { 'PASS' } else { 'FAIL' }) -Detail "build=$($linkedBuild.ExitCode); linkedInput=$linkedInput; resourceInput=$resourceInput; changedExit=$($linkedChanged.ExitCode)" -LogPath $linkedBuild.LogPath -Seconds 0
+
+        # Restore the linked source to the bytes that were recorded before
+        # exercising the NuGet.config cases.
+        [System.IO.File]::WriteAllText($linkedSource, "namespace Mahjong.Ai { internal static class ProvenanceLinked { } }`r`n", $utf8)
+
+        # A recorded repository NuGet.config deletion fails; restoring passes.
+        Remove-Item -LiteralPath $fixtureNuGet -Force
+        $nugetRemoved = & $fixtureCheckRun 'P34-nuget-removed'
+        [System.IO.File]::WriteAllText($fixtureNuGet, "<configuration>`r`n</configuration>`r`n", $utf8)
+        $nugetRestored = & $fixtureCheckRun 'P34b-nuget-restored'
+        $nugetRemovedOk = ($nugetRemoved.ExitCode -ne 0) -and ($nugetRemoved.Output -match 'BUILD_CONFIG_REMOVED') -and ($nugetRestored.ExitCode -eq 0)
+        Add-TestCase -Id 'P34' -Name 'recorded repository NuGet.config removal fails, restore passes' -Status $(if ($nugetRemovedOk) { 'PASS' } else { 'FAIL' }) -Detail "removedExit=$($nugetRemoved.ExitCode); restoredExit=$($nugetRestored.ExitCode)" -LogPath $nugetRemoved.LogPath -Seconds 0
+
+        # Root NuGet.config is recorded by the P33 build. Modify and delete it,
+        # then restore the recorded bytes; a new dotnet/NuGet.config exercises
+        # the "added" path because it is not part of the recorded closure.
+        [System.IO.File]::WriteAllText($rootNuGet, "<configuration><packageSources><clear /></packageSources></configuration>`r`n", $utf8)
+        $rootNuGetChanged = & $fixtureCheckRun 'P35-root-nuget-changed'
+        Remove-Item -LiteralPath $rootNuGet -Force
+        $rootNuGetRemoved = & $fixtureCheckRun 'P35b-root-nuget-removed'
+        [System.IO.File]::WriteAllText($rootNuGet, "<configuration>`r`n</configuration>`r`n", $utf8)
+        $rootNuGetRestored = & $fixtureCheckRun 'P35c-root-nuget-restored'
+        $addedNuGet = Join-Path $fixtureRepo 'dotnet\NuGet.config'
+        [System.IO.File]::WriteAllText($addedNuGet, "<configuration><packageSources><add key=`"caller-proof`" value=`"https://example.invalid/index.json`" /></packageSources></configuration>`r`n", $utf8)
+        $rootNuGetAdded = & $fixtureCheckRun 'P35d-root-nuget-added'
+        Remove-Item -LiteralPath $addedNuGet -Force
+        $rootNuGetAddedRemoved = & $fixtureCheckRun 'P35e-added-nuget-removed'
+        $rootNuGetOk = ($rootNuGetAdded.ExitCode -ne 0) -and ($rootNuGetAdded.Output -match 'BUILD_CONFIG_ADDED') -and
+                       ($rootNuGetChanged.ExitCode -ne 0) -and ($rootNuGetChanged.Output -match 'BUILD_CONFIG_CHANGED') -and
+                       ($rootNuGetRemoved.ExitCode -ne 0) -and ($rootNuGetRemoved.Output -match 'BUILD_CONFIG_REMOVED') -and
+                       ($rootNuGetRestored.ExitCode -eq 0) -and ($rootNuGetAddedRemoved.ExitCode -eq 0)
+        Add-TestCase -Id 'P35' -Name 'recorded root NuGet.config add/modify/delete is tracked' -Status $(if ($rootNuGetOk) { 'PASS' } else { 'FAIL' }) -Detail "added=$($rootNuGetAdded.ExitCode); changed=$($rootNuGetChanged.ExitCode); removed=$($rootNuGetRemoved.ExitCode); restored=$($rootNuGetRestored.ExitCode); addedRemoved=$($rootNuGetAddedRemoved.ExitCode)" -LogPath $rootNuGetChanged.LogPath -Seconds 0
+
+        # Unsupported MSBuild expression in a shared props include fails closed.
+        $unsupportedProps = $fixturePropsOriginal.Replace('</Project>', '  <ItemGroup>' + "`r`n" + '    <Compile Include="$(UnsupportedProvenanceProperty)/x.cs" />' + "`r`n" + '  </ItemGroup>' + "`r`n" + '</Project>')
+        [System.IO.File]::WriteAllText($fixtureProps, $unsupportedProps, $utf8)
+        $unsupportedBuild = & $fixtureBuildRun 'P36-unsupported-expression'
+        $unsupportedNoEvidence = -not (Test-Path -LiteralPath $fixtureEvidence)
+        $unsupportedOk = ($unsupportedBuild.ExitCode -ne 0) -and $unsupportedNoEvidence -and ($unsupportedBuild.Output -match 'Unsupported MSBuild property expression')
+        [System.IO.File]::WriteAllText($fixtureProps, $linkedProps, $utf8)
+        Add-TestCase -Id 'P36' -Name 'unsupported MSBuild property expression fails closed' -Status $(if ($unsupportedOk) { 'PASS' } else { 'FAIL' }) -Detail "buildExit=$($unsupportedBuild.ExitCode); noEvidence=$unsupportedNoEvidence" -LogPath $unsupportedBuild.LogPath -Seconds 0
+
+        # ProjectReference outside the seven projects in shared props fails closed.
+        $outsideDir = Join-Path $fixtureRepo 'outside'
+        New-Item -ItemType Directory -Force -Path $outsideDir | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $outsideDir 'Outside.csproj'), "<Project Sdk=`"Microsoft.NET.Sdk`"></Project>`r`n", $utf8)
+        $outsideProps = $fixturePropsOriginal.Replace('</Project>', '  <ItemGroup>' + "`r`n" + '    <ProjectReference Include="$(MSBuildThisFileDirectory)../outside/Outside.csproj" />' + "`r`n" + '  </ItemGroup>' + "`r`n" + '</Project>')
+        [System.IO.File]::WriteAllText($fixtureProps, $outsideProps, $utf8)
+        $outsideBuild = & $fixtureBuildRun 'P37-outside-project-reference'
+        $outsideNoEvidence = -not (Test-Path -LiteralPath $fixtureEvidence)
+        $outsideOk = ($outsideBuild.ExitCode -ne 0) -and $outsideNoEvidence -and ($outsideBuild.Output -match 'ProjectReference outside the seven shared projects')
+        [System.IO.File]::WriteAllText($fixtureProps, $linkedProps, $utf8)
+        $finalFixtureBuild = & $fixtureBuildRun 'P37b-final-fixture-rebuild'
+        $finalFixtureCheck = & $fixtureCheckRun 'P37c-final-fixture-check'
+        Add-TestCase -Id 'P37' -Name 'props ProjectReference outside the seven projects fails closed' -Status $(if ($outsideOk) { 'PASS' } else { 'FAIL' }) -Detail "buildExit=$($outsideBuild.ExitCode); noEvidence=$outsideNoEvidence" -LogPath $outsideBuild.LogPath -Seconds 0
+        $fixturePositive = $fixturePositive -and ($finalFixtureBuild.ExitCode -eq 0) -and ($finalFixtureCheck.ExitCode -eq 0)
+
 
         # Mid-build drift: the wrapper changes a real compile input, then builds.
         $driftWrapper = Join-Path $EvidenceRoot 'fake-dotnet-drift.cmd'
@@ -770,11 +1041,11 @@ try {
         Move-Item -LiteralPath $defaultEvidence -Destination "$defaultEvidence.hidden" -Force
         try {
             $run = Invoke-CapturedProcess -FilePath $UnityExe -Arguments @(
-                '-projectPath', $unityProject,
+                '-batchmode', '-projectPath', $unityProject,
                 '-executeMethod', 'Mahjong.Unity.Editor.SharedPluginProvenancePlayProbe.Run',
                 '-provenancePlayProbeResult', $probeJson,
                 '-logFile', (Join-Path $logsDir 'P16-unity-play-blocked.log')
-            ) -LogPath (Join-Path $logsDir 'P16-unity-play-blocked-wrapper.log') -TimeoutSeconds ([math]::Min($UnityTimeoutSeconds, 300))
+            ) -LogPath (Join-Path $logsDir 'P16-unity-play-blocked-wrapper.log') -TimeoutSeconds $UnityTimeoutSeconds
         }
         finally {
             Move-Item -LiteralPath "$defaultEvidence.hidden" -Destination $defaultEvidence -Force
@@ -789,11 +1060,11 @@ try {
         $watch = [System.Diagnostics.Stopwatch]::StartNew()
         $probeJsonGood = Join-Path $EvidenceRoot 'play-allowed.json'
         $run = Invoke-CapturedProcess -FilePath $UnityExe -Arguments @(
-            '-projectPath', $unityProject,
+            '-batchmode', '-projectPath', $unityProject,
             '-executeMethod', 'Mahjong.Unity.Editor.SharedPluginProvenancePlayProbe.Run',
             '-provenancePlayProbeResult', $probeJsonGood,
             '-logFile', (Join-Path $logsDir 'P17-unity-play-allowed.log')
-        ) -LogPath (Join-Path $logsDir 'P17-unity-play-allowed-wrapper.log') -TimeoutSeconds ([math]::Min($UnityTimeoutSeconds, 300))
+        ) -LogPath (Join-Path $logsDir 'P17-unity-play-allowed-wrapper.log') -TimeoutSeconds $UnityTimeoutSeconds
         $logText = if (Test-Path (Join-Path $logsDir 'P17-unity-play-allowed.log')) { Get-Content (Join-Path $logsDir 'P17-unity-play-allowed.log') -Raw } else { '' }
         $probe = if (Test-Path -LiteralPath $probeJsonGood) { Get-Content -LiteralPath $probeJsonGood -Raw | ConvertFrom-Json } else { $null }
         $ok = ($run.ExitCode -eq 0) -and ($null -ne $probe) -and ($probe.enteredPlay -eq $true) -and ($probe.blocked -eq $false) -and
@@ -803,9 +1074,30 @@ try {
     }
     else {
         Add-TestCase -Id 'P15' -Name 'real Unity BuildPlayer blocked' -Status 'NOT_RUN' -Detail 'skipped by -SkipUnity' -LogPath $null -Seconds 0
+        Add-TestCase -Id 'P15b' -Name 'real BuildPlayer rejects drifted DLL' -Status 'NOT_RUN' -Detail 'skipped by -SkipUnity' -LogPath $null -Seconds 0
         Add-TestCase -Id 'P16' -Name 'real Editor Play blocked' -Status 'NOT_RUN' -Detail 'skipped by -SkipUnity' -LogPath $null -Seconds 0
         Add-TestCase -Id 'P17' -Name 'real Editor Play allowed' -Status 'NOT_RUN' -Detail 'skipped by -SkipUnity' -LogPath $null -Seconds 0
     }
+
+    # -----------------------------------------------------------------------
+    # P22 - production JUnit reporter: NOT_RUN must be a skipped testcase with a
+    # correct skipped count, not a green success testcase.
+    # -----------------------------------------------------------------------
+    $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    $reporterXml = Join-Path $logsDir 'reporter-selftest.xml'
+    $synthetic = @(
+        [pscustomobject]@{ Id = 'R1'; Name = 'pass'; Status = 'PASS'; Detail = 'ok'; LogPath = $null; Seconds = 0.1 },
+        [pscustomobject]@{ Id = 'R2'; Name = 'not run'; Status = 'NOT_RUN'; Detail = 'intentional reporter fixture'; LogPath = $null; Seconds = 0.0 }
+    )
+    Write-JUnitXml -Path $reporterXml -Cases $synthetic
+    $reporterDoc = [xml](Get-Content -LiteralPath $reporterXml -Raw)
+    $reporterSuite = $reporterDoc.testsuite
+    $skippedNodes = @($reporterDoc.SelectNodes('//testcase/skipped')).Count
+    $ok = ($reporterSuite.tests -eq '2') -and ($reporterSuite.failures -eq '0') -and
+          ($reporterSuite.skipped -eq '1') -and ($reporterSuite.partial -eq 'true') -and
+          ($skippedNodes -eq 1)
+    $watch.Stop()
+    Add-TestCase -Id 'P22' -Name 'production JUnit reporter marks NOT_RUN as skipped' -Status $(if ($ok) { 'PASS' } else { 'FAIL' }) -Detail "tests=$($reporterSuite.tests); failures=$($reporterSuite.failures); skipped=$($reporterSuite.skipped); skippedNodes=$skippedNodes; partial=$($reporterSuite.partial)" -LogPath $reporterXml -Seconds $watch.Elapsed.TotalSeconds
 }
 catch {
     Add-TestCase -Id 'P00' -Name 'test harness completed without an unhandled error' -Status 'FAIL' -Detail $_.Exception.Message -LogPath $null -Seconds 0
@@ -838,17 +1130,28 @@ finally {
     }
     if ($fixtureRepo -and (Test-Path -LiteralPath $fixtureRepo)) {
         $resolvedFixture = Resolve-SharedPluginFullPath $fixtureRepo
-        if ($resolvedFixture.StartsWith($EvidenceRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
-            # Long MSBuild paths can defeat Remove-Item; rd handles them and is best-effort.
-            $null = & "$env:SystemRoot\System32\cmd.exe" /c ('rd /s /q "\\?\' + $resolvedFixture + '" 2>nul')
-            if (Test-Path -LiteralPath $resolvedFixture) {
-                try { Remove-Item -LiteralPath $resolvedFixture -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+        if (Test-SharedPluginPathWithin -Path $resolvedFixture -Root $EvidenceRoot) {
+            try {
+                Remove-Item -LiteralPath $resolvedFixture -Recurse -Force -ErrorAction Stop
             }
+            catch {
+                # Long MSBuild paths can defeat Remove-Item. Leave the evidence in
+                # place and report it; never fall back to a cross-shell recursive
+                # delete.
+                Add-TestCase -Id 'P23' -Name 'fixture cleanup stayed inside the evidence root' -Status 'FAIL' -Detail "could not remove fixture $resolvedFixture : $($_.Exception.Message)" -LogPath $null -Seconds 0
+            }
+        }
+        else {
+            Add-TestCase -Id 'P23' -Name 'fixture cleanup stayed inside the evidence root' -Status 'FAIL' -Detail "refused to remove fixture outside evidence root: $resolvedFixture" -LogPath $null -Seconds 0
         }
     }
 }
 
-Write-JUnitXml -Path (Join-Path $EvidenceRoot 'test-results.xml')
+$partial = (@($script:cases | Where-Object { $_.Status -eq 'NOT_RUN' }).Count -gt 0)
+if ($partial -and -not $AllowPartial) {
+    $script:overallFail = $true
+}
+Write-JUnitXml -Path (Join-Path $EvidenceRoot 'test-results.xml') -Cases $script:cases.ToArray()
 $summaryPath = Join-Path $EvidenceRoot 'test-summary.json'
 [ordered]@{
     StartedAtUtc = $script:overallStart.ToString('o')
@@ -859,6 +1162,8 @@ $summaryPath = Join-Path $EvidenceRoot 'test-summary.json'
     Passed = @($script:cases | Where-Object { $_.Status -eq 'PASS' }).Count
     Failed = @($script:cases | Where-Object { $_.Status -eq 'FAIL' }).Count
     NotRun = @($script:cases | Where-Object { $_.Status -eq 'NOT_RUN' }).Count
+    Partial = $partial
+    AllowPartial = [bool]$AllowPartial
     OverallFail = $script:overallFail
     Cases = $script:cases.ToArray()
 } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $summaryPath -Encoding UTF8

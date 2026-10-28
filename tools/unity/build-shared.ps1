@@ -188,12 +188,29 @@ foreach ($project in $pluginProjects) {
     Assert-LangVersionFloor (Get-EffectiveLangVersion $csproj $propsPath) $csproj
 }
 
+# A successful dotnet build alone is not enough: MSBuild may reuse an old DLL
+# when a source's timestamp was preserved. Remove this configuration's outputs
+# for all seven projects so the recorded source set is actually compiled.
+$cleanedOutputs = @()
+foreach ($project in $pluginProjects) {
+    foreach ($relative in @("dotnet\src\$project\bin\$Configuration", "dotnet\src\$project\obj\$Configuration")) {
+        $full = Resolve-SharedPluginFullPath (Join-Path $root $relative)
+        if (-not (Test-SharedPluginPathWithin -Path $full -Root (Join-Path $root 'dotnet'))) {
+            throw "Refusing to clean output outside dotnet: $full"
+        }
+        if (Test-Path -LiteralPath $full -PathType Container) {
+            Remove-Item -LiteralPath $full -Recurse -Force
+            $cleanedOutputs += $relative.Replace('\', '/')
+        }
+    }
+}
+
 # Build from the repository root so an incidental Directory.Build.rsp in the
 # caller's working directory cannot change the produced closure. The root rsp is
 # part of the recorded input boundary when present.
 Push-Location -LiteralPath $root
 try {
-    & $DotnetPath build $solution -c $Configuration --nologo
+    & $DotnetPath build $solution -c $Configuration --nologo -m:1 -nodeReuse:false
     $buildExitCode = $LASTEXITCODE
 }
 finally {
@@ -244,50 +261,21 @@ foreach ($project in $pluginProjects) {
 
 # Third-party runtime closure from the resolved asset graph (e.g. Google.Protobuf
 # for Contracts.Wire). Class libraries do not copy package assemblies to bin, so
-# the DLLs are resolved against the NuGet global packages cache.
-if (-not $env:NUGET_PACKAGES) {
-    $localsOutput = & $DotnetPath nuget locals global-packages --list 2>$null
-    if ($LASTEXITCODE -eq 0 -and $localsOutput -match 'global-packages:\s*(.+)$') {
-        $env:NUGET_PACKAGES = $Matches[1].Trim()
-    }
+# the DLLs are resolved against the NuGet global packages cache. The verifier
+# re-resolves the same closure independently from obj/project.assets.json.
+$runtimeClosure = Get-SharedPluginResolvedRuntimeClosure -RepoRoot $root -Projects $pluginProjects -DotnetPath $DotnetPath
+if (-not $runtimeClosure.Ok) {
+    throw "Could not resolve the third-party runtime closure: $($runtimeClosure.Errors -join '; ')"
 }
-$nugetCache = if ($env:NUGET_PACKAGES) { $env:NUGET_PACKAGES } else { Join-Path $env:USERPROFILE '.nuget\packages' }
+$nugetCache = $runtimeClosure.NuGetCache
 Write-Host "nuget    : $nugetCache"
 
-foreach ($project in $pluginProjects) {
-    $assetsPath = Join-Path $root "dotnet\src\$project\obj\project.assets.json"
-    if (-not (Test-Path $assetsPath)) {
-        throw "Missing $assetsPath; run a restore before copying plugins"
-    }
-    $assets = Get-Content $assetsPath -Raw | ConvertFrom-Json
-    $targetProp = $assets.targets.PSObject.Properties |
-        Where-Object { $_.Name -ieq '.NETStandard,Version=v2.1' }
-    if (-not $targetProp) {
-        throw "$project was not restored for netstandard2.1 (no '.NETStandard,Version=v2.1' target in project.assets.json)"
-    }
-    foreach ($packageProp in $targetProp.Value.PSObject.Properties) {
-        if ($packageProp.Name -notmatch '^(.+)/([^/]+)$') { continue }
-        # Project references show up in the same graph with placeholder paths;
-        # only 'package' library entries have a real NuGet payload.
-        $library = $assets.libraries.PSObject.Properties[$packageProp.Name]
-        if (-not $library -or $library.Value.type -ne 'package') { continue }
-        $packageId = $Matches[1]
-        $packageVersion = $Matches[2]
-        $runtimeProp = $packageProp.Value.runtime
-        if (-not $runtimeProp) { continue }
-        foreach ($runtimeEntry in $runtimeProp.PSObject.Properties) {
-            $relativePath = $runtimeEntry.Name
-            $packageDll = Join-Path $nugetCache "$($packageId.ToLower())\$packageVersion\$($relativePath -replace '/', '\')"
-            if (-not (Test-Path $packageDll)) {
-                throw "Resolved package assembly not found in the NuGet cache: $packageDll"
-            }
-            Add-Candidate "$packageId $packageVersion" (Get-Item $packageDll) @{
-                SourceKind    = 'package'
-                PackageId     = $packageId
-                PackageVersion = $packageVersion
-                AssetName     = ($relativePath -replace '/', '\')
-            }
-        }
+foreach ($assembly in $runtimeClosure.Assemblies) {
+    Add-Candidate "$($assembly.PackageId) $($assembly.PackageVersion)" (Get-Item -LiteralPath $assembly.Path) @{
+        SourceKind     = 'package'
+        PackageId      = $assembly.PackageId
+        PackageVersion = $assembly.PackageVersion
+        AssetName      = $assembly.AssetPath
     }
 }
 
@@ -419,22 +407,25 @@ $manifest = [ordered]@{
             'Directory.Build.targets',
             'Directory.Packages.props',
             'Directory.Build.rsp',
+            'NuGet.config',
             'dotnet/Directory.Build.props',
             'dotnet/Directory.Build.targets',
             'dotnet/Directory.Packages.props',
             'dotnet/Directory.Build.rsp',
+            'dotnet/NuGet.config',
             'dotnet/src/Directory.Build.props',
             'dotnet/src/Directory.Build.targets',
             'dotnet/src/Directory.Packages.props',
-            'dotnet/NuGet.config',
+            'dotnet/src/Directory.Build.rsp',
+            'dotnet/src/NuGet.config',
             'dotnet/global.json',
             'global.json',
             'dotnet/Mahjong.sln',
             'tools/unity/build-shared.ps1',
             'tools/unity/shared-plugin-provenance-lib.ps1'
         )
-        excluded    = @('**/bin/**', '**/obj/**', 'tests', 'server-only services', 'documentation/reports')
-        unsupported = @('custom MSBuild Import', 'Compile/Protobuf/EmbeddedResource Remove', 'custom DefaultItemExcludes', 'explicit Reference/Analyzer/AdditionalFiles', 'wildcard or out-of-repo explicit includes', 'ProjectReference outside the seven projects')
+        excluded    = @('**/bin/**', '**/obj/**', 'tests', 'server-only services', 'documentation/reports', 'machine/user NuGet.config')
+        unsupported = @('custom MSBuild Import', 'Compile/Protobuf/EmbeddedResource Remove', 'item Exclude attributes', 'custom DefaultItemExcludes', 'explicit Reference/Analyzer/AdditionalFiles', 'wildcard, out-of-repo or unresolved-property includes', 'ProjectReference outside the seven projects')
         lineEndings = 'raw-bytes-no-normalisation'
     }
     tool           = [ordered]@{
@@ -449,7 +440,11 @@ $manifest = [ordered]@{
         completedAtUtc = [DateTime]::UtcNow.ToString('o')
         elapsedSeconds = [math]::Round(([DateTime]::UtcNow - $buildStartedAtUtc).TotalSeconds, 3)
         exitCode       = 0
+        mode           = 'forced-clean-outputs'
+        forcedRebuild  = $true
+        cleanedOutputs = @($cleanedOutputs | Sort-Object)
         copiedFileCount = $copied.Count
+        inputCount     = $inputSnapshotAfter.Count
     }
     requiredOwnAssemblies = @($pluginProjects | ForEach-Object { "$($_).dll" })
     inputs         = @($inputSnapshotAfter | ForEach-Object {
