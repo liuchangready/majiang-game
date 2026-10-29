@@ -24,6 +24,8 @@ namespace Mahjong.Unity.UI
     {
         public const string LocalHostUnavailableCode = "LOCAL_HOST_UNAVAILABLE";
         public const string LocalHostStartFailedCode = "LOCAL_HOST_START_FAILED";
+        public const string LocalHostLeaseConflictCode = "LOCAL_HOST_LEASE_CONFLICT";
+        public const string LocalHostSaveCorruptCode = "LOCAL_HOST_SAVE_CORRUPT";
         public const string LocalHostTerminalCode = "LOCAL_HOST_TERMINAL";
         public const string TableSceneUnavailableCode = "TABLE_SCENE_UNAVAILABLE";
         public const string UnexpectedFailureCode = "LOCAL_GAME_START_FAILED";
@@ -66,8 +68,9 @@ namespace Mahjong.Unity.UI
 
         /// <summary>
         /// Whether this navigation can start a real local table session at all.
-        /// False while the production composition only wires the explicit
-        /// unavailable factory; not a promise that any individual start succeeds.
+        /// The production composition wires the real pure .NET local host and
+        /// reports true; false only for the explicit unavailable test path or a
+        /// terminal composition. Not a promise that any individual start succeeds.
         /// </summary>
         bool IsLocalGameStartAvailable { get; }
 

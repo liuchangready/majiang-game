@@ -46,11 +46,12 @@ namespace Mahjong.Unity.App
 
         /// <summary>
         /// Whether the wired channel factory can back a real local table session.
-        /// The P4.2-core production default (<see cref="UnavailableLocalTableChannelFactory"/>)
-        /// reports false; the P4.2-B activation wires <c>LocalTableChannelFactory</c> over the
-        /// accepted pure .NET Mahjong.LocalHost and reports true. Explicitly injected test
-        /// factories also report true so the UI state machine and lifecycle error paths can be
-        /// exercised; that is never production evidence of a real host.
+        /// The production default is <see cref="LocalTableChannelFactory"/> over the
+        /// accepted pure .NET Mahjong.LocalHost and reports true. The explicit
+        /// <see cref="UnavailableLocalTableChannelFactory"/> remains only for the
+        /// unavailable-error test path and reports false. Explicitly injected test
+        /// factories also report true so the UI state machine and lifecycle error
+        /// paths can be exercised; that is never production evidence of a real host.
         /// </summary>
         public bool SupportsLocalStart
         {
@@ -131,9 +132,16 @@ namespace Mahjong.Unity.App
         {
             Config = config ?? new AppConfig();
             Dispatcher = dispatcher ?? throw new ArgumentNullException(nameof(dispatcher));
+
+            // Capture Application.persistentDataPath (or the explicit absolute test
+            // root) here, on the Unity main thread, before any worker opens a host.
             Paths = new UnityAppPaths(persistentDataPath);
             ThemeProvider = themeProvider ?? UiThemeProvider.Instance;
-            ChannelFactory = channelFactory ?? new UnavailableLocalTableChannelFactory();
+
+            // Production default: a real pure .NET local host. The outbox lives at
+            // Paths.OutboxDirectory while the host owns Paths.LocalSaveDirectory, so
+            // the two persistence domains can never alias each other.
+            ChannelFactory = channelFactory ?? new LocalTableChannelFactory(Config, Paths);
         }
 
         private static readonly Task<ShutdownResult> CachedCompletedTask = Task.FromResult(ShutdownResult.Completed());
@@ -192,6 +200,8 @@ namespace Mahjong.Unity.App
                 SessionCoordinator? coordinator = null;
                 try
                 {
+                    // Pre-cancel must not reach the factory: no ticket, directory,
+                    // file, lease or actor may exist for an already-cancelled open.
                     token.ThrowIfCancellationRequested();
 
                     channel = await ChannelFactory.CreateAsync(TableTransportKind.Local, token).ConfigureAwait(false);
@@ -204,11 +214,27 @@ namespace Mahjong.Unity.App
                         }
                     }
 
+                    // A real factory issues an opaque one-use ticket for this attempt;
+                    // the explicit scripted/unavailable test channels carry no ticket
+                    // source and keep the neutral test build id. Production never hits
+                    // the fallback because LocalTableChannelFactory always supplies one.
+                    string ticket = (channel as ILocalTableTicketSource)?.SessionTicket ?? "local";
+                    string clientBuild = (channel as ILocalTableTicketSource) != null
+                        ? LocalTableChannelFactory.ClientBuild
+                        : "unity-p42b-test";
+
                     Paths.EnsureDirectoriesCreated();
                     var outbox = new FileOutboxStore(Paths.OutboxDirectory);
                     var session = new TableSession(channel, outbox, new TableSessionOptions());
                     var queue = new TableSessionOperationQueue(session);
                     coordinator = new SessionCoordinator(session, queue, channel, Dispatcher, Config, gen);
+
+                    // The real channel rejects ReceiveAsync before its first open.
+                    // Open the transport/HELLO first, then admit the receive pump;
+                    // starting it earlier turns a benign "not open yet" into a
+                    // transport fault on a real LocalTableChannel (a scripted test
+                    // channel that parks forever hides that ordering bug).
+                    await queue.OpenAsync(new TableSessionOpenRequest(ticket, clientBuild), token).ConfigureAwait(false);
 
                     var pumpToken = coordinator.RunToken;
                     var pumpTask = Task.Run(async () =>
@@ -239,8 +265,6 @@ namespace Mahjong.Unity.App
                         }
                     }, pumpToken);
                     coordinator.SetPumpTask(pumpTask);
-
-                    await queue.OpenAsync(new TableSessionOpenRequest("local", "local"), token).ConfigureAwait(false);
 
                     lock (_gate)
                     {

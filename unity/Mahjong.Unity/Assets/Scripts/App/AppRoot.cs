@@ -28,7 +28,10 @@ namespace Mahjong.Unity.App
         public MainThreadDispatcher Dispatcher => _dispatcher!;
         public AppLifecycle Lifecycle => _lifecycle!;
 
-        public static AppRoot EnsureInitialized(AppConfig? config = null, UiTheme? theme = null)
+        public static AppRoot EnsureInitialized(
+            AppConfig? config = null,
+            UiTheme? theme = null,
+            string? persistentDataPath = null)
         {
             if (_instance != null)
             {
@@ -45,7 +48,7 @@ namespace Mahjong.Unity.App
             var rootGo = new GameObject("AppRoot");
             DontDestroyOnLoad(rootGo);
             _instance = rootGo.AddComponent<AppRoot>();
-            _instance.Initialize(config ?? new AppConfig(), theme);
+            _instance.Initialize(config ?? new AppConfig(), theme, persistentDataPath);
             return _instance;
         }
 
@@ -62,7 +65,10 @@ namespace Mahjong.Unity.App
             EnsureEventSystem();
         }
 
-        public void Initialize(AppConfig config, UiTheme? theme = null)
+        public void Initialize(
+            AppConfig config,
+            UiTheme? theme = null,
+            string? persistentDataPath = null)
         {
             _config = config ?? new AppConfig();
             EnsureEventSystem();
@@ -70,7 +76,9 @@ namespace Mahjong.Unity.App
             _dispatcher = new MainThreadDispatcher(_config.maxDispatchPerFrame * 8);
             _lifecycle = new AppLifecycle();
             var themeProvider = theme != null ? new UiThemeProvider(theme) : UiThemeProvider.Instance;
-            _composition = new AppComposition(_config, _dispatcher, themeProvider);
+            // AppComposition captures the absolute persistent root and installs the
+            // real local host factory on this main thread.
+            _composition = new AppComposition(_config, _dispatcher, themeProvider, persistentDataPath: persistentDataPath);
             _backRouter = new BackRouter();
             _backSource = new UnityBackRequestSource();
 

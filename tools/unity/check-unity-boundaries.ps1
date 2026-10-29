@@ -449,7 +449,10 @@ class Program
                     },
                     ["Mahjong.Unity.App.dll"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
                     {
-                        "Mahjong.LocalHost", "Mahjong.Domain", "Mahjong.TableRuntime", "Mahjong.Ai", "Mahjong.Server"
+                        // App is the composition root and is allowed exactly the
+                        // LocalHost facade. Domain/TableRuntime/Ai must still never
+                        // appear in the App assembly's direct references.
+                        "Mahjong.Domain", "Mahjong.TableRuntime", "Mahjong.Ai", "Mahjong.Server"
                     },
                     ["Mahjong.Unity.Table.dll"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
                     {
@@ -756,6 +759,39 @@ function Get-NegativeCases() {
             Strict = $true
             Mutate = {
                 param($p)
+            }
+        },
+        @{
+            Name = "Case14: LocalHost DLL added to UI precompiledReferences"
+            ExpectedCategory = "asmdef_dag"
+            Mutate = {
+                param($p)
+                $file = Join-Path $p "Assets/Scripts/UI/Mahjong.Unity.UI.asmdef"
+                $json = Get-Content $file -Raw | ConvertFrom-Json
+                $json.precompiledReferences = @($json.precompiledReferences) + "Mahjong.LocalHost.dll"
+                $json | ConvertTo-Json -Depth 10 | Set-Content $file -Encoding utf8
+            }
+        },
+        @{
+            Name = "Case15: LocalHost DLL added to Platform precompiledReferences"
+            ExpectedCategory = "asmdef_dag"
+            Mutate = {
+                param($p)
+                $file = Join-Path $p "Assets/Scripts/Platform/Mahjong.Unity.Platform.asmdef"
+                $json = Get-Content $file -Raw | ConvertFrom-Json
+                $json.precompiledReferences = @($json.precompiledReferences) + "Mahjong.LocalHost.dll"
+                $json | ConvertTo-Json -Depth 10 | Set-Content $file -Encoding utf8
+            }
+        },
+        @{
+            Name = "Case16: Domain DLL smuggled into App precompiledReferences"
+            ExpectedCategory = "asmdef_dag"
+            Mutate = {
+                param($p)
+                $file = Join-Path $p "Assets/Scripts/App/Mahjong.Unity.App.asmdef"
+                $json = Get-Content $file -Raw | ConvertFrom-Json
+                $json.precompiledReferences = @($json.precompiledReferences) + "Mahjong.Domain.dll"
+                $json | ConvertTo-Json -Depth 10 | Set-Content $file -Encoding utf8
             }
         }
     )

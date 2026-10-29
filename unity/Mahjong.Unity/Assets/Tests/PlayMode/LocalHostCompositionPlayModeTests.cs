@@ -1,6 +1,7 @@
 #nullable enable
 using System;
 using System.Collections;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
@@ -11,15 +12,17 @@ using Mahjong.Client;
 using Mahjong.Unity.App;
 using Mahjong.Unity.Platform;
 using Mahjong.Unity.UI;
+using Mahjong.Unity.UI.Session;
 
 namespace Mahjong.Unity.Tests.PlayMode
 {
     /// <summary>
-    /// P4.2-B preparation PlayMode evidence for the route itself (not a fake
-    /// navigation): a scripted channel is wired into AppComposition so one real
-    /// Lobby -&gt; Table scene load and the router's owner gate can be observed.
-    /// This is route/lifecycle evidence only; it is never proof that a real
-    /// Mahjong.LocalHost is integrated in production.
+    /// P4.2-B PlayMode evidence: the first three cases keep the scripted route and
+    /// lifecycle boundary as independent error/routing evidence. The real-host
+    /// cases use the production AppRoot composition and the real local factory to
+    /// load Lobby -&gt; Table, observe a real snapshot, exercise one-owner double
+    /// start and prove return-to-menu releases the host before a clean re-entry.
+    /// They never reference the forbidden Mahjong.LocalHost or Domain namespaces.
     /// </summary>
     [TestFixture]
     public sealed class LocalHostCompositionPlayModeTests
@@ -218,6 +221,161 @@ namespace Mahjong.Unity.Tests.PlayMode
             Assert.IsFalse(factory.Channel.IsOpen, "The cancelled open must close its scripted channel.");
 
             yield return Cleanup(router, composition);
+        }
+
+        // ------------------------------------------------------------------
+        // Real accepted pure .NET local host through the production AppRoot
+        // ------------------------------------------------------------------
+
+        private static AppConfig RealConfig() => new AppConfig
+        {
+            pumpBarrierTimeoutMs = 5000,
+            closeTimeoutMs = 5000,
+            cancelObservationMs = 50
+        };
+
+        private static string NewRealRoot() =>
+            Path.GetFullPath(Path.Combine("build", "p42b-playmode-realhost", Guid.NewGuid().ToString("N")));
+
+        private static void ResetAppRoot()
+        {
+            foreach (AppRoot root in UnityEngine.Object.FindObjectsByType<AppRoot>(
+                         FindObjectsInactive.Include,
+                         FindObjectsSortMode.None))
+            {
+                UnityEngine.Object.DestroyImmediate(root.gameObject);
+            }
+        }
+
+        private static IEnumerator WaitForRealSnapshot(AppComposition composition, float timeoutSeconds)
+        {
+            yield return WaitUntil(
+                () => composition.SessionCoordinator != null &&
+                      composition.SessionCoordinator.Current.State == TableConnectionState.Ready &&
+                      composition.SessionCoordinator.Current.Binding != null &&
+                      composition.SessionCoordinator.Current.PlayerSnapshot != null,
+                timeoutSeconds,
+                "real local snapshot");
+        }
+
+        [UnityTest]
+        public IEnumerator RealLocalHost_StartFromLobby_PublishesRealSnapshot()
+        {
+            ResetAppRoot();
+            string root = NewRealRoot();
+            AppRoot app = AppRoot.EnsureInitialized(RealConfig(), null, root);
+            AppComposition composition = app.Composition;
+
+            Assert.IsTrue(app.Router.IsLocalGameStartAvailable,
+                "The production default must advertise the real local host.");
+            Assert.IsInstanceOf<LocalTableChannelFactory>(composition.ChannelFactory);
+
+            Task<bool> lobby = app.Router.LoadAsync(SceneId.Lobby);
+            yield return WaitUntil(() => lobby.IsCompleted, 20f, "Lobby load");
+            Assert.IsTrue(lobby.Result);
+
+            Task<LocalGameStartResult> start = app.Router.StartLocalGameAsync();
+            yield return WaitUntil(() => start.IsCompleted, 60f, "real local start completion");
+            LocalGameStartResult result = start.Result;
+            Assert.AreEqual(LocalGameStartStatus.Started, result.Status,
+                "The production route must start a real local table.");
+            Assert.AreEqual(SceneId.Table, app.Router.CurrentScene);
+            Assert.AreEqual("Table", SceneManager.GetActiveScene().name);
+
+            yield return WaitForRealSnapshot(composition, 60f);
+            SessionViewState state = composition.SessionCoordinator!.Current;
+            Debug.Log(
+                "PLAYMODE_REAL_START" +
+                " room=" + state.Binding!.RoomId +
+                " seat=" + state.Binding.SeatId +
+                " stateVersion=" + state.PlayerSnapshot!.StateVersion +
+                " baseline=" + state.IsFullBaseline +
+                " batch=" + state.VisibleEventBatch.Kind);
+
+            Assert.AreEqual(LocalTableChannelFactory.DefaultRoomId, state.Binding.RoomId);
+            Assert.AreEqual(0, state.Binding.SeatId);
+            Assert.IsNotNull(state.PlayerSnapshot.PrivateView);
+            Assert.AreEqual(TableVisibleEventBatchKind.Baseline, state.VisibleEventBatch.Kind);
+            Assert.AreEqual(0, state.VisibleEventBatch.PlayableEvents.Count,
+                "Baseline history must not be exposed as new animation.");
+
+            yield return Cleanup(app.Router, composition);
+        }
+
+        [UnityTest]
+        public IEnumerator RealLocalHost_DoubleClick_OneStartedOneBusy()
+        {
+            ResetAppRoot();
+            AppRoot app = AppRoot.EnsureInitialized(RealConfig(), null, NewRealRoot());
+            AppComposition composition = app.Composition;
+
+            Task<bool> lobby = app.Router.LoadAsync(SceneId.Lobby);
+            yield return WaitUntil(() => lobby.IsCompleted, 20f, "Lobby load");
+            Assert.IsTrue(lobby.Result);
+
+            Task<LocalGameStartResult> first = app.Router.StartLocalGameAsync();
+            Task<LocalGameStartResult> second = app.Router.StartLocalGameAsync();
+            Assert.IsTrue(second.IsCompleted,
+                "The second click must be rejected synchronously without entering the open.");
+            Assert.AreEqual(LocalGameStartStatus.Busy, second.Result.Status);
+
+            yield return WaitUntil(() => first.IsCompleted, 60f, "owner start completion");
+            Assert.AreEqual(LocalGameStartStatus.Started, first.Result.Status);
+            yield return WaitForRealSnapshot(composition, 60f);
+            Assert.IsNotNull(composition.SessionCoordinator,
+                "The owner start must leave exactly one live session.");
+            Debug.Log(
+                "PLAYMODE_REAL_CONCURRENT first=" + first.Result.Status +
+                " second=" + second.Result.Status +
+                " room=" + composition.SessionCoordinator!.Current.Binding!.RoomId);
+
+            yield return Cleanup(app.Router, composition);
+        }
+
+        [UnityTest]
+        public IEnumerator RealLocalHost_ReturnToMenuThenReenter_RecoversSameRoom()
+        {
+            ResetAppRoot();
+            AppRoot app = AppRoot.EnsureInitialized(RealConfig(), null, NewRealRoot());
+            AppComposition composition = app.Composition;
+
+            Task<bool> lobby = app.Router.LoadAsync(SceneId.Lobby);
+            yield return WaitUntil(() => lobby.IsCompleted, 20f, "Lobby load");
+            Assert.IsTrue(lobby.Result);
+
+            Task<LocalGameStartResult> firstStart = app.Router.StartLocalGameAsync();
+            yield return WaitUntil(() => firstStart.IsCompleted, 60f, "first real start");
+            Assert.AreEqual(LocalGameStartStatus.Started, firstStart.Result.Status);
+            yield return WaitForRealSnapshot(composition, 60f);
+            string firstSession = composition.SessionCoordinator!.Current.Binding!.SessionId;
+            string firstRoom = composition.SessionCoordinator.Current.Binding.RoomId;
+
+            Task<bool> back = app.Router.ReturnToMenuAsync();
+            yield return WaitUntil(() => back.IsCompleted, 30f, "return to menu");
+            Assert.IsTrue(back.Result);
+            Assert.AreEqual(SceneId.Menu, app.Router.CurrentScene);
+            Assert.IsNull(composition.SessionCoordinator,
+                "Returning to the menu must release the real local session and its file lease.");
+            Assert.IsTrue(app.Router.IsLocalGameStartAvailable,
+                "A clean close must leave the composition reusable.");
+
+            Task<LocalGameStartResult> secondStart = app.Router.StartLocalGameAsync();
+            yield return WaitUntil(() => secondStart.IsCompleted, 60f, "second real start");
+            Assert.AreEqual(LocalGameStartStatus.Started, secondStart.Result.Status,
+                "A clean return-to-menu followed by a fresh start must reopen the real host.");
+            yield return WaitForRealSnapshot(composition, 60f);
+            SessionViewState second = composition.SessionCoordinator!.Current;
+            Debug.Log(
+                "PLAYMODE_REAL_REENTRY firstSession=" + firstSession +
+                " secondSession=" + second.Binding!.SessionId +
+                " room=" + second.Binding.RoomId);
+
+            Assert.AreEqual(firstRoom, second.Binding.RoomId,
+                "A re-entry must recover the same stable local room.");
+            Assert.AreNotEqual(firstSession, second.Binding.SessionId,
+                "A re-entry must open a fresh connection/session identity, never reuse the closed one.");
+
+            yield return Cleanup(app.Router, composition);
         }
     }
 }

@@ -1,7 +1,9 @@
 #nullable enable
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Reflection;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
@@ -9,8 +11,10 @@ using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
 using Mahjong.Client;
+using Mahjong.Contracts;
 using Mahjong.Unity.App;
 using Mahjong.Unity.Platform;
+using Mahjong.Unity.Table;
 using Mahjong.Unity.UI;
 using Mahjong.Unity.UI.Session;
 
@@ -21,12 +25,12 @@ using UnityEditor;
 namespace Mahjong.Unity.Tests.EditMode
 {
     /// <summary>
-    /// P4.2-B preparation tests: drive the local-game-start capability state machine
-    /// (LobbyPresenter button states), the AppRouter stable error-code mapping and the
-    /// composition-level open dedup / late-abandon invariants with scripted factories.
-    /// These tests cover the P4.2-core default (unavailable factory) and explicitly
-    /// injected scripted factories. They are UI/lifecycle evidence only — never
-    /// evidence that a real pure .NET Mahjong.LocalHost is integrated in production.
+    /// P4.2-B composition tests: the local-game-start capability state machine
+    /// (LobbyPresenter button states), AppRouter stable error-code mapping, open
+    /// dedup / late-abandon invariants with scripted factories, and the production
+    /// default factory driving the accepted pure .NET local host through the App
+    /// public surface. The real-host cases below use only App/Client/Table types,
+    /// never the forbidden Mahjong.LocalHost or Domain namespaces.
     /// </summary>
     [TestFixture]
     public sealed class LocalHostCompositionTests
@@ -499,16 +503,17 @@ namespace Mahjong.Unity.Tests.EditMode
         // ------------------------------------------------------------------
 
         [Test]
-        public async Task Router_DefaultComposition_MapsUnavailableFactoryToStableCode()
+        public async Task Router_ExplicitUnavailableFactory_MapsToStableCode()
         {
             var comp = new AppComposition(
                 new AppConfig(),
                 new MainThreadDispatcher(),
+                channelFactory: new UnavailableLocalTableChannelFactory(),
                 persistentDataPath: System.IO.Path.GetFullPath("build/p42b/store-" + Guid.NewGuid().ToString("N")));
             var router = new AppRouter(comp, new BackRouter());
 
             Assert.IsFalse(router.IsLocalGameStartAvailable,
-                "Default P4.2-core production composition must report local start unavailable.");
+                "The explicit unavailable test factory must report local start unavailable.");
 
             LocalGameStartResult result = await router.StartLocalGameAsync();
             Assert.AreEqual(LocalGameStartStatus.Failed, result.Status);
@@ -766,6 +771,420 @@ namespace Mahjong.Unity.Tests.EditMode
 
             ShutdownResult shutdown = await comp.ShutdownAsync("TEST_DEDUP_DONE");
             Assert.AreEqual(ShutdownOutcome.Completed, shutdown.Outcome);
+        }
+
+        // ------------------------------------------------------------------
+        // Real accepted pure .NET local host through the App public surface
+        // ------------------------------------------------------------------
+
+        private static string NewRealRoot() =>
+            Path.GetFullPath(Path.Combine("build", "p42b-realhost", Guid.NewGuid().ToString("N")));
+
+        private static AppConfig RealConfig() => new AppConfig
+        {
+            pumpBarrierTimeoutMs = 5000,
+            closeTimeoutMs = 5000,
+            cancelObservationMs = 50
+        };
+
+        private static AppComposition NewRealComposition(string root, ITableChannelFactory? factory = null) =>
+            new AppComposition(
+                RealConfig(),
+                new MainThreadDispatcher(),
+                channelFactory: factory,
+                persistentDataPath: root);
+
+        private static async Task<SessionViewState> WaitForSession(
+            AppComposition comp,
+            Func<SessionViewState, bool> predicate,
+            int timeoutMs,
+            string label)
+        {
+            var started = DateTime.UtcNow;
+            string last = string.Empty;
+            while ((DateTime.UtcNow - started).TotalMilliseconds < timeoutMs)
+            {
+                SessionCoordinator? coordinator = comp.SessionCoordinator;
+                if (coordinator != null)
+                {
+                    try
+                    {
+                        SessionViewState current = coordinator.Current;
+                        last = "state=" + current.State +
+                               " binding=" + (current.Binding != null) +
+                               " snapshot=" + (current.PlayerSnapshot != null) +
+                               " error=" + (current.LastError ?? "<none>");
+                        if (predicate(current))
+                        {
+                            return current;
+                        }
+                    }
+                    catch (Exception exception)
+                    {
+                        last = exception.GetType().Name + ": " + exception.Message;
+                    }
+                }
+
+                await Task.Delay(25);
+            }
+
+            Assert.Fail("Timed out waiting for " + label + (last.Length > 0 ? " (" + last + ")" : string.Empty));
+            return null!;
+        }
+
+        private static Task<SessionViewState> WaitForReady(AppComposition comp, int timeoutMs = 30000) =>
+            WaitForSession(
+                comp,
+                state => state.State == TableConnectionState.Ready &&
+                         state.Binding != null &&
+                         state.PlayerSnapshot != null &&
+                         state.PlayerSnapshot.PrivateView != null,
+                timeoutMs,
+                "real local session Ready with a private snapshot");
+
+        private static async Task<TableCommandIntent> WaitForSubmittableAction(
+            AppComposition comp,
+            int timeoutMs = 20000)
+        {
+            var mapper = new PlayerTableProjectionMapper(new SystemTableClientClock());
+            var intentFactory = new TableCommandIntentFactory(new SystemTableClientClock());
+            var started = DateTime.UtcNow;
+            string last = "no snapshot";
+            while ((DateTime.UtcNow - started).TotalMilliseconds < timeoutMs)
+            {
+                SessionCoordinator? coordinator = comp.SessionCoordinator;
+                if (coordinator != null)
+                {
+                    SessionViewState current = coordinator.Current;
+                    if (current.State == TableConnectionState.Ready &&
+                        current.Binding != null &&
+                        current.PlayerSnapshot != null)
+                    {
+                        PlayerTableViewState view;
+                        try
+                        {
+                            view = mapper.Project(current);
+                        }
+                        catch (Exception exception)
+                        {
+                            last = "projection: " + exception.Message;
+                            await Task.Delay(25);
+                            continue;
+                        }
+
+                        if (view.CanSubmit &&
+                            view.Own?.Decision != null &&
+                            view.Own.Decision.Candidates.Count > 0)
+                        {
+                            PlayerLegalActionState? action = null;
+                            for (int i = 0; i < view.Own.Decision.Candidates.Count; i++)
+                            {
+                                if (view.Own.Decision.Candidates[i].Action == PlayerActionKind.DiscardTile)
+                                {
+                                    action = view.Own.Decision.Candidates[i];
+                                    break;
+                                }
+                            }
+
+                            action ??= view.Own.Decision.Candidates[0];
+                            try
+                            {
+                                return intentFactory.CreateSubmitAction(
+                                    view,
+                                    action,
+                                    new TableCommandOwnerContext(
+                                        new RequestId("p42b-" + Guid.NewGuid().ToString("N")),
+                                        new RequestScopeId(view.Identity.ScopeId),
+                                        new StateVersion(view.Identity.StateVersion),
+                                        new OwnerEpoch(view.Identity.OwnerEpoch)));
+                            }
+                            catch (TableIntentUnavailableException exception)
+                            {
+                                last = exception.Code;
+                            }
+                        }
+                    }
+                }
+
+                await Task.Delay(25);
+            }
+
+            Assert.Fail("Timed out waiting for a submittable legal action: " + last);
+            return null!;
+        }
+
+        [Test]
+        public async Task DefaultComposition_IsRealLocalHost_AndPublishesBaselineSnapshot()
+        {
+            string root = NewRealRoot();
+            var comp = NewRealComposition(root);
+            try
+            {
+                Assert.IsTrue(comp.SupportsLocalStart,
+                    "The production AppComposition default must advertise a real local host.");
+                Assert.IsInstanceOf<LocalTableChannelFactory>(comp.ChannelFactory,
+                    "The production default must be the real local host factory, not the unavailable stub.");
+
+                SessionCoordinator coordinator = await comp.OpenLocalSessionAsync(CancellationToken.None);
+                SessionViewState baseline = await WaitForReady(comp);
+
+                Assert.AreSame(coordinator, comp.SessionCoordinator);
+                Assert.AreEqual(LocalTableChannelFactory.DefaultRoomId, baseline.Binding!.RoomId,
+                    "The production room id must be stable, not the old placeholder 'local'.");
+                Assert.AreEqual(0, baseline.Binding.SeatId);
+                Assert.IsNotNull(baseline.PlayerSnapshot);
+                Assert.IsNotNull(baseline.PlayerSnapshot!.PrivateView);
+                Assert.IsTrue(baseline.IsFullBaseline,
+                    "The first confirmed publication must be a full baseline snapshot.");
+                Assert.AreEqual(TableVisibleEventBatchKind.Baseline, baseline.VisibleEventBatch.Kind);
+                Assert.AreEqual(0, baseline.VisibleEventBatch.PlayableEvents.Count,
+                    "A baseline's historical events must never be replayed as new animation.");
+
+                string save = Path.Combine(root, "local", LocalTableChannelFactory.DefaultRoomId + ".save");
+                Assert.IsTrue(File.Exists(save), "The real host must own the local save file.");
+                Assert.IsTrue(Directory.Exists(Path.Combine(root, "client", "outbox")),
+                    "The client outbox must be created separately from the host save directory.");
+                Assert.AreNotEqual(
+                    Path.GetFullPath(Path.Combine(root, "local")),
+                    Path.GetFullPath(Path.Combine(root, "client", "outbox")));
+            }
+            finally
+            {
+                ShutdownResult shutdown = await comp.ShutdownAsync("TEST_REAL_DEFAULT_DONE");
+                Assert.AreEqual(ShutdownOutcome.Completed, shutdown.Outcome);
+            }
+        }
+
+        [Test]
+        public async Task RealFactory_PreCancelled_CreatesNoDirectoryTicketOrActor()
+        {
+            string root = NewRealRoot();
+            var factory = new LocalTableChannelFactory(new AppConfig(), new UnityAppPaths(root));
+            using var cts = new CancellationTokenSource();
+            cts.Cancel();
+
+            OperationCanceledException? factoryError = Assert.CatchAsync<OperationCanceledException>(
+                async () => { await factory.CreateAsync(TableTransportKind.Local, cts.Token); });
+            Assert.IsNotNull(factoryError);
+            Assert.IsTrue(cts.IsCancellationRequested);
+            Assert.IsFalse(Directory.Exists(root),
+                "A pre-cancelled factory call must not create the save/outbox root.");
+
+            var comp = NewRealComposition(root);
+            OperationCanceledException? compositionError = Assert.CatchAsync<OperationCanceledException>(
+                async () => { await comp.OpenLocalSessionAsync(cts.Token); });
+            Assert.IsNotNull(compositionError);
+            Assert.IsFalse(Directory.Exists(root),
+                "A pre-cancelled composition open must not create a directory, ticket, lease or actor.");
+            Assert.IsNull(comp.SessionCoordinator);
+        }
+
+        [Test]
+        public async Task RealHost_LegalDiscard_ProducesIncrementalConfirmedVisibleEvent()
+        {
+            string root = NewRealRoot();
+            var comp = NewRealComposition(root);
+            try
+            {
+                await comp.OpenLocalSessionAsync(CancellationToken.None);
+                await WaitForReady(comp);
+
+                TableCommandIntent intent = await WaitForSubmittableAction(comp);
+                SessionCoordinator coordinator = comp.SessionCoordinator!;
+                ulong before = coordinator.Current.PlayerSnapshot!.StateVersion;
+
+                CommandSubmission submission = await coordinator.SubmitAsync(
+                    intent.Command,
+                    CancellationToken.None);
+                Assert.IsTrue(submission.Sent, "The legal discard must reach the real local host.");
+
+                SessionViewState confirmed = await WaitForSession(
+                    comp,
+                    state => (state.PlayerSnapshot?.StateVersion ?? 0UL) > before &&
+                             state.VisibleEventBatch.Kind == TableVisibleEventBatchKind.Incremental &&
+                             state.VisibleEventBatch.PlayableEvents.Count > 0,
+                    30000,
+                    "an incremental confirmed visible event after the legal action");
+
+                Assert.Greater(confirmed.PlayerSnapshot!.StateVersion, before,
+                    "A confirmed player action must advance the authoritative state version.");
+                Assert.AreEqual(TableVisibleEventBatchKind.Incremental, confirmed.VisibleEventBatch.Kind);
+                Assert.Greater(confirmed.VisibleEventBatch.PlayableEvents.Count, 0,
+                    "A confirmed incremental batch must expose at least one playable visible event.");
+            }
+            finally
+            {
+                ShutdownResult shutdown = await comp.ShutdownAsync("TEST_REAL_ACTION_DONE");
+                Assert.AreEqual(ShutdownOutcome.Completed, shutdown.Outcome);
+            }
+        }
+
+        [Test]
+        public async Task RealHost_ConcurrentOpen_SharesOneSessionAndOneSave()
+        {
+            string root = NewRealRoot();
+            var comp = NewRealComposition(root);
+            try
+            {
+                Task<SessionCoordinator> first = comp.OpenLocalSessionAsync(CancellationToken.None);
+                Task<SessionCoordinator> second = comp.OpenLocalSessionAsync(CancellationToken.None);
+                Task all = Task.WhenAll(first, second);
+                Task winner = await Task.WhenAny(all, Task.Delay(30000));
+                Assert.AreSame(all, winner, "Both concurrent opens must settle.");
+                await all;
+
+                Assert.AreSame(first.Result, second.Result,
+                    "Concurrent opens must share one real host session.");
+                await WaitForReady(comp);
+                string[] saves = Directory.GetFiles(
+                    Path.Combine(root, "local"),
+                    LocalTableChannelFactory.DefaultRoomId + ".save");
+                Assert.AreEqual(1, saves.Length, "One room must own exactly one save file.");
+            }
+            finally
+            {
+                ShutdownResult shutdown = await comp.ShutdownAsync("TEST_REAL_CONCURRENT_DONE");
+                Assert.AreEqual(ShutdownOutcome.Completed, shutdown.Outcome);
+            }
+        }
+
+        [Test]
+        public async Task RealHost_SecondOwnerSameRoom_MapsLeaseConflict_AndKeepsOwnerAlive()
+        {
+            string sharedRoot = NewRealRoot();
+            string secondRoot = NewRealRoot();
+            var owner = NewRealComposition(sharedRoot);
+            var second = new AppComposition(
+                RealConfig(),
+                new MainThreadDispatcher(),
+                channelFactory: new LocalTableChannelFactory(new AppConfig(), new UnityAppPaths(sharedRoot)),
+                persistentDataPath: secondRoot);
+            try
+            {
+                await owner.OpenLocalSessionAsync(CancellationToken.None);
+                await WaitForReady(owner);
+
+                var router = new AppRouter(second, new BackRouter());
+                SetScene(router, SceneId.Lobby);
+                LocalGameStartResult result = await router.StartLocalGameAsync();
+
+                Assert.AreEqual(LocalGameStartStatus.Failed, result.Status);
+                Assert.AreEqual(LocalGameStartResult.LocalHostLeaseConflictCode, result.StableErrorCode,
+                    "A second owner of the same room must surface the stable lease code.");
+                Assert.AreNotEqual(LocalGameStartResult.LocalHostUnavailableCode, result.StableErrorCode,
+                    "A lease conflict must never be disguised as a missing host.");
+                Assert.IsFalse(second.IsTerminal, "A lease conflict is retryable and must not quarantine.");
+                Assert.IsNull(second.SessionCoordinator);
+
+                await WaitForReady(owner);
+                Assert.IsTrue(File.Exists(
+                    Path.Combine(sharedRoot, "local", LocalTableChannelFactory.DefaultRoomId + ".save")),
+                    "The losing owner must not delete the owner's save.");
+            }
+            finally
+            {
+                await second.ShutdownAsync("TEST_REAL_LEASE_SECOND_DONE");
+                ShutdownResult shutdown = await owner.ShutdownAsync("TEST_REAL_LEASE_OWNER_DONE");
+                Assert.AreEqual(ShutdownOutcome.Completed, shutdown.Outcome);
+            }
+        }
+
+        [Test]
+        public async Task RealHost_CorruptSave_MapsCorruptCode_AndPreservesBytes()
+        {
+            string root = NewRealRoot();
+            var created = NewRealComposition(root);
+            await created.OpenLocalSessionAsync(CancellationToken.None);
+            await WaitForReady(created);
+            ShutdownResult createdShutdown = await created.ShutdownAsync("TEST_REAL_CREATE_SAVE");
+            Assert.AreEqual(ShutdownOutcome.Completed, createdShutdown.Outcome);
+
+            string saveDir = Path.Combine(root, "local");
+            string[] saveFiles = Directory.GetFiles(
+                saveDir,
+                LocalTableChannelFactory.DefaultRoomId + ".save*");
+            Assert.Greater(saveFiles.Length, 0, "The real host must have persisted a save envelope.");
+            byte[] garbage = Encoding.UTF8.GetBytes("not-a-local-save-envelope");
+            foreach (string file in saveFiles)
+            {
+                File.WriteAllBytes(file, garbage);
+            }
+
+            var reopened = NewRealComposition(root);
+            try
+            {
+                var router = new AppRouter(reopened, new BackRouter());
+                SetScene(router, SceneId.Lobby);
+                LocalGameStartResult result = await router.StartLocalGameAsync();
+
+                Assert.AreEqual(LocalGameStartStatus.Failed, result.Status);
+                Assert.AreEqual(LocalGameStartResult.LocalHostSaveCorruptCode, result.StableErrorCode,
+                    "A corrupt save must surface the stable corruption code.");
+                Assert.AreNotEqual(LocalGameStartResult.LocalHostUnavailableCode, result.StableErrorCode,
+                    "A corrupt save must never be disguised as a missing host.");
+                Assert.IsFalse(reopened.IsTerminal);
+
+                foreach (string file in saveFiles)
+                {
+                    Assert.IsTrue(File.Exists(file),
+                        "A failed corrupt-save open must not delete the save file.");
+                    CollectionAssert.AreEqual(garbage, File.ReadAllBytes(file),
+                        "A failed corrupt-save open must not rewrite the save bytes.");
+                }
+            }
+            finally
+            {
+                await reopened.ShutdownAsync("TEST_REAL_CORRUPT_DONE");
+            }
+        }
+
+        [Test]
+        public async Task RealHost_CleanCloseThenReopen_RecoversCommittedState()
+        {
+            string root = NewRealRoot();
+            var first = NewRealComposition(root);
+            ulong committed;
+            try
+            {
+                await first.OpenLocalSessionAsync(CancellationToken.None);
+                await WaitForReady(first);
+
+                TableCommandIntent intent = await WaitForSubmittableAction(first);
+                SessionCoordinator coordinator = first.SessionCoordinator!;
+                ulong before = coordinator.Current.PlayerSnapshot!.StateVersion;
+                CommandSubmission submission = await coordinator.SubmitAsync(
+                    intent.Command,
+                    CancellationToken.None);
+                Assert.IsTrue(submission.Sent);
+
+                SessionViewState confirmed = await WaitForSession(
+                    first,
+                    state => (state.PlayerSnapshot?.StateVersion ?? 0UL) > before,
+                    30000,
+                    "a committed player action before clean close");
+                committed = confirmed.PlayerSnapshot!.StateVersion;
+            }
+            finally
+            {
+                ShutdownResult shutdown = await first.ShutdownAsync("TEST_REAL_RECOVERY_CLOSE");
+                Assert.AreEqual(ShutdownOutcome.Completed, shutdown.Outcome);
+                Assert.IsNull(first.SessionCoordinator);
+            }
+
+            var second = NewRealComposition(root);
+            try
+            {
+                await second.OpenLocalSessionAsync(CancellationToken.None);
+                SessionViewState recovered = await WaitForReady(second);
+                Assert.GreaterOrEqual(recovered.PlayerSnapshot!.StateVersion, committed,
+                    "A clean close followed by a fresh open must recover the committed state, not a new room.");
+                Assert.AreEqual(LocalTableChannelFactory.DefaultRoomId, recovered.Binding!.RoomId);
+            }
+            finally
+            {
+                ShutdownResult shutdown = await second.ShutdownAsync("TEST_REAL_RECOVERY_REOPEN");
+                Assert.AreEqual(ShutdownOutcome.Completed, shutdown.Outcome);
+            }
         }
 #endif
     }

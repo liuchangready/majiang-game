@@ -2,6 +2,7 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using Mahjong.LocalHost;
 using Mahjong.Unity.UI;
 using UnityEngine;
 using UnityEngine.SceneManagement;
@@ -128,13 +129,24 @@ namespace Mahjong.Unity.App
                     if (_composition.IsShutdownInProgress) return LocalGameStartResult.Busy();
                     return LocalGameStartResult.Cancelled();
                 }
+                catch (LocalTableException ex)
+                {
+                    // The accepted host classifies its own failure. Only a genuinely
+                    // unavailable host maps to LOCAL_HOST_UNAVAILABLE; lease conflicts
+                    // and corrupt saves keep their own stable codes so the UI never
+                    // hides them as a missing host. No catch here deletes a save,
+                    // releases another owner's lease or opens a replacement room.
+                    if (_composition.IsTerminal) return TerminalStartResult();
+                    if (_composition.IsShutdownInProgress) return LocalGameStartResult.Busy();
+                    Debug.LogWarning($"LOCAL_HOST_START_FAILED: kind={ex.ErrorKind}");
+                    return LocalGameStartResult.Failed(MapLocalHostFailure(ex.ErrorKind));
+                }
                 catch (Exception)
                 {
-                    // Quarantined composition, lease conflicts, corrupt saves and other host
-                    // failures surface as one stable generic code here. They are never mapped
-                    // to LOCAL_HOST_UNAVAILABLE and never clear saves or silently open a new
-                    // room. The P4.2-B activation patch refines this mapping with the accepted
-                    // LocalTableErrorKind values once the real host is integrable.
+                    // Quarantined composition and other unexpected failures surface as
+                    // one stable generic code. They are never mapped to
+                    // LOCAL_HOST_UNAVAILABLE and never clear saves or silently open a
+                    // new room.
                     if (_composition.IsTerminal) return TerminalStartResult();
                     if (_composition.IsShutdownInProgress) return LocalGameStartResult.Busy();
                     return LocalGameStartResult.Failed(LocalGameStartResult.LocalHostStartFailedCode);
@@ -194,6 +206,27 @@ namespace Mahjong.Unity.App
 
         private LocalGameStartResult TerminalStartResult() =>
             LocalGameStartResult.Terminal(LocalGameStartResult.LocalHostTerminalCode);
+
+        /// <summary>
+        /// Stable UI mapping of the accepted host's error kinds. UI never receives
+        /// exception text, save paths, tickets or lease owner identities.
+        /// </summary>
+        private static string MapLocalHostFailure(LocalTableErrorKind kind)
+        {
+            switch (kind)
+            {
+                case LocalTableErrorKind.Unavailable:
+                    return LocalGameStartResult.LocalHostUnavailableCode;
+                case LocalTableErrorKind.LeaseConflict:
+                    return LocalGameStartResult.LocalHostLeaseConflictCode;
+                case LocalTableErrorKind.CorruptState:
+                    return LocalGameStartResult.LocalHostSaveCorruptCode;
+                case LocalTableErrorKind.InvalidOptions:
+                case LocalTableErrorKind.ChannelClosed:
+                default:
+                    return LocalGameStartResult.LocalHostStartFailedCode;
+            }
+        }
 
         private static bool IsTerminalShutdown(ShutdownResult result)
         {
