@@ -1,6 +1,6 @@
 # D-CAPTURE-01 caller acceptance — 2026-10-29
 
-Decision: **PASS for the native capture repair**, including D-CAPTURE-01-SCOPE. This accepts bridge thread `thread_20261029_114646_759c` round 2 at `6f0a31784fc7f8d483623ad07678f1968fa77bc6`. It does not approve the full batch, LocalHost activation, G2–G5 or release. V4 remains production.
+Decision: **independent code review PASS for the native capture repair**, including D-CAPTURE-01-SCOPE, for thread `thread_20261029_114646_759c` round 2 at `6f0a31784fc7f8d483623ad07678f1968fa77bc6`. The bridge task remains waiting_review: approve_task rejected this scheduled session because it holds no active reviewer role for that thread. The original reviewer callback must close the ledger; this caller did not bypass the role check or launch another round. It does not approve the full batch, LocalHost activation, G2–G5 or release. V4 remains production.
 
 The caller created `D:/majiang-wt/codex-capture-integration-20261029-1793248950316` from fetched accepted origin/v5 `8fd7c6cb701dfbb41c28938de4186749bdd1d6c7`, fast-forwarded to reviewed PR20 `27ec2b66e45637d2b63e632f6c9cb4a2441e9824`, and merged only this accepted candidate. Integration commit `e2664722f40773a12b64d918be3463a9fa391e76` changes exactly the verifier, its new captured-exit self-test and the delivery report. Receiver tracked state was clean; default diff-check passed. No other task's uncommitted output was included.
 
@@ -35,7 +35,7 @@ One global ledger read found legacy GLM `thread_20261029_064512_04b1` round3 rew
 
 After capture acceptance there is one available slot. P5.4b-A is accepted/published at 27ec2b6; taskbook P5.4b's remaining actual HTTPS Lobby ticket to WSS/PostgreSQL client integration is dependency-ready and independent of the reserved LocalHost/Unity files. A single DeepSeek follow-up may be prepared; task ID must be taken from dispatch result. Full Unity activation stays with its original thread. Failed historical LocalHost threads are not resumed.
 
-Existing PR20 is the sole publication target, base v5. PR19 remains merged/closed. No merge into v5 or default branch, force push, release or complete.flag is authorized here.
+Existing PR20 is the sole publication target, base v5. The reviewed implementation and this independent acceptance were normally pushed at 15090461883537ec79f6aff5638458a855ba328f; gh PR head and ls-remote matched. record_merge_request succeeded (MR_RECORDED/synced) and explicitly records the separate ledger-approval role blocker. This documentation correction leaves implementation/tests/tools unchanged. PR19 remains merged/closed. No merge into v5 or default branch, force push, release or complete.flag is authorized here.
 
 Exact prior PR20 head27ec2b6 remote runs [40817096599](https://github.com/liuchangready/majiang-game/actions/runs/40817096599) and [40817090774](https://github.com/liuchangready/majiang-game/actions/runs/40817090774) have failure status, empty steps and empty runner names. Both check annotations explicitly report account payment/spending-limit prevention before execution. Remote tests are BLOCKED/NOT_RUN; no retry or CI-only ref was created. Raw annotations are retained in E. A later published SHA needs its own remote evidence.
 
