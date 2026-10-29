@@ -5,6 +5,7 @@ using System.Linq;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
+using Google.Protobuf;
 using Mahjong.Client;
 using Mahjong.Contracts;
 using Mahjong.Domain;
@@ -12,6 +13,15 @@ using Mahjong.Domain.Cheat;
 using Mahjong.LocalHost;
 using Mahjong.TableRuntime;
 using PlayerSnapshot = Mahjong.Contracts.Wire.PlayerSnapshot;
+using WireCodec = Mahjong.Contracts.Wire.WireCodec;
+using WireCommand = Mahjong.Contracts.Wire.Command;
+using WireCommandType = Mahjong.Contracts.Wire.CommandType;
+using WireEnvelope = Mahjong.Contracts.Wire.Envelope;
+using WireHello = Mahjong.Contracts.Wire.Hello;
+using WireMessageType = Mahjong.Contracts.Wire.MessageType;
+using WireReceiptStatus = Mahjong.Contracts.Wire.ReceiptStatus;
+using WireLookupStatus = Mahjong.Contracts.Wire.LookupStatus;
+using WireScope = Mahjong.Contracts.Wire.RequestScope;
 
 namespace Mahjong.LocalHost.CrashWorker
 {
@@ -305,6 +315,776 @@ namespace Mahjong.LocalHost.CrashWorker
                 }
 
                 File.WriteAllLines(marker, controlLines);
+                return 0;
+            }
+
+            if (mode == "rejected-receipt-cold-session")
+            {
+                // Cold-process evidence for the durable stale-decision rejection
+                // (D-LH-GATE-02): a separate OS process (1) reads the committed
+                // save through the real store, (2) recovers the real LocalHost
+                // runtime from that save, (3) queries the persisted rejection over
+                // the real wire for the pre-restart scope, (4) replays the same
+                // request id with the same business bytes and kind through the
+                // real wire under the freshly issued scope and observes
+                // Replayed=true with a single durable record, and (5) reconciles
+                // the real client FileOutboxStore with a real TableSession until
+                // PendingCommands and LoadUnresolvedAsync are empty. The autonomous
+                // driver stays disabled (AutoPlay=false) and the worker clock is
+                // frozen, so every durable movement in this process is attributable
+                // to the rejection/replay/reconciliation path under test rather
+                // than to autonomous round advancement.
+                if (args.Length < 11)
+                {
+                    Console.Error.WriteLine(
+                        "rejected-receipt-cold-session requires <account> <scopeId> <requestId> <decisionId> <outboxPath> after the clock.");
+                    return 2;
+                }
+
+                string rejectionAccount = args[6];
+                string rejectionScope = args[7];
+                string rejectionRequest = args[8];
+                string retiredDecisionId = args[9];
+                string outboxPath = args[10];
+                ITableClock rejectionClock = options.Environment?.ResolveClock() ?? SystemTableClock.Instance;
+                var failures = new List<string>();
+                // Per-step durable state trace: records where the cold runtime's
+                // own committed cut stands after each phase, so an exactness
+                // failure pinpoints the step that moved state.
+                var traceState = new List<string>();
+                var movedEventLines = new List<string>();
+                var movedCommandLines = new List<string>();
+
+                // (1) Cold-start disk truth, read through the real store before any
+                // runtime exists in this process.
+                ulong coldEvaluated;
+                ulong coldCreated;
+                ulong coldExpires;
+                ulong startStateVersion;
+                ulong startLastEventSeq;
+                string startDigest;
+                bool coldCommandVersionPresent;
+                bool coldEventSeqPresent;
+                using (LocalTableStore rejectionStore = await LocalTableStore.OpenAsync(
+                    options,
+                    rejectionClock,
+                    null,
+                    CancellationToken.None))
+                {
+                    TableDurableReceipt? rejection = await rejectionStore.TryGetAsync(
+                        rejectionAccount,
+                        new RequestScopeId(rejectionScope),
+                        new RequestId(rejectionRequest),
+                        CancellationToken.None);
+                    if (rejection == null)
+                    {
+                        Console.Error.WriteLine("rejected-receipt-cold-session receipt not found");
+                        return 5;
+                    }
+
+                    TableStateRow? rejectionState = await rejectionStore.LoadStateAsync(
+                        roomId,
+                        CancellationToken.None);
+                    LocalControlRecord? rejectionControl = rejectionStore.GetControlResult(
+                        rejectionAccount,
+                        new RequestScopeId(rejectionScope),
+                        new RequestId(rejectionRequest));
+                    startDigest = rejectionStore.GetReceiptDigest(
+                        rejectionAccount,
+                        new RequestScopeId(rejectionScope),
+                        new RequestId(rejectionRequest)) ?? string.Empty;
+                    coldEvaluated = rejection.Receipt.EvaluatedStateVersion.Value;
+                    coldCreated = rejection.CreatedAtUtcMs;
+                    coldExpires = rejection.ExpiresAtUtcMs;
+                    coldCommandVersionPresent = rejection.Receipt.CommandVersion.HasValue;
+                    coldEventSeqPresent = rejection.Receipt.EventSeq.HasValue;
+                    startStateVersion = rejectionState?.StateVersion.Value ?? 0UL;
+                    startLastEventSeq = rejectionState?.LastEventSeq.Value ?? 0UL;
+                    if (rejectionControl != null)
+                    {
+                        failures.Add("the original rejection must not carry a LOCAL_CONTROL record");
+                    }
+
+                    if (rejectionStore.ControlVersionForTest != 0L)
+                    {
+                        failures.Add("control version must stay zero at the cold start");
+                    }
+                }
+
+                string coldScopeId = string.Empty;
+                string coldRoundId = string.Empty;
+                string coldPendingDecision = string.Empty;
+                long recoveryGeneration = 0;
+                string queryStatus = string.Empty;
+                string queryReceiptStatus = string.Empty;
+                string queryReceiptReason = string.Empty;
+                string queryDigest = string.Empty;
+                string newKey1Status = string.Empty;
+                string newKey1Reason = string.Empty;
+                string newKey1Digest = string.Empty;
+                string newKey1Evaluated = string.Empty;
+                bool newKey1Replayed = false;
+                string newKey2Reason = string.Empty;
+                string newKey2Digest = string.Empty;
+                string newKey2Evaluated = string.Empty;
+                bool newKey2Replayed = false;
+                ulong newKeyRecordCreated = 0UL;
+                ulong newKeyRecordExpires = 0UL;
+                ulong originalCreatedAfter = 0UL;
+                string originalStatusAfter = string.Empty;
+                string originalReasonAfter = string.Empty;
+                string originalDigestAfter = string.Empty;
+                string originalEvaluatedAfter = string.Empty;
+                string query2Status = string.Empty;
+                string query2ReceiptStatus = string.Empty;
+                string query2Reason = string.Empty;
+                string query2Digest = string.Empty;
+                string query2Evaluated = string.Empty;
+                ulong finalStateVersion = 0UL;
+                ulong finalLastEventSeq = 0UL;
+                long finalControlVersion = -1L;
+                bool finalControlRecordPresent = true;
+                string clientDisposition = string.Empty;
+                string clientReason = string.Empty;
+                string clientDigest = string.Empty;
+                string clientKind = string.Empty;
+                bool clientFromLookup = false;
+                int clientPending = -1;
+                int clientUnresolved = -1;
+
+                ITableChannel? coldChannel = null;
+                TableSession? coldSession = null;
+                try
+                {
+                    // (2) Real LocalHost recovery from the committed save. The
+                    // channel exposes its runtime only after the open handshake,
+                    // so the recovery checks run once the connection is up.
+                    coldChannel = await LocalTableHost.CreateChannelAsync(options, CancellationToken.None);
+                    string coldChannelTicket = LocalTableHost.IssueTicket(options);
+                    await coldChannel.OpenAsync(
+                        new TableChannelConnectRequest(coldChannelTicket, "crash-worker", null),
+                        CancellationToken.None);
+                    if (coldChannel is not LocalTableChannel coldLocalChannel || coldLocalChannel.RuntimeForMatch == null)
+                    {
+                        Console.Error.WriteLine("rejected-receipt-cold-session runtime is not exposed by the channel");
+                        return 4;
+                    }
+
+                    LocalTableRuntime coldRuntime = coldLocalChannel.RuntimeForMatch;
+                    recoveryGeneration = coldRuntime.ActorForTest.RecoveryGeneration;
+                    if (recoveryGeneration <= 0)
+                    {
+                        failures.Add("the worker runtime must be a cold recovery, not a fresh room");
+                    }
+
+                    async Task TraceStateAsync(string step)
+                    {
+                        TableStateRow? traceRow = await coldRuntime.StoreForTest.LoadStateAsync(
+                            roomId,
+                            CancellationToken.None);
+                        traceState.Add(
+                            step + ":v" +
+                            (traceRow?.StateVersion.Value ?? 0UL).ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                            ":e" +
+                            (traceRow?.LastEventSeq.Value ?? 0UL).ToString(System.Globalization.CultureInfo.InvariantCulture));
+                    }
+
+                    await TraceStateAsync("open");
+
+                    // Raw HELLO binds this connection; the freshly issued scope is
+                    // the only scope command envelopes may carry (a pre-restart
+                    // scope is accepted only by explicit receipt queries).
+                    var hello = new WireEnvelope
+                    {
+                        ProtocolMajor = ProtocolConstants.Major,
+                        ProtocolMinor = ProtocolConstants.Minor,
+                        RulesetVersion = ProtocolConstants.RulesetVersion,
+                        ProjectionVersion = ProtocolConstants.ProjectionVersion,
+                        MessageType = WireMessageType.Hello,
+                        BindingEpoch = 1UL,
+                        CorrelationId = "cold-hello",
+                        Hello = new WireHello
+                        {
+                            Ticket = coldChannelTicket,
+                            ProtocolMajor = ProtocolConstants.Major,
+                            ProtocolMinor = ProtocolConstants.Minor,
+                            RulesetVersion = ProtocolConstants.RulesetVersion,
+                            ProjectionVersion = ProtocolConstants.ProjectionVersion,
+                            ClientBuild = "crash-worker",
+                            ResumeRequested = false
+                        }
+                    };
+                    await coldChannel.SendAsync(WireCodec.Encode(hello), CancellationToken.None);
+                    WireEnvelope welcome = await WorkerReceiveUntilAsync(
+                        coldChannel,
+                        envelope => envelope.Welcome != null,
+                        "the cold WELCOME");
+                    coldScopeId = welcome.Welcome!.Scope.ScopeId;
+                    coldRoundId = coldRuntime.ActorForTest.GetRoundStateForHost().RoundId;
+                    coldPendingDecision = coldRuntime.ActorForTest.GetPendingDecisionId(0) ?? string.Empty;
+                    if (string.Equals(coldPendingDecision, retiredDecisionId, StringComparison.Ordinal))
+                    {
+                        failures.Add("the recovered pending decision must differ from the retired decision id");
+                    }
+
+                    await TraceStateAsync("hello");
+
+                    // (3) Real wire receipt query for the PRE-RESTART scope: the
+                    // persisted rejection must answer with its original outcome.
+                    var query = new WireEnvelope
+                    {
+                        ProtocolMajor = ProtocolConstants.Major,
+                        ProtocolMinor = ProtocolConstants.Minor,
+                        RulesetVersion = ProtocolConstants.RulesetVersion,
+                        ProjectionVersion = ProtocolConstants.ProjectionVersion,
+                        MessageType = WireMessageType.ReceiptQuery,
+                        SessionId = welcome.SessionId,
+                        RoomId = roomId,
+                        SeatId = welcome.SeatId,
+                        BindingEpoch = welcome.BindingEpoch,
+                        CorrelationId = "cold-receipt-query",
+                        ReceiptQuery = new Mahjong.Contracts.Wire.ReceiptQuery
+                        {
+                            RequestScopeId = rejectionScope,
+                            RequestId = rejectionRequest
+                        }
+                    };
+                    await coldChannel.SendAsync(WireCodec.Encode(query), CancellationToken.None);
+                    WireEnvelope lookup = await WorkerReceiveUntilAsync(
+                        coldChannel,
+                        envelope => envelope.ReceiptLookup != null &&
+                                    string.Equals(envelope.CorrelationId, "cold-receipt-query", StringComparison.Ordinal),
+                        "the cold receipt lookup");
+                    queryStatus = lookup.ReceiptLookup!.Status.ToString();
+                    if (lookup.ReceiptLookup.Receipt != null)
+                    {
+                        queryReceiptStatus = lookup.ReceiptLookup.Receipt.Status.ToString();
+                        queryReceiptReason = lookup.ReceiptLookup.Receipt.ReasonCode;
+                        queryDigest = lookup.ReceiptLookup.CanonicalPayloadSha256;
+                    }
+
+                    if (!string.Equals(queryStatus, WireLookupStatus.Found.ToString(), StringComparison.Ordinal) ||
+                        !string.Equals(queryReceiptStatus, WireReceiptStatus.Rejected.ToString(), StringComparison.Ordinal) ||
+                        !string.Equals(queryReceiptReason, "DECISION_MISMATCH", StringComparison.Ordinal))
+                    {
+                        failures.Add("the cold wire receipt query must find the persisted Rejected/DECISION_MISMATCH receipt");
+                    }
+
+                    if (!string.Equals(queryDigest, startDigest, StringComparison.Ordinal))
+                    {
+                        failures.Add("the cold wire receipt query must return the persisted canonical digest");
+                    }
+
+                    await TraceStateAsync("query1");
+
+                    // (4) Cold-scope new-key submissions — an explicit ISOLATION
+                    // negative, not an original-key replay. The idempotency key is
+                    // (account, scope, request id): every Hello issues a fresh
+                    // scope (HandleHelloAsync resolves a new scope id per
+                    // connection and binds the connection to it), and the binding
+                    // gate rejects any other scope pre-linearization, so an
+                    // original-key COMMAND replay over the cold wire is
+                    // unreachable by contract. The original key is covered on the
+                    // cold wire by the explicit receipt query above (read side)
+                    // and by the client outbox reconciliation below (which
+                    // resolves the ORIGINAL outbox entry from that query); the
+                    // write-side replay semantics (first replay Replayed=true on
+                    // the same key) are covered warm by the parent's
+                    // exact-replay test. What these two submissions prove is key
+                    // isolation: the cold-issued scope under the same request id
+                    // gets its own record and must not rewrite the original.
+                    BusinessPayload replayPayload = CommandPayloadFactory.ClaimControl(coldRoundId, 0UL);
+                    byte[] BuildNewKeyBytes()
+                    {
+                        var envelope = new WireEnvelope
+                        {
+                            ProtocolMajor = ProtocolConstants.Major,
+                            ProtocolMinor = ProtocolConstants.Minor,
+                            RulesetVersion = ProtocolConstants.RulesetVersion,
+                            ProjectionVersion = ProtocolConstants.ProjectionVersion,
+                            MessageType = WireMessageType.Command,
+                            SessionId = welcome.SessionId,
+                            RoomId = roomId,
+                            SeatId = welcome.SeatId,
+                            BindingEpoch = welcome.BindingEpoch,
+                            RequestId = rejectionRequest,
+                            Scope = welcome.Welcome!.Scope.Clone(),
+                            ControlEpoch = 0UL,
+                            OwnerEpoch = welcome.Welcome.OwnerEpoch,
+                            Command = new WireCommand
+                            {
+                                Type = WireCommandType.ClaimControl,
+                                CanonicalPayload = ByteString.CopyFrom(replayPayload.CopyBytes()),
+                                PayloadSchemaVersion = 1U,
+                                ExpectedStateVersion = 0UL,
+                                ExpectedRoundId = coldRoundId,
+                                ExpectedDecisionId = retiredDecisionId
+                            }
+                        };
+                        return WireCodec.Encode(envelope);
+                    }
+
+                    byte[] newKeyBytes = BuildNewKeyBytes();
+                    await coldChannel.SendAsync(newKeyBytes, CancellationToken.None);
+                    WireEnvelope newKey1 = await WorkerReceiveUntilAsync(
+                        coldChannel,
+                        envelope => envelope.Receipt != null &&
+                                    string.Equals(envelope.RequestId, rejectionRequest, StringComparison.Ordinal),
+                        "the cold new-key first submission receipt");
+                    newKey1Status = newKey1.Receipt!.Status.ToString();
+                    newKey1Reason = newKey1.Receipt.ReasonCode;
+                    newKey1Digest = newKey1.Receipt.CanonicalPayloadSha256;
+                    newKey1Evaluated = newKey1.Receipt.EvaluatedStateVersion.ToString(
+                        System.Globalization.CultureInfo.InvariantCulture);
+                    newKey1Replayed = newKey1.Receipt.Replayed;
+                    if (!string.Equals(newKey1Status, WireReceiptStatus.Rejected.ToString(), StringComparison.Ordinal) ||
+                        !string.Equals(newKey1Reason, "DECISION_MISMATCH", StringComparison.Ordinal) ||
+                        newKey1Replayed)
+                    {
+                        failures.Add("the cold-scope new-key submission must create its own fresh Rejected/DECISION_MISMATCH record");
+                    }
+
+                    if (!string.Equals(newKey1Digest, startDigest, StringComparison.Ordinal))
+                    {
+                        failures.Add("the cold-scope new-key submission must carry the same canonical digest as the persisted rejection");
+                    }
+
+                    await coldChannel.SendAsync(BuildNewKeyBytes(), CancellationToken.None);
+                    WireEnvelope newKey2 = await WorkerReceiveUntilAsync(
+                        coldChannel,
+                        envelope => envelope.Receipt != null &&
+                                    string.Equals(envelope.RequestId, rejectionRequest, StringComparison.Ordinal),
+                        "the cold new-key second submission receipt");
+                    newKey2Reason = newKey2.Receipt!.ReasonCode;
+                    newKey2Digest = newKey2.Receipt.CanonicalPayloadSha256;
+                    newKey2Evaluated = newKey2.Receipt.EvaluatedStateVersion.ToString(
+                        System.Globalization.CultureInfo.InvariantCulture);
+                    newKey2Replayed = newKey2.Receipt.Replayed;
+                    if (!newKey2Replayed ||
+                        !string.Equals(newKey2Reason, newKey1Reason, StringComparison.Ordinal) ||
+                        !string.Equals(newKey2Digest, newKey1Digest, StringComparison.Ordinal) ||
+                        !string.Equals(newKey2Evaluated, newKey1Evaluated, StringComparison.Ordinal))
+                    {
+                        failures.Add("the cold new-key second submission must replay the first new-key record without rewriting it");
+                    }
+
+                    await TraceStateAsync("newkey2");
+
+                    // The original key must still answer its ORIGINAL outcome on
+                    // the wire after the cold-scope writes: Found / Rejected /
+                    // DECISION_MISMATCH with the original digest and evaluated
+                    // version, proving the new-key records did not touch it.
+                    var requery = new WireEnvelope
+                    {
+                        ProtocolMajor = ProtocolConstants.Major,
+                        ProtocolMinor = ProtocolConstants.Minor,
+                        RulesetVersion = ProtocolConstants.RulesetVersion,
+                        ProjectionVersion = ProtocolConstants.ProjectionVersion,
+                        MessageType = WireMessageType.ReceiptQuery,
+                        SessionId = welcome.SessionId,
+                        RoomId = roomId,
+                        SeatId = welcome.SeatId,
+                        BindingEpoch = welcome.BindingEpoch,
+                        CorrelationId = "cold-original-requery",
+                        ReceiptQuery = new Mahjong.Contracts.Wire.ReceiptQuery
+                        {
+                            RequestScopeId = rejectionScope,
+                            RequestId = rejectionRequest
+                        }
+                    };
+                    await coldChannel.SendAsync(WireCodec.Encode(requery), CancellationToken.None);
+                    WireEnvelope relookup = await WorkerReceiveUntilAsync(
+                        coldChannel,
+                        envelope => envelope.ReceiptLookup != null &&
+                                    string.Equals(envelope.CorrelationId, "cold-original-requery", StringComparison.Ordinal),
+                        "the cold original-scope requery");
+                    query2Status = relookup.ReceiptLookup!.Status.ToString();
+                    if (relookup.ReceiptLookup.Receipt != null)
+                    {
+                        query2ReceiptStatus = relookup.ReceiptLookup.Receipt.Status.ToString();
+                        query2Reason = relookup.ReceiptLookup.Receipt.ReasonCode;
+                        query2Digest = relookup.ReceiptLookup.CanonicalPayloadSha256;
+                        query2Evaluated = relookup.ReceiptLookup.Receipt.EvaluatedStateVersion.ToString(
+                            System.Globalization.CultureInfo.InvariantCulture);
+                    }
+
+                    if (!string.Equals(query2Status, WireLookupStatus.Found.ToString(), StringComparison.Ordinal) ||
+                        !string.Equals(query2ReceiptStatus, WireReceiptStatus.Rejected.ToString(), StringComparison.Ordinal) ||
+                        !string.Equals(query2Reason, "DECISION_MISMATCH", StringComparison.Ordinal) ||
+                        !string.Equals(query2Digest, startDigest, StringComparison.Ordinal))
+                    {
+                        failures.Add("the original key must still answer its original outcome after the cold-scope writes");
+                    }
+
+                    if (!string.Equals(query2Evaluated, coldEvaluated.ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal))
+                    {
+                        failures.Add("the original key must keep its evaluated version after the cold-scope writes");
+                    }
+
+                    await TraceStateAsync("query2");
+
+                    // Store truth between the new-key submissions and the client
+                    // phase: the cold-issued key holds exactly one own record and
+                    // the original record is untouched in every field. Read
+                    // through the recovered runtime's own store so only one store
+                    // handle exists while the channel is live.
+                    {
+                        TableDurableReceipt? newKeyRecord = await coldRuntime.StoreForTest.TryGetAsync(
+                            rejectionAccount,
+                            new RequestScopeId(coldScopeId),
+                            new RequestId(rejectionRequest),
+                            CancellationToken.None);
+                        TableDurableReceipt? originalRecord = await coldRuntime.StoreForTest.TryGetAsync(
+                            rejectionAccount,
+                            new RequestScopeId(rejectionScope),
+                            new RequestId(rejectionRequest),
+                            CancellationToken.None);
+                        if (newKeyRecord == null || originalRecord == null)
+                        {
+                            failures.Add("both the cold-scope record and the original record must be readable after the new-key submissions");
+                        }
+                        else
+                        {
+                            newKeyRecordCreated = newKeyRecord.CreatedAtUtcMs;
+                            newKeyRecordExpires = newKeyRecord.ExpiresAtUtcMs;
+                            originalCreatedAfter = originalRecord.CreatedAtUtcMs;
+                            originalStatusAfter = originalRecord.Receipt.Status.ToString();
+                            originalReasonAfter = originalRecord.Receipt.ReasonCode;
+                            originalDigestAfter = coldRuntime.StoreForTest.GetReceiptDigest(
+                                rejectionAccount,
+                                new RequestScopeId(rejectionScope),
+                                new RequestId(rejectionRequest)) ?? string.Empty;
+                            originalEvaluatedAfter = originalRecord.Receipt.EvaluatedStateVersion.Value.ToString(
+                                System.Globalization.CultureInfo.InvariantCulture);
+                            if (originalCreatedAfter != coldCreated)
+                            {
+                                failures.Add("the original persisted rejection must keep its CreatedAtUtcMs");
+                            }
+
+                            if (!string.Equals(originalStatusAfter, WireReceiptStatus.Rejected.ToString(), StringComparison.Ordinal) ||
+                                !string.Equals(originalReasonAfter, "DECISION_MISMATCH", StringComparison.Ordinal))
+                            {
+                                failures.Add("the original record must keep its outcome after the cold-scope writes");
+                            }
+
+                            if (!string.Equals(originalDigestAfter, startDigest, StringComparison.Ordinal))
+                            {
+                                failures.Add("the original record must keep its canonical digest after the cold-scope writes");
+                            }
+
+                            if (!string.Equals(
+                                    originalEvaluatedAfter,
+                                    coldEvaluated.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                                    StringComparison.Ordinal))
+                            {
+                                failures.Add("the original record must keep its evaluated version after the cold-scope writes");
+                            }
+
+                            // The two records are distinct by KEY: the cold-scope
+                            // record lives under the freshly issued scope while
+                            // the original keeps its own scope, and both are
+                            // readable at their own keys at the same moment
+                            // (checked above). Their creation timestamps may
+                            // legitimately coincide because this worker clock is
+                            // frozen at the parent's pinned value, so a timestamp
+                            // comparison must not be used as the distinctness
+                            // proof.
+                        }
+                    }
+
+                    await TraceStateAsync("records");
+
+                    // (5) Real cold client: the same FileOutboxStore the parent's
+                    // live session used, reconciled by a real TableSession until
+                    // the pending entry resolves from the durable receipt.
+                    var resolutions = new List<TableReceiptResolvedEventArgs>();
+                    FileOutboxStore clientOutbox = new FileOutboxStore(outboxPath);
+                    coldSession = new TableSession(coldChannel, clientOutbox);
+                    coldSession.ReceiptResolved += (_, args2) =>
+                    {
+                        lock (resolutions)
+                        {
+                            resolutions.Add(args2);
+                        }
+                    };
+                    string coldSessionTicket = LocalTableHost.IssueTicket(options);
+                    await coldSession.OpenAsync(
+                        new TableSessionOpenRequest(coldSessionTicket, "crash-worker"),
+                        CancellationToken.None);
+                    using (var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30)))
+                    {
+                        while (!timeout.IsCancellationRequested)
+                        {
+                            bool done;
+                            lock (resolutions)
+                            {
+                                done = coldSession.State == TableConnectionState.Ready &&
+                                       coldSession.PendingCommands.Count == 0 &&
+                                       resolutions.Count > 0;
+                            }
+
+                            if (done)
+                            {
+                                break;
+                            }
+
+                            try
+                            {
+                                await coldSession.PumpOnceAsync(timeout.Token);
+                            }
+                            catch (OperationCanceledException)
+                            {
+                                break;
+                            }
+                            catch (TableChannelClosedException)
+                            {
+                                break;
+                            }
+                            catch (InvalidOperationException)
+                            {
+                                break;
+                            }
+                        }
+                    }
+
+                    TableReceiptResolvedEventArgs? resolved;
+                    lock (resolutions)
+                    {
+                        resolved = resolutions.FirstOrDefault(args2 =>
+                            string.Equals(args2.Command.RequestId, rejectionRequest, StringComparison.Ordinal));
+                    }
+
+                    if (resolved != null)
+                    {
+                        clientDisposition = resolved.Resolution.Disposition.ToString();
+                        clientReason = resolved.Resolution.ReasonCode;
+                        clientDigest = resolved.Resolution.CanonicalPayloadSha256;
+                        clientKind = resolved.Command.Kind.ToString();
+                        clientFromLookup = resolved.Resolution.FromReceiptLookup;
+                    }
+
+                    clientPending = coldSession.PendingCommands.Count;
+                    IReadOnlyList<OutboxEntry> unresolved = await clientOutbox.LoadUnresolvedAsync(
+                        CancellationToken.None);
+                    clientUnresolved = unresolved.Count;
+                    if (resolved == null ||
+                        !string.Equals(clientDisposition, OutboxDisposition.Rejected.ToString(), StringComparison.Ordinal) ||
+                        !string.Equals(clientReason, "DECISION_MISMATCH", StringComparison.Ordinal) ||
+                        !clientFromLookup ||
+                        !string.Equals(clientDigest, startDigest, StringComparison.Ordinal) ||
+                        clientPending != 0 ||
+                        clientUnresolved != 0)
+                    {
+                        failures.Add("the cold client must reconcile the entry to Rejected with pending and unresolved empty");
+                    }
+
+                    await TraceStateAsync("reconcile");
+                }
+                finally
+                {
+                    if (coldSession != null)
+                    {
+                        try
+                        {
+                            await coldSession.CloseAsync("WORKER_DONE", CancellationToken.None);
+                        }
+                        catch
+                        {
+                        }
+                    }
+
+                    if (coldChannel != null)
+                    {
+                        try
+                        {
+                            await coldChannel.CloseAsync(
+                                new TableChannelCloseReason("WORKER_DONE", true),
+                                CancellationToken.None);
+                        }
+                        catch
+                        {
+                        }
+                    }
+                }
+
+                // Final disk truth after every socket/session in this process is
+                // closed: the cold activity must have left state/event and control
+                // exactly where the cold start left them.
+                using (LocalTableStore finalStore = await LocalTableStore.OpenAsync(
+                    options,
+                    rejectionClock,
+                    null,
+                    CancellationToken.None))
+                {
+                    TableStateRow? finalState = await finalStore.LoadStateAsync(roomId, CancellationToken.None);
+                    TableDurableReceipt? newKeyFinal = await finalStore.TryGetAsync(
+                        rejectionAccount,
+                        new RequestScopeId(coldScopeId),
+                        new RequestId(rejectionRequest),
+                        CancellationToken.None);
+                    TableDurableReceipt? originalFinal = await finalStore.TryGetAsync(
+                        rejectionAccount,
+                        new RequestScopeId(rejectionScope),
+                        new RequestId(rejectionRequest),
+                        CancellationToken.None);
+                    finalStateVersion = finalState?.StateVersion.Value ?? 0UL;
+                    finalLastEventSeq = finalState?.LastEventSeq.Value ?? 0UL;
+                    IReadOnlyList<TableEventRecord> movedEvents = await finalStore.LoadEventsAfterAsync(
+                        roomId,
+                        new EventSeq(startLastEventSeq),
+                        CancellationToken.None);
+                    foreach (TableEventRecord movedEvent in movedEvents)
+                    {
+                        movedEventLines.Add(
+                            movedEvent.Type + "/seat" + movedEvent.Seat + "/seq" + movedEvent.Seq.Value);
+                    }
+
+                    IReadOnlyList<TableCommandJournalRecord> movedCommands = await finalStore.LoadCommandsAfterAsync(
+                        roomId,
+                        new StateVersion(startStateVersion),
+                        CancellationToken.None);
+                    foreach (TableCommandJournalRecord movedCommand in movedCommands)
+                    {
+                        movedCommandLines.Add(
+                            movedCommand.Api + "/acct=" + movedCommand.AccountId +
+                            "/req=" + movedCommand.RequestId.Value +
+                            "/v" + movedCommand.CommandVersion.Value);
+                    }
+
+                    finalControlVersion = finalStore.ControlVersionForTest;
+                    finalControlRecordPresent =
+                        finalStore.GetControlResult(
+                            rejectionAccount,
+                            new RequestScopeId(rejectionScope),
+                            new RequestId(rejectionRequest)) != null ||
+                        finalStore.GetControlResult(
+                            rejectionAccount,
+                            new RequestScopeId(coldScopeId),
+                            new RequestId(rejectionRequest)) != null;
+                    if (finalStateVersion != startStateVersion || finalLastEventSeq != startLastEventSeq)
+                    {
+                        failures.Add(
+                            "the rejection/replay/reconciliation activity must not move state or events (state " +
+                            startStateVersion.ToString(System.Globalization.CultureInfo.InvariantCulture) + "->" +
+                            finalStateVersion.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                            ", events " +
+                            startLastEventSeq.ToString(System.Globalization.CultureInfo.InvariantCulture) + "->" +
+                            finalLastEventSeq.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                            "; moved: " + string.Join(",", movedEventLines) + ")");
+                    }
+
+                    if (finalControlVersion != 0L || finalControlRecordPresent)
+                    {
+                        failures.Add("the rejection/replay/reconciliation activity must not create LOCAL_CONTROL records");
+                    }
+
+                    if (newKeyFinal == null || newKeyFinal.CreatedAtUtcMs != newKeyRecordCreated)
+                    {
+                        failures.Add("the cold-scope record must keep the CreatedAtUtcMs of the first new-key submission");
+                    }
+
+                    if (originalFinal == null || originalFinal.CreatedAtUtcMs != coldCreated ||
+                        !string.Equals(
+                            finalStore.GetReceiptDigest(
+                                rejectionAccount,
+                                new RequestScopeId(rejectionScope),
+                                new RequestId(rejectionRequest)) ?? string.Empty,
+                            startDigest,
+                            StringComparison.Ordinal) ||
+                        !string.Equals(originalFinal.Receipt.Status.ToString(), WireReceiptStatus.Rejected.ToString(), StringComparison.Ordinal) ||
+                        !string.Equals(originalFinal.Receipt.EvaluatedStateVersion.Value.ToString(System.Globalization.CultureInfo.InvariantCulture), coldEvaluated.ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal))
+                    {
+                        failures.Add("the original record must stay field-identical at the final disk read");
+                    }
+                }
+
+                var coldLines = new List<string>
+                {
+                    "mode=rejected-receipt-cold-session",
+                    "recovery_generation=" + recoveryGeneration.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    "receipt_found=1",
+                    "receipt_status=Rejected",
+                    "receipt_reason=DECISION_MISMATCH",
+                    "receipt_api=CLAIM_CONTROL",
+                    "receipt_evaluated=" + coldEvaluated.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    "receipt_created=" + coldCreated.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    "receipt_expires=" + coldExpires.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    "receipt_command_version_present=" + (coldCommandVersionPresent ? "1" : "0"),
+                    "receipt_event_seq_present=" + (coldEventSeqPresent ? "1" : "0"),
+                    "digest_hex=" + startDigest,
+                    "state_version=" + startStateVersion.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    "last_event_seq=" + startLastEventSeq.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    "cold_scope=" + coldScopeId,
+                    "cold_round_id=" + coldRoundId,
+                    "cold_pending_decision=" + coldPendingDecision,
+                    "query_status=" + queryStatus,
+                    "query_receipt_status=" + queryReceiptStatus,
+                    "query_receipt_reason=" + queryReceiptReason,
+                    "query_digest=" + queryDigest,
+                    "replay_key_scope=cold-issued",
+                    "original_key_cold_command_replay=unreachable",
+                    "newkey1_replayed=" + (newKey1Replayed ? "1" : "0"),
+                    "newkey1_status=" + newKey1Status,
+                    "newkey1_reason=" + newKey1Reason,
+                    "newkey1_digest=" + newKey1Digest,
+                    "newkey1_evaluated=" + newKey1Evaluated,
+                    "newkey2_replayed=" + (newKey2Replayed ? "1" : "0"),
+                    "newkey2_reason=" + newKey2Reason,
+                    "newkey2_digest=" + newKey2Digest,
+                    "newkey2_evaluated=" + newKey2Evaluated,
+                    "newkey_record_created=" + newKeyRecordCreated.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    "newkey_record_expires=" + newKeyRecordExpires.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    "query2_status=" + query2Status,
+                    "query2_receipt_status=" + query2ReceiptStatus,
+                    "query2_reason=" + query2Reason,
+                    "query2_digest=" + query2Digest,
+                    "query2_evaluated=" + query2Evaluated,
+                    "original_created_after=" + originalCreatedAfter.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    "original_status_after=" + originalStatusAfter,
+                    "original_reason_after=" + originalReasonAfter,
+                    "original_digest_after=" + originalDigestAfter,
+                    "original_evaluated_after=" + originalEvaluatedAfter,
+                    "final_state_version=" + finalStateVersion.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    "final_last_event_seq=" + finalLastEventSeq.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    "final_control_version=" + finalControlVersion.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    "final_control_record_present=" + (finalControlRecordPresent ? "1" : "0"),
+                    "client_disposition=" + clientDisposition,
+                    "client_reason=" + clientReason,
+                    "client_digest=" + clientDigest,
+                    "client_kind=" + clientKind,
+                    "client_from_lookup=" + (clientFromLookup ? "1" : "0"),
+                    "client_pending=" + clientPending.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    "client_unresolved=" + clientUnresolved.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                };
+                coldLines.AddRange(traceState.Select(trace => "trace_state=" + trace));
+                coldLines.AddRange(movedEventLines.Select(moved => "moved_event=" + moved));
+                coldLines.AddRange(movedCommandLines.Select(moved => "moved_command=" + moved));
+                File.WriteAllLines(marker, coldLines);
+                if (failures.Count > 0)
+                {
+                    foreach (string moved in movedEventLines)
+                    {
+                        Console.Error.WriteLine("cold-session moved_event " + moved);
+                    }
+
+                    foreach (string moved in movedCommandLines)
+                    {
+                        Console.Error.WriteLine("cold-session moved_command " + moved);
+                    }
+
+                    foreach (string trace in traceState)
+                    {
+                        Console.Error.WriteLine("cold-session trace " + trace);
+                    }
+
+                    foreach (string failure in failures)
+                    {
+                        Console.Error.WriteLine("cold-session check failed: " + failure);
+                    }
+
+                    return 3;
+                }
+
                 return 0;
             }
 
@@ -816,6 +1596,29 @@ namespace Mahjong.LocalHost.CrashWorker
             // Real crash: no actor close, no channel close, no store dispose.
             System.Diagnostics.Process.GetCurrentProcess().Kill();
             return 0;
+        }
+
+        private static async Task<WireEnvelope> WorkerReceiveUntilAsync(
+            ITableChannel channel,
+            Func<WireEnvelope, bool> predicate,
+            string description)
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            while (true)
+            {
+                ReadOnlyMemory<byte> bytes = await channel.ReceiveAsync(timeout.Token);
+                WireEnvelope envelope = WireEnvelope.Parser.ParseFrom(bytes.ToArray());
+                if (envelope.Error != null)
+                {
+                    throw new InvalidDataException(
+                        description + " was interrupted by ERROR " + envelope.Error.Code + ".");
+                }
+
+                if (predicate(envelope))
+                {
+                    return envelope;
+                }
+            }
         }
 
         private static string BoundaryLedgerDigest(TableCheatLedgerCheckpoint cheat)
