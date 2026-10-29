@@ -289,9 +289,14 @@ namespace Mahjong.TableService
                             bound.AccountId);
                     }
 
-                    // A different jti cannot share an assignment: one assignment belongs to
-                    // exactly one (account, role, room, seat) for its whole validity.
-                    return TicketConsumptionOutcome.DuplicateJti;
+                    // The assignment's identity still matches. A DIFFERENT jti is the
+                    // legitimate reconnect/re-ticket path for the same (account, role, room,
+                    // seat): the exact-jti replay check above already rejected reuse of a
+                    // consumed ticket, and the seat fence below still rejects a live owner
+                    // of a different account. The new jti proceeds to the two-phase
+                    // consume/commit handover; it never inherits the old jti's one-time
+                    // grant, and the assignment record is redistributed with the new
+                    // ticket's expiry below.
                 }
 
                 string? seatKey = null;
@@ -367,12 +372,22 @@ namespace Mahjong.TableService
 
                 if (ticket.AssignmentId != null)
                 {
+                    // The assignment binding outlives every one of its consumed tickets'
+                    // retention windows. A later, shorter-lived re-ticket must never shorten
+                    // the binding: otherwise the old longer-lived ticket's assignment could
+                    // be re-bound to a different tuple after the new ticket expires while
+                    // the old ticket is still valid. Taking the max continues to satisfy
+                    // "an old expiry never deletes a newer binding" in both directions.
+                    long assignmentRetainUntilMs =
+                        _assignments.TryGetValue(ticket.AssignmentId, out AssignmentRecord? previousAssignment)
+                            ? Math.Max(previousAssignment.ExpiresRetainAtMs, retainUntilMs)
+                            : retainUntilMs;
                     _assignments[ticket.AssignmentId] = new AssignmentRecord(
                         ticket.AccountId,
                         ticket.Role,
                         ticket.RoomId,
                         ticket.SeatId,
-                        retainUntilMs);
+                        assignmentRetainUntilMs);
                 }
 
                 _sessions[sessionId] = new SessionRecord(

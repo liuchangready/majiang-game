@@ -1,5 +1,4 @@
 using System;
-using System.Security.Cryptography;
 using System.Threading.Tasks;
 using Google.Protobuf;
 using Mahjong.Contracts;
@@ -94,30 +93,58 @@ namespace Mahjong.TableService.Tests
             Envelope command = TableWire.Command(
                 welcome, requestId, Contracts.CommandKind.SubmitAction, payload);
             command.CorrelationId = "corr-1";
-            await client.SendAsync(command);
+            // B1-BLOCKER-01: send the exact retained wire bytes once, then replay those SAME
+            // bytes below. This is the production outbox/retry shape, not a rebuilt envelope.
+            byte[] commandBytes = command.ToByteArray();
+            await client.SendAsync(commandBytes);
 
             Envelope receipt = await client.ReadUntilAsync(
                 envelope => envelope.MessageType == MessageType.Receipt,
                 TimeSpan.FromSeconds(15));
             Assert.Equal(requestId, receipt.RequestId);
             Assert.Equal("corr-1", receipt.CorrelationId);
+            TableReceiptAssertions.AssertAuthoritativeScope(receipt, welcome);
             Contracts.Wire.Receipt body = receipt.Receipt;
             Assert.True(
                 body.Status == Contracts.Wire.ReceiptStatus.Applied ||
                 body.Status == Contracts.Wire.ReceiptStatus.Rejected,
                 "receipt status must be authoritative: " + body.Status);
             Assert.False(string.IsNullOrEmpty(body.ReasonCode));
-            Assert.Equal(Sha256Hex(payload), body.CanonicalPayloadSha256);
+            // B1-BLOCKER-01: the wire digest is the Client's MJC1 idempotency digest, not a
+            // bare SHA-256 of the bytes; a raw digest makes the Client resolve a Conflict.
+            Assert.Equal(CanonicalPayloadDigest.Compute(payload).ToHex(), body.CanonicalPayloadSha256);
             Assert.False(body.Replayed);
 
-            // Exact retry: same request id and payload is answered from the receipt ledger.
-            await client.SendAsync(TableWire.Command(
-                welcome, requestId, Contracts.CommandKind.SubmitAction, payload));
+            // Exact retry: the exact original wire bytes are answered from the receipt ledger
+            // and retain the original request/correlation/scope/digest/version identity.
+            await client.SendAsync(commandBytes);
             Envelope replay = await client.ReadUntilAsync(
                 envelope => envelope.MessageType == MessageType.Receipt,
                 TimeSpan.FromSeconds(15));
             Assert.True(replay.Receipt.Replayed, "an exact retry must be marked replayed");
+            Assert.Equal(requestId, replay.RequestId);
+            Assert.Equal("corr-1", replay.CorrelationId);
+            TableReceiptAssertions.AssertAuthoritativeScope(replay, welcome);
+            Assert.Equal(body.Status, replay.Receipt.Status);
+            Assert.Equal(body.ReasonCode, replay.Receipt.ReasonCode);
             Assert.Equal(body.CanonicalPayloadSha256, replay.Receipt.CanonicalPayloadSha256);
+            Assert.Equal(body.EvaluatedStateVersion, replay.Receipt.EvaluatedStateVersion);
+            Assert.Equal(body.CommandVersion, replay.Receipt.CommandVersion);
+
+            // Same key with different canonical bytes is a conflict with zero side effects;
+            // it never overwrites the original receipt identity.
+            byte[] otherPayload = TableWire.SubmitActionPayload(
+                "room-cmd-r1",
+                "decision-does-not-exist-yet",
+                0,
+                (uint)ProtocolActionType.Pass);
+            await client.SendAsync(TableWire.Command(
+                welcome, requestId, Contracts.CommandKind.SubmitAction, otherPayload));
+            Envelope conflict = await client.ReadUntilAsync(
+                envelope => envelope.MessageType == MessageType.Error &&
+                            envelope.Error.Code == ProtocolErrorCode.RequestIdConflict,
+                TimeSpan.FromSeconds(15));
+            Assert.Equal("request_id", conflict.Error.FieldPath);
 
             // Durable lookup within the session scope. The frozen actor's QueryReceiptAsync
             // converts the stored TableDurableReceipt (whose PayloadSha256 is mandatory) into
@@ -127,12 +154,26 @@ namespace Mahjong.TableService.Tests
             // delivery report). Payload binding is verifiable on the immediate receipt above;
             // what is contractual on the lookup path: the same request id resolves as Found,
             // marked as a replay, with the authoritative status, reason and state version.
-            await client.SendAsync(TableWire.ReceiptQuery(
-                welcome, welcome.Scope.ScopeId, requestId));
+            Envelope query = TableWire.ReceiptQuery(
+                welcome, welcome.Scope.ScopeId, requestId);
+            query.CorrelationId = "corr-lookup";
+            await client.SendAsync(query);
             Envelope lookup = await client.ReadUntilAsync(
                 envelope => envelope.MessageType == MessageType.ReceiptLookup,
                 TimeSpan.FromSeconds(15));
             Assert.Equal(LookupStatus.Found, lookup.ReceiptLookup.Status);
+            Assert.Equal(requestId, lookup.RequestId);
+            Assert.Equal("corr-lookup", lookup.CorrelationId);
+            // A lookup may target a HISTORICAL scope: never fabricate this connection's
+            // current scope onto the answer as if it owned the queried old scope.
+            Assert.Null(lookup.Scope);
+            // The durable receipt stores the actor's raw TablePayloadSha256, not the Client's
+            // MJC1 idempotency digest. Forwarding that raw value would make the Client resolve
+            // every lookup as a Conflict, so the lookup carries no digest and the Client binds
+            // the answer to its own retained expected digest (the frozen history contract).
+            Assert.True(
+                string.IsNullOrEmpty(lookup.ReceiptLookup.Receipt.CanonicalPayloadSha256),
+                "a lookup must not forward the actor's raw digest under the Client digest field");
             Assert.True(lookup.ReceiptLookup.Receipt.Replayed, "a durable lookup answers with the replayed receipt");
             Assert.Equal(body.Status, lookup.ReceiptLookup.Receipt.Status);
             Assert.Equal(body.ReasonCode, lookup.ReceiptLookup.Receipt.ReasonCode);
@@ -209,6 +250,36 @@ namespace Mahjong.TableService.Tests
                 envelope => envelope.MessageType == MessageType.Error,
                 TimeSpan.FromSeconds(10));
             Assert.Equal("SCOPE_MISMATCH", scopeError.Error.DetailCode);
+
+            // The scope id matches but the client lies about every OTHER owner field. The
+            // server fences by id only and must answer with its own admission identity, not
+            // these forged fields (B1-BLOCKER-01). The command itself is an authoritative
+            // rejection, still a real receipt from the actor path.
+            string forgedRequest = TableWire.RandomId("req");
+            await client.SendAsync(TableWire.Command(
+                welcome, forgedRequest, Contracts.CommandKind.SubmitAction, payload,
+                scope: new Contracts.Wire.RequestScope
+                {
+                    ScopeId = welcome.Scope.ScopeId,
+                    AccountId = "forged-account",
+                    Role = Contracts.Wire.Role.Spectator,
+                    RoomId = "forged-room",
+                    IssuedAtMs = 1,
+                    ExpiresAtMs = 2
+                }));
+            Envelope forgedReceipt = await client.ReadUntilAsync(
+                envelope => envelope.MessageType == MessageType.Receipt &&
+                            envelope.RequestId == forgedRequest,
+                TimeSpan.FromSeconds(10));
+            Assert.True(
+                forgedReceipt.Receipt.Status == Contracts.Wire.ReceiptStatus.Applied ||
+                forgedReceipt.Receipt.Status == Contracts.Wire.ReceiptStatus.Rejected,
+                "a forged owner-field command still gets an authoritative receipt: " +
+                forgedReceipt.Receipt.Status);
+            TableReceiptAssertions.AssertAuthoritativeScope(forgedReceipt, welcome);
+            Assert.NotEqual("forged-account", forgedReceipt.Scope.AccountId);
+            Assert.NotEqual("forged-room", forgedReceipt.Scope.RoomId);
+            Assert.NotEqual(Contracts.Wire.Role.Spectator, forgedReceipt.Scope.Role);
 
             // The session is still alive after fenced attempts.
             string nonce = TableWire.RandomNonce();
@@ -375,16 +446,5 @@ namespace Mahjong.TableService.Tests
                 TimeSpan.FromSeconds(15));
         }
 
-        private static string Sha256Hex(byte[] bytes)
-        {
-            byte[] hash = SHA256.HashData(bytes);
-            var text = new System.Text.StringBuilder(hash.Length * 2);
-            foreach (byte b in hash)
-            {
-                text.Append(b.ToString("x2", System.Globalization.CultureInfo.InvariantCulture));
-            }
-
-            return text.ToString();
-        }
     }
 }
