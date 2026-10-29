@@ -360,7 +360,7 @@ namespace Mahjong.Architecture.Tests
         [InlineData("Mahjong.Domain", "Mahjong.Infrastructure")]
         [InlineData("Mahjong.TableService", "Mahjong.Client")]
         [InlineData("Mahjong.TableService", "Mahjong.LobbyService")]
-        [InlineData("Mahjong.TableService", "Mahjong.Infrastructure")]
+        [InlineData("Mahjong.Infrastructure", "Mahjong.TableService")]
         [InlineData("Mahjong.Domain", "Mahjong.TableService")]
         public void ForbiddenProjectEdgesAreRejectedWithSpecificDiagnostics(string from, string to)
         {
@@ -411,6 +411,38 @@ namespace Mahjong.Architecture.Tests
             Assert.True(
                 diagnostics.Count == 0,
                 "The accepted LocalHost contract project edges must be authorized:" + Environment.NewLine + Describe(diagnostics));
+        }
+
+        [Fact]
+        public void DurableTableServiceRequiresItsInfrastructureProjectEdge()
+        {
+            SyntheticGraph graph = CreateSyntheticGraph();
+            Dictionary<string, ProjectGraph> projects = CopyProjects(graph);
+            Assert.Empty(ModuleDependencyValidator.ValidateProjectGraph(graph.KnownProjects, projects, graph.Rules));
+            projects["Mahjong.TableService"] =
+                projects["Mahjong.TableService"].WithoutProjectReference("Mahjong.Infrastructure");
+
+            DependencyDiagnostic diagnostic = Assert.Single(
+                ModuleDependencyValidator.ValidateProjectGraph(graph.KnownProjects, projects, graph.Rules));
+            Assert.Equal(DiagnosticCodes.ProjectMissingEdge, diagnostic.Code);
+            Assert.Equal("Mahjong.TableService", diagnostic.From);
+            Assert.Equal("Mahjong.Infrastructure", diagnostic.To);
+        }
+
+        [Fact]
+        public void DurableTableServiceRequiresItsInfrastructureAssemblyReference()
+        {
+            SyntheticGraph graph = CreateSyntheticGraph();
+            Dictionary<string, AssemblyGraph> assemblies = CopyAssemblies(graph);
+            Assert.Empty(ModuleDependencyValidator.ValidateAssemblyGraph(graph.KnownProjects, assemblies, graph.Rules));
+            assemblies["Mahjong.TableService"] =
+                assemblies["Mahjong.TableService"].WithoutReference("Mahjong.Infrastructure");
+
+            DependencyDiagnostic diagnostic = Assert.Single(
+                ModuleDependencyValidator.ValidateAssemblyGraph(graph.KnownProjects, assemblies, graph.Rules));
+            Assert.Equal(DiagnosticCodes.AssemblyMissingMahjongReference, diagnostic.Code);
+            Assert.Equal("Mahjong.TableService", diagnostic.From);
+            Assert.Equal("Mahjong.Infrastructure", diagnostic.To);
         }
 
         [Fact]
@@ -608,7 +640,7 @@ namespace Mahjong.Architecture.Tests
         [InlineData("Mahjong.Domain", "Mahjong.Infrastructure")]
         [InlineData("Mahjong.TableService", "Mahjong.Client")]
         [InlineData("Mahjong.TableService", "Mahjong.LobbyService")]
-        [InlineData("Mahjong.TableService", "Mahjong.Infrastructure")]
+        [InlineData("Mahjong.Infrastructure", "Mahjong.TableService")]
         [InlineData("Mahjong.Domain", "Mahjong.TableService")]
         public void ForbiddenAssemblyMahjongReferencesAreRejectedWithSpecificDiagnostics(string from, string to)
         {
@@ -1039,11 +1071,11 @@ namespace Mahjong.Architecture.Tests
                 ["Mahjong.TableService"] = new ModuleRule(
                     name: "Mahjong.TableService",
                     targetFramework: "net8.0",
-                    allowedProjectReferences: new[] { "Mahjong.Contracts", "Mahjong.Contracts.Wire", "Mahjong.TableRuntime" },
+                    allowedProjectReferences: new[] { "Mahjong.Contracts", "Mahjong.Contracts.Wire", "Mahjong.TableRuntime", "Mahjong.Infrastructure" },
                     allowedPackages: NoStrings,
                     buildOnlyPackages: NoStrings,
-                    allowedMahjongAssemblyReferences: new[] { "Mahjong.Ai", "Mahjong.Contracts", "Mahjong.Contracts.Wire", "Mahjong.Domain", "Mahjong.TableRuntime" },
-                    requiredMahjongAssemblyReferences: new[] { "Mahjong.Contracts", "Mahjong.Contracts.Wire", "Mahjong.Domain", "Mahjong.TableRuntime" },
+                    allowedMahjongAssemblyReferences: new[] { "Mahjong.Ai", "Mahjong.Contracts", "Mahjong.Contracts.Wire", "Mahjong.Domain", "Mahjong.TableRuntime", "Mahjong.Infrastructure" },
+                    requiredMahjongAssemblyReferences: new[] { "Mahjong.Contracts", "Mahjong.Contracts.Wire", "Mahjong.Domain", "Mahjong.TableRuntime", "Mahjong.Infrastructure" },
                     allowedThirdPartyAssemblyReferences: new[] { "Google.Protobuf" },
                     requiredThirdPartyAssemblyReferences: new[] { "Google.Protobuf" },
                     allowSharedFramework: true),
@@ -1084,7 +1116,7 @@ namespace Mahjong.Architecture.Tests
                 // Accepted shell baseline: only TableRuntime is declared today. The
                 // four-edge contract fixture is exercised separately.
                 ["Mahjong.LocalHost"] = Project("Mahjong.LocalHost", "Mahjong.TableRuntime"),
-                ["Mahjong.TableService"] = Project("Mahjong.TableService", "Mahjong.Contracts", "Mahjong.Contracts.Wire", "Mahjong.TableRuntime"),
+                ["Mahjong.TableService"] = Project("Mahjong.TableService", "Mahjong.Contracts", "Mahjong.Contracts.Wire", "Mahjong.TableRuntime", "Mahjong.Infrastructure"),
                 ["Mahjong.Infrastructure"] = new ProjectGraph(
                     "Mahjong.Infrastructure",
                     "synthetic/Mahjong.Infrastructure.csproj",
@@ -1109,7 +1141,7 @@ namespace Mahjong.Architecture.Tests
                 // TableRuntime edge. Client/Wire/Protobuf are authorized but optional.
                 ["Mahjong.LocalHost"] = Assembly("Mahjong.LocalHost", "netstandard"),
                 ["Mahjong.TableService"] = Assembly(
-                    "Mahjong.TableService", "Mahjong.Contracts", "Mahjong.Contracts.Wire", "Mahjong.Domain", "Mahjong.TableRuntime",
+                    "Mahjong.TableService", "Mahjong.Contracts", "Mahjong.Contracts.Wire", "Mahjong.Domain", "Mahjong.TableRuntime", "Mahjong.Infrastructure",
                     "Google.Protobuf", "Microsoft.AspNetCore.Http", "Microsoft.Extensions.Logging.Abstractions", "System.Runtime"),
                 ["Mahjong.Infrastructure"] = Assembly(
                     "Mahjong.Infrastructure", "Mahjong.Contracts", "Mahjong.Domain", "Mahjong.TableRuntime", "Npgsql", "System.Runtime"),
