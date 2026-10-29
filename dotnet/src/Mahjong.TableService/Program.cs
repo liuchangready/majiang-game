@@ -37,7 +37,19 @@ namespace Mahjong.TableService
                 return ex is TableKeyConfigurationException ? ExitNoValidationKeys : ExitBadConfig;
             }
 
-            TableServiceHostRuntime runtime = TableServiceWebHost.Build(options, keys, IPAddress.Loopback);
+            TableServiceHostRuntime runtime;
+            try
+            {
+                runtime = TableServiceWebHost.Build(options, keys, IPAddress.Loopback, options.HttpPort);
+            }
+            catch (Exception ex)
+            {
+                // A persistent host with a bad connection string, payload key or schema
+                // refuses to start — it never boots into an in-memory fallback.
+                Console.Error.WriteLine("tableservice: host build refused: " + ex.Message);
+                return ExitBadConfig;
+            }
+
             runtime.StartAsync().GetAwaiter().GetResult();
             Console.WriteLine("tableservice: listening on " + runtime.BoundAddress + " (ctrl+c to stop)");
             using ManualResetEventSlim done = new ManualResetEventSlim(false);
@@ -76,9 +88,64 @@ namespace Mahjong.TableService
             options.MaxRetainedConsumedTickets = RequireInt("MAX_RETAINED_CONSUMED_TICKETS", options.MaxRetainedConsumedTickets);
             options.RoomTickIntervalMs = RequireInt("ROOM_TICK_INTERVAL_MS", options.RoomTickIntervalMs);
             options.LeaseTtlSeconds = RequireInt("LEASE_TTL_SECONDS", options.LeaseTtlSeconds);
+            options.HttpPort = RequireInt("HTTP_PORT", options.HttpPort);
             options.AdminDrainToken = OptionalString("ADMIN_DRAIN_TOKEN");
             options.ServerCertificate = LoadServerCertificate();
+            options.StoreMode = RequireStoreMode();
+            if (options.StoreMode == TableHostStoreMode.Postgres)
+            {
+                options.PostgresConnectionString = RequireString(
+                    "PG_CONNECTION",
+                    options.PostgresConnectionString ?? string.Empty);
+                options.PostgresPayloadKeyBase64 = OptionalString("PG_PAYLOAD_KEY");
+                options.PostgresCommandTimeoutSeconds = RequireInt(
+                    "PG_COMMAND_TIMEOUT_SECONDS",
+                    options.PostgresCommandTimeoutSeconds);
+                options.PostgresMaxPoolSize = RequireInt("PG_MAX_POOL_SIZE", options.PostgresMaxPoolSize);
+                options.PostgresApplyMigrations = RequireBool(
+                    "PG_APPLY_MIGRATIONS",
+                    options.PostgresApplyMigrations);
+            }
+
             return options;
+        }
+
+        /// <summary>
+        /// TABLESERVICE_STORE selects the room store: "memory" (accepted P3.4/P5.1 mode) or
+        /// "postgres" (P5.4b-A durable table_store mode). An unknown value refuses the
+        /// start — the mode is never guessed.
+        /// </summary>
+        private static TableHostStoreMode RequireStoreMode()
+        {
+            string? value = Environment.GetEnvironmentVariable("TABLESERVICE_STORE");
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return TableHostStoreMode.Memory;
+            }
+
+            return value.Trim().ToLowerInvariant() switch
+            {
+                "memory" => TableHostStoreMode.Memory,
+                "postgres" => TableHostStoreMode.Postgres,
+                _ => throw new ArgumentException(
+                    "TABLESERVICE_STORE must be 'memory' or 'postgres': " + value)
+            };
+        }
+
+        private static bool RequireBool(string suffix, bool fallback)
+        {
+            string? value = Environment.GetEnvironmentVariable("TABLESERVICE_" + suffix);
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return fallback;
+            }
+
+            if (!bool.TryParse(value, out bool parsed))
+            {
+                throw new ArgumentException("TABLESERVICE_" + suffix + " is not a boolean: " + value);
+            }
+
+            return parsed;
         }
 
         /// <summary>

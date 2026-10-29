@@ -112,11 +112,63 @@ namespace Mahjong.TableService
             builder.Services.AddSingleton<ITableStreamContractCodec, WireTableStreamContractCodec>();
             builder.Services.AddSingleton<ITableClock>(SystemTableClock.Instance);
             builder.Services.AddSingleton<ITableRoundSource>(roundSource ?? CryptographicTableRoundSource.Instance);
-            var hostRegistry = new InMemoryTableHostRegistry(
-                options,
-                new WireTableStreamContractCodec(),
-                SystemTableClock.Instance,
-                roundSource ?? CryptographicTableRoundSource.Instance);
+
+            // P5.4b-A durable host assembly. Postgres mode binds the SAME P5.2 store to the
+            // actors' durable context and the host's scope issuance — and refuses to build
+            // (before any listener exists) when the configuration, key or schema is wrong.
+            // There is no fallback to the in-memory registry in this mode, ever.
+            ITableHostRegistry hostRegistry;
+            IAsyncDisposable? storeOwner = null;
+            if (options.StoreMode == TableHostStoreMode.Postgres)
+            {
+                var pgOptions = new Mahjong.Infrastructure.PostgresTableOptions(
+                    options.PostgresConnectionString!,
+                    options.PostgresPayloadKeyBase64 ?? string.Empty,
+                    options.PostgresCommandTimeoutSeconds,
+                    options.PostgresMaxPoolSize);
+                if (options.PostgresApplyMigrations)
+                {
+                    Mahjong.Infrastructure.PostgresTableMigrator
+                        .ApplyAsync(options.PostgresConnectionString!)
+                        .GetAwaiter()
+                        .GetResult();
+                }
+
+                if (!IsStoreSchemaReady(options.PostgresConnectionString!))
+                {
+                    throw new TableServiceCapacityException(
+                        "PERSISTENT_STORE_NOT_READY",
+                        "The table_store schema is not ready; a persistent host refuses to serve.");
+                }
+
+                var pgStore = new Mahjong.Infrastructure.PostgresTableStore(pgOptions);
+                storeOwner = pgStore;
+                var scopeAuthority = new PostgresTableHostScopeAuthority(pgStore);
+                hostRegistry = new PostgresTableHostRegistry(
+                    options,
+                    new WireTableStreamContractCodec(),
+                    SystemTableClock.Instance,
+                    roundSource ?? CryptographicTableRoundSource.Instance,
+                    pgStore,
+                    scopeAuthority,
+                    // The lease contract lets an owner RECLAIM its own live lease when the
+                    // owner_instance matches (restart-reclaim semantics), so this id must be
+                    // unique per host RUNTIME — not per process. A process id collides for
+                    // every embedding that hosts two registries side by side (the dual-host
+                    // fencing scenario): the second runtime would treat a foreign live lease
+                    // as its own, take the room over and welcome admissions it must refuse.
+                    // The runner only pins the tablesvc- prefix.
+                    "tablesvc-" + Guid.NewGuid().ToString("N"));
+            }
+            else
+            {
+                hostRegistry = new InMemoryTableHostRegistry(
+                    options,
+                    new WireTableStreamContractCodec(),
+                    SystemTableClock.Instance,
+                    roundSource ?? CryptographicTableRoundSource.Instance);
+            }
+
             builder.Services.AddSingleton<ITableHostRegistry>(hostRegistry);
             builder.Services.AddHostedService<TableTickDriver>();
 
@@ -205,15 +257,23 @@ namespace Mahjong.TableService
                 {
                     canServe = false;
                 }
-                else if (hosts is not InMemoryTableHostRegistry registry)
-                {
-                    canServe = true;
-                }
                 else
                 {
+                    // D-1-10 over ANY registry implementation (memory and PostgreSQL alike):
+                    // the authoritative gate is each known room's OWN actor lifecycle. A room
+                    // that exists durably but could not be served by this process (failed
+                    // cold recovery, foreign live lease) also counts as known-and-not-
+                    // serving, so a persistent host with an unrecoverable room reports 503
+                    // instead of a green light over a room it refuses to admit.
                     bool anyKnownRoom = false;
                     bool anyServingRoom = false;
-                    foreach (RoomHost room in registry.Hosts)
+                    if (hosts is PostgresTableHostRegistry postgres &&
+                        postgres.FailedRooms.Count > 0)
+                    {
+                        anyKnownRoom = true;
+                    }
+
+                    foreach (RoomHost room in hosts.Hosts)
                     {
                         anyKnownRoom = true;
                         try
@@ -275,7 +335,7 @@ namespace Mahjong.TableService
                     .ConfigureAwait(false);
             });
 
-            return new TableServiceHostRuntime(app, options, hostRegistry);
+            return new TableServiceHostRuntime(app, options, hostRegistry, storeOwner);
         }
 
         /// <summary>
@@ -300,26 +360,60 @@ namespace Mahjong.TableService
             return hashedLeft && hashedRight &&
                    System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(left, right);
         }
+
+        /// <summary>
+        /// Proves the <c>table_store</c> schema is live before any listener exists. Any failure
+        /// to PROVE readiness — unreachable database, missing schema, missing migration row —
+        /// is "not ready": a persistent host refuses to serve rather than guessing.
+        /// </summary>
+        private static bool IsStoreSchemaReady(string connectionString)
+        {
+            try
+            {
+                return Mahjong.Infrastructure.PostgresTableMigrator
+                    .IsReadyAsync(connectionString)
+                    .GetAwaiter()
+                    .GetResult();
+            }
+            catch (Exception exception)
+            {
+                Console.Error.WriteLine(
+                    "tableservice: persistent store readiness could not be proven: " +
+                    exception.GetType().Name);
+                return false;
+            }
+        }
     }
 
-    /// <summary>Started-host handle: the bound loopback port and graceful stop.</summary>
+    /// <summary>
+    /// Started-host handle: the bound loopback port and graceful stop. Shutdown order is
+    /// strict: listeners stop first, then every OWNED table actor is disposed (D-1-05),
+    /// and only then — with no actor left that could touch it — the process-wide durable
+    /// store (PostgreSQL pool) is disposed in persistent mode.
+    /// </summary>
     public sealed class TableServiceHostRuntime
     {
         private readonly WebApplication _app;
-        private readonly InMemoryTableHostRegistry? _hosts;
+        private readonly ITableHostRegistry? _hosts;
+        private readonly IAsyncDisposable? _storeOwner;
 
-        public TableServiceHostRuntime(WebApplication app, TableServiceOptions options, InMemoryTableHostRegistry? hosts = null)
+        public TableServiceHostRuntime(
+            WebApplication app,
+            TableServiceOptions options,
+            ITableHostRegistry? hosts = null,
+            IAsyncDisposable? storeOwner = null)
         {
             _app = app;
             Options = options;
             _hosts = hosts;
+            _storeOwner = storeOwner;
         }
 
         public TableServiceOptions Options { get; }
 
         public IServiceProvider Services => _app.Services;
 
-        public InMemoryTableHostRegistry? HostRegistry => _hosts;
+        public ITableHostRegistry? HostRegistry => _hosts;
 
         public string BoundAddress { get; private set; } = string.Empty;
 
@@ -355,11 +449,23 @@ namespace Mahjong.TableService
         public async Task StopAsync(CancellationToken cancellationToken = default)
         {
             await _app.StopAsync(cancellationToken).ConfigureAwait(false);
-            if (_hosts != null)
+            if (_hosts is InMemoryTableHostRegistry memoryHosts)
             {
                 // Shutdown disposes every OWNED table actor: no pump, stream or timer of a
                 // table actor outlives the host (D-1-05).
-                await _hosts.DisposeHostsAsync().ConfigureAwait(false);
+                await memoryHosts.DisposeHostsAsync().ConfigureAwait(false);
+            }
+
+            if (_hosts is PostgresTableHostRegistry postgresHosts)
+            {
+                await postgresHosts.DisposeHostsAsync().ConfigureAwait(false);
+            }
+
+            if (_storeOwner != null)
+            {
+                // Last: the process-wide durable store. Every actor and stream is already
+                // gone, so nothing can issue database work through a disposed pool.
+                await _storeOwner.DisposeAsync().ConfigureAwait(false);
             }
         }
     }

@@ -80,6 +80,11 @@ $script:EnvNames = @(
     'MAHJONG_TABLE_PG_PAYLOAD_KEY',
     'MAHJONG_P52_CRASH_MARKER',
     'MAHJONG_P52_CRASH_RESULT',
+    'MAHJONG_P54B_TEST_PG',
+    'MAHJONG_P54B_TEST_PG_ADMIN',
+    'MAHJONG_P54B_TEST_PG_EMPTY',
+    'MAHJONG_P54B_TEST_PG_KEY',
+    'MAHJONG_P54B_TEST_PG_EVIDENCE',
     'DOTNET_CLI_UI_LANGUAGE',
     'DOTNET_CLI_TELEMETRY_OPTOUT',
     'DOTNET_NOLOGO',
@@ -341,7 +346,13 @@ function Initialize-Cluster {
         throw "Refusing to use a listener whose data_directory ($dataDir) is not this cluster."
     }
 
-    foreach ($database in @($script:Database, $script:RestoreDatabase)) {
+    $ownedDatabases = @($script:Database, $script:RestoreDatabase)
+    if ($RunUnifiedVerification) {
+        # The discovered durable-host suite owns separate state and an unmigrated
+        # negative-probe database on this same verified disposable cluster.
+        $ownedDatabases += @('mahjong_p54b_test', 'mahjong_p54b_empty')
+    }
+    foreach ($database in $ownedDatabases) {
         $exists = Get-PgScalar -Database 'postgres' -Sql "SELECT 1 FROM pg_database WHERE datname = '$database'"
         if ($exists -ne '1') {
             $createLog = Join-Path $script:LogDir ('createdb-' + $database + '.log')
@@ -684,6 +695,11 @@ try {
         # Tests start from the live owned database, not the backup restore copy.
         $env:MAHJONG_P52_TEST_POSTGRES = $runtimeConnection
         $env:MAHJONG_P52_TEST_POSTGRES_ADMIN = $adminConnection
+        $env:MAHJONG_P54B_TEST_PG = "Host=127.0.0.1;Port=$Port;Database=mahjong_p54b_test;Username=mahjong_table_runtime;Pooling=false;Timeout=10;Command Timeout=30"
+        $env:MAHJONG_P54B_TEST_PG_ADMIN = "Host=127.0.0.1;Port=$Port;Database=mahjong_p54b_test;Username=mahjong_pg;Pooling=false;Timeout=10;Command Timeout=30"
+        $env:MAHJONG_P54B_TEST_PG_EMPTY = "Host=127.0.0.1;Port=$Port;Database=mahjong_p54b_empty;Username=mahjong_pg;Pooling=false;Timeout=10;Command Timeout=30"
+        $env:MAHJONG_P54B_TEST_PG_KEY = $payloadKey
+        $env:MAHJONG_P54B_TEST_PG_EVIDENCE = Join-Path $LogDir 'durable-host-tests'
         $hostExe = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
         $unifiedCode = Invoke-Native -FilePath $hostExe -Arguments @(
             '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',

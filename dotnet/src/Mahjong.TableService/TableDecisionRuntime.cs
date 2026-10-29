@@ -305,7 +305,7 @@ namespace Mahjong.TableService
                 host.OwnerEpoch,
                 new ControlEpoch((ulong)control.Seats[seat].ControlEpoch),
                 decisionId: null,
-                recoveryGeneration: 0L,
+                recoveryGeneration: host.RecoveryGeneration,
                 scopeId: host.ServiceScope.ScopeId,
                 api: TableRoomHostAutoDraw.Api,
                 payloadSha256: TablePayloadSha256.Compute(
