@@ -166,6 +166,15 @@ namespace Mahjong.TableService
 
         public const string ResponseEligibilityDetail = "RESPONSE_WINDOW_AUTHORITY_UNAVAILABLE";
 
+        // Frozen Contracts (PR20) control payload tags:
+        //   CommandPayloadFields.ControlRoundId = 20 (string)
+        //   CommandPayloadFields.ExpectedControlEpochV2 = 21 (uint64)
+        // Local constants keep this mapper buildable in the pre-PR20 delivery tree and in
+        // the integrated PR20 tree without changing the frozen Contracts surface.
+        private const ushort ControlRoundIdField = 20;
+
+        private const ushort ControlExpectedEpochField = 21;
+
         public static TableCommandRoute Map(
             TableConnectionIdentity identity,
             Envelope envelope,
@@ -614,8 +623,20 @@ namespace Mahjong.TableService
             OwnerEpoch ownerEpoch)
         {
             CanonicalPayloadDocument document = CanonicalPayloadParser.Parse(payload);
+            // D-LH-GATE-01: the frozen Client contract writes ControlRoundId=20 and
+            // ExpectedControlEpochV2=21. The legacy expectedControlEpoch tag (1) is never
+            // accepted as a compatibility fallback — an old-tag payload is refused exactly
+            // like any other malformed control command.
+            if (document.HasField(CommandPayloadFields.ExpectedControlEpoch))
+            {
+                throw new CanonicalEncodingException(
+                    "A control command must use the frozen ControlRoundId/ExpectedControlEpochV2 tags; " +
+                    "the legacy expectedControlEpoch tag is not accepted.");
+            }
+
+            _ = document.RequireString(ControlRoundIdField, "roundId");
             var expectedControlEpoch = new ControlEpoch(
-                document.RequireUInt64(CommandPayloadFields.ExpectedControlEpoch, "expectedControlEpoch"));
+                document.RequireUInt64(ControlExpectedEpochField, "expectedControlEpoch"));
             bool reclaim = kind == CommandKind.ClaimControl;
             return new TableCommandRoute.Control(
                 reclaim,

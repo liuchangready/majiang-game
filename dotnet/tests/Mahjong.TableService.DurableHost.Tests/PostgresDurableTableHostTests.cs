@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Reflection;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using Mahjong.Contracts;
@@ -777,6 +778,205 @@ SELECT count(*) FROM table_store.request_receipt
                 snapshot.StateVersion,
                 payload,
                 outcome);
+        }
+    }
+
+    /// <summary>
+    /// D-LH-GATE-01: the frozen PR20 Client contract writes ClaimControl/ReleaseControl
+    /// with ControlRoundId=20 (string) and ExpectedControlEpochV2=21 (uint64). This suite
+    /// pins the mapper's frozen-tag mapping plus the malformed/legacy/identity negatives.
+    ///
+    /// The direct mapper seam is exercised because THIS delivery tree predates PR20: its
+    /// CommandPayloadValidator still requires the legacy tag 1, so a frozen-tag payload
+    /// cannot pass the public Map validator here. The caller's frozen PR20 tree supplies
+    /// the matching validator/factory and runs the same mapper through the real WSS host;
+    /// no local test fabricates an old-schema success.
+    /// </summary>
+    [Collection(DurableHostCollection.Name)]
+    public sealed class TableCommandMapperControlContractTests
+    {
+        private const ushort FrozenControlRoundId = 20;
+
+        private const ushort FrozenExpectedControlEpoch = 21;
+
+        [Theory]
+        [InlineData(CommandKind.ClaimControl, true)]
+        [InlineData(CommandKind.ReleaseControl, false)]
+        public void FrozenFactoryTags_MapToControlRoute(CommandKind kind, bool reclaim)
+        {
+            byte[] payload = FrozenControlPayload(kind, "room-ctl-r1", 7UL);
+            TableCommandRoute.Control route = Assert.IsType<TableCommandRoute.Control>(
+                InvokeMapControl(kind, payload));
+
+            Assert.Equal(reclaim, route.Reclaim);
+            Assert.Equal(0, route.Seat);
+            Assert.Equal(9UL, route.OwnerEpoch.Value);
+            Assert.Equal(7UL, route.ExpectedControlEpoch.Value);
+            Assert.Equal(reclaim ? "CLAIM_CONTROL" : "RELEASE_CONTROL", route.Reason);
+        }
+
+        [Fact]
+        public void LegacyExpectedControlEpochTag_IsRefused()
+        {
+            var writer = new CanonicalPayloadWriter((ushort)CommandKind.ClaimControl);
+            writer.WriteUInt64(CommandPayloadFields.ExpectedControlEpoch, 7UL);
+            byte[] payload = writer.Build().CopyBytes();
+
+            TargetInvocationException error = Assert.Throws<TargetInvocationException>(
+                () => InvokeMapControl(CommandKind.ClaimControl, payload));
+            CanonicalEncodingException inner = Assert.IsType<CanonicalEncodingException>(error.InnerException);
+            Assert.Contains("legacy", inner.Message, StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
+        public void LegacyTagMixedWithFrozenTags_IsRefused()
+        {
+            var writer = new CanonicalPayloadWriter((ushort)CommandKind.ClaimControl);
+            writer.WriteUInt64(CommandPayloadFields.ExpectedControlEpoch, 7UL);
+            writer.WriteString(FrozenControlRoundId, "room-ctl-r1");
+            writer.WriteUInt64(FrozenExpectedControlEpoch, 7UL);
+            byte[] payload = writer.Build().CopyBytes();
+
+            TargetInvocationException error = Assert.Throws<TargetInvocationException>(
+                () => InvokeMapControl(CommandKind.ClaimControl, payload));
+            Assert.IsType<CanonicalEncodingException>(error.InnerException);
+        }
+
+        [Fact]
+        public void MissingFrozenRoundId_IsRefused()
+        {
+            var writer = new CanonicalPayloadWriter((ushort)CommandKind.ClaimControl);
+            writer.WriteUInt64(FrozenExpectedControlEpoch, 7UL);
+            AssertFrozenShapeRefused(CommandKind.ClaimControl, writer.Build().CopyBytes());
+        }
+
+        [Fact]
+        public void MissingFrozenExpectedEpoch_IsRefused()
+        {
+            var writer = new CanonicalPayloadWriter((ushort)CommandKind.ClaimControl);
+            writer.WriteString(FrozenControlRoundId, "room-ctl-r1");
+            AssertFrozenShapeRefused(CommandKind.ClaimControl, writer.Build().CopyBytes());
+        }
+
+        [Fact]
+        public void WrongFrozenFieldTypes_AreRefused()
+        {
+            var roundIdAsUInt = new CanonicalPayloadWriter((ushort)CommandKind.ClaimControl);
+            roundIdAsUInt.WriteUInt64(FrozenControlRoundId, 1UL);
+            roundIdAsUInt.WriteUInt64(FrozenExpectedControlEpoch, 7UL);
+            AssertFrozenShapeRefused(CommandKind.ClaimControl, roundIdAsUInt.Build().CopyBytes());
+
+            var epochAsString = new CanonicalPayloadWriter((ushort)CommandKind.ClaimControl);
+            epochAsString.WriteString(FrozenControlRoundId, "room-ctl-r1");
+            epochAsString.WriteString(FrozenExpectedControlEpoch, "7");
+            AssertFrozenShapeRefused(CommandKind.ClaimControl, epochAsString.Build().CopyBytes());
+        }
+
+        [Fact]
+        public void DuplicateFrozenFields_AreRefusedByCanonicalEncoding()
+        {
+            Assert.Throws<CanonicalEncodingException>(() =>
+            {
+                var writer = new CanonicalPayloadWriter((ushort)CommandKind.ClaimControl);
+                writer.WriteString(FrozenControlRoundId, "room-ctl-r1");
+                writer.WriteString(FrozenControlRoundId, "room-ctl-r2");
+            });
+
+            Assert.Throws<CanonicalEncodingException>(() =>
+            {
+                var writer = new CanonicalPayloadWriter((ushort)CommandKind.ClaimControl);
+                writer.WriteUInt64(FrozenExpectedControlEpoch, 7UL);
+                writer.WriteUInt64(FrozenExpectedControlEpoch, 8UL);
+            });
+        }
+
+        [Fact]
+        public void SpectatorControl_IsRefusedBeforePayload()
+        {
+            byte[] payload = FrozenControlPayload(CommandKind.ClaimControl, "room-ctl-r1", 7UL);
+            Envelope envelope = ControlEnvelope(CommandKind.ClaimControl, payload, seat: -1, scopeId: null);
+            var identity = new TableConnectionIdentity(
+                "sess-ctl", "room-ctl", TableAdmissionRole.Spectator, -1,
+                "acct-ctl", "scope-own", 0, 1_000_000, "jti-ctl");
+
+            var rejection = Assert.IsType<TableCommandRoute.PreActorRejection>(
+                TableCommandMapper.Map(
+                    identity, envelope, new OwnerEpoch(1), 0, new TableServiceOptions(), null));
+            Assert.Equal(ProtocolErrorCode.Unauthenticated, rejection.ErrorCode);
+            Assert.Equal("SCOPE_ROLE_NOT_AUTHORIZED", rejection.DetailCode);
+        }
+
+        [Fact]
+        public void ForeignControlScope_IsRefusedBeforePayload()
+        {
+            byte[] payload = FrozenControlPayload(CommandKind.ReleaseControl, "room-ctl-r1", 8UL);
+            Envelope envelope = ControlEnvelope(CommandKind.ReleaseControl, payload, seat: 0, scopeId: "scope-foreign");
+            var identity = new TableConnectionIdentity(
+                "sess-ctl", "room-ctl", TableAdmissionRole.Player, 0,
+                "acct-ctl", "scope-own", 0, 1_000_000, "jti-ctl");
+
+            var rejection = Assert.IsType<TableCommandRoute.PreActorRejection>(
+                TableCommandMapper.Map(
+                    identity, envelope, new OwnerEpoch(1), 0, new TableServiceOptions(), null));
+            Assert.Equal(ProtocolErrorCode.MalformedMessage, rejection.ErrorCode);
+            Assert.Equal("SCOPE_MISMATCH", rejection.DetailCode);
+        }
+
+        private static byte[] FrozenControlPayload(CommandKind kind, string roundId, ulong expectedEpoch)
+        {
+            // Exact tags CommandPayloadFactory.ClaimControl/ReleaseControl write in PR20.
+            var writer = new CanonicalPayloadWriter((ushort)kind);
+            writer.WriteString(FrozenControlRoundId, roundId);
+            writer.WriteUInt64(FrozenExpectedControlEpoch, expectedEpoch);
+            return writer.Build().CopyBytes();
+        }
+
+        private static TableCommandRoute InvokeMapControl(CommandKind kind, byte[] payload)
+        {
+            var identity = new TableConnectionIdentity(
+                "sess-ctl", "room-ctl", TableAdmissionRole.Player, 0,
+                "acct-ctl", "scope-own", 0, 1_000_000, "jti-ctl");
+            MethodInfo method = typeof(TableCommandMapper).GetMethod(
+                "MapControl",
+                BindingFlags.NonPublic | BindingFlags.Static)
+                ?? throw new InvalidOperationException("the control mapper seam is missing");
+            return (TableCommandRoute)method.Invoke(
+                null,
+                new object[]
+                {
+                    identity,
+                    kind,
+                    new RequestId("req-ctl-1"),
+                    BusinessPayload.Retain(payload),
+                    new OwnerEpoch(9)
+                })!;
+        }
+
+        private static void AssertFrozenShapeRefused(CommandKind kind, byte[] payload)
+        {
+            TargetInvocationException error = Assert.Throws<TargetInvocationException>(
+                () => InvokeMapControl(kind, payload));
+            Assert.IsType<CanonicalEncodingException>(error.InnerException);
+        }
+
+        private static Envelope ControlEnvelope(CommandKind kind, byte[] payload, int seat, string? scopeId)
+        {
+            var welcome = new Welcome
+            {
+                SessionId = "sess-ctl",
+                RoomId = "room-ctl",
+                SeatId = seat,
+                BindingEpoch = 1,
+                OwnerEpoch = 1
+            };
+            return TableWire.Command(
+                welcome,
+                "req-ctl-1",
+                kind,
+                payload,
+                seatId: seat,
+                expectedStateVersion: 1,
+                scope: scopeId == null ? null : new Contracts.Wire.RequestScope { ScopeId = scopeId });
         }
     }
 }
