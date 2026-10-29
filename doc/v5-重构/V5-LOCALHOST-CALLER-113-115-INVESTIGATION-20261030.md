@@ -1,10 +1,10 @@
 # V5 LocalHost Caller Run Investigation — 113/115 at PR20 `00cd02d`
 
-Date: 2026-10-30  
-Worktree: `D:/majiang-wt/localhost-scope-race-20261030`  
-Branch: `wt/v5-localhost-scope-race-20261030`  
-Accepted base: `origin/v5` = `8fd7c6cb701dfbb41c28938de4186749bdd1d6c7`  
-Unaccepted PR20 head: `00cd02d80172ebd13a2945e4e8bacfe486ae0c21`  
+Date: 2026-10-30
+Worktree: `D:/majiang-wt/localhost-scope-race-20261030`
+Branch: `wt/v5-localhost-scope-race-20261030`
+Accepted base: `origin/v5` = `8fd7c6cb701dfbb41c28938de4186749bdd1d6c7`
+Unaccepted PR20 head: `00cd02d80172ebd13a2945e4e8bacfe486ae0c21`
 Status: **investigation complete; report only; PR20 remains unaccepted.**
 
 ## 0. Verdict
@@ -400,7 +400,7 @@ reviewed and committed separately from production code and from PR20 acceptance.
 
 ## 12. Evidence index (ignored `build/`)
 
-Root: `build/localhost-scope-race-20261030/`  
+Root: `build/localhost-scope-race-20261030/`
 Manifest: `evidence/SHA256SUMS.txt` (89 files), SHA-256
 `1F2960190A505C6847333A9EE5C87D7E3434841C2D199C224022C7879293DD90`.
 
