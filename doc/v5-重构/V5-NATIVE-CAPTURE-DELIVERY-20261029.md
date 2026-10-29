@@ -2,7 +2,7 @@
 
 日期：2026-10-29
 任务：修复统一验证器 `tools/verify-v5.ps1` 在 Windows PowerShell 5.1 下捕获原生 stderr 时丢失真实退出码的 MAJOR 缺陷。
-状态：**工具执行/捕获边界修复已在本树验证；第 2 轮已复现并修复 D-CAPTURE-01-SCOPE（caller-local LASTEXITCODE 遮蔽）；未重跑完整 unified/PG/WSS 批次，不代表整批通过，不宣称 G2/G3 通过。**
+状态：**工具执行/捕获边界修复已在本树验证；第 2 轮已复现并修复 D-CAPTURE-01-SCOPE（caller-local LASTEXITCODE 遮蔽）；第 3 轮已复现并修复 D-CAPTURE-01-RESTORE-EXISTENCE（变量原本不存在时未移除）；未重跑完整 unified/PG/WSS 批次，不代表整批通过，不宣称 G2/G3 通过。**
 
 ---
 
@@ -133,18 +133,80 @@ no-native → null、native exit 0/1/2/17 且双流、throw → null、不存在
 native preference 保持。修前 35/44（9 failed，exit 1），修后 44/44
 （0 failed，exit 0）。caller 探针重放修后为 `(null, 17)`。详见 5.4。
 
+### 3.4 D-CAPTURE-01-RESTORE-EXISTENCE（第 3 轮 MINOR）
+
+```text
+[ID] D-CAPTURE-01-RESTORE-EXISTENCE
+严重级别：MINOR
+位置：tools/verify-v5.ps1 :: Invoke-Captured 约 206-207 保存 script/global 值、
+      finally 末尾直接赋回；tools/ci/test-v5-captured-exit.ps1 原 44 例均预先
+      建立 LASTEXITCODE，未断言“调用前不存在”的场景
+```
+
+**本轮新信息**：第 2 轮新增 script 作用域保存/清空/恢复路径；复核该新 finally
+路径发现只保存值、未保存存在性。第 2 轮已明确要求“检查原变量存在性/值与局部
+偏好还原，不污染父会话”，本次由新增路径的补充探针发现该遗漏；不是新增领域
+范围或按批次依赖返修。
+
+**复现**（cwd 当前工作树；原始目录只读）：
+
+```powershell
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+  -File artifacts/caller-capture-r2-1793248746625/probe-existence.ps1 `
+  -EvidenceDir artifacts/caller-capture-r2-1793248746625
+```
+
+探针 AST 提取真实生产 `Invoke-Captured`，清除 script/global
+`LASTEXITCODE` 后分别跑 no-native、native exit 0/1/2/17（stdout+stderr）、
+throw、missing exe。
+
+**实际（修前）**：退出码全部准确，但 **7/7 存在性断言失败，探针 exit 1**；
+每例 `BeforeScript=false`、`BeforeGlobal=false`，调用后
+`AfterScript=true`、`AfterGlobal=true`。函数在 finally 留下值为 null 的新变量。
+
+**期望**：调用前不存在的变量，调用后仍不存在；原本存在的变量值保持；
+caller-local、EAP 与可用 native preference 保持；原 native stderr 与异常
+fail-closed 行为继续通过。
+
+**证据（原始目录只读，未覆盖）**：
+
+- `artifacts/caller-capture-r2-1793248746625/probe-existence.ps1`
+  SHA256 `FBEECE04D1E48306E37CC8C0DFF318FDB987C71CC6F5DDC92FFE7C1F2A6986F8`
+- `existence-results.json`
+  SHA256 `F6C277F9B575EFBEF4C2582030A8A0DB618276157C38F02727430CBD7D9FC5F6`
+
+**修复**：
+
+- 调用前用 `Get-Variable -Scope Script/Global` 精确保存“存在性 + 值”，不再
+  只读取未限定的当前值。
+- 清空改为 `Remove-Variable -Scope Script/Global`，不再赋 `$null`；这样
+  原本不存在的变量不会被本次调用创建成 null 变量。
+- finally 按保存的存在性恢复：原本存在则赋回原值；原本不存在则移除本次
+  引入的变量。script/global 在普通 `.ps1` 中可能别名同一作用域，移除/恢复
+  操作对两者都执行且幂等，不会删除祖先 local 变量。
+- 保留第 1/2 轮的 stderr 捕获、真实异常 fail-closed、显式作用域读取、
+  EAP/可用 native preference 局部还原。
+
+**验收**：矩阵扩展为 **51 例 = 16 global + 14 local + 14 script + 7
+existence**。7 个 existence 例全部从 script/global 变量缺失开始，覆盖
+no-native、native 0/1/2/17、throw、missing；断言调用前后
+`BeforeScript/BeforeGlobal=false`、`AfterScript/AfterGlobal=false`，并保留
+44 例 sentinel 覆盖。修前 44/51（7 failed，exit 1），修后 51/51
+（0 failed，exit 0）。caller 探针从 7/7 失败变为 0/7 失败、exit 0。
+详见 5.5。
+
 ---
 
 ## 4. 修复内容
 
 修复只在 `Invoke-Captured` 内：
 
-1. 调用前保存 `$ErrorActionPreference`、`$script:LASTEXITCODE`、`$global:LASTEXITCODE` 以及当前 host 可见的 `PSNativeCommandUseErrorActionPreference`。
+1. 调用前保存 `$ErrorActionPreference`、`$script:LASTEXITCODE` 与 `$global:LASTEXITCODE` 的**存在性和值**，以及当前 host 可见的 `PSNativeCommandUseErrorActionPreference`。
 2. 仅在该次调用内把 `$ErrorActionPreference` 设为 `Continue`，使 native stderr 以 `ErrorRecord` 到达管道而不是终止管道。
 3. 对 `FullyQualifiedErrorId` 为 `NativeCommandError*` 的记录，取 `$_.Exception.Message` 作为原始 stderr 行写入日志；不再保留 PowerShell 的 `program : ...`、`CategoryInfo` 包装。
 4. 对非 `NativeCommandError*` 的真实 PowerShell 错误记录重新 `throw`，由原 catch 记录异常并返回 null，保持 fail-closed。
-5. 调用前清空 `$script:LASTEXITCODE` 与 `$global:LASTEXITCODE`；读取只用这两个显式作用域。只有本次调用确实产生整数退出码才返回该值；无原生命令、命令未执行、退出码不确定或两作用域冲突时返回 null，并在日志中写明 uncertain。
-6. `finally` 恢复 `$ErrorActionPreference`、`PSNativeCommandUseErrorActionPreference`（若存在）与调用方 script/global `LASTEXITCODE`；调用方 local 值不修改。
+5. 调用前用 `Remove-Variable -Scope Script/Global` 清空 `LASTEXITCODE`；读取只用这两个显式作用域。只有本次调用确实产生整数退出码才返回该值；无原生命令、命令未执行、退出码不确定或两作用域冲突时返回 null，并在日志中写明 uncertain。
+6. `finally` 按保存的存在性恢复：原本存在则恢复 `$ErrorActionPreference`、`PSNativeCommandUseErrorActionPreference`（若存在）与 script/global `LASTEXITCODE` 值；原本不存在则移除本次引入的变量。调用方 local 值不修改。
 7. 日志在原有输出之后追加 `[verify-v5] native exit code: N` 诊断行；不参与任何测试结果判定。
 
 PowerShell 5.1 实测版本：`5.1.19041.6456`。本机未安装 `pwsh`，因此 **pwsh 实际运行未执行**；代码在存在 `PSNativeCommandUseErrorActionPreference` 时局部禁用并还原，避免 pwsh 7.3+ 把 native stderr 提升为终止错误。
@@ -262,6 +324,61 @@ caller 探针在**新的独占目录**重放（原始失败目录未改动）：
 修后 `post-fix-caller-probe/local-scope-results.json` SHA256：
 `910C86654279CAC0EE1E89B40045E4A2806ACA9049F3E2347851596EC6EDB360`。
 
+### 5.5 第 3 轮存在性矩阵（51 例）与 caller 重放
+
+同一测试脚本继续用 AST 提取真实生产 `Invoke-Captured`。矩阵构成为
+**16 global + 14 local + 14 script + 7 existence = 51 例**；44 例 sentinel
+覆盖保持不变，新增 7 例全部从 script/global `LASTEXITCODE` **不存在**开始：
+
+| # | existence 用例 | 期望 |
+|---:|---|---|
+| 1 | `no-native` | exit null；调用前后 script/global 均不存在 |
+| 2 | `native0` | exit 0；stdout+stderr；前后均不存在 |
+| 3 | `native1` | exit 1；stdout+stderr；前后均不存在 |
+| 4 | `native2` | exit 2；stdout+stderr；前后均不存在 |
+| 5 | `native17` | exit 17；stdout+stderr；前后均不存在 |
+| 6 | `throw` | exit null；前后均不存在 |
+| 7 | `missing` | exit null；前后均不存在 |
+
+每例同时检查 EAP 与可用 `PSNativeCommandUseErrorActionPreference` 保持。
+
+修前（`6f0a317:tools/verify-v5.ps1` 冻结 blob，git blob 校验一致；
+SHA256 `7184EBBF761D8E382F28697A4A8E1A75F2F1F0CF668070917795B81C6BAA48E3`）：
+
+```powershell
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+  -File tools/ci/test-v5-captured-exit.ps1 `
+  -EvidenceDir artifacts/d-capture-01-existence-8f540e41bb164f7581f6a00816bf0767/pre-fix-existence-matrix `
+  -VerifyScriptPath artifacts/d-capture-01-existence-8f540e41bb164f7581f6a00816bf0767/pre-fix-existence-verify-v5.ps1
+```
+
+结果：**44/51 passed，7 failed，exit 1**；7 个失败全部是存在性断言
+（`AfterScript=true`、`AfterGlobal=true`），退出码本身均正确。`results.json`
+SHA256：`219BE4E370F38FFB36A75FA8E0F0C2FE1F696AD0F6E335D38FADF4C182B643CA`。
+
+修后：
+
+```powershell
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+  -File tools/ci/test-v5-captured-exit.ps1 `
+  -EvidenceDir artifacts/d-capture-01-existence-8f540e41bb164f7581f6a00816bf0767/post-fix-existence-matrix
+```
+
+结果：**51/51 passed，0 failed，exit 0**；7 个 existence 例均为
+`BeforeScript/BeforeGlobal=false`、`AfterScript/AfterGlobal=false`。
+`results.json` SHA256：
+`FA94142218BBEB010C8877BD03C3D7FBD1CCEAD72819500317A8673C34AF6138`。
+
+caller 探针在新独占目录重放（原始失败目录未改动）：
+
+| 运行 | 失败数 | 探针 exit | 说明 |
+|---|---:|---:|---|
+| 修前 `pre-fix-caller-probe/` | 7/7 | 1 | 退出码正确，但变量被留下 |
+| 修后 `post-fix-caller-probe/` | 0/7 | 0 | 变量缺失状态保持 |
+
+修后 `post-fix-caller-probe/existence-results.json` SHA256：
+`ED8E2C6705CBACCD5B8B702B15C886540F2E1AC616128FC04D5292E81D713286`。
+
 ---
 
 ## 6. 现有工具测试与真实 runner 验证
@@ -351,7 +468,28 @@ powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
 
 第 2 轮证据根：`artifacts/d-capture-01-scope-d97531049e6940f5a56ff8f5514af540/`
 （含 `pre-fix-scope-verify-v5.ps1`、`pre-fix-scope-matrix/`、
-`pre-fix-scope-matrix/`、`post-fix-scope-matrix/`、`pre-fix-caller-probe/`、
+`post-fix-scope-matrix/`、`pre-fix-caller-probe/`、
+`post-fix-caller-probe/`、`existing-tests/`、`direct-run/`、`dotnet-test/`、
+`unified-tiny/`、`SHA256-MANIFEST.txt`）。
+
+### 6.6 第 3 轮 existence 修复后的复跑
+
+| 验证 | 第 3 轮结果 |
+|---|---|
+| `test-v5-captured-exit.ps1` | 51/51，exit 0（16 global + 14 local + 14 script + 7 existence） |
+| `test-v5-native-exit.ps1` | 6/6，exit 0 |
+| `test-v5-direct-results.ps1` | 19/19，负例仍红，exit 0 |
+| fresh direct build | exit 0；warning 0；error 0 |
+| fresh direct DLL | SHA256 `30FC29F581E0A413A3CC17E6DDA26ABF8E76CD670953030B7AF2E570A7E155D4`，fresh=true |
+| direct runner | native exit 0；selected/passed/failed/skipped/errors/notrun = 130/130/0/0/0/0 |
+| direct XML | 130 节点，gate PASS，SHA256 `83ABD0E78DE72C8166ACFD292E8D4C97C9A437E45E7F593018F772FB5DC15D6B` |
+| real `dotnet test` | exit 0；`Failed: 0, Passed: 130, Skipped: 0, Total: 130` |
+| isolated tiny unified | `OVERALL: PASS`，130/130，direct XML gate PASS，companion 4/4，plugin NOT_RUN，exit 0 |
+| tiny unified direct XML | SHA256 `6F38E2901A091FA661C76F81A3ECE91780BF65236C7A04E616F1E77D1CC4F09D` |
+
+第 3 轮证据根：`artifacts/d-capture-01-existence-8f540e41bb164f7581f6a00816bf0767/`
+（含 `pre-fix-existence-verify-v5.ps1`、`pre-fix-existence-matrix/`、
+`post-fix-existence-matrix/`、`pre-fix-caller-probe/`、
 `post-fix-caller-probe/`、`existing-tests/`、`direct-run/`、`dotnet-test/`、
 `unified-tiny/`、`SHA256-MANIFEST.txt`）。
 
@@ -368,11 +506,13 @@ powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
 
 ### 7.2 本轮已验证
 
-- 捕获边界：第 1 轮 16/16；第 2 轮扩展为 44/44，真实子进程矩阵通过。
+- 捕获边界：第 1 轮 16/16；第 2 轮扩展为 44/44；第 3 轮扩展为 51/51，
+  真实子进程矩阵通过。
 - caller 探针：第 1 轮 stderr 场景修后 `capturedExit=0`；第 2 轮 local-scope
-  场景修后 `(null, 17)`，stderr 与 sentinel 保持。
+  场景修后 `(null, 17)`；第 3 轮 existence 场景由 7/7 失败变为 0/7 失败、
+  exit 0。
 - 现有 native-exit 与 direct-results 工具测试：通过，负例仍红。
-- fresh 小型 build / dotnet test / direct runner / tiny unified：第 2 轮复跑通过。
+- fresh 小型 build / dotnet test / direct runner / tiny unified：第 3 轮复跑通过。
 
 ### 7.3 未跑 / 明确缺口
 
@@ -402,8 +542,8 @@ PR20 的两条 CI：
 
 | 文件 | 变更 |
 |---|---|
-| `tools/verify-v5.ps1` | `Invoke-Captured` 捕获边界 + script/global 作用域修复 |
-| `tools/ci/test-v5-captured-exit.ps1` | 真实子进程矩阵，第 2 轮扩展到 44 例（AST 提取生产函数） |
+| `tools/verify-v5.ps1` | `Invoke-Captured` 捕获边界 + script/global 作用域 + 存在性还原 |
+| `tools/ci/test-v5-captured-exit.ps1` | 真实子进程矩阵，第 3 轮扩展到 51 例（44 sentinel + 7 existence） |
 | `doc/v5-重构/V5-NATIVE-CAPTURE-DELIVERY-20261029.md` | 本交付文档 |
 
 ### 8.2 提交
@@ -412,6 +552,7 @@ PR20 的两条 CI：
 |---|---|
 | `36d332592cfcd2879d786d01137297ec97b3f1` | 第 1 轮 `fix(v5): capture native stderr without losing exit codes` |
 | `3ceef6b8a4056e5a1de01dea64328304f77f7b14` | 第 2 轮 `fix(v5): prevent caller-local LASTEXITCODE shadowing`（scope 修复 + 44 例矩阵） |
+| `3a39ab8a9ce3953e5e047ec8071557b66c0d5873` | 第 3 轮 `fix(v5): preserve LASTEXITCODE variable existence`（存在性还原 + 51 例矩阵） |
 | 本文件提交 | 交付文档更新；提交后最终 HEAD 以 `git rev-parse HEAD` 与最终回复为准 |
 
 ### 8.3 证据目录
@@ -428,33 +569,38 @@ artifacts/d-capture-01-54b8788057ae426e90759cbfa3facb4d/
 artifacts/d-capture-01-scope-d97531049e6940f5a56ff8f5514af540/
 ```
 
-第 2 轮根包含：
+第 3 轮证据根：
 
-- `pre-fix-scope-verify-v5.ps1`：`3b8af95:tools/verify-v5.ps1` 冻结副本，
+```text
+artifacts/d-capture-01-existence-8f540e41bb164f7581f6a00816bf0767/
+```
+
+第 3 轮根包含：
+
+- `pre-fix-existence-verify-v5.ps1`：`6f0a317:tools/verify-v5.ps1` 冻结副本，
   git blob 校验一致；SHA256
-  `B718A14A70E953CACEE726A9C263317FDABFC33BFEF3E66F6411544EEF5C822E`
-- `pre-fix-scope-matrix/`：修前 44 例结果（35/44，9 failed，exit 1）
-- `post-fix-scope-matrix/`：修后 44 例结果（44/44，0 failed，exit 0）
-- `pre-fix-caller-probe/`、`post-fix-caller-probe/`：caller local-scope 重放
-- `direct-run/`、`direct-run-result.json`
-- `dotnet-test/`
-- `unified-tiny/`（console、summary、run-info、meta、XML）
+  `7184EBBF761D8E382F28697A4A8E1A75F2F1F0CF668070917795B81C6BAA48E3`
+- `pre-fix-existence-matrix/`：修前 51 例结果（44/51，7 failed，exit 1）
+- `post-fix-existence-matrix/`：修后 51 例结果（51/51，0 failed，exit 0）
+- `pre-fix-caller-probe/`、`post-fix-caller-probe/`：caller existence 重放
+- `existing-tests/`、`direct-run/`、`dotnet-test/`、`unified-tiny/`
 - `SHA256-MANIFEST.txt`（全部证据文件清单）
 
 关键 SHA256：
 
 | 对象 | SHA256 |
 |---|---|
-| 当前 `tools/verify-v5.ps1` | `7184EBBF761D8E382F28697A4A8E1A75F2F1F0CF668070917795B81C6BAA48E3` |
-| 当前 `tools/ci/test-v5-captured-exit.ps1` | `DC0F28BF5310D62DC59BB7D08C425D8E55D69719CCD7952AA1DC30962AFBE712` |
-| 修前 44 例 `results.json` | `2585A49E57D20AE24E912A0FE3032B1625BAB63EEC8F0D352F51D0918A0EDBC4` |
-| 修后 44 例 `results.json` | `ED0003A4D7AF0C0BB786B9AD08C3E9D35B751041796AE6C0987191CF2018EB73` |
-| 修后 caller local-scope JSON | `910C86654279CAC0EE1E89B40045E4A2806ACA9049F3E2347851596EC6EDB360` |
-| 第 2 轮 direct XML | `6A152B9A3B5D6B1D03B4D21369477D4AD7941F0896FF728CB7AA6A06711832B9` |
-| 第 2 轮 direct DLL | `DD69DAE437C9629CF534B5C28CD89CFCC5C1D86794556020C8C0EE5FBE5CAF9C` |
-| 第 2 轮 tiny unified XML | `535102AC0954BF828F8D98F1F8FD92950B9C696DB3AF1F6262E7229AC7974B11` |
+| 当前 `tools/verify-v5.ps1` | `363A398D9CEFCA1C7F2BA5AC5DD2B7989BD6EDE49812C6E1E9BA487CAD7EDE66` |
+| 当前 `tools/ci/test-v5-captured-exit.ps1` | `23E30A125D683BCBDAFF4B33ADE5B3FD14E2A3420965F8B253981F25C5A1FA26` |
+| 修前 51 例 `results.json` | `219BE4E370F38FFB36A75FA8E0F0C2FE1F696AD0F6E335D38FADF4C182B643CA` |
+| 修后 51 例 `results.json` | `FA94142218BBEB010C8877BD03C3D7FBD1CCEAD72819500317A8673C34AF6138` |
+| 修后 caller existence JSON | `ED8E2C6705CBACCD5B8B702B15C886540F2E1AC616128FC04D5292E81D713286` |
+| 第 3 轮 direct XML | `83ABD0E78DE72C8166ACFD292E8D4C97C9A437E45E7F593018F772FB5DC15D6B` |
+| 第 3 轮 direct DLL | `30FC29F581E0A413A3CC17E6DDA26ABF8E76CD670953030B7AF2E570A7E155D4` |
+| 第 3 轮 tiny unified XML | `6F38E2901A091FA661C76F81A3ECE91780BF65236C7A04E616F1E77D1CC4F09D` |
+| 原 caller existence `probe-existence.ps1` | `FBEECE04D1E48306E37CC8C0DFF318FDB987C71CC6F5DDC92FFE7C1F2A6986F8` |
+| 原 caller existence `existence-results.json` | `F6C277F9B575EFBEF4C2582030A8A0DB618276157C38F02727430CBD7D9FC5F6` |
 | 原 caller local-scope `probe.ps1` | `CE32D23A31EFCABA0CB34616F77B3551D5959E308F1AAD3006F8517FFAF6E9CA` |
-| 原 caller local-scope `local-scope-results.json` | `E70C65F067BE02F66DC9CBB8DA5FC731B0B19BD8F10A9D7CAC65799313F8758E` |
 | 原 caller stderr `stderr-probe.json` | `CC934DCF7A06E5CD2990ADC9CCF3566230DD115159577BCA3173EC6F09A11429` |
 
 ### 8.4 冻结/最终 SHA 与净 diff
@@ -462,7 +608,8 @@ artifacts/d-capture-01-scope-d97531049e6940f5a56ff8f5514af540/
 - 冻结基线：`e3ddd83fec0bc2592bb490594e5452b672bbb8f7`
 - 第 1 轮实现提交：`36d332592cfcd2879d786d01137297ec97b3f1`
 - 第 2 轮实现提交：`3ceef6b8a4056e5a1de01dea64328304f77f7b14`
-- 第 2 轮实现提交净变更：2 files changed，165 insertions(+)，18 deletions(-)
+- 第 3 轮实现提交：`3a39ab8a9ce3953e5e047ec8071557b66c0d5873`
+- 第 3 轮实现提交净变更：2 files changed，175 insertions(+)，12 deletions(-)
 - 交付文档提交后的最终 HEAD、`git status`、`git diff --check e3ddd83..HEAD` 与净 diff，以最终回复中的实测为准。
 
 ---
@@ -476,5 +623,6 @@ artifacts/d-capture-01-scope-d97531049e6940f5a56ff8f5514af540/
 - 没有只匹配/过滤 `RECOVERY_LEASE_HELD` 特例。
 - 没有只修 caller 探针、只对 exit 17 做特例，或用 global-only sentinel 代替
   local/script 覆盖。
+- 没有把“值为 null 的现有变量”当作“变量不存在”，也没有用赋 null 代替移除。
 - 没有 push、PR/MR、合并到 `v5`、部署或创建 `complete.flag`。
 - 没有接管另一 caller 的 PG/WSS 集群或进程。
