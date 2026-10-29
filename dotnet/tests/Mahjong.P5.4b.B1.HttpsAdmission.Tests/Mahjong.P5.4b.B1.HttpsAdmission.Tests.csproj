@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Focused P5.4b-B1 unit project: it pins the SAME strict trust policy and
+    receipt-loss decorator that the real HTTPS/WSS worker uses. It is not a
+    substitute for the worker's network evidence and is not registered in
+    Mahjong.sln (the caller performs the serial solution registration).
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
+    <LangVersion>12.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <Deterministic>true</Deterministic>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <AssemblyName>Mahjong.P5.4b.B1.HttpsAdmission.Tests</AssemblyName>
+    <RootNamespace>Mahjong.P5_4b.B1.HttpsAdmission.Tests</RootNamespace>
+    <NoWarn>$(NoWarn);xUnit1051</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" Version="4.0.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Mahjong.Client\Mahjong.Client.csproj" />
+    <ProjectReference Include="..\..\src\Mahjong.Contracts\Mahjong.Contracts.csproj" />
+    <ProjectReference Include="..\..\src\Mahjong.Contracts.Wire\Mahjong.Contracts.Wire.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Mahjong.P5.4b.B1.HttpsAdmission.Worker\StrictRootTrust.cs" LinkBase="Shared" />
+    <Compile Include="..\Mahjong.P5.4b.B1.HttpsAdmission.Worker\ReceiptLossChannel.cs" LinkBase="Shared" />
+  </ItemGroup>
+
+</Project>
