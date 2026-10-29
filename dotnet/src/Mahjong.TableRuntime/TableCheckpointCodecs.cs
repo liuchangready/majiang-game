@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
@@ -246,7 +246,7 @@ namespace Mahjong.TableRuntime
 
     public static class TableTimingCheckpointCodec
     {
-        public const int FormatVersion = 2;
+        public const int FormatVersion = 3;
         private const int Magic = 0x4D4A5443; // MJTC
 
         public static byte[] Encode(TableTimingCheckpoint checkpoint)
@@ -306,6 +306,13 @@ namespace Mahjong.TableRuntime
                         {
                             writer.Write(option.OptionId);
                         }
+
+                        IReadOnlyList<TileId> optionTiles = option.Tiles;
+                        writer.Write(optionTiles.Count);
+                        for (int t = 0; t < optionTiles.Count; t++)
+                        {
+                            writer.Write(optionTiles[t].Value);
+                        }
                     }
                 }
 
@@ -330,7 +337,7 @@ namespace Mahjong.TableRuntime
                 }
 
                 int schema = reader.ReadInt32();
-                if (schema != FormatVersion)
+                if (schema != 2 && schema != FormatVersion)
                 {
                     throw new InvalidDataException("Unsupported timing checkpoint schema " + schema + ".");
                 }
@@ -384,7 +391,29 @@ namespace Mahjong.TableRuntime
                             throw new InvalidDataException("Timing checkpoint candidate kind is invalid.");
                         }
 
-                        candidates.Add(new LegalActionOption((LegalActionKind)kind, seat, tile, optionId));
+                        TileId[]? tiles = null;
+                        if (schema >= 3)
+                        {
+                            int tileCount = reader.ReadInt32();
+                            if (tileCount < 0 || tileCount > 136)
+                            {
+                                throw new InvalidDataException("Timing checkpoint candidate tile count is invalid: " + tileCount);
+                            }
+
+                            tiles = new TileId[tileCount];
+                            for (int t = 0; t < tileCount; t++)
+                            {
+                                int tileVal = reader.ReadInt32();
+                                if (tileVal < 0 || tileVal >= TileId.Count)
+                                {
+                                    throw new InvalidDataException("Timing checkpoint candidate tile value is invalid: " + tileVal);
+                                }
+
+                                tiles[t] = new TileId(tileVal);
+                            }
+                        }
+
+                        candidates.Add(new LegalActionOption((LegalActionKind)kind, seat, tile, optionId, tiles));
                     }
 
                     decisions.Add(new TableRecoveredDecision(

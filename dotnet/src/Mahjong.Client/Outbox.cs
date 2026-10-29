@@ -228,6 +228,28 @@ namespace Mahjong.Client
         public bool Succeeded =>
             Disposition == OutboxDisposition.Applied || Disposition == OutboxDisposition.Recorded;
 
+        /// <summary>
+        /// A durable control result is not a state-version command. It is identified by the
+        /// control request kind and the LOCAL_CONTROL reason; it deliberately has no
+        /// command_version/event_seq and never fabricates one.
+        /// </summary>
+        public static OutboxResolution ControlApplied(
+            StateVersion evaluated,
+            string canonicalPayloadSha256,
+            bool fromLookup)
+        {
+            return new OutboxResolution(
+                OutboxDisposition.Recorded,
+                ReceiptStatus.Recorded,
+                "LOCAL_CONTROL",
+                evaluated,
+                null,
+                null,
+                null,
+                canonicalPayloadSha256,
+                fromLookup);
+        }
+
         public static OutboxResolution FromReceipt(ReceiptStatus status, string? reasonCode, StateVersion evaluated, StateVersion? commandVersion, EventSeq? eventSeq, ulong? committedAtMs, string sha256, bool fromLookup)
         {
             switch (status)

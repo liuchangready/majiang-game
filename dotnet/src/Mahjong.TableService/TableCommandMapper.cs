@@ -166,10 +166,20 @@ namespace Mahjong.TableService
 
         public const string ResponseEligibilityDetail = "RESPONSE_WINDOW_AUTHORITY_UNAVAILABLE";
 
+        // Frozen Contracts (PR20) control payload tags:
+        //   CommandPayloadFields.ControlRoundId = 20 (string)
+        //   CommandPayloadFields.ExpectedControlEpochV2 = 21 (uint64)
+        // Local constants keep this mapper buildable in the pre-PR20 delivery tree and in
+        // the integrated PR20 tree without changing the frozen Contracts surface.
+        private const ushort ControlRoundIdField = 20;
+
+        private const ushort ControlExpectedEpochField = 21;
+
         public static TableCommandRoute Map(
             TableConnectionIdentity identity,
             Envelope envelope,
             OwnerEpoch currentOwnerEpoch,
+            long recoveryGeneration,
             TableServiceOptions options,
             string? authoritativeRoundId,
             Func<uint, TableBeamSwapSlotResolution?>? beamSwapSlotResolver = null,
@@ -281,7 +291,7 @@ namespace Mahjong.TableService
                 case CommandKind.SubmitAction:
                     return MapSubmitAction(
                         identity, requestId, payload, expectedStateVersion, ownerEpoch, digest,
-                        responseEligibilityResolver);
+                        recoveryGeneration, responseEligibilityResolver);
 
                 case CommandKind.SubmitTileMark:
                 case CommandKind.SubmitSleeveBloom:
@@ -292,7 +302,7 @@ namespace Mahjong.TableService
                 case CommandKind.SubmitBeamSwapChoice:
                     return MapCheat(
                         identity, kind, requestId, payload, expectedStateVersion, ownerEpoch, controlEpoch, digest,
-                        options, authoritativeRoundId, beamSwapSlotResolver);
+                        recoveryGeneration, options, authoritativeRoundId, beamSwapSlotResolver);
 
                 case CommandKind.ClaimControl:
                 case CommandKind.ReleaseControl:
@@ -333,6 +343,7 @@ namespace Mahjong.TableService
             StateVersion expectedStateVersion,
             OwnerEpoch ownerEpoch,
             TablePayloadSha256 digest,
+            long recoveryGeneration,
             Func<int, TileId, ulong, TableCommandRouteResponseEligibility?>? responseEligibilityResolver)
         {
             CanonicalPayloadDocument document = CanonicalPayloadParser.Parse(payload);
@@ -423,7 +434,7 @@ namespace Mahjong.TableService
                 ownerEpoch,
                 controlEpoch,
                 new DecisionId(decisionId),
-                recoveryGeneration: 0L,
+                recoveryGeneration: recoveryGeneration,
                 new RequestScopeId(identity.ScopeId),
                 "SUBMIT_ACTION",
                 digest);
@@ -439,6 +450,7 @@ namespace Mahjong.TableService
             OwnerEpoch ownerEpoch,
             ControlEpoch controlEpoch,
             TablePayloadSha256 digest,
+            long recoveryGeneration,
             TableServiceOptions options,
             string? authoritativeRoundId,
             Func<uint, TableBeamSwapSlotResolution?>? beamSwapSlotResolver)
@@ -596,7 +608,7 @@ namespace Mahjong.TableService
                 ownerEpoch,
                 controlEpoch,
                 envelopeDecisionId,
-                recoveryGeneration: 0L,
+                recoveryGeneration: recoveryGeneration,
                 new RequestScopeId(identity.ScopeId),
                 ApiFor(kind),
                 digest);
@@ -611,8 +623,20 @@ namespace Mahjong.TableService
             OwnerEpoch ownerEpoch)
         {
             CanonicalPayloadDocument document = CanonicalPayloadParser.Parse(payload);
+            // D-LH-GATE-01: the frozen Client contract writes ControlRoundId=20 and
+            // ExpectedControlEpochV2=21. The legacy expectedControlEpoch tag (1) is never
+            // accepted as a compatibility fallback — an old-tag payload is refused exactly
+            // like any other malformed control command.
+            if (document.HasField(CommandPayloadFields.ExpectedControlEpoch))
+            {
+                throw new CanonicalEncodingException(
+                    "A control command must use the frozen ControlRoundId/ExpectedControlEpochV2 tags; " +
+                    "the legacy expectedControlEpoch tag is not accepted.");
+            }
+
+            _ = document.RequireString(ControlRoundIdField, "roundId");
             var expectedControlEpoch = new ControlEpoch(
-                document.RequireUInt64(CommandPayloadFields.ExpectedControlEpoch, "expectedControlEpoch"));
+                document.RequireUInt64(ControlExpectedEpochField, "expectedControlEpoch"));
             bool reclaim = kind == CommandKind.ClaimControl;
             return new TableCommandRoute.Control(
                 reclaim,

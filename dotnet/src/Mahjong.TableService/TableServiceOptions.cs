@@ -12,6 +12,19 @@ namespace Mahjong.TableService
     }
 
     /// <summary>
+    /// Where a host's rooms live (P5.4b-A). <see cref="Memory"/> is the accepted P3.4/P5.1
+    /// in-process mode; <see cref="Postgres"/> binds every room's events, receipts,
+    /// checkpoints, scopes, lease and settlement outbox to the P5.2 table_store database.
+    /// A misconfigured persistent host refuses to start — it never silently falls back to
+    /// memory.
+    /// </summary>
+    public enum TableHostStoreMode : byte
+    {
+        Memory = 0,
+        Postgres = 1
+    }
+
+    /// <summary>
     /// Frozen V5 /v1/table host configuration. Every value is explicit; defaults mirror the
     /// frozen wire limits and the V5 heartbeat design values recorded in the protocol
     /// decisions. <see cref="Validate"/> is fail-closed: a production host without validation
@@ -83,8 +96,35 @@ namespace Mahjong.TableService
         // transport heartbeats cannot block actor rule deadlines.
         public int RoomTickIntervalMs { get; set; } = 250;
 
+        // Fixed HTTP listener port for production deployments (0 = bind an ephemeral port,
+        // which is what unit tests and bare local runs use). A deployed host must be
+        // reachable at a known address, so the entry point passes this to Kestrel.
+        public int HttpPort { get; set; }
+
         // Durable port wiring (accepted P3.4 in-memory implementations; PG arrives with P5.2).
         public int LeaseTtlSeconds { get; set; } = 90;
+
+        // P5.4b-A durable host assembly. In Postgres mode the SAME P5.2 store backs the
+        // actors' durable context AND the host's scope issuance — there is no hybrid mode
+        // and no in-memory fallback; a bad connection string, key or schema refuses the
+        // build. The payload key may be blank here, in which case PostgresTableOptions
+        // reads MAHJONG_TABLE_PG_PAYLOAD_KEY itself (and refuses to start without it).
+        public TableHostStoreMode StoreMode { get; set; } = TableHostStoreMode.Memory;
+
+        public string? PostgresConnectionString { get; set; }
+
+        public string? PostgresPayloadKeyBase64 { get; set; }
+
+        public int PostgresCommandTimeoutSeconds { get; set; } = 15;
+
+        public int PostgresMaxPoolSize { get; set; } = 20;
+
+        /// <summary>
+        /// Apply the idempotent table_store migration at startup before serving. An operator
+        /// who pre-applies the schema may leave this off; readiness is still gated on a
+        /// verified schema either way.
+        /// </summary>
+        public bool PostgresApplyMigrations { get; set; }
 
         // Operator drain endpoint. Disabled (404) unless a token is configured.
         public string? AdminDrainToken { get; set; }
@@ -127,6 +167,17 @@ namespace Mahjong.TableService
             RequireRange(MaxRetainedConsumedTickets, 1024, 16_777_216, nameof(MaxRetainedConsumedTickets));
             RequireRange(RoomTickIntervalMs, 10, 60_000, nameof(RoomTickIntervalMs));
             RequireRange(LeaseTtlSeconds, 5, 3_600, nameof(LeaseTtlSeconds));
+            RequireRange(HttpPort, 0, 65_535, nameof(HttpPort));
+
+            // P5.4b-A: a Postgres-mode host REQUIRES a connection string here and a payload
+            // key from this field or MAHJONG_TABLE_PG_PAYLOAD_KEY (refused inside
+            // PostgresTableOptions). The key itself is never logged or rendered.
+            if (StoreMode == TableHostStoreMode.Postgres)
+            {
+                RequireNotBlank(PostgresConnectionString!, nameof(PostgresConnectionString));
+                RequireRange(PostgresCommandTimeoutSeconds, 1, 600, nameof(PostgresCommandTimeoutSeconds));
+                RequireRange(PostgresMaxPoolSize, 1, 200, nameof(PostgresMaxPoolSize));
+            }
         }
 
         private static void RequireNotBlank(string value, string name)

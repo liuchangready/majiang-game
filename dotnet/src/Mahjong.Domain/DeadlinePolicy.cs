@@ -20,13 +20,33 @@ namespace Mahjong.Domain
 
     public sealed class LegalActionOption
     {
-        public LegalActionOption(LegalActionKind kind, int seat, TileId? tile = null, string? optionId = null)
+        private readonly System.Collections.ObjectModel.ReadOnlyCollection<TileId> _tiles;
+
+        public LegalActionOption(LegalActionKind kind, int seat, TileId? tile = null, string? optionId = null, IReadOnlyList<TileId>? tiles = null)
         {
             V5Guard.CheckSeat(seat);
             Kind = kind;
             Seat = seat;
             Tile = tile;
             OptionId = optionId;
+            if (tiles != null && tiles.Count > 0)
+            {
+                var list = new List<TileId>(tiles.Count);
+                for (int i = 0; i < tiles.Count; i++)
+                {
+                    list.Add(tiles[i]);
+                }
+
+                _tiles = list.AsReadOnly();
+            }
+            else if (tile.HasValue)
+            {
+                _tiles = new List<TileId> { tile.Value }.AsReadOnly();
+            }
+            else
+            {
+                _tiles = new List<TileId>().AsReadOnly();
+            }
         }
 
         public LegalActionKind Kind { get; }
@@ -37,12 +57,25 @@ namespace Mahjong.Domain
 
         public string? OptionId { get; }
 
+        public IReadOnlyList<TileId> Tiles => _tiles;
+
         internal bool Matches(LegalActionOption other)
         {
             return Kind == other.Kind &&
                    Seat == other.Seat &&
                    Nullable.Equals(Tile, other.Tile) &&
-                   string.Equals(OptionId, other.OptionId, StringComparison.Ordinal);
+                   string.Equals(OptionId, other.OptionId, StringComparison.Ordinal) &&
+                   MatchesTiles(other);
+        }
+
+        private bool MatchesTiles(LegalActionOption other)
+        {
+            if (_tiles.Count != other._tiles.Count) return false;
+            for (int i = 0; i < _tiles.Count; i++)
+            {
+                if (_tiles[i] != other._tiles[i]) return false;
+            }
+            return true;
         }
 
         public override string ToString() => Kind + "/seat" + Seat + (Tile.HasValue ? "/" + Tile.Value : string.Empty);
