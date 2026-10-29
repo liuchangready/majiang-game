@@ -24,11 +24,20 @@ namespace Mahjong.LocalHost.Tests
             using var aCts = new CancellationTokenSource();
             Task a = OpenWithTicketAsync(channel, harness, aCts.Token);
             Task b = OpenWithTicketAsync(channel, harness, ct);
-            await Task.Delay(100, ct);
-            aCts.Cancel();
-            gate.TrySetResult(true);
+            try
+            {
+                Assert.Equal(2, channel.WaiterCount);
+                aCts.Cancel();
+                // Observe cancellation while the shared open is still gated. Releasing the
+                // gate first makes cancellation and successful completion race each other.
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await a);
+                Assert.False(b.IsCompleted);
+            }
+            finally
+            {
+                gate.TrySetResult(true);
+            }
 
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await a);
             await b;
             Assert.True(channel.IsOpen);
 
