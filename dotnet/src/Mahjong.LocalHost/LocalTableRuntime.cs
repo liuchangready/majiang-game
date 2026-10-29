@@ -777,7 +777,14 @@ namespace Mahjong.LocalHost
             }
 
             string? pendingDecision = _actor.GetPendingDecisionId(_seat);
-            if (RejectStaleDecision(envelope, kind, requestId, expected, payload, pendingDecision))
+            if (await RejectStaleDecisionAsync(
+                    envelope,
+                    kind,
+                    requestId,
+                    expected,
+                    payload,
+                    pendingDecision,
+                    cancellationToken).ConfigureAwait(false))
             {
                 return;
             }
@@ -1105,35 +1112,69 @@ namespace Mahjong.LocalHost
             return await _actor.SubmitSettlementAsync(request, cancellationToken).ConfigureAwait(false);
         }
 
-        private bool RejectStaleDecision(
+        private async Task<bool> RejectStaleDecisionAsync(
             Envelope envelope,
             CommandKind kind,
             RequestId requestId,
             StateVersion expected,
             BusinessPayload payload,
-            string? pendingDecision)
+            string? pendingDecision,
+            CancellationToken cancellationToken)
         {
             string suppliedDecision = envelope.Command?.ExpectedDecisionId ?? string.Empty;
-            if (!string.IsNullOrEmpty(suppliedDecision) &&
-                !string.Equals(suppliedDecision, pendingDecision, StringComparison.Ordinal))
+            if (string.IsNullOrEmpty(suppliedDecision) ||
+                string.Equals(suppliedDecision, pendingDecision, StringComparison.Ordinal))
             {
-                // A stale decision identity is a definitive rejection of this request,
-                // not a transport fault: the outbox entry must receive a RECEIPT and be
-                // resolved exactly like any other rejected side effect. The rejection
-                // is durably committed first so a lost reply packet still reconciles
-                // by receipt query.
-                RejectDurably(
+                return false;
+            }
+
+            // A stale decision identity is a definitive rejection of this request,
+            // not a transport fault: the outbox entry must receive a RECEIPT and be
+            // resolved exactly like any other rejected side effect. The ordering
+            // mirrors the control path: an already-committed record under this
+            // idempotency key is decisive first (exact replay replays, different
+            // bytes or kind conflict)...
+            if (await RejectFromDurableReceiptAsync(
                     envelope,
                     kind,
                     requestId,
                     expected,
-                    ProtocolErrorCode.DecisionMismatch,
-                    "The command decision id is not the current pending decision.",
-                    payload);
+                    payload,
+                    _connectionScopeId ?? default,
+                    cancellationToken).ConfigureAwait(false))
+            {
                 return true;
             }
 
-            return false;
+            // ...then a genuinely new request must be authorized before any durable
+            // rejection is written: an expired or revoked scope must not borrow the
+            // rejection path to gain a persisted record, so its answer stays
+            // transport-only.
+            LocalCommandException? scopeError = await ValidateControlScopeAsync(cancellationToken)
+                .ConfigureAwait(false);
+            if (scopeError != null)
+            {
+                Enqueue(RejectedReceipt(
+                    envelope,
+                    requestId,
+                    expected,
+                    scopeError.Code,
+                    scopeError.Message,
+                    payload));
+                return true;
+            }
+
+            // The rejection is durably committed first so a lost reply packet still
+            // reconciles by receipt query.
+            RejectDurably(
+                envelope,
+                kind,
+                requestId,
+                expected,
+                ProtocolErrorCode.DecisionMismatch,
+                "The command decision id is not the current pending decision.",
+                payload);
+            return true;
         }
 
         /// <summary>
@@ -1411,9 +1452,18 @@ namespace Mahjong.LocalHost
 
                 // Only a genuinely new, authorized control request is checked against
                 // the current decision; its rejection is durably committed before the
-                // receipt is published so a lost reply still reconciles by query.
+                // receipt is published so a lost reply still reconciles by query. The
+                // stale-decision rejection re-derives the receipt guard and scope
+                // authorization itself, so both command paths share one ordering.
                 string? pendingDecision = _actor.GetPendingDecisionId(_seat);
-                if (RejectStaleDecision(envelope, kind, requestId, expected, payload, pendingDecision))
+                if (await RejectStaleDecisionAsync(
+                        envelope,
+                        kind,
+                        requestId,
+                        expected,
+                        payload,
+                        pendingDecision,
+                        cancellationToken).ConfigureAwait(false))
                 {
                     return;
                 }
