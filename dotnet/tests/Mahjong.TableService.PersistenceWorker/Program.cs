@@ -28,6 +28,10 @@ namespace Mahjong.TableService.PersistenceWorker
     ///                       the machine trust store is never touched
     ///   phase1              admit through a REAL host, apply one legal action, same-key replay, record state
     ///   phase2              re-admit after cold recovery, explicit receipt query + same-key replay
+    ///   claimed-host        deterministic real-WSS host: real discard + Chi/Pon + post-claim
+    ///                       checkpoint through its own actor, then hold sessions live for -9
+    ///   claimed-recover     NEW process: cold-recover the claimed opening fact/history,
+    ///                       reconcile the old receipt, continue one real action, assert 136
     ///   admitprobe          attempt one admission and report the exact refusal shape (expect NO welcome)
     ///   crossaccount        a foreign account's receipt query is refused; an unknown request has no side effect
     ///   tamper-event-hash   corrupt one committed event blob byte (fail-closed recovery probe)
@@ -80,6 +84,10 @@ namespace Mahjong.TableService.PersistenceWorker
                         return await RunPhase1Async(options).ConfigureAwait(false);
                     case "phase2":
                         return await RunPhase2Async(options).ConfigureAwait(false);
+                    case "claimed-host":
+                        return await ClaimedOpeningWorker.RunHostAsync(options).ConfigureAwait(false);
+                    case "claimed-recover":
+                        return await ClaimedOpeningWorker.RunRecoverAsync(options).ConfigureAwait(false);
                     case "admitprobe":
                         return await RunAdmitProbeAsync(options).ConfigureAwait(false);
                     case "crossaccount":
@@ -134,7 +142,7 @@ namespace Mahjong.TableService.PersistenceWorker
             return options;
         }
 
-        private static string Require(Dictionary<string, string> options, string name)
+        internal static string Require(Dictionary<string, string> options, string name)
         {
             if (!options.TryGetValue(name, out string? value) || string.IsNullOrWhiteSpace(value))
             {
@@ -144,7 +152,7 @@ namespace Mahjong.TableService.PersistenceWorker
             return value;
         }
 
-        private static string? Optional(Dictionary<string, string> options, string name)
+        internal static string? Optional(Dictionary<string, string> options, string name)
         {
             return options.TryGetValue(name, out string? value) && !string.IsNullOrWhiteSpace(value)
                 ? value
@@ -155,7 +163,7 @@ namespace Mahjong.TableService.PersistenceWorker
         // Shared evidence helpers
         // ------------------------------------------------------------------
 
-        private static async Task WriteJsonAsync(string path, object value)
+        internal static async Task WriteJsonAsync(string path, object value)
         {
             string directory = Path.GetDirectoryName(Path.GetFullPath(path)) ?? ".";
             Directory.CreateDirectory(directory);
@@ -164,14 +172,14 @@ namespace Mahjong.TableService.PersistenceWorker
             Console.WriteLine("wrote " + Path.GetFileName(path));
         }
 
-        private static async Task<JsonElement> ReadJsonAsync(string path)
+        internal static async Task<JsonElement> ReadJsonAsync(string path)
         {
             string json = await File.ReadAllTextAsync(path).ConfigureAwait(false);
             using var document = JsonDocument.Parse(json);
             return document.RootElement.Clone();
         }
 
-        private static string RequireRuntimeConnection()
+        internal static string RequireRuntimeConnection()
         {
             return RequireEnvironment("MAHJONG_P54B_TEST_PG");
         }
@@ -197,7 +205,7 @@ namespace Mahjong.TableService.PersistenceWorker
             return value;
         }
 
-        private static async Task<int> ScalarCountAsync(string connectionString, string sql, string? roomId)
+        internal static async Task<int> ScalarCountAsync(string connectionString, string sql, string? roomId)
         {
             await using var connection = new NpgsqlConnection(connectionString);
             await connection.OpenAsync().ConfigureAwait(false);
@@ -235,7 +243,7 @@ namespace Mahjong.TableService.PersistenceWorker
         /// <summary>Counts the durable APPLIED receipt rows bound to one exact historical
         /// (account, scope, request) key at one exact command version — the auto-draw-immune
         /// side-effect ledger for the crash-replay contract.</summary>
-        private static async Task<int> CountLedgerRowAsync(string requestId, string scopeId, long commandVersion)
+        internal static async Task<int> CountLedgerRowAsync(string requestId, string scopeId, long commandVersion)
         {
             await using var connection = new NpgsqlConnection(RequireRuntimeConnection());
             await connection.OpenAsync().ConfigureAwait(false);
@@ -473,7 +481,7 @@ CASCADE";
         /// the worker never falls back to machine trust. Plain ws:// keeps the prior
         /// behavior so the memory-mode harnesses are untouched.
         /// </summary>
-        private static Task<TableTestClient> ConnectTableClientAsync(Dictionary<string, string> options, string url)
+        internal static Task<TableTestClient> ConnectTableClientAsync(Dictionary<string, string> options, string url)
         {
             if (url.StartsWith("wss://", StringComparison.OrdinalIgnoreCase))
             {
@@ -644,7 +652,7 @@ CASCADE";
             return ExitOk;
         }
 
-        private static async Task<Envelope> SendAndAwaitReceiptAsync(
+        internal static async Task<Envelope> SendAndAwaitReceiptAsync(
             TableTestClient client,
             Welcome welcome,
             string requestId,

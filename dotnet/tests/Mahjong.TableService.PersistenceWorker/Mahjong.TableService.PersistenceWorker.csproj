@@ -39,6 +39,7 @@
     <Compile Include="..\Mahjong.TableService.Tests\TestSupport\TableTestClient.cs" LinkBase="TestSupport" />
     <Compile Include="..\Mahjong.TableService.Tests\TestSupport\TableTestSigner.cs" LinkBase="TestSupport" />
     <Compile Include="..\Mahjong.TableService.Tests\TestSupport\TableServiceTestHost.cs" LinkBase="TestSupport" />
+    <Compile Include="..\Mahjong.TableService.Tests\TestSupport\N1aRoundSource.cs" LinkBase="TestSupport" />
   </ItemGroup>
 
 </Project>

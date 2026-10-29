@@ -1525,6 +1525,67 @@ try {
     Stop-TableHost -Process $hostE -Name 'host-e'
     Add-Stage 'e2e-tamper-event-gap' 'PASS' 0 "room=$gapRoom welcomed=$($gapProbe.welcomed) readiness=503 (strict TLS)"
 
+    # ---- D-R2-01 remaining acceptance: REAL cross-process claimed-opening crash chain.
+    # A worker-mode host process (the SAME public TableServiceWebHost.Build seam with the
+    # deterministic N1a fixture) performs strict-WSS admission, a real discard, a real
+    # Pon, and persists a post-claim checkpoint through its own actor. It HOLDS with both
+    # sessions LIVE; the runner force-kills the whole process (-9, no graceful teardown).
+    # A DIFFERENT worker process (new PID/boot, deliberately different deal) then
+    # cold-recovers the SAME room from the SAME PostgreSQL and verifies the persisted
+    # opening fact, history, receipt, ledger and 136-tile conservation.
+    $claimedRoom = 'p54b-e2e-claimed'
+    $claimedP1 = Join-Path $LogDir 'claimed-phase1.json'
+    $claimedP2 = Join-Path $LogDir 'claimed-phase2.json'
+    $claimedP1Host = Start-WorkerHold -Name 'e2e-claimed-host' -Arguments @(
+        'claimed-host', '--room', $claimedRoom, '--claim', 'pon',
+        '--out', $claimedP1, '--hold-open',
+        '--keys', $keysDir,
+        '--ca-root', $script:TlsRootPem,
+        '--tls-pfx', $script:TlsLeafPfx) -EvidencePath $claimedP1 -TimeoutSeconds 180
+    $claimed1 = Get-Content -LiteralPath $claimedP1 -Raw | ConvertFrom-Json
+    if ($claimed1.strictWss -ne $true) { throw 'The claimed-opening phase-1 host did not run strict WSS.' }
+    if ([int]$claimed1.processId -ne [int]$claimedP1Host.Id) {
+        throw "The claimed-opening phase-1 evidence PID $($claimed1.processId) is not the held host PID $($claimedP1Host.Id)."
+    }
+    if ([int]$claimed1.claimVersion -lt 1 -or [int]$claimed1.checkpointVersion -lt [int]$claimed1.claimVersion) {
+        throw "The claimed-opening phase-1 checkpoint is not post-claim ($($claimed1.checkpointVersion) < $($claimed1.claimVersion))."
+    }
+    if ($claimed1.openingFact.tsumogiri -ne $true) { throw 'The claimed opening discard lost its tsumogiri fact before the crash.' }
+    if ([int]$claimed1.claimedSeat0Discards -ne 0) { throw 'The claimed opening discard was still in the river before the crash.' }
+    if ([int]$claimed1.claimedSeat1Melds -ne 1) { throw 'The claimant did not hold exactly one meld before the crash.' }
+    if ([int]$claimed1.appliedRows -ne 2) { throw "The claimed-opening phase-1 APPLIED ledger is $($claimed1.appliedRows), expected 2." }
+
+    Stop-HeldWorker -Process $claimedP1Host -Name 'e2e-claimed-host'
+    Start-Sleep -Seconds ([int]$env:TABLESERVICE_LEASE_TTL_SECONDS + 3)
+
+    $null = Invoke-Worker -Name 'e2e-claimed-recover' -Arguments @(
+        'claimed-recover', '--room', $claimedRoom,
+        '--state', $claimedP1, '--out', $claimedP2,
+        '--keys', $keysDir,
+        '--ca-root', $script:TlsRootPem,
+        '--tls-pfx', $script:TlsLeafPfx) -TimeoutSeconds 300
+    $claimed2 = Get-Content -LiteralPath $claimedP2 -Raw | ConvertFrom-Json
+    if ([int]$claimed2.processId -eq [int]$claimed1.processId) { throw 'The claimed-opening recovery reused the crashed PID.' }
+    if ($claimed2.bootId -eq $claimed1.bootId) { throw 'The claimed-opening recovery reused the crashed boot id.' }
+    if ($claimed2.strictWss -ne $true) { throw 'The claimed-opening recovery did not run strict WSS.' }
+    if ([int]$claimed2.recoveredVersion -lt [int]$claimed1.claimVersion) {
+        throw "The claimed-opening recovery is older than the claim ($($claimed2.recoveredVersion) < $($claimed1.claimVersion))."
+    }
+    if ($claimed2.claimReceiptFound -ne $true -or [int]$claimed2.claimReceiptVersion -ne [int]$claimed1.claimVersion) {
+        throw 'The historical claim receipt was not reconciled at its original command version.'
+    }
+    if ([int]$claimed2.claimLedgerRows -ne 1 -or [int]$claimed2.appliedLedgerRows -ne 3) {
+        throw "The claimed-opening ledger is wrong (claim=$($claimed2.claimLedgerRows) applied=$($claimed2.appliedLedgerRows))."
+    }
+    if ($claimed2.postActionApplied -ne $true) { throw 'No real legal post-recovery action was applied.' }
+    if ([int]$claimed2.tileCount -ne 136 -or [int]$claimed2.unassignedCount -ne 0) {
+        throw "The claimed-opening post-play physical conservation failed (tiles=$($claimed2.tileCount) unassigned=$($claimed2.unassignedCount))."
+    }
+    if ($claimed2.openingFactUnchanged -ne $true -or $claimed2.seat0RiverHasOpening -ne $false -or $claimed2.historyExtended -ne $true) {
+        throw 'The claimed-opening persisted fact/history did not survive the cross-process recovery intact.'
+    }
+    Add-Stage 'e2e-claimed-opening-kill-recover' 'PASS' 0 "room=$claimedRoom claimVersion=$($claimed1.claimVersion) checkpoint=$($claimed1.checkpointVersion) oldPid=$($claimed1.processId)/$($claimed1.bootId.Substring(0, 8)) newPid=$($claimed2.processId)/$($claimed2.bootId.Substring(0, 8)) receipt=Found ledger=3 tiles=136 postActionVersion=$($claimed2.postActionVersion) (strict WSS, -9 kill)"
+
     Add-Stage 'result' 'PASS' 0 'all P5.4b-A durable-host stages passed'
 }
 catch {
