@@ -103,8 +103,12 @@ $results = New-Object System.Collections.Generic.List[object]
 # preference for the whole matrix. The synthetic preference exercises the
 # restoration path even on Windows PowerShell 5.1, where the variable does not
 # exist by default; it is removed again at the end.
-$originalScriptExitCode = $script:LASTEXITCODE
-$originalGlobalExitCode = $global:LASTEXITCODE
+$originalScriptExitVariable = Get-Variable -Name 'LASTEXITCODE' -Scope Script -ErrorAction SilentlyContinue
+$originalScriptExitExisted = ($null -ne $originalScriptExitVariable)
+$originalScriptExitCode = $(if ($originalScriptExitExisted) { $originalScriptExitVariable.Value } else { $null })
+$originalGlobalExitVariable = Get-Variable -Name 'LASTEXITCODE' -Scope Global -ErrorAction SilentlyContinue
+$originalGlobalExitExisted = ($null -ne $originalGlobalExitVariable)
+$originalGlobalExitCode = $(if ($originalGlobalExitExisted) { $originalGlobalExitVariable.Value } else { $null })
 $originalNativePreference = Get-Variable -Name 'PSNativeCommandUseErrorActionPreference' -ErrorAction SilentlyContinue
 $hadOriginalNativePreference = ($null -ne $originalNativePreference)
 $originalNativePreferenceValue = $(if ($hadOriginalNativePreference) { $originalNativePreference.Value } else { $null })
@@ -372,15 +376,154 @@ Add-ScopedNativeMatrix -Scope local -Sentinel 4242 -GlobalSentinel 7777
 Add-ScopedNativeMatrix -Scope script -Sentinel 0
 Add-ScopedNativeMatrix -Scope script -Sentinel 4242
 
-# Restore the test harness's own caller state after the scoped cases.
+# --- D-CAPTURE-01-RESTORE-EXISTENCE: absent variables stay absent -------------
+# Each case starts with LASTEXITCODE removed from both script and global scope,
+# then verifies it is absent again after the call. A null-valued variable is
+# not the same contract as an absent variable.
+function Add-ExistenceCase {
+    param(
+        [string]$Case,
+        [object]$ExpectedExit,
+        [scriptblock]$Command,
+        [string[]]$MustContain = @(),
+        [int]$MaxSeconds = 30
+    )
+
+    $caseDir = Join-Path $evidenceDir ("existence-{0}" -f $Case)
+    New-Item -ItemType Directory -Force -Path $caseDir | Out-Null
+    $logPath = Join-Path $caseDir 'capture.log'
+
+    Remove-Variable -Name 'LASTEXITCODE' -Scope Script -ErrorAction SilentlyContinue
+    Remove-Variable -Name 'LASTEXITCODE' -Scope Global -ErrorAction SilentlyContinue
+    $beforeScript = ($null -ne (Get-Variable -Name 'LASTEXITCODE' -Scope Script -ErrorAction SilentlyContinue))
+    $beforeGlobal = ($null -ne (Get-Variable -Name 'LASTEXITCODE' -Scope Global -ErrorAction SilentlyContinue))
+    $beforeEap = $ErrorActionPreference
+    $prefBefore = Get-Variable -Name 'PSNativeCommandUseErrorActionPreference' -ErrorAction SilentlyContinue
+    $prefExistedBefore = ($null -ne $prefBefore)
+    $prefValueBefore = $(if ($prefExistedBefore) { $prefBefore.Value } else { $null })
+
+    $actual = $null
+    $leaked = $null
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    try {
+        $actual = Invoke-Captured -LogPath $logPath -Command $Command
+    }
+    catch {
+        $leaked = $_
+    }
+    $stopwatch.Stop()
+
+    $afterScript = ($null -ne (Get-Variable -Name 'LASTEXITCODE' -Scope Script -ErrorAction SilentlyContinue))
+    $afterGlobal = ($null -ne (Get-Variable -Name 'LASTEXITCODE' -Scope Global -ErrorAction SilentlyContinue))
+    $afterEap = $ErrorActionPreference
+    $prefAfter = Get-Variable -Name 'PSNativeCommandUseErrorActionPreference' -ErrorAction SilentlyContinue
+    $prefExistedAfter = ($null -ne $prefAfter)
+    $prefValueAfter = $(if ($prefExistedAfter) { $prefAfter.Value } else { $null })
+
+    $logText = ''
+    if (Test-Path -LiteralPath $logPath -PathType Leaf) {
+        $logText = Get-Content -LiteralPath $logPath -Raw
+        if ($null -eq $logText) { $logText = '' }
+    }
+
+    $failures = New-Object System.Collections.Generic.List[string]
+    if ($leaked) {
+        $failures.Add("Invoke-Captured leaked an exception: $($leaked.Exception.GetType().FullName): $($leaked.Exception.Message)")
+    }
+    if ($null -eq $ExpectedExit) {
+        if ($null -ne $actual) { $failures.Add("expected a null/failing exit, got '$actual'") }
+    }
+    elseif ($null -eq $actual) {
+        $failures.Add("expected exit $ExpectedExit, got null")
+    }
+    elseif ([int]$actual -ne [int]$ExpectedExit) {
+        $failures.Add("expected exit $ExpectedExit, got '$actual'")
+    }
+    if ($beforeScript) { $failures.Add('LASTEXITCODE unexpectedly existed in script scope before the call') }
+    if ($beforeGlobal) { $failures.Add('LASTEXITCODE unexpectedly existed in global scope before the call') }
+    if ($afterScript) { $failures.Add('LASTEXITCODE was left behind in script scope after the call') }
+    if ($afterGlobal) { $failures.Add('LASTEXITCODE was left behind in global scope after the call') }
+    foreach ($marker in $MustContain) {
+        if (-not $logText.Contains($marker)) { $failures.Add("captured log is missing marker: $marker") }
+    }
+    if (-not [string]::IsNullOrEmpty($logText) -and $null -ne $ExpectedExit -and $logText.Contains('invocation threw an exception')) {
+        $failures.Add('captured log contains forbidden marker: invocation threw an exception')
+    }
+    if ($afterEap -ne $beforeEap) {
+        $failures.Add("ErrorActionPreference was not restored: '$beforeEap' -> '$afterEap'")
+    }
+    if ($prefExistedBefore -ne $prefExistedAfter) {
+        $failures.Add("PSNativeCommandUseErrorActionPreference existence changed: $prefExistedBefore -> $prefExistedAfter")
+    }
+    elseif ($prefExistedBefore -and $prefValueBefore -ne $prefValueAfter) {
+        $failures.Add("PSNativeCommandUseErrorActionPreference was not restored: '$prefValueBefore' -> '$prefValueAfter'")
+    }
+    if ($stopwatch.Elapsed.TotalSeconds -gt $MaxSeconds) {
+        $failures.Add(("case exceeded {0}s (actual {1:N1}s); possible deadlock" -f $MaxSeconds, $stopwatch.Elapsed.TotalSeconds))
+    }
+
+    $record = [pscustomobject]@{
+        Case         = $Case
+        Scope        = 'existence'
+        ExpectedExit = $(if ($null -eq $ExpectedExit) { 'NULL' } else { "$ExpectedExit" })
+        ActualExit   = $(if ($null -eq $actual) { 'NULL' } else { "$actual" })
+        BeforeScript = $beforeScript
+        BeforeGlobal = $beforeGlobal
+        AfterScript  = $afterScript
+        AfterGlobal  = $afterGlobal
+        Seconds      = [Math]::Round($stopwatch.Elapsed.TotalSeconds, 3)
+        Pass         = ($failures.Count -eq 0)
+        Failures     = ($failures -join '; ')
+        LogPath      = $logPath
+        LogBytes     = $logText.Length
+    }
+    $results.Add($record)
+    Write-Host ("[{0}] {1} existence expected={2} actual={3} before=({4},{5}) after=({6},{7}) {8}" -f $(if ($record.Pass) { 'PASS' } else { 'FAIL' }), $Case, $record.ExpectedExit, $record.ActualExit, $record.BeforeScript, $record.BeforeGlobal, $record.AfterScript, $record.AfterGlobal, $record.Failures)
+    return $record
+}
+
+Add-ExistenceCase -Case 'no-native' -ExpectedExit $null -Command {
+    'no native command in existence matrix'
+} -MustContain @('no native command in existence matrix') -MaxSeconds 15 | Out-Null
+
+foreach ($code in @(0, 1, 2, 17)) {
+    $stdoutMarker = "existence-exit$code-stdout"
+    $stderrMarker = "existence-exit$code-stderr"
+    Add-ExistenceCase -Case "native$code" -ExpectedExit $code -Command {
+        & $hostExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $childPath -ExitCode $code -StdoutText $stdoutMarker -StderrText $stderrMarker
+    } -MustContain @($stdoutMarker, $stderrMarker) -MaxSeconds 30 | Out-Null
+}
+
+$existenceThrowMessage = 'existence intentional throw'
+Add-ExistenceCase -Case 'throw' -ExpectedExit $null -Command {
+    throw $existenceThrowMessage
+} -MustContain @($existenceThrowMessage) -MaxSeconds 15 | Out-Null
+
+$existenceMissingName = 'existence-missing-executable.exe'
+Add-ExistenceCase -Case 'missing' -ExpectedExit $null -Command {
+    & (Join-Path $env:WINDIR $existenceMissingName)
+} -MustContain @($existenceMissingName) -MaxSeconds 15 | Out-Null
+
+# Restore the test harness's own caller state after all cases, honoring the
+# original existence (not just the value).
 if ($syntheticNativePreference) {
     Remove-Variable -Name 'PSNativeCommandUseErrorActionPreference' -Scope Script -ErrorAction SilentlyContinue
 }
 elseif ($hadOriginalNativePreference) {
     $script:PSNativeCommandUseErrorActionPreference = $originalNativePreferenceValue
 }
-$script:LASTEXITCODE = $originalScriptExitCode
-$global:LASTEXITCODE = $originalGlobalExitCode
+if ($originalScriptExitExisted) {
+    $script:LASTEXITCODE = $originalScriptExitCode
+}
+else {
+    Remove-Variable -Name 'LASTEXITCODE' -Scope Script -ErrorAction SilentlyContinue
+}
+if ($originalGlobalExitExisted) {
+    $global:LASTEXITCODE = $originalGlobalExitCode
+}
+else {
+    Remove-Variable -Name 'LASTEXITCODE' -Scope Global -ErrorAction SilentlyContinue
+}
 
 $failed = @($results | Where-Object { -not $_.Pass })
 $summary = [ordered]@{
