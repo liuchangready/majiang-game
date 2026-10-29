@@ -99,6 +99,21 @@ Set-Content -LiteralPath $childPath -Value $childSource -Encoding UTF8
 
 $results = New-Object System.Collections.Generic.List[object]
 
+# Preserve the caller's own script/global LASTEXITCODE and the host's native
+# preference for the whole matrix. The synthetic preference exercises the
+# restoration path even on Windows PowerShell 5.1, where the variable does not
+# exist by default; it is removed again at the end.
+$originalScriptExitCode = $script:LASTEXITCODE
+$originalGlobalExitCode = $global:LASTEXITCODE
+$originalNativePreference = Get-Variable -Name 'PSNativeCommandUseErrorActionPreference' -ErrorAction SilentlyContinue
+$hadOriginalNativePreference = ($null -ne $originalNativePreference)
+$originalNativePreferenceValue = $(if ($hadOriginalNativePreference) { $originalNativePreference.Value } else { $null })
+$syntheticNativePreference = $false
+if (-not $hadOriginalNativePreference) {
+    $script:PSNativeCommandUseErrorActionPreference = $true
+    $syntheticNativePreference = $true
+}
+
 function Add-CaptureCase {
     param(
         [string]$Case,
@@ -107,7 +122,10 @@ function Add-CaptureCase {
         [string[]]$MustContain = @(),
         [string[]]$MustNotContain = @(),
         [switch]$AllowEmptyLog,
+        [ValidateSet('global', 'local', 'script')]
+        [string]$Scope = 'global',
         [int]$Sentinel = 9876,
+        [int]$GlobalSentinel = 4242,
         [int]$MaxSeconds = 60
     )
 
@@ -116,7 +134,23 @@ function Add-CaptureCase {
     $logPath = Join-Path $caseDir 'capture.log'
 
     $beforeEap = $ErrorActionPreference
-    $global:LASTEXITCODE = $Sentinel
+    $prefBefore = Get-Variable -Name 'PSNativeCommandUseErrorActionPreference' -ErrorAction SilentlyContinue
+    $prefExistedBefore = ($null -ne $prefBefore)
+    $prefValueBefore = $(if ($prefExistedBefore) { $prefBefore.Value } else { $null })
+
+    # Set the sentinel in the exact scope under test. For a local sentinel the
+    # script/global baseline is deliberately different, so a production read of
+    # an ancestor value cannot masquerade as the native exit code.
+    $script:LASTEXITCODE = $GlobalSentinel
+    $global:LASTEXITCODE = $GlobalSentinel
+    if ($Scope -eq 'local') {
+        $local:LASTEXITCODE = $Sentinel
+    }
+    else {
+        $script:LASTEXITCODE = $Sentinel
+        $global:LASTEXITCODE = $Sentinel
+    }
+
     $actual = $null
     $leaked = $null
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
@@ -128,7 +162,13 @@ function Add-CaptureCase {
     }
     $stopwatch.Stop()
     $afterEap = $ErrorActionPreference
-    $afterLastExitCode = $LASTEXITCODE
+    $afterLocal = $local:LASTEXITCODE
+    $afterScript = $script:LASTEXITCODE
+    $afterGlobal = $global:LASTEXITCODE
+    $afterUnqualified = $LASTEXITCODE
+    $prefAfter = Get-Variable -Name 'PSNativeCommandUseErrorActionPreference' -ErrorAction SilentlyContinue
+    $prefExistedAfter = ($null -ne $prefAfter)
+    $prefValueAfter = $(if ($prefExistedAfter) { $prefAfter.Value } else { $null })
 
     $logText = ''
     if (Test-Path -LiteralPath $logPath -PathType Leaf) {
@@ -168,25 +208,53 @@ function Add-CaptureCase {
     if ($afterEap -ne $beforeEap) {
         $failures.Add("ErrorActionPreference was not restored: '$beforeEap' -> '$afterEap'")
     }
-    if ($null -eq $afterLastExitCode -or [int]$afterLastExitCode -ne $Sentinel) {
-        $failures.Add("LASTEXITCODE was not restored to the caller value ${Sentinel}: '$afterLastExitCode'")
+    if ($prefExistedBefore -ne $prefExistedAfter) {
+        $failures.Add("PSNativeCommandUseErrorActionPreference existence changed: $prefExistedBefore -> $prefExistedAfter")
+    }
+    elseif ($prefExistedBefore -and $prefValueBefore -ne $prefValueAfter) {
+        $failures.Add("PSNativeCommandUseErrorActionPreference was not restored: '$prefValueBefore' -> '$prefValueAfter'")
+    }
+
+    $expectedLocal = $(if ($Scope -eq 'local') { $Sentinel } else { $null })
+    $expectedScript = $(if ($Scope -eq 'local') { $GlobalSentinel } else { $Sentinel })
+    $expectedGlobal = $(if ($Scope -eq 'local') { $GlobalSentinel } else { $Sentinel })
+    if ($null -eq $expectedLocal) {
+        if ($null -ne $afterLocal) { $failures.Add("caller local LASTEXITCODE unexpectedly set to '$afterLocal'") }
+    }
+    elseif ($null -eq $afterLocal -or [int]$afterLocal -ne [int]$expectedLocal) {
+        $failures.Add("caller local LASTEXITCODE was not preserved: expected $expectedLocal, got '$afterLocal'")
+    }
+    if ($null -eq $afterScript -or [int]$afterScript -ne [int]$expectedScript) {
+        $failures.Add("script LASTEXITCODE was not restored: expected $expectedScript, got '$afterScript'")
+    }
+    if ($null -eq $afterGlobal -or [int]$afterGlobal -ne [int]$expectedGlobal) {
+        $failures.Add("global LASTEXITCODE was not restored: expected $expectedGlobal, got '$afterGlobal'")
+    }
+    if ($null -eq $afterUnqualified -or [int]$afterUnqualified -ne [int]$Sentinel) {
+        $failures.Add("unqualified LASTEXITCODE was not preserved: expected $Sentinel, got '$afterUnqualified'")
     }
     if ($stopwatch.Elapsed.TotalSeconds -gt $MaxSeconds) {
         $failures.Add(("case exceeded {0}s (actual {1:N1}s); possible deadlock" -f $MaxSeconds, $stopwatch.Elapsed.TotalSeconds))
     }
 
     $record = [pscustomobject]@{
-        Case         = $Case
-        ExpectedExit = $(if ($null -eq $ExpectedExit) { 'NULL' } else { "$ExpectedExit" })
-        ActualExit   = $(if ($null -eq $actual) { 'NULL' } else { "$actual" })
-        Seconds      = [Math]::Round($stopwatch.Elapsed.TotalSeconds, 3)
-        Pass         = ($failures.Count -eq 0)
-        Failures     = ($failures -join '; ')
-        LogPath      = $logPath
-        LogBytes     = $logText.Length
+        Case                   = $Case
+        Scope                  = $Scope
+        Sentinel               = $Sentinel
+        GlobalSentinel         = $(if ($Scope -eq 'local') { $GlobalSentinel } else { $Sentinel })
+        ExpectedExit           = $(if ($null -eq $ExpectedExit) { 'NULL' } else { "$ExpectedExit" })
+        ActualExit             = $(if ($null -eq $actual) { 'NULL' } else { "$actual" })
+        AfterLocal             = $(if ($null -eq $afterLocal) { 'NULL' } else { "$afterLocal" })
+        AfterScript            = $(if ($null -eq $afterScript) { 'NULL' } else { "$afterScript" })
+        AfterGlobal            = $(if ($null -eq $afterGlobal) { 'NULL' } else { "$afterGlobal" })
+        Seconds                = [Math]::Round($stopwatch.Elapsed.TotalSeconds, 3)
+        Pass                   = ($failures.Count -eq 0)
+        Failures               = ($failures -join '; ')
+        LogPath                = $logPath
+        LogBytes               = $logText.Length
     }
     $results.Add($record)
-    Write-Host ("[{0}] {1} expected={2} actual={3} {4}" -f $(if ($record.Pass) { 'PASS' } else { 'FAIL' }), $Case, $record.ExpectedExit, $record.ActualExit, $record.Failures)
+    Write-Host ("[{0}] {1} scope={2} expected={3} actual={4} local={5} script={6} global={7} {8}" -f $(if ($record.Pass) { 'PASS' } else { 'FAIL' }), $Case, $Scope, $record.ExpectedExit, $record.ActualExit, $record.AfterLocal, $record.AfterScript, $record.AfterGlobal, $record.Failures)
     return $record
 }
 
@@ -259,6 +327,60 @@ Add-CaptureCase -Case 'polluted-lastexitcode-throw-fails-closed' -ExpectedExit $
 Add-CaptureCase -Case 'real-exit-overrides-polluted-lastexitcode' -ExpectedExit 17 -Sentinel 4242 -Command {
     & $hostExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $childPath -ExitCode 17 -StdoutText 'case-override-stdout' -StderrText 'case-override-stderr'
 } -MustContain @('case-override-stdout', 'case-override-stderr') -MaxSeconds 30 | Out-Null
+
+# --- D-CAPTURE-01-SCOPE: caller-local and script-scope shadows ----------------
+# A caller function can hold $local:LASTEXITCODE. That value must never be
+# mistaken for a native exit, and a real native code must never be masked by it.
+function Add-ScopedNativeMatrix {
+    param(
+        [ValidateSet('local', 'script')]
+        [string]$Scope,
+        [int]$Sentinel,
+        [int]$GlobalSentinel = 4242
+    )
+    $prefix = '{0}{1}' -f $Scope, $Sentinel
+
+    Add-CaptureCase -Case "$prefix-no-native" -ExpectedExit $null -Scope $Scope `
+        -Sentinel $Sentinel -GlobalSentinel $GlobalSentinel -Command {
+        'no native command in scoped matrix'
+    } -MustContain @('no native command in scoped matrix') -MaxSeconds 15 | Out-Null
+
+    foreach ($code in @(0, 1, 2, 17)) {
+        $stdoutMarker = "$prefix-exit$code-stdout"
+        $stderrMarker = "$prefix-exit$code-stderr"
+        Add-CaptureCase -Case "$prefix-exit$code-both" -ExpectedExit $code -Scope $Scope `
+            -Sentinel $Sentinel -GlobalSentinel $GlobalSentinel -Command {
+            & $hostExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $childPath -ExitCode $code -StdoutText $stdoutMarker -StderrText $stderrMarker
+        } -MustContain @($stdoutMarker, $stderrMarker) -MaxSeconds 30 | Out-Null
+    }
+
+    $throwMessage = "$prefix intentional throw"
+    Add-CaptureCase -Case "$prefix-throw" -ExpectedExit $null -Scope $Scope `
+        -Sentinel $Sentinel -GlobalSentinel $GlobalSentinel -Command {
+        throw $throwMessage
+    } -MustContain @($throwMessage) -MaxSeconds 15 | Out-Null
+
+    $missingName = "$prefix-missing-executable.exe"
+    Add-CaptureCase -Case "$prefix-missing-executable" -ExpectedExit $null -Scope $Scope `
+        -Sentinel $Sentinel -GlobalSentinel $GlobalSentinel -Command {
+        & (Join-Path $env:WINDIR $missingName)
+    } -MustContain @($missingName) -MaxSeconds 15 | Out-Null
+}
+
+Add-ScopedNativeMatrix -Scope local -Sentinel 0
+Add-ScopedNativeMatrix -Scope local -Sentinel 4242 -GlobalSentinel 7777
+Add-ScopedNativeMatrix -Scope script -Sentinel 0
+Add-ScopedNativeMatrix -Scope script -Sentinel 4242
+
+# Restore the test harness's own caller state after the scoped cases.
+if ($syntheticNativePreference) {
+    Remove-Variable -Name 'PSNativeCommandUseErrorActionPreference' -Scope Script -ErrorAction SilentlyContinue
+}
+elseif ($hadOriginalNativePreference) {
+    $script:PSNativeCommandUseErrorActionPreference = $originalNativePreferenceValue
+}
+$script:LASTEXITCODE = $originalScriptExitCode
+$global:LASTEXITCODE = $originalGlobalExitCode
 
 $failed = @($results | Where-Object { -not $_.Pass })
 $summary = [ordered]@{

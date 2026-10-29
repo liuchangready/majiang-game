@@ -186,7 +186,13 @@ function Resolve-DotnetPath {
 #   - clears LASTEXITCODE before invoking and only accepts a code produced by
 #     this invocation, so a stale value or a command that never ran is never
 #     reported as success;
-#   - restores $ErrorActionPreference and the caller's LASTEXITCODE in finally.
+#   - clears/reads/restores LASTEXITCODE through the script and global scopes,
+#     never through the unqualified name: a caller function's local
+#     $LASTEXITCODE would otherwise shadow the real native value (D-CAPTURE-01-
+#     SCOPE). If the two scopes disagree after the call, the outcome is treated
+#     as uncertain instead of picking one;
+#   - restores $ErrorActionPreference and the caller's script/global
+#     LASTEXITCODE in finally. Caller-local values are never modified.
 # PowerShell 7.3+ has an opt-in native-command error preference; it is disabled
 # locally when the current host defines it, so stderr stays a diagnostic here.
 function Invoke-Captured {
@@ -197,7 +203,8 @@ function Invoke-Captured {
     $output = New-Object System.Collections.Generic.List[string]
     $exit = $null
     $previousErrorActionPreference = $ErrorActionPreference
-    $previousExitCode = $global:LASTEXITCODE
+    $previousScriptExitCode = $script:LASTEXITCODE
+    $previousGlobalExitCode = $global:LASTEXITCODE
     $nativePreferenceVariable = Get-Variable -Name 'PSNativeCommandUseErrorActionPreference' -ErrorAction SilentlyContinue
     $hadNativePreference = ($null -ne $nativePreferenceVariable)
     $previousNativePreference = $(if ($hadNativePreference) { $nativePreferenceVariable.Value } else { $null })
@@ -212,6 +219,7 @@ function Invoke-Captured {
         if ($hadNativePreference) {
             $PSNativeCommandUseErrorActionPreference = $false
         }
+        $script:LASTEXITCODE = $null
         $global:LASTEXITCODE = $null
 
         & $Command 2>&1 | ForEach-Object {
@@ -233,8 +241,24 @@ function Invoke-Captured {
             }
         }
 
-        $nativeExit = $LASTEXITCODE
-        if ($null -ne $nativeExit -and "$nativeExit" -match '^-?\d+$') {
+        # Read the scopes native commands actually update. An unqualified
+        # $LASTEXITCODE here could be a caller-local value and would mask both
+        # a real exit code and the absence of a native command.
+        $scriptExit = $script:LASTEXITCODE
+        $globalExit = $global:LASTEXITCODE
+        $nativeExit = $null
+        $exitConflict = $false
+        if ($null -ne $scriptExit -and $null -ne $globalExit) {
+            if ("$scriptExit" -eq "$globalExit") { $nativeExit = $scriptExit }
+            else { $exitConflict = $true }
+        }
+        elseif ($null -ne $scriptExit) { $nativeExit = $scriptExit }
+        elseif ($null -ne $globalExit) { $nativeExit = $globalExit }
+
+        if ($exitConflict) {
+            $output.Add("[verify-v5] invocation produced conflicting script/global LASTEXITCODE values ('$scriptExit' vs '$globalExit'); outcome is uncertain and treated as a failure")
+        }
+        elseif ($null -ne $nativeExit -and "$nativeExit" -match '^-?\d+$') {
             $exit = [int]$nativeExit
             $producedExitCode = $true
         }
@@ -267,7 +291,8 @@ function Invoke-Captured {
         else {
             Remove-Variable -Name 'PSNativeCommandUseErrorActionPreference' -ErrorAction SilentlyContinue
         }
-        $global:LASTEXITCODE = $previousExitCode
+        $script:LASTEXITCODE = $previousScriptExitCode
+        $global:LASTEXITCODE = $previousGlobalExitCode
     }
     return $exit
 }
