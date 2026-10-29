@@ -343,6 +343,52 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                 RequirePrivacy(p0Client, p1Client, p2Client, p3Client, spectatorClient);
                 suite.Assertions.Add("wss_baseline_and_stream_identity");
 
+                ClientHandle[] fiveAdmitted =
+                    { p0Client, p1Client, p2Client, p3Client, spectatorClient };
+                // The configured 10 s interval makes LivenessLoopAsync send every
+                // max(250, 10000 / 2) = 5 s, not every 10 s. This early phase requires
+                // three phase-local PING/PONG pairs over at least 15 s: three actual 5 s
+                // send periods. It deliberately does NOT claim three configured 10 s
+                // periods, and it stays inside the 20 s action reserve before the first
+                // business command. The original defect faulted at the FIRST PING.
+                int configuredHeartbeatMs = p0Client.NegotiatedHeartbeatIntervalMs;
+                Require(configuredHeartbeatMs > 0, "The real Client did not negotiate a heartbeat interval.");
+                int actualPingMs = Math.Max(250, configuredHeartbeatMs / 2);
+                HeartbeatLivenessResult fiveHeartbeat = await RequireHeartbeatLivenessAsync(
+                    fiveAdmitted,
+                    3,
+                    TimeSpan.FromSeconds(15),
+                    TimeSpan.FromSeconds(40),
+                    "five admitted sessions").ConfigureAwait(false);
+                suite.HeartbeatLivenessAllFive = true;
+                suite.HeartbeatConfiguredIntervalMs = configuredHeartbeatMs;
+                suite.HeartbeatActualPingIntervalMs = actualPingMs;
+                suite.HeartbeatFivePhaseStartUtc =
+                    fiveHeartbeat.StartedAtUtc.ToString("o", CultureInfo.InvariantCulture);
+                suite.HeartbeatFivePhaseEndUtc =
+                    DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture);
+                suite.HeartbeatFivePhaseElapsedMs =
+                    (long)Math.Round(fiveHeartbeat.Elapsed.TotalMilliseconds, MidpointRounding.AwayFromZero);
+                suite.HeartbeatFiveNewPingsMin = fiveHeartbeat.NewPingsMin;
+                suite.HeartbeatFiveNewPongsMin = fiveHeartbeat.NewPongsMin;
+                suite.HeartbeatFivePhaseSummary = fiveHeartbeat.Summary;
+                suite.HeartbeatBindingMismatchCount = fiveAdmitted.Sum(
+                    client => client.HeartbeatAudit.PingBindingMismatchCount +
+                              client.HeartbeatAudit.PongBindingMismatchCount +
+                              client.HeartbeatAudit.EmptyIdentityPingCount);
+                suite.HeartbeatUnexpectedCloseCount = fiveAdmitted.Sum(
+                    client => client.HeartbeatAudit.CloseCallCount +
+                              client.HeartbeatAudit.InboundCloseEnvelopeCount +
+                              client.HeartbeatAudit.TransportCloseCount);
+                suite.Assertions.Add("heartbeat_liveness_five_sessions");
+                Console.WriteLine(
+                    "B1-HEARTBEAT-OK " + fiveHeartbeat.Summary +
+                    " newPingsMin=" + fiveHeartbeat.NewPingsMin +
+                    " newPongsMin=" + fiveHeartbeat.NewPongsMin +
+                    " elapsedMs=" + suite.HeartbeatFivePhaseElapsedMs +
+                    " configuredMs=" + configuredHeartbeatMs +
+                    " actualPingMs=" + actualPingMs);
+
                 (PlayerSnapshot normalSnapshot, WireDecisionView normalDecision, WireLegalActionView normalDiscard) =
                     await B1Actions.WaitForDiscardAsync(p0Client, TimeSpan.FromSeconds(60), CancellationToken.None)
                         .ConfigureAwait(false);
@@ -569,6 +615,43 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                     "The recovery reused the closed pre-crash session binding.");
                 suite.Assertions.Add("multi_client_confirmation_after_recovery");
 
+                ClientHandle[] stillLive = { p0Client, p2Client, p3Client, spectatorClient };
+                // p1 is intentionally closed by the crash/recover scenario above; the four
+                // sessions that must remain live are re-checked with phase-local baselines:
+                // six NEW PING/PONG pairs over at least 30 s, i.e. six actual 5 s send
+                // periods. No business action deadline is pending here, so this is the
+                // correct place for the 30 s span rather than before the first command.
+                HeartbeatLivenessResult postRecoveryHeartbeat = await RequireHeartbeatLivenessAsync(
+                    stillLive,
+                    6,
+                    TimeSpan.FromSeconds(30),
+                    TimeSpan.FromSeconds(60),
+                    "post-recovery live sessions").ConfigureAwait(false);
+                suite.PostRecoveryHeartbeatLiveness = true;
+                suite.HeartbeatPostRecoveryPhaseStartUtc =
+                    postRecoveryHeartbeat.StartedAtUtc.ToString("o", CultureInfo.InvariantCulture);
+                suite.HeartbeatPostRecoveryPhaseEndUtc =
+                    DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture);
+                suite.HeartbeatPostRecoveryElapsedMs =
+                    (long)Math.Round(postRecoveryHeartbeat.Elapsed.TotalMilliseconds, MidpointRounding.AwayFromZero);
+                suite.HeartbeatPostRecoveryNewPingsMin = postRecoveryHeartbeat.NewPingsMin;
+                suite.HeartbeatPostRecoveryNewPongsMin = postRecoveryHeartbeat.NewPongsMin;
+                suite.HeartbeatPostRecoveryPhaseSummary = postRecoveryHeartbeat.Summary;
+                suite.HeartbeatBindingMismatchCount += stillLive.Sum(
+                    client => client.HeartbeatAudit.PingBindingMismatchCount +
+                              client.HeartbeatAudit.PongBindingMismatchCount +
+                              client.HeartbeatAudit.EmptyIdentityPingCount);
+                suite.HeartbeatUnexpectedCloseCount += stillLive.Sum(
+                    client => client.HeartbeatAudit.CloseCallCount +
+                              client.HeartbeatAudit.InboundCloseEnvelopeCount +
+                              client.HeartbeatAudit.TransportCloseCount);
+                suite.Assertions.Add("heartbeat_liveness_after_recovery");
+                Console.WriteLine(
+                    "B1-HEARTBEAT-POST-RECOVERY-OK " + postRecoveryHeartbeat.Summary +
+                    " newPingsMin=" + postRecoveryHeartbeat.NewPingsMin +
+                    " newPongsMin=" + postRecoveryHeartbeat.NewPongsMin +
+                    " elapsedMs=" + suite.HeartbeatPostRecoveryElapsedMs);
+
                 // Negative probes run after the positive evidence so a deliberate
                 // displacement cannot disturb the normal/observer assertions.
                 await NegativeProbes.RunAsync(
@@ -757,6 +840,72 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                 "A Client binding role/seat does not match the Lobby assignment.");
             Require(binding.BindingEpoch.Value > 0 && binding.OwnerEpoch.Value > 0,
                 "A Client binding epoch is not positive.");
+        }
+
+        /// <summary>
+        /// B1 liveness gate: a phase must observe NEW server PINGs and matching PONGs,
+        /// not cumulative counters that a previous phase already satisfied. Baselines are
+        /// captured per client at phase start; only in-phase frames count. The gate also
+        /// requires the phase to span a minimum monotonic duration, every client to stay
+        /// Ready, every PING binding to match the WELCOME, every PONG nonce to match a
+        /// phase PING, and no close. The server sends PING every
+        /// max(250, HeartbeatIntervalMs / 2), so the duration is deliberately evaluated
+        /// separately from the configured interval.
+        /// </summary>
+        private static async Task<HeartbeatLivenessResult> RequireHeartbeatLivenessAsync(
+            ClientHandle[] clients,
+            int minimumNewPings,
+            TimeSpan minimumElapsed,
+            TimeSpan timeout,
+            string context)
+        {
+            DateTimeOffset startedAtUtc = DateTimeOffset.UtcNow;
+            long startTimestamp = Stopwatch.GetTimestamp();
+            HeartbeatLivenessSample[] initial = clients.Select(ToHeartbeatSample).ToArray();
+            HeartbeatLivenessPhase phase = HeartbeatLivenessPhase.Start(
+                context,
+                initial,
+                minimumNewPings,
+                minimumElapsed,
+                startedAtUtc);
+            long deadline = Environment.TickCount64 + (long)timeout.TotalMilliseconds;
+            while (true)
+            {
+                TimeSpan elapsed = Stopwatch.GetElapsedTime(startTimestamp);
+                HeartbeatLivenessResult result = phase.Evaluate(
+                    clients.Select(ToHeartbeatSample).ToArray(),
+                    elapsed);
+                if (result.IsViolation)
+                {
+                    throw new InvalidOperationException(result.Failure);
+                }
+
+                if (result.IsReady)
+                {
+                    return result;
+                }
+
+                if (Environment.TickCount64 >= deadline)
+                {
+                    throw new TimeoutException(
+                        context + ": phase-local heartbeat gate timed out after " +
+                        timeout.TotalSeconds + " s; phase elapsed=" +
+                        elapsed.TotalSeconds.ToString("0.0", CultureInfo.InvariantCulture) +
+                        " s, required=" + minimumNewPings + " new PING/PONG and " +
+                        minimumElapsed.TotalSeconds.ToString("0.0", CultureInfo.InvariantCulture) +
+                        " s monotonic; observed=" + result.Summary + ".");
+                }
+
+                await Task.Delay(200).ConfigureAwait(false);
+            }
+        }
+
+        private static HeartbeatLivenessSample ToHeartbeatSample(ClientHandle client)
+        {
+            return new HeartbeatLivenessSample(
+                client.Seat.ToString(CultureInfo.InvariantCulture),
+                client.State == TableConnectionState.Ready,
+                HeartbeatAuditCounters.Capture(client.HeartbeatAudit));
         }
 
         private static bool PublicProjectionIsSafe(ClientHandle client)

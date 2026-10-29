@@ -578,6 +578,25 @@ namespace Mahjong.TableService.Tests
             };
         }
 
+        /// <summary>PONG carrying the connection's admitted binding, exactly like the
+        /// production Client's HeartbeatTableChannel sends it.</summary>
+        public static Envelope HeartbeatPong(Welcome welcome, string nonce)
+        {
+            return new Envelope
+            {
+                ProtocolMajor = ProtocolConstants.Major,
+                ProtocolMinor = ProtocolConstants.Minor,
+                RulesetVersion = ProtocolConstants.RulesetVersion,
+                ProjectionVersion = ProtocolConstants.ProjectionVersion,
+                MessageType = MessageType.Heartbeat,
+                SessionId = welcome.SessionId,
+                RoomId = welcome.RoomId,
+                SeatId = welcome.SeatId,
+                BindingEpoch = welcome.BindingEpoch,
+                Heartbeat = new Heartbeat { Pong = new Pong { Nonce = nonce } }
+            };
+        }
+
         public static Envelope CloseEnvelope()
         {
             return new Envelope

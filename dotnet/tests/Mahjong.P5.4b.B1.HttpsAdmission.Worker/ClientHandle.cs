@@ -19,6 +19,7 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
     {
         private readonly TableSession _session;
         private readonly TableSessionOperationQueue _operations;
+        private readonly HeartbeatBindingAuditChannel _heartbeatAudit;
         private readonly HeartbeatTableChannel _heartbeat;
         private readonly ReceiptLossChannel _loss;
         private readonly RealWssTableChannel _transport;
@@ -48,7 +49,8 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                 TargetRequestId = lossRequestId,
                 DropTargetReceipts = dropTargetReceipts
             };
-            _heartbeat = new HeartbeatTableChannel(_loss);
+            _heartbeatAudit = new HeartbeatBindingAuditChannel(_loss);
+            _heartbeat = new HeartbeatTableChannel(_heartbeatAudit);
             var outbox = new FileOutboxStore(outboxDirectory);
             _session = new TableSession(_heartbeat, outbox);
             _operations = new TableSessionOperationQueue(_session);
@@ -65,6 +67,11 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
         public int Seat { get; set; } = -1;
 
         public ReceiptLossChannel Loss => _loss;
+
+        public HeartbeatBindingAuditChannel HeartbeatAudit => _heartbeatAudit;
+
+        /// <summary>The configured WELCOME heartbeat interval (not the /2 send period).</summary>
+        public int NegotiatedHeartbeatIntervalMs => _heartbeat.Snapshot?.NegotiatedIntervalMs ?? 0;
 
         public RealWssTableChannel Transport => _transport;
 

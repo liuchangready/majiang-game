@@ -2541,19 +2541,18 @@ namespace Mahjong.TableService
             return BuildReceipt(request, receipt);
         }
 
-        private static Envelope BuildHeartbeatPing()
+        private Envelope BuildHeartbeatPing()
         {
+            // B1 heartbeat binding: a server-generated PING is liveness control for the
+            // CURRENT admitted connection, so it must carry the same authoritative
+            // session/room/seat/binding identity as every other envelope. The frozen
+            // Client rejects a bound heartbeat whose envelope does not match its WELCOME
+            // (HeartbeatTableChannel.MatchesBinding); a bare envelope therefore faulted
+            // every healthy session at the first server PING. Reuse the one envelope
+            // builder instead of duplicating (and drifting from) the identity fields.
             string nonce = RandomNumberGenerator.GetHexString(16, lowercase: true);
             var heartbeat = new Heartbeat { Ping = new Ping { Nonce = nonce } };
-            return new Envelope
-            {
-                ProtocolMajor = ProtocolConstants.Major,
-                ProtocolMinor = ProtocolConstants.Minor,
-                RulesetVersion = ProtocolConstants.RulesetVersion,
-                ProjectionVersion = ProtocolConstants.ProjectionVersion,
-                MessageType = MessageType.Heartbeat,
-                Heartbeat = heartbeat
-            };
+            return BuildEnvelope(MessageType.Heartbeat, heartbeat, correlationId: null);
         }
 
         private Envelope BuildHeartbeatPong(string nonce)

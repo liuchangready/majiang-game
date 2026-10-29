@@ -149,6 +149,42 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
 
         public bool PrivateStreamsIsolated { get; set; }
 
+        public bool HeartbeatLivenessAllFive { get; set; }
+
+        public int HeartbeatConfiguredIntervalMs { get; set; }
+
+        public int HeartbeatActualPingIntervalMs { get; set; }
+
+        public string HeartbeatFivePhaseStartUtc { get; set; } = string.Empty;
+
+        public string HeartbeatFivePhaseEndUtc { get; set; } = string.Empty;
+
+        public long HeartbeatFivePhaseElapsedMs { get; set; }
+
+        public int HeartbeatFiveNewPingsMin { get; set; }
+
+        public int HeartbeatFiveNewPongsMin { get; set; }
+
+        public string HeartbeatFivePhaseSummary { get; set; } = string.Empty;
+
+        public int HeartbeatBindingMismatchCount { get; set; }
+
+        public int HeartbeatUnexpectedCloseCount { get; set; }
+
+        public bool PostRecoveryHeartbeatLiveness { get; set; }
+
+        public string HeartbeatPostRecoveryPhaseStartUtc { get; set; } = string.Empty;
+
+        public string HeartbeatPostRecoveryPhaseEndUtc { get; set; } = string.Empty;
+
+        public long HeartbeatPostRecoveryElapsedMs { get; set; }
+
+        public int HeartbeatPostRecoveryNewPingsMin { get; set; }
+
+        public int HeartbeatPostRecoveryNewPongsMin { get; set; }
+
+        public string HeartbeatPostRecoveryPhaseSummary { get; set; } = string.Empty;
+
         public int NormalActionSeat { get; set; } = -1;
 
         public ulong NormalActionStateVersion { get; set; }
