@@ -175,6 +175,20 @@ function Resolve-DotnetPath {
 # log in finally{}, so whatever the command produced before a throw is preserved.
 # On a thrown invocation the function returns $null - callers must treat a
 # missing exit code as a failing outcome (never as 0 / success).
+#
+# Windows PowerShell 5.1 wraps native stderr in a RemoteException ErrorRecord and
+# $ErrorActionPreference='Stop' makes that record terminate the pipeline before
+# $LASTEXITCODE can be read (D-CAPTURE-01). The capture boundary therefore:
+#   - switches $ErrorActionPreference to 'Continue' for this invocation only, so
+#     stderr records are delivered instead of aborting the pipeline;
+#   - extracts the verbatim native stderr line from NativeCommandError records,
+#     while rethrowing any real PowerShell error record (fail-closed);
+#   - clears LASTEXITCODE before invoking and only accepts a code produced by
+#     this invocation, so a stale value or a command that never ran is never
+#     reported as success;
+#   - restores $ErrorActionPreference and the caller's LASTEXITCODE in finally.
+# PowerShell 7.3+ has an opt-in native-command error preference; it is disabled
+# locally when the current host defines it, so stderr stays a diagnostic here.
 function Invoke-Captured {
     param(
         [string]$LogPath,
@@ -182,23 +196,78 @@ function Invoke-Captured {
     )
     $output = New-Object System.Collections.Generic.List[string]
     $exit = $null
+    $previousErrorActionPreference = $ErrorActionPreference
+    $previousExitCode = $global:LASTEXITCODE
+    $nativePreferenceVariable = Get-Variable -Name 'PSNativeCommandUseErrorActionPreference' -ErrorAction SilentlyContinue
+    $hadNativePreference = ($null -ne $nativePreferenceVariable)
+    $previousNativePreference = $(if ($hadNativePreference) { $nativePreferenceVariable.Value } else { $null })
+    $producedExitCode = $false
     try {
-        & $Command 2>&1 | ForEach-Object {
-            $output.Add([string]$_)
+        $logDir = Split-Path $LogPath -Parent
+        if ($logDir -and -not (Test-Path -LiteralPath $logDir)) {
+            New-Item -ItemType Directory -Force -Path $logDir | Out-Null
         }
-        $exit = $LASTEXITCODE
+
+        $ErrorActionPreference = 'Continue'
+        if ($hadNativePreference) {
+            $PSNativeCommandUseErrorActionPreference = $false
+        }
+        $global:LASTEXITCODE = $null
+
+        & $Command 2>&1 | ForEach-Object {
+            if ($_ -is [System.Management.Automation.ErrorRecord]) {
+                $errorId = "$($_.FullyQualifiedErrorId)"
+                if ($errorId -like 'NativeCommandError*') {
+                    # Native stderr: keep the diagnostic verbatim, never render
+                    # PowerShell's "program : ..." wrapper or CategoryInfo noise.
+                    $output.Add([string]$_.Exception.Message)
+                }
+                else {
+                    # A real PowerShell error (not native stderr): preserve the
+                    # previous fail-closed behavior.
+                    throw $_
+                }
+            }
+            else {
+                $output.Add([string]$_)
+            }
+        }
+
+        $nativeExit = $LASTEXITCODE
+        if ($null -ne $nativeExit -and "$nativeExit" -match '^-?\d+$') {
+            $exit = [int]$nativeExit
+            $producedExitCode = $true
+        }
+        else {
+            $output.Add('[verify-v5] invocation produced no native exit code; outcome is uncertain and treated as a failure')
+        }
     }
     catch {
         $output.Add("[verify-v5] invocation threw an exception: $($_.Exception.GetType().FullName): $($_.Exception.Message)")
         if ($_.ScriptStackTrace) { $output.Add($_.ScriptStackTrace) }
+        $exit = $null
+        $producedExitCode = $false
     }
     finally {
+        if ($producedExitCode -and $null -ne $exit) {
+            # Evidence only; the caller receives $exit explicitly. The automatic
+            # variable itself is restored below so this helper never leaks state.
+            $output.Add("[verify-v5] native exit code: $exit")
+        }
         $logDir = Split-Path $LogPath -Parent
         if ($logDir -and -not (Test-Path -LiteralPath $logDir)) {
             try { New-Item -ItemType Directory -Force -Path $logDir | Out-Null } catch { }
         }
         try { ($output | Out-String) | Set-Content -Path $LogPath -Encoding UTF8 }
         catch { Write-Warning "[verify-v5] could not write captured log ${LogPath}: $($_.Exception.Message)" }
+        $ErrorActionPreference = $previousErrorActionPreference
+        if ($hadNativePreference) {
+            $PSNativeCommandUseErrorActionPreference = $previousNativePreference
+        }
+        else {
+            Remove-Variable -Name 'PSNativeCommandUseErrorActionPreference' -ErrorAction SilentlyContinue
+        }
+        $global:LASTEXITCODE = $previousExitCode
     }
     return $exit
 }
