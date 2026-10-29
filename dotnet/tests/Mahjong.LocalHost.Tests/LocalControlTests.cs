@@ -1182,6 +1182,17 @@ namespace Mahjong.LocalHost.Tests
             }
 
             string[] lines = File.ReadAllLines(marker);
+            // Evidence seam: the harness deletes its temp root on dispose, so a
+            // delivery run may ask this test to keep the worker's raw marker
+            // (the values below are still asserted verbatim; this only archives
+            // the artifact and changes no assertion).
+            string? evidenceDir = Environment.GetEnvironmentVariable("LH02_EVIDENCE_DIR");
+            if (!string.IsNullOrEmpty(evidenceDir))
+            {
+                Directory.CreateDirectory(evidenceDir);
+                File.WriteAllLines(Path.Combine(evidenceDir, "cold-worker-marker.txt"), lines);
+            }
+
             string MarkerValue(string key)
             {
                 string? line = lines.FirstOrDefault(candidate => candidate.StartsWith(key, StringComparison.Ordinal));
