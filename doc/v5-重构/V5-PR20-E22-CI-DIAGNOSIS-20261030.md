@@ -6,20 +6,23 @@
 [成功 run 40932986363](https://github.com/liuchangready/majiang-game/actions/runs/40932986363)。
 仓库 `liuchangready/majiang-game`，PR [#20](https://github.com/liuchangready/majiang-game/pull/20)
 （Draft，base `v5`）。本轮未触发、未重跑、未取消任何 CI；未 push、未建/改/合并 PR；未改动
-生产代码、verifier、Unity 资产或其他工作树；未申请 gate 批准。
+生产代码、verifier、Unity 资产或其他工作树；未申请 gate 批准。修正说明：本版仅修正归因
+口径与交付文件名（原 `V5-PR20-E22-CI-FAILURE-DIAGNOSIS-20261030.md` 改为本文件），
+artifact、计数与探针日志未变。
 
 **结论：** 两个 run 的实际测试树**完全相同**（tree `0f20e8a6...`），但 PR run 在
 `Mahjong.LocalHost.Tests` 的 1 个 furiten 冷重启用例上失败，push run 同一用例通过。
 失败用例是
 `LocalHostCandidateAcceptanceTests.ClientPassOnRonSetsFuritenAndColdRestartKeepsItUntilTheNextDraw`，
 断言 `LocalHostCandidateAcceptanceTests.cs:1063`，`Assert.True()` 实得 `False`；该程序集
-**115 / 1 failed / 0 skipped**，整个 job **2,641 / 1 failed / 0 skipped**。这不是 e22 的
-heartbeat 改动、PR merge 内容、SDK/构建或 PostgreSQL 造成的：e22 未改 LocalHost，PR merge
-commit 的 tree 与 e22 全等，14 个测试程序集中只有 LocalHost 一行失败。独立受控探针已复现
-同一断言：pass 后让本地自动驱动继续推进 750 ms，状态推进到 `state=7 furiten=False`，断言
-失败；同一延迟下先停驱动，则 `state=5 furiten=True`，断言通过。故**失败机制（测试在自动
-驱动仍可推进时读取持久化 furiten）已由探针证实**；**CI 当次精确调度交错仍是假设**，因为
-artifact 不含失败时的 save 文件或状态版本。
+**115 / 1 failed / 0 skipped**，整个 job **2,641 / 1 failed / 0 skipped**。现有证据可以
+明确排除的是 PR merge 与 push 的**源码树差异**：两者 tree 全等。e22 未直接修改 LocalHost，
+SDK/构建/PG 阶段也通过，但这些观察不足以证明 e22 改动、SDK、构建或 PG 与本失败无关；
+同树一次 push 通过也不能排除间接影响或其他确定性条件。独立受控探针已复现同一断言：
+pass 后让本地自动驱动继续推进 750 ms，状态推进到 `state=7 furiten=False`，断言失败；同一
+延迟下先停驱动，则 `state=5 furiten=True`，断言通过。故**失败机制（测试在自动驱动仍可
+推进时读取持久化 furiten）已由探针证实**；**CI 当次精确调度交错仍是假设**，因为 artifact
+不含失败时的 save 文件或状态版本。
 
 **V4 仍是生产版本；G2–G5 未批准；本报告不构成 PR20 批次、G2/G3 或任何 gate 的通过。**
 
@@ -76,7 +79,8 @@ f87ce9d:dotnet/tests/Mahjong.LocalHost.Tests/LocalHostCandidateAcceptanceTests.c
 ```
 
 因此，失败的 PR run 与成功的 push run 测试的是**同一份源码树**；API 的 `head_sha=e22e52a`
-不是 PR run 的实际 `GITHUB_SHA`。
+不是 PR run 的实际 `GITHUB_SHA`。源码树相同只排除了 tree 差异，不排除运行时、调度、
+进程/文件系统或其他条件差异。
 
 ---
 
@@ -168,8 +172,8 @@ using (LocalTableStore store = await LocalTableStore.OpenAsync(harness.Options, 
 }
 ```
 
-该失败在测试方法 `finally` 关闭 session/channel 之后、冷重启之前发生；不是超时、不是
-PG、不是 native crash，native exit 1 来自该断言。
+该失败在测试方法 `finally` 关闭 session/channel 之后、冷重启之前发生；artifact 中
+native exit 1 与该断言一致，没有 timeout/PG/native crash 的独立证据。
 
 ### 3.1 两 run 逐项目计数
 
@@ -280,21 +284,25 @@ DIAG-CONTROLLED storeTemporaryFuriten=True driverStopped=True
 日志：`probe/controlled-probe.log`，SHA256 `7EF44E50...`。两组探针只差“driver 是否继续
 推进”；store 读取代码、pass 命令、断言均相同。
 
-### 4.5 本地基线与“不是每次必现”
+### 4.5 本地基线与复现边界
 
-- 未修改的 e22 测试单测，连续 20 次：**20/20 exit 0**，每次 `Total: 1, Failed: 0`。
-- 未修改的 LocalHost 全量，连续 5 次：**5/5 exit 0**，每次 `Total: 115, Failed: 0`；
+- 未修改的 e22 测试单测，在本机连续 20 次：**20/20 exit 0**，每次 `Total: 1, Failed: 0`。
+- 未修改的 LocalHost 全量，在本机连续 5 次：**5/5 exit 0**，每次 `Total: 115, Failed: 0`；
   本机全量约 26 s，比 CI 的 13.9 s 慢。
-- 这说明该失败**不是确定性代码错误**；本机慢/单测隔离时没有触发 driver 追及 store 读取。
-  但“本机 20 次通过”不能否定 CI 失败，也不能把 CI 失败标成“已修复”。
+- 这些结果只说明本机条件下未触发该失败，**不足以证明不存在确定性代码错误**，也不足以
+  证明 CI 失败已修复。它同时说明该失败对执行时序/环境敏感，但敏感性本身不等于已找到
+  CI 当次的具体确定性条件。
+- 独立验收输入（caller）：caller 已在 e22 归档中实际运行目标单测 **1/1 通过**，并核对
+  两份 artifact SHA256 与本报告一致。该输入支持 e22 归档可复现通过，不改变 CI 失败事实，
+  也不证明 CI 当次交错或排除其他确定性条件。
 
-### 4.6 已证实与未证实
+### 4.6 证据支持的结论与仍未证实项
 
 **已由原始 artifact + 受控探针证实：**
 
 1. 失败 run 是 `pull_request`，实际测试 `f87ce9d`；成功 run 是 `push`，实际测试 e22；
-   两者 tree 全等，LocalHost 测试源码 blob 全等。故代码树差异、PR merge 差异、e22 的
-   heartbeat 改动都不是本失败的可归因原因。
+   两者 tree 全等，LocalHost 测试源码 blob 全等。故**源码树/PR merge 差异可明确排除**；
+   源码树相同不排除运行环境、调度、进程/文件系统等差异。
 2. 失败 run 的唯一失败是 LocalHost 的
    `ClientPassOnRonSetsFuritenAndColdRestartKeepsItUntilTheNextDraw`，断言在
    `LocalHostCandidateAcceptanceTests.cs:1063`，LocalHost **115/1/0**，全 job
@@ -309,19 +317,35 @@ DIAG-CONTROLLED storeTemporaryFuriten=True driverStopped=True
 - CI 失败 run 的**精确调度交错**：artifact 没有失败时的 save 文件、没有 `state`/furiten
   诊断输出，也没有 driver 的 tick 时序。我们只能证明“该机制可复现且与断言完全一致”，
   不能从 artifact 反推失败瞬间的 `stateVersion` 或具体 tick。
+- e22 heartbeat 改动、SDK、构建、PG 等差异的**因果作用**：这些项目未直接落在失败点，
+  相关阶段或同 tree run 通过，但这些只支持“未获直接证据”，不能排除间接影响或其他
+  确定性条件。同树一次 push 通过只证明该树在该次 run 通过，不构成因果排除。
 - 因此不能把本次 CI 失败简单归为“flaky 已修复”或“候选代码回归”；本报告只确认
   测试观测竞态这一机制，并保留精确交错的 UNKNOWN。
 
-**已排除：**
+**可明确排除的只有源码树差异：**
+
+- PR merge `f87ce9d` 与 e22 tree 全等（§1.1），LocalHost 测试 blob 全等；因此“PR merge
+  内容与 push 源树不同”可排除。
+- 这不等于排除运行环境、调度、进程/文件系统、构建产物实例或其他条件差异。
+
+**未获直接证据支持、但不能写成“已排除”的项：**
 
 - e22 的 heartbeat 绑定改动：候选 diff 的 11 个文件全在 `Mahjong.TableService`、
-  `Mahjong.Client.Wss`、B1 测试与文档，未触碰 LocalHost；同 tree 的 push run 通过。
-- PR merge/base 内容：`f87ce9d` 与 e22 tree 全等（§1.1）。
+  `Mahjong.Client.Wss`、B1 测试与文档，未直接触碰 LocalHost；同 tree 的 push run 通过。
+  这些只说明未获直接证据支持其作为原因，不能排除共享进程/时序/构建产物等间接影响。
 - SDK/构建：两 run 均 `8.0.426`，solution build PASS（0 warning / 0 error），插件复制
-  PASS（12 DLL），companion 4/4 PASS。
-- PostgreSQL：失败 run 的 P5.2 table/lobby PG 阶段均 PASS；唯一 FAIL 是 LocalHost。
-- 断言被削弱/重试/超时放宽：两 run 的 failure 计数、native exit 与 XML 均来自原始
-  runner；本诊断未改生产测试，未重跑 CI。
+  PASS（12 DLL），companion 4/4 PASS。仅说明这些阶段通过，不能排除其对时序/环境的
+  间接影响。
+- PostgreSQL：失败 run 的 P5.2 table/lobby PG 阶段均 PASS；无直接证据指向 PG，但不能
+  据此排除其资源占用/调度影响。
+- “本机 20/20、caller 1/1 通过”：只说明各自环境通过；不能据此证明失败与确定性条件
+  无关，也不能证明 CI 失败已修复。
+
+**方法/交付核对：**
+
+- 两 run 的 failure 计数、native exit 与 XML 均来自原始 runner；本诊断未改生产测试，
+  未削弱断言，未用重试/超时放宽替换失败，未重跑 CI。
 
 ---
 
@@ -396,8 +420,8 @@ D:\Unity\dotnet\dotnet.exe <...>/Mahjong.LocalHost.Tests.dll -noLogo -reporter d
   机制，但不把精确交错写成已观测。若 caller 需要该级别证明，需要下次失败时保留
   `build/p41-tests/**/room-1.save`、失败时 `stateVersion` 和 driver tick 日志；本轮没有
   为了补这个证据而重跑 CI。
-- 本机探针结果受本机调度影响：20/20 单测、5/5 全量通过；这只能说明本机没有触发该竞态，
-  不能替代 CI 证据，也不能作为“已修复”的证明。
+- 本机探针结果受本机调度影响：20/20 单测、5/5 全量通过；这只能说明本机未触发，
+  不能据此证明失败与确定性条件无关，也不能替代 CI 证据或作为“已修复”的证明。
 - 未运行/未声明：Unity Editor/IL2CPP、Android/iOS 真机、跨物理网络、真实生产部署、
   G2/G3 全链路。V4 仍是生产；G2–G5 未批准。
 
@@ -411,11 +435,11 @@ D:\Unity\dotnet\dotnet.exe <...>/Mahjong.LocalHost.Tests.dll -noLogo -reporter d
 | Run 40932986363（push e22） | **PASS** | 已观测；同 tree，LocalHost 115/115 |
 | 失败用例身份 | **已定位** | `ClientPassOnRonSetsFuritenAndColdRestartKeepsItUntilTheNextDraw`，`LocalHostCandidateAcceptanceTests.cs:1063` |
 | 失败计数 | **已定位** | LocalHost 115/1/0；全 job 2,641/1/0；14 test assemblies |
-| 失败机制 | **已由受控探针证实** | 测试读取持久化 furiten 时 auto-play driver 仍可推进；停 driver 后同断言通过 |
+| 失败机制 | **已由受控探针证实（机制可复现）** | 测试读取持久化 furiten 时 auto-play driver 仍可推进；停 driver 后同断言通过；不证明 CI 当次交错 |
 | CI 精确交错 | **BLOCKED/UNKNOWN** | artifact 无失败时 save/state/tick；不以重跑替代 |
-| e22 heartbeat 改动归因 | **排除** | 未触碰 LocalHost；同 tree push PASS |
-| PR merge 内容归因 | **排除** | `f87ce9d` tree = e22 tree |
-| SDK/构建/PG 归因 | **排除** | 8.0.426、build 0/0、PG stages PASS，唯一失败在 LocalHost |
+| e22 heartbeat 改动归因 | **未证实（缺乏直接证据）** | 未直接触碰 LocalHost；同 tree push PASS，但没有隔离 A/B，不能排除间接影响 |
+| PR merge 内容归因 | **源码树差异明确排除** | `f87ce9d` tree = e22 tree；不排除运行环境/调度差异 |
+| SDK/构建/PG 归因 | **未证实（缺乏直接证据）** | 8.0.426、build 0/0、PG stages PASS，唯一失败在 LocalHost；不能据此排除间接/其他确定性条件 |
 | 本报告对 PR20 的影响 | **不批准** | PR20 仍为 Draft；不构成批次或 gate 通过 |
 | V4 / G2–G5 | **不变** | V4 生产；G2–G5 未批准 |
 
