@@ -136,31 +136,84 @@ function Invoke-Native {
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $psi
     $timedOut = $false
+    $collectionIncomplete = $false
     $outText = ''
     $errText = ''
     $exitCode = $null
     try {
         if (-not $process.Start()) { throw "The process could not be started: $FilePath" }
-        $outTask = $process.StandardOutput.ReadToEndAsync()
-        $errTask = $process.StandardError.ReadToEndAsync()
-        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
-            $timedOut = $true
-            try { & taskkill.exe /PID $process.Id /T /F 2>$null | Out-Null } catch { }
-            try { if (-not $process.HasExited) { $process.Kill() } } catch { }
+        $outBuilder = New-Object System.Text.StringBuilder
+        $errBuilder = New-Object System.Text.StringBuilder
+        $outBuffer = New-Object char[] 4096
+        $errBuffer = New-Object char[] 4096
+        $outTask = $process.StandardOutput.ReadAsync($outBuffer, 0, $outBuffer.Length)
+        $errTask = $process.StandardError.ReadAsync($errBuffer, 0, $errBuffer.Length)
+        $clock = [System.Diagnostics.Stopwatch]::StartNew()
+        $exitClock = $null
+
+        while ($true) {
+            if ($outTask -ne $null -and $outTask.IsCompleted) {
+                try {
+                    $n = $outTask.GetAwaiter().GetResult()
+                    if ($n -gt 0) {
+                        [void]$outBuilder.Append($outBuffer, 0, $n)
+                        $outTask = $process.StandardOutput.ReadAsync($outBuffer, 0, $outBuffer.Length)
+                    }
+                    else {
+                        $outTask = $null
+                    }
+                }
+                catch {
+                    $outTask = $null
+                }
+            }
+            if ($errTask -ne $null -and $errTask.IsCompleted) {
+                try {
+                    $n = $errTask.GetAwaiter().GetResult()
+                    if ($n -gt 0) {
+                        [void]$errBuilder.Append($errBuffer, 0, $n)
+                        $errTask = $process.StandardError.ReadAsync($errBuffer, 0, $errBuffer.Length)
+                    }
+                    else {
+                        $errTask = $null
+                    }
+                }
+                catch {
+                    $errTask = $null
+                }
+            }
+
+            if (-not $process.HasExited) {
+                if ($clock.ElapsedMilliseconds -ge ($TimeoutSeconds * 1000)) {
+                    $timedOut = $true
+                    try { & taskkill.exe /PID $process.Id /T /F 2>$null | Out-Null } catch { }
+                    try { if (-not $process.HasExited) { $process.Kill() } } catch { }
+                    try { $process.WaitForExit(5000) | Out-Null } catch { }
+                }
+            }
+            elseif ($null -eq $exitClock) {
+                $exitClock = [System.Diagnostics.Stopwatch]::StartNew()
+            }
+
+            if ($process.HasExited -and $outTask -eq $null -and $errTask -eq $null) {
+                break
+            }
+            if ($process.HasExited -and $exitClock -ne $null -and $exitClock.ElapsedMilliseconds -ge 3000) {
+                # A grandchild (postgres/build server) still owns a pipe write end.
+                # Keep every byte already read and mark the collection incomplete
+                # instead of pretending ReadToEnd completed.
+                $collectionIncomplete = ($outTask -ne $null -or $errTask -ne $null)
+                try { $process.StandardOutput.Close() } catch { }
+                try { $process.StandardError.Close() } catch { }
+                break
+            }
+
+            Start-Sleep -Milliseconds 10
         }
-        try { $process.WaitForExit(10000) | Out-Null } catch { }
-        # A grandchild (postgres/build server) may keep a pipe write end open.
-        # Give in-flight bytes a bounded grace, then release the reader so the
-        # function cannot hang after the child already exited.
-        $grace = [System.Diagnostics.Stopwatch]::StartNew()
-        while ((-not $outTask.IsCompleted -or -not $errTask.IsCompleted) -and $grace.ElapsedMilliseconds -lt 10000) {
-            Start-Sleep -Milliseconds 25
-        }
-        if (-not $outTask.IsCompleted) { try { $process.StandardOutput.Close() } catch { } }
-        if (-not $errTask.IsCompleted) { try { $process.StandardError.Close() } catch { } }
+
         try { $process.WaitForExit(5000) | Out-Null } catch { }
-        try { if ($outTask.IsCompleted) { $outText = $outTask.GetAwaiter().GetResult() } } catch { }
-        try { if ($errTask.IsCompleted) { $errText = $errTask.GetAwaiter().GetResult() } } catch { }
+        $outText = $outBuilder.ToString()
+        $errText = $errBuilder.ToString()
         try { $exitCode = $process.ExitCode } catch { }
     }
     finally {
@@ -169,6 +222,13 @@ function Invoke-Native {
     Set-Content -LiteralPath $out -Value $outText -Encoding utf8
     Set-Content -LiteralPath $err -Value $errText -Encoding utf8
     Set-Content -LiteralPath $LogPath -Value ($outText + $errText) -Encoding utf8
+    [ordered]@{
+        timedOut = $timedOut
+        collectionIncomplete = $collectionIncomplete
+        stdoutBytes = [System.Text.Encoding]::UTF8.GetByteCount($outText)
+        stderrBytes = [System.Text.Encoding]::UTF8.GetByteCount($errText)
+        exitCode = $exitCode
+    } | ConvertTo-Json | Set-Content -LiteralPath ($LogPath + '.collection.json') -Encoding utf8
     if ($timedOut) { return 124 }
     if ($null -eq $exitCode) { throw "Native exit code unavailable: $FilePath" }
     return [int]$exitCode
@@ -835,19 +895,29 @@ try {
     if ([string]::IsNullOrEmpty($normalId)) { throw 'The suite did not record the normal request identity.' }
     $normalCount = [int](Get-PgScalar -Database $script:TableDb -User 'b1_observer' -Sql "SELECT count(*) FROM table_store.request_receipt WHERE room_id='$room' AND request_id='$normalId'")
     $normalStatus = Get-PgScalar -Database $script:TableDb -User 'b1_observer' -Sql "SELECT status FROM table_store.request_receipt WHERE room_id='$room' AND request_id='$normalId'"
-    if ($normalCount -ne 1 -or $normalStatus -ne 'APPLIED') {
-        throw "Normal request fact mismatch: count=$normalCount status=$normalStatus"
+    $normalCommandVersion = Get-PgScalar -Database $script:TableDb -User 'b1_observer' -Sql "SELECT coalesce(command_version::text,'') FROM table_store.request_receipt WHERE room_id='$room' AND request_id='$normalId'"
+    $normalJournalCount = [int](Get-PgScalar -Database $script:TableDb -User 'b1_observer' -Sql "SELECT count(*) FROM table_store.table_command_journal WHERE room_id='$room' AND request_id='$normalId'")
+    if ($normalCount -ne 1 -or $normalStatus -ne 'APPLIED' -or $normalJournalCount -ne 1 -or [string]::IsNullOrEmpty($normalCommandVersion)) {
+        throw "Normal request fact mismatch: count=$normalCount status=$normalStatus journal=$normalJournalCount version=$normalCommandVersion"
     }
+    $normalEventRows = [int](Get-PgScalar -Database $script:TableDb -User 'b1_observer' -Sql "SELECT count(*) FROM table_store.table_event WHERE room_id='$room' AND command_version=$normalCommandVersion")
+    if ($normalEventRows -lt 1) { throw "Normal requested command has no event rows." }
 
     $crashId = [string]$script:Suite.CrashRequestId
     $crashCount = 0
     $crashStatus = ''
+    $crashCommandVersion = ''
+    $crashJournalCount = 0
+    $crashEventRows = 0
     if (-not [string]::IsNullOrEmpty($crashId)) {
         $crashCount = [int](Get-PgScalar -Database $script:TableDb -User 'b1_observer' -Sql "SELECT count(*) FROM table_store.request_receipt WHERE room_id='$room' AND request_id='$crashId'")
         $crashStatus = Get-PgScalar -Database $script:TableDb -User 'b1_observer' -Sql "SELECT status FROM table_store.request_receipt WHERE room_id='$room' AND request_id='$crashId'"
-        if ($crashCount -ne 1 -or $crashStatus -ne 'APPLIED') {
-            throw "Crash request fact mismatch: count=$crashCount status=$crashStatus"
+        $crashCommandVersion = Get-PgScalar -Database $script:TableDb -User 'b1_observer' -Sql "SELECT coalesce(command_version::text,'') FROM table_store.request_receipt WHERE room_id='$room' AND request_id='$crashId'"
+        $crashJournalCount = [int](Get-PgScalar -Database $script:TableDb -User 'b1_observer' -Sql "SELECT count(*) FROM table_store.table_command_journal WHERE room_id='$room' AND request_id='$crashId'")
+        if ($crashCount -ne 1 -or $crashStatus -ne 'APPLIED' -or $crashJournalCount -ne 1) {
+            throw "Crash request fact mismatch: count=$crashCount status=$crashStatus journal=$crashJournalCount"
         }
+        $crashEventRows = [int](Get-PgScalar -Database $script:TableDb -User 'b1_observer' -Sql "SELECT count(*) FROM table_store.table_event WHERE room_id='$room' AND command_version=$crashCommandVersion")
     }
     elseif (-not [bool]$script:Suite.Blocked) {
         throw 'A non-blocked suite has no crash request identity.'
@@ -862,7 +932,17 @@ try {
         $count = [int](Get-PgScalar -Database $script:TableDb -User 'b1_observer' -Sql "SELECT count(*) FROM table_store.request_receipt WHERE $where")
         $status = Get-PgScalar -Database $script:TableDb -User 'b1_observer' -Sql "SELECT coalesce(max(status),'') FROM table_store.request_receipt WHERE $where"
         $digest = Get-PgScalar -Database $script:TableDb -User 'b1_observer' -Sql "SELECT coalesce(encode((SELECT canonical_payload_digest FROM table_store.request_receipt WHERE $where LIMIT 1),'hex'),'')"
-        $factOk = $count -eq [int]$fact.ExpectedReceiptCount
+        $journalWhere = $where
+        if (-not [string]::IsNullOrEmpty([string]$fact.AccountId)) { $journalWhere += " AND account_id='$($fact.AccountId)'" }
+        if (-not [string]::IsNullOrEmpty([string]$fact.ScopeId)) { $journalWhere += " AND scope_id='$($fact.ScopeId)'" }
+        if (-not [string]::IsNullOrEmpty([string]$fact.Api)) { $journalWhere += " AND api='$($fact.Api)'" }
+        $journalCount = [int](Get-PgScalar -Database $script:TableDb -User 'b1_observer' -Sql "SELECT count(*) FROM table_store.table_command_journal WHERE $journalWhere")
+        $journalVersions = Get-PgScalar -Database $script:TableDb -User 'b1_observer' -Sql "SELECT coalesce(string_agg(command_version::text,','),'') FROM table_store.table_command_journal WHERE $journalWhere"
+        $journalEventRows = 0
+        if (-not [string]::IsNullOrEmpty($journalVersions)) {
+            $journalEventRows = [int](Get-PgScalar -Database $script:TableDb -User 'b1_observer' -Sql "SELECT count(*) FROM table_store.table_event WHERE room_id='$($fact.RoomId)' AND command_version IN ($journalVersions)")
+        }
+        $factOk = $count -eq [int]$fact.ExpectedReceiptCount -and $journalCount -eq [int]$fact.ExpectedJournalCount
         if ($fact.ExpectedReceiptCount -gt 0) {
             $factOk = $factOk -and $status -eq [string]$fact.ExpectedStatus
             if (-not [string]::IsNullOrEmpty([string]$fact.ExpectedCanonicalDigestHex)) {
@@ -872,20 +952,31 @@ try {
         else {
             $factOk = $factOk -and $status -eq ''
         }
+        if ([int]$fact.ExpectedJournalCount -eq 0 -and $journalEventRows -ne 0) {
+            $factOk = $false
+        }
         $negativeAudit.Add([ordered]@{
             label = $fact.Label
             roomId = $fact.RoomId
             requestId = $fact.RequestId
+            accountId = $fact.AccountId
+            scopeId = $fact.ScopeId
+            api = $fact.Api
             expectedCount = $fact.ExpectedReceiptCount
             actualCount = $count
+            expectedJournalCount = $fact.ExpectedJournalCount
+            actualJournalCount = $journalCount
+            actualJournalVersions = $journalVersions
+            actualEventRowsForJournal = $journalEventRows
             expectedStatus = $fact.ExpectedStatus
             actualStatus = $status
             expectedDigest = $fact.ExpectedCanonicalDigestHex
             actualDigest = $digest
+            ledgerStatus = 'NOT_RUN: wallet/ledger schema is not implemented in this B1 tree'
             ok = $factOk
         })
         if (-not $factOk) {
-            throw "Negative fact mismatch for $($fact.Label): count=$count status=$status digest=$digest"
+            throw "Negative fact mismatch for $($fact.Label): receipt=$count/$status journal=$journalCount events=$journalEventRows"
         }
     }
     $negativeAudit | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $LogDir 'negative-facts-audit.json') -Encoding utf8
@@ -898,9 +989,15 @@ try {
         appliedReceipts = [int]$applied
         normalRequestCount = [int]$normalCount
         normalRequestStatus = [string]$normalStatus
+        normalCommandVersion = [string]$normalCommandVersion
+        normalJournalCount = [int]$normalJournalCount
+        normalEventRows = [int]$normalEventRows
         crashRequestCount = [int]$crashCount
         crashRequestStatus = [string]$crashStatus
+        crashJournalCount = [int]$crashJournalCount
+        crashEventRows = [int]$crashEventRows
         negativeFacts = $negativeFactsArray
+        ledgerStatus = 'NOT_RUN: wallet/ledger schema is not implemented in this B1 tree'
         scopes = [int]$scopes
         settlementOutboxRows = [int]$outbox
         lobbyAccounts = [int]$lobbyAccounts
@@ -914,7 +1011,7 @@ try {
         throw "PG facts do not match the committed room: stateVersion=$stateVersion events=$eventCount"
     }
     if ([int]$outbox -ne 0) { throw "Unexpected settlement outbox rows: $outbox" }
-    Add-Stage 'pg-facts' 'PASS' 0 "stateVersion=$stateVersion events=$eventCount normal=$normalCount/$normalStatus crash=$crashCount/$crashStatus negFacts=$($negativeAudit.Count) settlementOutbox=$outbox lobbyConsumption=$lobbyConsumed"
+    Add-Stage 'pg-facts' 'PASS' 0 "stateVersion=$stateVersion events=$eventCount normal=$normalCount/$normalStatus journal=$normalJournalCount eventRows=$normalEventRows crash=$crashCount/$crashStatus journal=$crashJournalCount eventRows=$crashEventRows negFacts=$($negativeAudit.Count) settlementOutbox=$outbox lobbyConsumption=$lobbyConsumed ledger=NOT_RUN"
 
     $suiteSummary = [ordered]@{
         blocked = [bool]$script:Suite.Blocked
@@ -937,6 +1034,7 @@ try {
         crashRequestId = [string]$script:Suite.CrashRequestId
         recoveredProjectionConfirmed = [bool]$script:Suite.RecoveredProjectionConfirmed
         httpDifferentKindConflict = [bool]$script:Suite.HttpDifferentKindConflict
+        canonicalReceiptIdentityVerified = [bool]$script:Suite.CanonicalReceiptIdentityVerified
         negativeFactCount = @($script:Suite.NegativeFacts).Count
         negativeResults = @($script:Suite.NegativeResults)
         assertions = @($script:Suite.Assertions)

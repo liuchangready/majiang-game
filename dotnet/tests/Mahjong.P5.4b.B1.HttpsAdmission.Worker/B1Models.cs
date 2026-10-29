@@ -223,6 +223,8 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
 
         public bool ReceiptDigestDomainMismatch { get; set; }
 
+        public bool CanonicalReceiptIdentityVerified { get; set; }
+
         public bool Blocked { get; set; }
 
         public string BlockerCode { get; set; } = string.Empty;
@@ -265,5 +267,13 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
         public string ExpectedStatus { get; set; } = string.Empty;
 
         public string ExpectedCanonicalDigestHex { get; set; } = string.Empty;
+
+        public string AccountId { get; set; } = string.Empty;
+
+        public string ScopeId { get; set; } = string.Empty;
+
+        public string Api { get; set; } = string.Empty;
+
+        public int ExpectedJournalCount { get; set; }
     }
 }

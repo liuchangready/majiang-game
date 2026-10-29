@@ -31,6 +31,7 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
         private long _baselineCount;
         private long _lastBaselineVersion;
         private Mahjong.Contracts.StreamCursor? _confirmedCursor;
+        private TableVisibleEventBatch _lastVisibleEvents = TableVisibleEventBatch.Empty;
         private TableReceiptResolvedEventArgs? _lastResolution;
 
         public ClientHandle(
@@ -82,6 +83,17 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
         }
 
         public string? LastError => _operations.LastError;
+
+        public TableVisibleEventBatch LastVisibleEvents
+        {
+            get
+            {
+                lock (_snapshotGate)
+                {
+                    return _lastVisibleEvents;
+                }
+            }
+        }
 
         public long BaselineCount
         {
@@ -271,6 +283,8 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                         _lastBaselineVersion = (long)args.PublicSnapshot.StateVersion;
                     }
                 }
+
+                _lastVisibleEvents = args.VisibleEventBatch;
             }
         }
 

@@ -132,9 +132,10 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
             return Regex.IsMatch(value, @"-----BEGIN [^-]+-----", RegexOptions.IgnoreCase)
                    || Regex.IsMatch(value, @"(?i)\bBearer\s+\S+")
                    || Regex.IsMatch(value, @"[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")
-                   || Regex.IsMatch(value, @"(?i)(sessionToken|bootstrapSecret|authorization|private[_-]?key|password|secret)\s*[:=]")
+                   || Regex.IsMatch(value, @"(?i)[""']?(sessionToken|bootstrapSecret|authorization|private[_-]?key|password|secret|token|credential)[""']?\s*[:=]")
                    || Regex.IsMatch(value, @"eyJ[A-Za-z0-9_-]{8,}")
-                   || Regex.IsMatch(value, @"[A-Za-z0-9+/]{40,}={0,2}")
+                   || Regex.IsMatch(value, @"[A-Za-z0-9+/]{20,}={0,2}")
+                   || Regex.IsMatch(value, @"[A-Za-z0-9_-]{16,}")
                    || Regex.IsMatch(value, @"[A-Fa-f0-9]{40,}");
         }
 

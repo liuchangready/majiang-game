@@ -8,6 +8,8 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Google.Protobuf;
+using Google.Protobuf.Reflection;
 using Mahjong.Client;
 using Mahjong.Contracts;
 using Mahjong.Contracts.Wire;
@@ -16,6 +18,10 @@ using WireLegalActionView = Mahjong.Contracts.Wire.LegalActionView;
 using WireReceiptStatus = Mahjong.Contracts.Wire.ReceiptStatus;
 using WirePlayerPublicView = Mahjong.Contracts.Wire.PlayerPublicView;
 using WirePublicBoardView = Mahjong.Contracts.Wire.PublicBoardView;
+using WirePublicMatchView = Mahjong.Contracts.Wire.PublicMatchView;
+using WireMeldView = Mahjong.Contracts.Wire.MeldView;
+using WireConcealedMeldView = Mahjong.Contracts.Wire.ConcealedMeldView;
+using WireDiscardView = Mahjong.Contracts.Wire.DiscardView;
 
 namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
 {
@@ -752,27 +758,142 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
 
         private static bool PublicProjectionIsSafe(ClientHandle client)
         {
-            string text = string.Empty;
             PublicSnapshot? publicSnapshot = client.LatestPublic;
             if (publicSnapshot != null)
             {
-                text += publicSnapshot.ToString();
+                if (!FieldsAllowed(publicSnapshot, 1, 2, 3, 4, 5, 6, 7, 8) ||
+                    !PublicMatchViewSafe(publicSnapshot.View) ||
+                    !string.Equals(publicSnapshot.SessionId, client.Binding?.SessionId.Value, StringComparison.Ordinal))
+                {
+                    return false;
+                }
             }
 
             PlayerSnapshot? player = client.LatestPlayer;
-            if (player?.PublicView != null)
+            if (player != null)
             {
-                text += player.PublicView.ToString();
+                if (player.PrivateView == null ||
+                    player.PrivateView.Seat != client.Seat ||
+                    !PublicMatchViewSafe(player.PublicView) ||
+                    !string.Equals(player.SessionId, client.Binding?.SessionId.Value, StringComparison.Ordinal))
+                {
+                    return false;
+                }
             }
 
-            string[] forbidden =
+            return VisibleEventsSafe(client);
+        }
+
+        private static bool PublicMatchViewSafe(WirePublicMatchView? view)
+        {
+            if (view == null)
             {
-                "closed_tiles", "drawn_tile_id", "cheat_points", "cheat_entries",
-                "seed", "ura_dora", "sleeve"
-            };
-            foreach (string token in forbidden)
+                return true;
+            }
+
+            if (!FieldsAllowed(view, 1, 2, 3, 4, 5, 6) || !PublicBoardSafe(view.Board))
             {
-                if (text.Contains(token, StringComparison.OrdinalIgnoreCase))
+                return false;
+            }
+
+            foreach (PublicEventEnvelope settlement in view.SettlementEvents)
+            {
+                if (settlement.Visibility == EventVisibility.Private ||
+                    settlement.Visibility == EventVisibility.Unspecified)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static bool PublicBoardSafe(WirePublicBoardView? board)
+        {
+            if (board == null)
+            {
+                return true;
+            }
+
+            if (!FieldsAllowed(board, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13))
+            {
+                return false;
+            }
+
+            var seats = new HashSet<int>();
+            foreach (WirePlayerPublicView player in board.Players)
+            {
+                if (!FieldsAllowed(player, 1, 2, 3, 4, 5, 13) ||
+                    player.Seat < 0 || player.Seat > 3 || !seats.Add(player.Seat))
+                {
+                    return false;
+                }
+
+                foreach (WireMeldView meld in player.Melds)
+                {
+                    // A closed kan is identity-free on the public stream:
+                    // it must be a ConcealedMeldView, never a MeldView carrying
+                    // four physical tile IDs.
+                    if (!FieldsAllowed(meld, 1, 2, 3, 4) ||
+                        meld.Type == MeldType.ClosedKan)
+                    {
+                        return false;
+                    }
+                }
+
+                foreach (WireConcealedMeldView concealed in player.ConcealedMelds)
+                {
+                    if (!FieldsAllowed(concealed, 1, 2, 3) ||
+                        concealed.Type != MeldType.ClosedKan ||
+                        concealed.TileCount != 4 ||
+                        concealed.FromSeat != -1)
+                    {
+                        return false;
+                    }
+                }
+
+                foreach (WireDiscardView discard in player.Discards)
+                {
+                    if (!FieldsAllowed(discard, 1, 2, 3, 4))
+                    {
+                        return false;
+                    }
+                }
+            }
+
+            return true;
+        }
+
+        private static bool VisibleEventsSafe(ClientHandle client)
+        {
+            foreach (TableVisibleEvent visible in client.LastVisibleEvents.Events)
+            {
+                if (visible.Visibility == ProtocolEventVisibility.Unspecified)
+                {
+                    return false;
+                }
+
+                if (visible.IsPrivate)
+                {
+                    if (client.Role != "PLAYER" || visible.OwnerSeat != client.Seat)
+                    {
+                        return false;
+                    }
+                }
+                else if (visible.OwnerSeat != -1)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static bool FieldsAllowed(IMessage message, params int[] allowed)
+        {
+            foreach (FieldDescriptor field in message.Descriptor.Fields.InFieldNumberOrder())
+            {
+                if (Array.IndexOf(allowed, field.FieldNumber) < 0)
                 {
                     return false;
                 }

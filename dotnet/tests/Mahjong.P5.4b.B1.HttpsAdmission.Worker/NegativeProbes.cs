@@ -51,6 +51,7 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                     conflictRoom).ConfigureAwait(false);
                 suite.SameKeyDifferentBytesPreservedOriginal = result.Preserved;
                 suite.ReceiptDigestDomainMismatch = result.DigestDomainMismatch;
+                suite.CanonicalReceiptIdentityVerified = !string.IsNullOrEmpty(result.CanonicalDigestHex);
                 if (!suite.SameKeyDifferentBytesPreservedOriginal)
                 {
                     throw new InvalidOperationException(
@@ -64,7 +65,11 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                     RequestId = result.RequestId,
                     ExpectedReceiptCount = 1,
                     ExpectedStatus = result.Status,
-                    ExpectedCanonicalDigestHex = result.CanonicalDigestHex
+                    ExpectedCanonicalDigestHex = result.CanonicalDigestHex,
+                    AccountId = welcome.Scope.AccountId,
+                    ScopeId = welcome.Scope.ScopeId,
+                    Api = "SubmitAction",
+                    ExpectedJournalCount = 0
                 });
                 suite.NegativeResults.Add("same_key_different_bytes=PRESERVED");
             }
