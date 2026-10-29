@@ -1,0 +1,28 @@
+V5-B1 first-receipt digest fix — cleanup evidence
+Date: 2026-10-29 (final patched run)
+Run root: build\b1-fix-pr20\patched\artifacts\b1-pg-patched-59471 (local ignored; removed)
+Ports: 59471 (PostgreSQL), 59472 (Lobby HTTPS), 59473 (Table WSS)
+
+wrapper-summary.json:
+  exitCode = 0
+  status = PASS
+  cleanupOk = true
+  secretMaterialRemoved = true
+  stage cleanup = PASS (exit 0) "ownership-verified cluster removed; ports free; no postmaster"
+
+Independent verification after the suite:
+  Test-Path <run-root>                                  -> False
+  Test-Path <run-root>\material                         -> False
+  Get-NetTCPConnection -LocalPort 59471 -State Listen  -> 0 listeners
+  Get-NetTCPConnection -LocalPort 59472 -State Listen  -> 0 listeners
+  Get-NetTCPConnection -LocalPort 59473 -State Listen  -> 0 listeners
+  postgres.exe processes whose command line matches
+    'b1-pg-patched-59471'                              -> 0
+  Other postgres.exe processes on the machine (6 at
+    the time of the check) were not started by this
+    task and were left untouched.
+
+The suite's temporary ES256 ticket key, TLS leaf/root, guest secrets and
+outbox material lived under <run-root>\material and were removed with the
+ownership-verified cluster root. No machine certificate store or global
+trust setting was changed.

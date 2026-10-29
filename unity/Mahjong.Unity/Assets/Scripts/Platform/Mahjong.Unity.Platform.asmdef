@@ -1,13 +1,17 @@
 {
   "name": "Mahjong.Unity.Platform",
   "rootNamespace": "Mahjong.Unity.Platform",
-  "references": [],
+  "references": [
+    "Unity.InputSystem"
+  ],
   "includePlatforms": [],
   "excludePlatforms": [],
   "allowUnsafeCode": false,
-  "overrideReferences": false,
-  "precompiledReferences": [],
-  "autoReferenced": true,
+  "overrideReferences": true,
+  "precompiledReferences": [
+    "Mahjong.Client.dll"
+  ],
+  "autoReferenced": false,
   "defineConstraints": [],
   "versionDefines": [],
   "noEngineReferences": false

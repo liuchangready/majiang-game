@@ -436,10 +436,12 @@ namespace Mahjong.TableRuntime
         /// <summary>
         /// Adds Domain-verifiable cross-checks when the recovered final round is supplied:
         /// each TileDrawn fact's wallRemaining is reconstructed backwards from the trusted
-        /// checkpoint/final wall; RoundEnded roundWind/roundNumber must equal the immutable
-        /// round spec; draw tenpai and win loser must equal the committed result. Histories
-        /// containing kan/replacement draws are rejected because live-wall inverse evidence is
-        /// not modeled rather than guessed.
+        /// checkpoint/final wall using the Domain's normal-draw and kan-replacement physical
+        /// model; KanDeclared meld/tile facts must equal the recovered Domain meld and each
+        /// RinshanDrawn must pair with a KanDeclared in its own command. RoundEnded
+        /// roundWind/roundNumber must equal the immutable round spec; draw tenpai and win loser
+        /// must equal the committed result. Missing, re-ordered or malformed kan evidence fails
+        /// closed; it is never filled from a default.
         /// </summary>
         public static void ValidateRecoveredEventFacts(
             IReadOnlyList<TableEventRecord> history,
@@ -494,34 +496,17 @@ namespace Mahjong.TableRuntime
             }
 
             var expectedWallBySeq = new Dictionary<ulong, uint>();
+            var expectedKanMeldBySeq = new Dictionary<ulong, MeldView>();
             if (finalRound != null)
             {
-                long wall = finalRound.Tiles.WallRemaining;
-                for (int i = history.Count - 1; i >= 0; i--)
-                {
-                    TableEventRecord record = history[i];
-                    if (record.Type == RoundEventType.KanDeclared ||
-                        record.Type == RoundEventType.RinshanDrawn)
-                    {
-                        throw new TableProjectionException(
-                            TableProjectionErrorCode.InvalidContext,
-                            "Kan/replacement-draw wall evidence is not modeled; refusing to guess.");
-                    }
-
-                    if (record.Type == RoundEventType.TileDrawn)
-                    {
-                        if (wall < 0)
-                        {
-                            throw new TableProjectionException(
-                                TableProjectionErrorCode.InvalidContext,
-                                "Recovered wall remaining underflowed during event validation.");
-                        }
-
-                        expectedWallBySeq[record.Seq.Value] = unchecked((uint)wall);
-                        wall++;
-                    }
-                }
+                TableKanWallEvidence evidence = TableKanWallEvidence.Reconstruct(history, finalRound);
+                expectedWallBySeq = new Dictionary<ulong, uint>(evidence.WallRemainingBySeq);
+                expectedKanMeldBySeq = new Dictionary<ulong, MeldView>(evidence.KanMeldBySeq);
             }
+
+            // History order itself is validated by TableKanWallEvidence (strictly increasing
+            // event_seq, contiguous ordinals). Fact records are keyed by event_seq; their list
+            // order is not semantic, and cheat facts are legitimately merged after host facts.
 
             var validationPolicy = new TableProjectionPolicy(
                 policy.Paused,
@@ -563,7 +548,13 @@ namespace Mahjong.TableRuntime
                     TableProjectedEvent? value = TableEventProjection.Project(input, audience, validationPolicy);
                     if (value != null)
                     {
-                        _ = TableProjectionContractMapper.MapEvent(value, fact.Facts);
+                        // Mirror the live mapper's redaction boundary: a public/other-seat
+                        // closed-kan event must never carry the owner's four identities from
+                        // the trusted owner fact.
+                        TableProjectionEventFacts mapFacts = value.IsClosedKan && value.TileIds.Count == 0
+                            ? fact.Facts.WithoutMeld()
+                            : fact.Facts;
+                        _ = TableProjectionContractMapper.MapEvent(value, mapFacts);
                         projected = true;
                     }
                 }
@@ -577,7 +568,12 @@ namespace Mahjong.TableRuntime
 
                 if (finalRound != null)
                 {
-                    ValidateDomainEventValues(record, fact, finalRound, expectedWallBySeq);
+                    ValidateDomainEventValues(
+                        record,
+                        fact,
+                        finalRound,
+                        expectedWallBySeq,
+                        expectedKanMeldBySeq);
                 }
             }
         }
@@ -586,7 +582,8 @@ namespace Mahjong.TableRuntime
             TableEventRecord record,
             TableProjectionEventFact fact,
             RoundStateMachine finalRound,
-            IReadOnlyDictionary<ulong, uint> expectedWallBySeq)
+            IReadOnlyDictionary<ulong, uint> expectedWallBySeq,
+            IReadOnlyDictionary<ulong, MeldView> expectedKanMeldBySeq)
         {
             switch (record.Type)
             {
@@ -598,6 +595,41 @@ namespace Mahjong.TableRuntime
                         throw new TableProjectionException(
                             TableProjectionErrorCode.InvalidPayload,
                             "TileDrawn wallRemaining contradicts the recovered wall at " + record.Seq + ".");
+                    }
+
+                    break;
+                case RoundEventType.RinshanDrawn:
+                    // RinshanDrawn carries no public wall field; its physical evidence is the
+                    // paired KanDeclared and the backward wall count validated above. Reject a
+                    // fact that smuggles a different wall value or meld body.
+                    if (fact.Facts.WallRemaining.HasValue || fact.Facts.Meld != null)
+                    {
+                        throw new TableProjectionException(
+                            TableProjectionErrorCode.InvalidPayload,
+                            "RinshanDrawn carries an unexpected wall/meld fact at " + record.Seq + ".");
+                    }
+
+                    break;
+                case RoundEventType.KanDeclared:
+                    if (!expectedKanMeldBySeq.TryGetValue(record.Seq.Value, out MeldView? expectedMeld) ||
+                        fact.Facts.Meld == null ||
+                        !TableKanWallEvidence.Matches(fact.Facts.Meld, expectedMeld))
+                    {
+                        throw new TableProjectionException(
+                            TableProjectionErrorCode.InvalidPayload,
+                            "KanDeclared meld/tile facts contradict the recovered Domain meld at " +
+                            record.Seq + ".");
+                    }
+
+                    if (!string.Equals(
+                            KanDetail(expectedMeld.Type),
+                            record.Detail,
+                            StringComparison.Ordinal))
+                    {
+                        throw new TableProjectionException(
+                            TableProjectionErrorCode.InvalidPayload,
+                            "KanDeclared type detail contradicts the recovered Domain meld at " +
+                            record.Seq + ".");
                     }
 
                     break;
@@ -620,6 +652,23 @@ namespace Mahjong.TableRuntime
                 case RoundEventType.RonWin:
                     ValidateLoser(record, fact, finalRound);
                     break;
+            }
+        }
+
+        private static string KanDetail(ProtocolMeldType type)
+        {
+            switch (type)
+            {
+                case ProtocolMeldType.OpenKan:
+                    return "OPEN_KAN";
+                case ProtocolMeldType.ClosedKan:
+                    return "CLOSED_KAN";
+                case ProtocolMeldType.AddedKan:
+                    return "ADDED_KAN";
+                default:
+                    throw new TableProjectionException(
+                        TableProjectionErrorCode.InvalidPayload,
+                        "A kan fact carried a non-kan meld type.");
             }
         }
 

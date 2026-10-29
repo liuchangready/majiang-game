@@ -1,0 +1,100 @@
+V5-B1 first-receipt digest fix — commands and native exit codes
+Date: 2026-10-29
+Candidate: a2a1bf9099ce6b607008cb017d7be60577166118
+Accepted baseline: 8fd7c6cb701dfbb41c28938de4186749bdd1d6c7
+Test host: Windows 10 loopback; dotnet SDK 8.0.426; PostgreSQL 16.10 (isolated owned cluster)
+Patch: doc\v5-重构\patches\V5-B1-FIRST-RECEIPT-DIGEST-FIX-20261029.patch
+Patch SHA-256: 2E2A52D850FE8720F443EA21BF431DE2B7F6E04C7322FDCFE8B2A5861B3D8F29
+
+[archive and isolated trees]
+git archive --format=tar --output=build\b1-fix-pr20\src-a2a1bf9.tar a2a1bf9099ce6b607008cb017d7be60577166118
+  native exit 0
+tar -xf build\b1-fix-pr20\src-a2a1bf9.tar -C build\b1-fix-pr20\src
+  native exit 0
+# The extracted candidate and patched trees were each placed in a local scratch
+# git repository only to satisfy the suite's read-only guard (`git rev-parse HEAD`).
+# No candidate code was committed to the delivery worktree or pushed.
+# Unpatched scratch HEAD: 8b7b96545dbb15c560a142c115b08961da72c430
+# Patched scratch HEAD:   46e2c018f477f8399d29947af05b264ecfef5bb8
+
+[unpatched frozen candidate: reproduce the reported native 1]
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools\ci\verify-v5-https-admission.ps1 `
+  -DotnetPath D:\Unity\dotnet\dotnet.exe `
+  -PgPort 59171 -LobbyPort 59172 -TablePort 59173 `
+  -Root build\b1-fix-pr20\src\artifacts\b1-pg-unpatched-59171 `
+  -LogDir build\b1-fix-pr20\src\artifacts\b1-logs-unpatched-59171 `
+  -SuiteTimeoutSeconds 420
+  wrapper/PowerShell native exit 1
+  stage suite: FAIL, suite native exit 1
+  suite.log: B1-SUITE-FAIL InvalidOperationException: [redacted]
+  NegativeResults: 3 (TLS only); no same-key/cross-account/spectator/ticket negatives
+  SameKeyDifferentBytesPreservedOriginal=false
+  CanonicalReceiptIdentityVerified=true   (early-exit value, not a lookup proof)
+  ReceiptDigestDomainMismatch=false       (early-exit value)
+  stage cleanup: PASS (exit 0)
+
+[patched candidate: original HTTPS admission suite]
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools\ci\verify-v5-https-admission.ps1 `
+  -DotnetPath D:\Unity\dotnet\dotnet.exe `
+  -PgPort 59471 -LobbyPort 59472 -TablePort 59473 `
+  -Root build\b1-fix-pr20\patched\artifacts\b1-pg-patched-59471 `
+  -LogDir build\b1-fix-pr20\patched\artifacts\b1-logs-patched-59471 `
+  -SuiteTimeoutSeconds 480
+  wrapper/PowerShell native exit 0
+  stage tests-b1: PASS total=44 passed=44 failed=0 errors=0 skipped=0 notRun=0
+  stage suite: PASS (exit 0)
+  stage pg-facts: PASS (exit 0)
+  stage cleanup: PASS (exit 0)
+  wrapper status: PASS, cleanupOk=true, secretMaterialRemoved=true
+  manifest count=371 sha256=8B324B4BBBFAEBD336902B10A7CD5E2B73D405AF7A73F6CE39A9AEF14F1E8361
+
+  suite flags:
+    FirstReceiptCanonicalDigestHex = 6f99fc869c3abed62d2a1c0ca103d23113d650ba433e0bcb7f5e601d9d0d250a
+    LookupCanonicalDigestHex = "" (empty)
+    FirstReceiptDigestVerified = true
+    LookupReceiptDigestAvailable = false
+    LookupReceiptDigestMatchesExpected = false
+    ReceiptDigestDomainMismatch = true
+    CanonicalReceiptIdentityVerified = false
+    SameKeyDifferentBytesPreservedOriginal = true
+
+  negative matrix:
+    NegativeResults = 10
+      tls_untrusted_root=rejected_https_and_wss
+      tls_wrong_san=rejected_https_and_wss
+      tls_expired=rejected_https_and_wss
+      same_key_different_bytes=PRESERVED
+      same_key_lookup_digest=UNAVAILABLE_B1_BLOCKER_03
+      cross_account_query=SCOPE_MISMATCH
+      spectator_player_command=SCOPE_ROLE_NOT_AUTHORIZED
+      tampered_ticket=rejected
+      foreign_room_ticket=rejected
+      expired_lobby_ticket=rejected
+    NegativeFacts = 4 (all DB-audited ok=true)
+    assertions = 11, final assertion = negative_matrix_complete
+
+  pg-facts: stateVersion=5 events=10 normal=1/APPLIED journal=1 eventRows=2
+            crash=1/APPLIED journal=1 eventRows=2 negFacts=4
+            settlementOutbox=0 lobbyConsumption=0 ledger=NOT_RUN
+
+
+[fresh-archive patch application and build]
+# applycheck2 = fresh `git archive a2a1bf9` extraction
+git apply --check doc\v5-重构\patches\V5-B1-FIRST-RECEIPT-DIGEST-FIX-20261029.patch
+  native exit 0
+git apply doc\v5-重构\patches\V5-B1-FIRST-RECEIPT-DIGEST-FIX-20261029.patch
+  native exit 0
+dotnet build dotnet\tests\Mahjong.P5.4b.B1.HttpsAdmission.Worker\Mahjong.P5.4b.B1.HttpsAdmission.Worker.csproj `
+  -c Release --no-incremental --nologo -v:minimal -nr:false
+  native exit 0 (0 warnings, 0 errors)
+
+[final cleanup checks]
+Get-NetTCPConnection -LocalPort 59471,59472,59473 -State Listen
+  0 listeners on each port
+Get-CimInstance Win32_Process -Filter "Name='postgres.exe'" |
+  Where-Object { $_.CommandLine -match 'b1-pg-patched-59471' }
+  0 owned postgres processes
+Test-Path build\b1-fix-pr20\patched\artifacts\b1-pg-patched-59471
+  False (ownership-verified cluster root removed)
+Test-Path ...\b1-pg-patched-59471\material
+  False (temporary TLS/key material removed)

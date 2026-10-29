@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <!--
+    P5.1 table transport host: the /v1/table WSS admission + binding surface.
+
+    Registered in dotnet/Mahjong.sln and the exact Architecture allowlist by the
+    caller after independent P5.1 acceptance. Direct project builds remain supported.
+
+    Direct references stay at the accepted V5 binding surface: Contracts (protocol
+    constants/error codes), Contracts.Wire (frozen protobuf envelope + WireCodec)
+    and TableRuntime (the accepted per-table actor). Domain types flow in
+    transitively for the initial-round factory only; this service never modifies
+    Domain rules or the Wire schema.
+
+    P5.4b-A adds exactly one new edge, the one the migration plan's dependency table
+    already defines for the table host: Mahjong.Infrastructure, consumed ONLY through
+    PostgresTableStore/PostgresTableMigrator so a durable host can bind the accepted
+    P5.2 table_store ports to the actors' durable context and scope issuance. The
+    precise Architecture allowlist entry for this edge is registered by the caller
+    after independent acceptance.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>12.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <Deterministic>true</Deterministic>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <AssemblyName>Mahjong.TableService</AssemblyName>
+    <RootNamespace>Mahjong.TableService</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Mahjong.Contracts\Mahjong.Contracts.csproj" />
+    <ProjectReference Include="..\Mahjong.Contracts.Wire\Mahjong.Contracts.Wire.csproj" />
+    <ProjectReference Include="..\Mahjong.Infrastructure\Mahjong.Infrastructure.csproj" />
+    <ProjectReference Include="..\Mahjong.TableRuntime\Mahjong.TableRuntime.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -84,6 +84,42 @@ namespace Mahjong.Client.Wss.Tests
         }
 
         [Fact]
+        public async Task BindinglessServerPingIsRejected()
+        {
+            // Exact regression shape of the server defect: empty session/room, seat 0,
+            // epoch 0 on an otherwise valid PING after a bound WELCOME. The strict client
+            // must keep rejecting it; a server-side fix may never be excused here.
+            var fixture = await OpenBoundAsync();
+            using var channel = fixture.Channel;
+            Envelope ping = TestWire.HeartbeatPing(0, "0123456789abcdef", seatId: 0);
+            ping.SessionId = string.Empty;
+            ping.RoomId = string.Empty;
+            fixture.Inner.Enqueue(ping);
+
+            TableChannelClosedException ex = await Assert.ThrowsAsync<TableChannelClosedException>(
+                () => channel.ReceiveAsync(CancellationToken.None));
+
+            Assert.Equal(ProtocolErrorCode.ProtocolViolation, ex.Code);
+            Assert.True(ex.Permanent);
+        }
+
+        [Fact]
+        public async Task PingWithStaleSessionIdentityIsRejected()
+        {
+            var fixture = await OpenBoundAsync();
+            using var channel = fixture.Channel;
+            Envelope ping = TestWire.HeartbeatPing(11, "0123456789abcdef");
+            ping.SessionId = "session-from-a-previous-binding";
+            fixture.Inner.Enqueue(ping);
+
+            TableChannelClosedException ex = await Assert.ThrowsAsync<TableChannelClosedException>(
+                () => channel.ReceiveAsync(CancellationToken.None));
+
+            Assert.Equal(ProtocolErrorCode.ProtocolViolation, ex.Code);
+            Assert.True(ex.Permanent);
+        }
+
+        [Fact]
         public async Task InvalidHeartbeatNonceIsRejectedAsMalformed()
         {
             var fixture = await OpenBoundAsync();
