@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    P5.4b-A independent durable-host E2E worker. A plain console process the
+    verify-v5-durable-table-host.ps1 runner drives against REAL TableService
+    host processes (never an in-proc substitute): it mints the run's ticket
+    signing keypair, applies/resets the table_store schema, performs the
+    phase-1/phase-2 WSS client actions, and owns every fault injection
+    (tampered event hash, event gap, scope revocation). Fault injection lives
+    ONLY here — no production failpoint exists.
+
+    Not registered in Mahjong.sln; the runner builds and executes the DLL
+    directly. Test-support sources are link-compiled so the accepted
+    TableService.Tests assembly is never referenced or modified.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <LangVersion>12.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <Deterministic>true</Deterministic>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <AssemblyName>Mahjong.TableService.PersistenceWorker</AssemblyName>
+    <RootNamespace>Mahjong.TableService.PersistenceWorker</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Npgsql" Version="8.0.9" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Mahjong.Infrastructure\Mahjong.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\Mahjong.TableService\Mahjong.TableService.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Mahjong.TableService.Tests\TestSupport\TableTestClient.cs" LinkBase="TestSupport" />
+    <Compile Include="..\Mahjong.TableService.Tests\TestSupport\TableTestSigner.cs" LinkBase="TestSupport" />
+    <Compile Include="..\Mahjong.TableService.Tests\TestSupport\TableServiceTestHost.cs" LinkBase="TestSupport" />
+    <Compile Include="..\Mahjong.TableService.Tests\TestSupport\N1aRoundSource.cs" LinkBase="TestSupport" />
+  </ItemGroup>
+
+</Project>

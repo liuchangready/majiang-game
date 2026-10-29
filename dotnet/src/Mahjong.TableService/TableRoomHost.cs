@@ -198,13 +198,14 @@ namespace Mahjong.TableService
             string roomId,
             TableServiceOptions options,
             TableActor actor,
-            InMemoryRequestScopeAuthority scopes,
-            InMemoryTableStore store,
+            ITableHostScopeAuthority scopes,
+            ITableStore store,
             TableServiceCommitPort commitPort,
             TableDurableContext durable,
             OwnerEpoch ownerEpoch,
             TableRoomDecisionState decisionState,
-            TableScopeRecord serviceScope)
+            TableScopeRecord serviceScope,
+            long recoveryGeneration = 0L)
         {
             RoomId = roomId;
             Options = options;
@@ -216,6 +217,7 @@ namespace Mahjong.TableService
             OwnerEpoch = ownerEpoch;
             DecisionState = decisionState ?? throw new ArgumentNullException(nameof(decisionState));
             ServiceScope = serviceScope;
+            RecoveryGeneration = recoveryGeneration;
         }
 
         public string RoomId { get; }
@@ -233,15 +235,31 @@ namespace Mahjong.TableService
         /// </summary>
         public TableScopeRecord ServiceScope { get; }
 
-        public InMemoryRequestScopeAuthority Scopes { get; }
+        /// <summary>
+        /// P5.4b-A: the room's scope authority through the narrow host port — the in-memory
+        /// registry binds the accepted P3.4 authority, the PostgreSQL registry binds the
+        /// table_store-backed one. Admission, rollback revocation and receipt reconciliation
+        /// authorize here; there is no second, diverging scope source.
+        /// </summary>
+        public ITableHostScopeAuthority Scopes { get; }
 
-        public InMemoryTableStore Store { get; }
+        /// <summary>The room's durable store (memory-mode or PostgreSQL — same frozen ports).</summary>
+        public ITableStore Store { get; }
 
         public TableServiceCommitPort CommitPort { get; }
 
         public TableDurableContext Durable { get; }
 
         public OwnerEpoch OwnerEpoch { get; }
+
+        /// <summary>
+        /// The actor's CURRENT recovery generation, read through the accepted
+        /// <c>GetControlSnapshotAsync</c> API right after a cold recovery (0 for a freshly
+        /// bootstrapped room). Every actor envelope this host issues — stream subscribe,
+        /// client command, cheat command, auto-draw — must carry this exact generation: a
+        /// recovered actor runs the strict recovery fence and rejects stale generations.
+        /// </summary>
+        public long RecoveryGeneration { get; }
 
         /// <summary>
         /// D-1-01: the room's decision runtime state 鈥?the trusted opening seam that derives a
@@ -368,7 +386,8 @@ namespace Mahjong.TableService
             TableDurableContext? durable,
             OwnerEpoch initialOwnerEpoch,
             RoundStateMachine round,
-            TableRoomDecisionState decisionState)
+            TableRoomDecisionState decisionState,
+            TableProjectionContextSource? projectionContextSource = null)
         {
             var actorOptions = new TableActorOptions
             {
@@ -386,7 +405,10 @@ namespace Mahjong.TableService
                 clock,
                 publicationSink,
                 controlCommitPort: null,
-                projectionContextSource: new TableProjectionContextSource(decisionState, round),
+                // D-R1-01: cold recovery injects a source anchored on the room's own verified
+                // checkpoint so tsumogiri derivation never consults this process's freshly
+                // drawn placeholder round; every other path keeps the bootstrap anchor.
+                projectionContextSource: projectionContextSource ?? new TableProjectionContextSource(decisionState, round),
                 streamOptions,
                 durable,
                 settlementFactsPort: null);
@@ -424,7 +446,29 @@ namespace Mahjong.TableService
             byte[] state = RoundRecoveryCodec.Encode(RoundRecovery.Capture(round));
             byte[] controlBytes = TableControlCheckpointCodec.Encode(control);
             byte[] timingBytes = TableTimingCheckpointCodec.Encode(timing);
-            byte[] cheatBytes = TableCheatLedgerCheckpointCodec.Encode(TableCheatLedgerCheckpoint.FromLedger(ledger));
+            // Checkpoint-0 must carry the FULL initial private aggregate — including the
+            // dealt-round registration the actor itself applies to its initial state at
+            // construction (TableActor registers the round on TileMarks before serving) —
+            // so a cold recovery that has to start from this row rebuilds exactly the
+            // cheat version/fingerprint the first commit binds to. A ledger-only blob
+            // cannot model that registration (journal replay opens bloom windows but
+            // never re-registers the dealt round), and recovery would fail closed with
+            // RECOVERY_STATE_HASH_MISMATCH on every room whose first cheat-advancing
+            // commit never reached a later checkpoint.
+            var initialCheat = new CheatState(
+                ledger,
+                new TileMarkState(),
+                new SleeveBloomState(),
+                new BeamSwapState());
+            TileMarkTransition dealt = initialCheat.TileMarks.RegisterDealtRound(round.RoundId);
+            if (!dealt.Success)
+            {
+                throw new InvalidOperationException(
+                    "The initial cheat state cannot register the initial round: " + dealt.Error + ".");
+            }
+
+            byte[] cheatBytes = TableCheatLedgerCheckpointCodec.Encode(
+                TableCheatLedgerCheckpoint.FromCheatState(initialCheat.WithTileMarks(dealt.State)));
             byte[] facts = TableProjectionFactsCodec.Encode(
                 new TableProjectionContextSource().Capture(new TableProjectionContextRequest(
                     roomId,
@@ -499,6 +543,15 @@ namespace Mahjong.TableService
     public interface ITableHostRegistry
     {
         RoomHost GetOrAdd(string roomId);
+
+        /// <summary>
+        /// Async admission create/recover. The default wraps the synchronous in-memory
+        /// factory; a DURABLE implementation must override it: its bootstrap and cold
+        /// recovery perform real database I/O and must run as true async work — calling
+        /// blocking <c>GetResult()</c> on the session's receive chain deadlocks (the
+        /// awaited continuation can require the very thread the blocking call parked).
+        /// </summary>
+        Task<RoomHost> GetOrAddAsync(string roomId) => Task.FromResult(GetOrAdd(roomId));
 
         bool TryGet(string roomId, out RoomHost? host);
 
@@ -680,7 +733,7 @@ namespace Mahjong.TableService
                 roomId,
                 _options,
                 RoomHost.CreateActor(roomId, _options, commitPort, _clock, null, CreateStreamOptionsLazy(roomId), durable, initialEpoch, round, decisionState),
-                scopes,
+                new InMemoryTableHostScopeAuthority(scopes),
                 store,
                 commitPort,
                 durable,

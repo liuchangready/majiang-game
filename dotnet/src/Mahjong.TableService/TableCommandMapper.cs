@@ -170,6 +170,7 @@ namespace Mahjong.TableService
             TableConnectionIdentity identity,
             Envelope envelope,
             OwnerEpoch currentOwnerEpoch,
+            long recoveryGeneration,
             TableServiceOptions options,
             string? authoritativeRoundId,
             Func<uint, TableBeamSwapSlotResolution?>? beamSwapSlotResolver = null,
@@ -281,7 +282,7 @@ namespace Mahjong.TableService
                 case CommandKind.SubmitAction:
                     return MapSubmitAction(
                         identity, requestId, payload, expectedStateVersion, ownerEpoch, digest,
-                        responseEligibilityResolver);
+                        recoveryGeneration, responseEligibilityResolver);
 
                 case CommandKind.SubmitTileMark:
                 case CommandKind.SubmitSleeveBloom:
@@ -292,7 +293,7 @@ namespace Mahjong.TableService
                 case CommandKind.SubmitBeamSwapChoice:
                     return MapCheat(
                         identity, kind, requestId, payload, expectedStateVersion, ownerEpoch, controlEpoch, digest,
-                        options, authoritativeRoundId, beamSwapSlotResolver);
+                        recoveryGeneration, options, authoritativeRoundId, beamSwapSlotResolver);
 
                 case CommandKind.ClaimControl:
                 case CommandKind.ReleaseControl:
@@ -333,6 +334,7 @@ namespace Mahjong.TableService
             StateVersion expectedStateVersion,
             OwnerEpoch ownerEpoch,
             TablePayloadSha256 digest,
+            long recoveryGeneration,
             Func<int, TileId, ulong, TableCommandRouteResponseEligibility?>? responseEligibilityResolver)
         {
             CanonicalPayloadDocument document = CanonicalPayloadParser.Parse(payload);
@@ -423,7 +425,7 @@ namespace Mahjong.TableService
                 ownerEpoch,
                 controlEpoch,
                 new DecisionId(decisionId),
-                recoveryGeneration: 0L,
+                recoveryGeneration: recoveryGeneration,
                 new RequestScopeId(identity.ScopeId),
                 "SUBMIT_ACTION",
                 digest);
@@ -439,6 +441,7 @@ namespace Mahjong.TableService
             OwnerEpoch ownerEpoch,
             ControlEpoch controlEpoch,
             TablePayloadSha256 digest,
+            long recoveryGeneration,
             TableServiceOptions options,
             string? authoritativeRoundId,
             Func<uint, TableBeamSwapSlotResolution?>? beamSwapSlotResolver)
@@ -596,7 +599,7 @@ namespace Mahjong.TableService
                 ownerEpoch,
                 controlEpoch,
                 envelopeDecisionId,
-                recoveryGeneration: 0L,
+                recoveryGeneration: recoveryGeneration,
                 new RequestScopeId(identity.ScopeId),
                 ApiFor(kind),
                 digest);

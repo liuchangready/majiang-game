@@ -498,9 +498,10 @@ namespace Mahjong.TableService
                 // the failed identity. Best effort; the scope expires with the ticket anyway.
                 try
                 {
-                    host.Scopes.Revoke(
+                    await host.Scopes.RevokeScopeAsync(
                         _issuedScopeId.Value,
-                        (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+                        (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                        CancellationToken.None).ConfigureAwait(false);
                 }
                 catch (Exception)
                 {
@@ -928,7 +929,9 @@ namespace Mahjong.TableService
             RoomHost host;
             try
             {
-                host = _hosts.GetOrAdd(_admissionRoom);
+                // Durable admission is REAL async work (bootstrap/cold-recovery database
+                // I/O): await it on the receive chain — never block this thread on it.
+                host = await _hosts.GetOrAddAsync(_admissionRoom).ConfigureAwait(false);
             }
             catch (TableServiceCapacityException)
             {
@@ -994,14 +997,21 @@ namespace Mahjong.TableService
                 _registeredSessionId = sessionId;
 
                 // 8. Server-issued request scope (expires with the ticket, never later).
+                // P5.4b-A: issued through the room's narrow scope port, so a durable host
+                // writes the same database row its commit path and receipt reconciliation
+                // re-read. A durable issuance failure rolls the admission back below.
                 long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                 long expiresMs = ticket.ExpiresAt.ToUnixTimeMilliseconds();
-                TableScopeRecord scope = host.Scopes.Issue(
+                var scopeRequest = new TableScopeRecord(
+                    new RequestScopeId(Guid.NewGuid().ToString("N")),
                     ticket.AccountId,
                     ticket.Role == TableAdmissionRole.Player ? TableScopeRole.Player : TableScopeRole.Spectator,
                     _admissionRoom,
                     (ulong)nowMs,
                     (ulong)expiresMs);
+                TableScopeRecord scope = await host.Scopes
+                    .IssueScopeAsync(scopeRequest, stopping)
+                    .ConfigureAwait(false);
                 // D-1-10: recorded so a failed admission revokes instead of leaking a scope.
                 _issuedScopeId = scope.ScopeId;
 
@@ -1035,7 +1045,7 @@ namespace Mahjong.TableService
                         new BindingEpoch(1),
                         new SyncEpoch(1)),
                     host.OwnerEpoch,
-                    recoveryGeneration: 0L,
+                    recoveryGeneration: host.RecoveryGeneration,
                     sink);
                 TableStreamControlResult subscribed =
                     await host.Actor.SubscribeStreamAsync(subscribe, stopping).ConfigureAwait(false);
@@ -1046,6 +1056,14 @@ namespace Mahjong.TableService
                         "status", subscribed.Status.ToString(),
                         "reason", subscribed.ReasonCode,
                         "detail", subscribed.Detail);
+                    // Redacted operational identity only (status/reason/detail codes —
+                    // never payloads): a faulted room pump must be diagnosable from the
+                    // service log alone.
+                    Console.Error.WriteLine(
+                        "tablesvc: stream subscribe refused room=" + _admissionRoom +
+                        " status=" + subscribed.Status +
+                        " reason=" + subscribed.ReasonCode +
+                        " detail=" + subscribed.Detail);
                     throw new AdmissionClosedException(Directive(ProtocolErrorCode.InternalError));
                 }
 
@@ -1430,7 +1448,8 @@ namespace Mahjong.TableService
                     (seat, tile, expectedVersion) =>
                         decisionState.DeriveResponseEligibility(seat, tile, expectedVersion);
                 route = TableCommandMapper.Map(
-                    identity, envelope, host.OwnerEpoch, _options, authoritativeRoundId, resolver, eligibility);
+                    identity, envelope, host.OwnerEpoch, host.RecoveryGeneration, _options,
+                    authoritativeRoundId, resolver, eligibility);
             }
             catch (ResponseEligibilityUnavailableException)
             {
