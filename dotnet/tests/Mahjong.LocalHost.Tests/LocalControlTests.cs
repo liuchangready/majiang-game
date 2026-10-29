@@ -1000,10 +1000,12 @@ namespace Mahjong.LocalHost.Tests
             string roundId;
             string parentPendingDecision;
             string decisionId;
+            RoundStateMachine parentRound;
             ulong evaluated;
             ulong createdAt;
             ulong expiresAt;
             ulong stateVersion;
+            ulong parentStateVersion;
             ulong lastEventSeq;
             try
             {
@@ -1075,7 +1077,16 @@ namespace Mahjong.LocalHost.Tests
                 // cold process then recovers this same pending decision from the
                 // disk checkpoint.
                 await WaitUntilFollowUpsSettleAsync(live.Runtime, "before the cold restart", ct);
+                parentRound = live.Runtime.ActorForTest.GetRoundStateForHost();
+                Assert.Equal(0, parentRound.CurrentSeat);
+                TableSnapshot parentSnapshot = await live.Runtime.ActorForTest.GetSnapshotAsync(ct);
+                parentStateVersion = parentSnapshot.StateVersion.Value;
                 parentPendingDecision = live.Runtime.ActorForTest.GetPendingDecisionId(0)!;
+                Assert.Equal(
+                    "local-human-" +
+                    parentStateVersion.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                    "-0-" + parentRound.Phase.ToString(),
+                    parentPendingDecision);
 
                 // The durable row still lags the released cascade (only receipt
                 // persists flush it), so one more authoritative stale-decision
@@ -1133,6 +1144,10 @@ namespace Mahjong.LocalHost.Tests
                 Assert.Equal(evaluated, durableOnDisk.Receipt.EvaluatedStateVersion.Value);
                 Assert.Equal(0L, baseline.ControlVersionForTest);
             }
+
+            // The cold cut must be the same committed state/seat the parent sampled, not an
+            // older cascade anchor whose version only happens to share a pending id.
+            Assert.Equal(parentStateVersion, stateVersion);
 
             string workerDll = System.IO.Path.Combine(
                 P41Harness.FindRepositoryRoot(),
@@ -1276,6 +1291,9 @@ namespace Mahjong.LocalHost.Tests
             Assert.NotEqual(scope.Value, coldScopeValue);
             Assert.Equal(roundId, MarkerValue("cold_round_id="));
             Assert.Equal(parentPendingDecision, MarkerValue("cold_pending_decision="));
+            Assert.Equal(
+                "local-human-" + MarkerValue("state_version=") + "-0-" + parentRound.Phase.ToString(),
+                MarkerValue("cold_pending_decision="));
             Assert.Equal("cold-issued", MarkerValue("replay_key_scope="));
             Assert.Equal("unreachable", MarkerValue("original_key_cold_command_replay="));
             Assert.Equal("0", MarkerValue("newkey1_evaluated="));
@@ -2710,8 +2728,13 @@ namespace Mahjong.LocalHost.Tests
         private static async Task WaitUntilFollowUpsSettleAsync(LocalTableRuntime runtime, string description, CancellationToken ct)
         {
             await WaitUntilAsync(
-                () => !string.IsNullOrEmpty(runtime.ActorForTest.GetPendingDecisionId(0)) ||
-                      runtime.ActorForTest.GetRoundStateForHost().IsFinished,
+                () =>
+                {
+                    RoundStateMachine round = runtime.ActorForTest.GetRoundStateForHost();
+                    return (round.CurrentSeat == 0 &&
+                            !string.IsNullOrEmpty(runtime.ActorForTest.GetPendingDecisionId(0))) ||
+                           round.IsFinished;
+                },
                 "the automatic follow-up commits to settle (" + description + ")",
                 ct);
         }

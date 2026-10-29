@@ -715,6 +715,243 @@ namespace Mahjong.TableRuntime.Tests
             }
         }
 
+        [Fact]
+        public async Task TurnDecisionIsRemovedAtomicallyWhenCommitAdvancesCurrentSeat()
+        {
+            RoundStateMachine round = BuildTurnRound("r3-turn-advance");
+            TileId discard = round.Tiles.TilesInZone(TileZone.Hand, 0)[0];
+            var key = new DecisionKey(round.RoundId, 0, "turn-0");
+            await using ActorHarness harness = CreateActor(round);
+            Assert.Equal(
+                TableOperationStatus.Configured,
+                (await harness.OpenDecisionAsync(new PendingDecision(
+                    key,
+                    0L,
+                    new[] { new LegalActionOption(LegalActionKind.Discard, 0, discard) },
+                    discard))).Status);
+            TableTimingSnapshot before = await harness.GetTimingSnapshotAsync();
+            Assert.Equal(key, before.Seats[0].PendingKey);
+            Assert.NotNull(before.Seats[0].Timing);
+
+            TableOperationResult applied = await harness.SubmitAsync(P31Fixtures.Command(
+                RoundCommand.Discard(round.RoundId, 0, discard),
+                0,
+                "turn-advance",
+                new DecisionId(key.DecisionId)));
+            Assert.Equal(TableOperationStatus.Accepted, applied.Status);
+            TableSnapshot after = await harness.GetSnapshotAsync();
+            Assert.Equal(1UL, after.StateVersion.Value);
+            Assert.Equal(1, after.CurrentSeat);
+            Assert.Null(harness.Actor.GetRoundStateForHost().Window);
+
+            // The old turn decision and its timing must leave in the same commit; a later tick
+            // must never see a seat that no longer owns the turn.
+            TableTimingSnapshot timing = await harness.GetTimingSnapshotAsync();
+            Assert.All(timing.Seats, seat => Assert.Null(seat.PendingKey));
+            Assert.All(timing.Seats, seat => Assert.Null(seat.Timing));
+        }
+
+        [Fact]
+        public async Task FailedTurnCommitLeavesPendingAndTimingUntouchedThenRetries()
+        {
+            RoundStateMachine round = BuildTurnRound("r3-turn-failed-commit");
+            TileId discard = round.Tiles.TilesInZone(TileZone.Hand, 0)[0];
+            var key = new DecisionKey(round.RoundId, 0, "turn-fail");
+            await using ActorHarness harness = CreateActor(round);
+            Assert.Equal(
+                TableOperationStatus.Configured,
+                (await harness.OpenDecisionAsync(new PendingDecision(
+                    key,
+                    0L,
+                    new[] { new LegalActionOption(LegalActionKind.Discard, 0, discard) },
+                    discard))).Status);
+            TableTimingSnapshot before = await harness.GetTimingSnapshotAsync();
+
+            harness.CommitPort.FailNext();
+            TableOperationResult failed = await harness.SubmitAsync(P31Fixtures.Command(
+                RoundCommand.Discard(round.RoundId, 0, discard),
+                0,
+                "turn-fail",
+                new DecisionId(key.DecisionId)));
+            Assert.Equal(TableOperationStatus.Failed, failed.Status);
+            Assert.Equal(0UL, (await harness.GetSnapshotAsync()).StateVersion.Value);
+            TableTimingSnapshot afterFailure = await harness.GetTimingSnapshotAsync();
+            Assert.Equal(key, afterFailure.Seats[0].PendingKey);
+            Assert.Equal(before.Seats[0].Timing!.DeadlineMillis, afterFailure.Seats[0].Timing!.DeadlineMillis);
+            Assert.Equal(before.Seats[0].RemainingReserveMillis, afterFailure.Seats[0].RemainingReserveMillis);
+
+            TableOperationResult retry = await harness.SubmitAsync(P31Fixtures.Command(
+                RoundCommand.Discard(round.RoundId, 0, discard),
+                0,
+                "turn-retry",
+                new DecisionId(key.DecisionId)));
+            Assert.Equal(TableOperationStatus.Accepted, retry.Status);
+            TableTimingSnapshot afterRetry = await harness.GetTimingSnapshotAsync();
+            Assert.All(afterRetry.Seats, seat => Assert.Null(seat.PendingKey));
+            Assert.All(afterRetry.Seats, seat => Assert.Null(seat.Timing));
+        }
+
+        [Fact]
+        public async Task FinishedRoundClearsEveryPendingAndTimingInTheSameCommit()
+        {
+            RoundStateMachine round = SettlementFixture.Tsumo();
+            TileId drawn = round.Tiles.DrawnTile!.Value.Tile;
+            var key = new DecisionKey(round.RoundId, 0, "terminal-0");
+            var stale = new DecisionKey(round.RoundId, 2, "stale-terminal-2");
+            await using ActorHarness harness = CreateActor(round);
+            Assert.Equal(
+                TableOperationStatus.Configured,
+                (await harness.OpenDecisionAsync(new PendingDecision(
+                    key,
+                    0L,
+                    new[] { new LegalActionOption(LegalActionKind.Tsumo, 0, drawn) },
+                    drawn))).Status);
+            Assert.Equal(
+                TableOperationStatus.Configured,
+                (await harness.OpenDecisionAsync(new PendingDecision(
+                    stale,
+                    0L,
+                    new[] { new LegalActionOption(LegalActionKind.Discard, 2, drawn) },
+                    null))).Status);
+            TableTimingSnapshot before = await harness.GetTimingSnapshotAsync();
+            Assert.NotNull(before.Seats[0].Timing);
+            Assert.NotNull(before.Seats[2].Timing);
+
+            var settlement = new RoundSettlement(
+                "terminal-result",
+                RoundOutcome.Tsumo(0),
+                new long[] { 26000, 24000, 25000, 25000 },
+                0,
+                new PersistedUtcTime(new DateTimeOffset(2026, 10, 29, 0, 0, 0, TimeSpan.Zero)),
+                1234L);
+            TableOperationResult applied = await harness.SubmitAsync(P31Fixtures.Command(
+                RoundCommand.Tsumo(round.RoundId, 0, settlement),
+                0,
+                "terminal-tsumo",
+                new DecisionId(key.DecisionId)));
+            Assert.True(
+                applied.Status == TableOperationStatus.Accepted,
+                "tsumo status=" + applied.Status + " reason=" + applied.ReasonCode +
+                " detail=" + applied.Detail);
+            Assert.True((await harness.GetSnapshotAsync()).IsFinished);
+
+            TableTimingSnapshot after = await harness.GetTimingSnapshotAsync();
+            Assert.All(after.Seats, seat => Assert.Null(seat.PendingKey));
+            Assert.All(after.Seats, seat => Assert.Null(seat.Timing));
+        }
+
+        [Fact]
+        public async Task ReviewerStaleTurnMustNotSurviveNewResponseWindow()
+        {
+            RoundStateMachine round = TableKanRecoveryEvidenceTests.BuildDealt(
+                "review-stale",
+                new Dictionary<int, TileId[]>
+                {
+                    [1] = new[] { Dragon(1, 0), Dragon(1, 1), Dragon(1, 2) }
+                },
+                Dragon(1, 3));
+            TileId target = Dragon(1, 3);
+            await using ActorHarness harness = CreateActor(round);
+            var turn = new DecisionKey(round.RoundId, 0, "turn");
+            var stale = new DecisionKey(round.RoundId, 1, "stale-turn");
+            Assert.Equal(
+                TableOperationStatus.Configured,
+                (await harness.OpenDecisionAsync(new PendingDecision(
+                    turn,
+                    0L,
+                    new[] { new LegalActionOption(LegalActionKind.Discard, 0, target) },
+                    target))).Status);
+            Assert.Equal(
+                TableOperationStatus.Configured,
+                (await harness.OpenDecisionAsync(new PendingDecision(
+                    stale,
+                    0L,
+                    new[] { new LegalActionOption(LegalActionKind.Discard, 1, Dragon(1, 0)) },
+                    null))).Status);
+
+            TableOperationResult result = await harness.SubmitAsync(P31Fixtures.Command(
+                RoundCommand.Discard(round.RoundId, 0, target, new[] { 1 }),
+                0,
+                "discard",
+                new DecisionId("turn")));
+            Assert.Equal(TableOperationStatus.Accepted, result.Status);
+
+            TableTimingSnapshot timing = await harness.GetTimingSnapshotAsync();
+            Assert.Null(timing.Seats[1].PendingKey);
+            Assert.Null(timing.Seats[1].Timing);
+        }
+
+        [Fact]
+        public void ResponseDecisionFromDifferentWindowIdentityIsDroppedDespiteSeatOverlap()
+        {
+            RoundStateMachine prior = BuildWindowRound();
+            Assert.NotNull(prior.Window);
+            Assert.Contains(1, prior.Window!.EligibleSeats);
+
+            RoundStateMachine opening = TableKanRecoveryEvidenceTests.BuildDealt(
+                prior.RoundId,
+                new Dictionary<int, TileId[]>
+                {
+                    [1] = new[] { Dragon(1, 0), Dragon(1, 1), Dragon(1, 2) }
+                },
+                Dragon(1, 3));
+            TileId nextTarget = Dragon(1, 3);
+            RoundTransition transition = opening.Execute(
+                RoundCommand.Discard(opening.RoundId, 0, nextTarget, new[] { 1 }));
+            Assert.True(transition.IsAccepted, transition.Error?.ToString());
+            RoundStateMachine next = transition.State!;
+            Assert.NotNull(next.Window);
+            Assert.Contains(1, next.Window!.EligibleSeats);
+            Assert.NotEqual(prior.Window.TargetTile, next.Window.TargetTile);
+
+            var key = new DecisionKey(prior.RoundId, 1, "old-window-response");
+            var pending = new PendingDecision(
+                key,
+                0L,
+                new[]
+                {
+                    new LegalActionOption(LegalActionKind.Pon, 1, prior.Window.TargetTile),
+                    new LegalActionOption(LegalActionKind.Pass, 1)
+                },
+                null);
+
+            var sameClock = new DecisionClock(new DecisionClockConfig(1000L, 0L, ReserveScope.Round));
+            sameClock.BeginRound(prior.RoundId, 1000L);
+            sameClock.Open(key, 1000L);
+            List<PendingDecision> sameKept = TableResponseDecisionReconciliation.FilterAfterTransition(
+                prior,
+                prior,
+                new[] { pending },
+                sameClock,
+                1100L);
+            Assert.Single(sameKept);
+            Assert.Equal(key, sameKept[0].Key);
+            Assert.NotNull(sameClock.Timing(1));
+
+            var changedClock = new DecisionClock(new DecisionClockConfig(1000L, 0L, ReserveScope.Round));
+            changedClock.BeginRound(prior.RoundId, 1000L);
+            changedClock.Open(key, 1000L);
+            List<PendingDecision> changedKept = TableResponseDecisionReconciliation.FilterAfterTransition(
+                prior,
+                next,
+                new[] { pending },
+                changedClock,
+                1100L);
+            Assert.Empty(changedKept);
+            Assert.Null(changedClock.Timing(1));
+        }
+
+        private static RoundStateMachine BuildTurnRound(string roundId)
+        {
+            RoundStateMachine round = TableKanRecoveryEvidenceTests.BuildDealt(
+                roundId,
+                new Dictionary<int, TileId[]>(),
+                Man(9, 3));
+            Assert.Equal(0, round.CurrentSeat);
+            Assert.Null(round.Window);
+            return round;
+        }
+
         private static TableRecoveryBaseline RecoveryBaseline(
             RoundStateMachine round,
             TableRecoveredDecision decision)

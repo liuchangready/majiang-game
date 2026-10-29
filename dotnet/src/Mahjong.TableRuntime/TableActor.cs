@@ -3506,7 +3506,6 @@ namespace Mahjong.TableRuntime
             TimingConsumption timingConsumption = TimingConsumption.None,
             CheatState? nextCheat = null)
         {
-            RoundResponseWindow? priorWindow = _round.Window;
             StateVersion evaluated = _stateVersion;
             StateVersion commandVersion;
             try
@@ -3595,7 +3594,7 @@ namespace Mahjong.TableRuntime
 
             List<PendingDecision> nonDurablePending = CopyPendingExcept(consumedSeat);
             nonDurablePending = TableResponseDecisionReconciliation.FilterAfterTransition(
-                priorWindow,
+                _round,
                 nextState,
                 nonDurablePending,
                 candidateClock,
@@ -3737,7 +3736,6 @@ namespace Mahjong.TableRuntime
             TimingConsumption timingConsumption = TimingConsumption.None,
             CheatState? nextCheat = null)
         {
-            RoundResponseWindow? priorWindow = _round.Window;
             TableDurableContext durable = _durable!;
             ulong createdUtc = NowUtc();
             string accountId = "system";
@@ -3830,7 +3828,7 @@ namespace Mahjong.TableRuntime
 
             List<PendingDecision> pendingAfter = CopyPendingExcept(consumedSeat);
             pendingAfter = TableResponseDecisionReconciliation.FilterAfterTransition(
-                priorWindow,
+                _round,
                 nextState,
                 pendingAfter,
                 candidateClock,
@@ -4008,7 +4006,6 @@ namespace Mahjong.TableRuntime
             long now,
             TimingConsumption timingConsumption = TimingConsumption.Complete)
         {
-            RoundResponseWindow? priorWindow = _round.Window;
             StateVersion evaluated = _stateVersion;
             StateVersion commandVersion;
             try
@@ -4095,7 +4092,7 @@ namespace Mahjong.TableRuntime
 
             List<PendingDecision> cheatPendingAfter = CopyPendingExcept(cheatConsumedSeat);
             cheatPendingAfter = TableResponseDecisionReconciliation.FilterAfterTransition(
-                priorWindow,
+                _round,
                 nextState,
                 cheatPendingAfter,
                 cheatClock,

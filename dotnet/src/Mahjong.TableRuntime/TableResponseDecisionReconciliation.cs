@@ -5,12 +5,13 @@ using Mahjong.Domain;
 namespace Mahjong.TableRuntime
 {
     /// <summary>
-    /// P3.3/P3.4 response-decision lifecycle fence.
+    /// P3.3/P3.4 decision-ownership lifecycle fence.
     ///
-    /// A response decision is only meaningful while the Domain's exact response window still
-    /// requires that seat. When a committed transition closes the window, or re-opens it with a
-    /// different target/identity, every pending decision that belonged to the old window must be
-    /// removed together with its timing. Decisions that still belong to the open window (the
+    /// A pending decision is only meaningful while the transitioned Domain state still owns it:
+    /// a response while the exact window still requires that seat, and a turn/cheat/settlement
+    /// decision only at the acting seat with turn evidence. A committed transition that moves the
+    /// turn, closes/re-targets the window, or finishes the round removes every no-longer-owned
+    /// decision together with its timing. Decisions that still belong to the current state (the
     /// ordinary multi-seat submit/priority case) are retained unchanged.
     ///
     /// The filter mutates only the supplied candidate clock, which is always a clone of the
@@ -20,12 +21,17 @@ namespace Mahjong.TableRuntime
     internal static class TableResponseDecisionReconciliation
     {
         internal static List<PendingDecision> FilterAfterTransition(
-            RoundResponseWindow? priorWindow,
+            RoundStateMachine priorState,
             RoundStateMachine nextState,
             IReadOnlyList<PendingDecision> pendingAfter,
             DecisionClock candidateClock,
             long now)
         {
+            if (priorState == null)
+            {
+                throw new ArgumentNullException(nameof(priorState));
+            }
+
             if (nextState == null)
             {
                 throw new ArgumentNullException(nameof(nextState));
@@ -48,34 +54,29 @@ namespace Mahjong.TableRuntime
                 return kept;
             }
 
+            RoundResponseWindow? priorWindow = priorState.Window;
             RoundResponseWindow? nextWindow = nextState.Window;
             for (int i = 0; i < pendingAfter.Count; i++)
             {
                 PendingDecision pending = pendingAfter[i] ??
                     throw new ArgumentException("Pending decision cannot be null.", nameof(pendingAfter));
 
-                bool wasResponseDecision = priorWindow != null &&
-                                           ContainsSeat(priorWindow.EligibleSeats, pending.Key.Seat);
-                if (!wasResponseDecision)
-                {
-                    // A turn/cheat/settlement decision is not owned by the response window and
-                    // must survive an unrelated commit unchanged.
-                    kept.Add(pending);
-                    continue;
-                }
-
-                if (nextWindow != null &&
-                    SameWindow(priorWindow!, nextWindow) &&
-                    ContainsSeat(nextWindow.EligibleSeats, pending.Key.Seat) &&
-                    !nextWindow.HasResponded(pending.Key.Seat))
+                if (IsStillOwned(
+                    priorState,
+                    priorWindow,
+                    nextState,
+                    nextWindow,
+                    pending.Key.Seat,
+                    pending.Candidates))
                 {
                     kept.Add(pending);
                     continue;
                 }
 
-                // The exact window that justified this decision is gone (or this seat already
-                // responded). Settle the elapsed allowance and drop the timing in the same
-                // candidate used by the commit, never after the fact.
+                // The transitioned state no longer owns this decision (the turn moved on, the
+                // window closed/re-targeted, or this seat already responded). Settle the elapsed
+                // allowance and drop the timing in the same candidate used by the commit, never
+                // after the fact.
                 candidateClock.Cancel(pending.Key, now);
             }
 
@@ -109,7 +110,13 @@ namespace Mahjong.TableRuntime
             {
                 TableRecoveredDecision decision = recovered[i] ??
                     throw new ArgumentException("Recovered decision cannot be null.", nameof(recovered));
-                if (IsStillValid(round, window, decision))
+                if (IsStillOwned(
+                    round,
+                    window,
+                    round,
+                    window,
+                    decision.Key.Seat,
+                    decision.Candidates))
                 {
                     kept.Add(decision);
                 }
@@ -118,37 +125,84 @@ namespace Mahjong.TableRuntime
             return kept;
         }
 
-        private static bool IsStillValid(
-            RoundStateMachine round,
-            RoundResponseWindow? window,
-            TableRecoveredDecision decision)
+        /// <summary>
+        /// Single ownership predicate shared by the transition and recovery filters, so the two
+        /// paths cannot drift into different answers for the same state.
+        /// </summary>
+        private static bool IsStillOwned(
+            RoundStateMachine priorState,
+            RoundResponseWindow? priorWindow,
+            RoundStateMachine nextState,
+            RoundResponseWindow? nextWindow,
+            int seat,
+            IReadOnlyList<LegalActionOption> candidates)
         {
-            if (window != null)
+            if (nextWindow != null)
             {
-                return ContainsSeat(window.EligibleSeats, decision.Key.Seat) &&
-                       !window.HasResponded(decision.Key.Seat);
+                // A window transition only preserves decisions that were actual responses to
+                // the same window identity. A stale turn for an eligible seat (the host-race
+                // case) is still a turn decision and must not become a response merely because
+                // the new window lists that seat.
+                if (priorWindow == null ||
+                    IsTurnDecision(priorState, priorWindow, seat, candidates) ||
+                    !SameWindow(priorWindow, nextWindow))
+                {
+                    return false;
+                }
+
+                return ContainsSeat(nextWindow.EligibleSeats, seat) &&
+                       !nextWindow.HasResponded(seat);
             }
 
-            // With no response window, only the acting seat can legitimately own a decision.
-            // Any decision for another seat is a stale response, including a Kan candidate:
-            // OpenKan is a response call, and there is no window in which it could execute.
-            if (decision.Key.Seat != round.CurrentSeat)
+            // Once a window has closed, every decision captured before it is stale. A response
+            // cannot become a turn, and a stale turn opened during the window is not the new
+            // turn's decision either.
+            if (priorWindow != null)
             {
                 return false;
             }
 
-            // A current-turn decision can be a normal discard/settlement decision, or a real
-            // closed/added kan decision whose candidate set is Kan-only. A stale response set
-            // can also contain Kan (OpenKan) alongside Pass; the Domain state distinguishes the
-            // two: only a current seat with the actual four-hand-tile closed-kan shape or an
-            // existing pon plus the fourth tile can execute a turn kan without a window.
-            return HasTurnAnchor(decision.Candidates) ||
-                   HasLegalTurnKan(round, decision);
+            return seat == nextState.CurrentSeat &&
+                   IsTurnDecision(nextState, null, seat, candidates);
+        }
+
+        private static bool IsTurnDecision(
+            RoundStateMachine state,
+            RoundResponseWindow? window,
+            int seat,
+            IReadOnlyList<LegalActionOption> candidates)
+        {
+            if (HasTurnAnchor(candidates))
+            {
+                return true;
+            }
+
+            if (window != null)
+            {
+                // A Kan on the window's own tile is an OpenKan response. A Kan on another tile
+                // cannot be a response to this window; if its hand shape supports a turn kan,
+                // it is a stale turn decision.
+                for (int i = 0; i < candidates.Count; i++)
+                {
+                    LegalActionOption candidate = candidates[i];
+                    if (candidate.Kind == LegalActionKind.Kan &&
+                        candidate.Tile.HasValue &&
+                        candidate.Tile.Value == window.TargetTile)
+                    {
+                        return false;
+                    }
+                }
+
+                return HasTurnKanShape(state, seat, candidates);
+            }
+
+            return HasLegalTurnKan(state, seat, candidates);
         }
 
         private static bool HasLegalTurnKan(
             RoundStateMachine round,
-            TableRecoveredDecision decision)
+            int seat,
+            IReadOnlyList<LegalActionOption> candidates)
         {
             if (round.Phase != RoundPhase.CheatWindow &&
                 round.Phase != RoundPhase.Discard)
@@ -156,11 +210,19 @@ namespace Mahjong.TableRuntime
                 return false;
             }
 
+            return HasTurnKanShape(round, seat, candidates);
+        }
+
+        private static bool HasTurnKanShape(
+            RoundStateMachine round,
+            int seat,
+            IReadOnlyList<LegalActionOption> candidates)
+        {
             // A response set normally carries Pass. Real turn decisions do not; keeping a
             // [Kan,Pass] pair would reintroduce the closed-window OpenKan response.
-            for (int i = 0; i < decision.Candidates.Count; i++)
+            for (int i = 0; i < candidates.Count; i++)
             {
-                if (decision.Candidates[i].Kind == LegalActionKind.Pass)
+                if (candidates[i].Kind == LegalActionKind.Pass)
                 {
                     return false;
                 }
@@ -173,11 +235,10 @@ namespace Mahjong.TableRuntime
                 return false;
             }
 
-            int seat = decision.Key.Seat;
             IReadOnlyList<TileId> hand = round.Tiles.TilesInZone(TileZone.Hand, seat);
-            for (int i = 0; i < decision.Candidates.Count; i++)
+            for (int i = 0; i < candidates.Count; i++)
             {
-                LegalActionOption candidate = decision.Candidates[i];
+                LegalActionOption candidate = candidates[i];
                 if (candidate.Kind != LegalActionKind.Kan || !candidate.Tile.HasValue)
                 {
                     continue;
