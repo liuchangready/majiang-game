@@ -45,15 +45,27 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                     conflictTicket.Ticket,
                     TimeSpan.FromSeconds(15),
                     CancellationToken.None).ConfigureAwait(false);
-                string result = await RunSameKeyConflictAsync(probe, welcome).ConfigureAwait(false);
-                suite.SameKeyDifferentBytesPreservedOriginal =
-                    string.Equals(result, "PRESERVED", StringComparison.Ordinal);
+                ConflictProbeResult result = await RunSameKeyConflictAsync(
+                    probe,
+                    welcome,
+                    conflictRoom).ConfigureAwait(false);
+                suite.SameKeyDifferentBytesPreservedOriginal = result.Preserved;
+                suite.ReceiptDigestDomainMismatch = result.DigestDomainMismatch;
                 if (!suite.SameKeyDifferentBytesPreservedOriginal)
                 {
                     throw new InvalidOperationException(
-                        "Same-key different-bytes conflict did not preserve the original receipt: " + result);
+                        "Same-key different-bytes conflict did not preserve the original receipt: " + result.Detail);
                 }
 
+                suite.NegativeFacts.Add(new NegativeFact
+                {
+                    Label = "same_key_different_payload_and_kind",
+                    RoomId = conflictRoom,
+                    RequestId = result.RequestId,
+                    ExpectedReceiptCount = 1,
+                    ExpectedStatus = result.Status,
+                    ExpectedCanonicalDigestHex = result.CanonicalDigestHex
+                });
                 suite.NegativeResults.Add("same_key_different_bytes=PRESERVED");
             }
 
@@ -88,6 +100,13 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                     throw new InvalidOperationException("A foreign account receipt query was not refused with SCOPE_MISMATCH.");
                 }
 
+                suite.NegativeFacts.Add(new NegativeFact
+                {
+                    Label = "cross_account_receipt_query",
+                    RoomId = crossRoom,
+                    RequestId = normalRequestId,
+                    ExpectedReceiptCount = 0
+                });
                 suite.NegativeResults.Add("cross_account_query=SCOPE_MISMATCH");
             }
 
@@ -124,22 +143,30 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                     0,
                     ProtocolActionType.DiscardTile,
                     tileIds: new uint[] { 1 });
+                string spectatorRequestId = "spectator-command-" + Guid.NewGuid().ToString("N");
                 Envelope response = await probe.SendCommandAsync(
-                    "spectator-command-" + Guid.NewGuid().ToString("N"),
+                    spectatorRequestId,
                     WireCommand(payload, welcome.Baseline.StateVersion, "round-b1-spectator", "missing-decision"),
                     0,
                     TimeSpan.FromSeconds(10),
                     CancellationToken.None).ConfigureAwait(false);
                 suite.SpectatorPlayerCommandRejected =
-                    (response.BodyCase == Envelope.BodyOneofCase.Error &&
-                     response.Error != null &&
-                     string.Equals(response.Error.DetailCode, "SCOPE_ROLE_NOT_AUTHORIZED", StringComparison.Ordinal)) ||
-                    response.BodyCase == Envelope.BodyOneofCase.Close;
+                    response.BodyCase == Envelope.BodyOneofCase.Error &&
+                    response.Error != null &&
+                    string.Equals(response.Error.DetailCode, "SCOPE_ROLE_NOT_AUTHORIZED", StringComparison.Ordinal);
                 if (!suite.SpectatorPlayerCommandRejected)
                 {
-                    throw new InvalidOperationException("A spectator player command was not refused by the service.");
+                    throw new InvalidOperationException(
+                        "A spectator player command was not refused with SCOPE_ROLE_NOT_AUTHORIZED.");
                 }
 
+                suite.NegativeFacts.Add(new NegativeFact
+                {
+                    Label = "spectator_player_command",
+                    RoomId = specRoom,
+                    RequestId = spectatorRequestId,
+                    ExpectedReceiptCount = 0
+                });
                 suite.NegativeResults.Add("spectator_player_command=SCOPE_ROLE_NOT_AUTHORIZED");
             }
 
@@ -158,24 +185,28 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                 CancellationToken.None).ConfigureAwait(false);
 
             string tampered = Tamper(expiringTicket.Ticket);
-            suite.TamperedTicketRejected = await AdmissionRejectedAsync(
+            (bool tamperedRejected, string tamperedCode) = await AdmissionRejectedAsync(
                 TableUri(tablePort, expireRoom),
                 goodRoot,
                 tampered,
                 TimeSpan.FromSeconds(15)).ConfigureAwait(false);
+            suite.TamperedTicketRejected = tamperedRejected &&
+                                           (tamperedCode == "WS_CLOSE_4401" || tamperedCode == "INVALID_TOKEN");
             if (!suite.TamperedTicketRejected)
             {
-                throw new InvalidOperationException("A tampered ticket was not rejected.");
+                throw new InvalidOperationException("A tampered ticket was not rejected with 4401/INVALID_TOKEN.");
             }
 
-            suite.ForeignRoomTicketRejected = await AdmissionRejectedAsync(
+            (bool foreignRejected, string foreignCode) = await AdmissionRejectedAsync(
                 TableUri(tablePort, "b1-other-room"),
                 goodRoot,
                 expiringTicket.Ticket,
                 TimeSpan.FromSeconds(15)).ConfigureAwait(false);
+            suite.ForeignRoomTicketRejected = foreignRejected &&
+                                              (foreignCode == "WS_CLOSE_4401" || foreignCode == "INVALID_TOKEN");
             if (!suite.ForeignRoomTicketRejected)
             {
-                throw new InvalidOperationException("A ticket used against a foreign room was not rejected.");
+                throw new InvalidOperationException("A ticket used against a foreign room was not rejected with 4401/INVALID_TOKEN.");
             }
 
             DateTimeOffset expiresAt = DateTimeOffset.Parse(
@@ -188,16 +219,24 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                 await Task.Delay(remaining).ConfigureAwait(false);
             }
 
-            suite.ExpiredTicketRejected = await AdmissionRejectedAsync(
+            (bool expiredRejected, string expiredCode) = await AdmissionRejectedAsync(
                 TableUri(tablePort, expireRoom),
                 goodRoot,
                 expiringTicket.Ticket,
                 TimeSpan.FromSeconds(15)).ConfigureAwait(false);
+            suite.ExpiredTicketRejected = expiredRejected &&
+                                           (expiredCode == "WS_CLOSE_4401" || expiredCode == "INVALID_TOKEN");
             if (!suite.ExpiredTicketRejected)
             {
-                throw new InvalidOperationException("A genuinely expired Lobby ticket was not rejected.");
+                throw new InvalidOperationException("A genuinely expired Lobby ticket was not rejected with 4401/INVALID_TOKEN.");
             }
 
+            suite.NegativeFacts.Add(new NegativeFact
+            {
+                Label = "invalid_ticket_room",
+                RoomId = expireRoom,
+                ExpectedReceiptCount = 0
+            });
             suite.NegativeResults.Add("tampered_ticket=rejected");
             suite.NegativeResults.Add("foreign_room_ticket=rejected");
             suite.NegativeResults.Add("expired_lobby_ticket=rejected");
@@ -275,7 +314,10 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
             return channel.LastRejectionReason != null;
         }
 
-        private static async Task<string> RunSameKeyConflictAsync(RawWssProbe probe, Welcome welcome)
+        private static async Task<ConflictProbeResult> RunSameKeyConflictAsync(
+            RawWssProbe probe,
+            Welcome welcome,
+            string roomId)
         {
             string requestId = "conflict-" + Guid.NewGuid().ToString("N");
             string round = "round-b1-conflict";
@@ -285,6 +327,9 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                 0,
                 ProtocolActionType.DiscardTile,
                 tileIds: new uint[] { 1 });
+            string plainDigest = Convert.ToHexString(
+                System.Security.Cryptography.SHA256.HashData(firstPayload.CopyBytes()));
+            string expectedDigest = firstPayload.Digest.ToHex();
             Envelope first = await probe.SendCommandAsync(
                 requestId,
                 WireCommand(firstPayload, welcome.Baseline.StateVersion, round, "missing-decision-b1"),
@@ -293,38 +338,67 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                 CancellationToken.None).ConfigureAwait(false);
             if (first.BodyCase != Envelope.BodyOneofCase.Receipt || first.Receipt == null)
             {
-                return "NO_FIRST_RECEIPT_" + first.BodyCase;
+                return new ConflictProbeResult(false, "NO_FIRST_RECEIPT_" + first.BodyCase, requestId, string.Empty, string.Empty, false);
+            }
+
+            if (first.Receipt.Status != WireReceiptStatus.Rejected ||
+                string.IsNullOrEmpty(first.Receipt.ReasonCode) ||
+                !string.Equals(first.Receipt.CanonicalPayloadSha256, plainDigest, StringComparison.OrdinalIgnoreCase))
+            {
+                return new ConflictProbeResult(
+                    false,
+                    "FIRST_RECEIPT_NOT_EXACT_REJECTION (status=" + first.Receipt.Status +
+                    ", reason=" + first.Receipt.ReasonCode +
+                    ", plainDigestMatch=" + string.Equals(first.Receipt.CanonicalPayloadSha256, plainDigest, StringComparison.OrdinalIgnoreCase) + ")",
+                    requestId,
+                    first.Receipt.Status.ToString(),
+                    expectedDigest,
+                    false);
             }
 
             string originalStatus = first.Receipt.Status.ToString();
             ulong originalVersion = first.Receipt.HasCommandVersion ? first.Receipt.CommandVersion : 0;
             ulong evaluated = first.Receipt.EvaluatedStateVersion;
+            string originalReason = first.Receipt.ReasonCode;
 
-            BusinessPayload secondPayload = CommandPayloadFactory.SubmitAction(
+            // Same request id/scope, DIFFERENT kind and payload. The pre-actor
+            // receipt query must preserve the original rejected receipt; it must
+            // not be accepted as a new shuffle plan.
+            BusinessPayload secondPayload = CommandPayloadFactory.SubmitTileMark(
                 round,
                 "missing-decision-b1",
                 0,
-                ProtocolActionType.Pass);
+                new uint[] { 1, 2, 3, 4 });
             Envelope second = await probe.SendCommandAsync(
                 requestId,
-                WireCommand(secondPayload, welcome.Baseline.StateVersion, round, "missing-decision-b1"),
+                WireCommand(
+                    secondPayload,
+                    welcome.Baseline.StateVersion,
+                    round,
+                    "missing-decision-b1",
+                    CommandType.SubmitTileMark),
                 0,
                 TimeSpan.FromSeconds(10),
                 CancellationToken.None).ConfigureAwait(false);
-            bool conflictReported =
+            bool exactConflict =
                 (second.BodyCase == Envelope.BodyOneofCase.Error &&
                  second.Error != null &&
-                 (string.Equals(second.Error.DetailCode, "REQUEST_ID_CONFLICT", StringComparison.Ordinal) ||
-                  string.Equals(second.Error.Code, "REQUEST_ID_CONFLICT", StringComparison.Ordinal) ||
-                  second.Error.DetailCode.Contains("CONFLICT", StringComparison.OrdinalIgnoreCase) ||
-                  second.Error.Code.Contains("CONFLICT", StringComparison.OrdinalIgnoreCase))) ||
+                 (string.Equals(second.Error.Code, "REQUEST_ID_CONFLICT", StringComparison.Ordinal) ||
+                  string.Equals(second.Error.DetailCode, "REQUEST_ID_CONFLICT", StringComparison.Ordinal))) ||
                 (second.BodyCase == Envelope.BodyOneofCase.Receipt &&
                  second.Receipt != null &&
-                 second.Receipt.Status == WireReceiptStatus.Rejected);
-            if (!conflictReported)
+                 second.Receipt.Status == WireReceiptStatus.Rejected &&
+                 string.Equals(second.Receipt.ReasonCode, "REQUEST_ID_CONFLICT", StringComparison.Ordinal));
+            if (!exactConflict)
             {
-                return "SECOND_NOT_CONFLICT_" + second.BodyCase + "_" +
-                       (second.Error == null ? string.Empty : second.Error.Code + "/" + second.Error.DetailCode);
+                return new ConflictProbeResult(
+                    false,
+                    "SECOND_NOT_EXACT_CONFLICT_" + second.BodyCase + "_" +
+                    (second.Error == null ? string.Empty : second.Error.Code + "/" + second.Error.DetailCode),
+                    requestId,
+                    originalStatus,
+                    expectedDigest,
+                    false);
             }
 
             Envelope lookup = await probe.QueryReceiptAsync(
@@ -337,26 +411,76 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                 lookup.ReceiptLookup.Status != LookupStatus.Found ||
                 lookup.ReceiptLookup.Receipt == null)
             {
-                return "ORIGINAL_NOT_FOUND";
+                return new ConflictProbeResult(false, "ORIGINAL_NOT_FOUND", requestId, originalStatus, expectedDigest, false);
             }
 
             WireReceipt original = lookup.ReceiptLookup.Receipt;
+            bool digestAvailable = !string.IsNullOrEmpty(original.CanonicalPayloadSha256);
+            bool digestPreserved = digestAvailable &&
+                                   string.Equals(original.CanonicalPayloadSha256, expectedDigest, StringComparison.OrdinalIgnoreCase);
             bool preserved =
                 original.Status.ToString() == originalStatus &&
+                string.Equals(original.ReasonCode, originalReason, StringComparison.Ordinal) &&
                 original.EvaluatedStateVersion == evaluated &&
-                (original.HasCommandVersion ? original.CommandVersion : 0) == originalVersion;
-            return preserved ? "PRESERVED" : "ORIGINAL_CHANGED";
+                (original.HasCommandVersion ? original.CommandVersion : 0) == originalVersion &&
+                (!digestAvailable || digestPreserved);
+            return new ConflictProbeResult(
+                preserved,
+                preserved
+                    ? (digestAvailable ? "PRESERVED" : "PRESERVED_DIGEST_UNAVAILABLE")
+                    : "ORIGINAL_CHANGED statusMatch=" + (original.Status.ToString() == originalStatus) +
+                      " reasonMatch=" + string.Equals(original.ReasonCode, originalReason, StringComparison.Ordinal) +
+                      " evaluatedMatch=" + (original.EvaluatedStateVersion == evaluated) +
+                      " versionMatch=" + ((original.HasCommandVersion ? original.CommandVersion : 0) == originalVersion) +
+                      " digestAvailable=" + digestAvailable +
+                      " digestMatch=" + digestPreserved,
+                requestId,
+                originalStatus,
+                digestAvailable ? expectedDigest : string.Empty,
+                !digestAvailable || !string.Equals(original.CanonicalPayloadSha256, plainDigest, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private sealed class ConflictProbeResult
+        {
+            public ConflictProbeResult(
+                bool preserved,
+                string detail,
+                string requestId,
+                string status,
+                string canonicalDigestHex,
+                bool digestDomainMismatch)
+            {
+                Preserved = preserved;
+                Detail = detail;
+                RequestId = requestId;
+                Status = status;
+                CanonicalDigestHex = canonicalDigestHex;
+                DigestDomainMismatch = digestDomainMismatch;
+            }
+
+            public bool Preserved { get; }
+
+            public string Detail { get; }
+
+            public string RequestId { get; }
+
+            public string Status { get; }
+
+            public string CanonicalDigestHex { get; }
+
+            public bool DigestDomainMismatch { get; }
         }
 
         private static Command WireCommand(
             BusinessPayload payload,
             ulong expectedStateVersion,
             string round,
-            string decision)
+            string decision,
+            CommandType kind = CommandType.SubmitAction)
         {
             return new Command
             {
-                Type = CommandType.SubmitAction,
+                Type = kind,
                 CanonicalPayload = ByteString.CopyFrom(payload.CopyBytes()),
                 PayloadSchemaVersion = CanonicalPayloadDigest.FormatVersion,
                 ExpectedStateVersion = expectedStateVersion,
@@ -365,7 +489,7 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
             };
         }
 
-        private static async Task<bool> AdmissionRejectedAsync(
+        private static async Task<(bool Rejected, string Code)> AdmissionRejectedAsync(
             Uri endpoint,
             X509Certificate2 root,
             string ticket,
@@ -375,15 +499,15 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
             try
             {
                 await probe.AdmitAsync(ticket, timeout, CancellationToken.None).ConfigureAwait(false);
-                return false;
+                return (false, "ADMITTED");
             }
-            catch (RawWssProbe.ProbeRejectedException)
+            catch (RawWssProbe.ProbeRejectedException ex)
             {
-                return true;
+                return (true, ex.Code);
             }
-            catch (TableChannelClosedException)
+            catch (TableChannelClosedException ex)
             {
-                return true;
+                return (true, ex.Code);
             }
         }
 

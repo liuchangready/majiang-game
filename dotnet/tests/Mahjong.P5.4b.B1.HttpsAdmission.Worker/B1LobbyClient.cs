@@ -155,6 +155,29 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                     return document.RootElement.Clone();
                 }
             }
+
+            /// <summary>Only the stable error code, never the raw response body.</summary>
+            public string? ErrorCode
+            {
+                get
+                {
+                    try
+                    {
+                        using JsonDocument document = JsonDocument.Parse(Body);
+                        if (document.RootElement.ValueKind == JsonValueKind.Object &&
+                            document.RootElement.TryGetProperty("code", out JsonElement code) &&
+                            code.ValueKind == JsonValueKind.String)
+                        {
+                            return code.GetString();
+                        }
+                    }
+                    catch (JsonException)
+                    {
+                    }
+
+                    return null;
+                }
+            }
         }
     }
 }

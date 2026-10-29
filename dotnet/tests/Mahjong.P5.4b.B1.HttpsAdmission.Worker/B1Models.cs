@@ -42,6 +42,8 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
 
         public string RequestIdHash { get; set; } = string.Empty;
 
+        public string RequestId { get; set; } = string.Empty;
+
         public string ScopeIdHash { get; set; } = string.Empty;
 
         public long BaselineStateVersion { get; set; }
@@ -102,7 +104,6 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
         public int PendingAfterQuery { get; set; }
 
         public string ResolvedStatus { get; set; } = string.Empty;
-
         public string ResolvedReason { get; set; } = string.Empty;
 
         public bool ResolvedFromLookup { get; set; }
@@ -114,6 +115,22 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
         public int OutboxEntriesAfter { get; set; }
 
         public string OutboxDirectory { get; set; } = string.Empty;
+
+        public long RecoveredStateVersion { get; set; }
+
+        public bool RecoveredCrashActionVisible { get; set; }
+
+        public uint RecoveredPublicDiscardTileId { get; set; }
+
+        public int RecoveredPublicDiscardSeat { get; set; }
+
+        public int RecoveredPublicPlayerCount { get; set; }
+
+        public string RecoveredSessionIdHash { get; set; } = string.Empty;
+
+        public string RecoveredRole { get; set; } = string.Empty;
+
+        public int RecoveredSeat { get; set; }
     }
 
     public sealed class SuiteEvidence
@@ -136,6 +153,8 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
 
         public ulong NormalActionStateVersion { get; set; }
 
+        public string NormalRequestId { get; set; } = string.Empty;
+
         public ulong NormalReplayCommandVersion { get; set; }
 
         public bool NormalReplaySameReceipt { get; set; }
@@ -148,6 +167,10 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
 
         public int CrashCommandVersion { get; set; }
 
+        public string CrashRequestId { get; set; } = string.Empty;
+
+        public bool RecoveredProjectionConfirmed { get; set; }
+
         public int RecoverPid { get; set; }
 
         public bool RecoveryFound { get; set; }
@@ -158,6 +181,8 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
 
         public List<string> NegativeResults { get; set; } = new List<string>();
 
+        public List<NegativeFact> NegativeFacts { get; set; } = new List<NegativeFact>();
+
         public bool HttpIdempotencyCreateReplay { get; set; }
 
         public bool HttpIdempotencyCreateConflict { get; set; }
@@ -165,6 +190,8 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
         public bool HttpIdempotencyJoinReplay { get; set; }
 
         public bool HttpIdempotencyJoinConflict { get; set; }
+
+        public bool HttpDifferentKindConflict { get; set; }
 
         public bool HttpTicketReplay { get; set; }
 
@@ -194,6 +221,8 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
 
         public bool SameKeyDifferentBytesPreservedOriginal { get; set; }
 
+        public bool ReceiptDigestDomainMismatch { get; set; }
+
         public bool Blocked { get; set; }
 
         public string BlockerCode { get; set; } = string.Empty;
@@ -221,5 +250,20 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
         public string ImmediateReissueDetail { get; set; } = string.Empty;
 
         public List<string> Assertions { get; set; } = new List<string>();
+    }
+
+    public sealed class NegativeFact
+    {
+        public string Label { get; set; } = string.Empty;
+
+        public string RoomId { get; set; } = string.Empty;
+
+        public string RequestId { get; set; } = string.Empty;
+
+        public int ExpectedReceiptCount { get; set; }
+
+        public string ExpectedStatus { get; set; } = string.Empty;
+
+        public string ExpectedCanonicalDigestHex { get; set; } = string.Empty;
     }
 }

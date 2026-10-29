@@ -92,7 +92,15 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                                                       string.Equals(
                                                           B1Flows.RequireString(createReplay.Json.GetProperty("room"), "roomId"),
                                                           roomId,
+                                                          StringComparison.Ordinal) &&
+                                                      string.Equals(
+                                                          B1Flows.RequireString(
+                                                              createReplay.Json.GetProperty("assignment"),
+                                                              "assignmentId"),
+                                                          hostAssignment,
                                                           StringComparison.Ordinal);
+                Require(suite.HttpIdempotencyCreateReplay,
+                    "The same-key create replay did not return the original room/assignment.");
 
                 B1LobbyClient.LobbyHttpResult createConflict = await lobby.PostAsync(
                     "/v1/rooms",
@@ -100,7 +108,23 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                     p0.SessionToken,
                     createKey,
                     CancellationToken.None).ConfigureAwait(false);
-                suite.HttpIdempotencyCreateConflict = createConflict.StatusCode == 409;
+                suite.HttpIdempotencyCreateConflict =
+                    createConflict.StatusCode == 409 &&
+                    string.Equals(createConflict.ErrorCode, "REQUEST_ID_CONFLICT", StringComparison.Ordinal);
+                Require(suite.HttpIdempotencyCreateConflict,
+                    "The different-payload create did not fail with HTTP 409/REQUEST_ID_CONFLICT.");
+
+                B1LobbyClient.LobbyHttpResult differentKindConflict = await lobby.PostAsync(
+                    "/v1/rooms/" + Uri.EscapeDataString(roomId) + "/join",
+                    new { preferSeat = 0 },
+                    p0.SessionToken,
+                    createKey,
+                    CancellationToken.None).ConfigureAwait(false);
+                suite.HttpDifferentKindConflict =
+                    differentKindConflict.StatusCode == 409 &&
+                    string.Equals(differentKindConflict.ErrorCode, "REQUEST_ID_CONFLICT", StringComparison.Ordinal);
+                Require(suite.HttpDifferentKindConflict,
+                    "The same-key different-API request did not fail with HTTP 409/REQUEST_ID_CONFLICT.");
 
                 string p1JoinKey = "join1-" + Guid.NewGuid().ToString("N");
                 (string p1Assignment, int p1Seat) = await B1Flows.JoinRoomAsync(
@@ -127,6 +151,8 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                                                            "assignmentId"),
                                                        p1Assignment,
                                                        StringComparison.Ordinal);
+                Require(suite.HttpIdempotencyJoinReplay,
+                    "The same-key join replay did not return the original assignment.");
 
                 B1LobbyClient.LobbyHttpResult joinConflict = await lobby.PostAsync(
                     "/v1/rooms/" + Uri.EscapeDataString(roomId) + "/join",
@@ -134,7 +160,11 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                     p1.SessionToken,
                     p1JoinKey,
                     CancellationToken.None).ConfigureAwait(false);
-                suite.HttpIdempotencyJoinConflict = joinConflict.StatusCode == 409;
+                suite.HttpIdempotencyJoinConflict =
+                    joinConflict.StatusCode == 409 &&
+                    string.Equals(joinConflict.ErrorCode, "REQUEST_ID_CONFLICT", StringComparison.Ordinal);
+                Require(suite.HttpIdempotencyJoinConflict,
+                    "The different-payload join did not fail with HTTP 409/REQUEST_ID_CONFLICT.");
 
                 (string p2Assignment, int p2Seat) = await B1Flows.JoinRoomAsync(
                     lobby,
@@ -216,14 +246,29 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                                          string.Equals(
                                              B1Flows.RequireString(ticketReplay.Json, "jti"),
                                              ticketIdem.Jti,
+                                             StringComparison.Ordinal) &&
+                                         string.Equals(
+                                             B1Flows.RequireString(ticketReplay.Json, "assignmentId"),
+                                             p0.AssignmentId,
+                                             StringComparison.Ordinal) &&
+                                         string.Equals(
+                                             B1Flows.RequireString(ticketReplay.Json, "roomId"),
+                                             roomId,
                                              StringComparison.Ordinal);
+                Require(suite.HttpTicketReplay,
+                    "The same-key ticket replay did not return the original jti/assignment/room.");
+
                 B1LobbyClient.LobbyHttpResult ticketConflict = await lobby.PostAsync(
                     "/v1/table-tickets",
                     new { assignmentId = p2Assignment },
                     p0.SessionToken,
                     ticketIdemKey,
                     CancellationToken.None).ConfigureAwait(false);
-                suite.HttpTicketConflict = ticketConflict.StatusCode == 409;
+                suite.HttpTicketConflict =
+                    ticketConflict.StatusCode == 409 &&
+                    string.Equals(ticketConflict.ErrorCode, "REQUEST_ID_CONFLICT", StringComparison.Ordinal);
+                Require(suite.HttpTicketConflict,
+                    "The different-assignment ticket did not fail with HTTP 409/REQUEST_ID_CONFLICT.");
                 p0Ticket = ticketIdem;
 
                 string tableUri = "wss://127.0.0.1:" + tablePort + "/v1/table?room=" + Uri.EscapeDataString(roomId);
@@ -255,6 +300,27 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                         spectatorClient.Binding.SeatId == ProtocolConstants.NoSeat,
                     "The spectator binding is not a no-seat spectator.");
 
+                RequireBindingIdentity(p0Client, p0, roomId, ProtocolRole.Player, 0);
+                RequireBindingIdentity(p1Client, p1, roomId, ProtocolRole.Player, 1);
+                RequireBindingIdentity(p2Client, p2, roomId, ProtocolRole.Player, 2);
+                RequireBindingIdentity(p3Client, p3, roomId, ProtocolRole.Player, 3);
+                RequireBindingIdentity(spectatorClient, spectator, roomId, ProtocolRole.Spectator, ProtocolConstants.NoSeat);
+                Require(
+                    new[] { p0Client, p1Client, p2Client, p3Client, spectatorClient }
+                        .Select(client => client.Binding!.SessionId.Value)
+                        .Distinct(StringComparer.Ordinal)
+                        .Count() == 5,
+                    "The five admitted identities do not have five distinct session bindings.");
+                Require(
+                    new[] { p0Client, p1Client, p2Client, p3Client, spectatorClient }
+                        .All(client => client.ConfirmedCursor.HasValue),
+                    "A real Client has no independent confirmed stream cursor.");
+                Require(
+                    PublicProjectionIsSafe(p0Client) && PublicProjectionIsSafe(p1Client) &&
+                    PublicProjectionIsSafe(p2Client) && PublicProjectionIsSafe(p3Client) &&
+                    PublicProjectionIsSafe(spectatorClient),
+                    "A public/player public projection exposed a private field name.");
+
                 Require(p0Client.BaselineCount > 0 && p1Client.BaselineCount > 0 &&
                         p2Client.BaselineCount > 0 && p3Client.BaselineCount > 0 &&
                         spectatorClient.BaselineCount > 0,
@@ -283,6 +349,7 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                     normalDiscard,
                     normalRequestId);
                 string normalScopeId = p0Client.Binding.Scope.ScopeId.Value;
+                suite.NormalRequestId = normalRequestId;
                 TableReceiptResolvedEventArgs normalResolved;
                 try
                 {
@@ -314,14 +381,6 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                         p0).ConfigureAwait(false);
                     suite.ImmediateReissueRejected = reissueRejected;
                     suite.ImmediateReissueDetail = reissueDetail;
-                    await NegativeProbes.RunAsync(
-                        suite,
-                        lobby,
-                        root,
-                        tablePort,
-                        normalScopeId,
-                        normalRequestId,
-                        tlsDirectory).ConfigureAwait(false);
                     (bool found, ulong version, string detail) = await ProbeServerReceiptAsync(
                         lobby,
                         root,
@@ -334,6 +393,14 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                     suite.RawReceiptQueryFound = found;
                     suite.RawReceiptQueryCommandVersion = version;
                     suite.RawReceiptQueryDetail = detail;
+                    await NegativeProbes.RunAsync(
+                        suite,
+                        lobby,
+                        root,
+                        tablePort,
+                        normalScopeId,
+                        normalRequestId,
+                        tlsDirectory).ConfigureAwait(false);
                     suite.Assertions.Add("server_receipt_delivered_but_client_did_not_resolve");
                     Program.WriteJson(outputPath, suite);
                     Console.Error.WriteLine(
@@ -349,6 +416,7 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                     "The normal action did not produce an APPLIED command version.");
                 suite.NormalActionSeat = p0Client.Seat;
                 suite.NormalActionStateVersion = normalResolved.Resolution.CommandVersion!.Value.Value;
+                suite.NormalRequestId = normalRequestId;
 
                 IReadOnlyList<byte[]> normalFrames = p0Client.Loss.CapturedCommandFrames;
                 Require(normalFrames.Count == 1, "The normal command bytes were not captured exactly once.");
@@ -414,6 +482,7 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                 CrashClientEvidence crash = Program.ReadJson<CrashClientEvidence>(crashOut);
                 suite.CrashPid = crash.Pid;
                 suite.CrashCommandVersion = (int)crash.OriginalCommandVersion;
+                suite.CrashRequestId = crash.RequestId;
                 Require(crash.OriginalReceiptStatus == "Applied" && crash.ReplayReceiptStatus == "Applied",
                     "The crash command/replay were not APPLIED.");
                 Require(crash.OriginalCommandVersion == crash.ReplayCommandVersion && crash.ReplayReplayed,
@@ -471,17 +540,24 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                 suite.Assertions.Add("new_pid_disk_outbox_receipt_query_found");
 
                 autoplayCancellation.Dispose();
-                suite.AllClientsSawCrashAction = await WaitForActionVisibleAsync(
-                    new[] { p0Client, p1Client, p2Client, p3Client, spectatorClient },
+                bool liveSawCrashAction = await WaitForActionVisibleAsync(
+                    new[] { p0Client, p2Client, p3Client, spectatorClient },
                     crash.Seat,
                     crash.DiscardTileId,
                     (ulong)suite.CrashCommandVersion,
                     TimeSpan.FromSeconds(10)).ConfigureAwait(false);
-                // The discard identity is not in the crash JSON (privacy); the state
-                // version advance plus the recovered projection is enough for the
-                // cross-stream confirmation above. The runner separately asserts the
-                // PG event/receipt counts and the recovered public river.
-                Require(suite.AllClientsSawCrashAction, "Not every live client observed the crash action state.");
+                suite.RecoveredProjectionConfirmed =
+                    recovered.RecoveredCrashActionVisible &&
+                    recovered.RecoveredStateVersion >= suite.CrashCommandVersion &&
+                    recovered.RecoveredPublicPlayerCount >= 4 &&
+                    recovered.RecoveredSeat == crash.Seat &&
+                    string.Equals(recovered.RecoveredRole, "Player", StringComparison.Ordinal);
+                suite.AllClientsSawCrashAction = liveSawCrashAction && suite.RecoveredProjectionConfirmed;
+                Require(suite.AllClientsSawCrashAction,
+                    "The four live clients and the recovered process did not all confirm the crash action.");
+                Require(!string.Equals(recovered.RecoveredSessionIdHash, Program.Sha256Hex(p1Client.Binding!.SessionId.Value),
+                        StringComparison.Ordinal),
+                    "The recovery reused the closed pre-crash session binding.");
                 suite.Assertions.Add("multi_client_confirmation_after_recovery");
 
                 // Negative probes run after the positive evidence so a deliberate
@@ -653,6 +729,56 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
             {
                 return (false, 0, ex.GetType().Name + ":" + Program.Redact(ex.Message));
             }
+        }
+
+        private static void RequireBindingIdentity(
+            ClientHandle client,
+            GuestState guest,
+            string roomId,
+            ProtocolRole role,
+            int seat)
+        {
+            TableSessionBinding binding = client.Binding
+                ?? throw new InvalidOperationException("A real Client has no binding.");
+            Require(string.Equals(binding.Scope.AccountId, guest.AccountId, StringComparison.Ordinal),
+                "A Client scope account does not match its Lobby account.");
+            Require(string.Equals(binding.RoomId.Value, roomId, StringComparison.Ordinal),
+                "A Client binding room does not match the Lobby room.");
+            Require(binding.Role == role && binding.SeatId == seat,
+                "A Client binding role/seat does not match the Lobby assignment.");
+            Require(binding.BindingEpoch.Value > 0 && binding.OwnerEpoch.Value > 0,
+                "A Client binding epoch is not positive.");
+        }
+
+        private static bool PublicProjectionIsSafe(ClientHandle client)
+        {
+            string text = string.Empty;
+            PublicSnapshot? publicSnapshot = client.LatestPublic;
+            if (publicSnapshot != null)
+            {
+                text += publicSnapshot.ToString();
+            }
+
+            PlayerSnapshot? player = client.LatestPlayer;
+            if (player?.PublicView != null)
+            {
+                text += player.PublicView.ToString();
+            }
+
+            string[] forbidden =
+            {
+                "closed_tiles", "drawn_tile_id", "cheat_points", "cheat_entries",
+                "seed", "ura_dora", "sleeve"
+            };
+            foreach (string token in forbidden)
+            {
+                if (text.Contains(token, StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         private static ClientHandle NewClient(

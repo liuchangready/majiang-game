@@ -7,6 +7,7 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -69,7 +70,7 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
             if (!string.Equals(result.StatusCode.ToString(CultureInfo.InvariantCulture), expect, StringComparison.Ordinal))
             {
                 Console.Error.WriteLine(
-                    "health expected " + expect + " but observed " + result.StatusCode + ": " + result.Body);
+                    "health expected " + expect + " but observed " + result.StatusCode + ".");
                 return ExitFailed;
             }
 
@@ -114,16 +115,27 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                 return string.Empty;
             }
 
-            // Never echo an accidental compact JWT, bearer token or PEM block.
+            // Diagnostic output is a whitelist, not a sanitizer that tries to keep
+            // a credential with a changed prefix. Any token/PEM/credential-shaped
+            // input is replaced as a whole; ordinary short status text is kept.
             string value = message!;
-            if (value.Length > 400)
+            if (LooksSensitive(value))
             {
-                value = value.Substring(0, 400);
+                return "[redacted-sensitive]";
             }
 
-            return value
-                .Replace("eyJ", "ey~", StringComparison.Ordinal)
-                .Replace("Bearer ", "Bearer~", StringComparison.Ordinal);
+            return value.Length > 300 ? value.Substring(0, 300) : value;
+        }
+
+        private static bool LooksSensitive(string value)
+        {
+            return Regex.IsMatch(value, @"-----BEGIN [^-]+-----", RegexOptions.IgnoreCase)
+                   || Regex.IsMatch(value, @"(?i)\bBearer\s+\S+")
+                   || Regex.IsMatch(value, @"[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")
+                   || Regex.IsMatch(value, @"(?i)(sessionToken|bootstrapSecret|authorization|private[_-]?key|password|secret)\s*[:=]")
+                   || Regex.IsMatch(value, @"eyJ[A-Za-z0-9_-]{8,}")
+                   || Regex.IsMatch(value, @"[A-Za-z0-9+/]{40,}={0,2}")
+                   || Regex.IsMatch(value, @"[A-Fa-f0-9]{40,}");
         }
 
         public sealed class Options

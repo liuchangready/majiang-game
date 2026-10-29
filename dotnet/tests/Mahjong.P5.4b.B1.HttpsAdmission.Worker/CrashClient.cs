@@ -141,6 +141,7 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                 Seat = guest.Seat,
                 RoomId = room,
                 RequestIdHash = Program.Sha256Hex(requestId),
+                RequestId = requestId,
                 ScopeIdHash = Program.Sha256Hex(scopeId),
                 BaselineStateVersion = handle.LastBaselineVersion,
                 ExpectedStateVersion = snapshot.StateVersion,

@@ -6,6 +6,7 @@ using System.Security.Cryptography.X509Certificates;
 using System.Threading;
 using System.Threading.Tasks;
 using Mahjong.Client;
+using Mahjong.Contracts.Wire;
 
 namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
 {
@@ -105,6 +106,22 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                         "The receipt lookup did not resolve to the original APPLIED command version.");
                 }
 
+                PlayerSnapshot? recoveredPlayer = handle.LatestPlayer;
+                PublicSnapshot? recoveredPublic = handle.LatestPublic;
+                long recoveredStateVersion = recoveredPlayer != null
+                    ? (long)recoveredPlayer.StateVersion
+                    : (long)(recoveredPublic?.StateVersion ?? 0);
+                PublicBoardView? recoveredBoard = recoveredPlayer?.PublicView?.Board ?? recoveredPublic?.View?.Board;
+                bool crashActionVisible = recoveredBoard != null &&
+                                          recoveredBoard.Players.Any(player =>
+                                              player.Seat == crash.Seat &&
+                                              player.Discards.Any(discard =>
+                                                  discard.TileId == crash.DiscardTileId));
+                int recoveredPlayers = recoveredBoard?.Players.Count ?? 0;
+                string recoveredSessionHash = Program.Sha256Hex(handle.Binding!.SessionId.Value);
+                Mahjong.Contracts.ProtocolRole recoveredRole = handle.Binding.Role;
+                int recoveredSeat = handle.Binding.SeatId;
+
                 await handle.CloseAsync(CancellationToken.None).ConfigureAwait(false);
                 await handle.DisposeAsync().ConfigureAwait(false);
                 handle = null!;
@@ -133,7 +150,15 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                     ResolvedCommandVersion = resolved.Resolution.CommandVersion.Value.Value,
                     QueryDigestHash = Program.Sha256Hex(resolved.Resolution.CanonicalPayloadSha256),
                     OutboxEntriesAfter = remaining.Count,
-                    OutboxDirectory = outboxDirectory
+                    OutboxDirectory = outboxDirectory,
+                    RecoveredStateVersion = recoveredStateVersion,
+                    RecoveredCrashActionVisible = crashActionVisible,
+                    RecoveredPublicDiscardTileId = crash.DiscardTileId,
+                    RecoveredPublicDiscardSeat = crash.Seat,
+                    RecoveredPublicPlayerCount = recoveredPlayers,
+                    RecoveredSessionIdHash = recoveredSessionHash,
+                    RecoveredRole = recoveredRole.ToString(),
+                    RecoveredSeat = recoveredSeat
                 };
                 Program.WriteJson(outputPath, evidence);
                 Console.WriteLine(

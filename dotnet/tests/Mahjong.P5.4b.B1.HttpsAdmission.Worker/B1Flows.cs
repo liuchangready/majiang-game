@@ -159,7 +159,8 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
             {
                 throw new InvalidOperationException(
                     what + " expected HTTP " + expected + " but observed " + response.StatusCode +
-                    ": " + Program.Redact(response.Body));
+                    (string.IsNullOrEmpty(response.ErrorCode) ? string.Empty : " (code=" + response.ErrorCode + ")") +
+                    ".");
             }
         }
 

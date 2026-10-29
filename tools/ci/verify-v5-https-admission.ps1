@@ -25,18 +25,27 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+$script:RunId = [Guid]::NewGuid().ToString('N')
 $script:Stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss')
 if ([string]::IsNullOrWhiteSpace($Root)) {
-    $Root = Join-Path $script:RepoRoot ('artifacts\p54b-b1-pg-' + $script:Stamp)
+    $Root = Join-Path $script:RepoRoot ('artifacts\p54b-b1-pg-' + $script:Stamp + '-' + $script:RunId)
 }
 if ([string]::IsNullOrWhiteSpace($LogDir)) {
-    $LogDir = Join-Path $script:RepoRoot ('artifacts\p54b-b1-logs-' + $script:Stamp)
+    $LogDir = Join-Path $script:RepoRoot ('artifacts\p54b-b1-logs-' + $script:Stamp + '-' + $script:RunId)
 }
 $Root = [System.IO.Path]::GetFullPath($Root)
 $LogDir = [System.IO.Path]::GetFullPath($LogDir)
+$script:ArtifactsRoot = [System.IO.Path]::GetFullPath((Join-Path $script:RepoRoot 'artifacts'))
+foreach ($pathToCheck in @($Root, $LogDir)) {
+    if (-not $pathToCheck.StartsWith($script:ArtifactsRoot + [System.IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "BLOCKED: B1 resources must stay under this workspace's artifacts directory: $pathToCheck"
+    }
+}
 $script:LogDir = $LogDir
 $script:Stages = New-Object System.Collections.Generic.List[object]
 $script:HostProcesses = New-Object System.Collections.Generic.List[object]
+$script:HostRecords = @{}
+$script:RunStartedUtc = (Get-Date).ToUniversalTime()
 $script:ClusterStarted = $false
 $script:Blocker = $false
 $script:PgBin = Join-Path $Root 'pgsql\bin'
@@ -77,6 +86,16 @@ function Get-Sha256([string]$Path) {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
 }
 
+function Normalize-Path([string]$Path) {
+    return [System.IO.Path]::GetFullPath($Path).Replace('/', '\').TrimEnd('\')
+}
+
+function Get-ProcessPathSafe($Process) {
+    try { if ($Process.Path) { return $Process.Path } } catch { }
+    try { return $Process.MainModule.FileName } catch { }
+    return $null
+}
+
 function Test-PortInUse([int]$Value) {
     $client = New-Object System.Net.Sockets.TcpClient
     try {
@@ -97,16 +116,16 @@ function Invoke-Native {
     )
     $out = $LogPath + '.stdout'
     $err = $LogPath + '.stderr'
-    Remove-Item -LiteralPath $out, $err -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $out, $err, $LogPath -Force -ErrorAction SilentlyContinue
     $argumentLine = ($Arguments | ForEach-Object {
         $value = [string]$_
         if ($value -match '[\s"]') { '"' + ($value -replace '"', '\"') + '"' } else { $value }
     }) -join ' '
 
-    # Windows PowerShell 5.1: Start-Process loses the native exit code whenever it
-    # redirects streams, and pipe EOF belongs to the last handle holder (postgres
-    # or a lingering build server). Launch through the raw .NET Process, drain
-    # incrementally, and read ExitCode before Dispose.
+    # PS 5.1 traps: Start-Process loses ExitCode whenever it redirects streams;
+    # serial ReadToEnd on one pipe lets a full stderr pipe block the child before
+    # stdout is ever read. Both streams are read CONCURRENTLY from the moment the
+    # process starts, and every byte collected on timeout is still written.
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $FilePath
     $psi.Arguments = $argumentLine
@@ -116,64 +135,41 @@ function Invoke-Native {
     $psi.CreateNoWindow = $true
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $psi
-    $outWriter = [System.IO.StreamWriter]::new($out)
-    $errWriter = [System.IO.StreamWriter]::new($err)
+    $timedOut = $false
+    $outText = ''
+    $errText = ''
+    $exitCode = $null
     try {
         if (-not $process.Start()) { throw "The process could not be started: $FilePath" }
-        $deadline = [System.Diagnostics.Stopwatch]::StartNew()
-        $outBuilder = New-Object System.Text.StringBuilder
-        $errBuilder = New-Object System.Text.StringBuilder
-        foreach ($side in @(
-            @{ Reader = $process.StandardOutput; Target = $outBuilder },
-            @{ Reader = $process.StandardError; Target = $errBuilder })) {
-            $reader = $side.Reader
-            $buffer = New-Object char[] 4096
-            while ($true) {
-                $read = $reader.ReadAsync($buffer, 0, $buffer.Length)
-                while (-not $read.IsCompleted -and -not $process.HasExited -and
-                       $deadline.ElapsedMilliseconds -lt ($TimeoutSeconds * 1000)) {
-                    Start-Sleep -Milliseconds 25
-                }
-                if (-not $read.IsCompleted) {
-                    $grace = [System.Diagnostics.Stopwatch]::StartNew()
-                    while (-not $read.IsCompleted -and $grace.ElapsedMilliseconds -lt 10000 -and
-                           $deadline.ElapsedMilliseconds -lt ($TimeoutSeconds * 1000)) {
-                        Start-Sleep -Milliseconds 50
-                    }
-                    if ($read.IsCompleted) {
-                        $n = $read.GetAwaiter().GetResult()
-                        if ($n -gt 0) { [void]$side.Target.Append($buffer, 0, $n) }
-                    }
-                    break
-                }
-                $n = $read.GetAwaiter().GetResult()
-                if ($n -le 0) { break }
-                [void]$side.Target.Append($buffer, 0, $n)
-            }
-        }
+        $outTask = $process.StandardOutput.ReadToEndAsync()
+        $errTask = $process.StandardError.ReadToEndAsync()
         if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
-            try { $process.Kill() } catch { }
-            throw "Command timed out after $TimeoutSeconds seconds: $FilePath"
+            $timedOut = $true
+            try { & taskkill.exe /PID $process.Id /T /F 2>$null | Out-Null } catch { }
+            try { if (-not $process.HasExited) { $process.Kill() } } catch { }
         }
-        $process.WaitForExit()
-        $outWriter.Write($outBuilder.ToString())
-        $outWriter.Flush()
-        $errWriter.Write($errBuilder.ToString())
-        $errWriter.Flush()
-        $exitCode = $process.ExitCode
+        try { $process.WaitForExit(10000) | Out-Null } catch { }
+        # A grandchild (postgres/build server) may keep a pipe write end open.
+        # Give in-flight bytes a bounded grace, then release the reader so the
+        # function cannot hang after the child already exited.
+        $grace = [System.Diagnostics.Stopwatch]::StartNew()
+        while ((-not $outTask.IsCompleted -or -not $errTask.IsCompleted) -and $grace.ElapsedMilliseconds -lt 10000) {
+            Start-Sleep -Milliseconds 25
+        }
+        if (-not $outTask.IsCompleted) { try { $process.StandardOutput.Close() } catch { } }
+        if (-not $errTask.IsCompleted) { try { $process.StandardError.Close() } catch { } }
+        try { $process.WaitForExit(5000) | Out-Null } catch { }
+        try { if ($outTask.IsCompleted) { $outText = $outTask.GetAwaiter().GetResult() } } catch { }
+        try { if ($errTask.IsCompleted) { $errText = $errTask.GetAwaiter().GetResult() } } catch { }
+        try { $exitCode = $process.ExitCode } catch { }
     }
     finally {
-        $outWriter.Dispose()
-        $errWriter.Dispose()
-        $process.Dispose()
+        try { $process.Dispose() } catch { }
     }
-    $text = ''
-    if (Test-Path -LiteralPath $out) { $text += (Get-Content -LiteralPath $out -Raw) }
-    if (Test-Path -LiteralPath $err) {
-        $errorText = Get-Content -LiteralPath $err -Raw
-        if ($errorText) { $text += $errorText }
-    }
-    Set-Content -LiteralPath $LogPath -Value $text -Encoding utf8
+    Set-Content -LiteralPath $out -Value $outText -Encoding utf8
+    Set-Content -LiteralPath $err -Value $errText -Encoding utf8
+    Set-Content -LiteralPath $LogPath -Value ($outText + $errText) -Encoding utf8
+    if ($timedOut) { return 124 }
     if ($null -eq $exitCode) { throw "Native exit code unavailable: $FilePath" }
     return [int]$exitCode
 }
@@ -201,11 +197,42 @@ function Assert-OwnedCluster {
     if (-not (Test-Path -LiteralPath $script:Marker)) { throw "Refusing to touch ${Root}: marker missing." }
     $marker = Get-Content -LiteralPath $script:Marker -Raw | ConvertFrom-Json
     if ($marker.owner -ne 'mahjong-p54b-b1' -or
-        -not [string]::Equals([System.IO.Path]::GetFullPath($marker.root), $Root, [StringComparison]::OrdinalIgnoreCase) -or
-        [int]$marker.port -ne $PgPort) {
-        throw "Refusing to touch ${Root}: marker mismatch."
+        $marker.runId -ne $script:RunId -or
+        -not [string]::Equals((Normalize-Path $marker.root), (Normalize-Path $Root), [StringComparison]::OrdinalIgnoreCase) -or
+        [int]$marker.port -ne $PgPort -or
+        -not [string]::Equals((Normalize-Path $marker.dataDir), (Normalize-Path $script:DataDir), [StringComparison]::OrdinalIgnoreCase)) {
+        throw ("Refusing to touch ${Root}: marker/runId/root/port/dataDir mismatch. " +
+            "markerRunId=$($marker.runId) scriptRunId=$($script:RunId) " +
+            "markerRoot=$($marker.root) root=$Root " +
+            "markerDataDir=$($marker.dataDir) dataDir=$($script:DataDir) markerPort=$($marker.port) port=$PgPort")
     }
     return $marker
+}
+
+function Assert-OwnedClusterProcess {
+    Assert-OwnedCluster | Out-Null
+    $pidFile = Join-Path $script:DataDir 'postmaster.pid'
+    if (-not (Test-Path -LiteralPath $pidFile)) { throw "Refusing to touch ${Root}: postmaster.pid is missing." }
+    $lines = Get-Content -LiteralPath $pidFile
+    $postmasterPid = 0
+    if (-not [int]::TryParse(([string]$lines[0]).Trim(), [ref]$postmasterPid)) {
+        throw "Refusing to touch ${Root}: postmaster.pid has no numeric PID."
+    }
+    $postmaster = Get-Process -Id $postmasterPid -ErrorAction SilentlyContinue
+    if ($null -eq $postmaster) { throw "Refusing to touch ${Root}: postmaster PID $postmasterPid is not running." }
+    $expectedPostgres = Join-Path $script:PgBin 'postgres.exe'
+    if (-not [string]::Equals((Get-ProcessPathSafe $postmaster), $expectedPostgres, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to touch ${Root}: PID $postmasterPid is not this cluster's postgres ($($postmaster.Path))."
+    }
+    $listener = @(Get-NetTCPConnection -LocalPort $PgPort -State Listen -ErrorAction SilentlyContinue)
+    if ($listener.Count -eq 0 -or @($listener | Where-Object { $_.OwningProcess -eq $postmasterPid }).Count -eq 0) {
+        throw "Refusing to touch ${Root}: port $PgPort is not owned by postmaster PID $postmasterPid."
+    }
+    $actualDataDir = Get-PgScalar -Database 'postgres' -Sql 'SHOW data_directory'
+    if (-not [string]::Equals((Normalize-Path $actualDataDir), (Normalize-Path $script:DataDir), [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to touch ${Root}: live data_directory mismatch ($actualDataDir)."
+    }
+    return $postmasterPid
 }
 
 function Initialize-Cluster {
@@ -224,7 +251,9 @@ function Initialize-Cluster {
     if (-not (Test-Path -LiteralPath $script:Marker)) {
         [ordered]@{
             owner = 'mahjong-p54b-b1'
+            runId = $script:RunId
             root = $Root
+            dataDir = $script:DataDir
             port = $PgPort
             createdUtc = (Get-Date).ToUniversalTime().ToString('o')
         } | ConvertTo-Json | Set-Content -LiteralPath $script:Marker -Encoding utf8
@@ -284,8 +313,9 @@ function Initialize-Cluster {
         Start-Sleep -Milliseconds 250
     }
     if ($LASTEXITCODE -ne 0) { throw 'PostgreSQL did not become ready.' }
+    $script:PostmasterPid = Assert-OwnedClusterProcess
     $dataDir = Get-PgScalar -Database 'postgres' -Sql 'SHOW data_directory'
-    if (-not [string]::Equals([System.IO.Path]::GetFullPath($dataDir), [System.IO.Path]::GetFullPath($script:DataDir), [StringComparison]::OrdinalIgnoreCase)) {
+    if (-not [string]::Equals((Normalize-Path $dataDir), (Normalize-Path $script:DataDir), [StringComparison]::OrdinalIgnoreCase)) {
         throw "Refusing listener whose data_directory is not this cluster: $dataDir"
     }
 }
@@ -417,6 +447,12 @@ function Start-ServiceProcess {
         }
     }
     $script:HostProcesses.Add($process)
+    $script:HostRecords[$process.Id] = [ordered]@{
+        pid = $process.Id
+        path = (Get-ProcessPathSafe $process)
+        startTimeUtc = $process.StartTime.ToUniversalTime()
+        name = $Name
+    }
     return $process
 }
 
@@ -436,36 +472,57 @@ function Wait-HttpsStatus {
 }
 
 function Stop-HostProcesses {
-    foreach ($process in $script:HostProcesses) {
-        if (-not $process.HasExited) {
-            try { Stop-Process -Id $process.Id -Force -ErrorAction Stop } catch { }
+    foreach ($record in @($script:HostRecords.Values)) {
+        $process = Get-Process -Id $record.pid -ErrorAction SilentlyContinue
+        if ($null -eq $process) { continue }
+        if (-not [string]::Equals((Get-ProcessPathSafe $process), $record.path, [StringComparison]::OrdinalIgnoreCase) -or
+            $process.StartTime.ToUniversalTime() -ne $record.startTimeUtc) {
+            throw "Refusing to stop PID $($record.pid): path/start-time no longer match this B1 run."
         }
+        try { Stop-Process -Id $record.pid -Force -ErrorAction Stop } catch { throw }
     }
     Start-Sleep -Milliseconds 500
 }
 
 function Remove-TreeLongPath([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path)) { return }
-    $prefixed = '\\?\' + [System.IO.Path]::GetFullPath($Path)
+    $resolved = [System.IO.Path]::GetFullPath($Path)
+    if (-not $resolved.StartsWith($script:ArtifactsRoot + [System.IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to delete a path outside this workspace's artifacts: $resolved"
+    }
+    $prefixed = '\\?\' + $resolved
     [System.IO.Directory]::Delete($prefixed, $true)
 }
 
 function Stop-And-RemoveCluster {
     if (-not (Test-Path -LiteralPath $Root)) { return }
-    Assert-OwnedCluster | Out-Null
+    $marker = Assert-OwnedCluster
+    if ($script:ClusterStarted -and (Test-Path -LiteralPath (Join-Path $script:DataDir 'postmaster.pid'))) {
+        $null = Assert-OwnedClusterProcess
+    }
     Stop-HostProcesses
     if ($script:ClusterStarted) {
         $log = Join-Path $LogDir 'pg-stop.log'
-        $null = Invoke-Native -FilePath $script:PgCtl -Arguments @('-D', $script:DataDir, '-m', 'immediate', '-w', '-t', '30', 'stop') -LogPath $log -TimeoutSeconds 60
+        $stopCode = Invoke-Native -FilePath $script:PgCtl -Arguments @(
+            '-D', $script:DataDir, '-m', 'immediate', '-w', '-t', '30', 'stop'
+        ) -LogPath $log -TimeoutSeconds 60
+        if ($stopCode -ne 0) { throw "pg_ctl stop failed with exit $stopCode." }
     }
     foreach ($value in @($PgPort, $LobbyPort, $TablePort)) {
         if (Test-PortInUse -Value $value) {
-            Write-Step "cleanup refused: port $value still has a listener"
-            return
+            throw "Cleanup failed: port $value still has a listener."
         }
     }
+    if (Test-Path -LiteralPath (Join-Path $script:DataDir 'postmaster.pid')) {
+        $still = Get-Content -LiteralPath (Join-Path $script:DataDir 'postmaster.pid') -ErrorAction SilentlyContinue
+        if ($still -and (Get-Process -Id ([int]$still[0]) -ErrorAction SilentlyContinue)) {
+            throw "Cleanup failed: postmaster PID $($still[0]) is still running."
+        }
+    }
+    if ($marker.runId -ne $script:RunId) { throw "Cleanup failed: marker runId changed." }
     Remove-TreeLongPath $Root
-    Write-Step "ownership-verified cluster removed: $Root"
+    if (Test-Path -LiteralPath $Root) { throw "Cleanup failed: $Root still exists after removal." }
+    Add-Stage 'cleanup' 'PASS' 0 "ownership-verified cluster removed; ports free; no postmaster"
 }
 
 function Get-XmlCounts([string]$Path) {
@@ -503,20 +560,94 @@ function Invoke-TestRun {
 }
 
 function Write-Manifest {
-    $files = @(Get-ChildItem -LiteralPath $LogDir -Recurse -File |
-        Where-Object { $_.FullName -notlike '*\tmp\*' } |
-        Sort-Object FullName)
+    $manifestPath = Join-Path $LogDir 'manifest.sha256.json'
+    $manifestHashPath = Join-Path $LogDir 'manifest.sha256.txt'
+    $auditPath = Join-Path $LogDir 'manifest-audit.json'
+    $excludedNames = @('manifest.sha256.json', 'manifest.sha256.txt', 'manifest-audit.json')
     $entries = New-Object System.Collections.Generic.List[object]
+    $files = @(Get-ChildItem -LiteralPath $LogDir -Recurse -File |
+        Where-Object {
+            $_.FullName -notlike '*\tmp\*' -and
+            $excludedNames -notcontains $_.Name
+        } | Sort-Object FullName)
     foreach ($file in $files) {
         $entries.Add([ordered]@{
+            kind = 'log'
             path = $file.FullName.Substring($LogDir.Length + 1)
             length = $file.Length
             sha256 = Get-Sha256 $file.FullName
         })
     }
-    $manifestPath = Join-Path $LogDir 'manifest.sha256.json'
+
+    $externalInputs = @(
+        (Join-Path $script:RepoRoot 'tools\ci\verify-v5-https-admission.ps1'),
+        (Join-Path $script:RepoRoot 'tools\ci\verify-v5-durable-table-host.ps1'),
+        (Join-Path $script:RepoRoot 'dotnet\src\Mahjong.LobbyService\Migrations\001_lobby.sql'),
+        (Join-Path $script:RepoRoot 'dotnet\src\Mahjong.Infrastructure\Migrations\001_table_store.sql'),
+        $script:WorkerDll,
+        $script:TestsDll,
+        $script:TableDll,
+        $script:LobbyDll,
+        $script:AcceptedWorkerDll
+    )
+    $b1Roots = @(
+        (Join-Path $script:RepoRoot 'dotnet\tests\Mahjong.P5.4b.B1.HttpsAdmission.Worker'),
+        (Join-Path $script:RepoRoot 'dotnet\tests\Mahjong.P5.4b.B1.HttpsAdmission.Tests')
+    )
+    foreach ($root in $b1Roots) {
+        foreach ($file in @(Get-ChildItem -LiteralPath $root -Recurse -File |
+            Where-Object { $_.FullName -notlike '*\bin\*' -and $_.FullName -notlike '*\obj\*' })) {
+            $externalInputs += $file.FullName
+        }
+    }
+    foreach ($path in ($externalInputs | Select-Object -Unique)) {
+        if (-not (Test-Path -LiteralPath $path)) { throw "Manifest source/output missing: $path" }
+        $full = [System.IO.Path]::GetFullPath($path)
+        $relative = $full.Substring($script:RepoRoot.Length + 1)
+        $entries.Add([ordered]@{
+            kind = 'repo'
+            path = $relative.Replace('\', '/')
+            length = (Get-Item -LiteralPath $full).Length
+            sha256 = Get-Sha256 $full
+        })
+    }
+
     $entries | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $manifestPath -Encoding utf8
-    return [ordered]@{ count = $entries.Count; sha256 = (Get-Sha256 $manifestPath); path = $manifestPath }
+    $manifestHash = Get-Sha256 $manifestPath
+    Set-Content -LiteralPath $manifestHashPath -Value $manifestHash -Encoding ascii
+
+    $audit = [ordered]@{
+        manifestSha256 = $manifestHash
+        count = $entries.Count
+        missing = @()
+        mismatched = @()
+    }
+    foreach ($entry in $entries) {
+        $path = if ($entry.kind -eq 'log') {
+            Join-Path $LogDir $entry.path
+        } else {
+            Join-Path $script:RepoRoot ($entry.path.Replace('/', '\'))
+        }
+        if (-not (Test-Path -LiteralPath $path)) {
+            $audit.missing += $entry.path
+            continue
+        }
+        $actual = Get-Sha256 $path
+        if ($actual -ne $entry.sha256 -or (Get-Item -LiteralPath $path).Length -ne $entry.length) {
+            $audit.mismatched += $entry.path
+        }
+    }
+    $audit | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $auditPath -Encoding utf8
+    if ($audit.missing.Count -ne 0 -or $audit.mismatched.Count -ne 0) {
+        throw "Manifest verification failed: missing=$($audit.missing.Count) mismatch=$($audit.mismatched.Count)"
+    }
+    return [ordered]@{
+        count = $entries.Count
+        sha256 = $manifestHash
+        path = $manifestPath
+        audit = $auditPath
+        verified = $true
+    }
 }
 
 $exit = 0
@@ -555,6 +686,7 @@ try {
     $testsProject = Join-Path $script:RepoRoot 'dotnet\tests\Mahjong.P5.4b.B1.HttpsAdmission.Tests\Mahjong.P5.4b.B1.HttpsAdmission.Tests.csproj'
     $script:WorkerDll = Join-Path $script:RepoRoot 'dotnet\tests\Mahjong.P5.4b.B1.HttpsAdmission.Worker\bin\Release\net8.0\Mahjong.P5.4b.B1.HttpsAdmission.Worker.dll'
     $testsDll = Join-Path $script:RepoRoot 'dotnet\tests\Mahjong.P5.4b.B1.HttpsAdmission.Tests\bin\Release\net8.0\Mahjong.P5.4b.B1.HttpsAdmission.Tests.dll'
+    $script:TestsDll = $testsDll
     $buildIndex = 0
     foreach ($pair in @(@($workerProject, $script:WorkerDll), @($testsProject, $testsDll))) {
         $buildIndex++
@@ -569,11 +701,12 @@ try {
     Invoke-TestRun -Name 'tests-b1' -Dll $testsDll
 
     $acceptedWorker = Join-Path $script:RepoRoot 'dotnet\tests\Mahjong.TableService.PersistenceWorker\bin\Release\net8.0\Mahjong.TableService.PersistenceWorker.dll'
-    if (-not (Test-Path -LiteralPath $acceptedWorker)) {
-        $acceptedProject = Join-Path $script:RepoRoot 'dotnet\tests\Mahjong.TableService.PersistenceWorker\Mahjong.TableService.PersistenceWorker.csproj'
-        $code = Invoke-Native -FilePath $DotnetPath -Arguments @('build', $acceptedProject, '-c', 'Release', '--nologo', '-v:minimal', '-nr:false') -LogPath (Join-Path $LogDir 'build-accepted-worker.log') -TimeoutSeconds 420
-        if ($code -ne 0) { throw "The accepted certgen/keygen worker did not build (exit $code)." }
-    }
+    $acceptedProject = Join-Path $script:RepoRoot 'dotnet\tests\Mahjong.TableService.PersistenceWorker\Mahjong.TableService.PersistenceWorker.csproj'
+    $code = Invoke-Native -FilePath $DotnetPath -Arguments @('build', $acceptedProject, '-c', 'Release', '--no-incremental', '--nologo', '-v:minimal', '-nr:false') -LogPath (Join-Path $LogDir 'build-accepted-worker.log') -TimeoutSeconds 420
+    if ($code -ne 0) { throw "The accepted certgen/keygen worker did not build fresh (exit $code)." }
+    if (-not (Test-Path -LiteralPath $acceptedWorker)) { throw 'The accepted certgen/keygen worker output is missing.' }
+    $script:AcceptedWorkerDll = $acceptedWorker
+    Add-Stage 'fresh-build-accepted-helper' 'PASS' 0 'accepted keygen/certgen helper rebuilt fresh from frozen source; no A long chain executed'
     $keysDir = Join-Path $Root 'material\keys'
     $tlsDir = Join-Path $Root 'material\tls'
     $code = Invoke-Native -FilePath $DotnetPath -Arguments @($acceptedWorker, 'keygen', '--dir', $keysDir) -LogPath (Join-Path $LogDir 'keygen.log') -TimeoutSeconds 60
@@ -585,6 +718,8 @@ try {
 
     $lobbyDll = Join-Path $script:RepoRoot 'dotnet\src\Mahjong.LobbyService\bin\Release\net8.0\Mahjong.LobbyService.dll'
     $tableDll = Join-Path $script:RepoRoot 'dotnet\src\Mahjong.TableService\bin\Release\net8.0\Mahjong.TableService.dll'
+    $script:LobbyDll = $lobbyDll
+    $script:TableDll = $tableDll
     $lobbyProject = Join-Path $script:RepoRoot 'dotnet\src\Mahjong.LobbyService\Mahjong.LobbyService.csproj'
     $tableProject = Join-Path $script:RepoRoot 'dotnet\src\Mahjong.TableService\Mahjong.TableService.csproj'
     foreach ($pair in @(@($lobbyProject, $lobbyDll), @($tableProject, $tableDll))) {
@@ -637,9 +772,9 @@ try {
         TABLESERVICE_TLS_PFX = (Join-Path $tlsDir 'leaf.pfx')
         TABLESERVICE_TLS_PFX_PASSWORD = ''
         TABLESERVICE_LEASE_TTL_SECONDS = '5'
-        TABLESERVICE_HEARTBEAT_INTERVAL_MS = '5000'
+        TABLESERVICE_HEARTBEAT_INTERVAL_MS = '10000'
         TABLESERVICE_IDLE_DEAD_MS = '120000'
-        TABLESERVICE_ROOM_TICK_INTERVAL_MS = '250'
+        TABLESERVICE_ROOM_TICK_INTERVAL_MS = '500'
         TABLESERVICE_HANDSHAKE_TIMEOUT_MS = '5000'
     }
     Start-Sleep -Seconds 3
@@ -650,7 +785,7 @@ try {
 
     $suiteOut = Join-Path $LogDir 'suite.json'
     $secretsDir = Join-Path $Root 'material\guest-secrets'
-    $outboxRoot = Join-Path $LogDir 'outbox'
+    $outboxRoot = Join-Path $Root 'material\outbox'
     $crashOut = Join-Path $LogDir 'crash.json'
     $crashStarted = Join-Path $LogDir 'crash-started.json'
     $recoverOut = Join-Path $LogDir 'recover.json'
@@ -695,11 +830,77 @@ try {
     $lobbyAssignments = Get-PgScalar -Database $script:LobbyDb -User 'b1_observer' -Sql "SELECT count(*) FROM lobby.assignment WHERE room_id='$room'"
     $lobbyTickets = Get-PgScalar -Database $script:LobbyDb -User 'b1_observer' -Sql "SELECT count(*) FROM lobby.table_ticket WHERE room_id='$room'"
     $lobbyConsumed = Get-PgScalar -Database $script:LobbyDb -User 'b1_observer' -Sql "SELECT count(*) FROM lobby.table_ticket_consumption WHERE room_id='$room'"
-    $dbFacts = [ordered]@{
-        room = $room
+
+    $normalId = [string]$script:Suite.NormalRequestId
+    if ([string]::IsNullOrEmpty($normalId)) { throw 'The suite did not record the normal request identity.' }
+    $normalCount = [int](Get-PgScalar -Database $script:TableDb -User 'b1_observer' -Sql "SELECT count(*) FROM table_store.request_receipt WHERE room_id='$room' AND request_id='$normalId'")
+    $normalStatus = Get-PgScalar -Database $script:TableDb -User 'b1_observer' -Sql "SELECT status FROM table_store.request_receipt WHERE room_id='$room' AND request_id='$normalId'"
+    if ($normalCount -ne 1 -or $normalStatus -ne 'APPLIED') {
+        throw "Normal request fact mismatch: count=$normalCount status=$normalStatus"
+    }
+
+    $crashId = [string]$script:Suite.CrashRequestId
+    $crashCount = 0
+    $crashStatus = ''
+    if (-not [string]::IsNullOrEmpty($crashId)) {
+        $crashCount = [int](Get-PgScalar -Database $script:TableDb -User 'b1_observer' -Sql "SELECT count(*) FROM table_store.request_receipt WHERE room_id='$room' AND request_id='$crashId'")
+        $crashStatus = Get-PgScalar -Database $script:TableDb -User 'b1_observer' -Sql "SELECT status FROM table_store.request_receipt WHERE room_id='$room' AND request_id='$crashId'"
+        if ($crashCount -ne 1 -or $crashStatus -ne 'APPLIED') {
+            throw "Crash request fact mismatch: count=$crashCount status=$crashStatus"
+        }
+    }
+    elseif (-not [bool]$script:Suite.Blocked) {
+        throw 'A non-blocked suite has no crash request identity.'
+    }
+
+    $negativeAudit = New-Object System.Collections.Generic.List[object]
+    foreach ($fact in @($script:Suite.NegativeFacts)) {
+        $where = "room_id='$($fact.RoomId)'"
+        if (-not [string]::IsNullOrEmpty([string]$fact.RequestId)) {
+            $where += " AND request_id='$($fact.RequestId)'"
+        }
+        $count = [int](Get-PgScalar -Database $script:TableDb -User 'b1_observer' -Sql "SELECT count(*) FROM table_store.request_receipt WHERE $where")
+        $status = Get-PgScalar -Database $script:TableDb -User 'b1_observer' -Sql "SELECT coalesce(max(status),'') FROM table_store.request_receipt WHERE $where"
+        $digest = Get-PgScalar -Database $script:TableDb -User 'b1_observer' -Sql "SELECT coalesce(encode((SELECT canonical_payload_digest FROM table_store.request_receipt WHERE $where LIMIT 1),'hex'),'')"
+        $factOk = $count -eq [int]$fact.ExpectedReceiptCount
+        if ($fact.ExpectedReceiptCount -gt 0) {
+            $factOk = $factOk -and $status -eq [string]$fact.ExpectedStatus
+            if (-not [string]::IsNullOrEmpty([string]$fact.ExpectedCanonicalDigestHex)) {
+                $factOk = $factOk -and ($digest.ToLowerInvariant() -eq ([string]$fact.ExpectedCanonicalDigestHex).ToLowerInvariant())
+            }
+        }
+        else {
+            $factOk = $factOk -and $status -eq ''
+        }
+        $negativeAudit.Add([ordered]@{
+            label = $fact.Label
+            roomId = $fact.RoomId
+            requestId = $fact.RequestId
+            expectedCount = $fact.ExpectedReceiptCount
+            actualCount = $count
+            expectedStatus = $fact.ExpectedStatus
+            actualStatus = $status
+            expectedDigest = $fact.ExpectedCanonicalDigestHex
+            actualDigest = $digest
+            ok = $factOk
+        })
+        if (-not $factOk) {
+            throw "Negative fact mismatch for $($fact.Label): count=$count status=$status digest=$digest"
+        }
+    }
+    $negativeAudit | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $LogDir 'negative-facts-audit.json') -Encoding utf8
+
+    $negativeFactsArray = @($negativeAudit | ForEach-Object { $_ })
+    $dbFacts = [pscustomobject][ordered]@{
+        room = [string]$room
         tableStateVersion = [int]$stateVersion
         tableEventRows = [int]$eventCount
         appliedReceipts = [int]$applied
+        normalRequestCount = [int]$normalCount
+        normalRequestStatus = [string]$normalStatus
+        crashRequestCount = [int]$crashCount
+        crashRequestStatus = [string]$crashStatus
+        negativeFacts = $negativeFactsArray
         scopes = [int]$scopes
         settlementOutboxRows = [int]$outbox
         lobbyAccounts = [int]$lobbyAccounts
@@ -708,12 +909,12 @@ try {
         lobbyTicketConsumptionRows = [int]$lobbyConsumed
         note = 'Lobby consumption is not wired by the accepted P5.1/P5.3 boundary; TableService owns the in-memory one-time jti registry.'
     }
-    $dbFacts | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $LogDir 'db-facts.json') -Encoding utf8
-    if ([int]$stateVersion -lt 1 -or [int]$applied -ne 1 -or [int]$eventCount -lt 1) {
-        throw "PG facts do not match the one applied action: stateVersion=$stateVersion applied=$applied events=$eventCount"
+    $dbFacts | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $LogDir 'db-facts.json') -Encoding utf8
+    if ([int]$stateVersion -lt 1 -or [int]$eventCount -lt 1) {
+        throw "PG facts do not match the committed room: stateVersion=$stateVersion events=$eventCount"
     }
     if ([int]$outbox -ne 0) { throw "Unexpected settlement outbox rows: $outbox" }
-    Add-Stage 'pg-facts' 'PASS' 0 "stateVersion=$stateVersion (>=1; later versions are authoritative deadline auto-play) events=$eventCount appliedReceipts=$applied scopes=$scopes settlementOutbox=$outbox lobbyAssignments=$lobbyAssignments lobbyTickets=$lobbyTickets lobbyConsumption=$lobbyConsumed"
+    Add-Stage 'pg-facts' 'PASS' 0 "stateVersion=$stateVersion events=$eventCount normal=$normalCount/$normalStatus crash=$crashCount/$crashStatus negFacts=$($negativeAudit.Count) settlementOutbox=$outbox lobbyConsumption=$lobbyConsumed"
 
     $suiteSummary = [ordered]@{
         blocked = [bool]$script:Suite.Blocked
@@ -732,6 +933,11 @@ try {
         rawReceiptQueryCommandVersion = [int]$script:Suite.RawReceiptQueryCommandVersion
         immediateReissueRejected = [bool]$script:Suite.ImmediateReissueRejected
         immediateReissueDetail = [string]$script:Suite.ImmediateReissueDetail
+        normalRequestId = [string]$script:Suite.NormalRequestId
+        crashRequestId = [string]$script:Suite.CrashRequestId
+        recoveredProjectionConfirmed = [bool]$script:Suite.RecoveredProjectionConfirmed
+        httpDifferentKindConflict = [bool]$script:Suite.HttpDifferentKindConflict
+        negativeFactCount = @($script:Suite.NegativeFacts).Count
         negativeResults = @($script:Suite.NegativeResults)
         assertions = @($script:Suite.Assertions)
     }
@@ -749,24 +955,44 @@ catch {
     Add-Stage 'exception' 'FAIL' $exit $message
 }
 finally {
-    try { Stop-And-RemoveCluster } catch { Write-Step ('cleanup error: ' + $_.Exception.Message) }
+    $cleanupOk = $true
     try {
-        $manifest = Write-Manifest
-        $summary = [ordered]@{
-            exitCode = $exit
-            status = $(if ($exit -eq 0) { 'PASS' } elseif ($exit -eq 2) { 'BLOCKED' } else { 'FAIL' })
-            secretMaterialRoot = (Join-Path $Root 'material')
-            secretMaterialRemoved = (-not (Test-Path -LiteralPath (Join-Path $Root 'material')))
-            stages = $script:Stages
-            suite = $script:Suite
-            manifest = $manifest
-        }
-        $summary | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $LogDir 'wrapper-summary.json') -Encoding utf8
-        Write-Step ("manifest count={0} sha256={1}" -f $manifest.count, $manifest.sha256)
+        Stop-And-RemoveCluster
     }
     catch {
-        Write-Step ('manifest error: ' + $_.Exception.Message)
-        if ($exit -eq 0) { $exit = 1 }
+        $cleanupOk = $false
+        $exit = 1
+        Write-Step ('cleanup FAILED: ' + $_.Exception.Message)
+        Add-Stage 'cleanup' 'FAIL' 1 $_.Exception.Message
+    }
+    $secretMaterialRemoved = -not (Test-Path -LiteralPath (Join-Path $Root 'material'))
+    if (-not $secretMaterialRemoved) {
+        $exit = 1
+        Write-Step 'secret material still exists after cleanup'
+    }
+    $summary = [ordered]@{
+        exitCode = $exit
+        status = $(if ($exit -eq 0) { 'PASS' } elseif ($exit -eq 2) { 'BLOCKED' } else { 'FAIL' })
+        cleanupOk = $cleanupOk
+        secretMaterialRoot = (Join-Path $Root 'material')
+        secretMaterialRemoved = $secretMaterialRemoved
+        stages = $script:Stages
+        suite = $script:Suite
+    }
+    $summary | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $LogDir 'wrapper-summary.json') -Encoding utf8
+    try {
+        $manifest = Write-Manifest
+        Write-Host ("manifest count={0} sha256={1}" -f $manifest.count, $manifest.sha256)
+    }
+    catch {
+        $exit = 1
+        Write-Host ('manifest error: ' + $_.Exception.Message)
+        $summary.exitCode = 1
+        $summary.status = 'FAIL'
+        $summary.cleanupOk = $cleanupOk
+        $summary.secretMaterialRemoved = $secretMaterialRemoved
+        $summary | Add-Member -NotePropertyName manifestError -NotePropertyValue $_.Exception.Message
+        $summary | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $LogDir 'wrapper-summary.json') -Encoding utf8
     }
 }
 

@@ -30,6 +30,7 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
         private RoomUpdate? _latestRoom;
         private long _baselineCount;
         private long _lastBaselineVersion;
+        private Mahjong.Contracts.StreamCursor? _confirmedCursor;
         private TableReceiptResolvedEventArgs? _lastResolution;
 
         public ClientHandle(
@@ -68,6 +69,17 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
         public TableConnectionState State => _operations.State;
 
         public TableSessionBinding? Binding => _operations.Binding;
+
+        public Mahjong.Contracts.StreamCursor? ConfirmedCursor
+        {
+            get
+            {
+                lock (_snapshotGate)
+                {
+                    return _confirmedCursor;
+                }
+            }
+        }
 
         public string? LastError => _operations.LastError;
 
@@ -143,10 +155,20 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                 new TableSessionOpenRequest(ticket, "p54b-b1-worker"),
                 cancellationToken).ConfigureAwait(false);
             _pumpTask = Task.Run(() => PumpLoopAsync(_pumpCancellation.Token), CancellationToken.None);
-            await WaitForAsync(
-                () => _operations.State == TableConnectionState.Ready,
-                timeout,
-                "the real Client baseline did not reach Ready").ConfigureAwait(false);
+            try
+            {
+                await WaitForAsync(
+                    () => _operations.State == TableConnectionState.Ready,
+                    timeout,
+                    "the real Client baseline did not reach Ready").ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                throw new TimeoutException(
+                    "The real Client baseline did not reach Ready (state=" + State +
+                    ", lastError=" + Program.Redact(LastError) +
+                    ", inbound=" + Loss.InboundTrace + ").");
+            }
         }
 
         private async Task PumpLoopAsync(CancellationToken cancellationToken)
@@ -239,6 +261,7 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                 if (args.IsFullBaseline)
                 {
                     _baselineCount++;
+                    _confirmedCursor = args.Cursor;
                     if (args.PlayerSnapshot != null)
                     {
                         _lastBaselineVersion = (long)args.PlayerSnapshot.StateVersion;
