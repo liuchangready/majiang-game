@@ -115,28 +115,72 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                 return string.Empty;
             }
 
-            // Diagnostic output is a whitelist, not a sanitizer that tries to keep
-            // a credential with a changed prefix. Any token/PEM/credential-shaped
-            // input is replaced as a whole; ordinary short status text is kept.
-            string value = message!;
-            if (LooksSensitive(value))
+            // A diagnostic whitelist, not a blacklist and not a sanitizer.
+            // Arbitrary exception text, JSON, escaped keys, tokens and any
+            // unknown structure are not echoed at all. Only exact stable codes,
+            // status words, exception type names, HTTP/stage forms and simple
+            // key=value diagnostics with whitelisted keys survive.
+            string value = message.Trim();
+            if (IsSafeDiagnostic(value))
             {
-                return "[redacted-sensitive]";
+                return value;
             }
 
-            return value.Length > 300 ? value.Substring(0, 300) : value;
+            return "[redacted]";
         }
 
-        private static bool LooksSensitive(string value)
+        private static readonly HashSet<string> SafeCodes = new HashSet<string>(StringComparer.Ordinal)
         {
-            return Regex.IsMatch(value, @"-----BEGIN [^-]+-----", RegexOptions.IgnoreCase)
-                   || Regex.IsMatch(value, @"(?i)\bBearer\s+\S+")
-                   || Regex.IsMatch(value, @"[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")
-                   || Regex.IsMatch(value, @"(?i)[""']?(sessionToken|bootstrapSecret|authorization|private[_-]?key|password|secret|token|credential)[""']?\s*[:=]")
-                   || Regex.IsMatch(value, @"eyJ[A-Za-z0-9_-]{8,}")
-                   || Regex.IsMatch(value, @"[A-Za-z0-9+/]{20,}={0,2}")
-                   || Regex.IsMatch(value, @"[A-Za-z0-9_-]{16,}")
-                   || Regex.IsMatch(value, @"[A-Fa-f0-9]{40,}");
+            "PASS", "FAIL", "BLOCKED", "APPLIED", "REJECTED", "RECORDED", "UNKNOWN", "NOT_RUN",
+            "CLIENT_RECEIPT_SCOPE_MISSING", "REQUEST_ID_CONFLICT", "SCOPE_MISMATCH",
+            "SCOPE_ROLE_NOT_AUTHORIZED", "INVALID_TOKEN", "PROTOCOL_VIOLATION",
+            "WS_CLOSE_4401", "WS_CLOSE_4403", "WS_CLOSE_4404", "WS_CLOSE_4503"
+        };
+
+        private static readonly HashSet<string> SafeExceptionTypes = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "ArgumentException", "InvalidOperationException", "IOException", "TimeoutException",
+            "OperationCanceledException", "HttpRequestException", "WebSocketException",
+            "TaskCanceledException", "ObjectDisposedException", "ProbeRejectedException"
+        };
+
+        private static bool IsSafeDiagnostic(string value)
+        {
+            if (value.Length == 0 || value.Length > 200)
+            {
+                return false;
+            }
+
+            // Any structure, quoting, escaping, whitespace-bearing free text or
+            // credential keyword is untrusted by default.
+            if (value.IndexOfAny(new[] { '{', '}', '[', ']', '"', '\'', '\\', '\r', '\n', '\t' }) >= 0)
+            {
+                return false;
+            }
+
+            if (Regex.IsMatch(value, @"(?i)\b(token|secret|password|authorization|session|bootstrap|credential|private[_-]?key)\b"))
+            {
+                return false;
+            }
+
+            if (SafeCodes.Contains(value) || SafeExceptionTypes.Contains(value))
+            {
+                return true;
+            }
+
+            if (Regex.IsMatch(value, @"^HTTP [0-9]{3}$") ||
+                Regex.IsMatch(value, @"^stage [a-z0-9-]+$"))
+            {
+                return true;
+            }
+
+            // Structured diagnostic fields we explicitly emit ourselves.
+            if (Regex.IsMatch(value, @"^(code|status|stage|reason|state|room|seat|role|version|count)=[A-Za-z0-9_.:/-]{0,80}$"))
+            {
+                return true;
+            }
+
+            return Regex.IsMatch(value, @"^(code|status|stage)=[A-Za-z0-9_.:/-]{0,80}(;(code|status|stage)=[A-Za-z0-9_.:/-]{0,80}){0,3}$");
         }
 
         public sealed class Options

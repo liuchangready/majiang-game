@@ -340,6 +340,7 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                     spectatorClient.LatestPlayer == null &&
                     spectatorClient.LatestPublic != null;
                 Require(suite.PrivateStreamsIsolated, "The player/spectator private streams are not isolated.");
+                RequirePrivacy(p0Client, p1Client, p2Client, p3Client, spectatorClient);
                 suite.Assertions.Add("wss_baseline_and_stream_identity");
 
                 (PlayerSnapshot normalSnapshot, WireDecisionView normalDecision, WireLegalActionView normalDiscard) =
@@ -369,7 +370,7 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                 {
                     suite.Blocked = true;
                     suite.BlockerCode = blocked.Code;
-                    suite.BlockerDetail = Program.Redact(blocked.Message);
+                    suite.BlockerDetail = blocked.Code;
                     IReadOnlyList<ReceiptLossChannel.ReceiptObservation> observations =
                         p0Client.Loss.ObservedReceipts;
                     ReceiptLossChannel.ReceiptObservation observed = observations[observations.Count - 1];
@@ -407,6 +408,7 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                         normalScopeId,
                         normalRequestId,
                         tlsDirectory).ConfigureAwait(false);
+                    RequirePrivacy(p0Client, p1Client, p2Client, p3Client, spectatorClient);
                     suite.Assertions.Add("server_receipt_delivered_but_client_did_not_resolve");
                     Program.WriteJson(outputPath, suite);
                     Console.Error.WriteLine(
@@ -449,6 +451,7 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                     normalResolved.Resolution.CommandVersion!.Value.Value,
                     TimeSpan.FromSeconds(20)).ConfigureAwait(false);
                 Require(suite.AllClientsSawNormalAction, "Not every real client observed the normal action.");
+                RequirePrivacy(p0Client, p2Client, p3Client, spectatorClient);
                 suite.Assertions.Add("real_action_applied_and_exact_replay_idempotent");
 
                 GuestState crashGuest = CloneSecret(p1);
@@ -758,148 +761,32 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
 
         private static bool PublicProjectionIsSafe(ClientHandle client)
         {
-            PublicSnapshot? publicSnapshot = client.LatestPublic;
-            if (publicSnapshot != null)
-            {
-                if (!FieldsAllowed(publicSnapshot, 1, 2, 3, 4, 5, 6, 7, 8) ||
-                    !PublicMatchViewSafe(publicSnapshot.View) ||
-                    !string.Equals(publicSnapshot.SessionId, client.Binding?.SessionId.Value, StringComparison.Ordinal))
-                {
-                    return false;
-                }
-            }
-
-            PlayerSnapshot? player = client.LatestPlayer;
-            if (player != null)
-            {
-                if (player.PrivateView == null ||
-                    player.PrivateView.Seat != client.Seat ||
-                    !PublicMatchViewSafe(player.PublicView) ||
-                    !string.Equals(player.SessionId, client.Binding?.SessionId.Value, StringComparison.Ordinal))
-                {
-                    return false;
-                }
-            }
-
-            return VisibleEventsSafe(client);
-        }
-
-        private static bool PublicMatchViewSafe(WirePublicMatchView? view)
-        {
-            if (view == null)
-            {
-                return true;
-            }
-
-            if (!FieldsAllowed(view, 1, 2, 3, 4, 5, 6) || !PublicBoardSafe(view.Board))
+            if (client.PrivacyViolated)
             {
                 return false;
             }
 
-            foreach (PublicEventEnvelope settlement in view.SettlementEvents)
-            {
-                if (settlement.Visibility == EventVisibility.Private ||
-                    settlement.Visibility == EventVisibility.Unspecified)
-                {
-                    return false;
-                }
-            }
-
-            return true;
+            TableSessionBinding? binding = client.Binding;
+            return PublicProjectionValidator.Validate(
+                binding?.SessionId.Value ?? string.Empty,
+                binding?.RoomId.Value ?? string.Empty,
+                client.Role,
+                client.Seat,
+                client.LatestPlayer,
+                client.LatestPublic,
+                client.LastVisibleEvents,
+                out _);
         }
 
-        private static bool PublicBoardSafe(WirePublicBoardView? board)
+        private static void RequirePrivacy(params ClientHandle[] clients)
         {
-            if (board == null)
+            foreach (ClientHandle client in clients)
             {
-                return true;
+                Require(!client.PrivacyViolated,
+                    "A public projection/event batch violated privacy: " + Program.Redact(client.PrivacyReason));
+                Require(client.PrivacyBatchesObserved > 0,
+                    "No public projection/event batch was privacy-audited for a real client.");
             }
-
-            if (!FieldsAllowed(board, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13))
-            {
-                return false;
-            }
-
-            var seats = new HashSet<int>();
-            foreach (WirePlayerPublicView player in board.Players)
-            {
-                if (!FieldsAllowed(player, 1, 2, 3, 4, 5, 13) ||
-                    player.Seat < 0 || player.Seat > 3 || !seats.Add(player.Seat))
-                {
-                    return false;
-                }
-
-                foreach (WireMeldView meld in player.Melds)
-                {
-                    // A closed kan is identity-free on the public stream:
-                    // it must be a ConcealedMeldView, never a MeldView carrying
-                    // four physical tile IDs.
-                    if (!FieldsAllowed(meld, 1, 2, 3, 4) ||
-                        meld.Type == MeldType.ClosedKan)
-                    {
-                        return false;
-                    }
-                }
-
-                foreach (WireConcealedMeldView concealed in player.ConcealedMelds)
-                {
-                    if (!FieldsAllowed(concealed, 1, 2, 3) ||
-                        concealed.Type != MeldType.ClosedKan ||
-                        concealed.TileCount != 4 ||
-                        concealed.FromSeat != -1)
-                    {
-                        return false;
-                    }
-                }
-
-                foreach (WireDiscardView discard in player.Discards)
-                {
-                    if (!FieldsAllowed(discard, 1, 2, 3, 4))
-                    {
-                        return false;
-                    }
-                }
-            }
-
-            return true;
-        }
-
-        private static bool VisibleEventsSafe(ClientHandle client)
-        {
-            foreach (TableVisibleEvent visible in client.LastVisibleEvents.Events)
-            {
-                if (visible.Visibility == ProtocolEventVisibility.Unspecified)
-                {
-                    return false;
-                }
-
-                if (visible.IsPrivate)
-                {
-                    if (client.Role != "PLAYER" || visible.OwnerSeat != client.Seat)
-                    {
-                        return false;
-                    }
-                }
-                else if (visible.OwnerSeat != -1)
-                {
-                    return false;
-                }
-            }
-
-            return true;
-        }
-
-        private static bool FieldsAllowed(IMessage message, params int[] allowed)
-        {
-            foreach (FieldDescriptor field in message.Descriptor.Fields.InFieldNumberOrder())
-            {
-                if (Array.IndexOf(allowed, field.FieldNumber) < 0)
-                {
-                    return false;
-                }
-            }
-
-            return true;
         }
 
         private static ClientHandle NewClient(

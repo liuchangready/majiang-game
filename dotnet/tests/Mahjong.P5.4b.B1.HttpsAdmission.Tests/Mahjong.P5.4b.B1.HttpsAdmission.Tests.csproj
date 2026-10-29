@@ -30,11 +30,10 @@
     <ProjectReference Include="..\..\src\Mahjong.Client\Mahjong.Client.csproj" />
     <ProjectReference Include="..\..\src\Mahjong.Contracts\Mahjong.Contracts.csproj" />
     <ProjectReference Include="..\..\src\Mahjong.Contracts.Wire\Mahjong.Contracts.Wire.csproj" />
+    <ProjectReference Include="..\Mahjong.P5.4b.B1.HttpsAdmission.Worker\Mahjong.P5.4b.B1.HttpsAdmission.Worker.csproj" />
   </ItemGroup>
 
   <ItemGroup>
-    <Compile Include="..\Mahjong.P5.4b.B1.HttpsAdmission.Worker\StrictRootTrust.cs" LinkBase="Shared" />
-    <Compile Include="..\Mahjong.P5.4b.B1.HttpsAdmission.Worker\ReceiptLossChannel.cs" LinkBase="Shared" />
   </ItemGroup>
 
 </Project>

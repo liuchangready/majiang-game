@@ -23,6 +23,7 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
         private readonly ReceiptLossChannel _loss;
         private readonly RealWssTableChannel _transport;
         private readonly CancellationTokenSource _pumpCancellation = new CancellationTokenSource();
+        private readonly PrivacyAuditState _privacyAudit = new PrivacyAuditState();
         private readonly object _snapshotGate = new object();
         private Task? _pumpTask;
         private PlayerSnapshot? _latestPlayer;
@@ -94,6 +95,12 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                 }
             }
         }
+
+        public bool PrivacyViolated => _privacyAudit.Violated;
+
+        public string? PrivacyReason => _privacyAudit.Reason;
+
+        public long PrivacyBatchesObserved => _privacyAudit.BatchesObserved;
 
         public long BaselineCount
         {
@@ -253,6 +260,19 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
 
         private void OnSnapshotChanged(object? sender, TableSnapshotChangedEventArgs args)
         {
+            TableSessionBinding? binding = _operations.Binding;
+            if (binding != null)
+            {
+                _privacyAudit.Observe(
+                    binding.SessionId.Value,
+                    binding.RoomId.Value,
+                    Role,
+                    Seat,
+                    args.PlayerSnapshot,
+                    args.PublicSnapshot,
+                    args.VisibleEventBatch);
+            }
+
             lock (_snapshotGate)
             {
                 if (args.PlayerSnapshot != null)
