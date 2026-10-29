@@ -1473,8 +1473,12 @@ namespace Mahjong.TableService
             }
 
             byte[] payloadBytes = envelope.Command.CanonicalPayload.ToByteArray();
-            var digest = TablePayloadSha256.Compute(payloadBytes);
-            string digestHex = TableCommandMapper.ToHexLowercase(digest);
+            // B1-BLOCKER-01 (second root cause): the frozen Client keys its durable outbox by
+            // Contract.CanonicalPayloadDigest (the domain-separated MJC1 idempotency digest),
+            // not by a bare SHA-256 of the bytes. The wire receipt must echo THAT digest or
+            // every APPLIED answer is resolved locally as a Conflict. The actor keeps its own
+            // raw TablePayloadSha256 for durable idempotency; this is the wire-facing value.
+            string wireDigestHex = CanonicalPayloadDigest.Compute(payloadBytes).ToHex();
 
             if (route is TableCommandRoute.Control control)
             {
@@ -1535,7 +1539,7 @@ namespace Mahjong.TableService
                 case TableOperationStatus.Accepted:
                 case TableOperationStatus.Replayed:
                 case TableOperationStatus.Rejected:
-                    Enqueue(BuildReceipt(envelope, TableCommandMapper.MapReceipt(result, digestHex)));
+                    Enqueue(BuildReceipt(envelope, TableCommandMapper.MapReceipt(result, wireDigestHex)));
                     break;
                 case TableOperationStatus.MailboxFull:
                     EnqueueError(ProtocolErrorCode.ServerBusy, "connection", "MAILBOX_FULL", retryable: true, retryAfterMs: 250);
@@ -1787,7 +1791,15 @@ namespace Mahjong.TableService
                     break;
             }
 
-            Enqueue(BuildEnvelope(MessageType.ReceiptLookup, wire, correlationId: envelope.CorrelationId));
+            // Echo the queried request id and correlation so the lookup answer keeps the
+            // caller's identity even when it concerns a HISTORICAL scope. Deliberately no
+            // Scope: the queried scope may be an old (possibly expired) admission scope, and
+            // attaching this connection's current scope here would forge the old scope's
+            // owner identity. The response carries the authoritative receipt payload only.
+            Envelope reply = BuildEnvelope(
+                MessageType.ReceiptLookup, wire, correlationId: envelope.CorrelationId);
+            reply.RequestId = requestId.Value;
+            Enqueue(reply);
         }
 
         /// <summary>
@@ -2492,7 +2504,30 @@ namespace Mahjong.TableService
         {
             Envelope reply = BuildEnvelope(MessageType.Receipt, receipt, correlationId: request.CorrelationId);
             reply.RequestId = request.RequestId;
+            // D-1-11 / B1-BLOCKER-01: the frozen Client resolves a receipt by the
+            // server-issued request scope, and drops any receipt whose envelope has no
+            // scope. Rebuild the scope from this connection's AUTHORITATIVE admission
+            // identity (the same server-issued scope the request was fenced against), never
+            // by aliasing the client's mutable request.Scope object. Account/role/room/times
+            // therefore cannot drift or be forged through the echoed envelope.
+            reply.Scope = BuildAuthoritativeScope(_identity!);
             return reply;
+        }
+
+        /// <summary>Builds a fresh wire scope from the connection's server-issued admission
+        /// identity. The envelope owns an independent object; no client-supplied or shared
+        /// mutable scope instance is exposed to the outbound queue.</summary>
+        private static Contracts.Wire.RequestScope BuildAuthoritativeScope(TableConnectionIdentity identity)
+        {
+            return new Contracts.Wire.RequestScope
+            {
+                ScopeId = identity.ScopeId,
+                AccountId = identity.AccountId,
+                Role = identity.IsPlayer ? Contracts.Wire.Role.Player : Contracts.Wire.Role.Spectator,
+                RoomId = identity.RoomId,
+                IssuedAtMs = (ulong)identity.ScopeIssuedAtMs,
+                ExpiresAtMs = (ulong)identity.ScopeExpiresAtMs
+            };
         }
 
         private Envelope BuildControlReceipt(Envelope request, Contracts.Wire.ReceiptStatus status, string reasonCode, ulong evaluatedStateVersion)

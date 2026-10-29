@@ -353,6 +353,630 @@ namespace Mahjong.TableService.Tests
         }
 
         [Fact]
+        public void SameAssignmentFreshJti_AfterRelease_IsAccepted_AndOldJtiStaysReplayProof()
+        {
+            TableServiceOptions options = Options();
+            var registry = new InMemoryTicketConsumptionRegistry(options);
+            TableTestSigner signer = new TableTestSigner("reissue-key");
+
+            ValidatedTableTicket old = SignValidated(
+                signer,
+                options,
+                new TableTestTicket(
+                    "acct-reissue",
+                    "room-reissue",
+                    TableAdmissionRole.Player,
+                    0,
+                    Jti: "jti-old-reissue",
+                    AssignmentId: "assignment-reissue"));
+            ValidatedTableTicket fresh = SignValidated(
+                signer,
+                options,
+                new TableTestTicket(
+                    "acct-reissue",
+                    "room-reissue",
+                    TableAdmissionRole.Player,
+                    0,
+                    Jti: "jti-fresh-reissue",
+                    AssignmentId: "assignment-reissue"));
+
+            Assert.Equal(TicketConsumptionStatus.Accepted, registry.Consume(old, "old-live", DateTimeOffset.UtcNow).Status);
+            Assert.Equal(TicketCommitStatus.Committed, registry.CommitAdmission("old-live").Status);
+            Assert.Equal(TableEvictionKind.None, registry.EvictOnWelcome("old-live").Kind);
+            registry.Release("old-live");
+            Assert.False(registry.TryGetSeatOwner("room-reissue", 0, out string? _));
+
+            // B1-BLOCKER-02: the SAME assignment with the SAME tuple and a FRESH jti is the
+            // legitimate reconnect path, even while the old assignment evidence is retained.
+            Assert.Equal(
+                TicketConsumptionStatus.Accepted,
+                registry.Consume(fresh, "fresh-live", DateTimeOffset.UtcNow).Status);
+            Assert.Equal(TicketCommitStatus.Committed, registry.CommitAdmission("fresh-live").Status);
+            Assert.Equal(TableEvictionKind.None, registry.EvictOnWelcome("fresh-live").Kind);
+            Assert.True(registry.TryGetSeatOwner("room-reissue", 0, out string? owner));
+            Assert.Equal("fresh-live", owner);
+
+            // Each consumed jti stays one-time until its own expiry + skew, including the
+            // disconnected old jti and the just-consumed fresh jti.
+            Assert.Equal(
+                TicketConsumptionStatus.DuplicateJti,
+                registry.Consume(old, "old-replay", DateTimeOffset.UtcNow).Status);
+            Assert.Equal(
+                TicketConsumptionStatus.DuplicateJti,
+                registry.Consume(fresh, "fresh-replay", DateTimeOffset.UtcNow).Status);
+        }
+
+        [Fact]
+        public void SameAssignmentFreshJti_WhileLive_WelcomesAndDisplacesOldOwner()
+        {
+            TableServiceOptions options = Options();
+            var registry = new InMemoryTicketConsumptionRegistry(options);
+            TableTestSigner signer = new TableTestSigner("handover-key");
+
+            ValidatedTableTicket old = SignValidated(
+                signer,
+                options,
+                new TableTestTicket(
+                    "acct-handover",
+                    "room-handover",
+                    TableAdmissionRole.Player,
+                    1,
+                    Jti: "jti-old-handover",
+                    AssignmentId: "assignment-handover"));
+            ValidatedTableTicket fresh = SignValidated(
+                signer,
+                options,
+                new TableTestTicket(
+                    "acct-handover",
+                    "room-handover",
+                    TableAdmissionRole.Player,
+                    1,
+                    Jti: "jti-fresh-handover",
+                    AssignmentId: "assignment-handover"));
+
+            Assert.Equal(TicketConsumptionStatus.Accepted, registry.Consume(old, "old-live", DateTimeOffset.UtcNow).Status);
+            Assert.Equal(TicketCommitStatus.Committed, registry.CommitAdmission("old-live").Status);
+            Assert.Equal(TableEvictionKind.None, registry.EvictOnWelcome("old-live").Kind);
+
+            Assert.Equal(
+                TicketConsumptionStatus.Accepted,
+                registry.Consume(fresh, "fresh-live", DateTimeOffset.UtcNow).Status);
+            TableTicketCommitOutcome commit = registry.CommitAdmission("fresh-live");
+            Assert.Equal(TicketCommitStatus.Committed, commit.Status);
+            Assert.Equal("old-live", commit.DisplacedSessionId);
+            TableEvictionDecision eviction = registry.EvictOnWelcome("fresh-live");
+            Assert.Equal(TableEvictionKind.DisplacedOther, eviction.Kind);
+            Assert.Equal("old-live", eviction.SessionId);
+
+            // Exactly one authoritative live owner remains; a late/duplicate welcome of the
+            // displaced connection cannot resurrect it.
+            Assert.True(registry.TryGetSeatOwner("room-handover", 1, out string? owner));
+            Assert.Equal("fresh-live", owner);
+            Assert.Equal(TableEvictionKind.None, registry.EvictOnWelcome("old-live").Kind);
+            (string OnlySession, bool OnlyWelcomed) = Assert.Single(SeatChain(registry, "room-handover", 1));
+            Assert.Equal("fresh-live", OnlySession);
+            Assert.True(OnlyWelcomed);
+            Assert.Equal(
+                TicketConsumptionStatus.DuplicateJti,
+                registry.Consume(old, "old-replay", DateTimeOffset.UtcNow).Status);
+        }
+
+        [Fact]
+        public void SameAssignmentFreshJti_AfterFailedHandover_KeepsOldOwner_AndBothJtisSpent()
+        {
+            TableServiceOptions options = Options();
+            var registry = new InMemoryTicketConsumptionRegistry(options);
+            TableTestSigner signer = new TableTestSigner("rollback-reissue-key");
+
+            ValidatedTableTicket old = SignValidated(
+                signer,
+                options,
+                new TableTestTicket(
+                    "acct-rollback",
+                    "room-rollback",
+                    TableAdmissionRole.Player,
+                    0,
+                    Jti: "jti-old-rollback",
+                    AssignmentId: "assignment-rollback"));
+            ValidatedTableTicket failed = SignValidated(
+                signer,
+                options,
+                new TableTestTicket(
+                    "acct-rollback",
+                    "room-rollback",
+                    TableAdmissionRole.Player,
+                    0,
+                    Jti: "jti-failed-rollback",
+                    AssignmentId: "assignment-rollback"));
+            ValidatedTableTicket reconnect = SignValidated(
+                signer,
+                options,
+                new TableTestTicket(
+                    "acct-rollback",
+                    "room-rollback",
+                    TableAdmissionRole.Player,
+                    0,
+                    Jti: "jti-reconnect-rollback",
+                    AssignmentId: "assignment-rollback"));
+
+            Assert.Equal(TicketConsumptionStatus.Accepted,
+                registry.Consume(old, "old-live", DateTimeOffset.UtcNow).Status);
+            Assert.Equal(TicketCommitStatus.Committed, registry.CommitAdmission("old-live").Status);
+            Assert.Equal(TableEvictionKind.None, registry.EvictOnWelcome("old-live").Kind);
+
+            // The fresh same-assignment ticket commits its handover, then its WELCOME fails.
+            // Rollback must restore the old owner and must NOT re-enable either ticket.
+            Assert.Equal(TicketConsumptionStatus.Accepted,
+                registry.Consume(failed, "failed-live", DateTimeOffset.UtcNow).Status);
+            Assert.Equal(TicketCommitStatus.Committed, registry.CommitAdmission("failed-live").Status);
+            registry.RollbackSeatHandover("failed-live");
+            registry.Release("failed-live");
+
+            Assert.True(registry.TryGetSeatOwner("room-rollback", 0, out string? owner));
+            Assert.Equal("old-live", owner);
+            Assert.Equal(
+                TicketConsumptionStatus.DuplicateJti,
+                registry.Consume(old, "old-replay", DateTimeOffset.UtcNow).Status);
+            Assert.Equal(
+                TicketConsumptionStatus.DuplicateJti,
+                registry.Consume(failed, "failed-replay", DateTimeOffset.UtcNow).Status);
+
+            // A genuinely fresh ticket for the same tuple is still the legal reconnect path.
+            Assert.Equal(
+                TicketConsumptionStatus.Accepted,
+                registry.Consume(reconnect, "reconnect-live", DateTimeOffset.UtcNow).Status);
+        }
+
+        [Fact]
+        public void ShorterLivedReissue_DoesNotShortenTheAssignmentsBindingWindow()
+        {
+            TableServiceOptions options = Options();
+            var registry = new InMemoryTicketConsumptionRegistry(options);
+            TableTestSigner signer = new TableTestSigner("assignment-window-key");
+
+            ValidatedTableTicket longLived = SignValidated(
+                signer,
+                options,
+                new TableTestTicket(
+                    "acct-window",
+                    "room-window",
+                    TableAdmissionRole.Player,
+                    0,
+                    Jti: "jti-long-window",
+                    AssignmentId: "assignment-window",
+                    Ttl: TimeSpan.FromSeconds(240)));
+            ValidatedTableTicket shortLived = SignValidated(
+                signer,
+                options,
+                new TableTestTicket(
+                    "acct-window",
+                    "room-window",
+                    TableAdmissionRole.Player,
+                    0,
+                    Jti: "jti-short-window",
+                    AssignmentId: "assignment-window",
+                    Ttl: TimeSpan.FromSeconds(60)));
+            ValidatedTableTicket crossTuple = SignValidated(
+                signer,
+                options,
+                new TableTestTicket(
+                    "acct-foreign-window",
+                    "room-window",
+                    TableAdmissionRole.Player,
+                    1,
+                    Jti: "jti-cross-window",
+                    AssignmentId: "assignment-window",
+                    Ttl: TimeSpan.FromSeconds(240)));
+
+            Assert.Equal(TicketConsumptionStatus.Accepted,
+                registry.Consume(longLived, "long-live", DateTimeOffset.UtcNow).Status);
+            Assert.Equal(TicketCommitStatus.Committed, registry.CommitAdmission("long-live").Status);
+            registry.Release("long-live");
+
+            // The newer re-ticket is valid for a SHORTER window; consuming it must not
+            // truncate the assignment binding established by the longer-lived first ticket.
+            Assert.Equal(TicketConsumptionStatus.Accepted,
+                registry.Consume(shortLived, "short-live", DateTimeOffset.UtcNow).Status);
+            registry.Release("short-live");
+
+            DateTimeOffset afterShortExpiry = DateTimeOffset.UtcNow.AddSeconds(90);
+            Assert.Equal(
+                TicketConsumptionStatus.DuplicateJti,
+                registry.Consume(longLived, "long-replay", afterShortExpiry).Status);
+            Assert.Equal(
+                TicketConsumptionStatus.AssignmentMismatch,
+                registry.Consume(crossTuple, "cross-live", afterShortExpiry).Status);
+        }
+
+        [Fact]
+        public void AssignmentMismatch_DoesNotLeakSpectatorCapacity()
+        {
+            TableServiceOptions options = Options();
+            var registry = new InMemoryTicketConsumptionRegistry(options);
+            TableTestSigner signer = new TableTestSigner("capacity-fence-key");
+
+            ValidatedTableTicket player = SignValidated(
+                signer,
+                options,
+                new TableTestTicket(
+                    "acct-capacity",
+                    "room-capacity",
+                    TableAdmissionRole.Player,
+                    0,
+                    Jti: "jti-capacity-player",
+                    AssignmentId: "assignment-capacity"));
+            ValidatedTableTicket roleMismatch = SignValidated(
+                signer,
+                options,
+                new TableTestTicket(
+                    "acct-capacity",
+                    "room-capacity",
+                    TableAdmissionRole.Spectator,
+                    null,
+                    Jti: "jti-capacity-role",
+                    AssignmentId: "assignment-capacity"));
+            ValidatedTableTicket unrelatedWatch = SignValidated(
+                signer,
+                options,
+                new TableTestTicket(
+                    "acct-watch",
+                    "room-capacity",
+                    TableAdmissionRole.Spectator,
+                    null,
+                    Jti: "jti-capacity-watch",
+                    AssignmentId: "assignment-capacity-watch"));
+
+            Assert.Equal(TicketConsumptionStatus.Accepted,
+                registry.Consume(player, "player-live", DateTimeOffset.UtcNow).Status);
+            Assert.Equal(TicketCommitStatus.Committed, registry.CommitAdmission("player-live").Status);
+            Assert.Equal(TableEvictionKind.None, registry.EvictOnWelcome("player-live").Kind);
+
+            Assert.Equal(
+                TicketConsumptionStatus.AssignmentMismatch,
+                registry.Consume(roleMismatch, "role-mismatch", DateTimeOffset.UtcNow).Status);
+
+            // MaxSpectatorsPerRoom = 1 and no spectator was admitted: if the refused role
+            // mismatch had consumed capacity, this legitimate unrelated spectator would fail.
+            Assert.Equal(
+                TicketConsumptionStatus.Accepted,
+                registry.Consume(unrelatedWatch, "watch-live", DateTimeOffset.UtcNow).Status);
+            Assert.True(registry.TryGetSeatOwner("room-capacity", 0, out string? owner));
+            Assert.Equal("player-live", owner);
+        }
+
+        [Fact]
+        public void RetainedTicketStore_IsBounded_AndExpiryPurgeReclaimsCapacity()
+        {
+            TableServiceOptions options = new TableServiceOptions
+            {
+                MaxSpectatorsPerRoom = 1,
+                MaxRetainedConsumedTickets = 1024
+            };
+            var registry = new InMemoryTicketConsumptionRegistry(options);
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            DateTimeOffset expires = now.AddSeconds(60);
+
+            for (int i = 0; i < 1024; i++)
+            {
+                ValidatedTableTicket ticket = DirectTicket(
+                    "jti-bound-" + i, "assignment-bound-" + i, now, expires);
+                string session = "session-bound-" + i;
+                Assert.Equal(TicketConsumptionStatus.Accepted,
+                    registry.Consume(ticket, session, now).Status);
+                registry.Release(session);
+            }
+
+            ValidatedTableTicket overCapacity = DirectTicket(
+                "jti-over-capacity", "assignment-over-capacity", now, expires);
+            Assert.Equal(
+                TicketConsumptionStatus.ConsumptionStoreExhausted,
+                registry.Consume(overCapacity, "session-over", now).Status);
+
+            // Past every retained ticket's expiry + skew, the bounded store is reclaimed by
+            // the next Consume instead of staying exhausted forever.
+            DateTimeOffset afterExpiry = expires.AddSeconds(options.ClockSkewSeconds + 1);
+            Assert.Equal(
+                TicketConsumptionStatus.Accepted,
+                registry.Consume(overCapacity, "session-after-purge", afterExpiry).Status);
+        }
+
+        [Theory]
+        [InlineData("account")]
+        [InlineData("role")]
+        [InlineData("room")]
+        [InlineData("seat")]
+        public void SameAssignmentDifferentTuple_FailsClosed_AndLeavesCurrentOwner(string changedField)
+        {
+            TableServiceOptions options = Options();
+            var registry = new InMemoryTicketConsumptionRegistry(options);
+            TableTestSigner signer = new TableTestSigner("tuple-key");
+
+            ValidatedTableTicket bound = SignValidated(
+                signer,
+                options,
+                new TableTestTicket(
+                    "acct-tuple",
+                    "room-tuple",
+                    TableAdmissionRole.Player,
+                    0,
+                    Jti: "jti-bound",
+                    AssignmentId: "assignment-tuple"));
+            Assert.Equal(TicketConsumptionStatus.Accepted, registry.Consume(bound, "bound-live", DateTimeOffset.UtcNow).Status);
+            Assert.Equal(TicketCommitStatus.Committed, registry.CommitAdmission("bound-live").Status);
+            Assert.Equal(TableEvictionKind.None, registry.EvictOnWelcome("bound-live").Kind);
+
+            TableTestTicket mismatch = changedField switch
+            {
+                "account" => new TableTestTicket(
+                    "acct-other",
+                    "room-tuple",
+                    TableAdmissionRole.Player,
+                    0,
+                    Jti: "jti-mismatch",
+                    AssignmentId: "assignment-tuple"),
+                "role" => new TableTestTicket(
+                    "acct-tuple",
+                    "room-tuple",
+                    TableAdmissionRole.Spectator,
+                    null,
+                    Jti: "jti-mismatch",
+                    AssignmentId: "assignment-tuple"),
+                "room" => new TableTestTicket(
+                    "acct-tuple",
+                    "room-other",
+                    TableAdmissionRole.Player,
+                    0,
+                    Jti: "jti-mismatch",
+                    AssignmentId: "assignment-tuple"),
+                _ => new TableTestTicket(
+                    "acct-tuple",
+                    "room-tuple",
+                    TableAdmissionRole.Player,
+                    1,
+                    Jti: "jti-mismatch",
+                    AssignmentId: "assignment-tuple")
+            };
+            ValidatedTableTicket cross = SignValidated(signer, options, mismatch);
+            TicketConsumptionOutcome refused = registry.Consume(cross, "mismatch-live", DateTimeOffset.UtcNow);
+            Assert.Equal(TicketConsumptionStatus.AssignmentMismatch, refused.Status);
+            Assert.Equal("acct-tuple", refused.ExistingAccountId);
+            Assert.Equal(1, ConsumedJtiCount(registry));
+            Assert.True(registry.TryGetSeatOwner("room-tuple", 0, out string? owner));
+            Assert.Equal("bound-live", owner);
+
+            // The refusal has zero resource/side effects: the unchanged tuple can still
+            // consume a fresh jti, and the same assignment still refuses the mismatched one.
+            ValidatedTableTicket sameTuple = SignValidated(
+                signer,
+                options,
+                new TableTestTicket(
+                    "acct-tuple",
+                    "room-tuple",
+                    TableAdmissionRole.Player,
+                    0,
+                    Jti: "jti-after-mismatch",
+                    AssignmentId: "assignment-tuple"));
+            Assert.Equal(
+                TicketConsumptionStatus.Accepted,
+                registry.Consume(sameTuple, "after-mismatch", DateTimeOffset.UtcNow).Status);
+        }
+
+        [Fact]
+        public void ConcurrentFreshJtis_SameAssignment_AtMostOneCommitAndOneLiveOwner()
+        {
+            TableServiceOptions options = Options();
+            var registry = new InMemoryTicketConsumptionRegistry(options);
+            TableTestSigner signer = new TableTestSigner("race-key");
+
+            ValidatedTableTicket old = SignValidated(
+                signer,
+                options,
+                new TableTestTicket(
+                    "acct-race",
+                    "room-race",
+                    TableAdmissionRole.Player,
+                    2,
+                    Jti: "jti-old-race",
+                    AssignmentId: "assignment-race"));
+            ValidatedTableTicket b = SignValidated(
+                signer,
+                options,
+                new TableTestTicket(
+                    "acct-race",
+                    "room-race",
+                    TableAdmissionRole.Player,
+                    2,
+                    Jti: "jti-b-race",
+                    AssignmentId: "assignment-race"));
+            ValidatedTableTicket c = SignValidated(
+                signer,
+                options,
+                new TableTestTicket(
+                    "acct-race",
+                    "room-race",
+                    TableAdmissionRole.Player,
+                    2,
+                    Jti: "jti-c-race",
+                    AssignmentId: "assignment-race"));
+
+            Assert.Equal(TicketConsumptionStatus.Accepted, registry.Consume(old, "live-old", DateTimeOffset.UtcNow).Status);
+            Assert.Equal(TicketCommitStatus.Committed, registry.CommitAdmission("live-old").Status);
+            Assert.Equal(TableEvictionKind.None, registry.EvictOnWelcome("live-old").Kind);
+
+            // Deterministic interleave of two fresh admissions racing for the same assignment:
+            // B reserves, C supersedes the provisional reservation, then B commits first.
+            Assert.Equal(TicketConsumptionStatus.Accepted, registry.Consume(b, "conn-b", DateTimeOffset.UtcNow).Status);
+            Assert.Equal(TicketConsumptionStatus.Accepted, registry.Consume(c, "conn-c", DateTimeOffset.UtcNow).Status);
+            Assert.Equal(TicketCommitStatus.Superseded, registry.CommitAdmission("conn-b").Status);
+            Assert.Equal(TicketCommitStatus.Committed, registry.CommitAdmission("conn-c").Status);
+            Assert.Equal(TableEvictionKind.None, registry.EvictOnWelcome("conn-b").Kind);
+            Assert.Equal(TableEvictionKind.DisplacedOther, registry.EvictOnWelcome("conn-c").Kind);
+
+            Assert.True(registry.TryGetSeatOwner("room-race", 2, out string? owner));
+            Assert.Equal("conn-c", owner);
+            (string OnlySession, bool OnlyWelcomed) = Assert.Single(SeatChain(registry, "room-race", 2));
+            Assert.Equal("conn-c", OnlySession);
+            Assert.True(OnlyWelcomed);
+
+            // The loser's exact jti is still spent, and the old/winner jtis are spent too.
+            Assert.Equal(
+                TicketConsumptionStatus.DuplicateJti,
+                registry.Consume(b, "b-replay", DateTimeOffset.UtcNow).Status);
+            Assert.Equal(
+                TicketConsumptionStatus.DuplicateJti,
+                registry.Consume(c, "c-replay", DateTimeOffset.UtcNow).Status);
+            Assert.Equal(
+                TicketConsumptionStatus.DuplicateJti,
+                registry.Consume(old, "old-replay", DateTimeOffset.UtcNow).Status);
+        }
+
+        [Fact]
+        public void SpectatorCapacity_DoesNotLeakAcrossSameAssignmentRefresh()
+        {
+            TableServiceOptions options = Options();
+            var registry = new InMemoryTicketConsumptionRegistry(options);
+            TableTestSigner signer = new TableTestSigner("watch-reissue-key");
+
+            ValidatedTableTicket old = SignValidated(
+                signer,
+                options,
+                new TableTestTicket(
+                    "acct-watch",
+                    "room-watch",
+                    TableAdmissionRole.Spectator,
+                    null,
+                    Jti: "jti-watch-old",
+                    AssignmentId: "assignment-watch"));
+            ValidatedTableTicket fresh = SignValidated(
+                signer,
+                options,
+                new TableTestTicket(
+                    "acct-watch",
+                    "room-watch",
+                    TableAdmissionRole.Spectator,
+                    null,
+                    Jti: "jti-watch-fresh",
+                    AssignmentId: "assignment-watch"));
+            ValidatedTableTicket later = SignValidated(
+                signer,
+                options,
+                new TableTestTicket(
+                    "acct-watch",
+                    "room-watch",
+                    TableAdmissionRole.Spectator,
+                    null,
+                    Jti: "jti-watch-later",
+                    AssignmentId: "assignment-watch"));
+
+            Assert.Equal(TicketConsumptionStatus.Accepted, registry.Consume(old, "watch-old", DateTimeOffset.UtcNow).Status);
+            Assert.Equal(TicketCommitStatus.Committed, registry.CommitAdmission("watch-old").Status);
+            // The old spectator is still live and the room max is 1: a second live admission
+            // is refused by capacity, not by the assignment tuple.
+            Assert.Equal(
+                TicketConsumptionStatus.SpectatorCapacityReached,
+                registry.Consume(fresh, "watch-fresh-live", DateTimeOffset.UtcNow).Status);
+
+            registry.Release("watch-old");
+            Assert.Equal(
+                TicketConsumptionStatus.Accepted,
+                registry.Consume(fresh, "watch-fresh", DateTimeOffset.UtcNow).Status);
+            Assert.Equal(TicketCommitStatus.Committed, registry.CommitAdmission("watch-fresh").Status);
+            registry.Release("watch-fresh");
+
+            // Capacity was released exactly once per session: the next refresh is accepted
+            // and no phantom count from the earlier capacity refusal remains.
+            Assert.Equal(
+                TicketConsumptionStatus.Accepted,
+                registry.Consume(later, "watch-later", DateTimeOffset.UtcNow).Status);
+        }
+
+        [Fact]
+        public async Task RealKestrel_SameAssignmentFreshJti_DisplacesOld4403_AndOldJtiReplayIsRejected()
+        {
+            await using TableServiceTestHost host = await TableServiceTestHost.StartAsync(options =>
+            {
+                options.RoomTickIntervalMs = 250;
+                options.HeartbeatIntervalMs = 1000;
+                options.IdleDeadMs = 60_000;
+            });
+
+            const string Room = "room-reissue-live";
+            const string Account = "acct-reissue-live";
+            var oldTicket = new TableTestTicket(
+                Account,
+                Room,
+                TableAdmissionRole.Player,
+                0,
+                Jti: "jti-old-live",
+                AssignmentId: "assignment-live");
+            var freshTicket = new TableTestTicket(
+                Account,
+                Room,
+                TableAdmissionRole.Player,
+                0,
+                Jti: "jti-fresh-live",
+                AssignmentId: "assignment-live");
+
+            TableTestClient oldClient = await host.ConnectPlayerAsync(Room, Account, 0, oldTicket);
+            try
+            {
+                Assert.NotNull(oldClient.Welcome);
+                TableTestClient freshClient = await host.ConnectPlayerAsync(Room, Account, 0, freshTicket);
+                try
+                {
+                    Assert.NotNull(freshClient.Welcome);
+
+                    // The legal fresh ticket's WELCOME is the displacement point: the old live
+                    // connection must close with the frozen 4403, not linger as a second owner.
+                    (int oldCode, string oldReason, TableWireMessage[] oldDrained) =
+                        await oldClient.ExpectCloseAsync(TimeSpan.FromSeconds(20));
+                    Assert.Equal(4403, oldCode);
+                    Assert.Equal(ProtocolErrorCode.DisplacedByNewConnection, oldReason);
+                    Assert.Contains(
+                        oldDrained,
+                        message => message.Envelope != null &&
+                                   message.Envelope.MessageType == MessageType.Close &&
+                                   !string.IsNullOrEmpty(message.Envelope.Close.Code));
+
+                    // The exact old jti remains spent: a replay is refused with 4401 even
+                    // though the same assignment was legitimately re-ticketed.
+                    TableTestClient replayClient = await TableTestClient.ConnectAsync(
+                        host.WsUrl + "?room=" + Uri.EscapeDataString(Room));
+                    try
+                    {
+                        await replayClient.SendAsync(TableWire.Hello(host.Signer.Sign(oldTicket)));
+                        (int replayCode, string replayReason, _) =
+                            await replayClient.ExpectCloseAsync(TimeSpan.FromSeconds(15));
+                        Assert.Equal(4401, replayCode);
+                        Assert.Equal(ProtocolErrorCode.InvalidToken, replayReason);
+                    }
+                    finally
+                    {
+                        await replayClient.DisposeAsync();
+                    }
+
+                    // The new owner is still alive and receives its own heartbeat answer; the
+                    // displaced connection was not resurrected by the replay attempt.
+                    string nonce = TableWire.RandomNonce();
+                    await freshClient.SendAsync(TableWire.HeartbeatPing(nonce));
+                    Envelope pong = await freshClient.ReadUntilAsync(
+                        envelope => envelope.MessageType == MessageType.Heartbeat &&
+                                    envelope.Heartbeat.BeatCase == Heartbeat.BeatOneofCase.Pong,
+                        TimeSpan.FromSeconds(15));
+                    Assert.Equal(nonce, pong.Heartbeat.Pong.Nonce);
+                }
+                finally
+                {
+                    await freshClient.DisposeAsync();
+                }
+            }
+            finally
+            {
+                await oldClient.DisposeAsync();
+            }
+        }
+
+        [Fact]
         public async Task FailedWelcomeDelivery_NeverEvictsOldOwner()
         {
             TableServiceOptions options = Options();
@@ -736,6 +1360,29 @@ namespace Mahjong.TableService.Tests
             }
 
             return chain;
+        }
+
+        private static ValidatedTableTicket DirectTicket(
+            string jti,
+            string assignmentId,
+            DateTimeOffset issuedAt,
+            DateTimeOffset expiresAt)
+        {
+            return new ValidatedTableTicket(
+                "mahjong-lobby",
+                "acct-bound",
+                "mahjong-table",
+                "room-bound",
+                assignmentId,
+                TableAdmissionRole.Player,
+                0,
+                jti,
+                issuedAt,
+                expiresAt,
+                ProtocolConstants.Major,
+                ProtocolConstants.RulesetVersion,
+                ProtocolConstants.ProjectionVersion,
+                "kid-bound");
         }
 
         private static ValidatedTableTicket SignValidated(

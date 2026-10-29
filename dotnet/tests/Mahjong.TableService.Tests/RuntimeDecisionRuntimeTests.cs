@@ -81,6 +81,7 @@ namespace Mahjong.TableService.Tests
                     TimeSpan.FromSeconds(20));
                 Assert.Equal(Contracts.Wire.ReceiptStatus.Applied, receipt.Receipt.Status);
                 Assert.False(receipt.Receipt.Replayed);
+                TableReceiptAssertions.AssertAuthoritativeScope(receipt, client.Welcome!);
                 Assert.True(
                     receipt.Receipt.CommandVersion >= stateVersionBefore + 1UL,
                     "an applied legal action must grow the authoritative chain: commandVersion " +
@@ -99,6 +100,7 @@ namespace Mahjong.TableService.Tests
                 Assert.True(
                     replay.Receipt.Replayed,
                     "an exact same-key retry must be answered from the receipt ledger");
+                TableReceiptAssertions.AssertAuthoritativeScope(replay, client.Welcome!);
                 Assert.Equal(receipt.Receipt.CommandVersion, replay.Receipt.CommandVersion);
 
                 // The applied commit advanced the Domain automatically: a FRESH admission's
@@ -320,6 +322,7 @@ namespace Mahjong.TableService.Tests
                     envelope => envelope.MessageType == MessageType.Receipt,
                     TimeSpan.FromSeconds(20));
                 Assert.Equal(Contracts.Wire.ReceiptStatus.Rejected, receipt.Receipt.Status);
+                TableReceiptAssertions.AssertAuthoritativeScope(receipt, client.Welcome!);
 
                 // A valid hand tile but a decision id that is not the open authoritative one.
                 byte[] wrongDecision = TableWire.SubmitActionPayload(
@@ -334,6 +337,7 @@ namespace Mahjong.TableService.Tests
                     envelope => envelope.MessageType == MessageType.Receipt,
                     TimeSpan.FromSeconds(20));
                 Assert.Equal(Contracts.Wire.ReceiptStatus.Rejected, wrong.Receipt.Status);
+                TableReceiptAssertions.AssertAuthoritativeScope(wrong, client.Welcome!);
 
                 // Zero side effects on the authoritative chain: the fresh admission's baseline
                 // still carries the base version (the refusals never entered the actor).
