@@ -86,7 +86,10 @@ namespace Mahjong.LocalHost
             }
 
             _driver = new LocalTableDriver(actor, options, store, scopes, () => _sessionOpen, _temporaryFuriten, _riichiFuriten);
-            _driver.Start();
+            if (options.AutoPlay)
+            {
+                _driver.Start();
+            }
         }
 
         public static async ValueTask<LocalTableRuntime> OpenAsync(
