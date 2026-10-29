@@ -50,8 +50,13 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                     welcome,
                     conflictRoom).ConfigureAwait(false);
                 suite.SameKeyDifferentBytesPreservedOriginal = result.Preserved;
+                suite.FirstReceiptCanonicalDigestHex = result.FirstReceiptDigestHex;
+                suite.LookupCanonicalDigestHex = result.LookupDigestHex;
+                suite.FirstReceiptDigestVerified = result.FirstReceiptDigestVerified;
+                suite.LookupReceiptDigestAvailable = result.LookupDigestAvailable;
+                suite.LookupReceiptDigestMatchesExpected = result.LookupDigestMatchesExpected;
                 suite.ReceiptDigestDomainMismatch = result.DigestDomainMismatch;
-                suite.CanonicalReceiptIdentityVerified = !string.IsNullOrEmpty(result.CanonicalDigestHex);
+                suite.CanonicalReceiptIdentityVerified = result.CanonicalReceiptIdentityVerified;
                 if (!suite.SameKeyDifferentBytesPreservedOriginal)
                 {
                     throw new InvalidOperationException(
@@ -65,13 +70,19 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                     RequestId = result.RequestId,
                     ExpectedReceiptCount = 1,
                     ExpectedStatus = result.Status,
-                    ExpectedCanonicalDigestHex = result.CanonicalDigestHex,
+                    ExpectedCanonicalDigestHex = result.LookupDigestAvailable
+                        ? result.LookupDigestHex
+                        : string.Empty,
                     AccountId = welcome.Scope.AccountId,
                     ScopeId = welcome.Scope.ScopeId,
                     Api = "SubmitAction",
                     ExpectedJournalCount = 0
                 });
                 suite.NegativeResults.Add("same_key_different_bytes=PRESERVED");
+                suite.NegativeResults.Add(
+                    "same_key_lookup_digest=" + (result.LookupDigestAvailable
+                        ? "PRESENT"
+                        : "UNAVAILABLE_B1_BLOCKER_03"));
             }
 
             GuestState crossGuest = await B1Flows.CreateGuestAsync(lobby, "b1-cross", CancellationToken.None)
@@ -332,6 +343,9 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                 0,
                 ProtocolActionType.DiscardTile,
                 tileIds: new uint[] { 1 });
+            // Diagnostic only. The wire receipt carries the MJC1
+            // domain-separated digest; a bare SHA-256 is never the protocol
+            // expectation and must not be used for acceptance.
             string plainDigest = Convert.ToHexString(
                 System.Security.Cryptography.SHA256.HashData(firstPayload.CopyBytes()));
             string expectedDigest = firstPayload.Digest.ToHex();
@@ -343,22 +357,39 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                 CancellationToken.None).ConfigureAwait(false);
             if (first.BodyCase != Envelope.BodyOneofCase.Receipt || first.Receipt == null)
             {
-                return new ConflictProbeResult(false, "NO_FIRST_RECEIPT_" + first.BodyCase, requestId, string.Empty, string.Empty, false);
+                return new ConflictProbeResult(
+                    false,
+                    "NO_FIRST_RECEIPT_" + first.BodyCase,
+                    requestId,
+                    string.Empty,
+                    string.Empty,
+                    false,
+                    false,
+                    false,
+                    true);
             }
 
+            string firstDigest = first.Receipt.CanonicalPayloadSha256 ?? string.Empty;
+            bool firstDigestMatchesDomain =
+                string.Equals(firstDigest, expectedDigest, StringComparison.OrdinalIgnoreCase);
             if (first.Receipt.Status != WireReceiptStatus.Rejected ||
                 string.IsNullOrEmpty(first.Receipt.ReasonCode) ||
-                !string.Equals(first.Receipt.CanonicalPayloadSha256, plainDigest, StringComparison.OrdinalIgnoreCase))
+                !firstDigestMatchesDomain)
             {
                 return new ConflictProbeResult(
                     false,
                     "FIRST_RECEIPT_NOT_EXACT_REJECTION (status=" + first.Receipt.Status +
                     ", reason=" + first.Receipt.ReasonCode +
-                    ", plainDigestMatch=" + string.Equals(first.Receipt.CanonicalPayloadSha256, plainDigest, StringComparison.OrdinalIgnoreCase) + ")",
+                    ", domainDigestMatch=" + firstDigestMatchesDomain +
+                    ", plainDigestDiagnosticMatch=" +
+                    string.Equals(firstDigest, plainDigest, StringComparison.OrdinalIgnoreCase) + ")",
                     requestId,
                     first.Receipt.Status.ToString(),
-                    expectedDigest,
-                    false);
+                    firstDigest,
+                    firstDigestMatchesDomain,
+                    false,
+                    false,
+                    true);
             }
 
             string originalStatus = first.Receipt.Status.ToString();
@@ -402,8 +433,11 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                     (second.Error == null ? string.Empty : second.Error.Code + "/" + second.Error.DetailCode),
                     requestId,
                     originalStatus,
-                    expectedDigest,
-                    false);
+                    firstDigest,
+                    true,
+                    false,
+                    false,
+                    true);
             }
 
             Envelope lookup = await probe.QueryReceiptAsync(
@@ -416,7 +450,16 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                 lookup.ReceiptLookup.Status != LookupStatus.Found ||
                 lookup.ReceiptLookup.Receipt == null)
             {
-                return new ConflictProbeResult(false, "ORIGINAL_NOT_FOUND", requestId, originalStatus, expectedDigest, false);
+                return new ConflictProbeResult(
+                    false,
+                    "ORIGINAL_NOT_FOUND",
+                    requestId,
+                    originalStatus,
+                    firstDigest,
+                    true,
+                    false,
+                    false,
+                    true);
             }
 
             WireReceipt original = lookup.ReceiptLookup.Receipt;
@@ -429,6 +472,10 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                 original.EvaluatedStateVersion == evaluated &&
                 (original.HasCommandVersion ? original.CommandVersion : 0) == originalVersion &&
                 (!digestAvailable || digestPreserved);
+            // A missing lookup digest is not a mismatch of an observed value,
+            // but it does mean the MJC1 identity cannot be verified. Keep that
+            // visible rather than defaulting either flag to a green value.
+            bool digestDomainMismatch = !firstDigestMatchesDomain || !digestAvailable || !digestPreserved;
             return new ConflictProbeResult(
                 preserved,
                 preserved
@@ -441,8 +488,12 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                       " digestMatch=" + digestPreserved,
                 requestId,
                 originalStatus,
-                digestAvailable ? expectedDigest : string.Empty,
-                !digestAvailable || !string.Equals(original.CanonicalPayloadSha256, plainDigest, StringComparison.OrdinalIgnoreCase));
+                firstDigest,
+                firstDigestMatchesDomain,
+                digestAvailable,
+                digestPreserved,
+                digestDomainMismatch,
+                lookupDigestHex: original.CanonicalPayloadSha256 ?? string.Empty);
         }
 
         private sealed class ConflictProbeResult
@@ -452,15 +503,23 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                 string detail,
                 string requestId,
                 string status,
-                string canonicalDigestHex,
-                bool digestDomainMismatch)
+                string firstReceiptDigestHex,
+                bool firstReceiptDigestVerified,
+                bool lookupDigestAvailable,
+                bool lookupDigestMatchesExpected,
+                bool digestDomainMismatch,
+                string lookupDigestHex = "")
             {
                 Preserved = preserved;
                 Detail = detail;
                 RequestId = requestId;
                 Status = status;
-                CanonicalDigestHex = canonicalDigestHex;
+                FirstReceiptDigestHex = firstReceiptDigestHex;
+                FirstReceiptDigestVerified = firstReceiptDigestVerified;
+                LookupDigestAvailable = lookupDigestAvailable;
+                LookupDigestMatchesExpected = lookupDigestMatchesExpected;
                 DigestDomainMismatch = digestDomainMismatch;
+                LookupDigestHex = lookupDigestHex;
             }
 
             public bool Preserved { get; }
@@ -471,9 +530,20 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
 
             public string Status { get; }
 
-            public string CanonicalDigestHex { get; }
+            public string FirstReceiptDigestHex { get; }
+
+            public bool FirstReceiptDigestVerified { get; }
+
+            public bool LookupDigestAvailable { get; }
+
+            public bool LookupDigestMatchesExpected { get; }
 
             public bool DigestDomainMismatch { get; }
+
+            public string LookupDigestHex { get; }
+
+            public bool CanonicalReceiptIdentityVerified =>
+                FirstReceiptDigestVerified && LookupDigestAvailable && LookupDigestMatchesExpected;
         }
 
         private static Command WireCommand(

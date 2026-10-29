@@ -223,6 +223,16 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
 
         public bool ReceiptDigestDomainMismatch { get; set; }
 
+        public string FirstReceiptCanonicalDigestHex { get; set; } = string.Empty;
+
+        public string LookupCanonicalDigestHex { get; set; } = string.Empty;
+
+        public bool FirstReceiptDigestVerified { get; set; }
+
+        public bool LookupReceiptDigestAvailable { get; set; }
+
+        public bool LookupReceiptDigestMatchesExpected { get; set; }
+
         public bool CanonicalReceiptIdentityVerified { get; set; }
 
         public bool Blocked { get; set; }
