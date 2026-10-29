@@ -15,6 +15,7 @@
     "Mahjong.Client.dll",
     "Mahjong.Contracts.dll",
     "Mahjong.Contracts.Wire.dll",
+    "Mahjong.LocalHost.dll",
     "Google.Protobuf.dll"
   ],
   "autoReferenced": false,

@@ -3407,6 +3407,9 @@ namespace Mahjong.Unity.Tests.PlayMode
             public void BackToMenu() => BackToMenuCalled = true;
             public void RequestQuit() => QuitRequested = true;
             public void OpenSettlement() => SettlementOpened = true;
+            public bool IsLocalGameStartAvailable => false;
+            public System.Threading.Tasks.Task<LocalGameStartResult> StartLocalGameAsync() =>
+                System.Threading.Tasks.Task.FromResult(LocalGameStartResult.Failed(LocalGameStartResult.LocalHostUnavailableCode));
         }
     }
 }

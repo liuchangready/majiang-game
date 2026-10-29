@@ -1310,6 +1310,55 @@ namespace Mahjong.LocalHost
             }
         }
 
+        /// <summary>
+        /// Persists an early-exit rejection receipt with its canonical digest in one
+        /// atomic write. The candidate touches only <see cref="LocalSave.Receipts"/>
+        /// and <see cref="LocalSave.ReceiptDigests"/> — no state, event or control
+        /// change travels with it. Returns the existing durable receipt when the key
+        /// already carries one (the caller must replay or conflict; it must never
+        /// overwrite a committed outcome); returns null once the given rejection is
+        /// durably committed. A failed write throws, so the caller can refuse to
+        /// claim durability.
+        /// </summary>
+        internal TableDurableReceipt? TryCommitRejectedReceipt(TableDurableReceipt receipt, string canonicalDigestHex)
+        {
+            if (string.IsNullOrEmpty(canonicalDigestHex))
+            {
+                throw new ArgumentException("A persisted rejection requires its canonical payload digest.", nameof(canonicalDigestHex));
+            }
+
+            lock (_gate)
+            {
+                ThrowIfUnavailable();
+                if (_save == null)
+                {
+                    throw new LocalTableException(
+                        LocalTableErrorKind.Unavailable,
+                        "The local table store has no committed save.");
+                }
+
+                string key = ReceiptKey(receipt.AccountId, receipt.ScopeId, receipt.RequestId);
+                if (_save.Receipts.TryGetValue(key, out TableDurableReceipt? existing))
+                {
+                    return existing;
+                }
+
+                LocalSave candidate = _save.DeepCloneForCandidate();
+                candidate.Receipts[key] = receipt;
+                candidate.ReceiptDigests[key] = canonicalDigestHex;
+                LocalWriteResult write = Persist(candidate, CancellationToken.None);
+                if (write.Verdict != LocalWriteVerdict.Committed)
+                {
+                    throw new LocalTableException(
+                        LocalTableErrorKind.Unavailable,
+                        "The rejected receipt could not be durably committed.");
+                }
+
+                _save = candidate;
+                return null;
+            }
+        }
+
         public ValueTask<TableLeaseAcquireResult> AcquireAsync(
             string roomId,
             string ownerInstance,

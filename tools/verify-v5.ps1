@@ -192,7 +192,9 @@ function Resolve-DotnetPath {
 #     SCOPE). If the two scopes disagree after the call, the outcome is treated
 #     as uncertain instead of picking one;
 #   - restores $ErrorActionPreference and the caller's script/global
-#     LASTEXITCODE in finally. Caller-local values are never modified.
+#     LASTEXITCODE existence and value in finally. Caller-local values are never
+#     modified; a variable that did not exist before the call is removed, not
+#     left behind as a new null variable.
 # PowerShell 7.3+ has an opt-in native-command error preference; it is disabled
 # locally when the current host defines it, so stderr stays a diagnostic here.
 function Invoke-Captured {
@@ -203,8 +205,12 @@ function Invoke-Captured {
     $output = New-Object System.Collections.Generic.List[string]
     $exit = $null
     $previousErrorActionPreference = $ErrorActionPreference
-    $previousScriptExitCode = $script:LASTEXITCODE
-    $previousGlobalExitCode = $global:LASTEXITCODE
+    $scriptExitVariable = Get-Variable -Name 'LASTEXITCODE' -Scope Script -ErrorAction SilentlyContinue
+    $scriptExitExisted = ($null -ne $scriptExitVariable)
+    $previousScriptExitCode = $(if ($scriptExitExisted) { $scriptExitVariable.Value } else { $null })
+    $globalExitVariable = Get-Variable -Name 'LASTEXITCODE' -Scope Global -ErrorAction SilentlyContinue
+    $globalExitExisted = ($null -ne $globalExitVariable)
+    $previousGlobalExitCode = $(if ($globalExitExisted) { $globalExitVariable.Value } else { $null })
     $nativePreferenceVariable = Get-Variable -Name 'PSNativeCommandUseErrorActionPreference' -ErrorAction SilentlyContinue
     $hadNativePreference = ($null -ne $nativePreferenceVariable)
     $previousNativePreference = $(if ($hadNativePreference) { $nativePreferenceVariable.Value } else { $null })
@@ -219,8 +225,12 @@ function Invoke-Captured {
         if ($hadNativePreference) {
             $PSNativeCommandUseErrorActionPreference = $false
         }
-        $script:LASTEXITCODE = $null
-        $global:LASTEXITCODE = $null
+        # Remove instead of assigning $null: a variable that did not exist before
+        # this call must not be left behind as a new null variable. Restoration
+        # below is conditional on the saved existence, so an absent variable is
+        # removed again rather than recreated.
+        Remove-Variable -Name 'LASTEXITCODE' -Scope Script -ErrorAction SilentlyContinue
+        Remove-Variable -Name 'LASTEXITCODE' -Scope Global -ErrorAction SilentlyContinue
 
         & $Command 2>&1 | ForEach-Object {
             if ($_ -is [System.Management.Automation.ErrorRecord]) {
@@ -291,8 +301,18 @@ function Invoke-Captured {
         else {
             Remove-Variable -Name 'PSNativeCommandUseErrorActionPreference' -ErrorAction SilentlyContinue
         }
-        $script:LASTEXITCODE = $previousScriptExitCode
-        $global:LASTEXITCODE = $previousGlobalExitCode
+        if ($scriptExitExisted) {
+            $script:LASTEXITCODE = $previousScriptExitCode
+        }
+        else {
+            Remove-Variable -Name 'LASTEXITCODE' -Scope Script -ErrorAction SilentlyContinue
+        }
+        if ($globalExitExisted) {
+            $global:LASTEXITCODE = $previousGlobalExitCode
+        }
+        else {
+            Remove-Variable -Name 'LASTEXITCODE' -Scope Global -ErrorAction SilentlyContinue
+        }
     }
     return $exit
 }
