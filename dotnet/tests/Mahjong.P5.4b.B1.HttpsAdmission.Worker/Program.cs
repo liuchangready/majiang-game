@@ -134,7 +134,32 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
             "PASS", "FAIL", "BLOCKED", "APPLIED", "REJECTED", "RECORDED", "UNKNOWN", "NOT_RUN",
             "CLIENT_RECEIPT_SCOPE_MISSING", "REQUEST_ID_CONFLICT", "SCOPE_MISMATCH",
             "SCOPE_ROLE_NOT_AUTHORIZED", "INVALID_TOKEN", "PROTOCOL_VIOLATION",
-            "WS_CLOSE_4401", "WS_CLOSE_4403", "WS_CLOSE_4404", "WS_CLOSE_4503"
+            "WS_CLOSE_4401", "WS_CLOSE_4403", "WS_CLOSE_4404", "WS_CLOSE_4503",
+            "public_snapshot_schema_or_session", "player_public_snapshot_schema_session_or_private_seat",
+            "event_batch_session_mismatch", "event_batch_room_mismatch", "event_visibility_unspecified",
+            "private_event_not_owned_by_this_seat", "public_event_has_owner_seat"
+        };
+
+        private static readonly HashSet<string> SafeStatuses = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "APPLIED", "REJECTED", "RECORDED", "UNKNOWN", "PASS", "FAIL", "BLOCKED", "NOT_RUN"
+        };
+
+        private static readonly HashSet<string> SafeStages = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "guard", "role-separation", "cluster", "fresh-build", "tests-b1",
+            "fresh-build-accepted-helper", "keygen-certgen", "fresh-build-services",
+            "lobby-https", "table-wss", "suite", "pg-facts", "cleanup", "redaction", "privacy"
+        };
+
+        private static readonly HashSet<string> SafeStates = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "Ready", "Faulted", "Connecting", "Connected", "Closed", "Disposed", "Open"
+        };
+
+        private static readonly HashSet<string> SafeRoles = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "PLAYER", "SPECTATOR"
         };
 
         private static readonly HashSet<string> SafeExceptionTypes = new HashSet<string>(StringComparer.Ordinal)
@@ -168,19 +193,69 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
                 return true;
             }
 
-            if (Regex.IsMatch(value, @"^HTTP [0-9]{3}$") ||
-                Regex.IsMatch(value, @"^stage [a-z0-9-]+$"))
+            if (Regex.IsMatch(value, @"^HTTP [0-9]{3}$"))
             {
                 return true;
             }
 
-            // Structured diagnostic fields we explicitly emit ourselves.
-            if (Regex.IsMatch(value, @"^(code|status|stage|reason|state|room|seat|role|version|count)=[A-Za-z0-9_.:/-]{0,80}$"))
+            if (value.StartsWith("stage ", StringComparison.Ordinal))
             {
+                return SafeStages.Contains(value.Substring(6));
+            }
+
+            // Structured diagnostic fields are accepted only when the value is
+            // itself an exact enum/number/known identifier; unknown short
+            // credentials never pass merely because they fit a character class.
+            if (value.IndexOf(';') >= 0)
+            {
+                foreach (string part in value.Split(';'))
+                {
+                    if (!TrySafeField(part))
+                    {
+                        return false;
+                    }
+                }
+
                 return true;
             }
 
-            return Regex.IsMatch(value, @"^(code|status|stage)=[A-Za-z0-9_.:/-]{0,80}(;(code|status|stage)=[A-Za-z0-9_.:/-]{0,80}){0,3}$");
+            return TrySafeField(value);
+        }
+
+        private static bool TrySafeField(string value)
+        {
+            int separator = value.IndexOf('=');
+            if (separator <= 0 || separator == value.Length - 1)
+            {
+                return false;
+            }
+
+            string field = value.Substring(0, separator);
+            string fieldValue = value.Substring(separator + 1);
+            switch (field)
+            {
+                case "code":
+                case "reason":
+                    return SafeCodes.Contains(fieldValue);
+                case "status":
+                    return SafeStatuses.Contains(fieldValue);
+                case "stage":
+                    return SafeStages.Contains(fieldValue);
+                case "state":
+                    return SafeStates.Contains(fieldValue);
+                case "role":
+                    return SafeRoles.Contains(fieldValue);
+                case "seat":
+                    return Regex.IsMatch(fieldValue, @"^[0-3]$");
+                case "version":
+                    return Regex.IsMatch(fieldValue, @"^[0-9]{1,20}$");
+                case "count":
+                    return Regex.IsMatch(fieldValue, @"^[0-9]{1,9}$");
+                case "room":
+                    return Regex.IsMatch(fieldValue, @"^room_[0-9a-f]{32}$");
+                default:
+                    return false;
+            }
         }
 
         public sealed class Options

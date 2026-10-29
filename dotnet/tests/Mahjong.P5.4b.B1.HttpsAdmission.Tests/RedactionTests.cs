@@ -29,11 +29,38 @@ namespace Mahjong.P5_4b.B1.HttpsAdmission.Tests
         }
 
         [Theory]
+        [InlineData("status=abc123")]
+        [InlineData("reason=abc123")]
+        [InlineData("stage abc123")]
+        [InlineData("code=abc123")]
+        [InlineData("room=abc123")]
+        [InlineData("state=abc123")]
+        [InlineData("seat=abc123")]
+        [InlineData("role=abc123")]
+        [InlineData("version=abc123")]
+        [InlineData("count=abc123")]
+        [InlineData("code=eyJhbGciOiJFUzI1NiJ9")]
+        [InlineData("room=eyJhbGciOiJFUzI1NiJ9")]
+        public void UnknownFieldValuesAreRedacted(string input)
+        {
+            Assert.Equal("[redacted]", Program.Redact(input));
+        }
+
+        [Theory]
         [InlineData("HTTP 409")]
         [InlineData("REQUEST_ID_CONFLICT")]
         [InlineData("CLIENT_RECEIPT_SCOPE_MISSING")]
         [InlineData("stage suite")]
         [InlineData("status=APPLIED")]
+        [InlineData("code=REQUEST_ID_CONFLICT")]
+        [InlineData("reason=SCOPE_MISMATCH")]
+        [InlineData("stage=suite")]
+        [InlineData("state=Faulted")]
+        [InlineData("seat=0")]
+        [InlineData("role=PLAYER")]
+        [InlineData("version=1")]
+        [InlineData("count=2")]
+        [InlineData("room=room_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")]
         public void SafeStableDiagnosticsRemainReadable(string input)
         {
             Assert.Equal(input, Program.Redact(input));
