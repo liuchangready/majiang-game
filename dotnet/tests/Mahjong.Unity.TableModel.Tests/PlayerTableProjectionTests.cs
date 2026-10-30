@@ -309,12 +309,66 @@ namespace Mahjong.Unity.TableModel.Tests
         }
 
         [Fact]
+        public void ControlStateIsOwnerPrivateAndIndependentOfDecision()
+        {
+            PlayerTableViewState automated = Project(P43TestData.PlayerSnapshot(
+                includeDecision: false,
+                controlledByComputer: true,
+                controlEpoch: 3,
+                controlVersion: 2));
+
+            Assert.NotNull(automated.Own);
+            Assert.Null(automated.Own!.Decision);
+            Assert.NotNull(automated.Control);
+            Assert.Equal(3UL, automated.Control!.ControlEpoch);
+            Assert.True(automated.Control.ControlledByComputer);
+            Assert.Equal(2L, automated.Control.ControlVersion);
+            Assert.False(automated.HasGap(PlayerTableGapCodes.ControlStateUnavailable));
+
+            PlayerTableViewState human = Project(P43TestData.PlayerSnapshot(controlEpoch: 0, controlVersion: 0));
+            Assert.NotNull(human.Control);
+            Assert.Equal(0UL, human.Control!.ControlEpoch);
+            Assert.False(human.Control.ControlledByComputer);
+        }
+
+        [Fact]
+        public void MissingControlStateIsReportedAndNotTreatedAsEpochZero()
+        {
+            PlayerTableViewState view = Project(P43TestData.PlayerSnapshot(includeControl: false));
+
+            Assert.Null(view.Control);
+            Assert.True(view.HasGap(PlayerTableGapCodes.ControlStateUnavailable));
+        }
+
+        [Fact]
+        public void SpectatorPublicViewHasNoControlState()
+        {
+            PlayerSnapshot publicOnly = new PlayerSnapshot
+            {
+                SessionId = P43TestData.SessionId,
+                RoundId = P43TestData.RoundId,
+                StateVersion = 5,
+                EventSeq = 105,
+                PublicView = P43TestData.PublicMatch()
+            };
+            PlayerTableViewState view = new PlayerTableProjectionMapper(new ManualTableClock()).Project(
+                P43TestData.View(
+                    publicOnly,
+                    seat: -1,
+                    role: ProtocolRole.Spectator));
+
+            Assert.Null(view.Own);
+            Assert.Null(view.Control);
+            Assert.False(view.Identity.IsPrivateAuthorized);
+        }
+
+        [Fact]
         public void StructuralWireGapsAreExplicit()
         {
             PlayerTableViewState view = Project(P43TestData.PlayerSnapshot());
 
             Assert.True(view.HasGap(PlayerTableGapCodes.DeadWallIdentityNotPublic));
-            Assert.True(view.HasGap(PlayerTableGapCodes.ControlStateNotRepresentable));
+            Assert.False(view.HasGap(PlayerTableGapCodes.ControlStateUnavailable));
             Assert.True(view.HasGap(PlayerTableGapCodes.LegalActionMeldTypeNotRepresentable));
             Assert.True(view.HasGap(PlayerTableGapCodes.AbsoluteDeadlineNotRepresentable));
             Assert.False(view.HasGap(PlayerTableGapCodes.VisibleEventsNotExposedBySessionView));

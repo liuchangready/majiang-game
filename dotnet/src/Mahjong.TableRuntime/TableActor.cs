@@ -8018,7 +8018,9 @@ namespace Mahjong.TableRuntime
                 BuildStreamDecisions(now),
                 eventInputs,
                 factsBySeq,
-                now);
+                now,
+                _control.Capture(),
+                _controlVersion);
         }
 
         private IReadOnlyList<TableEventRecord> CopyCommittedEventLog()
@@ -8331,6 +8333,36 @@ namespace Mahjong.TableRuntime
             TableStreamIdentity identity = handle.Identity;
             TableProjectionContextData data = capture.Data;
             TableProjectionPolicy policy = EffectiveProjectionPolicy(data.Policy, capture.EventInputs);
+            if (capture.ControlVersion != _controlVersion)
+            {
+                throw new TableProjectionException(
+                    TableProjectionErrorCode.StaleStateVersion,
+                    "The captured control version " + capture.ControlVersion +
+                    " is not the installed control version " + _controlVersion + ".");
+            }
+
+            TableSeatControlProjection? control = null;
+            if (identity.Audience.IsSeat)
+            {
+                SeatControlState state = capture.Control.Seats[identity.Audience.Seat];
+                long installedEpoch = _control.GetEpoch(identity.Audience.Seat);
+                if (state.ControlEpoch != installedEpoch)
+                {
+                    throw new TableProjectionException(
+                        TableProjectionErrorCode.StaleStateVersion,
+                        "The captured control epoch " + state.ControlEpoch +
+                        " is not the installed epoch " + installedEpoch + " for seat " + state.Seat + ".");
+                }
+
+                bool automated = state.Kind == SeatControllerKind.Computer ||
+                                 state.Kind == SeatControllerKind.Takeover;
+                control = new TableSeatControlProjection(
+                    state.Seat,
+                    new ControlEpoch(unchecked((ulong)state.ControlEpoch)),
+                    automated,
+                    capture.ControlVersion);
+            }
+
             var context = new TableProjectionContext(
                 new TableProjectionIdentity(
                     identity.SessionId,
@@ -8421,7 +8453,8 @@ namespace Mahjong.TableRuntime
                     _round,
                     data.Cheat,
                     identity.Audience.Seat,
-                    context);
+                    context,
+                    control);
                 TableOwnerPrivateView owner = TableVisibilityProjection.ProjectOwnerPrivate(
                     _round,
                     data.Cheat,
@@ -9133,7 +9166,9 @@ namespace Mahjong.TableRuntime
                 IReadOnlyList<TableSeatDecision> decisions,
                 IReadOnlyList<TableEventProjectionInput> eventInputs,
                 IReadOnlyDictionary<ulong, TableProjectionEventFact> facts,
-                long monotonicMillis)
+                long monotonicMillis,
+                ControlRegistrySnapshot control,
+                long controlVersion)
             {
                 Data = data;
                 Clocks = clocks;
@@ -9141,6 +9176,8 @@ namespace Mahjong.TableRuntime
                 EventInputs = eventInputs;
                 _facts = facts;
                 MonotonicMillis = monotonicMillis;
+                Control = control ?? throw new ArgumentNullException(nameof(control));
+                ControlVersion = controlVersion;
                 _inputs = new Dictionary<ulong, TableEventProjectionInput>(eventInputs.Count);
                 for (int i = 0; i < eventInputs.Count; i++)
                 {
@@ -9157,6 +9194,14 @@ namespace Mahjong.TableRuntime
             public IReadOnlyList<TableEventProjectionInput> EventInputs { get; }
 
             public long MonotonicMillis { get; }
+
+            /// <summary>
+            /// Control authority captured on the same actor turn as the rest of
+            /// this projection input; never re-read later to backfill a snapshot.
+            /// </summary>
+            public ControlRegistrySnapshot Control { get; }
+
+            public long ControlVersion { get; }
 
             public TableProjectionEventFacts? FactsFor(TableProjectedEvent value)
             {

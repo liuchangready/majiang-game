@@ -301,7 +301,8 @@ namespace Mahjong.TableRuntime
                 source.Private.Decision,
                 cheat,
                 owner.SleeveTiles,
-                ownerMelds);
+                ownerMelds,
+                source.Private.Control);
 
             PublicMatchView publicView = RebuildPublicMatchView(
                 source.Public,

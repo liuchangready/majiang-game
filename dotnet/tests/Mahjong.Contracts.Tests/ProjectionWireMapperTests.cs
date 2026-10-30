@@ -43,7 +43,12 @@ namespace Mahjong.Protocol.Tests
         {
             for (int seat = 0; seat < 4; seat++)
             {
-                Contracts.PlayerSnapshotView source = PlayerSnapshot(seat);
+                Contracts.PlayerSnapshotView source = PlayerSnapshot(
+                    seat,
+                    control: new Contracts.PlayerControlView(
+                        new Contracts.ControlEpoch(3),
+                        controlledByComputer: seat % 2 == 1,
+                        controlVersion: 4));
                 Wire.PlayerSnapshot wire = Wire.ProjectionWireMapper.MapPlayerSnapshot(source);
                 Wire.Envelope envelope = Envelope(Wire.MessageType.PlayerSnapshot, e => e.PlayerSnapshot = wire);
                 envelope.SeatId = seat;
@@ -59,6 +64,10 @@ namespace Mahjong.Protocol.Tests
                 Assert.Equal(new uint[] { 80, 81, 82 }, actual.PrivateView.ClosedTiles.ToArray());
                 Assert.Equal(83u, actual.PrivateView.DrawnTileId);
                 Assert.Equal(new uint[] { 96, 97 }, actual.PrivateView.SleeveTiles.ToArray());
+                Assert.NotNull(actual.PrivateView.Control);
+                Assert.Equal(3ul, actual.PrivateView.Control.ControlEpoch);
+                Assert.Equal(seat % 2 == 1, actual.PrivateView.Control.ControlledByComputer);
+                Assert.Equal(4ul, actual.PrivateView.Control.ControlVersion);
                 Assert.Single(actual.PrivateView.OwnerMelds);
                 Assert.Equal(Wire.MeldType.ClosedKan, actual.PrivateView.OwnerMelds[0].Type);
                 Assert.Equal(4, actual.PrivateView.OwnerMelds[0].TileIds.Count);
@@ -82,6 +91,37 @@ namespace Mahjong.Protocol.Tests
                 Assert.Equal("ledger-" + seat, actual.PrivateView.Cheat.LedgerEntries[0].EntryId);
                 Assert.Equal(995, actual.PrivateView.Cheat.CheatPoints);
             }
+        }
+
+        [Fact]
+        public void absent_control_state_stays_absent_instead_of_becoming_epoch_zero()
+        {
+            Wire.PlayerSnapshot wire = Wire.ProjectionWireMapper.MapPlayerSnapshot(PlayerSnapshot(0));
+
+            Assert.Null(wire.PrivateView.Control);
+        }
+
+        [Fact]
+        public void present_control_state_round_trips_epoch_zero_and_control_version()
+        {
+            Contracts.PlayerSnapshotView source = PlayerSnapshot(
+                2,
+                control: new Contracts.PlayerControlView(
+                    new Contracts.ControlEpoch(0),
+                    controlledByComputer: false,
+                    controlVersion: 0));
+            Wire.PlayerSnapshot wire = Wire.ProjectionWireMapper.MapPlayerSnapshot(source);
+            Wire.Envelope envelope = Envelope(Wire.MessageType.PlayerSnapshot, e => e.PlayerSnapshot = wire);
+            envelope.SeatId = 2;
+            byte[] bytes = Wire.WireCodec.Encode(envelope);
+            Wire.WireDecodeResult decoded = Wire.WireCodec.Decode(bytes);
+
+            Assert.True(decoded.IsOk);
+            Wire.PlayerControlView control = decoded.Envelope!.PlayerSnapshot.PrivateView.Control;
+            Assert.NotNull(control);
+            Assert.Equal(0ul, control.ControlEpoch);
+            Assert.False(control.ControlledByComputer);
+            Assert.Equal(0ul, control.ControlVersion);
         }
 
         [Fact]
@@ -682,7 +722,10 @@ namespace Mahjong.Protocol.Tests
                 privateView);
         }
 
-        private static Contracts.PlayerSnapshotView PlayerSnapshot(int seat, Contracts.StreamCursor? cursor = null)
+        private static Contracts.PlayerSnapshotView PlayerSnapshot(
+            int seat,
+            Contracts.StreamCursor? cursor = null,
+            Contracts.PlayerControlView? control = null)
         {
             Contracts.PublicSnapshotView publicSnapshot = PublicSnapshot(withSettlement: false, cursor: cursor);
             var cheat = new Contracts.PrivateCheatView(
@@ -770,7 +813,8 @@ namespace Mahjong.Protocol.Tests
                         new uint[] { 98, 99, 100, 101 },
                         null,
                         Contracts.ProtocolConstants.NoSeat)
-                });
+                },
+                control);
 
             return new Contracts.PlayerSnapshotView(
                 publicSnapshot.SessionId,

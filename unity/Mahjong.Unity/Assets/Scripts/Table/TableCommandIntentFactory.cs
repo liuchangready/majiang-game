@@ -162,7 +162,10 @@ namespace Mahjong.Unity.Table
     /// </summary>
     public sealed class TableCommandIntentFactory
     {
-        public const string ControlPayloadFieldCollision = "CONTROL_PAYLOAD_FIELD_COLLISION";
+        public const string ControlStateUnavailable = "CONTROL_STATE_UNAVAILABLE";
+        public const string ControlAlreadyAutomated = "CONTROL_ALREADY_AUTOMATED";
+        public const string ControlAlreadyHuman = "CONTROL_ALREADY_HUMAN";
+        public const string ControlAutomated = "CONTROL_AUTOMATED";
 
         private readonly ITableClientClock _clock;
 
@@ -645,46 +648,79 @@ namespace Mahjong.Unity.Table
         }
 
         /// <summary>
-        /// Seat control is deliberately unavailable in this sub-range. The
-        /// frozen ClaimControl/ReleaseControl validator requires roundId and
-        /// expectedControlEpoch to both be canonical field 1, which cannot be
-        /// encoded. No alternative or invalid payload is generated.
+        /// Reclaims this seat from an automated controller. Every protocol
+        /// value comes from the same confirmed view and caller-supplied owner
+        /// identity; no value is guessed from a missing decision.
         /// </summary>
         public TableCommandIntent CreateClaimControl(
             PlayerTableViewState view,
-            string roundId,
-            ulong expectedControlEpoch,
             TableCommandOwnerContext owner)
         {
-            throw ControlUnavailable(roundId, expectedControlEpoch, owner);
+            return CreateControl(CommandKind.ClaimControl, view, owner);
         }
 
-        /// <summary>See <see cref="CreateClaimControl"/>: the same field collision applies.</summary>
+        /// <summary>Hands this seat to the authoritative automation controller.</summary>
         public TableCommandIntent CreateReleaseControl(
             PlayerTableViewState view,
-            string roundId,
-            ulong expectedControlEpoch,
             TableCommandOwnerContext owner)
         {
-            throw ControlUnavailable(roundId, expectedControlEpoch, owner);
+            return CreateControl(CommandKind.ReleaseControl, view, owner);
         }
 
-        private static TableIntentUnavailableException ControlUnavailable(
-            string roundId,
-            ulong expectedControlEpoch,
+        private TableCommandIntent CreateControl(
+            CommandKind kind,
+            PlayerTableViewState view,
             TableCommandOwnerContext owner)
         {
-            if (owner == null)
+            RequireSubmittable(view, owner, requireHumanControl: false);
+            PlayerControlState control = view.Own!.Control
+                ?? throw Unavailable(
+                    ControlStateUnavailable,
+                    "The confirmed snapshot has no authoritative owner control state; control commands fail closed.");
+            if (string.IsNullOrEmpty(view.Identity.RoundId))
             {
-                throw new ArgumentNullException(nameof(owner));
+                throw Unavailable("ROUND_ID_REQUIRED", "The confirmed snapshot has no round id.");
             }
 
-            return new TableIntentUnavailableException(
-                ControlPayloadFieldCollision,
-                "ClaimControl/ReleaseControl cannot be encoded: CommandPayloadFields.RoundIdField and "
-                + "CommandPayloadFields.ExpectedControlEpoch are both canonical field 1, so no payload can satisfy "
-                + "both required fields (roundId=" + (roundId ?? string.Empty)
-                + ", expectedControlEpoch=" + expectedControlEpoch.ToString(System.Globalization.CultureInfo.InvariantCulture) + ").");
+            if (kind == CommandKind.ReleaseControl && control.ControlledByComputer)
+            {
+                throw Unavailable(ControlAlreadyAutomated, "This seat is already controlled by the computer.");
+            }
+
+            if (kind == CommandKind.ClaimControl && !control.ControlledByComputer)
+            {
+                throw Unavailable(ControlAlreadyHuman, "This seat is already controlled by the owner.");
+            }
+
+            BusinessPayload payload = kind == CommandKind.ClaimControl
+                ? CommandPayloadFactory.ClaimControl(view.Identity.RoundId, control.ControlEpoch)
+                : CommandPayloadFactory.ReleaseControl(view.Identity.RoundId, control.ControlEpoch);
+
+            ProtocolCommand command = CreateCommand(
+                kind,
+                payload,
+                view,
+                owner,
+                view.Identity.RoundId,
+                null,
+                control.ControlEpoch);
+
+            string transition = kind == CommandKind.ClaimControl ? "claim" : "release";
+            return new TableCommandIntent(
+                kind,
+                command,
+                Key(
+                    kind,
+                    view,
+                    null,
+                    null,
+                    null,
+                    transition + "/" + control.ControlEpoch.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+                view.Identity.RoundId,
+                null,
+                control.ControlEpoch,
+                null,
+                null);
         }
 
         private ProtocolCommand CreateCommand(
@@ -739,7 +775,10 @@ namespace Mahjong.Unity.Table
             return result;
         }
 
-        private void RequireSubmittable(PlayerTableViewState view, TableCommandOwnerContext owner)
+        private void RequireSubmittable(
+            PlayerTableViewState view,
+            TableCommandOwnerContext owner,
+            bool requireHumanControl = true)
         {
             if (view == null)
             {
@@ -759,6 +798,21 @@ namespace Mahjong.Unity.Table
             if (!view.CanSubmit)
             {
                 throw Unavailable("NOT_SUBMITTABLE", "The confirmed view is not in a submittable ready/unpaused state.");
+            }
+
+            if (requireHumanControl)
+            {
+                if (view.Own.Control == null)
+                {
+                    throw Unavailable(
+                        ControlStateUnavailable,
+                        "The confirmed snapshot has no authoritative owner control state; actions fail closed.");
+                }
+
+                if (view.Own.Control.ControlledByComputer)
+                {
+                    throw Unavailable(ControlAutomated, "The computer currently controls this seat; reclaim control first.");
+                }
             }
 
             if (!string.Equals(owner.ScopeId.Value, view.Identity.ScopeId, StringComparison.Ordinal))

@@ -32,6 +32,7 @@ using MarkedTileView = Mahjong.Contracts.Wire.MarkedTileView;
 using BeamSwapView = Mahjong.Contracts.Wire.BeamSwapView;
 using BeamSwapCandidateView = Mahjong.Contracts.Wire.BeamSwapCandidateView;
 using ShufflePreparationView = Mahjong.Contracts.Wire.ShufflePreparationView;
+using WirePlayerControlView = Mahjong.Contracts.Wire.PlayerControlView;
 
 namespace Mahjong.Unity.TableModel.Tests
 {
@@ -54,7 +55,11 @@ namespace Mahjong.Unity.TableModel.Tests
             int seat = 0,
             bool includePrivate = true,
             bool includeDecision = true,
-            bool includeCheat = true)
+            bool includeCheat = true,
+            bool includeControl = true,
+            bool controlledByComputer = false,
+            ulong controlEpoch = 7UL,
+            long controlVersion = 1L)
         {
             var snapshot = new PlayerSnapshot
             {
@@ -70,7 +75,14 @@ namespace Mahjong.Unity.TableModel.Tests
 
             if (includePrivate)
             {
-                snapshot.PrivateView = PrivateView(seat, includeDecision, includeCheat);
+                snapshot.PrivateView = PrivateView(
+                    seat,
+                    includeDecision,
+                    includeCheat,
+                    includeControl,
+                    controlledByComputer,
+                    controlEpoch,
+                    controlVersion);
             }
 
             return snapshot;
@@ -156,13 +168,30 @@ namespace Mahjong.Unity.TableModel.Tests
             return board;
         }
 
-        public static PlayerPrivateView PrivateView(int seat = 0, bool includeDecision = true, bool includeCheat = true)
+        public static PlayerPrivateView PrivateView(
+            int seat = 0,
+            bool includeDecision = true,
+            bool includeCheat = true,
+            bool includeControl = true,
+            bool controlledByComputer = false,
+            ulong controlEpoch = 7UL,
+            long controlVersion = 1L)
         {
             var view = new PlayerPrivateView
             {
                 Seat = seat,
                 Furiten = false
             };
+
+            if (includeControl)
+            {
+                view.Control = new WirePlayerControlView
+                {
+                    ControlEpoch = controlEpoch,
+                    ControlledByComputer = controlledByComputer,
+                    ControlVersion = checked((ulong)controlVersion)
+                };
+            }
 
             for (uint tile = 0; tile < 13; tile++)
             {
