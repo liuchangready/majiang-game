@@ -12,6 +12,26 @@
     finally. The application payload key is generated in memory per run and is
     never written to a log, SQL file or the repository.
 
+    Port selection is explicit-or-bounded-default:
+      * -Port <n> is EXACT. If it is invalid, reserved, already listened on, or
+        refuses an exclusive IPv4 loopback bind, the run is BLOCKED; the port is
+        never silently replaced.
+      * Without -Port, the wrapper starts at -DefaultPort (55592) and takes the
+        first of at most -PortCandidateLimit (default 16) consecutive ports that
+        has no active TCP listener AND accepts an exclusive 127.0.0.1 bind. The
+        lobby port is skipped when -RunUnifiedVerification is set. If every
+        candidate fails, the run is BLOCKED and names each candidate state; it
+        never falls through to an unverified port.
+
+    A connect-only probe is insufficient: Windows can reject bind() with
+    WSAEACCES (10013, "Permission denied") for an administered/excluded port
+    range or for a port held by another exclusive-address socket while nothing
+    accepts connections. The probe therefore checks the active-listener table
+    and then performs a real exclusive bind. It releases that socket before
+    pg_ctl binds, so a small TOCTOU window remains; a genuine startup failure is
+    reported as FAIL with the native pg_ctl exit code and the preserved server
+    log, and is never retried, hidden, or remapped to another port.
+
     Stages:
       1. isolated cluster + two idempotent migrations (the test assembly repeats)
       2. fresh Infrastructure/Test/CrashWorker builds
@@ -29,7 +49,12 @@ param(
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
     [string]$DotnetPath,
-    [int]$Port = 55592,
+    # Explicit port: used exactly or the run is BLOCKED; never substituted.
+    [int]$Port,
+    # First candidate only when -Port was not supplied.
+    [int]$DefaultPort = 55592,
+    # Upper bound on consecutive default-port candidates (1..64).
+    [int]$PortCandidateLimit = 16,
     [string]$Root,
     [string]$LogDir,
     [string]$PgZipPath,
@@ -58,6 +83,8 @@ $script:Lines = New-Object System.Collections.Generic.List[string]
 $script:Exit = 0
 $script:ClusterStarted = $false
 $script:OwnedMarker = $null
+$script:PortSelection = $null
+$script:EnvRestoreRecords = @()
 $script:PgBin = Join-Path $Root 'pgsql\bin'
 $script:PgCtl = Join-Path $script:PgBin 'pg_ctl.exe'
 $script:InitDb = Join-Path $script:PgBin 'initdb.exe'
@@ -114,7 +141,18 @@ function Get-Sha256([string]$Path) {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
 }
 
-function Test-PortInUse([int]$Value) {
+function Get-TextSha256([string]$Text) {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($Text)
+        return ([System.BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '')
+    }
+    finally { $sha.Dispose() }
+}
+
+# Connect-only liveness check. Used ONLY by cleanup to decide whether the owned
+# postmaster is currently accepting connections; it is NOT a port preflight.
+function Test-TcpListenerReachable([int]$Value) {
     $client = New-Object System.Net.Sockets.TcpClient
     try {
         $task = $client.ConnectAsync('127.0.0.1', $Value)
@@ -123,6 +161,215 @@ function Test-PortInUse([int]$Value) {
     }
     catch { return $false }
     finally { $client.Dispose() }
+}
+
+<#
+.SYNOPSIS
+    Proves whether PostgreSQL could actually bind 127.0.0.1:<port> right now.
+.DESCRIPTION
+    A successful TCP connect is not a port-availability proof. On Windows,
+    bind() can fail with WSAEACCES (10013) while the port has no listener at all
+    (administered/excluded range, or another socket holding the port with
+    SO_EXCLUSIVEADDRUSE). This probe therefore:
+      1. rejects out-of-range and reserved ports,
+      2. consults the OS active-listener table (no socket side effects),
+      3. attempts a real exclusive IPv4 loopback bind and classifies the socket
+         error instead of collapsing every failure to "free" or "in use".
+    The probe closes its socket before returning, so it cannot reserve the port
+    for pg_ctl; that TOCTOU window is inherent and is reported honestly later.
+#>
+function Get-PortProbe {
+    param(
+        [int]$Value,
+        [string]$Address = '127.0.0.1',
+        [int[]]$ReservedPorts = @(5432, 5433, 55460, 55463)
+    )
+    $result = [ordered]@{
+        port = $Value
+        address = $Address
+        state = 'Unbindable'
+        errorCode = 0
+        detail = ''
+    }
+    if ($Value -lt 1 -or $Value -gt 65535) {
+        $result.state = 'Invalid'
+        $result.detail = "port $Value is outside 1..65535"
+        return $result
+    }
+    if ($ReservedPorts -contains $Value) {
+        $result.state = 'Reserved'
+        $result.detail = "port $Value is reserved by this wrapper"
+        return $result
+    }
+
+    $listeners = @()
+    try {
+        $listeners = @([System.Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners() |
+            Where-Object { $_.Port -eq $Value })
+    }
+    catch {
+        # A listener-table read failure must not be turned into "free": fall
+        # through to the real bind probe, which is authoritative.
+        $result.detail = "active-listener table unavailable: $($_.Exception.Message). "
+    }
+    if ($listeners.Count -gt 0) {
+        $result.state = 'InUse'
+        $result.detail += 'active TCP listener(s): ' + (($listeners | ForEach-Object { "$($_.Address):$($_.Port)" }) -join ', ')
+        return $result
+    }
+
+    $listener = $null
+    try {
+        $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Parse($Address), $Value)
+        # Match the Windows semantics PostgreSQL relies on: an exclusive
+        # address-use socket is exactly what makes a foreign reservation
+        # surface as WSAEACCES rather than a silent shared bind.
+        $listener.Server.ExclusiveAddressUse = $true
+        $listener.Start()
+        $result.state = 'Bindable'
+        return $result
+    }
+    catch {
+        $socketException = $_.Exception
+        while ($null -ne $socketException -and -not ($socketException -is [System.Net.Sockets.SocketException])) {
+            $socketException = $socketException.InnerException
+        }
+        if ($null -ne $socketException) {
+            $result.errorCode = [int]$socketException.SocketErrorCode
+            $result.detail += $socketException.Message
+            switch ($result.errorCode) {
+                10013 { $result.state = 'AccessDenied' }
+                10048 { $result.state = 'InUse' }
+                default { $result.state = 'Unbindable' }
+            }
+        }
+        else {
+            $result.detail += $_.Exception.Message
+        }
+        return $result
+    }
+    finally {
+        if ($null -ne $listener) {
+            try { $listener.Stop() } catch { }
+        }
+    }
+}
+
+<#
+.SYNOPSIS
+    Resolves the one table port this run may use.
+.DESCRIPTION
+    Explicit mode (-ExplicitPort) is exact and fails closed; it never falls
+    through to another port. Default mode scans at most -CandidateLimit
+    consecutive ports from -DefaultPort and returns the first that is bindable
+    and not excluded (the lobby port). Every rejection is recorded so an
+    exhausted scan is a named BLOCKED, not a fake PASS.
+    -Probe exists as a narrow dependency-injection seam for the self-test (a
+    synthetic WSAEACCES cannot be created on every machine); production passes
+    no -Probe and uses Get-PortProbe.
+#>
+function Resolve-TablePort {
+    param(
+        [int]$RequestedPort,
+        [switch]$ExplicitPort,
+        [int]$DefaultPort = 55592,
+        [int]$CandidateLimit = 16,
+        [int[]]$ReservedPorts = @(5432, 5433, 55460, 55463),
+        [int[]]$ExcludedPorts = @(),
+        [scriptblock]$Probe = $null
+    )
+    if ($CandidateLimit -lt 1 -or $CandidateLimit -gt 64) {
+        throw "BLOCKED: port candidate limit $CandidateLimit is outside 1..64."
+    }
+    if (-not $ExplicitPort -and ($DefaultPort -lt 1 -or $DefaultPort -gt 65535)) {
+        throw "BLOCKED: default port $DefaultPort is outside 1..65535."
+    }
+
+    $invokeProbe = {
+        param([int]$Candidate)
+        if ($null -eq $Probe) {
+            return (Get-PortProbe -Value $Candidate -ReservedPorts $ReservedPorts)
+        }
+        return (& $Probe $Candidate $ReservedPorts)
+    }
+
+    if ($ExplicitPort) {
+        $probeResult = & $invokeProbe $RequestedPort
+        if ($ExcludedPorts -contains $RequestedPort) {
+            throw "BLOCKED: explicit table port $RequestedPort equals the lobby port; refusing to share or silently substitute another port."
+        }
+        if ($probeResult.state -ne 'Bindable') {
+            throw ("BLOCKED: explicit table port 127.0.0.1:$RequestedPort is not usable " +
+                "(state=$($probeResult.state), socketError=$($probeResult.errorCode), detail=$($probeResult.detail)). " +
+                'Refusing to substitute another port.')
+        }
+        return [ordered]@{ mode = 'explicit'; port = $RequestedPort; candidateIndex = 0; candidates = @("$RequestedPort=Bindable") }
+    }
+
+    $candidates = @()
+    for ($offset = 0; $offset -lt $CandidateLimit; $offset++) {
+        $candidate = $DefaultPort + $offset
+        if ($candidate -gt 65535) { break }
+        $candidates += $candidate
+    }
+    if ($candidates.Count -eq 0) {
+        throw "BLOCKED: default port $DefaultPort yields no candidate in 1..65535."
+    }
+
+    $states = @()
+    for ($index = 0; $index -lt $candidates.Count; $index++) {
+        $candidate = $candidates[$index]
+        if ($ExcludedPorts -contains $candidate) {
+            $states += "$candidate=lobby-excluded"
+            continue
+        }
+        $probeResult = & $invokeProbe $candidate
+        $states += "$candidate=$($probeResult.state)"
+        if ($probeResult.state -eq 'Bindable') {
+            return [ordered]@{ mode = 'default'; port = $candidate; candidateIndex = $index; candidates = $states }
+        }
+    }
+
+    throw ("BLOCKED: no bindable default table port in $($candidates[0])..$($candidates[-1]) " +
+        "($($candidates.Count) candidate(s), limit $CandidateLimit): $($states -join '; '). " +
+        'Refusing to guess an unverified port.')
+}
+
+function Get-LogTail([string]$Path, [int]$Lines = 12) {
+    if (-not (Test-Path -LiteralPath $Path)) { return '(log missing)' }
+    try {
+        $text = @(Get-Content -LiteralPath $Path -Tail $Lines -ErrorAction Stop)
+        return (($text -join ' | ') -replace '\s+', ' ').Trim()
+    }
+    catch { return "(log unreadable: $($_.Exception.Message))" }
+}
+
+# Restores every captured process variable and returns value-free evidence:
+# names, whether the variable existed before, and a SHA-256 of the restored
+# value (or a marker for unset/empty). Secret values are never recorded.
+function Restore-ProcessEnvironment {
+    param([hashtable]$Snapshot)
+    $records = @()
+    foreach ($name in @($Snapshot.Keys | Sort-Object)) {
+        $target = $Snapshot[$name]
+        if ($null -eq $target) {
+            Remove-Item -LiteralPath ('Env:' + $name) -ErrorAction SilentlyContinue
+        }
+        else {
+            Set-Item -LiteralPath ('Env:' + $name) -Value $target -ErrorAction Stop
+        }
+        $item = Get-Item -LiteralPath ('Env:' + $name) -ErrorAction SilentlyContinue
+        $actual = if ($null -eq $item) { $null } else { [string]$item.Value }
+        $restored = if ($null -eq $target) { $null -eq $actual } else { $actual -ceq $target }
+        $sha = if ($null -eq $target) { '(unset)' } elseif ($target -eq '') { '(empty)' } else { Get-TextSha256 $target }
+        $records += [ordered]@{
+            variable = $name
+            wasSetBeforeRun = ($null -ne $target)
+            restored = [bool]$restored
+            restoredSha256 = $sha
+        }
+    }
+    return $records
 }
 
 function Invoke-Native {
@@ -250,11 +497,15 @@ function Assert-OwnedCluster {
 }
 
 function Initialize-Cluster {
-    if (Test-PortInUse -Value $Port) {
-        throw "BLOCKED: port $Port is already in use; refusing to attach to an unknown PostgreSQL."
-    }
-    if ($Port -eq 5432 -or $Port -eq 5433 -or $Port -eq 55460 -or $Port -eq 55463) {
-        throw "BLOCKED: port $Port is reserved; choose a unique P5.2 test port."
+    # Narrow TOCTOU recheck: the port was proven bindable moments ago, but do
+    # not silently continue if it changed between preflight and initdb. Any
+    # later loss (after this point) is a genuine pg_ctl failure, reported with
+    # its native exit and preserved log rather than retried or remapped.
+    $recheck = Get-PortProbe -Value $Port
+    if ($recheck.state -ne 'Bindable') {
+        throw ("BLOCKED: port 127.0.0.1:$Port was bindable at preflight but is not now " +
+            "(state=$($recheck.state), socketError=$($recheck.errorCode), detail=$($recheck.detail)); " +
+            'refusing to retry or substitute a different port.')
     }
 
     if (Test-Path -LiteralPath $Root) {
@@ -338,7 +589,21 @@ function Initialize-Cluster {
     $startCode = Invoke-Native -FilePath $script:PgCtl -Arguments @(
         '-D', $script:DataDir, '-l', $script:PgLog, '-w', '-t', '60', 'start'
     ) -LogPath $startLog -TimeoutSeconds 90
-    if ($startCode -ne 0) { throw "pg_ctl start failed with exit $startCode (see $startLog)." }
+    if ($startCode -ne 0) {
+        # Preserve the native exit code and BOTH original logs. Do not retry
+        # pg_ctl and do not delete/stop any other cluster.
+        $tail = Get-LogTail -Path $script:PgLog -Lines 20
+        $diagnostics = @(
+            "pg_ctl native exit: $startCode",
+            "pg_ctl log: $startLog",
+            "server log: $($script:PgLog)",
+            "server log tail: $tail"
+        ) -join [Environment]::NewLine
+        Set-Content -LiteralPath (Join-Path $script:LogDir 'pg-start-diagnostics.txt') -Value $diagnostics -Encoding utf8
+        Add-Stage 'pg-start' 'FAIL' $startCode ("pg_ctl native exit=$startCode; server log tail: " + $tail)
+        throw "pg_ctl start failed with native exit $startCode (see $startLog and $($script:PgLog)). $tail"
+    }
+    Add-Stage 'pg-start' 'PASS' $startCode "pg_ctl native exit=0; server log=$($script:PgLog)"
     $script:ClusterStarted = $true
     Wait-PgReady
     $dataDir = Get-PgDataDirectory
@@ -380,7 +645,11 @@ function Restart-ClusterImmediate {
     $startCode = Invoke-Native -FilePath $script:PgCtl -Arguments @(
         '-D', $script:DataDir, '-l', $script:PgLog, '-w', '-t', '60', 'start'
     ) -LogPath $startLog -TimeoutSeconds 90
-    if ($startCode -ne 0) { throw "pg_ctl restart start failed with exit $startCode." }
+    if ($startCode -ne 0) {
+        $tail = Get-LogTail -Path $script:PgLog -Lines 20
+        Add-Stage 'pg-restart' 'FAIL' $startCode ("pg_ctl restart native exit=$startCode; server log tail: " + $tail)
+        throw "pg_ctl restart start failed with native exit $startCode (see $startLog and $($script:PgLog)). $tail"
+    }
     $script:ClusterStarted = $true
     Wait-PgReady
     $after = Get-PgScalar -Database 'postgres' -Sql 'SELECT pg_postmaster_start_time()'
@@ -412,7 +681,7 @@ function Restart-ClusterImmediate {
 function Stop-And-RemoveCluster {
     if (-not (Test-Path -LiteralPath $Root)) { return }
     $marker = Assert-OwnedCluster
-    if (Test-PortInUse -Value $Port) {
+    if (Test-TcpListenerReachable -Value $Port) {
         $dataDir = Get-PgDataDirectory
         if (-not [string]::Equals([System.IO.Path]::GetFullPath($dataDir), [System.IO.Path]::GetFullPath($script:DataDir), [StringComparison]::OrdinalIgnoreCase)) {
             throw "Refusing cleanup: listener data_directory is not this cluster."
@@ -508,6 +777,25 @@ function Assert-XmlGatingSelfTest {
 try {
     New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $LogDir 'tmp') -Force | Out-Null
+
+    # Resolve the port BEFORE any cluster directory, download or build. A
+    # caller-supplied -Port is exact; only the default path may scan, and that
+    # scan is bounded and skips the lobby port when unified verification runs.
+    $explicitPort = $PSBoundParameters.ContainsKey('Port')
+    $excludedPorts = @()
+    if ($RunUnifiedVerification) {
+        if ($LobbyPort -lt 1 -or $LobbyPort -gt 65535) {
+            throw "BLOCKED: lobby port $LobbyPort is outside 1..65535."
+        }
+        $excludedPorts = @($LobbyPort)
+    }
+    $portDecision = Resolve-TablePort -RequestedPort $Port -ExplicitPort:$explicitPort `
+        -DefaultPort $DefaultPort -CandidateLimit $PortCandidateLimit -ExcludedPorts $excludedPorts
+    $Port = [int]$portDecision.port
+    $script:PortSelection = $portDecision
+    Add-Stage 'port-preflight' 'PASS' 0 ("mode={0} port=127.0.0.1:{1} candidateIndex={2} candidates=[{3}]" -f
+        $portDecision.mode, $Port, $portDecision.candidateIndex, ($portDecision.candidates -join ', '))
+
     if (-not $DotnetPath) {
         if ($env:DOTNET_ROOT -and (Test-Path -LiteralPath (Join-Path $env:DOTNET_ROOT 'dotnet.exe'))) {
             $DotnetPath = Join-Path $env:DOTNET_ROOT 'dotnet.exe'
@@ -717,9 +1005,11 @@ try {
 }
 catch {
     $message = $_.Exception.Message
-    Write-Step ("FAIL: " + $message)
-    Add-Stage 'result' 'FAIL' 1 $message
-    $script:Exit = 1
+    $blocked = $message.StartsWith('BLOCKED:', [StringComparison]::OrdinalIgnoreCase)
+    $prefix = if ($blocked) { '' } else { 'FAIL: ' }
+    Write-Step ($prefix + $message)
+    Add-Stage 'result' $(if ($blocked) { 'BLOCKED' } else { 'FAIL' }) $(if ($blocked) { 2 } else { 1 }) $message
+    $script:Exit = if ($blocked) { 2 } else { 1 }
 }
 finally {
     try {
@@ -744,18 +1034,40 @@ finally {
         if ($script:Exit -eq 0) { $script:Exit = 1 }
     }
 
-    foreach ($name in $script:EnvNames) {
-        [System.Environment]::SetEnvironmentVariable($name, $script:EnvSnapshot[$name], 'Process')
+    # Restore every captured process variable even after a preflight refusal.
+    # The summary records names and value hashes only, never the values.
+    try {
+        $script:EnvRestoreRecords = @(Restore-ProcessEnvironment -Snapshot $script:EnvSnapshot)
+        $notRestored = @($script:EnvRestoreRecords | Where-Object { -not $_.restored })
+        if ($notRestored.Count -gt 0) {
+            Write-Step ("environment restore FAIL: " + (($notRestored | ForEach-Object { $_.variable }) -join ', '))
+            if ($script:Exit -eq 0) { $script:Exit = 1 }
+        }
+    }
+    catch {
+        Write-Step ("environment restore exception: " + $_.Exception.Message)
+        Add-Stage 'environment-restore' 'FAIL' 1 $_.Exception.Message
+        if ($script:Exit -eq 0) { $script:Exit = 1 }
     }
 
     try {
+        $portMode = ''
+        $portCandidates = @()
+        if ($null -ne $script:PortSelection) {
+            $portMode = [string]$script:PortSelection.mode
+            $portCandidates = @($script:PortSelection.candidates)
+        }
         $summary = [ordered]@{
             generatedUtc = (Get-Date).ToUniversalTime().ToString('o')
             sdk = $(if ($sdkVersion) { $sdkVersion } else { '' })
             port = $Port
+            portMode = $portMode
+            portCandidates = $portCandidates
             database = $script:Database
             restoreDatabase = $script:RestoreDatabase
             payloadKeyRecorded = $false
+            environmentRestored = (@($script:EnvRestoreRecords | Where-Object { -not $_.restored }).Count -eq 0)
+            environment = $script:EnvRestoreRecords
             stages = $script:Stages
             lines = $script:Lines
             exit = $script:Exit
@@ -775,5 +1087,7 @@ finally {
     catch { Write-Step ("evidence manifest warning: " + $_.Exception.Message) }
 }
 
-if ($script:Exit -eq 0) { Write-Host 'P52-TABLE-POSTGRES-PASS' } else { Write-Host 'P52-TABLE-POSTGRES-FAIL' }
+if ($script:Exit -eq 0) { Write-Host 'P52-TABLE-POSTGRES-PASS' }
+elseif ($script:Exit -eq 2) { Write-Host 'P52-TABLE-POSTGRES-BLOCKED' }
+else { Write-Host 'P52-TABLE-POSTGRES-FAIL' }
 exit $script:Exit
