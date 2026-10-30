@@ -34,7 +34,9 @@ not a G2–G5 approval, and not a production acceptance. V4 remains the producti
 
 The LocalHost full-suite failure is real and is retained. Subsequent clean runs were used only to
 characterize it; they do not erase the first failure. The failure is **not** in either patched test
-hunk: it is the unpatched `RonCandidateAndSubmissionTest` timing path described in §5.1.
+hunk: it is the unpatched `RonCandidateAndSubmissionTest` timing path described in §5.1. A later
+caller recheck of the existing `combo` reported 115 passed / 0 failed / 0 skipped, exit 0; that
+observation is recorded in §5.1 but is not one of this report's 10 runs and does not erase run 1.
 
 ## 1. Inputs and identity
 
@@ -209,6 +211,11 @@ ron rejected: STALE_STATE_VERSION
 The console log records `失败: 1，通过: 114，已跳过: 0，总计: 115`; the command's native exit was 1.
 There were **0 skipped and 0 not-run** cases in every full run.
 
+**Later caller recheck (recorded, not this report's run).** The caller reports one additional Release
+`dotnet test` on the existing `combo` with **115 passed / 0 failed / 0 skipped, native exit 0**. No
+log for that invocation was supplied to this report; it is retained as a later observation and does
+not erase, replace, or explain away the run-1 failure above.
+
 **Evidence limitation.** The raw xUnit v3 `TestResults` file for run 1 was overwritten by a later
 full-suite run before it could be copied. The console log and `failure-transcript.txt` preserve the
 failure, but the transcript is explicitly **not** the raw framework file. The loss is reported rather
@@ -361,6 +368,7 @@ retained in the record and is **not** presented as a passing gate.
 | Category | Result |
 |---|---|
 | LocalHost full-suite failures | **1** — `RonCandidateAndSubmissionTest`, `STALE_STATE_VERSION`, run 1 |
+| Later caller recheck (not this report's run) | 115 passed / 0 failed / 0 skipped, exit 0; no log supplied; does not erase run 1 |
 | LocalHost full-suite skips / not-run | 0 / 0 in every run |
 | Patch-target failures | 0 — focused 9/9 PASS |
 | Unified test failures / skips / not-run | 0 / 0 / 0 |
@@ -419,37 +427,119 @@ Ignored evidence root:
 | `evidence/candidate-identity.txt` | `73200D058270DE11488C1C788E51ABE79068CF196C55E278D92298028717E811` |
 | `evidence/commands.txt` | `F74B46BE663E01249C13840CD8BAA844257DBCDFD9A6E14718A7D58A5BFD549B` |
 | `SHA256SUMS.txt` (65 entries) | `7B69E3B7ABED594DE4849FF2AE235CB34EFCC346FB55BEC6787541DFEB67A42E` |
+| `repro-20261030/commands.log` (fresh §9) | `6BE679BF8B535DD887B1ABAE4B4325B522235EABCF88C8626B7A8F68249BD195` |
+| `repro-20261030/release-build.log` | `F7204D681CE17D5656739DDDD1641A565F683064C2C5C36BE006FF75866EFA5B` |
+| `repro-20261030/release-test.log` | `847E14C5849CB9E580111F354BCD19B62B13E8C1C45C8F23614A2FE995D96700` |
 
-The manifest covers stable evidence files; it excludes transient compiler temp files and the failed
-dump attempt. The exact archive and both patches remain under the ignored evidence root.
+The 65-entry manifest covers the original stable evidence files; it excludes transient compiler temp
+files and the failed dump attempt. The fresh §9 logs above are separate from that manifest. The exact
+archive and both patches remain under the ignored evidence root.
 
 ## 9. Reproduction summary
 
+Run the whole block from the worktree root
+(`D:\majiang-wt\localhost-combined-gate-20261030` or the checkout root). It creates a fresh
+`repro-20261030` tree, extracts the exact `00cd02d` archive twice (pristine `candidate` plus working
+`combo`), creates a local-only git seed for `git apply`, applies both patches using **absolute**
+patch paths, checks the postimages, and runs the LocalHost Release build/test in `combo`.
+
+Correction note: the earlier draft passed worktree-relative patch paths to
+`git -C <combo> apply`; Git resolved them against `<combo>` and exited 128. The script below uses
+absolute `$patch1`/`$patch2`, creates `combo` explicitly, and runs the tests from that patched copy.
+
 ```powershell
-# exact LF candidate
-git -c core.eol=lf -c core.autocrlf=false archive --format=tar `
-  -o build/localhost-combined-gate-20261030/revalidation-20261030/pr20-00cd02d-lf.tar 00cd02d
-tar -xf build/localhost-combined-gate-20261030/revalidation-20261030/pr20-00cd02d-lf.tar `
-  -C build/localhost-combined-gate-20261030/revalidation-20261030/candidate
+$repo = (Resolve-Path '.').Path
+if (-not (Test-Path (Join-Path $repo 'dotnet/Mahjong.sln'))) {
+    throw 'Run this block from the worktree root.'
+}
 
-# apply accepted patches byte-exact
-git -C build/localhost-combined-gate-20261030/revalidation-20261030/combo apply --check --whitespace=error-all `
-  build/localhost-combined-gate-20261030/V5-LOCALHOST-FURITEN-RACE-REMEDY-TEST-FIX-20261030.patch
-git -C build/localhost-combined-gate-20261030/revalidation-20261030/combo apply --whitespace=error-all `
-  build/localhost-combined-gate-20261030/V5-LOCALHOST-FURITEN-RACE-REMEDY-TEST-FIX-20261030.patch
-git -C build/localhost-combined-gate-20261030/revalidation-20261030/combo apply --check --whitespace=error-all `
-  build/localhost-combined-gate-20261030/V5-LOCALHOST-CALLER-113-115-TWO-FIXES-20261030.patch
-git -C build/localhost-combined-gate-20261030/revalidation-20261030/combo apply --whitespace=error-all `
-  build/localhost-combined-gate-20261030/V5-LOCALHOST-CALLER-113-115-TWO-FIXES-20261030.patch
+$stageRoot = Join-Path $repo 'build/localhost-combined-gate-20261030'
+$stage = Join-Path $stageRoot 'repro-20261030'
+if (Test-Path -LiteralPath $stage) { throw "Refusing to reuse existing $stage" }
+$candidate = Join-Path $stage 'candidate'
+$combo = Join-Path $stage 'combo'
+New-Item -ItemType Directory -Force -Path $stage, $candidate, $combo | Out-Null
 
-# LocalHost full Release
-dotnet build dotnet/tests/Mahjong.LocalHost.Tests/Mahjong.LocalHost.Tests.csproj -c Release --nologo
-dotnet test dotnet/tests/Mahjong.LocalHost.Tests/Mahjong.LocalHost.Tests.csproj -c Release --no-restore
+# Absolute patch paths: `git -C $combo apply` resolves a RELATIVE patch path
+# against $combo, not against the caller's working directory.
+$patch1 = Join-Path $stageRoot 'V5-LOCALHOST-FURITEN-RACE-REMEDY-TEST-FIX-20261030.patch'
+$patch2 = Join-Path $stageRoot 'V5-LOCALHOST-CALLER-113-115-TWO-FIXES-20261030.patch'
+$archive = Join-Path $stage 'pr20-00cd02d-lf.tar'
 
-# unified verifier through the real-PG wrapper (see §5.4 for exact arguments)
-powershell.exe -NoProfile -ExecutionPolicy Bypass `
-  -File tools/ci/verify-v5-table-postgres.ps1 -Configuration Release -RunUnifiedVerification
+# Exact LF archive; extract once for candidate and once for combo.
+git -c core.eol=lf -c core.autocrlf=false archive --format=tar -o $archive 00cd02d
+tar -xf $archive -C $candidate
+tar -xf $archive -C $combo
+
+# Local seed only: gives `git apply` an index; not a source commit.
+git -C $combo init -q
+git -C $combo config core.autocrlf false
+git -C $combo config core.eol lf
+git -C $combo config user.name repro
+git -C $combo config user.email repro@example.invalid
+git -C $combo add -A
+git -C $combo commit -q -m 'exact 00cd02d archive'
+
+# Apply both accepted patches with clean applicability checks.
+git -C $combo apply --check --whitespace=error-all $patch1
+git -C $combo apply --whitespace=error-all $patch1
+git -C $combo apply --check --whitespace=error-all $patch2
+git -C $combo apply --whitespace=error-all $patch2
+
+# Postimages and production-preservation checks.
+git -C $combo hash-object dotnet/tests/Mahjong.LocalHost.Tests/LocalControlTests.cs
+# e1b9f7a985cdf305abebe8bd70a5b83ab49fd88d
+git -C $combo hash-object dotnet/tests/Mahjong.LocalHost.Tests/LocalHostCandidateAcceptanceTests.cs
+# e6779677ff56ab3eb5a80f2d04015af9472fdf44
+git -C $combo hash-object dotnet/tests/Mahjong.LocalHost.Tests/P41Harness.cs
+# 273bba4b9ad8d865774948e5bf88a1a432553e88
+if (git -C $combo status --porcelain -- dotnet/src) {
+    throw 'production tree changed'
+}
+git -C $combo status --porcelain -- dotnet/tests
+# Expected: exactly the three modified test files above.
+
+$dotnet = (Get-Command dotnet -ErrorAction Stop).Source
+& $dotnet build "$combo/dotnet/tests/Mahjong.LocalHost.Tests/Mahjong.LocalHost.Tests.csproj" -c Release --nologo
+& $dotnet test "$combo/dotnet/tests/Mahjong.LocalHost.Tests/Mahjong.LocalHost.Tests.csproj" -c Release --no-restore
 ```
 
-The full command list is preserved at `evidence/commands.txt`. No source commit, push, PR, CI,
-delegation, trust, or Unity change was made by this validation.
+**Verified result of the fresh reproduction** (logged `repro-20261030`, 2026-10-30):
+
+| Step | Native exit | Result |
+|---|---:|---|
+| archive / extract candidate / extract combo | 0 / 0 / 0 | exact LF archive, 2,332 files |
+| local init / config / add / commit | 0 / 0 / 0 / 0 | local seed only |
+| patch 1 check / apply | 0 / 0 | furiten patch |
+| patch 2 check / apply | 0 / 0 | caller patch |
+| postimages | — | `e1b9f7a9…`, `e6779677…`, `273bba4b…` |
+| `dotnet/src` status | — | empty |
+| `dotnet test` status | — | only the three test files modified |
+| Release build | 0 | 0 warnings / 0 errors |
+| Release `dotnet test` | 0 | **115 passed / 0 failed / 0 skipped**, 28s 608ms |
+
+This fresh LocalHost-only reproduction passed. The exact §9 block was also executed a second time in
+a separate `repro-20261030-exact` copy and returned **115 / 0 / 0, exit 0, 29s 667ms** (raw
+framework log SHA-256 `11BF5196D6565C47CA129E61B3C53DB719F760B9C0F2FBF14DE93D91D9893763`). Both
+are additional clean runs; neither erases the run-1 intermittent failure recorded in §5.1.
+
+Optional full verifier on the same `combo` (same real-PG wrapper as §5.4; the wrapper cleanup
+long-path defect in §5.5 still applies):
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File "$combo/tools/ci/verify-v5-table-postgres.ps1" `
+  -Configuration Release -RunUnifiedVerification -Port 55612 -LobbyPort 55613 `
+  -Root "$combo/artifacts/p52-pg-cluster-repro-20261030" `
+  -PgZipPath D:/majiang-pg-tmp/cache/postgresql-16.10-1-windows-x64-binaries.zip `
+  -LogDir "$stage/pg-table-wrapper" -UnifiedLogDir "$stage/unified" `
+  -DotnetPath $dotnet
+```
+
+The full unified run in §5.4 was executed on `revalidation-20261030`, not repeated in this
+LocalHost-only `repro-20261030`; the command above is the same wrapper with the fresh paths.
+
+The original run list is preserved at `evidence/commands.txt`; the corrected reproduction transcript
+is `repro-20261030/commands.log` (SHA-256
+`6BE679BF8B535DD887B1ABAE4B4325B522235EABCF88C8626B7A8F68249BD195`). No source commit, push, PR,
+CI, delegation, trust, or Unity change was made by this validation.
