@@ -6,6 +6,7 @@ using System.IO;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Text.RegularExpressions;
 using Mahjong.Client;
 using Mahjong.Contracts;
 using Mahjong.Unity.App;
@@ -304,6 +305,7 @@ namespace Mahjong.Unity.Tests.PlayMode
 
                 if (!terminal)
                 {
+                    LogAssert.Expect(LogType.Error, new Regex("PLAYMODE_ROUND_NOT_TERMINAL"));
                     Debug.LogError(
                         "PLAYMODE_ROUND_NOT_TERMINAL phase=" + view.Board.Phase +
                         " seat=" + view.Board.CurrentSeat +
@@ -355,6 +357,75 @@ namespace Mahjong.Unity.Tests.PlayMode
                 {
                 }
             }
+        }
+
+        [UnityTest]
+        public IEnumerator DriverFaultFixture_NoDecisionFailsBounded()
+        {
+            yield return RunFaultFixture("NO_DECISION", 42, "NO_DECISION");
+        }
+
+        [UnityTest]
+        public IEnumerator DriverFaultFixture_SubmitTimeoutKeepsFailure()
+        {
+            yield return RunFaultFixture("SUBMIT_TIMEOUT", 43, "SUBMIT_TIMEOUT");
+        }
+
+        [UnityTest]
+        public IEnumerator DriverFaultFixture_UnconfirmedRequestDoesNotRetry()
+        {
+            yield return RunFaultFixture("UNCONFIRMED", 43, "RECEIPT_UNRESOLVED");
+            string evidence = Path.Combine(Application.temporaryCachePath, "p45-driver-fixture-UNCONFIRMED");
+            string jsonl = File.ReadAllText(Path.Combine(evidence, "full-match.jsonl"));
+            Assert.AreEqual(1, CountOccurrences(jsonl, "\"kind\":\"action_plan\""));
+            StringAssert.Contains("fm-test-unconfirmed", jsonl);
+            Directory.Delete(evidence, true);
+        }
+
+        private static IEnumerator RunFaultFixture(string mode, int expectedExit, string expectedCode)
+        {
+            string evidence = Path.Combine(
+                Application.temporaryCachePath,
+                "p45-driver-fixture-" + mode);
+            if (Directory.Exists(evidence))
+            {
+                Directory.Delete(evidence, true);
+            }
+
+            var completed = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+            LocalFullMatchPlayerDriver driver = LocalFullMatchPlayerDriver.CreateForTest(
+                evidence,
+                "fixture-" + mode,
+                code => completed.TrySetResult(code));
+            LogAssert.Expect(LogType.Error, new Regex("FULL_MATCH_DRIVER_FAILED: code=" + expectedCode));
+            try
+            {
+                driver.StartCoroutine(driver.RunFaultFixtureForTest(mode));
+                yield return WaitTask(completed.Task, 15f, "driver fixture " + mode);
+                Assert.AreEqual(expectedExit, completed.Task.Result);
+                string summary = File.ReadAllText(Path.Combine(evidence, "summary.json"));
+                StringAssert.Contains("\"outcome\": \"FAIL\"", summary);
+                StringAssert.Contains("\"failureCode\": \"" + expectedCode + "\"", summary);
+                StringAssert.Contains("\"exitCode\": " + expectedExit, summary);
+                StringAssert.Contains("\"matchFinished\": false", summary);
+            }
+            finally
+            {
+                Object.DestroyImmediate(driver.gameObject);
+            }
+        }
+
+        private static int CountOccurrences(string text, string value)
+        {
+            int count = 0;
+            int index = 0;
+            while ((index = text.IndexOf(value, index, StringComparison.Ordinal)) >= 0)
+            {
+                count++;
+                index += value.Length;
+            }
+
+            return count;
         }
 
         private static string ReadMatchRoundId(object control)

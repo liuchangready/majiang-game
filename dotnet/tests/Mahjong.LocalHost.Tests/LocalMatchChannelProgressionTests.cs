@@ -53,6 +53,8 @@ namespace Mahjong.LocalHost.Tests
                 LocalMatchRound round = await match.OpenRoundAsync(ct);
                 firstRoundId = round.RoundId;
                 TableSession session = await OpenSessionAsync(round, ct);
+                ProtocolCommand? ronCommand = null;
+                PlayerSnapshot? terminalState = null;
                 using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 pumpCts.CancelAfter(TimeSpan.FromSeconds(60));
                 Task pump = PumpAsync(session, pumpCts.Token);
@@ -71,7 +73,7 @@ namespace Mahjong.LocalHost.Tests
                             a => a.ActionType == (uint)ProtocolActionType.DeclareRiichi).OptionId,
                         pumpCts.Token);
                     PlayerSnapshot ron = await WaitForActionAsync(session, ProtocolActionType.DeclareRon, pumpCts.Token);
-                    await SubmitActionAsync(
+                    ronCommand = await SubmitActionAsync(
                         session,
                         ron,
                         ron.PrivateView.Decision!,
@@ -81,6 +83,7 @@ namespace Mahjong.LocalHost.Tests
                         null,
                         pumpCts.Token);
                     await WaitForPhaseAsync(session, WireGamePhase.RoundEnd, pumpCts.Token);
+                    terminalState = session.PlayerSnapshot!;
                 }
                 finally
                 {
@@ -104,6 +107,21 @@ namespace Mahjong.LocalHost.Tests
                 {
                     await WaitReadyAsync(recoveredSession, recoveredPumpCts.Token);
                     await WaitForPhaseAsync(recoveredSession, WireGamePhase.RoundEnd, recoveredPumpCts.Token);
+                    PlayerSnapshot recoveredTerminal = recoveredSession.PlayerSnapshot!;
+                    Assert.NotNull(terminalState);
+                    Assert.NotNull(ronCommand);
+                    Assert.NotEqual(
+                        ronCommand!.ScopeId!.Value,
+                        recoveredSession.Binding!.Scope.ScopeId);
+                    // A recovered local channel receives a new client scope. The
+                    // original request cannot be replayed through the new session;
+                    // fail closed instead of fabricating a new scope/request. This
+                    // is the documented LocalHost/Client scope contract gap.
+                    await Assert.ThrowsAsync<ArgumentException>(
+                        () => recoveredSession.SubmitAsync(ronCommand, recoveredPumpCts.Token));
+                    Assert.Equal(terminalState!.StateVersion, recoveredSession.PlayerSnapshot!.StateVersion);
+                    Assert.Equal(terminalState.EventSeq, recoveredSession.PlayerSnapshot!.EventSeq);
+                    Assert.Equal(recoveredTerminal.StateVersion, recoveredSession.PlayerSnapshot!.StateVersion);
                     LocalMatchSnapshot after = await match.RecordRoundCompletionAsync(ct);
 
                     // The session owner still owns the channel after durable completion.
@@ -234,7 +252,7 @@ namespace Mahjong.LocalHost.Tests
             throw new TimeoutException("Timed out waiting for phase " + phase + ".");
         }
 
-        private static async Task SubmitActionAsync(
+        private static async Task<ProtocolCommand> SubmitActionAsync(
             TableSession session,
             PlayerSnapshot snapshot,
             DecisionView decision,
@@ -270,24 +288,23 @@ namespace Mahjong.LocalHost.Tests
                         action,
                         optionId: string.IsNullOrEmpty(candidate.OptionId) ? optionId : candidate.OptionId,
                         tileIds: candidate.TileIds.Count > 0 ? candidate.TileIds.ToArray() : tiles);
-                    CommandSubmission submission = await session.SubmitAsync(
-                        new ProtocolCommand(
-                            CommandKind.SubmitAction,
-                            payload,
-                            new RequestId(attemptRequestId),
-                            session.Binding!.Scope.ScopeId,
-                            new StateVersion(latest.StateVersion),
-                            new RoundId(latest.RoundId),
-                            decisionId: new DecisionId(latestDecision.DecisionId),
-                            controlEpoch: new ControlEpoch(latestDecision.ControlEpoch)),
-                        ct);
+                    var command = new ProtocolCommand(
+                        CommandKind.SubmitAction,
+                        payload,
+                        new RequestId(attemptRequestId),
+                        session.Binding!.Scope.ScopeId,
+                        new StateVersion(latest.StateVersion),
+                        new RoundId(latest.RoundId),
+                        decisionId: new DecisionId(latestDecision.DecisionId),
+                        controlEpoch: new ControlEpoch(latestDecision.ControlEpoch));
+                    CommandSubmission submission = await session.SubmitAsync(command, ct);
                     Assert.True(submission.Sent);
                     Task finished = await Task.WhenAny(resolved.Task, Task.Delay(10000, ct));
                     Assert.True(finished == resolved.Task, "action receipt did not arrive");
                     TableReceiptResolvedEventArgs receipt = resolved.Task.Result;
                     if (receipt.Resolution.ReceiptStatus == ReceiptStatus.Applied)
                     {
-                        return;
+                        return command;
                     }
 
                     Assert.True(

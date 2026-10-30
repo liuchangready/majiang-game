@@ -46,6 +46,7 @@ namespace Mahjong.Unity.App
         public const string DriverVersion = "p45-full-match-driver/1";
         public const string ArgumentName = "-full-match-driver";
         public const string RunIdArgumentName = "-full-match-run-id";
+        public const string TestUnconfirmedRequestId = "fm-test-unconfirmed";
 
         private const int ExitNavigation = 40;
         private const int ExitSession = 41;
@@ -90,6 +91,78 @@ namespace Mahjong.Unity.App
         private float _lastProgressAt;
         private int _sessionRecoveries;
         private LocalMatchSnapshot? _lastMatch;
+        private bool _suppressAutoStart;
+        private Action<int>? _testExit;
+
+        /// <summary>
+        /// Test-only fixture entry. It deliberately does not start the normal UI
+        /// journey; the directed PlayMode test drives bounded failure paths through
+        /// the same Fail/Finish/summary/exit machinery as the Player driver.
+        /// </summary>
+        public static LocalFullMatchPlayerDriver CreateForTest(
+            string evidenceDir,
+            string runId,
+            Action<int> onExit)
+        {
+            var go = new GameObject("LocalFullMatchPlayerDriver.Test");
+            go.SetActive(false);
+            LocalFullMatchPlayerDriver driver = go.AddComponent<LocalFullMatchPlayerDriver>();
+            driver._evidenceDir = evidenceDir;
+            driver._runId = runId;
+            driver._testExit = onExit;
+            driver._suppressAutoStart = true;
+            go.SetActive(true);
+            return driver;
+        }
+
+        /// <summary>
+        /// Directed failure fixture. It is not a full-match/Windows sample; it only
+        /// makes the driver's own bounded failure, summary and exit status executable
+        /// in PlayMode without an external Player quit.
+        /// </summary>
+        public IEnumerator RunFaultFixtureForTest(string mode)
+        {
+            if (!_suppressAutoStart)
+            {
+                yield break;
+            }
+
+            LogEvent(
+                "driver_test_fixture",
+                "\"mode\":\"" + Json(mode) + "\"" +
+                ",\"runId\":\"" + Json(_runId) + "\"");
+            yield return new WaitForSecondsRealtime(0.05f);
+            switch (mode)
+            {
+                case "NO_DECISION":
+                    Fail(
+                        ExitNoDecision,
+                        "NO_DECISION",
+                        "No server decision arrived within the bounded fixture window.");
+                    break;
+                case "SUBMIT_TIMEOUT":
+                    Fail(
+                        ExitActionUnconfirmed,
+                        "SUBMIT_TIMEOUT",
+                        "The original request did not resolve within the bounded fixture window; it is not retried under a new id.");
+                    break;
+                case "UNCONFIRMED":
+                    LogEvent(
+                        "action_plan",
+                        "\"roundId\":\"fixture\"");
+                    Fail(
+                        ExitActionUnconfirmed,
+                        "RECEIPT_UNRESOLVED",
+                        "No definitive Applied/rejected receipt arrived for request '" +
+                        TestUnconfirmedRequestId + "' action=DrawTile; request stays unresolved.");
+                    break;
+                default:
+                    Fail(ExitUnexpected, "FIXTURE_MODE_UNKNOWN", mode);
+                    break;
+            }
+
+            yield return Finish();
+        }
 
         /// <summary>
         /// Registers the opt-in driver before any scene or <c>AppRoot</c> exists.
@@ -155,7 +228,10 @@ namespace Mahjong.Unity.App
                 "driver_start",
                 "\"version\":\"" + DriverVersion + "\"" +
                 ",\"runId\":\"" + Json(_runId) + "\"");
-            StartCoroutine(RunMatch());
+            if (!_suppressAutoStart)
+            {
+                StartCoroutine(RunMatch());
+            }
         }
 
         /// <summary>
@@ -1137,6 +1213,12 @@ namespace Mahjong.Unity.App
                 "FULL_MATCH_DRIVER_RESULT: outcome=" + outcome +
                 " exit=" + exitCode +
                 " failure=" + (_failureCode.Length == 0 ? "none" : _failureCode));
+            if (_testExit != null)
+            {
+                _testExit(exitCode);
+                yield break;
+            }
+
 #if UNITY_EDITOR
             UnityEditor.EditorApplication.isPlaying = false;
 #else
