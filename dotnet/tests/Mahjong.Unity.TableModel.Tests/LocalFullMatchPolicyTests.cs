@@ -176,6 +176,22 @@ namespace Mahjong.Unity.TableModel.Tests
                 FullMatchRoundTransition.Failed,
                 guard2.Observe(View(new ManualTableClock(), P43TestData.PlayerSnapshot(roundId: "r2")), out string changeCode, out _));
             Assert.Equal("ROUND_CHANGED_BEFORE_TERMINAL", changeCode);
+
+            var guard3 = new FullMatchRoundGuard();
+            guard3.Observe(View(new ManualTableClock(), P43TestData.PlayerSnapshot(roundId: "r1")), out _, out _);
+            guard3.Observe(terminalView, out _, out _);
+            Assert.Equal(
+                FullMatchRoundTransition.Failed,
+                guard3.Observe(View(new ManualTableClock(), P43TestData.PlayerSnapshot(roundId: "r1")), out string activeCode, out _));
+            Assert.Equal("TERMINAL_ROUND_REVIVED", activeCode);
+
+            var guard4 = new FullMatchRoundGuard();
+            guard4.Observe(View(new ManualTableClock(), P43TestData.PlayerSnapshot(roundId: "r1")), out _, out _);
+            guard4.Observe(terminalView, out _, out _);
+            Assert.Equal(
+                FullMatchRoundTransition.Failed,
+                guard4.Observe(View(new ManualTableClock(), P43TestData.PlayerSnapshot(roundId: "r2")), out string uncommittedCode, out _));
+            Assert.Equal("NEXT_ROUND_BEFORE_COMMIT", uncommittedCode);
         }
 
         [Fact]
@@ -235,6 +251,7 @@ namespace Mahjong.Unity.TableModel.Tests
                     6)
             });
             Assert.True(LocalFullMatchPolicy.IsOwnActionEvent(plan!, observed, observed.Events[0], 6));
+            Assert.False(LocalFullMatchPolicy.IsOwnActionEvent(plan!, observed, observed.Events[0], 7));
 
             TableSessionBinding oldBinding = P43TestData.Binding(bindingEpoch: P43TestData.BindingEpoch - 1);
             TableVisibleEventBatch oldBatch = Project(

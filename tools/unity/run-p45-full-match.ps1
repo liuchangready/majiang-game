@@ -199,28 +199,51 @@ function Invoke-UnityBuild {
     )
 
     $process = Start-Process -FilePath $UnityExe -ArgumentList $arguments -PassThru -WindowStyle Hidden
-    Write-ToolLog ('UNITY_START pid=' + $process.Id + ' exe=' + $UnityExe)
-    $exited = $process.WaitForExit(3600 * 1000)
-    if (-not $exited) {
-        Write-ToolLog ('UNITY_TIMEOUT pid=' + $process.Id)
-        try {
-            $process.Kill()
-        }
-        catch {
-        }
-
-        return 124
+    $unityRecord = [ordered]@{
+        schemaVersion = 1
+        kind = 'p45-full-match-unity-process'
+        pid = $process.Id
+        startTimeUtc = $process.StartTime.ToUniversalTime().ToString('o')
+        path = $UnityExe
+        sha256 = (Get-FileHash -LiteralPath $UnityExe -Algorithm SHA256).Hash
     }
+    $unityRecord | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path (Split-Path -Parent $LogPath) 'unity-process.json') -Encoding UTF8
+    Write-ToolLog ('UNITY_START pid=' + $process.Id + ' exe=' + $UnityExe + ' sha256=' + $unityRecord.sha256)
+    $disposition = 'UNKNOWN'
+    $nativeExit = $null
+    try {
+        $exited = $process.WaitForExit(3600 * 1000)
+        if (-not $exited) {
+            Write-ToolLog ('UNITY_TIMEOUT pid=' + $process.Id)
+            $stop = Stop-OwnedPlayerProcess -Process $process -Record $unityRecord -Reason 'UNITY_TIMEOUT'
+            $disposition = if ($stop -eq 'KILLED') { 'TOOL_TIMEOUT_KILLED' } else { 'TOOL_TIMEOUT_' + $stop }
+            return 124
+        }
 
-    $process.Refresh()
-    $exitCode = $process.ExitCode
-    if ($null -eq $exitCode) {
-        Write-ToolLog ('UNITY_EXIT_CODE_UNAVAILABLE pid=' + $process.Id)
-        return 125
+        $process.Refresh()
+        $nativeExit = $process.ExitCode
+        $disposition = if ($nativeExit -eq 0) { 'EXITED_OK' } else { 'EXITED_NONZERO' }
+        if ($null -eq $nativeExit) {
+            Write-ToolLog ('UNITY_EXIT_CODE_UNAVAILABLE pid=' + $process.Id)
+            return 125
+        }
+
+        Write-ToolLog ('UNITY_EXIT pid=' + $process.Id + ' native=' + $nativeExit)
+        return [int]$nativeExit
     }
+    finally {
+        if (-not $process.HasExited) {
+            Stop-OwnedPlayerProcess -Process $process -Record $unityRecord -Reason 'UNITY_FINALLY' | Out-Null
+        }
 
-    Write-ToolLog ('UNITY_EXIT pid=' + $process.Id + ' native=' + $exitCode)
-    return [int]$exitCode
+        [ordered]@{
+            disposition = $disposition
+            nativeExitCode = $nativeExit
+            pid = $unityRecord.pid
+            path = $unityRecord.path
+            sha256 = $unityRecord.sha256
+        } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path (Split-Path -Parent $LogPath) 'unity-exit.json') -Encoding UTF8
+    }
 }
 
 function Get-WholeFileManifest {
@@ -260,13 +283,15 @@ function Get-ArtifactManifest {
     $rootFull = [System.IO.Path]::GetFullPath($Root)
     $manifestName = 'evidence/artifacts.json'
     $sidecarName = 'evidence/artifacts.json.sha256.txt'
+    $controlLogs = @('logs/tool.log')
     $entries = New-Object System.Collections.Generic.List[object]
     $totalBytes = [long]0
     Get-ChildItem -LiteralPath $rootFull -Recurse -File | Sort-Object FullName | ForEach-Object {
         $relative = $_.FullName.Substring($rootFull.Length).TrimStart('\', '/').Replace('\', '/')
         if ($relative -eq $manifestName -or $relative -eq $sidecarName -or
+            $controlLogs -contains $relative -or
             $relative -like '*.lock' -or $relative -like '*.tmp' -or $relative -like '*.tmp.*') {
-            # Manifest/self and transient files are intentionally absent.
+            # Manifest/self, mutable control log and transient files are intentionally absent.
         }
         else {
             $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
@@ -287,11 +312,75 @@ function Get-ArtifactManifest {
         generatedAtUtc = [DateTimeOffset]::UtcNow.ToString('o')
         entryCount = $entries.Count
         totalBytes = $totalBytes
+        controlLogs = $controlLogs
         entries = $entries
     }
     $json = $manifest | ConvertTo-Json -Depth 8
     [System.IO.File]::WriteAllText($OutputPath, $json, (New-Object System.Text.UTF8Encoding($false)))
     return (Get-FileHash -LiteralPath $OutputPath -Algorithm SHA256).Hash
+}
+
+function Test-WholePlayerManifest {
+    param([string]$ManifestPath, [string]$Root)
+
+    if (-not (Test-Path -LiteralPath $ManifestPath)) {
+        throw ('PLAYER_MANIFEST_MISSING ' + $ManifestPath)
+    }
+
+    $manifest = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
+    if ([int]$manifest.schemaVersion -ne 1 -or [string]$manifest.kind -ne 'p45-full-match-player-files') {
+        throw 'PLAYER_MANIFEST_INVALID schema/kind'
+    }
+
+    $rootFull = [System.IO.Path]::GetFullPath($Root)
+    $files = @($manifest.files)
+    if ([int]$manifest.fileCount -le 0 -or $files.Count -ne [int]$manifest.fileCount) {
+        throw 'PLAYER_MANIFEST_INVALID fileCount'
+    }
+
+    $expected = @{}
+    [long]$total = 0
+    foreach ($entry in $files) {
+        $relative = [string]$entry.path
+        if ([string]::IsNullOrWhiteSpace($relative) -or $expected.ContainsKey($relative)) {
+            throw ('PLAYER_MANIFEST_INVALID entry ' + $relative)
+        }
+
+        $expected[$relative] = $true
+        $full = [System.IO.Path]::GetFullPath((Join-Path $rootFull $relative))
+        if (-not $full.StartsWith($rootFull + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw ('PLAYER_MANIFEST_ESCAPE ' + $relative)
+        }
+
+        if (-not (Test-Path -LiteralPath $full -PathType Leaf)) {
+            throw ('PLAYER_MANIFEST_MISSING ' + $relative)
+        }
+
+        $item = Get-Item -LiteralPath $full
+        $hash = (Get-FileHash -LiteralPath $full -Algorithm SHA256).Hash
+        if ([long]$item.Length -ne [long]$entry.bytes -or $hash -ne [string]$entry.sha256) {
+            throw ('PLAYER_MANIFEST_MISMATCH ' + $relative)
+        }
+
+        $total += $item.Length
+    }
+
+    if ($total -ne [long]$manifest.totalBytes) {
+        throw 'PLAYER_MANIFEST_INVALID totalBytes'
+    }
+
+    $actual = @{}
+    Get-ChildItem -LiteralPath $rootFull -Recurse -File | ForEach-Object {
+        $relative = $_.FullName.Substring($rootFull.Length).TrimStart('\', '/').Replace('\', '/')
+        $actual[$relative] = $true
+    }
+    foreach ($path in $actual.Keys) {
+        if (-not $expected.ContainsKey($path)) {
+            throw ('PLAYER_MANIFEST_EXTRA ' + $path)
+        }
+    }
+
+    Write-ToolLog ('PLAYER_MANIFEST_VERIFIED files=' + $expected.Count + ' sha256=' + (Get-FileHash -LiteralPath $ManifestPath -Algorithm SHA256).Hash)
 }
 
 function Test-ArtifactManifest {
@@ -302,65 +391,151 @@ function Test-ArtifactManifest {
     }
 
     $manifest = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
+    if ([int]$manifest.schemaVersion -ne 1 -or [string]$manifest.kind -ne 'p45-full-match-evidence') {
+        throw 'MANIFEST_INVALID schema/kind'
+    }
+
+    $entries = @($manifest.entries)
+    if ([int]$manifest.entryCount -le 0 -or $entries.Count -ne [int]$manifest.entryCount) {
+        throw 'MANIFEST_INVALID entryCount'
+    }
+
+    if ([string]::IsNullOrWhiteSpace([string]$manifest.root)) {
+        throw 'MANIFEST_INVALID root'
+    }
+
     $root = [System.IO.Path]::GetFullPath([string]$manifest.root)
+    $manifestName = 'evidence/artifacts.json'
+    $sidecarName = 'evidence/artifacts.json.sha256.txt'
+    $controlLogs = @($manifest.controlLogs)
     $seen = @{}
-    $failures = New-Object System.Collections.Generic.List[string]
-    foreach ($entry in $manifest.entries) {
+    [long]$totalBytes = 0
+    foreach ($entry in $entries) {
         $relative = [string]$entry.path
-        if ($seen.ContainsKey($relative)) {
-            $failures.Add('DUPLICATE ' + $relative) | Out-Null
-            continue
+        if ([string]::IsNullOrWhiteSpace($relative) -or $seen.ContainsKey($relative)) {
+            throw ('MANIFEST_INVALID ' + $(if ($relative) { 'DUPLICATE ' + $relative } else { 'EMPTY_PATH' }))
         }
 
         $seen[$relative] = $true
         $full = [System.IO.Path]::GetFullPath((Join-Path $root $relative))
         if (-not $full.StartsWith($root + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)) {
-            $failures.Add('ESCAPE ' + $relative) | Out-Null
-            continue
+            throw ('MANIFEST_INVALID ESCAPE ' + $relative)
         }
 
         if (-not (Test-Path -LiteralPath $full -PathType Leaf)) {
-            $failures.Add('MISSING ' + $relative) | Out-Null
-            continue
+            throw ('MANIFEST_INVALID MISSING ' + $relative)
         }
 
         $item = Get-Item -LiteralPath $full
         $hash = (Get-FileHash -LiteralPath $full -Algorithm SHA256).Hash
         if ([long]$item.Length -ne [long]$entry.bytes -or $hash -ne [string]$entry.sha256) {
-            $failures.Add('MISMATCH ' + $relative) | Out-Null
+            throw ('MANIFEST_INVALID MISMATCH ' + $relative)
+        }
+
+        $totalBytes += $item.Length
+    }
+
+    if ($totalBytes -ne [long]$manifest.totalBytes) {
+        throw 'MANIFEST_INVALID totalBytes'
+    }
+
+    $actual = @{}
+    Get-ChildItem -LiteralPath $root -Recurse -File | ForEach-Object {
+        $relative = $_.FullName.Substring($root.Length).TrimStart('\', '/').Replace('\', '/')
+        if ($relative -eq $manifestName -or $relative -eq $sidecarName -or
+            $controlLogs -contains $relative -or
+            $relative -like '*.lock' -or $relative -like '*.tmp' -or $relative -like '*.tmp.*') {
+            # Excluded from the sealed evidence set.
+        }
+        else {
+            $actual[$relative] = $true
+        }
+    }
+    foreach ($path in $actual.Keys) {
+        if (-not $seen.ContainsKey($path)) {
+            throw ('MANIFEST_INVALID EXTRA ' + $path)
         }
     }
 
-    if ($failures.Count -gt 0) {
-        throw ('MANIFEST_INVALID ' + ($failures -join '; '))
+    $sidecar = Join-Path (Split-Path -Parent $ManifestPath) 'artifacts.json.sha256.txt'
+    if (-not (Test-Path -LiteralPath $sidecar)) {
+        throw 'MANIFEST_INVALID sidecar missing'
     }
 
-    Write-ToolLog ('MANIFEST_VERIFIED entries=' + $seen.Count + ' sha256=' + (Get-FileHash -LiteralPath $ManifestPath -Algorithm SHA256).Hash)
+    $sidecarText = (Get-Content -LiteralPath $sidecar -Raw).Trim()
+    $expectedSidecar = (Get-FileHash -LiteralPath $ManifestPath -Algorithm SHA256).Hash
+    if (-not $sidecarText.StartsWith($expectedSidecar, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw 'MANIFEST_INVALID sidecar hash'
+    }
+
+    $playerManifest = Join-Path $root 'player-files.json'
+    if (Test-Path -LiteralPath $playerManifest) {
+        Test-WholePlayerManifest -ManifestPath $playerManifest -Root (Join-Path $root 'player')
+    }
+
+    Write-ToolLog ('MANIFEST_VERIFIED entries=' + $seen.Count + ' sha256=' + $expectedSidecar)
 }
 
 function Write-SourceRecord {
     param([string]$RunRoot)
 
+    $logs = Join-Path $RunRoot 'logs'
+    New-Item -ItemType Directory -Force -Path $logs | Out-Null
     $head = (& git -C $script:RepoRoot rev-parse HEAD).Trim()
+    $tree = (& git -C $script:RepoRoot rev-parse ('HEAD^{tree}')).Trim()
     $branch = (& git -C $script:RepoRoot rev-parse --abbrev-ref HEAD).Trim()
     $status = (& git -C $script:RepoRoot status --porcelain=v1) -join "`n"
     $dirty = -not [string]::IsNullOrWhiteSpace($status)
     $stat = (& git -C $script:RepoRoot diff --stat) -join "`n"
-    & git -C $script:RepoRoot diff --check *> (Join-Path $RunRoot 'logs\diff-check.log')
+    & git -C $script:RepoRoot diff --check *> (Join-Path $logs 'diff-check.log')
     $diffCheck = $LASTEXITCODE
+
+    $dirtyPatchPath = Join-Path $logs 'source.dirty.patch'
+    $stagedPatchPath = Join-Path $logs 'source.staged.patch'
+    & git -C $script:RepoRoot diff --binary | Set-Content -LiteralPath $dirtyPatchPath -Encoding UTF8
+    & git -C $script:RepoRoot diff --cached --binary | Set-Content -LiteralPath $stagedPatchPath -Encoding UTF8
+
+    $untracked = New-Object System.Collections.Generic.List[object]
+    $untrackedLines = @(& git -C $script:RepoRoot ls-files --others --exclude-standard)
+    foreach ($relative in $untrackedLines) {
+        if ([string]::IsNullOrWhiteSpace($relative)) { continue }
+        $full = Join-Path $script:RepoRoot $relative
+        if (Test-Path -LiteralPath $full -PathType Leaf) {
+            $untracked.Add([ordered]@{
+                path = $relative.Replace('\', '/')
+                bytes = [long](Get-Item -LiteralPath $full).Length
+                sha256 = (Get-FileHash -LiteralPath $full -Algorithm SHA256).Hash
+            }) | Out-Null
+        }
+    }
+    $untrackedPath = Join-Path $logs 'source.untracked.json'
+    $untracked | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $untrackedPath -Encoding UTF8
+
+    $statusPath = Join-Path $logs 'source.status.txt'
+    [System.IO.File]::WriteAllText($statusPath, $status, (New-Object System.Text.UTF8Encoding($false)))
+
     $record = [ordered]@{
         schemaVersion = 1
         kind = 'p45-full-match-source'
         capturedAt = [DateTimeOffset]::Now.ToString('o')
         head = $head
+        tree = $tree
         branch = $branch
         dirty = $dirty
         statusPorcelain = $status
+        statusSha256 = (Get-FileHash -LiteralPath $statusPath -Algorithm SHA256).Hash
         diffStat = $stat
         diffCheckExit = $diffCheck
+        dirtyPatch = 'logs/source.dirty.patch'
+        dirtyPatchSha256 = (Get-FileHash -LiteralPath $dirtyPatchPath -Algorithm SHA256).Hash
+        stagedPatch = 'logs/source.staged.patch'
+        stagedPatchSha256 = (Get-FileHash -LiteralPath $stagedPatchPath -Algorithm SHA256).Hash
+        untracked = 'logs/source.untracked.json'
+        untrackedCount = $untracked.Count
+        untrackedSha256 = (Get-FileHash -LiteralPath $untrackedPath -Algorithm SHA256).Hash
     }
     $record | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $RunRoot 'source.json') -Encoding UTF8
-    Write-ToolLog ('SOURCE head=' + $head + ' branch=' + $branch + ' dirty=' + $dirty + ' diffCheck=' + $diffCheck)
+    Write-ToolLog ('SOURCE head=' + $head + ' tree=' + $tree + ' branch=' + $branch + ' dirty=' + $dirty + ' diffCheck=' + $diffCheck)
 }
 
 function Invoke-Build {
@@ -443,14 +618,38 @@ function Test-OwnedPlayerProcess {
             return $false
         }
 
+        $recordPath = [string]$Record.path
+        $recordHash = [string]$Record.sha256
+        if ([string]::IsNullOrEmpty($recordPath)) { $recordPath = [string]$Record.exe }
+        if ([string]::IsNullOrEmpty($recordHash)) { $recordHash = [string]$Record.exeSha256 }
         $current = Get-ProcessRecord -Process $Process
         return ($current.pid -eq [int]$Record.pid -and
                 $current.startTimeUtc -eq [string]$Record.startTimeUtc -and
-                $current.path -eq [string]$Record.path -and
-                $current.sha256 -eq [string]$Record.sha256)
+                $current.path -eq $recordPath -and
+                $current.sha256 -eq $recordHash)
     }
     catch {
         return $false
+    }
+}
+
+function Stop-OwnedPlayerProcess {
+    param([System.Diagnostics.Process]$Process, $Record, [string]$Reason)
+
+    if (-not (Test-OwnedPlayerProcess -Process $Process -Record $Record)) {
+        Write-ToolLog ('STOP_REFUSED reason=' + $Reason + ' pid=' + $(if ($Process) { $Process.Id } else { 'none' }))
+        return 'NOT_OWNED_OR_EXITED'
+    }
+
+    try {
+        $Process.Kill()
+        $Process.WaitForExit(10000) | Out-Null
+        Write-ToolLog ('STOP_OWNED reason=' + $Reason + ' pid=' + $Process.Id)
+        return 'KILLED'
+    }
+    catch {
+        Write-ToolLog ('STOP_FAILED reason=' + $Reason + ' pid=' + $Process.Id + ' error=' + $_.Exception.GetType().Name)
+        return 'KILL_FAILED'
     }
 }
 
@@ -462,11 +661,20 @@ function Invoke-Run {
         throw "Player not found: $playerExe"
     }
 
-    $logs = Join-Path $RunRoot 'logs'
-    $driverDir = Join-Path $RunRoot 'driver'
-    $dataDir = Join-Path $RunRoot 'data'
-    $shotDir = Join-Path $RunRoot 'screenshots'
-    $runtimeDir = Join-Path $RunRoot 'runtime'
+    $playerManifestPath = Join-Path $RunRoot 'player-files.json'
+    Test-WholePlayerManifest -ManifestPath $playerManifestPath -Root (Join-Path $RunRoot 'player')
+
+    $runId = 'p45-' + [DateTimeOffset]::Now.ToString('yyyyMMdd-HHmmss') + '-' + ([guid]::NewGuid().ToString('N').Substring(0, 8))
+    $executionRoot = Join-Path $RunRoot ('executions\' + $runId)
+    if (Test-Path -LiteralPath $executionRoot) {
+        throw "Refusing to reuse an existing execution directory: $executionRoot"
+    }
+
+    $logs = Join-Path $executionRoot 'logs'
+    $driverDir = Join-Path $executionRoot 'driver'
+    $dataDir = Join-Path $executionRoot 'data'
+    $shotDir = Join-Path $executionRoot 'screenshots'
+    $runtimeDir = Join-Path $executionRoot 'runtime'
     foreach ($dir in @($logs, $driverDir, $dataDir, $shotDir, $runtimeDir)) {
         New-Item -ItemType Directory -Force -Path $dir | Out-Null
     }
@@ -478,57 +686,68 @@ function Invoke-Run {
         '-screen-fullscreen', '0',
         '-logfile', $playerLog,
         '-smoke-data', $dataDir,
-        '-full-match-driver', $driverDir
+        '-full-match-driver', $driverDir,
+        '-full-match-run-id', $runId
     )
 
+    $startedAt = [DateTimeOffset]::UtcNow
     $process = Start-Process -FilePath $playerExe -ArgumentList $arguments -PassThru -WindowStyle Hidden
     $record = [ordered]@{
         schemaVersion = 1
         kind = 'p45-full-match-player-process'
-        startedAtUtc = [DateTimeOffset]::UtcNow.ToString('o')
+        runId = $runId
+        startedAtUtc = $startedAt.ToString('o')
         commandLine = $arguments
         exe = $playerExe
         exeSha256 = (Get-FileHash -LiteralPath $playerExe -Algorithm SHA256).Hash
         pid = $process.Id
         startTimeUtc = $process.StartTime.ToUniversalTime().ToString('o')
     }
+    $record.path = $record.exe
+    $record.sha256 = $record.exeSha256
     $record | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $runtimeDir 'process.json') -Encoding UTF8
-    Write-ToolLog ('PLAYER_START pid=' + $process.Id + ' exe=' + $playerExe + ' sha256=' + $record.exeSha256)
+    Write-ToolLog ('PLAYER_START runId=' + $runId + ' pid=' + $process.Id + ' exe=' + $playerExe + ' sha256=' + $record.sha256)
 
-    $exited = $process.WaitForExit([math]::Max(1, $TimeoutSeconds) * 1000)
     $disposition = ''
     $nativeExit = $null
-    if (-not $exited) {
-        Write-ToolLog ('PLAYER_TIMEOUT pid=' + $process.Id + ' timeoutSeconds=' + $TimeoutSeconds)
-        if (Test-OwnedPlayerProcess -Process $process -Record $record) {
-            try {
-                $process.Kill()
-                $process.WaitForExit(10000) | Out-Null
+    try {
+        $exited = $process.WaitForExit([math]::Max(1, $TimeoutSeconds) * 1000)
+        if (-not $exited) {
+            Write-ToolLog ('PLAYER_TIMEOUT pid=' + $process.Id + ' timeoutSeconds=' + $TimeoutSeconds)
+            $stop = Stop-OwnedPlayerProcess -Process $process -Record $record -Reason 'PLAYER_TIMEOUT'
+            if ($stop -eq 'KILLED') {
                 $disposition = 'TOOL_TIMEOUT_KILLED'
             }
-            catch {
+            elseif ($stop -eq 'KILL_FAILED') {
                 $disposition = 'TOOL_TIMEOUT_KILL_FAILED'
+            }
+            else {
+                $disposition = 'TOOL_TIMEOUT_NOT_OWNED'
             }
         }
         else {
-            $disposition = 'TOOL_TIMEOUT_NOT_OWNED'
+            $process.Refresh()
+            $nativeExit = $process.ExitCode
+            $disposition = if ($nativeExit -eq 0) { 'EXITED_OK' } else { 'EXITED_NONZERO' }
         }
     }
-    else {
-        $nativeExit = $process.ExitCode
-        $disposition = if ($nativeExit -eq 0) { 'EXITED_OK' } else { 'EXITED_NONZERO' }
+    finally {
+        if (-not $process.HasExited) {
+            Stop-OwnedPlayerProcess -Process $process -Record $record -Reason 'PLAYER_FINALLY' | Out-Null
+        }
     }
 
     $exitRecord = [ordered]@{
         schemaVersion = 1
         kind = 'p45-full-match-player-exit'
+        runId = $runId
         finishedAtUtc = [DateTimeOffset]::UtcNow.ToString('o')
         disposition = $disposition
         nativeExitCode = $nativeExit
         timeoutSeconds = $TimeoutSeconds
     }
     $exitRecord | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $runtimeDir 'exit.json') -Encoding UTF8
-    Write-ToolLog ('PLAYER_EXIT disposition=' + $disposition + ' native=' + $nativeExit)
+    Write-ToolLog ('PLAYER_EXIT runId=' + $runId + ' disposition=' + $disposition + ' native=' + $nativeExit)
 
     $driverSummaryPath = Join-Path $driverDir 'summary.json'
     $driverSummary = $null
@@ -541,8 +760,15 @@ function Invoke-Run {
         }
     }
 
-    $driverPass = $false
+    $summaryRunIdMatches = $false
+    $summaryFresh = $false
     if ($driverSummary) {
+        $summaryRunIdMatches = [string]$driverSummary.runId -eq $runId
+        $summaryFresh = (Get-Item -LiteralPath $driverSummaryPath).LastWriteTimeUtc -ge $startedAt.UtcDateTime
+    }
+
+    $driverPass = $false
+    if ($driverSummary -and $summaryRunIdMatches -and $summaryFresh) {
         $rounds = @($driverSummary.rounds)
         $finalScores = @($driverSummary.finalScores)
         $rankings = @($driverSummary.rankings)
@@ -558,23 +784,27 @@ function Invoke-Run {
     $toolSummary = [ordered]@{
         schemaVersion = 1
         kind = 'p45-full-match-tool-summary'
+        runId = $runId
         runDir = $RunRoot
+        executionRoot = $executionRoot
         finishedAtUtc = [DateTimeOffset]::UtcNow.ToString('o')
         disposition = $disposition
         nativeExitCode = $nativeExit
         driverSummaryPresent = ($null -ne $driverSummary)
+        driverSummaryRunIdMatches = $summaryRunIdMatches
+        driverSummaryFresh = $summaryFresh
         driverOutcome = if ($driverSummary) { [string]$driverSummary.outcome } else { 'MISSING' }
         driverExitCode = if ($driverSummary) { [int]$driverSummary.exitCode } else { $null }
         driverRoundCount = if ($driverSummary) { @($driverSummary.rounds).Count } else { 0 }
         driverFailureCode = if ($driverSummary) { [string]$driverSummary.failureCode } else { '' }
         driverPass = $driverPass
         playerExeSha256 = (Get-FileHash -LiteralPath $playerExe -Algorithm SHA256).Hash
-        playerFilesManifestSha256 = if (Test-Path -LiteralPath (Join-Path $RunRoot 'player-files.json')) { (Get-FileHash -LiteralPath (Join-Path $RunRoot 'player-files.json') -Algorithm SHA256).Hash } else { '' }
+        playerFilesManifestSha256 = if (Test-Path -LiteralPath $playerManifestPath) { (Get-FileHash -LiteralPath $playerManifestPath -Algorithm SHA256).Hash } else { '' }
         playerManifest = 'player-files.json'
         visualEvidence = 'NOT_RUN (hidden window may produce black frames; not used for PASS)'
         recoveryCompare = 'NOT_RUN (no structured Player exporter; P4.5 Compare remains BLOCKED)'
     }
-    $toolSummary | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $RunRoot 'runtime\tool-summary.json') -Encoding UTF8
+    $toolSummary | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $runtimeDir 'tool-summary.json') -Encoding UTF8
 
     if ($disposition -eq 'TOOL_TIMEOUT_KILLED' -or $disposition -eq 'TOOL_TIMEOUT_NOT_OWNED' -or $disposition -eq 'TOOL_TIMEOUT_KILL_FAILED') {
         return 11

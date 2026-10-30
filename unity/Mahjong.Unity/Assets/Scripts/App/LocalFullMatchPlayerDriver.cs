@@ -45,6 +45,7 @@ namespace Mahjong.Unity.App
     {
         public const string DriverVersion = "p45-full-match-driver/1";
         public const string ArgumentName = "-full-match-driver";
+        public const string RunIdArgumentName = "-full-match-run-id";
 
         private const int ExitNavigation = 40;
         private const int ExitSession = 41;
@@ -73,6 +74,7 @@ namespace Mahjong.Unity.App
         private readonly List<string> _observedScenarios = new List<string>();
 
         private string _evidenceDir = string.Empty;
+        private string _runId = string.Empty;
         private StreamWriter? _log;
         private bool _completed;
         private bool _failed;
@@ -99,12 +101,16 @@ namespace Mahjong.Unity.App
         {
             string[] args = Environment.GetCommandLineArgs();
             string? evidenceDir = null;
+            string? runId = null;
             for (int i = 0; i < args.Length; i++)
             {
                 if (string.Equals(args[i], ArgumentName, StringComparison.Ordinal) && i + 1 < args.Length)
                 {
                     evidenceDir = args[i + 1];
-                    break;
+                }
+                else if (string.Equals(args[i], RunIdArgumentName, StringComparison.Ordinal) && i + 1 < args.Length)
+                {
+                    runId = args[i + 1];
                 }
             }
 
@@ -119,6 +125,7 @@ namespace Mahjong.Unity.App
             UnityEngine.Object.DontDestroyOnLoad(go);
             LocalFullMatchPlayerDriver driver = go.AddComponent<LocalFullMatchPlayerDriver>();
             driver._evidenceDir = evidenceDir!;
+            driver._runId = string.IsNullOrWhiteSpace(runId) ? string.Empty : runId!;
         }
 
         private void Start()
@@ -144,7 +151,10 @@ namespace Mahjong.Unity.App
                 return;
             }
 
-            LogEvent("driver_start", "\"version\":\"" + DriverVersion + "\"");
+            LogEvent(
+                "driver_start",
+                "\"version\":\"" + DriverVersion + "\"" +
+                ",\"runId\":\"" + Json(_runId) + "\"");
             StartCoroutine(RunMatch());
         }
 
@@ -777,55 +787,6 @@ namespace Mahjong.Unity.App
                                         break;
                                     }
 
-                                    if (!confirmed &&
-                                        plan.Action == PlayerActionKind.DrawTile &&
-                                        LocalFullMatchPolicy.TryFindOwnVisibleEvent(
-                                            plan,
-                                            observer.Batches,
-                                            out ObservedVisibleEventBatch? fallbackBatch,
-                                            out ObservedVisibleEvent? fallbackEvent))
-                                    {
-                                        // The mandatory draw has no server decision; the
-                                        // client outbox can resolve before the UI dispatch
-                                        // callback. Its own TileDrawn fact under this exact
-                                        // binding/round/seat is still the authoritative
-                                        // confirmed event, never another seat/type.
-                                        confirmed = true;
-                                        LogEvent(
-                                            "visible_event_without_receipt",
-                                            "\"requestId\":\"" + Json(plan.RequestId) + "\"" +
-                                            ",\"action\":\"" + plan.Action + "\"" +
-                                            ",\"event\":\"" + fallbackEvent!.Type + "\"" +
-                                            ",\"eventSeq\":" + Num(fallbackEvent.EventSeq) +
-                                            ",\"commandVersion\":" + Num(fallbackEvent.CommandVersion) +
-                                            ",\"stateVersion\":" + Num(fallbackBatch!.StateVersion));
-                                        break;
-                                    }
-
-                                    if (!confirmed && plan.Action == PlayerActionKind.DrawTile)
-                                    {
-                                        PlayerTableViewState drawView = mapper.Project(coordinator.Current);
-                                        if (drawView.Identity.StateVersion > plan.BaselineStateVersion &&
-                                            drawView.Own != null &&
-                                            drawView.Own.DrawnTileId.HasValue &&
-                                            drawView.Board.CurrentSeat == plan.Seat &&
-                                            (drawView.Board.Phase == PlayerGamePhase.CheatWindow ||
-                                             drawView.Board.Phase == PlayerGamePhase.Discard))
-                                        {
-                                            // The mandatory draw is a no-choice transition. The
-                                            // confirmed post-state (new state version plus the
-                                            // owner's drawn tile and turn) is the authoritative
-                                            // visible result even if the receipt callback was lost.
-                                            confirmed = true;
-                                            LogEvent(
-                                                "draw_confirmed_by_state",
-                                                "\"requestId\":\"" + Json(plan.RequestId) + "\"" +
-                                                ",\"stateVersion\":" + Num(drawView.Identity.StateVersion) +
-                                                ",\"phase\":\"" + drawView.Board.Phase + "\"");
-                                            break;
-                                        }
-                                    }
-
                                     if (observer.HasAppliedReceipt && !plan.RequiresVisibleEvent)
                                     {
                                         // The only legal state-only action is a response Pass.
@@ -1280,6 +1241,7 @@ namespace Mahjong.Unity.App
             builder.Append("  \"schemaVersion\": 1,\n");
             builder.Append("  \"kind\": \"p45-full-match-driver-summary\",\n");
             builder.Append("  \"driverVersion\": \"").Append(Json(DriverVersion)).Append("\",\n");
+            builder.Append("  \"runId\": \"").Append(Json(_runId)).Append("\",\n");
             builder.Append("  \"outcome\": \"").Append(Json(outcome)).Append("\",\n");
             builder.Append("  \"exitCode\": ").Append(Num(exitCode)).Append(",\n");
             builder.Append("  \"failureCode\": \"").Append(Json(_failureCode)).Append("\",\n");

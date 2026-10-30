@@ -228,10 +228,13 @@ namespace Mahjong.Unity.App
         private readonly List<string> _seen = new List<string>();
         private string _current = string.Empty;
         private bool _terminalSeen;
+        private bool _terminalCommitted;
 
         public string CurrentRoundId => _current;
 
         public bool TerminalSeen => _terminalSeen;
+
+        public bool TerminalCommitted => _terminalCommitted;
 
         public int CompletedCount => _completed.Count;
 
@@ -275,6 +278,14 @@ namespace Mahjong.Unity.App
                     return FullMatchRoundTransition.Failed;
                 }
 
+                if (!_terminalCommitted)
+                {
+                    failureCode = "NEXT_ROUND_BEFORE_COMMIT";
+                    detail = "Round changed from '" + _current + "' to '" + roundId +
+                             "' before the terminal result was committed to the match.";
+                    return FullMatchRoundTransition.Failed;
+                }
+
                 SetRound(roundId);
                 return FullMatchRoundTransition.NewRound;
             }
@@ -283,6 +294,13 @@ namespace Mahjong.Unity.App
             {
                 _terminalSeen = true;
                 return FullMatchRoundTransition.Terminal;
+            }
+
+            if (_terminalSeen)
+            {
+                failureCode = _terminalCommitted ? "ROUND_REVIVED_AFTER_COMMIT" : "TERMINAL_ROUND_REVIVED";
+                detail = "The terminal round '" + roundId + "' returned to an active phase before a new round.";
+                return FullMatchRoundTransition.Failed;
             }
 
             return FullMatchRoundTransition.InRound;
@@ -347,6 +365,7 @@ namespace Mahjong.Unity.App
             }
 
             _completed.Add(terminal.RoundId);
+            _terminalCommitted = true;
             return true;
         }
 
@@ -354,6 +373,7 @@ namespace Mahjong.Unity.App
         {
             _current = roundId;
             _terminalSeen = false;
+            _terminalCommitted = false;
             if (!_seen.Contains(roundId))
             {
                 _seen.Add(roundId);
@@ -755,59 +775,6 @@ namespace Mahjong.Unity.App
             }
 
             return SmokeActionEventPolicy.IsRequiredEvent(plan.Action, plan.Seat, ev);
-        }
-
-        /// <summary>
-        /// Finds the selected action's own visible event when the Client resolved
-        /// the command in the outbox but the asynchronous ReceiptResolved callback
-        /// was not observed (a real LocalHost/UI dispatch race observed for the
-        /// mandatory draw). It still requires the exact accepted binding, round,
-        /// acting seat and unchanged SmokeActionEventPolicy type. It never accepts
-        /// another seat, another event type or an old binding, and it is only used
-        /// for the no-choice mandatory draw; commands with a server decision require
-        /// their Applied receipt.
-        /// </summary>
-        public static bool TryFindOwnVisibleEvent(
-            FullMatchActionPlan plan,
-            IReadOnlyList<ObservedVisibleEventBatch> batches,
-            out ObservedVisibleEventBatch? foundBatch,
-            out ObservedVisibleEvent? foundEvent)
-        {
-            if (plan == null) throw new ArgumentNullException(nameof(plan));
-            if (batches == null) throw new ArgumentNullException(nameof(batches));
-            foundBatch = null;
-            foundEvent = null;
-            for (int i = 0; i < batches.Count; i++)
-            {
-                ObservedVisibleEventBatch batch = batches[i];
-                if (!batch.Incremental ||
-                    batch.StateVersion <= plan.BaselineStateVersion ||
-                    !string.Equals(batch.RoundId, plan.RoundId, StringComparison.Ordinal) ||
-                    !string.Equals(batch.SessionId, plan.SessionId, StringComparison.Ordinal) ||
-                    !string.Equals(batch.RoomId, plan.RoomId, StringComparison.Ordinal) ||
-                    !string.Equals(batch.TableId, plan.TableId, StringComparison.Ordinal) ||
-                    !string.Equals(batch.ScopeId, plan.ScopeId, StringComparison.Ordinal) ||
-                    batch.Seat != plan.Seat ||
-                    batch.BindingEpoch != plan.BindingEpoch ||
-                    batch.ConnectionEpoch != plan.ConnectionEpoch ||
-                    batch.OwnerEpoch != plan.OwnerEpoch)
-                {
-                    continue;
-                }
-
-                for (int e = 0; e < batch.Events.Count; e++)
-                {
-                    ObservedVisibleEvent ev = batch.Events[e];
-                    if (SmokeActionEventPolicy.IsRequiredEvent(plan.Action, plan.Seat, ev))
-                    {
-                        foundBatch = batch;
-                        foundEvent = ev;
-                        return true;
-                    }
-                }
-            }
-
-            return false;
         }
 
         /// <summary>
