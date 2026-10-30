@@ -427,9 +427,9 @@ Ignored evidence root:
 | `evidence/candidate-identity.txt` | `73200D058270DE11488C1C788E51ABE79068CF196C55E278D92298028717E811` |
 | `evidence/commands.txt` | `F74B46BE663E01249C13840CD8BAA844257DBCDFD9A6E14718A7D58A5BFD549B` |
 | `SHA256SUMS.txt` (65 entries) | `7B69E3B7ABED594DE4849FF2AE235CB34EFCC346FB55BEC6787541DFEB67A42E` |
-| `repro-20261030/commands.log` (fresh §9) | `6BE679BF8B535DD887B1ABAE4B4325B522235EABCF88C8626B7A8F68249BD195` |
-| `repro-20261030/release-build.log` | `F7204D681CE17D5656739DDDD1641A565F683064C2C5C36BE006FF75866EFA5B` |
-| `repro-20261030/release-test.log` | `847E14C5849CB9E580111F354BCD19B62B13E8C1C45C8F23614A2FE995D96700` |
+| `repro-20261030-r3/commands.log` (self-contained §9) | `53D299579323E2F695EFAE9A696A835EEB2840B2957675B00282C7C31C50C907` |
+| `repro-20261030-r3/release-build.log` | `8988A025C1AD5E4D10CC25E313D94537F490851AC25C4E38D0A5E797A31BCE7F` |
+| `repro-20261030-r3/release-test.log` | `E61FA53E67F4C410517A9DB5D815275D03DAEB1CAFBA5F51DD37BEAAB7CD2BE6` |
 
 The 65-entry manifest covers the original stable evidence files; it excludes transient compiler temp
 files and the failed dump attempt. The fresh §9 logs above are separate from that manifest. The exact
@@ -439,89 +439,154 @@ archive and both patches remain under the ignored evidence root.
 
 Run the whole block from the worktree root
 (`D:\majiang-wt\localhost-combined-gate-20261030` or the checkout root). It creates a fresh
-`repro-20261030` tree, extracts the exact `00cd02d` archive twice (pristine `candidate` plus working
-`combo`), creates a local-only git seed for `git apply`, applies both patches using **absolute**
-patch paths, checks the postimages, and runs the LocalHost Release build/test in `combo`.
+`repro-20261030-r3` tree, extracts the exact `00cd02d` archive twice (pristine `candidate` plus
+working `combo`), **extracts both patch blobs from `acdc275` using byte-safe redirection and verifies
+the §2 SHA-256 values**, creates a local-only git seed for `git apply`, applies both patches, checks
+the postimages, and runs the LocalHost Release build/test in `combo`.
 
-Correction note: the earlier draft passed worktree-relative patch paths to
-`git -C <combo> apply`; Git resolved them against `<combo>` and exited 128. The script below uses
-absolute `$patch1`/`$patch2`, creates `combo` explicitly, and runs the tests from that patched copy.
+Correction note: the previous version only pointed at pre-existing ignored patch files and did not
+fail on native errors. This version fetches the exact blobs (`c9a34e47…`, `894cf430…`) from
+`acdc275`, verifies `DED09A…` and `500AB2…`, and wraps every native command in an explicit
+exit-code check. It does not rely on a pre-created `combo` or on any pre-existing patch file.
 
 ```powershell
+$ErrorActionPreference = 'Stop'
+
 $repo = (Resolve-Path '.').Path
 if (-not (Test-Path (Join-Path $repo 'dotnet/Mahjong.sln'))) {
     throw 'Run this block from the worktree root.'
 }
 
 $stageRoot = Join-Path $repo 'build/localhost-combined-gate-20261030'
-$stage = Join-Path $stageRoot 'repro-20261030'
+$stage = Join-Path $stageRoot 'repro-20261030-r3'
 if (Test-Path -LiteralPath $stage) { throw "Refusing to reuse existing $stage" }
 $candidate = Join-Path $stage 'candidate'
 $combo = Join-Path $stage 'combo'
+$archive = Join-Path $stage 'pr20-00cd02d-lf.tar'
+$patch1 = Join-Path $stage 'V5-LOCALHOST-FURITEN-RACE-REMEDY-TEST-FIX-20261030.patch'
+$patch2 = Join-Path $stage 'V5-LOCALHOST-CALLER-113-115-TWO-FIXES-20261030.patch'
+$log = Join-Path $stage 'commands.log'
 New-Item -ItemType Directory -Force -Path $stage, $candidate, $combo | Out-Null
 
-# Absolute patch paths: `git -C $combo apply` resolves a RELATIVE patch path
-# against $combo, not against the caller's working directory.
-$patch1 = Join-Path $stageRoot 'V5-LOCALHOST-FURITEN-RACE-REMEDY-TEST-FIX-20261030.patch'
-$patch2 = Join-Path $stageRoot 'V5-LOCALHOST-CALLER-113-115-TWO-FIXES-20261030.patch'
-$archive = Join-Path $stage 'pr20-00cd02d-lf.tar'
-
-# Exact LF archive; extract once for candidate and once for combo.
-git -c core.eol=lf -c core.autocrlf=false archive --format=tar -o $archive 00cd02d
-tar -xf $archive -C $candidate
-tar -xf $archive -C $combo
-
-# Local seed only: gives `git apply` an index; not a source commit.
-git -C $combo init -q
-git -C $combo config core.autocrlf false
-git -C $combo config core.eol lf
-git -C $combo config user.name repro
-git -C $combo config user.email repro@example.invalid
-git -C $combo add -A
-git -C $combo commit -q -m 'exact 00cd02d archive'
-
-# Apply both accepted patches with clean applicability checks.
-git -C $combo apply --check --whitespace=error-all $patch1
-git -C $combo apply --whitespace=error-all $patch1
-git -C $combo apply --check --whitespace=error-all $patch2
-git -C $combo apply --whitespace=error-all $patch2
-
-# Postimages and production-preservation checks.
-git -C $combo hash-object dotnet/tests/Mahjong.LocalHost.Tests/LocalControlTests.cs
-# e1b9f7a985cdf305abebe8bd70a5b83ab49fd88d
-git -C $combo hash-object dotnet/tests/Mahjong.LocalHost.Tests/LocalHostCandidateAcceptanceTests.cs
-# e6779677ff56ab3eb5a80f2d04015af9472fdf44
-git -C $combo hash-object dotnet/tests/Mahjong.LocalHost.Tests/P41Harness.cs
-# 273bba4b9ad8d865774948e5bf88a1a432553e88
-if (git -C $combo status --porcelain -- dotnet/src) {
-    throw 'production tree changed'
+function Assert-Native([string]$what, [int]$code) {
+    "[$what] exit=$code" | Add-Content -LiteralPath $log
+    if ($code -ne 0) { throw "$what failed with native exit $code" }
 }
-git -C $combo status --porcelain -- dotnet/tests
-# Expected: exactly the three modified test files above.
 
+function Invoke-Native([string]$what, [scriptblock]$command) {
+    & $command
+    Assert-Native $what $LASTEXITCODE
+}
+
+# 1. Exact LF archive of 00cd02d.
+Invoke-Native 'git archive' {
+    git -c core.eol=lf -c core.autocrlf=false archive --format=tar -o $archive 00cd02d
+}
+$archiveHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
+if ($archiveHash -ne 'BF799A62E8F83B887D860171C209E1E1F52314770E2C87DAFFA9404539A22B99') {
+    throw "archive SHA-256 mismatch: $archiveHash"
+}
+$entries = & tar -tf $archive
+Assert-Native 'tar -tf' $LASTEXITCODE
+$fileCount = @($entries | Where-Object { $_ -notmatch '/$' }).Count
+if ($fileCount -ne 2332) { throw "archive file count mismatch: $fileCount" }
+
+# 2. Two clean trees: pristine candidate and working combo.
+Invoke-Native 'tar extract candidate' { tar -xf $archive -C $candidate }
+Invoke-Native 'tar extract combo' { tar -xf $archive -C $combo }
+
+# 3. Exact patches from the specified acdc275 blobs, byte-safe redirection.
+$blob1 = 'c9a34e47c888e6ee965c6b2c471c4f0ab0acb0cf'
+$blob2 = '894cf43070be93d1331c0226fb5b1bb112c0b0f3'
+$tree = & git ls-tree -r acdc275
+Assert-Native 'git ls-tree acdc275' $LASTEXITCODE
+foreach ($blob in @($blob1, $blob2)) {
+    if (-not ($tree | Where-Object { $_ -match $blob })) {
+        throw "blob $blob is not present in acdc275"
+    }
+}
+Invoke-Native 'git cat-file patch1' {
+    cmd.exe /c "git cat-file blob $blob1 > `"$patch1`""
+}
+Invoke-Native 'git cat-file patch2' {
+    cmd.exe /c "git cat-file blob $blob2 > `"$patch2`""
+}
+$patch1Hash = (Get-FileHash -LiteralPath $patch1 -Algorithm SHA256).Hash
+$patch2Hash = (Get-FileHash -LiteralPath $patch2 -Algorithm SHA256).Hash
+if ($patch1Hash -ne 'DED09A4337CEB04E15B7642255EDB6C66A987E61997A00F9E382AB3A62623B7D') {
+    throw "patch1 SHA-256 mismatch: $patch1Hash"
+}
+if ($patch2Hash -ne '500AB2301394B96B82366BD523F1239DAB5B6877979CF29EC7DAEF60CABA7BE1') {
+    throw "patch2 SHA-256 mismatch: $patch2Hash"
+}
+
+# 4. Local-only index for git apply; never a source commit.
+Invoke-Native 'git init' { git -C $combo init -q }
+Invoke-Native 'git config autocrlf' { git -C $combo config core.autocrlf false }
+Invoke-Native 'git config eol' { git -C $combo config core.eol lf }
+Invoke-Native 'git config user.name' { git -C $combo config user.name repro }
+Invoke-Native 'git config user.email' { git -C $combo config user.email repro@example.invalid }
+Invoke-Native 'git add' { git -C $combo add -A }
+Invoke-Native 'git commit' { git -C $combo commit -q -m 'exact 00cd02d archive' }
+
+# 5. Apply both accepted patches with explicit exit checks.
+Invoke-Native 'patch1 check' { git -C $combo apply --check --whitespace=error-all $patch1 }
+Invoke-Native 'patch1 apply' { git -C $combo apply --whitespace=error-all $patch1 }
+Invoke-Native 'patch2 check' { git -C $combo apply --check --whitespace=error-all $patch2 }
+Invoke-Native 'patch2 apply' { git -C $combo apply --whitespace=error-all $patch2 }
+
+# 6. Postimages and untouched production tree.
+$postimages = [ordered]@{
+    'dotnet/tests/Mahjong.LocalHost.Tests/LocalControlTests.cs' = 'e1b9f7a985cdf305abebe8bd70a5b83ab49fd88d'
+    'dotnet/tests/Mahjong.LocalHost.Tests/LocalHostCandidateAcceptanceTests.cs' = 'e6779677ff56ab3eb5a80f2d04015af9472fdf44'
+    'dotnet/tests/Mahjong.LocalHost.Tests/P41Harness.cs' = '273bba4b9ad8d865774948e5bf88a1a432553e88'
+}
+foreach ($path in $postimages.Keys) {
+    $actual = & git -C $combo hash-object $path
+    Assert-Native "git hash-object $path" $LASTEXITCODE
+    if ($actual -ne $postimages[$path]) {
+        throw "postimage mismatch for $path`: $actual"
+    }
+}
+$srcStatus = @(& git -C $combo status --porcelain -- dotnet/src)
+Assert-Native 'git status dotnet/src' $LASTEXITCODE
+if ($srcStatus.Count -ne 0) { throw 'production tree changed' }
+$testStatus = @(& git -C $combo status --porcelain -- dotnet/tests)
+Assert-Native 'git status dotnet/tests' $LASTEXITCODE
+if ($testStatus.Count -ne 3) { throw "expected 3 modified test files, got $($testStatus.Count)" }
+
+# 7. Build and test the patched copy, fail closed.
 $dotnet = (Get-Command dotnet -ErrorAction Stop).Source
-& $dotnet build "$combo/dotnet/tests/Mahjong.LocalHost.Tests/Mahjong.LocalHost.Tests.csproj" -c Release --nologo
-& $dotnet test "$combo/dotnet/tests/Mahjong.LocalHost.Tests/Mahjong.LocalHost.Tests.csproj" -c Release --no-restore
+$buildLog = Join-Path $stage 'release-build.log'
+$testLog = Join-Path $stage 'release-test.log'
+Invoke-Native 'dotnet build' {
+    & $dotnet build "$combo/dotnet/tests/Mahjong.LocalHost.Tests/Mahjong.LocalHost.Tests.csproj" -c Release --nologo *> $buildLog
+}
+Invoke-Native 'dotnet test' {
+    & $dotnet test "$combo/dotnet/tests/Mahjong.LocalHost.Tests/Mahjong.LocalHost.Tests.csproj" -c Release --no-restore *> $testLog
+}
+
+Write-Host 'REPRO-OK'
 ```
 
-**Verified result of the fresh reproduction** (logged `repro-20261030`, 2026-10-30):
+**Verified result from a clean `repro-20261030-r3` with no pre-created patch files**
+(2026-10-30; run via `powershell.exe -NoProfile -ExecutionPolicy Bypass -File`):
 
 | Step | Native exit | Result |
 |---|---:|---|
-| archive / extract candidate / extract combo | 0 / 0 / 0 | exact LF archive, 2,332 files |
+| `git archive` / `tar -tf` / extract candidate / extract combo | 0 / 0 / 0 / 0 | archive SHA-256 `BF799A62…`, 2,332 files |
+| `git ls-tree -r acdc275` / `git cat-file` patch1 / patch2 | 0 / 0 / 0 | both blobs present and extracted |
+| patch SHA-256 checks | — | `DED09A…`, `500AB2…` both match |
 | local init / config / add / commit | 0 / 0 / 0 / 0 | local seed only |
 | patch 1 check / apply | 0 / 0 | furiten patch |
 | patch 2 check / apply | 0 / 0 | caller patch |
-| postimages | — | `e1b9f7a9…`, `e6779677…`, `273bba4b…` |
-| `dotnet/src` status | — | empty |
-| `dotnet test` status | — | only the three test files modified |
-| Release build | 0 | 0 warnings / 0 errors |
-| Release `dotnet test` | 0 | **115 passed / 0 failed / 0 skipped**, 28s 608ms |
+| postimages + status checks | 0 | `e1b9…`, `e677…`, `273b…`; `dotnet/src` empty; exactly 3 test files modified |
+| Release build | 0 | 0 warnings / 0 errors, 53.63 s |
+| Release `dotnet test` | 0 | **115 passed / 0 failed / 0 skipped**, 33s 125ms |
 
-This fresh LocalHost-only reproduction passed. The exact §9 block was also executed a second time in
-a separate `repro-20261030-exact` copy and returned **115 / 0 / 0, exit 0, 29s 667ms** (raw
-framework log SHA-256 `11BF5196D6565C47CA129E61B3C53DB719F760B9C0F2FBF14DE93D91D9893763`). Both
-are additional clean runs; neither erases the run-1 intermittent failure recorded in §5.1.
+The full self-contained block returned `REPRO-OK` and native exit 0. This is an additional clean run;
+it does not erase the run-1 intermittent failure recorded in §5.1, nor the caller's later
+`115/0/0, exit 0` recheck recorded there.
 
 Optional full verifier on the same `combo` (same real-PG wrapper as §5.4; the wrapper cleanup
 long-path defect in §5.5 still applies):
@@ -530,16 +595,16 @@ long-path defect in §5.5 still applies):
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File "$combo/tools/ci/verify-v5-table-postgres.ps1" `
   -Configuration Release -RunUnifiedVerification -Port 55612 -LobbyPort 55613 `
-  -Root "$combo/artifacts/p52-pg-cluster-repro-20261030" `
+  -Root "$combo/artifacts/p52-pg-cluster-repro-r3" `
   -PgZipPath D:/majiang-pg-tmp/cache/postgresql-16.10-1-windows-x64-binaries.zip `
   -LogDir "$stage/pg-table-wrapper" -UnifiedLogDir "$stage/unified" `
   -DotnetPath $dotnet
 ```
 
 The full unified run in §5.4 was executed on `revalidation-20261030`, not repeated in this
-LocalHost-only `repro-20261030`; the command above is the same wrapper with the fresh paths.
+LocalHost-only `repro-20261030-r3`; the command above is the same wrapper with fresh paths.
 
-The original run list is preserved at `evidence/commands.txt`; the corrected reproduction transcript
-is `repro-20261030/commands.log` (SHA-256
-`6BE679BF8B535DD887B1ABAE4B4325B522235EABCF88C8626B7A8F68249BD195`). No source commit, push, PR,
+The original run list is preserved at `evidence/commands.txt`; the self-contained reproduction
+transcript is `repro-20261030-r3/commands.log` (SHA-256
+`53D299579323E2F695EFAE9A696A835EEB2840B2957675B00282C7C31C50C907`). No source commit, push, PR,
 CI, delegation, trust, or Unity change was made by this validation.
