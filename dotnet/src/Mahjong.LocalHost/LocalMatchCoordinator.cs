@@ -299,6 +299,55 @@ namespace Mahjong.LocalHost
 
         public bool IsFinished => Snapshot.Finished;
 
+        /// <summary>
+        /// Read-only, hidden-tile-free runtime diagnostics for the local match
+        /// fixture. It exposes host-visible phase/seat, per-seat control, pending
+        /// decision ids and candidate counts so a PlayMode stall can be attributed
+        /// without modifying the runtime owner files.
+        /// </summary>
+        public string DescribeRuntimeForTest()
+        {
+            try
+            {
+                LocalTableChannel? channel = _channel;
+                if (channel?.RuntimeForMatch == null)
+                {
+                    return "runtime=null";
+                }
+
+                TableActor actor = channel.RuntimeForMatch.ActorForTest;
+                TableSnapshot snapshot = actor
+                    .GetSnapshotAsync(CancellationToken.None)
+                    .GetAwaiter()
+                    .GetResult();
+                TableControlSnapshot control = actor
+                    .GetControlSnapshotAsync(CancellationToken.None)
+                    .GetAwaiter()
+                    .GetResult();
+                var builder = new System.Text.StringBuilder();
+                builder.Append("phase=").Append(snapshot.Phase)
+                    .Append(";seat=").Append(snapshot.CurrentSeat)
+                    .Append(";state=").Append(snapshot.StateVersion.Value)
+                    .Append(";wall=").Append(actor.GetRoundStateForHost().Tiles.WallRemaining);
+                for (int seat = 0; seat < 4; seat++)
+                {
+                    string? pending = actor.GetPendingDecisionId(seat);
+                    int candidates = actor.GetPendingDecisionCandidates(seat).Count;
+                    builder.Append(";s").Append(seat)
+                        .Append(":kind=").Append(control.Seats[seat].Kind)
+                        .Append(",epoch=").Append(control.Seats[seat].ControlEpoch)
+                        .Append(",pending=").Append(pending ?? "-")
+                        .Append(",candidates=").Append(candidates);
+                }
+
+                return builder.ToString();
+            }
+            catch (Exception exception)
+            {
+                return "runtime-error=" + exception.GetType().Name + ":" + exception.Message;
+            }
+        }
+
         public async Task<LocalMatchRound> OpenRoundAsync(CancellationToken cancellationToken = default)
         {
             LocalMatchState state;

@@ -35,6 +35,9 @@ namespace Mahjong.Unity.App
         /// or shut down that session before opening the next round.
         /// </summary>
         Task<LocalMatchSnapshot> RecordRoundCompletionAsync(CancellationToken cancellationToken);
+
+        /// <summary>Hidden-tile-free runtime diagnostics for the local PlayMode fixture.</summary>
+        string DescribeRuntimeForTest();
     }
 
     /// <summary>
@@ -135,6 +138,12 @@ namespace Mahjong.Unity.App
                 LocalMatchCoordinator? match = Volatile.Read(ref _match);
                 return match?.Snapshot;
             }
+        }
+
+        public string DescribeRuntimeForTest()
+        {
+            LocalMatchCoordinator? match = Volatile.Read(ref _match);
+            return match?.DescribeRuntimeForTest() ?? "match=null";
         }
 
         public Task<ITableChannel> CreateAsync(
