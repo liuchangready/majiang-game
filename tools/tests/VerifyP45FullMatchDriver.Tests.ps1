@@ -19,7 +19,7 @@ $script:Failed = 0
 
 # Load the production ownership helpers without executing the tool's main body.
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($tool, [ref]$null, [ref]$null)
-$ownershipFunctions = @('Get-ProcessRecord', 'Test-OwnedPlayerProcess', 'Stop-OwnedPlayerProcess')
+$ownershipFunctions = @('Get-ProcessRecord', 'Test-OwnedPlayerProcess', 'Stop-OwnedPlayerProcess', 'Quote-ProcessArgument', 'Join-ProcessArguments')
 foreach ($name in $ownershipFunctions) {
     $fn = $ast.Find({
         param($node)
@@ -109,6 +109,19 @@ $second = Invoke-Verify -Run $runA
 Assert-True ($first -eq 0) 'valid manifest first Verify'
 Assert-True ($second -eq 0) 'valid manifest second Verify'
 
+# 1b) Collect seals a fresh final sample, then Verify twice.
+$runCollect = New-Fixture 'collect'
+[System.IO.File]::WriteAllText((Join-Path $runCollect 'driver\required.txt'), 'required')
+$collect = Start-Process -FilePath 'powershell.exe' -ArgumentList @(
+    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $tool,
+    '-Mode', 'Collect', '-RunDir', $runCollect
+) -PassThru -WindowStyle Hidden -Wait
+$collectVerify1 = Invoke-Verify -Run $runCollect
+$collectVerify2 = Invoke-Verify -Run $runCollect
+Assert-True ($collect.ExitCode -eq 0) 'Collect creates final manifest'
+Assert-True ($collectVerify1 -eq 0) 'Collect manifest Verify 1'
+Assert-True ($collectVerify2 -eq 0) 'Collect manifest Verify 2'
+
 # 2) Empty entries.
 $runB = New-Fixture 'empty'
 Write-ComputedManifest -Run $runB | Out-Null
@@ -179,6 +192,45 @@ $playerManifest | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path 
 Write-ComputedManifest -Run $runJ | Out-Null
 Assert-True ((Invoke-Verify -Run $runJ) -ne 0) 'whole Player manifest missing file rejected'
 
+# 10b) A manifest root redirected to a different existing run is rejected.
+$runK = New-Fixture 'wrong-existing-root'
+$runOther = New-Fixture 'other-existing-root'
+Write-ComputedManifest -Run $runK -RootOverride (Resolve-Path $runOther).Path | Out-Null
+Assert-True ((Invoke-Verify -Run $runK) -ne 0) 'manifest root redirected to another existing run rejected'
+
+# 10c) A required file cannot exempt itself by adding it to controlLogs.
+$runL = New-Fixture 'omitted-control'
+[System.IO.File]::WriteAllText((Join-Path $runL 'driver\required.txt'), 'required')
+Write-ComputedManifest -Run $runL | Out-Null
+$manifestL = Get-Content -LiteralPath (Join-Path $runL 'evidence\artifacts.json') -Raw | ConvertFrom-Json
+$requiredEntry = @($manifestL.entries | Where-Object { $_.path -eq 'driver/required.txt' })
+$manifestL.entries = @($manifestL.entries | Where-Object { $_.path -ne 'driver/required.txt' })
+$manifestL.entryCount = @($manifestL.entries).Count
+$manifestL.controlLogs = @('logs/tool.log', 'driver/required.txt')
+$manifestL.totalBytes = [long]($manifestL.totalBytes - [long]$requiredEntry[0].bytes)
+$manifestL | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $runL 'evidence\artifacts.json') -Encoding UTF8
+$hashL = (Get-FileHash -LiteralPath (Join-Path $runL 'evidence\artifacts.json') -Algorithm SHA256).Hash
+[System.IO.File]::WriteAllText((Join-Path $runL 'evidence\artifacts.json.sha256.txt'), ($hashL + "  x`n"))
+Assert-True ((Invoke-Verify -Run $runL) -ne 0) 'required file cannot be self-exempted via controlLogs'
+
+# 10d) Whole-player root must equal the expected player directory.
+$runM = New-Fixture 'wrong-player-root'
+New-Item -ItemType Directory -Force -Path (Join-Path $runM 'player') | Out-Null
+[System.IO.File]::WriteAllText((Join-Path $runM 'player\Mahjong.exe'), 'exe')
+$wrongPlayerRoot = Join-Path $outRoot 'another-player-root'
+New-Item -ItemType Directory -Force -Path $wrongPlayerRoot | Out-Null
+$playerM = [ordered]@{
+    schemaVersion = 1
+    kind = 'p45-full-match-player-files'
+    root = $wrongPlayerRoot
+    fileCount = 1
+    totalBytes = 3
+    files = @([ordered]@{ path = 'Mahjong.exe'; bytes = 3; sha256 = (Get-FileHash (Join-Path $runM 'player\Mahjong.exe') -Algorithm SHA256).Hash })
+}
+$playerM | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $runM 'player-files.json') -Encoding UTF8
+Write-ComputedManifest -Run $runM | Out-Null
+Assert-True ((Invoke-Verify -Run $runM) -ne 0) 'whole Player manifest wrong root rejected'
+
 # 11) Production ownership identity: a same-process record must be accepted, a
 # wrong hash must be refused without killing, and the correct record must stop
 # only the test-owned child process.
@@ -215,6 +267,22 @@ finally {
 }
 
 $toolText = Get-Content -LiteralPath $tool -Raw
+
+# 12) Windows argument quoting: spaces and a trailing backslash survive exactly.
+$spaceDir = Join-Path $outRoot 'space dir'
+New-Item -ItemType Directory -Force -Path $spaceDir | Out-Null
+$probeScript = Join-Path $spaceDir 'args probe.ps1'
+$probeOut = Join-Path $spaceDir 'args out.txt'
+[System.IO.File]::WriteAllText($probeScript, '$args -join "|"' + "`n")
+$argLine = Join-ProcessArguments -Arguments @(
+    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $probeScript,
+    'arg with spaces', 'plain', 'trailing\'
+)
+$argProcess = Start-Process -FilePath 'powershell.exe' -ArgumentList $argLine -PassThru -WindowStyle Hidden `
+    -RedirectStandardOutput $probeOut -Wait
+$received = (Get-Content -LiteralPath $probeOut -Raw).Trim()
+Assert-True ($argProcess.ExitCode -eq 0 -and $received -eq 'arg with spaces|plain|trailing\') 'Windows argument quoting preserves spaces and trailing backslash'
+
 Assert-True ($toolText -match '\$record\.path\s*=\s*\$record\.exe' -and $toolText -match '\$record\.sha256\s*=\s*\$record\.exeSha256') 'player record uses unified path/sha fields'
 Assert-True ($toolText -match 'UNITY_FINALLY' -and $toolText -match 'Stop-OwnedPlayerProcess\s+-Process\s+\$process\s+-Record\s+\$unityRecord') 'Unity timeout/finally uses owned identity stop'
 Assert-True ($toolText -match 'executions\\' -and $toolText -match '\-full-match-run-id' -and $toolText -match 'driverSummaryRunIdMatches') 'run uses a fresh execution id bound to summary'

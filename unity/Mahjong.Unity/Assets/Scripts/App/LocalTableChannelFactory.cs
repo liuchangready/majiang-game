@@ -113,6 +113,15 @@ namespace Mahjong.Unity.App
             Interlocked.Exchange(ref _matchModeEnabled, 1);
         }
 
+        /// <summary>
+        /// Test/process-isolation reset for the opt-in switch. PlayMode fixtures
+        /// must restore the normal single-round composition after their own test.
+        /// </summary>
+        public static void DisableMatchModeForTest()
+        {
+            Interlocked.Exchange(ref _matchModeEnabled, 0);
+        }
+
         /// <summary>Stable room id used by the single local production table.</summary>
         public string RoomId => _roomId;
 

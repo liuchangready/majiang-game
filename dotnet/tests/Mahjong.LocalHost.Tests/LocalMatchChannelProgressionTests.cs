@@ -111,6 +111,13 @@ namespace Mahjong.LocalHost.Tests
                     Assert.Single(after.Records);
                     Assert.Equal(firstRoundId, after.Records[0].RoundId);
                     Assert.False(after.Finished);
+
+                    // Recording the same terminal round again must be rejected and
+                    // must not append a second settlement/record.
+                    await Assert.ThrowsAsync<InvalidOperationException>(
+                        () => match.RecordRoundCompletionAsync(ct));
+                    Assert.Single(match.Snapshot.Records);
+                    Assert.Equal(after.Records[0].FinalScores, match.Snapshot.Records[0].FinalScores);
                 }
                 finally
                 {
