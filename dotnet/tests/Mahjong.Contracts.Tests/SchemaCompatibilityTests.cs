@@ -17,7 +17,7 @@ namespace Mahjong.Protocol.Tests
 {
     public sealed class SchemaCompatibilityTests
     {
-        private const string ExpectedSchemaFingerprint = "290f46913e43407c57cea9df1de0d23e0a516facfeb7c7a2e9a6867fe9c32430";
+        private const string ExpectedSchemaFingerprint = "efcdb08d49fa430ac70cc1f61c1d6b9c13806bfb558e0f3be2639c3399123796";
 
         [Fact]
         public void EnvelopeFieldNumbersAreStable()
@@ -111,7 +111,11 @@ namespace Mahjong.Protocol.Tests
             {
                 (1, "seat"), (2, "closed_tiles"), (3, "drawn_tile_id"), (4, "legal_actions"),
                 (5, "furiten"), (6, "discard_history"), (7, "decision"), (8, "cheat"),
-                (16, "sleeve_tiles"), (17, "owner_melds")
+                (16, "sleeve_tiles"), (17, "owner_melds"), (18, "control")
+            });
+            AssertFields(PlayerControlView.Descriptor, new (int, string)[]
+            {
+                (1, "control_epoch"), (2, "controlled_by_computer"), (3, "control_version")
             });
             AssertFields(PrivateCheatView.Descriptor, new (int, string)[]
             {

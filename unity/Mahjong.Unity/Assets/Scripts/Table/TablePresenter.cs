@@ -188,7 +188,7 @@ namespace Mahjong.Unity.Table
         private void Start()
         {
             WireButtons();
-            WireControlButtonsGap();
+            WireControlButtons();
             ResetAllViews();
         }
 
@@ -365,10 +365,12 @@ namespace Mahjong.Unity.Table
                 if (_tsumoButton != null) _tsumoButton.interactable = false;
                 if (_riichiButton != null) _riichiButton.interactable = false;
                 SuspendAnimationsForLifecycle();
+                if (_latestView != null) RenderControl(_latestView);
             }
             else
             {
                 ResumeAnimationsAfterLifecycle();
+                if (_latestView != null) RenderControl(_latestView);
             }
         }
 
@@ -388,10 +390,12 @@ namespace Mahjong.Unity.Table
                 if (_tsumoButton != null) _tsumoButton.interactable = false;
                 if (_riichiButton != null) _riichiButton.interactable = false;
                 SuspendAnimationsForLifecycle();
+                if (_latestView != null) RenderControl(_latestView);
             }
             else
             {
                 ResumeAnimationsAfterLifecycle();
+                if (_latestView != null) RenderControl(_latestView);
             }
         }
 
@@ -480,15 +484,21 @@ namespace Mahjong.Unity.Table
             var disposition = e.Resolution.Disposition;
             var receiptStatus = e.Resolution.ReceiptStatus;
 
+            bool controlIntent = pendingCmd.Kind == CommandKind.ClaimControl ||
+                                 pendingCmd.Kind == CommandKind.ReleaseControl;
             if (disposition == OutboxDisposition.Applied || receiptStatus == Mahjong.Contracts.ReceiptStatus.Applied)
             {
                 _interactionState.ApplyClientOutcome(TablePendingOutcome.Applied);
-                UpdateStatusText("操作已确认执行");
+                UpdateStatusText(controlIntent
+                    ? "控制权变更已确认，等待牌桌状态确认…"
+                    : "操作已确认执行");
             }
             else if (disposition == OutboxDisposition.Recorded || receiptStatus == Mahjong.Contracts.ReceiptStatus.Recorded)
             {
                 _interactionState.ApplyClientOutcome(TablePendingOutcome.Recorded);
-                UpdateStatusText("操作已由权威服务器记录");
+                UpdateStatusText(controlIntent
+                    ? "控制权变更已记录，等待牌桌确认（如未更新请重新进入牌桌）"
+                    : "操作已由权威服务器记录");
             }
             else if (disposition == OutboxDisposition.Rejected || receiptStatus == Mahjong.Contracts.ReceiptStatus.Rejected)
             {
@@ -500,6 +510,11 @@ namespace Mahjong.Unity.Table
             {
                 _interactionState.ApplyClientOutcome(TablePendingOutcome.Unknown);
                 UpdateStatusText("操作状态未知，等待对账中...");
+            }
+
+            if (_latestView != null)
+            {
+                RenderControl(_latestView);
             }
         }
 
@@ -972,6 +987,7 @@ namespace Mahjong.Unity.Table
             RenderOwnHand(view);
             RenderActionButtons(view);
             RenderCheats(view);
+            RenderControl(view);
             RenderSettlementNavigation(view);
         }
 
@@ -1113,7 +1129,11 @@ namespace Mahjong.Unity.Table
 
         private void RenderActionButtons(PlayerTableViewState view)
         {
-            bool hasDecision = view.Identity.IsPrivateAuthorized && view.Own?.Decision != null;
+            bool humanControl = view.Own?.Control != null && !view.Own.Control.ControlledByComputer;
+            bool hasDecision = view.Identity.IsPrivateAuthorized &&
+                               view.Own?.Decision != null &&
+                               humanControl &&
+                               !HasPendingControl();
 
             if (_actionPanelRoot != null)
             {
@@ -1171,9 +1191,21 @@ namespace Mahjong.Unity.Table
             SetButtonActive(_cancelSelectionButton, _interactionState.Selection.HandTileId.HasValue);
         }
 
+        private bool HasPendingControl()
+        {
+            TablePendingIntent? pending = _interactionState.Pending;
+            return pending != null &&
+                   (pending.Intent.Kind == CommandKind.ClaimControl ||
+                    pending.Intent.Kind == CommandKind.ReleaseControl);
+        }
+
         private void RenderCheats(PlayerTableViewState view)
         {
-            bool canCheat = view.Identity.IsPrivateAuthorized && view.Own?.Cheat != null;
+            bool canCheat = view.Identity.IsPrivateAuthorized &&
+                            view.Own?.Cheat != null &&
+                            view.Own.Control != null &&
+                            !view.Own.Control.ControlledByComputer &&
+                            !HasPendingControl();
 
             if (_cheatPanelRoot != null)
             {
@@ -1222,6 +1254,98 @@ namespace Mahjong.Unity.Table
             if (_viewSettlementButton != null)
             {
                 _viewSettlementButton.gameObject.SetActive(isRoundEnd || isMatchFinished);
+            }
+        }
+
+        /// <summary>
+        /// Renders the owner-seat control panel strictly from the confirmed
+        /// snapshot. Absent authority, a non-ready binding, a spectator role, or
+        /// an unresolved request all fail closed (visible but disabled, with a
+        /// reason); no button ever claims success before a confirmed state.
+        /// </summary>
+        private void RenderControl(PlayerTableViewState view)
+        {
+            if (_claimControlButton == null && _releaseControlButton == null && _controlStatusText == null)
+            {
+                return;
+            }
+
+            bool authorizedPlayer = view.Identity.Role == PlayerTableRole.Player &&
+                                    view.Identity.IsPrivateAuthorized &&
+                                    view.Own != null;
+            if (!authorizedPlayer)
+            {
+                SetControlButtons(visible: false, claimInteractable: false, releaseInteractable: false);
+                SetControlStatus(view.Identity.Role == PlayerTableRole.Spectator ? "观战模式：仅可查看" : string.Empty);
+                return;
+            }
+
+            PlayerControlState? control = view.Own!.Control;
+            if (control == null)
+            {
+                SetControlButtons(visible: true, claimInteractable: false, releaseInteractable: false);
+                SetControlStatus("控制状态不可用：等待权威牌桌数据");
+                return;
+            }
+
+            TablePendingIntent? pending = _interactionState.Pending;
+            bool controlPending = pending != null &&
+                                  (pending.Intent.Kind == CommandKind.ClaimControl ||
+                                   pending.Intent.Kind == CommandKind.ReleaseControl);
+            if (controlPending)
+            {
+                SetControlButtons(visible: true, claimInteractable: false, releaseInteractable: false);
+                bool unknown = pending!.LastOutcome == TablePendingOutcome.Unknown ||
+                               pending.NeedsReconciliation;
+                SetControlStatus(unknown
+                    ? "控制权变更结果未知，等待对账…"
+                    : "控制权变更确认中…");
+                return;
+            }
+
+            if (view.ConnectionState != TableConnectionState.Ready)
+            {
+                SetControlButtons(visible: true, claimInteractable: false, releaseInteractable: false);
+                SetControlStatus("连接恢复中，暂不可变更控制权");
+                return;
+            }
+
+            if (view.Paused || AnimationsSuspended || UiInputLifecycle.Instance.IsPaused || view.Board.SessionFinished)
+            {
+                SetControlButtons(visible: true, claimInteractable: false, releaseInteractable: false);
+                SetControlStatus(view.Board.SessionFinished ? "牌局已结束" : "牌桌已暂停");
+                return;
+            }
+
+            bool canSubmit = view.CanSubmit;
+            bool automated = control.ControlledByComputer;
+            SetControlButtons(
+                visible: true,
+                claimInteractable: canSubmit && automated,
+                releaseInteractable: canSubmit && !automated);
+            SetControlStatus(automated ? "当前控制：电脑托管" : "当前控制：本人");
+        }
+
+        private void SetControlButtons(bool visible, bool claimInteractable, bool releaseInteractable)
+        {
+            if (_claimControlButton != null)
+            {
+                _claimControlButton.gameObject.SetActive(visible);
+                _claimControlButton.interactable = visible && claimInteractable;
+            }
+
+            if (_releaseControlButton != null)
+            {
+                _releaseControlButton.gameObject.SetActive(visible);
+                _releaseControlButton.interactable = visible && releaseInteractable;
+            }
+        }
+
+        private void SetControlStatus(string message)
+        {
+            if (_controlStatusText != null)
+            {
+                _controlStatusText.text = message ?? string.Empty;
             }
         }
 
@@ -1363,22 +1487,19 @@ namespace Mahjong.Unity.Table
                 _cancelPreparationButton.onClick.AddListener(ClosePreparationDialog);
         }
 
-        private void WireControlButtonsGap()
+        private void WireControlButtons()
         {
             if (_claimControlButton != null)
             {
-                _claimControlButton.gameObject.SetActive(false);
-                _claimControlButton.interactable = false;
+                _claimControlButton.onClick.AddListener(OnClaimControlClicked);
             }
             if (_releaseControlButton != null)
             {
-                _releaseControlButton.gameObject.SetActive(false);
-                _releaseControlButton.interactable = false;
+                _releaseControlButton.onClick.AddListener(OnReleaseControlClicked);
             }
-            if (_controlStatusText != null)
-            {
-                _controlStatusText.text = string.Empty;
-            }
+
+            SetControlButtons(visible: false, claimInteractable: false, releaseInteractable: false);
+            SetControlStatus(string.Empty);
         }
 
         public void OnHandTileClicked(int index)
@@ -2191,6 +2312,42 @@ namespace Mahjong.Unity.Table
             }
         }
 
+        public void OnClaimControlClicked()
+        {
+            if (!ConsumeInputLifecycle(_claimControlButton?.gameObject)) return;
+            SubmitControlIntent(TableIntentKind.ClaimControl);
+        }
+
+        public void OnReleaseControlClicked()
+        {
+            if (!ConsumeInputLifecycle(_releaseControlButton?.gameObject)) return;
+            SubmitControlIntent(TableIntentKind.ReleaseControl);
+        }
+
+        private void SubmitControlIntent(TableIntentKind kind)
+        {
+            if (_latestView == null)
+            {
+                UpdateStatusText("尚未同步确认牌桌状态");
+                return;
+            }
+
+            TableCommandOwnerContext? owner = BuildOwnerContext();
+            if (owner == null) return;
+
+            TableInteractionOutcome outcome = _interactionState.BuildIntent(kind, owner);
+            if (outcome.Accepted && outcome.Intent != null)
+            {
+                RenderControl(_latestView);
+                SubmitIntentAsync(outcome.Intent);
+            }
+            else
+            {
+                UpdateStatusText($"控制权变更无法提交: {FormatRejection(outcome.Code)}");
+                RenderControl(_latestView);
+            }
+        }
+
         public void OnBackButtonClicked()
         {
             if (!ConsumeInputLifecycle(_backButton?.gameObject)) return;
@@ -2260,6 +2417,8 @@ namespace Mahjong.Unity.Table
                 _interactionState.ApplyClientOutcome(TablePendingOutcome.Rejected);
                 UpdateStatusText($"操作被服务器拒绝: {opName}");
             }
+
+            RenderControl(_latestView);
         }
 
         private TableCommandOwnerContext? BuildOwnerContext()
@@ -2429,6 +2588,10 @@ namespace Mahjong.Unity.Table
                 TableInteractionCodes.IdentityMismatch => "玩家身份不匹配",
                 TableInteractionCodes.InvalidIntentKind => "不支持的操作类型",
                 TableInteractionCodes.InvalidConfirmedData => "权威确认数据异常",
+                TableCommandIntentFactory.ControlStateUnavailable => "控制状态不可用",
+                TableCommandIntentFactory.ControlAlreadyAutomated => "本座位已托管给电脑",
+                TableCommandIntentFactory.ControlAlreadyHuman => "本座位已由本人控制",
+                TableCommandIntentFactory.ControlAutomated => "本座位由电脑控制，请先收回控制权",
                 TableInteractionCodes.PendingCleared => "待处理操作已被清除",
                 TableInteractionCodes.Applied => "操作已应用",
                 TableInteractionCodes.SelectionCleared => "选择已清除",
@@ -2518,6 +2681,8 @@ namespace Mahjong.Unity.Table
             _lastControlEpoch = null;
             _lastRoundId = null;
             _lastOwnerEpoch = null;
+            SetControlButtons(visible: false, claimInteractable: false, releaseInteractable: false);
+            SetControlStatus(string.Empty);
 
             if (_candidateOptionTexts != null)
             {

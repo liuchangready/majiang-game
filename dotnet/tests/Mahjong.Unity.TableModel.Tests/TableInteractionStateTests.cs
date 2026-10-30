@@ -412,17 +412,69 @@ namespace Mahjong.Unity.TableModel.Tests
         }
 
         [Fact]
-        public void ControlIntentFailsClosedWithoutCreatingPending()
+        public void ControlIntentUsesConfirmedAuthorityAndBlocksOppositeTransition()
         {
             var clock = new ManualTableClock();
             TableInteractionState state = State(clock, out _);
-            PlayerTableViewState view = View(clock);
-            state.ApplyConfirmedView(view);
+            PlayerTableViewState human = View(clock);
+            state.ApplyConfirmedView(human);
 
-            TableInteractionOutcome result = state.BuildIntent(TableIntentKind.ReleaseControl, Owner());
-            Assert.False(result.Accepted);
-            Assert.Equal(TableCommandIntentFactory.ControlPayloadFieldCollision, result.Code);
+            TableInteractionOutcome release = state.BuildIntent(TableIntentKind.ReleaseControl, Owner());
+            Assert.True(release.Accepted, release.Code);
+            Assert.NotNull(state.Pending);
+            Assert.Equal(CommandKind.ReleaseControl, state.Pending!.Intent.Kind);
+            Assert.Equal(7UL, state.Pending.Intent.ControlEpoch);
+
+            TableInteractionOutcome duplicate = state.BuildIntent(TableIntentKind.ReleaseControl, Owner());
+            Assert.True(duplicate.Accepted);
+            Assert.Equal(TableInteractionCodes.AlreadyPending, duplicate.Code);
+
+            TableInteractionOutcome opposite = state.BuildIntent(TableIntentKind.ClaimControl, Owner());
+            Assert.False(opposite.Accepted);
+            Assert.Equal(TableCommandIntentFactory.ControlAlreadyHuman, opposite.Code);
+            Assert.Single(new[] { state.Pending });
+        }
+
+        [Fact]
+        public void ConfirmedControlChangeClearsOldSelectionAndPending()
+        {
+            var clock = new ManualTableClock();
+            TableInteractionState state = State(clock, out _);
+            PlayerTableViewState human = View(clock);
+            state.ApplyConfirmedView(human);
+            Assert.True(state.SelectAction(human.Own!.Decision!.Candidates[0]).Accepted);
+            Assert.True(state.BuildIntent(TableIntentKind.ReleaseControl, Owner()).Accepted);
+            Assert.NotNull(state.Pending);
+
+            PlayerSnapshot automated = P43TestData.PlayerSnapshot(
+                stateVersion: 6,
+                eventSeq: 106,
+                controlledByComputer: true,
+                controlEpoch: 8,
+                controlVersion: 2);
+            PlayerTableViewState next = View(clock, automated);
+            TableInteractionOutcome applied = state.ApplyConfirmedView(next);
+
+            Assert.True(applied.Accepted);
+            Assert.Equal(TableSelectionKind.None, state.Selection.Kind);
             Assert.Null(state.Pending);
+        }
+
+        [Fact]
+        public void UnknownControlResultRemainsPendingAndIsNotRetried()
+        {
+            var clock = new ManualTableClock();
+            TableInteractionState state = State(clock, out _);
+            state.ApplyConfirmedView(View(clock));
+            Assert.True(state.BuildIntent(TableIntentKind.ReleaseControl, Owner()).Accepted);
+
+            Assert.True(state.MarkDeliveryUnknown().Accepted);
+            Assert.Equal(TablePendingOutcome.Unknown, state.Pending!.LastOutcome);
+            Assert.True(state.Pending.NeedsReconciliation);
+
+            TableInteractionOutcome duplicate = state.BuildIntent(TableIntentKind.ReleaseControl, Owner());
+            Assert.True(duplicate.Accepted);
+            Assert.Equal(TableInteractionCodes.AlreadyPending, duplicate.Code);
         }
     }
 }

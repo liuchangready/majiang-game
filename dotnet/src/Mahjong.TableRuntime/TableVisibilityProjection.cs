@@ -9,6 +9,40 @@ using Mahjong.Domain.Cheat;
 namespace Mahjong.TableRuntime
 {
     /// <summary>
+    /// One owner-seat control fact captured from the actor's control registry on
+    /// the same consumer turn as the snapshot. It is supplied explicitly to the
+    /// seat projector; absence means unknown and must fail closed.
+    /// </summary>
+    public sealed class TableSeatControlProjection
+    {
+        public TableSeatControlProjection(
+            int seat,
+            ControlEpoch controlEpoch,
+            bool controlledByComputer,
+            long controlVersion)
+        {
+            TableProjectionCopy.Seat(seat, nameof(seat));
+            if (controlVersion < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(controlVersion), controlVersion, "Control version must be non-negative.");
+            }
+
+            Seat = seat;
+            ControlEpoch = controlEpoch;
+            ControlledByComputer = controlledByComputer;
+            ControlVersion = controlVersion;
+        }
+
+        public int Seat { get; }
+
+        public ControlEpoch ControlEpoch { get; }
+
+        public bool ControlledByComputer { get; }
+
+        public long ControlVersion { get; }
+    }
+
+    /// <summary>
     /// Owner-only extension for facts that the current Contracts player snapshot cannot carry:
     /// own melds (including a closed kan's identities), sleeve tiles, mark groups, offers,
     /// reservations and beam candidates. It is never a public type and is built only for the
@@ -712,13 +746,22 @@ namespace Mahjong.TableRuntime
             RoundStateMachine round,
             CheatState cheat,
             int seat,
-            TableProjectionContext context)
+            TableProjectionContext context,
+            TableSeatControlProjection? control = null)
         {
             TableProjectionCopy.Seat(seat, nameof(seat));
             ContextIndex index = Validate(round, context);
+            if (control != null && control.Seat != seat)
+            {
+                throw new TableProjectionException(
+                    TableProjectionErrorCode.InvalidContext,
+                    "Control authority belongs to seat " + control.Seat +
+                    "; a seat " + seat + " projection must never receive it.");
+            }
+
             var audience = TableProjectionAudience.ForSeat(seat);
             var publicView = BuildPublicMatchView(round, context, audience, index);
-            PrivatePlayerView privateView = BuildContractPrivate(round, cheat, seat, context, index);
+            PrivatePlayerView privateView = BuildContractPrivate(round, cheat, seat, context, index, control);
             return new PlayerSnapshotView(
                 context.Identity.SessionId,
                 new RoundId(round.RoundId),
@@ -1207,7 +1250,8 @@ namespace Mahjong.TableRuntime
             CheatState cheat,
             int seat,
             TableProjectionContext context,
-            ContextIndex index)
+            ContextIndex index,
+            TableSeatControlProjection? control)
         {
             TableSeatPrivateFacts? privateFacts = index.PrivateFacts(seat);
             IReadOnlyList<TileId> hand = round.Tiles.TilesInZone(TileZone.Hand, seat);
@@ -1226,6 +1270,13 @@ namespace Mahjong.TableRuntime
                 privateFacts != null && privateFacts.HasPreparation,
                 seat);
 
+            PlayerControlView? contractControl = control == null
+                ? null
+                : new PlayerControlView(
+                    control.ControlEpoch,
+                    control.ControlledByComputer,
+                    control.ControlVersion);
+
             return new PrivatePlayerView(
                 seat,
                 closed,
@@ -1233,7 +1284,10 @@ namespace Mahjong.TableRuntime
                 privateFacts != null && privateFacts.Furiten,
                 history,
                 decision?.Decision,
-                contractCheat);
+                contractCheat,
+                null,
+                null,
+                contractControl);
         }
 
         private static PrivateCheatView BuildContractCheat(CheatPrivateView view, bool hasPreparation, int seat)

@@ -282,20 +282,106 @@ namespace Mahjong.Unity.TableModel.Tests
         }
 
         [Fact]
-        public void ControlCommandsFailClosedOnFrozenPayloadFieldCollision()
+        public void ReleaseControlUsesConfirmedEpochAndDedicatedV2PayloadTags()
         {
             var clock = new ManualTableClock();
             PlayerTableViewState view = View(clock);
             var factory = new TableCommandIntentFactory(clock);
 
-            TableIntentUnavailableException claim = Assert.Throws<TableIntentUnavailableException>(() =>
-                factory.CreateClaimControl(view, P43TestData.RoundId, 7, Owner()));
-            TableIntentUnavailableException release = Assert.Throws<TableIntentUnavailableException>(() =>
-                factory.CreateReleaseControl(view, P43TestData.RoundId, 7, Owner()));
+            TableCommandIntent release = factory.CreateReleaseControl(view, Owner());
+            TestPayload document = Payload(release);
 
-            Assert.Equal(TableCommandIntentFactory.ControlPayloadFieldCollision, claim.Code);
-            Assert.Equal(TableCommandIntentFactory.ControlPayloadFieldCollision, release.Code);
-            Assert.Contains("field 1", claim.Message, StringComparison.Ordinal);
+            Assert.Equal(CommandKind.ReleaseControl, release.Kind);
+            Assert.Equal(CommandKind.ReleaseControl, release.Command.Kind);
+            Assert.Equal(P43TestData.RoundId, release.RoundId);
+            Assert.Equal(7UL, release.ControlEpoch);
+            Assert.Equal(7UL, release.Command.ControlEpoch!.Value.Value);
+            Assert.Equal(new RoundId(P43TestData.RoundId), release.Command.RoundId!.Value);
+            Assert.Equal(P43TestData.RoundId, document.RequireString(CommandPayloadFields.ControlRoundId, "roundId"));
+            Assert.Equal(7UL, document.RequireUInt64(CommandPayloadFields.ExpectedControlEpochV2, "expectedControlEpoch"));
+            Assert.False(document.HasField(CommandPayloadFields.ExpectedControlEpoch));
+            Assert.False(document.HasField(CommandPayloadFields.RoundIdField));
+        }
+
+        [Fact]
+        public void ClaimControlUsesConfirmedEpochAndRejectsWrongTransition()
+        {
+            var clock = new ManualTableClock();
+            var factory = new TableCommandIntentFactory(clock);
+            PlayerSnapshot automated = P43TestData.PlayerSnapshot(controlledByComputer: true, controlEpoch: 11, controlVersion: 4);
+            PlayerTableViewState automatedView = View(clock, automated);
+
+            TableCommandIntent claim = factory.CreateClaimControl(automatedView, Owner());
+            TestPayload document = Payload(claim);
+
+            Assert.Equal(CommandKind.ClaimControl, claim.Kind);
+            Assert.Equal(11UL, claim.ControlEpoch);
+            Assert.Equal(11UL, claim.Command.ControlEpoch!.Value.Value);
+            Assert.Equal(11UL, document.RequireUInt64(CommandPayloadFields.ExpectedControlEpochV2, "expectedControlEpoch"));
+            Assert.Equal(P43TestData.RoundId, document.RequireString(CommandPayloadFields.ControlRoundId, "roundId"));
+
+            PlayerTableViewState human = View(clock);
+            Assert.Equal(
+                TableCommandIntentFactory.ControlAlreadyHuman,
+                Assert.Throws<TableIntentUnavailableException>(() => factory.CreateClaimControl(human, Owner())).Code);
+            Assert.Equal(
+                TableCommandIntentFactory.ControlAlreadyAutomated,
+                Assert.Throws<TableIntentUnavailableException>(() => factory.CreateReleaseControl(automatedView, Owner())).Code);
+        }
+
+        [Fact]
+        public void ControlIntentWithoutDecisionStillUsesAuthoritativeControlState()
+        {
+            var clock = new ManualTableClock();
+            PlayerSnapshot noDecision = P43TestData.PlayerSnapshot(
+                includeDecision: false,
+                controlledByComputer: true,
+                controlEpoch: 4,
+                controlVersion: 2);
+            PlayerTableViewState view = View(clock, noDecision);
+            var factory = new TableCommandIntentFactory(clock);
+
+            TableCommandIntent claim = factory.CreateClaimControl(view, Owner());
+            Assert.Equal(CommandKind.ClaimControl, claim.Kind);
+            Assert.Equal(4UL, claim.ControlEpoch);
+            Assert.Null(claim.DecisionId);
+        }
+
+        [Fact]
+        public void MissingControlStateFailsClosedInsteadOfGuessingEpochZero()
+        {
+            var clock = new ManualTableClock();
+            PlayerSnapshot noControl = P43TestData.PlayerSnapshot(includeControl: false);
+            PlayerTableViewState view = View(clock, noControl);
+            var factory = new TableCommandIntentFactory(clock);
+
+            TableIntentUnavailableException claim = Assert.Throws<TableIntentUnavailableException>(() =>
+                factory.CreateClaimControl(view, Owner()));
+            TableIntentUnavailableException release = Assert.Throws<TableIntentUnavailableException>(() =>
+                factory.CreateReleaseControl(view, Owner()));
+            Assert.Equal(TableCommandIntentFactory.ControlStateUnavailable, claim.Code);
+            Assert.Equal(TableCommandIntentFactory.ControlStateUnavailable, release.Code);
+        }
+
+        [Fact]
+        public void SpectatorCannotBuildControlCommands()
+        {
+            var clock = new ManualTableClock();
+            PlayerSnapshot spectator = new PlayerSnapshot
+            {
+                SessionId = P43TestData.SessionId,
+                RoundId = P43TestData.RoundId,
+                StateVersion = 5,
+                PublicView = P43TestData.PublicMatch()
+            };
+            PlayerTableViewState view = new PlayerTableProjectionMapper(clock).Project(
+                P43TestData.View(spectator, seat: -1, role: ProtocolRole.Spectator));
+            var factory = new TableCommandIntentFactory(clock);
+
+            Assert.Equal(
+                "NO_PRIVATE_VIEW",
+                Assert.Throws<TableIntentUnavailableException>(() =>
+                    factory.CreateClaimControl(view, Owner())).Code);
         }
 
         [Fact]

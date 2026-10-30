@@ -112,6 +112,32 @@ namespace Mahjong.Unity.Tests.EditMode
             Assert.AreEqual(14, badgesProp.arraySize, "Must have 14 hand tile mark badges bound (13 closed + 1 drawn)");
 #endif
         }
+
+        [Test]
+        public void Step06_TableScene_ControlButtonsAndStatusBound()
+        {
+#if UNITY_EDITOR
+            var scene = EditorSceneManager.OpenScene(TableSceneBuilder.TableScenePath, OpenSceneMode.Single);
+            var presenter = UnityEngine.Object.FindFirstObjectByType<TablePresenter>();
+            Assert.IsNotNull(presenter);
+
+            var so = new SerializedObject(presenter!);
+            var claim = so.FindProperty("_claimControlButton").objectReferenceValue as Button;
+            var release = so.FindProperty("_releaseControlButton").objectReferenceValue as Button;
+            var status = so.FindProperty("_controlStatusText").objectReferenceValue as TextMeshProUGUI;
+
+            Assert.IsNotNull(claim, "ClaimControlButton must be bound to the presenter");
+            Assert.IsNotNull(release, "ReleaseControlButton must be bound to the presenter");
+            Assert.IsNotNull(status, "ControlStatusText must be bound to the presenter");
+            Assert.AreEqual("ClaimControlButton", claim!.gameObject.name);
+            Assert.AreEqual("ReleaseControlButton", release!.gameObject.name);
+            Assert.AreEqual("ControlStatusText", status!.gameObject.name);
+            Assert.IsNotNull(claim.GetComponent<UiPointerLifecycleTrigger>());
+            Assert.IsNotNull(release.GetComponent<UiPointerLifecycleTrigger>());
+            Assert.IsNotNull(claim.transform.Find("Text"), "Claim button must carry a visible label");
+            Assert.IsNotNull(release.transform.Find("Text"), "Release button must carry a visible label");
+#endif
+        }
     }
 
 #if UNITY_EDITOR
@@ -515,6 +541,16 @@ namespace Mahjong.Unity.Tests.EditMode
                 new Vector2(550, 270), new Vector2(120, 36), "查看结算");
             viewSettlementBtn.gameObject.SetActive(false);
 
+            // --- Owner Seat Control Panel ---
+            var controlStatus = CreateText("ControlStatusText", designRootGo.transform, font, 13f,
+                TextAlignmentOptions.Center, new Vector2(300, 300), new Vector2(260, 24),
+                "控制状态: 同步中", new Color(0.85f, 0.95f, 1f), FontStyles.Bold);
+
+            var releaseControlBtn = CreateButton("ReleaseControlButton", designRootGo.transform, font, 13f,
+                new Vector2(300, 260), new Vector2(140, 36), "托管给电脑");
+            var claimControlBtn = CreateButton("ClaimControlButton", designRootGo.transform, font, 13f,
+                new Vector2(300, 220), new Vector2(140, 36), "收回控制权");
+
             // Serialize TablePresenter
             var soPresenter = new SerializedObject(presenter);
             soPresenter.FindProperty("_sessionInfoText").objectReferenceValue = sessionInfo;
@@ -527,6 +563,9 @@ namespace Mahjong.Unity.Tests.EditMode
             soPresenter.FindProperty("_backButton").objectReferenceValue = backBtn;
             soPresenter.FindProperty("_nextRoundButton").objectReferenceValue = nextRoundBtn;
             soPresenter.FindProperty("_viewSettlementButton").objectReferenceValue = viewSettlementBtn;
+            soPresenter.FindProperty("_claimControlButton").objectReferenceValue = claimControlBtn;
+            soPresenter.FindProperty("_releaseControlButton").objectReferenceValue = releaseControlBtn;
+            soPresenter.FindProperty("_controlStatusText").objectReferenceValue = controlStatus;
 
             // Seats array
             var seatsProp = soPresenter.FindProperty("_seatViews");

@@ -203,6 +203,9 @@ namespace Mahjong.Unity.Table
         private long _requiredGeneration = -1;
         private ulong _requiredStateVersion;
         private long _revision;
+        private bool _hadControlState;
+        private ulong _lastControlEpoch;
+        private bool _lastControlledByComputer;
 
         public TableInteractionState(TableCommandIntentFactory factory)
         {
@@ -232,9 +235,19 @@ namespace Mahjong.Unity.Table
 
             bool bindingChanged = _view != null && !SameBindingIdentity(_view.Identity, view.Identity);
             bool privateDisappeared = view.Own == null;
+            bool controlChanged = _hadControlState && !SameControlAuthority(_view?.Control, view.Control);
 
             if (bindingChanged)
             {
+                _pending = null;
+                ClearSelectionCore();
+            }
+
+            if (controlChanged)
+            {
+                // A control transition invalidates any action selected under the
+                // old controller and any control request already superseded by a
+                // confirmed state. The receipt path still reports its own outcome.
                 _pending = null;
                 ClearSelectionCore();
             }
@@ -254,6 +267,9 @@ namespace Mahjong.Unity.Table
             _requiredIdentity = null;
             _requiredGeneration = Math.Max(_requiredGeneration, view.Identity.Generation);
             _requiredStateVersion = view.Identity.StateVersion;
+            _hadControlState = view.Control != null;
+            _lastControlEpoch = view.Control?.ControlEpoch ?? 0UL;
+            _lastControlledByComputer = view.Control?.ControlledByComputer ?? false;
             _view = view;
             _revision++;
             return TableInteractionOutcome.Ok(bindingChanged ? TableInteractionCodes.PendingCleared : TableInteractionCodes.Applied);
@@ -738,6 +754,22 @@ namespace Mahjong.Unity.Table
                 return TableInteractionOutcome.Ok(TableInteractionCodes.Applied);
             }
 
+            if ((outcome == TablePendingOutcome.Applied || outcome == TablePendingOutcome.Recorded) &&
+                IsControlIntent(_pending.Intent.Kind))
+            {
+                // A control receipt is authoritative for the command result, but
+                // the visible authority only changes with a confirmed snapshot.
+                // Keep the request pending so the old control buttons cannot be
+                // pressed again against the pre-change epoch.
+                _pending = new TablePendingIntent(
+                    _pending.Intent,
+                    outcome,
+                    false,
+                    _pending.CreatedAtMonotonicMs);
+                _revision++;
+                return TableInteractionOutcome.Ok(TableInteractionCodes.Applied);
+            }
+
             if (outcome == TablePendingOutcome.Applied ||
                 outcome == TablePendingOutcome.Recorded ||
                 outcome == TablePendingOutcome.Rejected ||
@@ -802,10 +834,9 @@ namespace Mahjong.Unity.Table
                 case TableIntentKind.NextRound:
                     return _factory.CreateNextRound(view, owner);
                 case TableIntentKind.ClaimControl:
+                    return _factory.CreateClaimControl(view, owner);
                 case TableIntentKind.ReleaseControl:
-                    throw new TableIntentUnavailableException(
-                        TableCommandIntentFactory.ControlPayloadFieldCollision,
-                        "ClaimControl/ReleaseControl are not representable by the frozen canonical payload validator.");
+                    return _factory.CreateReleaseControl(view, owner);
                 default:
                     throw new TableIntentUnavailableException(
                         TableInteractionCodes.InvalidIntentKind,
@@ -840,6 +871,22 @@ namespace Mahjong.Unity.Table
             if (!view.CanSubmit)
             {
                 failure = Reject(TableInteractionCodes.NotSubmittable, "The confirmed view is not submittable.");
+                return false;
+            }
+
+            if (view.Own.Control == null)
+            {
+                failure = Reject(
+                    TableCommandIntentFactory.ControlStateUnavailable,
+                    "The confirmed view has no authoritative owner control state.");
+                return false;
+            }
+
+            if (view.Own.Control.ControlledByComputer)
+            {
+                failure = Reject(
+                    TableCommandIntentFactory.ControlAutomated,
+                    "The computer currently controls this seat.");
                 return false;
             }
 
@@ -948,6 +995,23 @@ namespace Mahjong.Unity.Table
         private void ClearSelectionCore()
         {
             _selection = TableSelection.None;
+        }
+
+        private static bool IsControlIntent(CommandKind kind)
+        {
+            return kind == CommandKind.ClaimControl || kind == CommandKind.ReleaseControl;
+        }
+
+        private static bool SameControlAuthority(PlayerControlState? left, PlayerControlState? right)
+        {
+            if (left == null || right == null)
+            {
+                return left == null && right == null;
+            }
+
+            return left.ControlEpoch == right.ControlEpoch &&
+                   left.ControlledByComputer == right.ControlledByComputer &&
+                   left.ControlVersion == right.ControlVersion;
         }
 
         private static bool SameBindingIdentity(PlayerTableIdentity left, PlayerTableIdentity right)

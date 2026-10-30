@@ -56,6 +56,7 @@ namespace Mahjong.Unity.Table
             AddStructuralGaps(gaps);
 
             SessionBindingView? binding = sessionView.Binding;
+
             PlayerTableRole role = binding == null ? PlayerTableRole.Unknown : (PlayerTableRole)binding.Role;
             bool playerBinding = binding != null &&
                                  role == PlayerTableRole.Player &&
@@ -414,6 +415,21 @@ namespace Mahjong.Unity.Table
                 ? null
                 : MapCheat(privateView.Cheat, roundId, now, gaps);
 
+            PlayerControlState? control;
+            if (privateView.Control == null ||
+                privateView.Control.ControlVersion > long.MaxValue)
+            {
+                AddGap(gaps, PlayerTableGapCodes.ControlStateUnavailable);
+                control = null;
+            }
+            else
+            {
+                control = new PlayerControlState(
+                    privateView.Control.ControlEpoch,
+                    privateView.Control.ControlledByComputer,
+                    (long)privateView.Control.ControlVersion);
+            }
+
             var own = new PlayerOwnState(
                 privateView.Seat,
                 roundId,
@@ -424,7 +440,8 @@ namespace Mahjong.Unity.Table
                 privateView.Furiten,
                 decision,
                 advisory,
-                cheat);
+                cheat,
+                control);
 
             return own;
         }
@@ -896,7 +913,6 @@ namespace Mahjong.Unity.Table
         private static void AddStructuralGaps(List<string> gaps)
         {
             AddGap(gaps, PlayerTableGapCodes.DeadWallIdentityNotPublic);
-            AddGap(gaps, PlayerTableGapCodes.ControlStateNotRepresentable);
             AddGap(gaps, PlayerTableGapCodes.LegalActionMeldTypeNotRepresentable);
             AddGap(gaps, PlayerTableGapCodes.AbsoluteDeadlineNotRepresentable);
             AddGap(gaps, PlayerTableGapCodes.ShuffleTargetCandidatesNotRepresentable);

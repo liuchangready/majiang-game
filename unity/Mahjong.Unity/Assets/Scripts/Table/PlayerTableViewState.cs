@@ -27,6 +27,7 @@ namespace Mahjong.Unity.Table
         public const string MissingSeatProjection = "PUBLIC_SEAT_MISSING";
         public const string DeadWallIdentityNotPublic = "DEAD_WALL_IDENTITY_NOT_PUBLIC";
         public const string ControlStateNotRepresentable = "SEAT_CONTROL_VIEW_NOT_REPRESENTABLE";
+        public const string ControlStateUnavailable = "SEAT_CONTROL_VIEW_UNAVAILABLE";
         public const string LegalActionMeldTypeNotRepresentable = "LEGAL_ACTION_MELD_TYPE_NOT_REPRESENTABLE";
         public const string AbsoluteDeadlineNotRepresentable = "ABSOLUTE_DEADLINE_NOT_REPRESENTABLE";
         public const string VisibleEventsNotExposedBySessionView = "VISIBLE_EVENTS_NOT_EXPOSED_BY_SESSION_VIEW";
@@ -780,6 +781,32 @@ namespace Mahjong.Unity.Table
         public string WindowId { get; }
     }
 
+    /// <summary>
+    /// Owner-private seat control authority from the confirmed snapshot. It is
+    /// independent of any decision window: a takeover may hold the seat with no
+    /// decision present. A null value means the authority is unavailable.
+    /// </summary>
+    public sealed class PlayerControlState
+    {
+        public PlayerControlState(ulong controlEpoch, bool controlledByComputer, long controlVersion)
+        {
+            if (controlVersion < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(controlVersion));
+            }
+
+            ControlEpoch = controlEpoch;
+            ControlledByComputer = controlledByComputer;
+            ControlVersion = controlVersion;
+        }
+
+        public ulong ControlEpoch { get; }
+
+        public bool ControlledByComputer { get; }
+
+        public long ControlVersion { get; }
+    }
+
     public sealed class PlayerOwnState
     {
         public PlayerOwnState(
@@ -792,7 +819,8 @@ namespace Mahjong.Unity.Table
             bool furiten,
             PlayerDecisionState? decision,
             IReadOnlyList<PlayerLegalActionState> advisoryLegalActions,
-            PlayerCheatState? cheat)
+            PlayerCheatState? cheat,
+            PlayerControlState? control = null)
         {
             if (seat < 0 || seat > 3)
             {
@@ -814,6 +842,7 @@ namespace Mahjong.Unity.Table
             Decision = decision;
             AdvisoryLegalActions = PlayerTableCopy.ReadOnly(advisoryLegalActions);
             Cheat = cheat;
+            Control = control;
         }
 
         public int Seat { get; }
@@ -845,6 +874,9 @@ namespace Mahjong.Unity.Table
         public IReadOnlyList<PlayerLegalActionState> AdvisoryLegalActions { get; }
 
         public PlayerCheatState? Cheat { get; }
+
+        /// <summary>Owner-private control authority; null means fail closed.</summary>
+        public PlayerControlState? Control { get; }
 
         public uint PhysicalHandTileCount => (uint)(ClosedTiles.Count + (DrawnTileId.HasValue ? 1 : 0));
     }
@@ -996,6 +1028,9 @@ namespace Mahjong.Unity.Table
         public IReadOnlyList<PlayerSeatState> Seats { get; }
 
         public PlayerOwnState? Own { get; }
+
+        /// <summary>Confirmed owner control authority; null when unavailable.</summary>
+        public PlayerControlState? Control => Own?.Control;
 
         /// <summary>
         /// The one own-seat meld list a renderer should use. It is the same
