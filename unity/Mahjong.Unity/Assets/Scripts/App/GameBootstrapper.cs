@@ -445,80 +445,246 @@ namespace Mahjong.Unity.App
                 yield break;
             }
 
-            PlayerLegalActionState? action = null;
-            for (int i = 0; i < view.Own.Decision.Candidates.Count; i++)
-            {
-                if (view.Own.Decision.Candidates[i].Action == PlayerActionKind.DiscardTile)
-                {
-                    action = view.Own.Decision.Candidates[i];
-                    break;
-                }
-            }
-
-            action ??= view.Own.Decision.Candidates[0];
             var intentFactory = new TableCommandIntentFactory(new SystemTableClientClock());
-            var ownerContext = new TableCommandOwnerContext(
-                new RequestId("smoke-" + Guid.NewGuid().ToString("N")),
-                new RequestScopeId(view.Identity.ScopeId),
-                new StateVersion(view.Identity.StateVersion),
-                new OwnerEpoch(view.Identity.OwnerEpoch));
-
-            TableCommandIntent intent;
+            var observer = new ConfirmedVisibleEventObserver(coordinator);
+            coordinator.ReceiptResolved += observer.OnReceiptResolved;
+            ConfirmedVisibleActionEvent? confirmedEvent = null;
+            TableCommandIntent? lastIntent = null;
+            string lastAction = "none";
             try
             {
-                intent = intentFactory.CreateSubmitAction(view, action, ownerContext);
-            }
-            catch (Exception exception)
-            {
-                FailLocalSmoke("Legal action intent failed: " + exception.GetType().Name, 29);
-                yield break;
-            }
+                // A response-window decision may legitimately contain no
+                // DiscardTile candidate. Its real action can be committed with
+                // an empty incremental batch (for example a domain event that
+                // has no protocol projection yet); never invent an animation
+                // for it. Advance through real Client actions until a confirmed
+                // visible event arrives, or fail with the observed batch chain.
+                const int maxActions = 3;
+                for (int attempt = 0; attempt < maxActions && confirmedEvent == null; attempt++)
+                {
+                    view = mapper.Project(coordinator.Current);
+                    float nextDecisionTimer = 0f;
+                    while (nextDecisionTimer < 15f && (view.Own?.Decision == null || view.Own.Decision.Candidates.Count == 0))
+                    {
+                        nextDecisionTimer += Time.unscaledDeltaTime;
+                        yield return null;
+                        coordinator = composition.SessionCoordinator;
+                        if (coordinator == null) break;
+                        view = mapper.Project(coordinator.Current);
+                    }
 
-            ulong versionBefore = coordinator.Current.PlayerSnapshot?.StateVersion ?? 0UL;
-            Task<CommandSubmission> submit = coordinator.SubmitAsync(intent.Command, CancellationToken.None);
-            float submitTimer = 0f;
-            while (submitTimer < 10f && !submit.IsCompleted)
-            {
-                submitTimer += Time.unscaledDeltaTime;
-                yield return null;
-            }
+                    if (coordinator == null || view.Own?.Decision == null || view.Own.Decision.Candidates.Count == 0)
+                    {
+                        Debug.LogError(
+                            "SMOKE_OBSERVER: no further legal decision action=" + lastAction +
+                            " " + observer.ReceiptSummary + " " + observer.DescribeBatches());
+                        FailLocalSmoke("No legal player decision was confirmed", 28);
+                        yield break;
+                    }
 
-            if (!submit.IsCompleted || submit.IsFaulted || submit.IsCanceled || !submit.Result.Sent)
-            {
-                FailLocalSmoke("Legal player action was not sent", 30);
-                yield break;
-            }
+                    PlayerLegalActionState? action = null;
+                    for (int i = 0; i < view.Own.Decision.Candidates.Count; i++)
+                    {
+                        if (view.Own.Decision.Candidates[i].Action == PlayerActionKind.DiscardTile)
+                        {
+                            action = view.Own.Decision.Candidates[i];
+                            break;
+                        }
+                    }
 
-            float eventTimer = 0f;
-            SessionViewState confirmed = coordinator.Current;
-            while (eventTimer < 20f &&
-                   ((confirmed.PlayerSnapshot?.StateVersion ?? 0UL) <= versionBefore ||
-                    confirmed.VisibleEventBatch.Kind != TableVisibleEventBatchKind.Incremental ||
-                    confirmed.VisibleEventBatch.Events.Count == 0))
-            {
-                eventTimer += Time.unscaledDeltaTime;
-                yield return null;
-                confirmed = coordinator.Current;
-            }
+                    action ??= view.Own.Decision.Candidates[0];
+                    lastAction = action.Action + "/" + action.RawActionType;
+                    Debug.Log(
+                        "SMOKE_STEP:LOCAL_ACTION_SELECTED" +
+                        " action=" + action.Action +
+                        " rawActionType=" + action.RawActionType +
+                        " option=" + (string.IsNullOrEmpty(action.OptionId) ? "<none>" : action.OptionId) +
+                        " tiles=" + action.TileIds.Count +
+                        " attempt=" + (attempt + 1) +
+                        " decisionCandidates=" + view.Own.Decision.Candidates.Count);
 
-            if ((confirmed.PlayerSnapshot?.StateVersion ?? 0UL) <= versionBefore ||
-                confirmed.VisibleEventBatch.Kind != TableVisibleEventBatchKind.Incremental ||
-                confirmed.VisibleEventBatch.Events.Count == 0)
-            {
-                FailLocalSmoke("No incremental confirmed visible event after the legal action", 31);
-                yield break;
-            }
+                    string requestId = "smoke-" + Guid.NewGuid().ToString("N");
+                    var ownerContext = new TableCommandOwnerContext(
+                        new RequestId(requestId),
+                        new RequestScopeId(view.Identity.ScopeId),
+                        new StateVersion(view.Identity.StateVersion),
+                        new OwnerEpoch(view.Identity.OwnerEpoch));
 
-            Debug.Log(
-                "SMOKE_STEP:LOCAL_ACTION_SUBMITTED" +
-                " kind=" + intent.Kind +
-                " stateVersion=" + confirmed.PlayerSnapshot!.StateVersion);
-            Debug.Log(
-                "SMOKE_STEP:LOCAL_VISIBLE_EVENT" +
-                " batch=" + confirmed.VisibleEventBatch.Kind +
-                " count=" + confirmed.VisibleEventBatch.Events.Count +
-                " type=" + confirmed.VisibleEventBatch.Events[0].Type +
-                " seq=" + confirmed.VisibleEventBatch.Events[0].EventSeq);
+                    TableCommandIntent intent;
+                    try
+                    {
+                        intent = intentFactory.CreateSubmitAction(view, action, ownerContext);
+                    }
+                    catch (Exception exception)
+                    {
+                        FailLocalSmoke("Legal action intent failed: " + exception.GetType().Name, 29);
+                        yield break;
+                    }
+
+                    lastIntent = intent;
+                    ulong versionBefore = coordinator.Current.PlayerSnapshot?.StateVersion ?? 0UL;
+                    observer.BeginAction(coordinator.Current, requestId, view.Identity.ScopeId, action.Action);
+                    Task<CommandSubmission> submit = coordinator.SubmitAsync(intent.Command, CancellationToken.None);
+                    float submitTimer = 0f;
+                    while (submitTimer < 10f && !submit.IsCompleted)
+                    {
+                        submitTimer += Time.unscaledDeltaTime;
+                        yield return null;
+                    }
+
+                    if (!submit.IsCompleted || submit.IsFaulted || submit.IsCanceled || !submit.Result.Sent)
+                    {
+                        FailLocalSmoke("Legal player action was not sent", 30);
+                        yield break;
+                    }
+
+                    float eventTimer = 0f;
+                    bool receiptLogged = false;
+                    while (eventTimer < 20f)
+                    {
+                        confirmedEvent = observer.TryGetConfirmation();
+                        if (confirmedEvent != null)
+                        {
+                            break;
+                        }
+
+                        if (observer.HasAppliedReceipt)
+                        {
+                            ulong? appliedCommand = observer.AppliedCommandVersion;
+                            if (!receiptLogged)
+                            {
+                                receiptLogged = true;
+                                Debug.Log(
+                                    "SMOKE_STEP:LOCAL_ACTION_APPLIED_WAITING_EVENT" +
+                                    " action=" + lastAction +
+                                    " " + observer.ReceiptSummary +
+                                    " stateVersionBefore=" + versionBefore);
+                            }
+
+                            if (appliedCommand.HasValue &&
+                                observer.FindActionPublication(appliedCommand.Value) != null)
+                            {
+                                // The action's own publication has been accepted;
+                                // if it carried no matching visible event, this is
+                                // a confirmed state-only action, not a timeout.
+                                break;
+                            }
+                        }
+
+                        eventTimer += Time.unscaledDeltaTime;
+                        yield return null;
+                    }
+
+                    confirmedEvent ??= observer.TryGetConfirmation();
+                    if (confirmedEvent != null)
+                    {
+                        break;
+                    }
+
+                    if (observer.HasAppliedReceipt)
+                    {
+                        ulong? appliedCommand = observer.AppliedCommandVersion;
+                        ObservedVisibleEventBatch? publication = appliedCommand.HasValue
+                            ? observer.FindActionPublication(appliedCommand.Value)
+                            : null;
+                        Debug.LogWarning(
+                            "SMOKE_STEP:LOCAL_ACTION_STATE_ONLY" +
+                            " action=" + lastAction +
+                            " publicationStateVersion=" + (publication == null ? "none" : publication.StateVersion.ToString()) +
+                            " publicationEvents=" + (publication == null ? -1 : publication.Events.Count) +
+                            " " + observer.ReceiptSummary +
+                            " baseline=" + versionBefore +
+                            " " + observer.DescribeBatches());
+                        if (publication == null)
+                        {
+                            Debug.LogError(
+                                "SMOKE_OBSERVER: the Applied action publication was never accepted" +
+                                " action=" + lastAction +
+                                " " + observer.ReceiptSummary +
+                                " " + observer.DescribeBatches());
+                            FailLocalSmoke("Applied action publication was not observed", 31);
+                            yield break;
+                        }
+
+                        if (!SmokeActionEventPolicy.AllowsEmptyPublication(action.Action))
+                        {
+                            if (publication.Events.Count > 0)
+                            {
+                                Debug.LogError(
+                                    "SMOKE_OBSERVER: the action publication carried events, but none matched the required type/acting seat" +
+                                    " action=" + lastAction +
+                                    " requirement=" + SmokeActionEventPolicy.DescribeRequirement(action.Action) +
+                                    " publicationStateVersion=" + publication.StateVersion +
+                                    " publicationEventSeq=" + publication.EventSeq +
+                                    " " + observer.ReceiptSummary +
+                                    " " + observer.DescribeBatches());
+                                FailLocalSmoke("Action publication events did not match the action's required type/seat", 31);
+                                yield break;
+                            }
+
+                            Debug.LogError(
+                                "SMOKE_OBSERVER: action requires a visible event, but its Applied publication was empty" +
+                                " action=" + lastAction +
+                                " requirement=" + SmokeActionEventPolicy.DescribeRequirement(action.Action) +
+                                " publicationStateVersion=" + publication.StateVersion +
+                                " publicationEventSeq=" + publication.EventSeq +
+                                " " + observer.ReceiptSummary +
+                                " " + observer.DescribeBatches());
+                            FailLocalSmoke("Action requires a visible event but its publication was empty", 31);
+                            yield break;
+                        }
+
+                        // Only the explicit state-only action above may continue.
+                        // A Pass publication may carry a window/settlement event
+                        // for another seat; it is never this request's confirmation.
+                        // The next real action must still confirm itself.
+                        continue;
+                    }
+
+                    Debug.LogError(
+                        "SMOKE_OBSERVER: " + observer.DescribeAction() +
+                        " action=" + lastAction +
+                        " currentStateVersion=" + (coordinator.Current.PlayerSnapshot?.StateVersion ?? 0UL) +
+                        " currentBatch=" + coordinator.Current.VisibleEventBatch.Kind +
+                        " currentBatchCount=" + coordinator.Current.VisibleEventBatch.Events.Count +
+                        " " + observer.ReceiptSummary +
+                        " " + observer.DescribeBatches());
+                    FailLocalSmoke("No incremental confirmed visible event after the legal action", 31);
+                    yield break;
+                }
+
+                if (confirmedEvent == null || lastIntent == null)
+                {
+                    Debug.LogError(
+                        "SMOKE_OBSERVER: no confirmed action event after bounded actions" +
+                        " action=" + lastAction +
+                        " " + observer.ReceiptSummary +
+                        " " + observer.DescribeBatches());
+                    FailLocalSmoke("No incremental confirmed visible event after the legal action", 31);
+                    yield break;
+                }
+
+                Debug.Log(
+                    "SMOKE_STEP:LOCAL_ACTION_SUBMITTED" +
+                    " kind=" + lastIntent.Kind +
+                    " action=" + lastAction +
+                    " stateVersion=" + confirmedEvent.Batch.StateVersion +
+                    " commandVersion=" + confirmedEvent.CommandVersion);
+                Debug.Log(
+                    "SMOKE_STEP:LOCAL_VISIBLE_EVENT" +
+                    " batch=" + confirmedEvent.Batch.Kind +
+                    " count=" + confirmedEvent.Batch.Events.Count +
+                    " type=" + confirmedEvent.Event.Type +
+                    " seq=" + confirmedEvent.Event.EventSeq +
+                    " commandVersion=" + confirmedEvent.Event.CommandVersion +
+                    " stateVersion=" + confirmedEvent.Batch.StateVersion);
+                Debug.Log("SMOKE_OBSERVER_ACCEPTED: " + observer.DescribeAction() + " " + observer.DescribeBatches());
+            }
+            finally
+            {
+                coordinator.ReceiptResolved -= observer.OnReceiptResolved;
+                observer.Dispose();
+            }
 
             string shot4 = Path.Combine(screenshotDir, "04-local-action.png");
             CaptureFrame(shot4);
