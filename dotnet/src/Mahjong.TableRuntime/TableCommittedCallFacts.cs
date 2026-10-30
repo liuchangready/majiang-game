@@ -104,7 +104,10 @@ namespace Mahjong.TableRuntime
                     interrupted = true;
             }
 
-            return !ownPriorDiscard && !interrupted && RequireTurnNumber(round, record) == 1;
+            // Double-riichi is a first-discard / uninterrupted-opening rule. The global
+            // turn projection counter advances after every discard and therefore is already
+            // 2 for the first draw by the non-dealer seats; it is not a valid condition here.
+            return !ownPriorDiscard && !interrupted;
         }
 
         private static RoundEvent RequireRoundEvent(RoundStateMachine round, TableEventRecord record)

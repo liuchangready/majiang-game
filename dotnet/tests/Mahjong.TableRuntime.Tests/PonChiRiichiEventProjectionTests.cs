@@ -185,7 +185,206 @@ namespace Mahjong.TableRuntime.Tests
             Assert.True(riichiPayload.ProjectionPayload.DoubleRiichi);
         }
 
+        [Theory]
+        [InlineData(1)]
+        [InlineData(2)]
+        [InlineData(3)]
+        public void non_dealer_first_discard_is_double_riichi_even_when_global_turn_counter_is_two(int seat)
+        {
+            RoundStateMachine round = BuildFirstTurnRiichiRound("double-riichi-seat-" + seat, seat);
+            int dealer = (seat + 3) % 4;
+            RoundTransition dealerDiscard = round.Execute(RoundCommand.Discard(
+                round.RoundId, dealer, Physical(22, 1)));
+            Assert.True(dealerDiscard.IsAccepted, dealerDiscard.Error?.ToString());
+
+            RoundTransition riichi = dealerDiscard.State!.Execute(RoundCommand.Riichi(
+                round.RoundId, seat, Physical(0, 3), new[] { (seat + 1) % 4 }));
+            Assert.True(riichi.IsAccepted, riichi.Error?.ToString());
+            RoundStateMachine committed = riichi.State!;
+            RoundEvent eventRecord = Assert.Single(committed.Events,
+                value => value.Type == RoundEventType.RiichiDeclared && value.Seat == seat);
+            TableEventRecord record = ToRecord(committed, eventRecord, new EventSeq(17), new StateVersion(4), 2);
+
+            Assert.Equal(2u, TableCommittedCallFacts.RequireTurnNumber(committed, record));
+            Assert.True(TableCommittedCallFacts.RequireDoubleRiichi(committed, record));
+        }
+
+        [Fact]
+        public void a_real_prior_discard_by_the_same_seat_cancels_double_riichi()
+        {
+            RoundStateMachine round = BuildFirstTurnRiichiRound("double-riichi-prior-discard", 1);
+            RoundTransition transition = round.Execute(RoundCommand.Discard(
+                round.RoundId, 0, Physical(22, 1), Array.Empty<int>()));
+            Assert.True(transition.IsAccepted, transition.Error?.ToString());
+            transition = transition.State!.Execute(RoundCommand.Discard(
+                round.RoundId, 1, Physical(0, 3), Array.Empty<int>()));
+            Assert.True(transition.IsAccepted, transition.Error?.ToString());
+            for (int i = 0; i < 3; i++)
+            {
+                RoundStateMachine current = transition.State!;
+                DrawnTileEvidence drawn = current.Tiles.DrawnTile!.Value;
+                transition = current.Execute(RoundCommand.Discard(
+                    current.RoundId, drawn.Seat, drawn.Tile, Array.Empty<int>()));
+                Assert.True(transition.IsAccepted, transition.Error?.ToString());
+            }
+
+            RoundStateMachine beforeSecondSeatTurn = transition.State!;
+            DrawnTileEvidence secondDraw = beforeSecondSeatTurn.Tiles.DrawnTile!.Value;
+            Assert.Equal(1, secondDraw.Seat);
+            transition = beforeSecondSeatTurn.Execute(RoundCommand.Riichi(
+                beforeSecondSeatTurn.RoundId, 1, secondDraw.Tile, Array.Empty<int>()));
+            Assert.True(transition.IsAccepted, transition.Error?.ToString());
+            RoundStateMachine committed = transition.State!;
+            RoundEvent source = Assert.Single(committed.Events,
+                value => value.Type == RoundEventType.RiichiDeclared && value.Seat == 1);
+            TableEventRecord record = ToRecord(committed, source, new EventSeq(23), new StateVersion(6), 1);
+
+            Assert.False(TableCommittedCallFacts.RequireDoubleRiichi(committed, record));
+        }
+
+        [Fact]
+        public void a_real_pon_before_another_seats_first_discard_cancels_double_riichi()
+        {
+            RoundStateMachine round = BuildFirstTurnRiichiRound("double-riichi-prior-pon", 1, ponBeforeRiichi: true);
+            TileId called = Physical(22, 1);
+            RoundTransition transition = round.Execute(RoundCommand.Discard(round.RoundId, 0, called, new[] { 2 }));
+            Assert.True(transition.IsAccepted, transition.Error?.ToString());
+            transition = transition.State!.Execute(RoundCommand.Pon(
+                round.RoundId, 2, called, Physical(22, 0), Physical(22, 3)));
+            Assert.True(transition.IsAccepted, transition.Error?.ToString());
+            TileId callerDiscard = transition.State!.Tiles.TilesInZone(TileZone.Hand, 2)[0];
+            transition = transition.State.Execute(RoundCommand.Discard(
+                round.RoundId, 2, callerDiscard, Array.Empty<int>()));
+            Assert.True(transition.IsAccepted, transition.Error?.ToString());
+            while (transition.State!.Tiles.DrawnTile!.Value.Seat != 1)
+            {
+                DrawnTileEvidence drawn = transition.State.Tiles.DrawnTile!.Value;
+                transition = transition.State.Execute(RoundCommand.Discard(
+                    round.RoundId, drawn.Seat, drawn.Tile, Array.Empty<int>()));
+                Assert.True(transition.IsAccepted, transition.Error?.ToString());
+            }
+
+            RoundStateMachine beforeRiichi = transition.State!;
+            TileId riichiDiscard = beforeRiichi.Tiles.DrawnTile!.Value.Tile;
+            transition = beforeRiichi.Execute(RoundCommand.Riichi(
+                round.RoundId, 1, riichiDiscard, Array.Empty<int>()));
+            Assert.True(transition.IsAccepted, transition.Error?.ToString());
+            RoundStateMachine committed = transition.State!;
+            RoundEvent source = Assert.Single(committed.Events,
+                value => value.Type == RoundEventType.RiichiDeclared && value.Seat == 1);
+            Assert.Contains(committed.Events, value => value.Type == RoundEventType.PonDeclared && value.Seat == 2);
+
+            Assert.False(TableCommittedCallFacts.RequireDoubleRiichi(committed,
+                ToRecord(committed, source, new EventSeq(31), new StateVersion(8), 2)));
+        }
+
+        [Fact]
+        public void a_real_kan_before_another_seats_first_discard_cancels_double_riichi()
+        {
+            RoundStateMachine round = BuildFirstTurnRiichiRound("double-riichi-prior-kan", 1, kanBeforeRiichi: true);
+            RoundTransition transition = round.Execute(RoundCommand.ClosedKan(
+                round.RoundId, 0, Physical(0, 0), Physical(0, 1), Physical(0, 2), Physical(0, 3)));
+            Assert.True(transition.IsAccepted, transition.Error?.ToString());
+            TileId dealerDiscard = transition.State!.Tiles.DrawnTile!.Value.Tile;
+            transition = transition.State.Execute(RoundCommand.Discard(
+                round.RoundId, 0, dealerDiscard, Array.Empty<int>()));
+            Assert.True(transition.IsAccepted, transition.Error?.ToString());
+            DrawnTileEvidence riichiDraw = transition.State!.Tiles.DrawnTile!.Value;
+            Assert.Equal(1, riichiDraw.Seat);
+            transition = transition.State.Execute(RoundCommand.Riichi(
+                round.RoundId, 1, riichiDraw.Tile, Array.Empty<int>()));
+            Assert.True(transition.IsAccepted, transition.Error?.ToString());
+            RoundStateMachine committed = transition.State!;
+            RoundEvent source = Assert.Single(committed.Events,
+                value => value.Type == RoundEventType.RiichiDeclared && value.Seat == 1);
+            Assert.Contains(committed.Events, value => value.Type == RoundEventType.KanDeclared && value.Seat == 0);
+
+            Assert.False(TableCommittedCallFacts.RequireDoubleRiichi(committed,
+                ToRecord(committed, source, new EventSeq(37), new StateVersion(9), 2)));
+        }
+
         internal static TileId Physical(int typeIndex, int copy) => TileId.FromTypeIndex(typeIndex, copy);
+
+        internal static RoundStateMachine BuildFirstTurnRiichiRound(
+            string roundId,
+            int riichiSeat,
+            bool ponBeforeRiichi = false,
+            bool kanBeforeRiichi = false)
+        {
+            if (riichiSeat < 0 || riichiSeat > 3) throw new ArgumentOutOfRangeException(nameof(riichiSeat));
+            if (ponBeforeRiichi && kanBeforeRiichi) throw new ArgumentException("Choose only one opening interruption.");
+            int dealer = (riichiSeat + 3) % 4;
+            var placements = new TilePlacement[TileId.Count];
+            var used = new bool[TileId.Count];
+            void Place(TileId tile, TilePosition position)
+            {
+                if (used[tile.Value]) throw new InvalidOperationException("duplicate test tile " + tile.Value);
+                used[tile.Value] = true;
+                placements[tile.Value] = new TilePlacement(tile, position);
+            }
+
+            TileId[] dealerHand =
+            {
+                Physical(0, 0), Physical(0, 1), Physical(0, 2),
+                Physical(8, 0), Physical(8, 1), Physical(8, 2),
+                Physical(9, 0), Physical(9, 1), Physical(9, 2),
+                Physical(18, 0), Physical(18, 1), Physical(18, 2),
+                ponBeforeRiichi ? Physical(23, 0) : Physical(22, 0)
+            };
+            TileId dealerDraw = kanBeforeRiichi ? Physical(0, 3) : Physical(22, 1);
+            TileId[] riichiHand =
+            {
+                Physical(1, 0), Physical(2, 0), Physical(3, 0),
+                Physical(1, 1), Physical(2, 1), Physical(3, 1),
+                Physical(5, 0), Physical(6, 0), Physical(7, 0),
+                Physical(19, 0), Physical(20, 0), Physical(21, 0), Physical(22, 2)
+            };
+            for (int i = 0; i < dealerHand.Length; i++) Place(dealerHand[i], TilePosition.Hand(dealer, i));
+            Place(dealerDraw, TilePosition.Hand(dealer, 13));
+            for (int i = 0; i < riichiHand.Length; i++) Place(riichiHand[i], TilePosition.Hand(riichiSeat, i));
+            TileId nextDraw = kanBeforeRiichi ? Physical(12, 3) : Physical(0, 3);
+            Place(nextDraw, TilePosition.Wall(0));
+            int ponCaller = ponBeforeRiichi ? 2 : -1;
+            if (ponBeforeRiichi)
+            {
+                Place(Physical(22, 0), TilePosition.Hand(ponCaller, 0));
+                Place(Physical(22, 3), TilePosition.Hand(ponCaller, 1));
+            }
+            for (int seat = 0; seat < 4; seat++)
+            {
+                if (seat == dealer || seat == riichiSeat) continue;
+                int startSlot = seat == ponCaller ? 2 : 0;
+                for (int slot = startSlot; slot < 13; slot++)
+                {
+                    int tile = Array.FindIndex(used, value => !value);
+                    Place(new TileId(tile), TilePosition.Hand(seat, slot));
+                }
+            }
+
+            int doraTile = -1;
+            for (int slot = 0; slot < 14; slot++)
+            {
+                int tile = Array.FindIndex(used, value => !value);
+                Place(new TileId(tile), TilePosition.DeadWall(slot));
+                if (slot == 4) doraTile = tile;
+            }
+
+            int wallCount = 1;
+            for (int tile = 0; tile < TileId.Count; tile++)
+            {
+                if (used[tile]) continue;
+                Place(new TileId(tile), TilePosition.Wall(wallCount++));
+            }
+
+            TilePositionMap map = TilePositionMap.FromPlacements(
+                placements, 0, wallCount, 0,
+                doraIndicators: new[] { new TileId(doraTile) },
+                drawnTile: new DrawnTileEvidence(dealerDraw, dealer, DrawSource.Wall));
+            return RoundStateMachine.CreateDealt(
+                new RoundSpec(roundId, dealer, 1, 0, 0, new long[] { 25000, 25000, 25000, 25000 }, 0),
+                map,
+                RoundPhase.CheatWindow);
+        }
 
         private static TableEventRecord ToRecord(RoundStateMachine round, RoundEvent value, EventSeq seq, StateVersion version, int ordinal) =>
             new TableEventRecord(seq, version, ordinal, value.Type, value.Seat, value.Tile, value.Detail);

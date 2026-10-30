@@ -437,6 +437,68 @@ namespace Mahjong.TableRuntime.Tests
             Assert.Empty(harness.Terminations.Terminations);
         }
 
+        [Fact]
+        public async Task non_dealer_first_draw_double_riichi_survives_wire_and_client_projection()
+        {
+            const int riichiSeat = 1;
+            const int dealer = 0;
+            TileId dealerDraw = PonChiRiichiEventProjectionTests.Physical(22, 1);
+            TileId riichiDiscard = PonChiRiichiEventProjectionTests.Physical(0, 3);
+            RoundStateMachine round = PonChiRiichiEventProjectionTests.BuildFirstTurnRiichiRound(
+                "wire-nondealer-double-riichi", riichiSeat);
+            var source = new TestProjectionSource
+            {
+                EventFactsFactory = request => WireEventFacts.Build(request),
+                PublicFactsFactory = request => BuildPublicFactsWithMelds(request.Round, request.CommittedEvents)
+            };
+            var codec = new StrictWireStreamCodec();
+            await using StreamHarness harness = StreamHarness.Create(WireOptions(codec), source, initialRound: round);
+            var player = new RecordingStreamSink();
+            var spectator = new RecordingStreamSink();
+            Assert.Equal(TableStreamControlStatus.Subscribed,
+                (await harness.SubscribeSeatAsync(riichiSeat, "double-riichi-seat", 1UL, 1UL, player)).Status);
+            Assert.Equal(TableStreamControlStatus.Subscribed,
+                (await harness.SubscribeSpectatorAsync("double-riichi-spectator", 1UL, 1UL, spectator)).Status);
+            await player.WaitForCountAsync(1);
+            await spectator.WaitForCountAsync(1);
+            (TableSession client, QueueClientChannel channel) = await OpenReadyClientAsync(
+                (await player.WaitForCountAsync(1))[0], TestContext.Current.CancellationToken);
+            TableSnapshotChangedEventArgs? clientUpdate = null;
+            client.SnapshotChanged += (_, args) => clientUpdate = args;
+
+            TableOperationResult dealerDiscardResult = await harness.Actor.SubmitAsync(P31Fixtures.Command(
+                RoundCommand.Discard(round.RoundId, dealer, dealerDraw), 0, "double-riichi-dealer-discard"),
+                TestContext.Current.CancellationToken);
+            Assert.Equal(TableOperationStatus.Accepted, dealerDiscardResult.Status);
+            channel.Enqueue(RequireBytes((await player.WaitForCountAsync(2))[1]));
+            await client.PumpOnceAsync(TestContext.Current.CancellationToken);
+
+            TableOperationResult riichi = await harness.Actor.SubmitAsync(P31Fixtures.Command(
+                RoundCommand.Riichi(round.RoundId, riichiSeat, riichiDiscard, new[] { 2 }), 1,
+                "double-riichi-nondealer-first-discard"), TestContext.Current.CancellationToken);
+            Assert.True(riichi.Status == TableOperationStatus.Accepted, riichi.ReasonCode + ": " + riichi.Detail);
+            channel.Enqueue(RequireBytes((await player.WaitForCountAsync(3))[2]));
+            await client.PumpOnceAsync(TestContext.Current.CancellationToken);
+
+            TableVisibleEvent clientEvent = Assert.Single(clientUpdate!.VisibleEventBatch.PlayableEvents,
+                value => value.Type == ProtocolEventType.RiichiDeclared);
+            Assert.Equal(riichiSeat, clientEvent.Seat);
+            Assert.True(clientEvent.Payload.DoubleRiichi);
+            Assert.Equal((uint)riichiDiscard.Value, clientEvent.Payload.DiscardTileId);
+            Envelope playerEnvelope = StrictWireStreamCodec.DecodeAndStrict(
+                RequireBytes((await player.WaitForCountAsync(3))[2]));
+            var wireEvent = Assert.Single(playerEnvelope.PlayerUpdate.VisibleEvents,
+                value => value.EventType == EventType.RiichiDeclared);
+            Assert.True(wireEvent.RiichiDeclared.DoubleRiichi);
+            Assert.Equal(riichiSeat, wireEvent.RiichiDeclared.Player);
+            Envelope spectatorEnvelope = StrictWireStreamCodec.DecodeAndStrict(
+                RequireBytes((await spectator.WaitForCountAsync(3))[2]));
+            var publicEvent = Assert.Single(spectatorEnvelope.PublicUpdate.VisibleEvents,
+                value => value.EventType == EventType.RiichiDeclared);
+            Assert.True(publicEvent.RiichiDeclared.DoubleRiichi);
+            Assert.Empty(harness.Terminations.Terminations);
+        }
+
         private static IReadOnlyList<TableSeatPublicFacts> BuildPublicFactsWithMelds(
             RoundStateMachine round,
             IReadOnlyList<TableEventRecord>? records = null)
