@@ -419,6 +419,19 @@ Invoke-Case 'Raw export identity fields cannot be changed independently of the o
     Assert-True ($exit -ne 0) 'raw binding tamper became PASS'
 }
 
+Invoke-Case 'Zero-player new Prepare cannot re-sign copied attempts' {
+    $forgeRoot = Join-Path $OutputDir 'zero-player-forge'
+    $buildLog = [string](Get-P45Property (Get-P45Property $context.Run.player 'buildLogArchived') 'path')
+    $created = New-P45Run -RunDir $forgeRoot -PlayerPath ([string]$context.Run.player.path) `
+        -EvidenceClass GAME -Mode RecoveryProbe -BuildProvenance BUILD_LOG_ATTACHED `
+        -BuildCommit ([string]$context.Run.player.buildCommit) -BuildLog $buildLog
+    Copy-Item -Path (Join-Path $context.Root 'attempts\*') -Destination (Join-Path $forgeRoot 'attempts') -Recurse -Force
+    $forgeContext = Get-P45Run -RunDir $forgeRoot
+    $refused = $false
+    try { $null = New-P45Collection -Context $forgeContext } catch { $refused = $true }
+    Assert-True $refused 'zero-player forge was re-signed by a fresh collector key'
+}
+
 $summary = [pscustomobject]@{
     schemaVersion = 1
     kind = 'p45-recovery-negative-summary'
