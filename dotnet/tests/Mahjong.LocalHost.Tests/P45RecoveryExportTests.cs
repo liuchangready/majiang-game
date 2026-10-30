@@ -3,7 +3,10 @@ using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Mahjong.Client;
+using Mahjong.Contracts;
+using Mahjong.Domain.Cheat;
 using Mahjong.LocalHost;
+using Mahjong.TableRuntime;
 using Xunit;
 
 namespace Mahjong.LocalHost.Tests
@@ -24,7 +27,8 @@ namespace Mahjong.LocalHost.Tests
             Assert.Equal(136, first.Facts.Physical.UniqueCount);
             Assert.Empty(first.Facts.Requests);
             Assert.Equal(0, first.Facts.Ledger.EntryCount);
-            Assert.Equal("LATEST_PERSISTED_CHECKPOINT", first.Facts.Ledger.Source);
+            Assert.Equal("CURRENT_COMMITTED_ACTOR", first.Facts.Ledger.Source);
+            Assert.Equal(Sha256Hex(first.CheatStatePayload), first.Facts.CheatStateSha256);
             Assert.Equal(first.AuthoritySaveBytes.Length, first.Facts.AuthoritySaveBytes);
             Assert.Equal(Sha256Hex(first.AuthoritySaveBytes), first.Facts.AuthoritySaveSha256);
 
@@ -78,6 +82,71 @@ namespace Mahjong.LocalHost.Tests
             byte[] tampered = (byte[])capture.AuthoritySaveBytes.Clone();
             tampered[tampered.Length - 1] ^= 0x01;
             Assert.Throws<InvalidDataException>(() => LocalTableRecoveryFactsReader.ReadPersistedFacts(tampered));
+        }
+
+        [Fact]
+        public async Task CurrentCheatAggregateIsRequiredAndCarriesNonEmptyLedger()
+        {
+            await using var harness = new P41Harness();
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            LocalTableRecoveryCapture capture = await OpenAndCaptureAsync(harness, cts.Token);
+
+            // A current cheat binding that no longer equals the base checkpoint must fail
+            // closed when no current aggregate is supplied.
+            LocalSave stale = LocalSaveCodec.DecodeEnvelope(capture.AuthoritySaveBytes);
+            stale.CurrentState.CheatVersion = 999;
+            stale.CurrentState.CheatFingerprint = 1234567;
+            stale.CurrentState.CheatBound = true;
+            byte[] staleBytes = LocalSaveCodec.EncodeEnvelope(stale);
+            Assert.Throws<InvalidDataException>(() =>
+                LocalTableRecoveryFactsReader.ReadPersistedFacts(staleBytes));
+
+            LocalSave save = LocalSaveCodec.DecodeEnvelope(capture.AuthoritySaveBytes);
+            TableCheatLedgerCheckpoint current = TableCheatLedgerCheckpointCodec.Decode(capture.CheatStatePayload);
+            CheatState state = current.RestoreCheatState();
+            var entry = new CheatLedgerEntry("review-entry", 0, -10, state.Ledger.BalanceOf(0) - 10, "review-ledger");
+            var balances = new[] { state.Ledger.BalanceOf(0) - 10, state.Ledger.BalanceOf(1), state.Ledger.BalanceOf(2), state.Ledger.BalanceOf(3) };
+            CheatLedger ledger = CheatLedger.FromSnapshot(120, balances, new[] { entry });
+            CheatState changed = state.WithLedger(ledger);
+            save.CurrentState.CheatVersion = changed.Version;
+            save.CurrentState.CheatFingerprint = changed.Fingerprint;
+            save.CurrentState.CheatBound = true;
+            byte[] changedSave = LocalSaveCodec.EncodeEnvelope(save);
+            byte[] changedCheat = TableCheatLedgerCheckpointCodec.Encode(new TableCheatLedgerCheckpoint(changed));
+
+            LocalTableRecoveryFacts facts = LocalTableRecoveryFactsReader.ReadPersistedFacts(changedSave, changedCheat);
+            Assert.Equal(1, facts.Ledger.EntryCount);
+            Assert.Equal(110, facts.Ledger.Balances[0]);
+            Assert.Equal("CURRENT_COMMITTED_ACTOR", facts.Ledger.Source);
+            Assert.Equal(Sha256Hex(changedCheat), facts.CheatStateSha256);
+
+            // A stale aggregate that does not match the current binding is rejected.
+            Assert.Throws<InvalidDataException>(() =>
+                LocalTableRecoveryFactsReader.ReadPersistedFacts(changedSave, capture.CheatStatePayload));
+        }
+
+        [Fact]
+        public async Task PersistedControlResultsAreExportedWithCanonicalIdentityAndDigest()
+        {
+            await using var harness = new P41Harness();
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            const string digest = "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF";
+            LocalTableRecoveryCapture capture = await OpenAndCaptureAsync(harness, cts.Token);
+            LocalSave save = LocalSaveCodec.DecodeEnvelope(capture.AuthoritySaveBytes);
+            save.ControlResults["control-account\u001fcontrol-scope\u001fcontrol-request"] =
+                new LocalControlRecord(7, digest, "CLAIM_CONTROL");
+            byte[] encoded = LocalSaveCodec.EncodeEnvelope(save);
+            LocalTableRecoveryFacts facts = LocalTableRecoveryFactsReader.ReadPersistedFacts(
+                encoded,
+                capture.CheatStatePayload);
+            Assert.Single(facts.ControlRequests);
+            LocalTableRecoveryControlFact control = facts.ControlRequests[0];
+            Assert.Equal("control-account", control.AccountId);
+            Assert.Equal("control-scope", control.ScopeId);
+            Assert.Equal("control-request", control.RequestId);
+            Assert.Equal(digest, control.Digest);
+            Assert.Equal("CLAIM_CONTROL", control.Kind);
+            Assert.Equal("7", control.EvaluatedStateVersion);
         }
 
         private static async Task<LocalTableRecoveryCapture> OpenAndCaptureAsync(

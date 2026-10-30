@@ -55,6 +55,36 @@ namespace Mahjong.LocalHost
         public string? EventSeq { get; }
     }
 
+    /// <summary>
+    /// One persisted control-result confirmation. The local store keys these by the same
+    /// account + scope + request identity and stores the real canonical control digest.
+    /// </summary>
+    public sealed class LocalTableRecoveryControlFact
+    {
+        public LocalTableRecoveryControlFact(
+            string accountId,
+            string scopeId,
+            string requestId,
+            string digest,
+            string kind,
+            string evaluatedStateVersion)
+        {
+            AccountId = accountId;
+            ScopeId = scopeId;
+            RequestId = requestId;
+            Digest = digest;
+            Kind = kind;
+            EvaluatedStateVersion = evaluatedStateVersion;
+        }
+
+        public string AccountId { get; }
+        public string ScopeId { get; }
+        public string RequestId { get; }
+        public string Digest { get; }
+        public string Kind { get; }
+        public string EvaluatedStateVersion { get; }
+    }
+
     /// <summary>Durable cheat-ledger digest. Entries are the real committed ledger order.</summary>
     public sealed class LocalTableRecoveryLedgerFact
     {
@@ -135,7 +165,9 @@ namespace Mahjong.LocalHost
             IReadOnlyList<long> controlEpochs,
             string cheatVersion,
             string cheatFingerprint,
+            string cheatStateSha256,
             IReadOnlyList<LocalTableRecoveryRequestFact> requests,
+            IReadOnlyList<LocalTableRecoveryControlFact> controlRequests,
             LocalTableRecoveryLedgerFact ledger,
             LocalTableRecoveryPhysicalFact physical)
         {
@@ -152,7 +184,9 @@ namespace Mahjong.LocalHost
             ControlEpochs = controlEpochs;
             CheatVersion = cheatVersion;
             CheatFingerprint = cheatFingerprint;
+            CheatStateSha256 = cheatStateSha256;
             Requests = requests;
+            ControlRequests = controlRequests;
             Ledger = ledger;
             Physical = physical;
         }
@@ -170,7 +204,9 @@ namespace Mahjong.LocalHost
         public IReadOnlyList<long> ControlEpochs { get; }
         public string CheatVersion { get; }
         public string CheatFingerprint { get; }
+        public string CheatStateSha256 { get; }
         public IReadOnlyList<LocalTableRecoveryRequestFact> Requests { get; }
+        public IReadOnlyList<LocalTableRecoveryControlFact> ControlRequests { get; }
         public LocalTableRecoveryLedgerFact Ledger { get; }
         public LocalTableRecoveryPhysicalFact Physical { get; }
     }
@@ -178,14 +214,25 @@ namespace Mahjong.LocalHost
     /// <summary>Read-only snapshot captured from an already-open, committed LocalHost runtime.</summary>
     public sealed class LocalTableRecoveryCapture
     {
-        internal LocalTableRecoveryCapture(byte[] authoritySaveBytes, LocalTableRecoveryFacts facts)
+        internal LocalTableRecoveryCapture(
+            byte[] authoritySaveBytes,
+            byte[] cheatStatePayload,
+            LocalTableRecoveryFacts facts)
         {
             AuthoritySaveBytes = authoritySaveBytes ?? throw new ArgumentNullException(nameof(authoritySaveBytes));
+            CheatStatePayload = cheatStatePayload ?? throw new ArgumentNullException(nameof(cheatStatePayload));
             Facts = facts ?? throw new ArgumentNullException(nameof(facts));
         }
 
         /// <summary>Exact primary envelope bytes at the captured version. Private authority data.</summary>
         public byte[] AuthoritySaveBytes { get; }
+
+        /// <summary>
+        /// Current committed cheat aggregate encoded from the live actor at the same capture
+        /// instant. It is required because LocalSave's base checkpoint can be older than the
+        /// current cheat aggregate; this payload must match the save's current version/fingerprint.
+        /// </summary>
+        public byte[] CheatStatePayload { get; }
 
         public LocalTableRecoveryFacts Facts { get; }
     }
@@ -196,7 +243,9 @@ namespace Mahjong.LocalHost
     /// </summary>
     public static class LocalTableRecoveryFactsReader
     {
-        public static LocalTableRecoveryFacts ReadPersistedFacts(byte[] saveBytes)
+        public static LocalTableRecoveryFacts ReadPersistedFacts(
+            byte[] saveBytes,
+            byte[]? currentCheatPayload = null)
         {
             if (saveBytes == null)
             {
@@ -215,19 +264,33 @@ namespace Mahjong.LocalHost
                 throw new InvalidDataException("Authority save has no base checkpoint.");
             }
 
-            TableCheckpoint checkpoint = LocalSaveCodec.DecodeCheckpoint(save.BaseCheckpointBlob);
-            Require(checkpoint.RulesetVersion == save.RulesetVersion, "checkpoint ruleset version differs from the envelope.");
-            Require(string.Equals(checkpoint.RoomId, save.RoomId, StringComparison.Ordinal), "checkpoint room id differs from the envelope.");
+            TableCheckpoint currentCheckpoint = LocalSaveCodec.DecodeCheckpoint(save.BaseCheckpointBlob);
+            Require(currentCheckpoint.RulesetVersion == save.RulesetVersion, "checkpoint ruleset version differs from the envelope.");
+            Require(string.Equals(currentCheckpoint.RoomId, save.RoomId, StringComparison.Ordinal), "checkpoint room id differs from the envelope.");
 
-            // The envelope carries one base checkpoint plus the exact durable operations after
-            // it. The current round/state bytes therefore come from the last accepted commit's
-            // NextStatePayload, not from the older base checkpoint. Operations are applied in
-            // their persisted order and are never mixed with a later version.
-            byte[] currentStatePayload = checkpoint.StatePayload;
-            ulong lastCommittedEventSeq = checkpoint.LastEventSeq.Value;
+            // The envelope carries a base checkpoint plus durable operations. A commit may carry
+            // only NextStatePayload (no checkpoint); a save/control checkpoint carries a full
+            // payload. Track the latest checkpoint and the latest state bytes in the exact
+            // persisted operation order; never take one field from an older point.
+            byte[] currentStatePayload = currentCheckpoint.StatePayload;
+            ulong lastCommittedEventSeq = currentCheckpoint.LastEventSeq.Value;
             for (int i = 0; i < save.Operations.Count; i++)
             {
                 LocalDurableOperation operation = save.Operations[i];
+                if (operation.ExpectedStateVersion < currentCheckpoint.StateVersion.Value)
+                {
+                    continue;
+                }
+
+                if (operation.Kind == LocalOperationKind.SaveCheckpoint ||
+                    (operation.Kind == LocalOperationKind.CommitControl && operation.CheckpointBlob != null))
+                {
+                    currentCheckpoint = LocalSaveCodec.DecodeCheckpoint(operation.CheckpointBlob!);
+                    currentStatePayload = currentCheckpoint.StatePayload;
+                    lastCommittedEventSeq = currentCheckpoint.LastEventSeq.Value;
+                    continue;
+                }
+
                 if (operation.Kind != LocalOperationKind.Commit || operation.Events.Count == 0)
                 {
                     continue;
@@ -251,19 +314,56 @@ namespace Mahjong.LocalHost
             Require(TablePayloadSha256.Compute(currentStatePayload) == save.CurrentState.StateHash, "current round bytes do not match the saved state hash.");
             Require(captured.SourceFingerprint == save.CurrentState.StateFingerprint, "current round fingerprint differs from the saved state row.");
 
-            TableControlCheckpoint control = TableControlCheckpointCodec.Decode(checkpoint.ControlPayload);
+            TableControlCheckpoint control = TableControlCheckpointCodec.Decode(currentCheckpoint.ControlPayload);
             Require(control.ControlVersion == save.CurrentState.ControlVersion, "control payload version differs from the saved state row.");
 
-            if (checkpoint.CheatPayload == null || checkpoint.CheatPayload.Length == 0)
+            if (currentCheckpoint.CheatPayload == null || currentCheckpoint.CheatPayload.Length == 0)
             {
                 throw new InvalidDataException("Authority save has no committed cheat ledger payload.");
             }
 
-            // The latest full checkpoint is the only persisted ledger snapshot. This exporter
-            // does not replay cheat operations and does not claim otherwise; the facts carry the
-            // checkpoint's own version/source so the verifier can compare them explicitly.
-            TableCheatLedgerCheckpoint cheat = TableCheatLedgerCheckpointCodec.Decode(checkpoint.CheatPayload);
-            cheat.RestoreCheatState();
+            TableCheatLedgerCheckpoint persistedCheat =
+                TableCheatLedgerCheckpointCodec.Decode(currentCheckpoint.CheatPayload);
+            persistedCheat.RestoreCheatState();
+
+            byte[] cheatPayload;
+            TableCheatLedgerCheckpoint cheat;
+            if (currentCheatPayload != null && currentCheatPayload.Length > 0)
+            {
+                cheat = TableCheatLedgerCheckpointCodec.Decode(currentCheatPayload);
+                cheat.RestoreCheatState();
+                if (save.CurrentState.CheatBound)
+                {
+                    Require(
+                        cheat.TotalVersion == save.CurrentState.CheatVersion &&
+                        cheat.Fingerprint == save.CurrentState.CheatFingerprint,
+                        "current cheat aggregate does not match the saved current cheat binding.");
+                }
+                else
+                {
+                    // The room has not yet committed a cheat-bound command. Its persisted row
+                    // still says version 0/unbound, but the initial checkpoint and the live
+                    // actor share the initialized aggregate.
+                    Require(
+                        cheat.TotalVersion == persistedCheat.TotalVersion &&
+                        cheat.Fingerprint == persistedCheat.Fingerprint,
+                        "initial cheat aggregate does not match the persisted initial checkpoint.");
+                }
+
+                cheatPayload = currentCheatPayload;
+            }
+            else
+            {
+                // Failing closed is mandatory when the base checkpoint's cheat aggregate is older
+                // than the current row. The host capture always supplies the current aggregate.
+                Require(
+                    !save.CurrentState.CheatBound ||
+                    (persistedCheat.TotalVersion == save.CurrentState.CheatVersion &&
+                     persistedCheat.Fingerprint == save.CurrentState.CheatFingerprint),
+                    "current cheat aggregate payload is required; the base checkpoint cheat aggregate is stale.");
+                cheat = persistedCheat;
+                cheatPayload = currentCheckpoint.CheatPayload;
+            }
 
             var controlEpochs = new long[4];
             for (int seat = 0; seat < 4; seat++)
@@ -272,8 +372,11 @@ namespace Mahjong.LocalHost
             }
 
             LocalTableRecoveryPhysicalFact physical = BuildPhysical(round);
-            LocalTableRecoveryLedgerFact ledger = BuildLedger(cheat);
+            LocalTableRecoveryLedgerFact ledger = BuildLedger(
+                cheat,
+                currentCheatPayload != null ? "CURRENT_COMMITTED_ACTOR" : "LATEST_PERSISTED_CHECKPOINT");
             IReadOnlyList<LocalTableRecoveryRequestFact> requests = BuildRequests(save);
+            IReadOnlyList<LocalTableRecoveryControlFact> controlRequests = BuildControlRequests(save);
 
             return new LocalTableRecoveryFacts(
                 authoritySha256,
@@ -287,9 +390,11 @@ namespace Mahjong.LocalHost
                 save.CurrentState.StateHash.ToHex().ToUpperInvariant(),
                 save.CurrentState.ControlVersion.ToString(CultureInfo.InvariantCulture),
                 controlEpochs,
-                save.CurrentState.CheatVersion.ToString(CultureInfo.InvariantCulture),
-                save.CurrentState.CheatFingerprint.ToString(CultureInfo.InvariantCulture),
+                cheat.TotalVersion.ToString(CultureInfo.InvariantCulture),
+                cheat.Fingerprint.ToString(CultureInfo.InvariantCulture),
+                Sha256Hex(cheatPayload),
                 requests,
+                controlRequests,
                 ledger,
                 physical);
         }
@@ -351,7 +456,7 @@ namespace Mahjong.LocalHost
                 Sha256Hex(Utf8.GetBytes(string.Join("\n", lines))));
         }
 
-        private static LocalTableRecoveryLedgerFact BuildLedger(TableCheatLedgerCheckpoint cheat)
+        private static LocalTableRecoveryLedgerFact BuildLedger(TableCheatLedgerCheckpoint cheat, string source)
         {
             var balances = new int[cheat.Balances.Count];
             long points = 0;
@@ -401,7 +506,7 @@ namespace Mahjong.LocalHost
                 Sha256Hex(Utf8.GetBytes("balances=" + balanceText)),
                 cheat.TotalVersion,
                 cheat.TotalVersion,
-                "LATEST_PERSISTED_CHECKPOINT");
+                source);
         }
 
         private static IReadOnlyList<LocalTableRecoveryRequestFact> BuildRequests(LocalSave save)
@@ -442,6 +547,44 @@ namespace Mahjong.LocalHost
                 return result != 0 ? result : string.CompareOrdinal(left.RequestId, right.RequestId);
             });
             return requests;
+        }
+
+        private static IReadOnlyList<LocalTableRecoveryControlFact> BuildControlRequests(LocalSave save)
+        {
+            var results = new List<LocalTableRecoveryControlFact>(save.ControlResults.Count);
+            foreach (KeyValuePair<string, LocalControlRecord> pair in save.ControlResults)
+            {
+                string[] identity = pair.Key.Split('\u001f');
+                if (identity.Length != 3 ||
+                    string.IsNullOrWhiteSpace(identity[0]) ||
+                    string.IsNullOrWhiteSpace(identity[1]) ||
+                    string.IsNullOrWhiteSpace(identity[2]))
+                {
+                    throw new InvalidDataException("A persisted control result has a malformed identity key.");
+                }
+
+                if (string.IsNullOrWhiteSpace(pair.Value.Digest) || string.IsNullOrWhiteSpace(pair.Value.Kind))
+                {
+                    throw new InvalidDataException("A persisted control result has no canonical digest/kind.");
+                }
+
+                results.Add(new LocalTableRecoveryControlFact(
+                    identity[0],
+                    identity[1],
+                    identity[2],
+                    pair.Value.Digest.ToUpperInvariant(),
+                    pair.Value.Kind,
+                    pair.Value.EvaluatedStateVersion.ToString(CultureInfo.InvariantCulture)));
+            }
+
+            results.Sort((left, right) =>
+            {
+                int result = string.CompareOrdinal(left.AccountId, right.AccountId);
+                if (result != 0) { return result; }
+                result = string.CompareOrdinal(left.ScopeId, right.ScopeId);
+                return result != 0 ? result : string.CompareOrdinal(left.RequestId, right.RequestId);
+            });
+            return results;
         }
 
         private static void Require(bool condition, string message)

@@ -20,6 +20,7 @@ $script:P45ObservationSources = @(
     'MANUAL_TRANSCRIPTION'
 )
 $script:P45BuildProvenances = @('UNKNOWN', 'USER_DECLARED', 'BUILD_LOG_ATTACHED')
+$script:P45RecoveryExporterVersion = 'p45-player-structured-export/1'
 # Fail-closed log redaction policy. Keys are matched quoted or unquoted and
 # case-insensitively; nested JSON under a sensitive key is never published.
 $script:P45SensitiveKeyAlternation = 'set-cookie|cookie|authorization|bearer|tickets?|access[_-]?token|refresh[_-]?token|id[_-]?token|token|opaque|secret|password|passwd|api[_-]?key|apikey|credential|signature'
@@ -338,14 +339,24 @@ function Get-P45SourceSnapshot {
         }
     }
 
-    $head = (& git.exe -C $RepoRoot rev-parse HEAD 2>$null)
-    $headExit = $LASTEXITCODE
-    $branch = (& git.exe -C $RepoRoot rev-parse --abbrev-ref HEAD 2>$null)
-    $branchExit = $LASTEXITCODE
-    $statusLines = @(& git.exe -C $RepoRoot status --porcelain=v1 --untracked-files=all 2>$null)
-    $statusExit = $LASTEXITCODE
-    $diffStatLines = @(& git.exe -C $RepoRoot diff --stat HEAD 2>$null)
-    $diffStatExit = $LASTEXITCODE
+    # Git may emit CRLF normalization warnings on stderr even when the command
+    # succeeds. They are not a source-state failure; only the native exit codes
+    # below decide whether the snapshot is usable.
+    $previousErrorAction = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $head = (& git.exe -C $RepoRoot rev-parse HEAD 2>$null)
+        $headExit = $LASTEXITCODE
+        $branch = (& git.exe -C $RepoRoot rev-parse --abbrev-ref HEAD 2>$null)
+        $branchExit = $LASTEXITCODE
+        $statusLines = @(& git.exe -C $RepoRoot status --porcelain=v1 --untracked-files=all 2>$null)
+        $statusExit = $LASTEXITCODE
+        $diffStatLines = @(& git.exe -C $RepoRoot diff --stat HEAD 2>$null)
+        $diffStatExit = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorAction
+    }
 
     if ($headExit -ne 0 -or $branchExit -ne 0 -or $statusExit -ne 0 -or $diffStatExit -ne 0) {
         return [pscustomobject]@{
@@ -667,6 +678,7 @@ function New-P45Run {
         buildProvenance = [string]$player.buildProvenance
     }
     Write-P45JsonAtomic -Path $markerPath -Object $marker
+    $collectorKeyPath = New-P45CollectorKey -RunId $runId -Root $RunDir
 
     $scenarioNames = @(
         'menu_create_local_room',
@@ -977,15 +989,82 @@ function Get-P45ProcessAlive {
     }
 }
 
+function Get-P45NativeExitCodeByPid {
+    param([Parameter(Mandatory = $true)][int]$ProcessId)
+
+    if (-not ('P45.NativeExit' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+namespace P45 {
+    public static class NativeExit {
+        private const uint QueryLimitedInformation = 0x1000;
+        private const uint StillActive = 259;
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern IntPtr OpenProcess(uint access, bool inheritHandle, int processId);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool CloseHandle(IntPtr handle);
+        public static int? GetExitCode(int processId) {
+            IntPtr handle = OpenProcess(QueryLimitedInformation, false, processId);
+            if (handle == IntPtr.Zero) { return null; }
+            try {
+                return GetExitCodeHandle(handle);
+            } finally {
+                CloseHandle(handle);
+            }
+        }
+        public static int? GetExitCodeHandle(IntPtr handle) {
+            if (handle == IntPtr.Zero) { return null; }
+            uint code;
+            if (!GetExitCodeProcess(handle, out code)) { return null; }
+            if (code == StillActive) { return null; }
+            return unchecked((int)code);
+        }
+    }
+}
+'@ -ErrorAction Stop
+    }
+
+    try {
+        $value = [P45.NativeExit]::GetExitCode($ProcessId)
+        if ($null -eq $value) { return $null }
+        return [int]$value
+    }
+    catch {
+        return $null
+    }
+}
+
+function Get-P45NativeExitCodeFromHandle {
+    param([Parameter(Mandatory = $true)][IntPtr]$Handle)
+
+    if (-not ('P45.NativeExit' -as [type])) {
+        $null = Get-P45NativeExitCodeByPid -ProcessId 0
+    }
+    try {
+        $value = [P45.NativeExit]::GetExitCodeHandle($Handle)
+        if ($null -eq $value) { return $null }
+        return [int]$value
+    }
+    catch {
+        return $null
+    }
+}
+
 function Get-P45NativeExitCode {
     param([Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process)
 
     try {
         $Process.Refresh()
-        if ($Process.HasExited) { return [int]$Process.ExitCode }
+        if ($Process.HasExited) {
+            $value = $Process.ExitCode
+            if ($null -ne $value) { return [int]$value }
+        }
     }
     catch { }
-    return $null
+    return Get-P45NativeExitCodeByPid -ProcessId ([int]$Process.Id)
 }
 
 function Quote-P45Argument {
@@ -1057,6 +1136,108 @@ public static extern bool IsWindowVisible(System.IntPtr hWnd);
     catch {
         # Hiding is best effort only. It never changes process ownership checks.
     }
+}
+
+function Get-P45CollectorRoot {
+    $root = Join-Path $script:P45RepoRoot 'build/p45-recovery-export/collector'
+    [IO.Directory]::CreateDirectory($root) | Out-Null
+    return $root
+}
+
+function Get-P45CollectorKeyPath {
+    param([Parameter(Mandatory = $true)][string]$RunId)
+    return (Join-Path (Get-P45CollectorRoot) ($RunId + '.json'))
+}
+
+function New-P45CollectorKey {
+    param(
+        [Parameter(Mandatory = $true)][string]$RunId,
+        [Parameter(Mandatory = $true)][string]$Root
+    )
+
+    $path = Get-P45CollectorKeyPath -RunId $RunId
+    if ([IO.File]::Exists($path)) {
+        Throw-P45 3 'RUN_EXISTS' 'A collector key already exists for this run id.'
+    }
+    $bytes = New-Object byte[] 32
+    $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
+    $key = -join ($bytes | ForEach-Object { $_.ToString('X2') })
+    Write-P45JsonAtomic -Path $path -Object ([pscustomobject]@{
+        schemaVersion = 1
+        kind = 'p45-collector-key'
+        runId = $RunId
+        root = (Get-P45FullPath $Root)
+        key = $key
+        createdAt = (Get-P45UtcNowText)
+    })
+    return $path
+}
+
+function Read-P45CollectorKey {
+    param([Parameter(Mandatory = $true)][string]$RunId)
+
+    $path = Get-P45CollectorKeyPath -RunId $RunId
+    if (-not [IO.File]::Exists($path)) { return $null }
+    $record = Read-P45Json -Path $path
+    if ((Get-P45Property $record 'kind') -ne 'p45-collector-key' -or
+        -not [string]::Equals([string](Get-P45Property $record 'runId'), $RunId, [StringComparison]::Ordinal) -or
+        [string](Get-P45Property $record 'key') -notmatch '^[A-Fa-f0-9]{64}$') {
+        return $null
+    }
+    return $record
+}
+
+function Get-P45CollectorHmac {
+    param(
+        [Parameter(Mandatory = $true)][string]$KeyHex,
+        [Parameter(Mandatory = $true)][string]$Text
+    )
+
+    $keyBytes = New-Object byte[] ($KeyHex.Length / 2)
+    for ($i = 0; $i -lt $keyBytes.Length; $i++) {
+        $keyBytes[$i] = [Convert]::ToByte($KeyHex.Substring($i * 2, 2), 16)
+    }
+    $hmac = New-Object System.Security.Cryptography.HMACSHA256 -ArgumentList (,$keyBytes)
+    try {
+        $hash = $hmac.ComputeHash($script:P45Utf8.GetBytes($Text))
+        return ([BitConverter]::ToString($hash)).Replace('-', '').ToUpperInvariant()
+    }
+    finally {
+        $hmac.Dispose()
+    }
+}
+
+function Enter-P45ExitLock {
+    param(
+        [Parameter(Mandatory = $true)][string]$RunId,
+        [Parameter(Mandatory = $true)][int]$Attempt,
+        [int]$TimeoutMilliseconds = 15000
+    )
+
+    $name = 'Local\P45E2E_EXIT_' + $RunId + '_' + $Attempt.ToString('0000', [Globalization.CultureInfo]::InvariantCulture)
+    $mutex = New-Object System.Threading.Mutex($false, $name)
+    try {
+        if (-not $mutex.WaitOne($TimeoutMilliseconds)) {
+            $mutex.Dispose()
+            Throw-P45 13 'STOP_FAILED' 'Timed out waiting for the per-attempt exit-record lock.'
+        }
+        return $mutex
+    }
+    catch [System.Threading.AbandonedMutexException] {
+        return $mutex
+    }
+    catch {
+        try { $mutex.Dispose() } catch { }
+        throw
+    }
+}
+
+function Exit-P45ExitLock {
+    param([Parameter(Mandatory = $true)][object]$Mutex)
+
+    try { $Mutex.ReleaseMutex() } catch { }
+    try { $Mutex.Dispose() } catch { }
 }
 
 function New-P45Attempt {
@@ -1450,6 +1631,94 @@ function New-P45Attempt {
     try { $exited = $process.WaitForExit($TimeoutSeconds * 1000) } catch { $exited = $false }
     if ($exited) {
         $native = Get-P45NativeExitCode -Process $process
+        $stopExpected = $false
+        $exitLock = Enter-P45ExitLock -RunId ([string]$Context.Run.runId) -Attempt $attemptNumber
+        try {
+            $currentState = Get-P45State -Context $Context
+            $stopRequest = Get-P45Property $currentState 'stopRequested'
+            if ($null -ne $stopRequest -and [int](Get-P45Property $stopRequest 'attempt' 0) -eq $attemptNumber) {
+                $stopExpected = $true
+            }
+            if ([IO.File]::Exists($exitJson)) {
+                $recorded = Read-P45Json -Path $exitJson
+                if ([bool](Get-P45Property $recorded 'requested' $false)) { $stopExpected = $true }
+            }
+        }
+        finally {
+            Exit-P45ExitLock -Mutex $exitLock
+        }
+
+        if ($stopExpected) {
+            $requestedExit = $null
+            for ($wait = 0; $wait -lt 100 -and $null -eq $requestedExit; $wait++) {
+                if ([IO.File]::Exists($exitJson)) {
+                    $candidate = Read-P45Json -Path $exitJson
+                    if ([bool](Get-P45Property $candidate 'requested' $false)) { $requestedExit = $candidate }
+                }
+                if ($null -eq $requestedExit) { Start-Sleep -Milliseconds 100 }
+            }
+            if ($null -ne $requestedExit) {
+                if ($null -eq (Get-P45Property $requestedExit 'nativeExitCode') -and $null -ne $native) {
+                    $exitLock = Enter-P45ExitLock -RunId ([string]$Context.Run.runId) -Attempt $attemptNumber
+                    try {
+                        $freshExit = Read-P45Json -Path $exitJson
+                        if ([bool](Get-P45Property $freshExit 'requested' $false) -and
+                            $null -eq (Get-P45Property $freshExit 'nativeExitCode')) {
+                            $freshExit.nativeExitCode = $native
+                            Write-P45JsonAtomic -Path $exitJson -Object $freshExit
+                            $requestedExit = $freshExit
+                        }
+                    }
+                    finally {
+                        Exit-P45ExitLock -Mutex $exitLock
+                    }
+                }
+                $launch.status = 'STOPPED'
+                $launch.nativeExitCode = Get-P45Property $requestedExit 'nativeExitCode'
+                $launch.disposition = [string](Get-P45Property $requestedExit 'disposition' 'STOPPED')
+                $launch.toolExitCode = 0
+                $launch.toolStatus = $launch.disposition
+                Write-P45JsonAtomic -Path $attemptJson -Object $launch
+                $state.activeProcess = $null
+                $state.status = 'STOPPED'
+                Save-P45State -Context $Context -State $state
+                $Context.Run.status = 'STOPPED'
+                Save-P45Run -Context $Context
+                return [pscustomobject]@{
+                    Attempt = $attemptNumber
+                    AttemptDirectory = $attemptDir
+                    Launch = $launch
+                    ExitCode = 0
+                    Status = $launch.toolStatus
+                    NativeExitCode = $launch.nativeExitCode
+                    Process = $process
+                }
+            }
+
+            # A stop was requested but the stopping command did not publish a final
+            # exit record. Never convert that into EXITED_OK.
+            $launch.status = 'EXITED'
+            $launch.nativeExitCode = $native
+            $launch.disposition = 'EXITED_UNOBSERVED'
+            $launch.toolExitCode = 0
+            $launch.toolStatus = 'EXITED_UNOBSERVED'
+            Write-P45JsonAtomic -Path $attemptJson -Object $launch
+            $state.activeProcess = $null
+            $state.status = 'STOPPED'
+            Save-P45State -Context $Context -State $state
+            $Context.Run.status = 'STOPPED'
+            Save-P45Run -Context $Context
+            return [pscustomobject]@{
+                Attempt = $attemptNumber
+                AttemptDirectory = $attemptDir
+                Launch = $launch
+                ExitCode = 0
+                Status = 'EXITED_UNOBSERVED'
+                NativeExitCode = $native
+                Process = $process
+            }
+        }
+
         if ([IO.File]::Exists($exitJson)) {
             $requestedExit = Read-P45Json -Path $exitJson
             if ([bool](Get-P45Property $requestedExit 'requested' $false)) {
@@ -1586,6 +1855,19 @@ function Stop-P45OwnedProcess {
     }
 
     $pidValue = [int](Get-P45Property $active 'pid')
+    $activeAttempt = [int](Get-P45Property $active 'attempt')
+    $exitLock = Enter-P45ExitLock -RunId ([string]$Context.Run.runId) -Attempt $activeAttempt
+    try {
+        $state | Add-Member -NotePropertyName stopRequested -Force -NotePropertyValue ([pscustomobject]@{
+            attempt = $activeAttempt
+            requestedAt = (Get-P45UtcNowText)
+            force = [bool]$Force
+        })
+        Save-P45State -Context $Context -State $state
+    }
+    finally {
+        Exit-P45ExitLock -Mutex $exitLock
+    }
     $identity = Get-P45ProcessByIdentity -ProcessId $pidValue -ExpectedPath ([string]$active.path) `
         -ExpectedSha256 ([string]$active.sha256) -ExpectedStartUtc ([string]$active.startTimeUtc)
     if (-not $identity.Exists) {
@@ -1602,27 +1884,49 @@ function Stop-P45OwnedProcess {
         $attemptDir = Join-Path $Context.Root ('attempts\' + $attemptName)
         $launchPath = Join-Path $attemptDir 'launch.json'
         $exitPath = Join-Path $attemptDir 'exit.json'
-        if ([IO.File]::Exists($launchPath)) {
-            $launch = Read-P45Json -Path $launchPath
-            $launch.status = 'EXITED'
-            $launch.disposition = 'EXITED_UNOBSERVED'
-            $launch.toolExitCode = 0
-            $launch.toolStatus = 'EXITED_UNOBSERVED'
-            Write-P45JsonAtomic -Path $launchPath -Object $launch
-            if (-not [IO.File]::Exists($exitPath)) {
-                Write-P45JsonAtomic -Path $exitPath -Object ([pscustomobject]@{
-                    schemaVersion = $script:P45SchemaVersion
-                    kind = 'p45-e2e-exit'
-                    runId = $Context.Run.runId
-                    attempt = $attempt
-                    disposition = 'EXITED_UNOBSERVED'
-                    nativeExitCode = $null
-                    toolExitCode = 0
-                    requested = $false
-                    killReason = $null
-                    observedAt = (Get-P45UtcNowText)
-                })
+        $exitLock = Enter-P45ExitLock -RunId ([string]$Context.Run.runId) -Attempt $attempt
+        try {
+            if ([IO.File]::Exists($exitPath)) {
+                $recorded = Read-P45Json -Path $exitPath
+                if ([bool](Get-P45Property $recorded 'requested' $false)) {
+                    $state.activeProcess = $null
+                    $state.status = 'STOPPED'
+                    Save-P45State -Context $Context -State $state
+                    return [pscustomobject]@{
+                        Status = [string](Get-P45Property $recorded 'disposition' 'STOPPED')
+                        ExitCode = 0
+                        NativeExitCode = Get-P45Property $recorded 'nativeExitCode'
+                        Disposition = [string](Get-P45Property $recorded 'disposition' 'STOPPED')
+                        Attempt = $attempt
+                        Reason = $identity.Reason
+                    }
+                }
             }
+            if ([IO.File]::Exists($launchPath)) {
+                $launch = Read-P45Json -Path $launchPath
+                $launch.status = 'EXITED'
+                $launch.disposition = 'EXITED_UNOBSERVED'
+                $launch.toolExitCode = 0
+                $launch.toolStatus = 'EXITED_UNOBSERVED'
+                Write-P45JsonAtomic -Path $launchPath -Object $launch
+                if (-not [IO.File]::Exists($exitPath)) {
+                    Write-P45JsonAtomic -Path $exitPath -Object ([pscustomobject]@{
+                        schemaVersion = $script:P45SchemaVersion
+                        kind = 'p45-e2e-exit'
+                        runId = $Context.Run.runId
+                        attempt = $attempt
+                        disposition = 'EXITED_UNOBSERVED'
+                        nativeExitCode = $null
+                        toolExitCode = 0
+                        requested = $false
+                        killReason = $null
+                        observedAt = (Get-P45UtcNowText)
+                    })
+                }
+            }
+        }
+        finally {
+            Exit-P45ExitLock -Mutex $exitLock
         }
         $state.activeProcess = $null
         $state.status = 'STOPPED'
@@ -1638,6 +1942,8 @@ function Stop-P45OwnedProcess {
     }
 
     $process = $identity.Process
+    $processHandle = [IntPtr]::Zero
+    try { $processHandle = $process.Handle } catch { $processHandle = [IntPtr]::Zero }
     $binding = Test-P45ProcessRunBinding -ProcessId $pidValue -Context $Context -Mode ([string]$active.mode)
     if ($binding -ne 'MATCH') {
         Throw-P45 4 'OWNERSHIP_OR_IDENTITY' ('Refusing to stop: process binding check returned ' + $binding + '.')
@@ -1683,26 +1989,34 @@ function Stop-P45OwnedProcess {
         }
     }
 
-    $native = Get-P45NativeExitCode -Process $process
-    $launch = Read-P45Json -Path $launchPath
-    $launch.status = 'STOPPED'
-    $launch.nativeExitCode = $native
-    $launch.disposition = $disposition
-    $launch.toolExitCode = 0
-    $launch.toolStatus = $disposition
-    Write-P45JsonAtomic -Path $launchPath -Object $launch
-    Write-P45JsonAtomic -Path $exitPath -Object ([pscustomobject]@{
-        schemaVersion = $script:P45SchemaVersion
-        kind = 'p45-e2e-exit'
-        runId = $Context.Run.runId
-        attempt = $attempt
-        disposition = $disposition
-        nativeExitCode = $native
-        toolExitCode = 0
-        requested = $true
-        killReason = $killReason
-        observedAt = (Get-P45UtcNowText)
-    })
+    $native = Get-P45NativeExitCodeFromHandle -Handle $processHandle
+    if ($null -eq $native) { $native = Get-P45NativeExitCodeByPid -ProcessId $pidValue }
+    if ($null -eq $native) { $native = Get-P45NativeExitCode -Process $process }
+    $exitLock = Enter-P45ExitLock -RunId ([string]$Context.Run.runId) -Attempt $attempt
+    try {
+        $launch = Read-P45Json -Path $launchPath
+        $launch.status = 'STOPPED'
+        $launch.nativeExitCode = $native
+        $launch.disposition = $disposition
+        $launch.toolExitCode = 0
+        $launch.toolStatus = $disposition
+        Write-P45JsonAtomic -Path $launchPath -Object $launch
+        Write-P45JsonAtomic -Path $exitPath -Object ([pscustomobject]@{
+            schemaVersion = $script:P45SchemaVersion
+            kind = 'p45-e2e-exit'
+            runId = $Context.Run.runId
+            attempt = $attempt
+            disposition = $disposition
+            nativeExitCode = $native
+            toolExitCode = 0
+            requested = $true
+            killReason = $killReason
+            observedAt = (Get-P45UtcNowText)
+        })
+    }
+    finally {
+        Exit-P45ExitLock -Mutex $exitLock
+    }
     $state.activeProcess = $null
     $state.status = 'STOPPED'
     Save-P45State -Context $Context -State $state
@@ -2343,6 +2657,30 @@ function New-P45Collection {
     $manifestHash = Get-P45Sha256 -Path $manifestPath
     Write-P45TextAtomic -Path (Join-Path $collectionDir 'manifest.sha256.txt') -Text ($manifestHash + '  manifest.json' + [Environment]::NewLine)
 
+    $collectorKey = Read-P45CollectorKey -RunId ([string]$Context.Run.runId)
+    if ($null -eq $collectorKey) {
+        Throw-P45 4 'OWNERSHIP_OR_IDENTITY' 'No external collector key exists for this run; refusing to attest a copied/re-sealed run.'
+    }
+    if (-not [string]::Equals((Get-P45FullPath ([string]$collectorKey.root)), (Get-P45FullPath $Context.Root), [StringComparison]::OrdinalIgnoreCase)) {
+        Throw-P45 4 'OWNERSHIP_OR_IDENTITY' 'The external collector key is bound to a different run root; refusing to attest a copied run.'
+    }
+    $attestationText = [string]$Context.Run.runId + '|' + (Get-P45FullPath $Context.Root) + '|' + $collectionName + '|' + $manifestHash
+    $attestation = [pscustomobject]@{
+        schemaVersion = 1
+        kind = 'p45-collector-attestation'
+        runId = [string]$Context.Run.runId
+        root = (Get-P45FullPath $Context.Root)
+        collection = $collectionName
+        manifestSha256 = $manifestHash
+        collectorKeyId = [string]$collectorKey.runId
+        hmacSha256 = Get-P45CollectorHmac -KeyHex ([string]$collectorKey.key) -Text $attestationText
+        createdAt = (Get-P45UtcNowText)
+        trustBoundary = 'LOCAL_COLLECTOR_KEY_BOUND_TO_ORIGINAL_RUN_ROOT; not administrator-forgery resistant'
+    }
+    $attestationPath = Join-Path $collectionDir 'collector-attestation.json'
+    Write-P45JsonAtomic -Path $attestationPath -Object $attestation
+    $attestationSha = Get-P45Sha256 -Path $attestationPath
+
     $collectionRecord = [pscustomobject]@{
         collection = $collectionName
         manifest = $manifestPath
@@ -2350,6 +2688,8 @@ function New-P45Collection {
         manifestEntries = @($manifest.entries).Count
         generatedAt = $manifest.generatedAt
         status = $manifest.status
+        collectorAttestation = $attestationPath
+        collectorAttestationSha256 = $attestationSha
     }
     $collections = @($Context.Run.collections)
     $collections += $collectionRecord
@@ -2363,6 +2703,8 @@ function New-P45Collection {
         ManifestSha256 = $manifestHash
         EntryCount = @($manifest.entries).Count
         Status = $manifest.status
+        CollectorAttestationPath = $attestationPath
+        CollectorAttestationSha256 = $attestationSha
     }
 }
 
@@ -2739,6 +3081,30 @@ function Get-P45ObservationDigest {
     }
     [Array]::Sort($requestLines, [StringComparer]::Ordinal)
     foreach ($line in $requestLines) { $lines.Add($line) }
+
+    $controlRequests = @(Get-P45Property $Observation 'controlRequests' @())
+    $controlLines = @()
+    foreach ($control in $controlRequests) {
+        if ($null -eq $control) { continue }
+        $controlLines += ('controlRequest=' +
+            (ConvertTo-P45InvariantString (Get-P45Property $control 'accountId')) + '|' +
+            (ConvertTo-P45InvariantString (Get-P45Property $control 'scopeId')) + '|' +
+            (ConvertTo-P45InvariantString (Get-P45Property $control 'requestId')) + '|' +
+            (ConvertTo-P45InvariantString (Get-P45Property $control 'digest')) + '|' +
+            (ConvertTo-P45InvariantString (Get-P45Property $control 'kind')) + '|' +
+            (ConvertTo-P45InvariantString (Get-P45Property $control 'evaluatedStateVersion')))
+    }
+    [Array]::Sort($controlLines, [StringComparer]::Ordinal)
+    foreach ($line in $controlLines) { $lines.Add($line) }
+
+    if ($null -ne $Observation.PSObject.Properties['cheatStateSha256']) {
+        $lines.Add('cheatStateSha256=' + (ConvertTo-P45InvariantString (Get-P45Property $Observation 'cheatStateSha256')))
+    }
+    foreach ($optionalAvailability in @('controlRequests', 'cheatAggregate')) {
+        if ($null -ne $availability.PSObject.Properties[$optionalAvailability]) {
+            $lines.Add('availability.' + $optionalAvailability + '=' + (ConvertTo-P45InvariantString (Get-P45Property $availability $optionalAvailability)))
+        }
+    }
     if ($ReturnLines) { return @($lines.ToArray()) }
     return Get-P45TextSha256 -Text ($lines -join "`n")
 }
@@ -2808,6 +3174,13 @@ function Test-P45Observation {
     foreach ($field in @('roundId', 'stateVersion', 'eventSeq', 'controlEpoch', 'requests', 'ledger', 'physical', 'structuredPlayerExport')) {
         if ($null -eq (Get-P45Property $availability $field)) { $errors.Add('availability.' + $field + ' is required') }
     }
+    if ($source -eq 'PLAYER_STRUCTURED_EXPORT') {
+        foreach ($field in @('controlEpoch', 'requests', 'ledger', 'physical', 'structuredPlayerExport')) {
+            if ((Get-P45Property $availability $field) -ne $true) {
+                $errors.Add('real export availability.' + $field + ' must be true')
+            }
+        }
+    }
 
     foreach ($field in @('stateVersion', 'eventSeq', 'controlEpoch')) {
         $value = Get-P45Property $Observation $field
@@ -2836,6 +3209,26 @@ function Test-P45Observation {
             }
             if ($requestKeys.ContainsKey($identityKey)) { $errors.Add('duplicate request identity ' + $identityKey) }
             $requestKeys[$identityKey] = $true
+        }
+    }
+
+    $controlRequests = Get-P45Property $Observation 'controlRequests'
+    if ($null -ne $controlRequests) {
+        $controlKeys = @{}
+        foreach ($control in @($controlRequests)) {
+            $accountId = [string](Get-P45Property $control 'accountId')
+            $scopeId = [string](Get-P45Property $control 'scopeId')
+            $requestId = [string](Get-P45Property $control 'requestId')
+            if ([string]::IsNullOrWhiteSpace($accountId) -or [string]::IsNullOrWhiteSpace($scopeId) -or [string]::IsNullOrWhiteSpace($requestId)) {
+                $errors.Add('controlRequest identity requires accountId + scopeId + requestId')
+                continue
+            }
+            if (-not (Test-P45Sha256Text ([string](Get-P45Property $control 'digest')))) {
+                $errors.Add('controlRequest digest is invalid for ' + $requestId)
+            }
+            $key = $accountId + '|' + $scopeId + '|' + $requestId
+            if ($controlKeys.ContainsKey($key)) { $errors.Add('duplicate controlRequest identity ' + $key) }
+            $controlKeys[$key] = $true
         }
     }
 
@@ -2924,7 +3317,7 @@ function Test-P45Observation {
         $eligible = $false
         $reasons.Add('source is ' + $source + ', not a real Player structured export')
     }
-    foreach ($field in @('roundId', 'stateVersion', 'eventSeq', 'requests', 'ledger', 'physical', 'structuredPlayerExport')) {
+    foreach ($field in @('roundId', 'stateVersion', 'eventSeq', 'controlEpoch', 'requests', 'controlRequests', 'cheatAggregate', 'ledger', 'physical', 'structuredPlayerExport')) {
         if ((Get-P45Property $availability $field) -ne $true) {
             $eligible = $false
             $reasons.Add('availability.' + $field + ' is false')
@@ -3033,17 +3426,23 @@ function Invoke-P45Verifier {
     param(
         [Parameter(Mandatory = $true)][string]$AuthorityPath,
         [Parameter(Mandatory = $true)][string]$VerifierPath,
-        [Parameter(Mandatory = $true)][string]$DotnetPath
+        [Parameter(Mandatory = $true)][string]$DotnetPath,
+        [string]$CheatStatePath = ''
     )
 
     if (-not [IO.File]::Exists($AuthorityPath)) {
         Throw-P45 5 'NOT_FOUND' ('Authority snapshot not found: ' + $AuthorityPath)
     }
+    if (-not [string]::IsNullOrWhiteSpace($CheatStatePath) -and -not [IO.File]::Exists($CheatStatePath)) {
+        Throw-P45 5 'NOT_FOUND' ('Current cheat-state snapshot not found: ' + $CheatStatePath)
+    }
     if (-not [IO.File]::Exists($VerifierPath)) {
         Throw-P45 5 'NOT_FOUND' ('P45RecoveryVerifier not found: ' + $VerifierPath)
     }
 
-    $raw = & $DotnetPath $VerifierPath $AuthorityPath 2>&1
+    $verifierArguments = @($VerifierPath, $AuthorityPath)
+    if (-not [string]::IsNullOrWhiteSpace($CheatStatePath)) { $verifierArguments += $CheatStatePath }
+    $raw = & $DotnetPath @verifierArguments 2>&1
     $exit = $LASTEXITCODE
     $text = (@($raw) | ForEach-Object { [string]$_ }) -join "`n"
     $parsed = $null
@@ -3076,6 +3475,22 @@ function Get-P45FactsRequestLines {
     return ($lines -join "`n")
 }
 
+function Get-P45FactsControlLines {
+    param([object]$Facts)
+
+    $lines = @()
+    foreach ($control in @(Get-P45Property $Facts 'controlRequests' @())) {
+        $lines += ((ConvertTo-P45InvariantString (Get-P45Property $control 'accountId')) + '|' +
+            (ConvertTo-P45InvariantString (Get-P45Property $control 'scopeId')) + '|' +
+            (ConvertTo-P45InvariantString (Get-P45Property $control 'requestId')) + '|' +
+            (ConvertTo-P45InvariantString (Get-P45Property $control 'digest')) + '|' +
+            (ConvertTo-P45InvariantString (Get-P45Property $control 'kind')) + '|' +
+            (ConvertTo-P45InvariantString (Get-P45Property $control 'evaluatedStateVersion')))
+    }
+    [Array]::Sort($lines, [StringComparer]::Ordinal)
+    return ($lines -join "`n")
+}
+
 function Test-P45RecoveryFactsMatch {
     param(
         [Parameter(Mandatory = $true)][object]$Left,
@@ -3087,7 +3502,7 @@ function Test-P45RecoveryFactsMatch {
     $mismatches = New-Object System.Collections.Generic.List[string]
     foreach ($field in @('roomId', 'roundId', 'rulesetVersion', 'stateVersion', 'eventSeq',
             'stateFingerprint', 'stateHash', 'controlVersion', 'cheatVersion', 'cheatFingerprint',
-            'authoritySaveSha256', 'authoritySaveBytes')) {
+            'cheatStateSha256', 'authoritySaveSha256', 'authoritySaveBytes')) {
         $leftValue = ConvertTo-P45InvariantString (Get-P45Property $Left $field)
         $rightValue = ConvertTo-P45InvariantString (Get-P45Property $Right $field)
         if (-not [string]::Equals($leftValue, $rightValue, [StringComparison]::OrdinalIgnoreCase)) {
@@ -3133,6 +3548,12 @@ function Test-P45RecoveryFactsMatch {
         $mismatches.Add('requests: ' + $LeftName + ' and ' + $RightName + ' differ') | Out-Null
     }
 
+    $leftControls = Get-P45FactsControlLines -Facts $Left
+    $rightControls = Get-P45FactsControlLines -Facts $Right
+    if (-not [string]::Equals($leftControls, $rightControls, [StringComparison]::Ordinal)) {
+        $mismatches.Add('controlRequests: ' + $LeftName + ' and ' + $RightName + ' differ') | Out-Null
+    }
+
     return [pscustomobject]@{
         Equal = ($mismatches.Count -eq 0)
         Mismatches = @($mismatches.ToArray())
@@ -3153,9 +3574,12 @@ function Import-P45PlayerExport {
     $null = Assert-P45UnderDirectory -Path $exportRoot -Directory $ownedObservations
     $exportPath = Join-Path $exportRoot 'export.json'
     $authorityPath = Join-Path $exportRoot 'authority.save'
+    $cheatStatePath = Join-Path $exportRoot 'cheat-state.bin'
+    $donePath = Join-Path $exportRoot 'export.done'
     $observationPath = Join-Path $exportRoot 'observation.json'
-    if (-not [IO.File]::Exists($exportPath) -or -not [IO.File]::Exists($authorityPath)) {
-        Throw-P45 17 'EVIDENCE_INVALID' 'Player export directory must contain export.json and authority.save.'
+    if (-not [IO.File]::Exists($exportPath) -or -not [IO.File]::Exists($authorityPath) -or
+        -not [IO.File]::Exists($cheatStatePath) -or -not [IO.File]::Exists($donePath)) {
+        Throw-P45 17 'EVIDENCE_INVALID' 'Player export directory must contain export.json, authority.save, cheat-state.bin and export.done.'
     }
     if ([IO.File]::Exists($observationPath)) {
         Throw-P45 3 'RUN_EXISTS' 'Refusing to overwrite an existing observation.json in the export directory.'
@@ -3163,8 +3587,9 @@ function Import-P45PlayerExport {
 
     $export = Read-P45Json -Path $exportPath
     if ((Get-P45Property $export 'kind') -ne 'p45-player-structured-export' -or
-        [int](Get-P45Property $export 'schemaVersion') -ne $script:P45SchemaVersion) {
-        Throw-P45 18 'OBSERVATION_INVALID' 'export.json is not a supported p45-player-structured-export record.'
+        [int](Get-P45Property $export 'schemaVersion') -ne $script:P45SchemaVersion -or
+        -not [string]::Equals([string](Get-P45Property $export 'exporterVersion'), $script:P45RecoveryExporterVersion, [StringComparison]::Ordinal)) {
+        Throw-P45 18 'OBSERVATION_INVALID' 'export.json is not a supported exporter version.'
     }
 
     $expectedPhase = if ($Phase -eq 'Before') { 'BEFORE_RECOVERY' } else { 'AFTER_RECOVERY' }
@@ -3219,8 +3644,19 @@ function Import-P45PlayerExport {
         [long]$authorityBytes -ne [long](Get-P45Property $export 'authorityBytes' ([long]-1))) {
         Throw-P45 18 'OBSERVATION_INVALID' 'authority.save does not match the digest/byte count declared by export.json.'
     }
+    $cheatSha = Get-P45Sha256 -Path $cheatStatePath
+    $cheatBytes = (Get-Item -LiteralPath $cheatStatePath).Length
+    if (-not [string]::Equals($cheatSha, [string](Get-P45Property $export 'cheatStateSha256'), [StringComparison]::OrdinalIgnoreCase) -or
+        [long]$cheatBytes -ne [long](Get-P45Property $export 'cheatStateBytes' ([long]-1))) {
+        Throw-P45 18 'OBSERVATION_INVALID' 'cheat-state.bin does not match the digest/byte count declared by export.json.'
+    }
+    $doneText = ([IO.File]::ReadAllText($donePath, $script:P45Utf8)).Trim()
+    $doneExpected = (Get-P45Sha256 -Path $exportPath) + '  export.json'
+    if (-not [string]::Equals($doneText, $doneExpected, [StringComparison]::OrdinalIgnoreCase)) {
+        Throw-P45 18 'OBSERVATION_INVALID' 'export.done does not bind the exact export.json bytes.'
+    }
 
-    $verified = Invoke-P45Verifier -AuthorityPath $authorityPath -VerifierPath $VerifierPath -DotnetPath $DotnetPath
+    $verified = Invoke-P45Verifier -AuthorityPath $authorityPath -VerifierPath $VerifierPath -DotnetPath $DotnetPath -CheatStatePath $cheatStatePath
     $facts = Get-P45Property $verified 'facts'
     $exportFacts = Get-P45Property $export 'facts'
     if ($null -eq $facts -or $null -eq $exportFacts) {
@@ -3230,8 +3666,9 @@ function Import-P45PlayerExport {
     if (-not $match.Equal) {
         Throw-P45 18 'OBSERVATION_INVALID' ('export.json facts do not match the independently decoded authority bytes: ' + ($match.Mismatches -join '; '))
     }
-    if (-not [string]::Equals([string](Get-P45Property $facts 'authoritySaveSha256'), $authoritySha, [StringComparison]::OrdinalIgnoreCase)) {
-        Throw-P45 18 'OBSERVATION_INVALID' 'Independent verifier authority digest differs from the copied authority.save.'
+    if (-not [string]::Equals([string](Get-P45Property $facts 'authoritySaveSha256'), $authoritySha, [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([string](Get-P45Property $facts 'cheatStateSha256'), $cheatSha, [StringComparison]::OrdinalIgnoreCase)) {
+        Throw-P45 18 'OBSERVATION_INVALID' 'Independent verifier authority/cheat digest differs from the copied artifacts.'
     }
 
     $observation = [pscustomobject]@{
@@ -3255,6 +3692,8 @@ function Import-P45PlayerExport {
             eventSeq = $true
             controlEpoch = $true
             requests = $true
+            controlRequests = $true
+            cheatAggregate = $true
             ledger = $true
             physical = $true
             structuredPlayerExport = $true
@@ -3271,9 +3710,11 @@ function Import-P45PlayerExport {
         controlEpochs = @((Get-P45Property $facts 'controlEpochs') | ForEach-Object { [long]$_ })
         cheatVersion = [string](Get-P45Property $facts 'cheatVersion')
         cheatFingerprint = [string](Get-P45Property $facts 'cheatFingerprint')
+        cheatStateSha256 = $cheatSha
         authoritySaveSha256 = $authoritySha
         authoritySaveBytes = [long]$authorityBytes
         requests = @((Get-P45Property $facts 'requests') | ForEach-Object { $_ })
+        controlRequests = @((Get-P45Property $facts 'controlRequests') | ForEach-Object { $_ })
         ledger = Get-P45Property $facts 'ledger'
         physical = Get-P45Property $facts 'physical'
         reconnect = $null
@@ -3291,6 +3732,8 @@ function Import-P45PlayerExport {
             packageFileCount = [int](Get-P45Property $export 'packageFileCount')
             authoritySaveSha256 = $authoritySha
             authoritySaveBytes = [long]$authorityBytes
+            cheatStateSha256 = $cheatSha
+            cheatStateBytes = [long]$cheatBytes
             rawExportSha256 = Get-P45Sha256 -Path $exportPath
         }
         integrity = [pscustomobject]@{
@@ -3349,6 +3792,25 @@ function Find-P45SealedPlayerObservation {
             if (-not [string]::IsNullOrWhiteSpace($CollectionPath)) { throw }
             continue
         }
+        $attestationPath = Join-Path $collectionDir 'collector-attestation.json'
+        if (-not [IO.File]::Exists($attestationPath)) { continue }
+        $collectorKey = Read-P45CollectorKey -RunId ([string]$Context.Run.runId)
+        if ($null -eq $collectorKey) { continue }
+        if (-not [string]::Equals((Get-P45FullPath ([string]$collectorKey.root)), (Get-P45FullPath $Context.Root), [StringComparison]::OrdinalIgnoreCase)) {
+            continue
+        }
+        $attestation = Read-P45Json -Path $attestationPath
+        $expectedHmac = Get-P45CollectorHmac -KeyHex ([string]$collectorKey.key) -Text (
+            [string]$Context.Run.runId + '|' + (Get-P45FullPath $Context.Root) + '|' + [string]$verified.Collection + '|' + [string]$verified.ManifestSha256)
+        if (-not [string]::Equals([string](Get-P45Property $attestation 'kind'), 'p45-collector-attestation', [StringComparison]::Ordinal) -or
+            -not [string]::Equals([string](Get-P45Property $attestation 'runId'), [string]$Context.Run.runId, [StringComparison]::Ordinal) -or
+            -not [string]::Equals([string](Get-P45Property $attestation 'root'), (Get-P45FullPath $Context.Root), [StringComparison]::OrdinalIgnoreCase) -or
+            -not [string]::Equals([string](Get-P45Property $attestation 'collection'), [string]$verified.Collection, [StringComparison]::Ordinal) -or
+            -not [string]::Equals([string](Get-P45Property $attestation 'manifestSha256'), [string]$verified.ManifestSha256, [StringComparison]::OrdinalIgnoreCase) -or
+            -not [string]::Equals([string](Get-P45Property $attestation 'hmacSha256'), $expectedHmac, [StringComparison]::OrdinalIgnoreCase)) {
+            continue
+        }
+
         $manifest = Read-P45Json -Path $manifestPath
         $entries = @(Get-P45Property $manifest 'entries' @())
         $entry = @($entries | Where-Object {
@@ -3360,9 +3822,11 @@ function Find-P45SealedPlayerObservation {
         $relative = [string](Get-P45Property $entry 'artifactPath')
         $exportRelative = [IO.Path]::Combine([IO.Path]::GetDirectoryName($relative), 'export.json')
         $authorityRelative = [IO.Path]::Combine([IO.Path]::GetDirectoryName($relative), 'authority.save')
+        $cheatRelative = [IO.Path]::Combine([IO.Path]::GetDirectoryName($relative), 'cheat-state.bin')
         $exportEntry = @($entries | Where-Object { [string](Get-P45Property $_ 'artifactPath') -eq $exportRelative }) | Select-Object -First 1
         $authorityEntry = @($entries | Where-Object { [string](Get-P45Property $_ 'artifactPath') -eq $authorityRelative }) | Select-Object -First 1
-        if ($null -eq $exportEntry -or $null -eq $authorityEntry) { continue }
+        $cheatEntry = @($entries | Where-Object { [string](Get-P45Property $_ 'artifactPath') -eq $cheatRelative }) | Select-Object -First 1
+        if ($null -eq $exportEntry -or $null -eq $authorityEntry -or $null -eq $cheatEntry) { continue }
 
         return [pscustomobject]@{
             CollectionDirectory = $collectionDir
@@ -3372,9 +3836,11 @@ function Find-P45SealedPlayerObservation {
             ObservationEntry = $entry
             ExportEntry = $exportEntry
             AuthorityEntry = $authorityEntry
+            CheatStateEntry = $cheatEntry
             ObservationPath = (Join-Path $collectionDir $relative)
             ExportPath = (Join-Path $collectionDir $exportRelative)
             AuthorityPath = (Join-Path $collectionDir $authorityRelative)
+            CheatStatePath = (Join-Path $collectionDir $cheatRelative)
         }
     }
 
@@ -3430,9 +3896,23 @@ function Test-P45RecoveryExportChain {
     if (-not [string]::Equals($exportSha, [string](Get-P45Property $binding 'rawExportSha256'), [StringComparison]::OrdinalIgnoreCase)) {
         return (& $invalid 'raw export.json SHA-256 differs from the observation export binding')
     }
+    if (-not [string]::Equals([string](Get-P45Property $export 'exporterVersion'), $script:P45RecoveryExporterVersion, [StringComparison]::Ordinal)) {
+        return (& $identity 'sealed export.json was not produced by the reviewed exporter version')
+    }
     if (-not [string]::Equals([string](Get-P45Property $export 'challenge'), [string](Get-P45Property $binding 'challenge'), [StringComparison]::Ordinal) -or
-        -not [string]::Equals([string](Get-P45Property $export 'phase'), [string](Get-P45Property $binding 'phase'), [StringComparison]::Ordinal)) {
-        return (& $identity 'sealed export.json challenge/phase does not match the observation export binding')
+        -not [string]::Equals([string](Get-P45Property $export 'phase'), [string](Get-P45Property $binding 'phase'), [StringComparison]::Ordinal) -or
+        -not [string]::Equals([string](Get-P45Property $export 'attempt'), [string](Get-P45Property $binding 'attempt'), [StringComparison]::Ordinal) -or
+        -not [string]::Equals([string](Get-P45Property $export 'runId'), [string]$sealedObservation.runBinding.runId, [StringComparison]::Ordinal) -or
+        -not [string]::Equals([string](Get-P45Property $export 'pid'), [string](Get-P45Property $binding 'pid'), [StringComparison]::Ordinal) -or
+        -not [string]::Equals([string](Get-P45Property $export 'processStartUtc'), [string](Get-P45Property $binding 'processStartUtc'), [StringComparison]::Ordinal) -or
+        -not [string]::Equals([string](Get-P45Property $export 'processPath'), [string](Get-P45Property $binding 'processPath'), [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([string](Get-P45Property $export 'playerSha256'), [string](Get-P45Property $binding 'playerSha256'), [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([string](Get-P45Property $export 'packageManifestSha256'), [string](Get-P45Property $binding 'packageManifestSha256'), [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([string](Get-P45Property $export 'packageFileCount'), [string](Get-P45Property $binding 'packageFileCount'), [StringComparison]::Ordinal) -or
+        -not [string]::Equals([string](Get-P45Property $export 'authoritySha256'), [string](Get-P45Property $binding 'authoritySaveSha256'), [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([string](Get-P45Property $export 'authorityBytes'), [string](Get-P45Property $binding 'authoritySaveBytes'), [StringComparison]::Ordinal) -or
+        -not [string]::Equals([string](Get-P45Property $export 'capturedAt'), [string](Get-P45Property $sealedObservation 'capturedAt'), [StringComparison]::Ordinal)) {
+        return (& $identity 'sealed export.json raw binding fields do not match the observation')
     }
 
     $authoritySha = Get-P45Sha256 -Path $sealed.AuthorityPath
@@ -3442,7 +3922,26 @@ function Test-P45RecoveryExportChain {
         return (& $invalid 'authority.save bytes/digest differ from the observation export binding')
     }
 
-    $verified = Invoke-P45Verifier -AuthorityPath $sealed.AuthorityPath -VerifierPath $VerifierPath -DotnetPath $DotnetPath
+    $cheatSha = Get-P45Sha256 -Path $sealed.CheatStatePath
+    $cheatBytes = (Get-Item -LiteralPath $sealed.CheatStatePath).Length
+    if (-not [string]::Equals($cheatSha, [string](Get-P45Property $binding 'cheatStateSha256'), [StringComparison]::OrdinalIgnoreCase) -or
+        [long]$cheatBytes -ne [long](Get-P45Property $binding 'cheatStateBytes' ([long]-1)) -or
+        -not [string]::Equals($cheatSha, [string](Get-P45Property $export 'cheatStateSha256'), [StringComparison]::OrdinalIgnoreCase)) {
+        return (& $invalid 'cheat-state.bin bytes/digest differ from the observation/export binding')
+    }
+    $doneRelative = [IO.Path]::Combine([IO.Path]::GetDirectoryName([string]$sealed.ObservationEntry.artifactPath), 'export.done')
+    $doneEntry = @((Get-P45Property $sealed.Manifest 'entries' @()) | Where-Object {
+            ([string](Get-P45Property $_ 'artifactPath')).Replace('/', '\') -eq $doneRelative.Replace('/', '\')
+        }) | Select-Object -First 1
+    if ($null -eq $doneEntry) {
+        return (& $blocked 'sealed collection lacks the one-time export.done marker')
+    }
+    $doneText = ([IO.File]::ReadAllText((Join-Path $sealed.CollectionDirectory $doneRelative), $script:P45Utf8)).Trim()
+    if (-not [string]::Equals($doneText, ($exportSha + '  export.json'), [StringComparison]::OrdinalIgnoreCase)) {
+        return (& $invalid 'export.done does not bind the sealed export.json bytes')
+    }
+
+    $verified = Invoke-P45Verifier -AuthorityPath $sealed.AuthorityPath -VerifierPath $VerifierPath -DotnetPath $DotnetPath -CheatStatePath $sealed.CheatStatePath
     $facts = Get-P45Property $verified 'facts'
     $match = Test-P45RecoveryFactsMatch -Left $sealedObservation -Right $facts -LeftName 'sealedObservation' -RightName 'independentVerifier'
     if (-not $match.Equal) {
@@ -3462,6 +3961,21 @@ function Test-P45RecoveryExportChain {
     $run = Read-P45Json -Path $runSnapshotPath
     $ownership = Read-P45Json -Path $ownershipPath
     $package = Read-P45Json -Path $packagePath
+
+    if (-not [string]::Equals((Get-P45FullPath ([string]$run.paths.root)), (Get-P45FullPath $Context.Root), [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals((Get-P45FullPath ([string]$run.paths.save)), (Get-P45FullPath (Join-Path $Context.Root 'local')), [StringComparison]::OrdinalIgnoreCase)) {
+        return (& $identity 'sealed run paths.root/save do not belong to this exact run directory')
+    }
+    if (-not [string]::Equals([string](Get-P45Property $export 'runId'), [string]$run.runId, [StringComparison]::Ordinal) -or
+        -not [string]::Equals([string](Get-P45Property $export 'processPath'), [string]$run.player.path, [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([string](Get-P45Property $export 'playerSha256'), [string]$run.player.sha256, [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([string](Get-P45Property $export 'sourceHead'), [string]$run.source.head, [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([string](Get-P45Property $export 'buildCommit'), [string]$run.player.buildCommit, [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([string](Get-P45Property $export 'buildProvenance'), [string]$run.player.buildProvenance, [StringComparison]::Ordinal) -or
+        -not [string]::Equals([string](Get-P45Property $export 'packageManifestSha256'), [string]$package.filesSha256, [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([string](Get-P45Property $export 'packageFileCount'), [string]$package.fileCount, [StringComparison]::Ordinal)) {
+        return (& $identity 'sealed export.json does not match the sealed run/player/package/build identity')
+    }
 
     if ([string]$run.evidenceClass -ne 'GAME' -or
         -not [string]::Equals([string]$run.runId, [string]$sealedObservation.runBinding.runId, [StringComparison]::Ordinal)) {
@@ -3556,6 +4070,8 @@ function Test-P45RecoveryExportChain {
     if ([int]$launch.pid -ne [int]$sealedObservation.exportBinding.pid -or
         -not [string]::Equals([string]$launch.startTimeUtc, [string]$sealedObservation.exportBinding.processStartUtc, [StringComparison]::Ordinal) -or
         -not [string]::Equals([string]$launch.player.sha256, [string]$sealedObservation.exportBinding.playerSha256, [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([string]$launch.player.path, [string]$sealedObservation.exportBinding.processPath, [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([string]$launch.command.executable, [string]$sealedObservation.exportBinding.processPath, [StringComparison]::OrdinalIgnoreCase) -or
         -not [string]::Equals([string]$launch.runId, [string]$run.runId, [StringComparison]::Ordinal) -or
         [int]$launch.attempt -ne [int]$attempt) {
         return (& $identity 'sealed launch PID/start/path/hash/attempt does not match the observation')
@@ -3584,7 +4100,15 @@ function Test-P45RecoveryExportChain {
         '-p45-recovery-challenge', [string]$sealedObservation.exportBinding.challenge,
         '-p45-recovery-phase', $expectedPhase,
         '-p45-recovery-export', [string]$recovery.directory,
-        '-p45-recovery-data-dir', [string]$run.paths.save
+        '-p45-recovery-data-dir', [string]$run.paths.save,
+        '-p45-recovery-player-sha', [string]$sealedObservation.exportBinding.playerSha256,
+        '-p45-recovery-package-sha', [string]$sealedObservation.exportBinding.packageManifestSha256,
+        '-p45-recovery-package-count', [string]$sealedObservation.exportBinding.packageFileCount,
+        '-p45-recovery-source-head', [string]$run.source.head,
+        '-p45-recovery-build-commit', [string]$run.player.buildCommit,
+        '-p45-recovery-build-provenance', [string]$run.player.buildProvenance,
+        '-p45-recovery-ruleset', [string]$sealedObservation.runBinding.rulesetVersion,
+        '-smoke-data', [string]$run.paths.root
     )
     foreach ($required in $requiredArguments) {
         if (-not ($arguments -contains $required)) {
@@ -3715,9 +4239,20 @@ function Compare-P45Observations {
     [void](& $addCheck 'roundId' (Get-P45Property $before 'roundId') (Get-P45Property $after 'roundId') $true)
     [void](& $addCheck 'stateVersion' (Get-P45Property $before 'stateVersion') (Get-P45Property $after 'stateVersion') $true)
     [void](& $addCheck 'eventSeq' (Get-P45Property $before 'eventSeq') (Get-P45Property $after 'eventSeq') $true)
-    [void](& $addCheck 'controlEpoch' (Get-P45Property $before 'controlEpoch') (Get-P45Property $after 'controlEpoch') $false)
+    [void](& $addCheck 'controlEpoch' (Get-P45Property $before 'controlEpoch') (Get-P45Property $after 'controlEpoch') $true)
+    $beforeControlEpochs = (@(Get-P45Property $before 'controlEpochs' @()) | ForEach-Object { ConvertTo-P45InvariantString $_ }) -join ','
+    $afterControlEpochs = (@(Get-P45Property $after 'controlEpochs' @()) | ForEach-Object { ConvertTo-P45InvariantString $_ }) -join ','
+    [void](& $addCheck 'controlEpochs' $beforeControlEpochs $afterControlEpochs $true)
+    [void](& $addCheck 'controlVersion' (Get-P45Property $before 'controlVersion') (Get-P45Property $after 'controlVersion') $true)
+    [void](& $addCheck 'cheatVersion' (Get-P45Property $before 'cheatVersion') (Get-P45Property $after 'cheatVersion') $true)
+    [void](& $addCheck 'cheatFingerprint' (Get-P45Property $before 'cheatFingerprint') (Get-P45Property $after 'cheatFingerprint') $true)
+    [void](& $addCheck 'cheatStateSha256' (Get-P45Property $before 'cheatStateSha256') (Get-P45Property $after 'cheatStateSha256') $true)
+    [void](& $addCheck 'stateFingerprint' (Get-P45Property $before 'stateFingerprint') (Get-P45Property $after 'stateFingerprint') $true)
+    [void](& $addCheck 'stateHash' (Get-P45Property $before 'stateHash') (Get-P45Property $after 'stateHash') $true)
+    [void](& $addCheck 'authoritySaveSha256' (Get-P45Property $before 'authoritySaveSha256') (Get-P45Property $after 'authoritySaveSha256') $true)
 
     [void](& $addCheck 'confirmedRequests' (Get-P45FactsRequestLines -Facts $before) (Get-P45FactsRequestLines -Facts $after) $true)
+    [void](& $addCheck 'controlRequests' (Get-P45FactsControlLines -Facts $before) (Get-P45FactsControlLines -Facts $after) $true)
 
     $beforeLedger = Get-P45Property $before 'ledger'
     $afterLedger = Get-P45Property $after 'ledger'
@@ -3755,7 +4290,9 @@ function Compare-P45Observations {
             @{ Name = 'before'; Observation = $before },
             @{ Name = 'after'; Observation = $after })) {
         $availability = Get-P45Property $pair.Observation 'availability'
-        foreach ($field in @('roundId', 'stateVersion', 'eventSeq', 'requests', 'ledger', 'physical', 'structuredPlayerExport')) {
+        $requiredAvailability = @('roundId', 'stateVersion', 'eventSeq', 'controlEpoch', 'requests', 'ledger', 'physical', 'structuredPlayerExport')
+        if ($isReal) { $requiredAvailability += @('controlRequests', 'cheatAggregate') }
+        foreach ($field in $requiredAvailability) {
             if ((Get-P45Property $availability $field) -ne $true) {
                 $incompleteReasons.Add($pair.Name + ' availability.' + $field + ' is false')
             }
@@ -3793,6 +4330,11 @@ function Compare-P45Observations {
         $exitCode = 17
         $rationale = 'A verified sealed Player export chain is unavailable: ' + $chainReason
     }
+    elseif ($toolOnly -and $requiredEqual) {
+        $outcome = 'TOOL_SELF_TEST_ONLY'
+        $exitCode = 30
+        $rationale = 'The comparison logic equaled, but at least one observation is TOOL_SELF_TEST evidence and cannot represent a real game recovery.'
+    }
     elseif ($incomplete) {
         $outcome = 'BLOCKED'
         $exitCode = 17
@@ -3802,11 +4344,6 @@ function Compare-P45Observations {
         $outcome = 'FAIL'
         $exitCode = 16
         $rationale = 'One or more required recovery fields differ.'
-    }
-    elseif ($toolOnly) {
-        $outcome = 'TOOL_SELF_TEST_ONLY'
-        $exitCode = 30
-        $rationale = 'The comparison logic equaled, but at least one observation is TOOL_SELF_TEST evidence and cannot represent a real game recovery.'
     }
     elseif ($isReal -and $chainStatus -ne 'VERIFIED') {
         $outcome = 'BLOCKED'

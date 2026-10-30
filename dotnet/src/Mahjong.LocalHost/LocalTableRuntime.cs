@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using Google.Protobuf;
@@ -40,6 +41,13 @@ namespace Mahjong.LocalHost
         private readonly LocalSnapshotFacts _facts;
         private readonly LocalTableDriver _driver;
         private readonly AsyncFrameQueue _outbound = new AsyncFrameQueue();
+
+        // Diagnostic-only view of the already-committed actor aggregate. TableActor does not
+        // expose the private cheat state publicly; the recovery probe needs the same committed
+        // aggregate as the live authority, not the older base checkpoint. It is read only by the
+        // opt-in capture path and never by normal gameplay.
+        private static readonly FieldInfo? ActorCheatField =
+            typeof(TableActor).GetField("_cheat", BindingFlags.Instance | BindingFlags.NonPublic);
 
         private string _sessionId = string.Empty;
         private ulong _bindingEpoch;
@@ -2413,7 +2421,35 @@ namespace Mahjong.LocalHost
                     continue;
                 }
 
-                LocalTableRecoveryFacts facts = LocalTableRecoveryFactsReader.ReadPersistedFacts(bytes);
+                CheatState? currentCheat = ActorCheatField?.GetValue(_actor) as CheatState;
+                if (currentCheat == null)
+                {
+                    throw new LocalTableException(
+                        LocalTableErrorKind.Unavailable,
+                        "The current committed cheat aggregate is not observable for the recovery capture.");
+                }
+
+                byte[] cheatPayload;
+                try
+                {
+                    cheatPayload = TableCheatLedgerCheckpointCodec.Encode(new TableCheatLedgerCheckpoint(currentCheat));
+                }
+                catch (Exception exception)
+                {
+                    throw new LocalTableException(
+                        LocalTableErrorKind.CorruptState,
+                        "The current cheat aggregate could not be encoded: " + exception.Message,
+                        exception);
+                }
+
+                LocalTableRecoveryFacts facts = LocalTableRecoveryFactsReader.ReadPersistedFacts(bytes, cheatPayload);
+                if (!string.Equals(facts.CheatVersion, currentCheat.Version.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal) ||
+                    !string.Equals(facts.CheatFingerprint, currentCheat.Fingerprint.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal))
+                {
+                    await Task.Delay(25, cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
                 if (!string.Equals(facts.RoundId, snapshot.RoundId, StringComparison.Ordinal) ||
                     !string.Equals(facts.StateVersion, snapshot.StateVersion.Value.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal) ||
                     !string.Equals(facts.EventSeq, snapshot.LastEventSeq.Value.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal) ||
@@ -2440,7 +2476,7 @@ namespace Mahjong.LocalHost
                     continue;
                 }
 
-                return new LocalTableRecoveryCapture(bytes, facts);
+                return new LocalTableRecoveryCapture(bytes, cheatPayload, facts);
             }
 
             throw new LocalTableException(

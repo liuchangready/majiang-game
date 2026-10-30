@@ -170,9 +170,10 @@ namespace Mahjong.Unity.App
         {
             LocalTableRecoveryFacts facts = capture.Facts;
             string authorityPath = Path.Combine(_arguments.ExportDirectory, "authority.save");
+            string cheatPath = Path.Combine(_arguments.ExportDirectory, "cheat-state.bin");
             string exportPath = Path.Combine(_arguments.ExportDirectory, "export.json");
             string donePath = Path.Combine(_arguments.ExportDirectory, "export.done");
-            if (File.Exists(authorityPath) || File.Exists(exportPath) || File.Exists(donePath))
+            if (File.Exists(authorityPath) || File.Exists(cheatPath) || File.Exists(exportPath) || File.Exists(donePath))
             {
                 throw new IOException("The one-time export directory already contains evidence.");
             }
@@ -181,6 +182,12 @@ namespace Mahjong.Unity.App
             if (!string.Equals(authoritySha, facts.AuthoritySaveSha256, StringComparison.OrdinalIgnoreCase))
             {
                 throw new InvalidDataException("Captured authority bytes do not match their decoded digest.");
+            }
+
+            string cheatSha = Sha256Hex(capture.CheatStatePayload);
+            if (!string.Equals(cheatSha, facts.CheatStateSha256, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidDataException("Captured cheat aggregate bytes do not match their decoded digest.");
             }
 
             string processPath = Process.GetCurrentProcess().MainModule?.FileName ?? string.Empty;
@@ -201,6 +208,7 @@ namespace Mahjong.Unity.App
             string capturedAt = DateTimeOffset.Now.ToString("yyyy-MM-ddTHH:mm:ss.fffffffzzz", CultureInfo.InvariantCulture);
 
             WriteBytesAtomic(authorityPath, capture.AuthoritySaveBytes);
+            WriteBytesAtomic(cheatPath, capture.CheatStatePayload);
             string exportJson = BuildExportJson(
                 facts,
                 processPath,
@@ -208,7 +216,9 @@ namespace Mahjong.Unity.App
                 processStart,
                 capturedAt,
                 authoritySha,
-                capture.AuthoritySaveBytes.Length);
+                capture.AuthoritySaveBytes.Length,
+                cheatSha,
+                capture.CheatStatePayload.Length);
             WriteTextAtomic(exportPath, exportJson);
             WriteTextAtomic(donePath, Sha256Hex(Encoding.UTF8.GetBytes(exportJson)) + "  export.json" + Environment.NewLine);
         }
@@ -220,7 +230,9 @@ namespace Mahjong.Unity.App
             string processStart,
             string capturedAt,
             string authoritySha,
-            int authorityBytes)
+            int authorityBytes,
+            string cheatSha,
+            int cheatBytes)
         {
             var builder = new StringBuilder(16384);
             builder.Append('{');
@@ -245,6 +257,9 @@ namespace Mahjong.Unity.App
             String(builder, "authorityFile", "authority.save"); builder.Append(',');
             Number(builder, "authorityBytes", authorityBytes); builder.Append(',');
             String(builder, "authoritySha256", authoritySha); builder.Append(',');
+            String(builder, "cheatStateFile", "cheat-state.bin"); builder.Append(',');
+            Number(builder, "cheatStateBytes", cheatBytes); builder.Append(',');
+            String(builder, "cheatStateSha256", cheatSha); builder.Append(',');
             builder.Append("\"facts\":");
             AppendFacts(builder, facts);
             builder.Append('}');
@@ -266,6 +281,7 @@ namespace Mahjong.Unity.App
             String(builder, "controlVersion", facts.ControlVersion); builder.Append(',');
             String(builder, "cheatVersion", facts.CheatVersion); builder.Append(',');
             String(builder, "cheatFingerprint", facts.CheatFingerprint); builder.Append(',');
+            String(builder, "cheatStateSha256", facts.CheatStateSha256); builder.Append(',');
             builder.Append("\"controlEpochs\":[");
             for (int i = 0; i < facts.ControlEpochs.Count; i++)
             {
@@ -291,6 +307,23 @@ namespace Mahjong.Unity.App
                 String(builder, "evaluatedStateVersion", request.EvaluatedStateVersion); builder.Append(',');
                 StringOrNull(builder, "commandVersion", request.CommandVersion); builder.Append(',');
                 StringOrNull(builder, "eventSeq", request.EventSeq);
+                builder.Append('}');
+            }
+
+            builder.Append("],");
+
+            builder.Append("\"controlRequests\":[");
+            for (int i = 0; i < facts.ControlRequests.Count; i++)
+            {
+                if (i != 0) { builder.Append(','); }
+                LocalTableRecoveryControlFact control = facts.ControlRequests[i];
+                builder.Append('{');
+                String(builder, "accountId", control.AccountId); builder.Append(',');
+                String(builder, "scopeId", control.ScopeId); builder.Append(',');
+                String(builder, "requestId", control.RequestId); builder.Append(',');
+                String(builder, "digest", control.Digest); builder.Append(',');
+                String(builder, "kind", control.Kind); builder.Append(',');
+                String(builder, "evaluatedStateVersion", control.EvaluatedStateVersion);
                 builder.Append('}');
             }
 

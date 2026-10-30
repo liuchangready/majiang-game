@@ -279,9 +279,24 @@
         "eventSeq": { "type": "boolean" },
         "controlEpoch": { "type": "boolean" },
         "requests": { "type": "boolean" },
+        "controlRequests": { "type": "boolean" },
+        "cheatAggregate": { "type": "boolean" },
         "ledger": { "type": "boolean" },
         "physical": { "type": "boolean" },
         "structuredPlayerExport": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+    "controlRequest": {
+      "type": "object",
+      "required": ["accountId", "scopeId", "requestId", "digest", "kind", "evaluatedStateVersion"],
+      "properties": {
+        "accountId": { "type": "string", "minLength": 1 },
+        "scopeId": { "type": "string", "minLength": 1 },
+        "requestId": { "type": "string", "minLength": 1 },
+        "digest": { "$ref": "#/$defs/sha256" },
+        "kind": { "type": "string", "minLength": 1 },
+        "evaluatedStateVersion": { "$ref": "#/$defs/decimalString" }
       },
       "additionalProperties": true
     },
@@ -372,6 +387,8 @@
         "controlVersion": { "$ref": "#/$defs/decimalString" },
         "cheatVersion": { "$ref": "#/$defs/decimalString" },
         "cheatFingerprint": { "$ref": "#/$defs/decimalString" },
+        "cheatStateSha256": { "$ref": "#/$defs/sha256" },
+        "controlRequests": { "type": "array", "items": { "$ref": "#/$defs/controlRequest" } },
         "authoritySaveSha256": { "$ref": "#/$defs/sha256" },
         "authoritySaveBytes": { "type": "integer", "minimum": 1 },
         "controlEpochs": {
@@ -422,6 +439,8 @@
         "packageFileCount": { "type": "integer", "minimum": 1 },
         "authoritySaveSha256": { "$ref": "#/$defs/sha256" },
         "authoritySaveBytes": { "type": "integer", "minimum": 1 },
+        "cheatStateSha256": { "$ref": "#/$defs/sha256" },
+        "cheatStateBytes": { "type": "integer", "minimum": 1 },
         "rawExportSha256": { "$ref": "#/$defs/sha256" }
       },
       "additionalProperties": true
