@@ -1009,9 +1009,13 @@ namespace Mahjong.Unity.Table
                 return left == null && right == null;
             }
 
+            // ControlVersion is a table-wide control-event sequence. Another
+            // seat's change advances it without changing this seat's authority.
+            // Only this seat's epoch/controller (and presence) may invalidate a
+            // pending request; otherwise an in-flight Release/Claim would be
+            // cleared and the UI could create a second request id.
             return left.ControlEpoch == right.ControlEpoch &&
-                   left.ControlledByComputer == right.ControlledByComputer &&
-                   left.ControlVersion == right.ControlVersion;
+                   left.ControlledByComputer == right.ControlledByComputer;
         }
 
         private static bool SameBindingIdentity(PlayerTableIdentity left, PlayerTableIdentity right)

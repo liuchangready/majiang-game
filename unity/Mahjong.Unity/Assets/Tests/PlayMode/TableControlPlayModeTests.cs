@@ -17,6 +17,7 @@ using Mahjong.Unity.App;
 using Mahjong.Unity.Platform;
 using Mahjong.Unity.Table;
 using Mahjong.Unity.UI;
+using Mahjong.Unity.UI.Session;
 
 namespace Mahjong.Unity.Tests.PlayMode
 {
@@ -180,6 +181,73 @@ namespace Mahjong.Unity.Tests.PlayMode
             Assert.AreEqual(ProtocolErrorCode.StaleControlEpoch, _lastReceipt.Resolution.ReasonCode);
         }
 
+        [UnityTest]
+        public IEnumerator UnsentSubmitFailuresClearPendingAndPossibleDeliveryBecomesUnknown()
+        {
+            string root = Path.GetFullPath(Path.Combine(
+                Application.dataPath,
+                "..",
+                "build",
+                "p45-control-playmode",
+                Guid.NewGuid().ToString("N")));
+            var config = new AppConfig
+            {
+                pumpBarrierTimeoutMs = 10000,
+                closeTimeoutMs = 10000,
+                cancelObservationMs = 100
+            };
+            _dispatcher = new MainThreadDispatcher();
+            _composition = new AppComposition(
+                config,
+                _dispatcher,
+                channelFactory: new LocalTableChannelFactory(new AppConfig(), new UnityAppPaths(root)),
+                persistentDataPath: root);
+
+            yield return OpenAndLoadTableAsync();
+            TablePresenter presenter = RequirePresenter();
+            yield return WaitForView(presenter, view => view.Control != null && !view.Control.ControlledByComputer,
+                "an initial human control state for submit-failure probes");
+
+            SessionViewState baseline = _composition.SessionCoordinator!.Current;
+            var staticView = new StaticSessionView(baseline);
+            var sink = new FakeCommandSink
+            {
+                CanSubmit = false,
+                Generation = baseline.Generation
+            };
+
+            presenter.Bind(sink, new NoopNavigation(), staticView, null);
+            yield return null;
+            ClickControlButton(presenter, "_releaseControlButton");
+            yield return WaitForPendingCleared(presenter, "sink unavailable");
+            Assert.AreEqual(0, sink.Calls, "An unavailable sink must not receive the command.");
+
+            sink.CanSubmit = true;
+            sink.Generation = baseline.Generation + 1;
+            presenter.Bind(sink, new NoopNavigation(), staticView, null);
+            yield return null;
+            ClickControlButton(presenter, "_releaseControlButton");
+            yield return WaitForPendingCleared(presenter, "sink generation mismatch");
+            Assert.AreEqual(0, sink.Calls, "A generation-mismatched sink must not receive the command.");
+
+            sink.Generation = baseline.Generation;
+            sink.ThrowCancellation = true;
+            presenter.Bind(sink, new NoopNavigation(), staticView, null);
+            yield return null;
+            ClickControlButton(presenter, "_releaseControlButton");
+            yield return WaitForPendingUnknown(presenter, "possible-delivery exception");
+            Assert.AreEqual(1, sink.Calls);
+            string requestId = presenter.InteractionState.Pending!.Intent.Command.RequestId.Value;
+            Assert.IsTrue(presenter.InteractionState.Pending.NeedsReconciliation);
+            Assert.IsTrue(presenter.InteractionState.Pending.LastOutcome == TablePendingOutcome.Unknown);
+
+            // A second click must not allocate a new request or reach the sink.
+            ClickControlButton(presenter, "_releaseControlButton", expectInteractable: false);
+            yield return null;
+            Assert.AreEqual(1, sink.Calls, "An unknown delivery must never be retried automatically.");
+            Assert.AreEqual(requestId, presenter.InteractionState.Pending!.Intent.Command.RequestId.Value);
+        }
+
         private IEnumerator OpenAndLoadTableAsync()
         {
             Task<SessionCoordinator> open = _composition!.OpenLocalSessionAsync(CancellationToken.None);
@@ -232,6 +300,43 @@ namespace Mahjong.Unity.Tests.PlayMode
         private void OnReceiptResolved(object? sender, TableReceiptResolvedEventArgs e)
         {
             _lastReceipt = e;
+        }
+
+        private IEnumerator WaitForPendingCleared(TablePresenter presenter, string label)
+        {
+            float deadline = Time.realtimeSinceStartup + 5f;
+            while (Time.realtimeSinceStartup < deadline)
+            {
+                _dispatcher?.Update();
+                if (presenter.InteractionState.Pending == null)
+                {
+                    yield break;
+                }
+
+                yield return null;
+            }
+
+            Assert.Fail("Timed out waiting for pending clear after " + label);
+        }
+
+        private IEnumerator WaitForPendingUnknown(TablePresenter presenter, string label)
+        {
+            float deadline = Time.realtimeSinceStartup + 5f;
+            while (Time.realtimeSinceStartup < deadline)
+            {
+                _dispatcher?.Update();
+                TablePendingIntent? pending = presenter.InteractionState.Pending;
+                if (pending != null &&
+                    pending.LastOutcome == TablePendingOutcome.Unknown &&
+                    pending.NeedsReconciliation)
+                {
+                    yield break;
+                }
+
+                yield return null;
+            }
+
+            Assert.Fail("Timed out waiting for unknown pending after " + label);
         }
 
         private IEnumerator WaitForPending(TablePresenter presenter, CommandKind kind, string label)
@@ -307,17 +412,70 @@ namespace Mahjong.Unity.Tests.PlayMode
             return presenter!;
         }
 
-        private static void ClickControlButton(TablePresenter presenter, string fieldName)
+        private static void ClickControlButton(TablePresenter presenter, string fieldName, bool expectInteractable = true)
         {
             FieldInfo? field = typeof(TablePresenter).GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
             Assert.IsNotNull(field, fieldName + " must be serialized on TablePresenter");
             Button? button = field!.GetValue(presenter) as Button;
             Assert.IsNotNull(button, fieldName + " must be bound to a real scene Button");
             Assert.IsTrue(button!.gameObject.activeInHierarchy, fieldName + " must be visible for the authorized owner");
-            Assert.IsTrue(button.interactable, fieldName + " must be enabled by the confirmed state");
+            if (expectInteractable)
+            {
+                Assert.IsTrue(button.interactable, fieldName + " must be enabled by the confirmed state");
+            }
+            else
+            {
+                Assert.IsFalse(button.interactable,
+                    fieldName + " must stay disabled while the delivery outcome is unknown");
+            }
             UiInputLifecycle.Instance.OnResume();
             UiInputLifecycle.Instance.OnFocusGained();
+            UiInputLifecycle.Instance.ClearConsumedSubmit(button.gameObject);
             button.onClick.Invoke();
+        }
+
+        private sealed class StaticSessionView : ISessionView
+        {
+            public StaticSessionView(SessionViewState current)
+            {
+                Current = current;
+            }
+
+            public SessionViewState Current { get; }
+
+            public event EventHandler<SessionViewState>? Changed
+            {
+                add { }
+                remove { }
+            }
+        }
+
+        private sealed class FakeCommandSink : ITableCommandSink
+        {
+            public bool CanSubmit { get; set; } = true;
+
+            public long Generation { get; set; }
+
+            public bool ThrowCancellation { get; set; }
+
+            public int Calls { get; private set; }
+
+            public event EventHandler<TableReceiptResolvedEventArgs>? ReceiptResolved
+            {
+                add { }
+                remove { }
+            }
+
+            public Task<CommandSubmission> SubmitAsync(ProtocolCommand command, CancellationToken cancellationToken)
+            {
+                Calls++;
+                if (ThrowCancellation)
+                {
+                    throw new OperationCanceledException("simulated possible delivery", cancellationToken);
+                }
+
+                throw new InvalidOperationException("The fake sink only supports the cancellation probe.");
+            }
         }
 
         private sealed class NoopNavigation : IAppNavigation

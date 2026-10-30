@@ -2364,27 +2364,35 @@ namespace Mahjong.Unity.Table
         {
             if (intent == null) return;
             var sink = _commandSink;
+            string initialRequestId = intent.Command.RequestId.Value;
+            string opName = FormatCommandKind(intent.Kind);
+
             if (sink == null || !sink.CanSubmit)
             {
-                UpdateStatusText("服务通道不可用，命令已拒绝");
+                AbandonUnsent(intent, "服务通道不可用，命令未发送，可重试");
                 return;
             }
 
-            if (_latestView == null) return;
+            if (_latestView == null)
+            {
+                AbandonUnsent(intent, "牌桌状态已重置，命令未发送");
+                return;
+            }
 
             long initialGeneration = _latestView.Identity.Generation;
             string initialScopeId = _latestView.Identity.ScopeId;
-            string initialRequestId = intent.Command.RequestId.Value;
 
-            // Generation fence: sink generation must match view generation!
+            // Generation fence: a different sink generation means these bytes
+            // were never handed to this transport. Clearing the pending intent
+            // lets the user retry without retrying an unknown delivery.
             if (sink.Generation != initialGeneration)
             {
                 Debug.LogWarning($"[TablePresenter] Sink generation ({sink.Generation}) != view generation ({initialGeneration}). Submission dropped.");
+                AbandonUnsent(intent, "牌桌会话已切换，命令未发送，可重试");
                 return;
             }
 
             var command = intent.Command;
-            string opName = FormatCommandKind(intent.Kind);
             UpdateStatusText($"已提交: {opName} (等待权威确认)...");
 
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
@@ -2395,21 +2403,42 @@ namespace Mahjong.Unity.Table
             }
             catch (Exception ex)
             {
-                Debug.LogError($"[TablePresenter] SubmitAsync exception: {ex.Message}");
+                // Cancellation/timeout/channel failure may occur after the
+                // durable outbox save or even after partial transport handoff.
+                // No exception here proves the bytes were never enqueued, so
+                // keep the original request id pending and require Client
+                // reconciliation instead of retrying.
+                Debug.LogWarning($"[TablePresenter] SubmitAsync exception for {opName}: {ex.Message}");
+                MarkUnknownIfStillPending(initialRequestId, "提交结果未知，等待对账…");
                 return;
             }
 
-            // Main-thread guard and identity fence check
+            // Main-thread guard.
             if (this == null || !gameObject.activeInHierarchy) return;
+
+            if (!IsPendingRequest(initialRequestId))
+            {
+                return; // Pending was replaced/cleared by a confirmed state.
+            }
+
             if (_latestView == null || _latestView.Identity.Generation != initialGeneration ||
                 !string.Equals(_latestView.Identity.ScopeId, initialScopeId, StringComparison.Ordinal))
             {
-                return; // Generation or identity changed while awaiting
+                // The request may already have reached the host before the
+                // binding changed. Keep the original pending request and mark
+                // it unknown; never allocate a replacement request id here.
+                MarkUnknownIfStillPending(initialRequestId, "会话在提交期间变更，结果未知，等待对账…");
+                return;
             }
-            if (_interactionState.Pending == null ||
-                !string.Equals(_interactionState.Pending.Intent.Command.RequestId.Value, initialRequestId, StringComparison.Ordinal))
+
+            bool deliveryUnknown = submission.Command.LastReceipt == Mahjong.Contracts.ReceiptStatus.Unknown ||
+                                   (!submission.Sent &&
+                                    !submission.WasDuplicate &&
+                                    (submission.Command.NeedsReconciliation || submission.Command.DeliveryUnknown));
+            if (deliveryUnknown)
             {
-                return; // Pending changed while awaiting
+                MarkUnknownIfStillPending(initialRequestId, "提交结果未知，等待对账…");
+                return;
             }
 
             if (submission.Command.LastReceipt == Mahjong.Contracts.ReceiptStatus.Rejected)
@@ -2419,6 +2448,43 @@ namespace Mahjong.Unity.Table
             }
 
             RenderControl(_latestView);
+        }
+
+        private bool IsPendingRequest(string requestId)
+        {
+            TablePendingIntent? pending = _interactionState.Pending;
+            return pending != null &&
+                   string.Equals(pending.Intent.Command.RequestId.Value, requestId, StringComparison.Ordinal);
+        }
+
+        private void AbandonUnsent(TableCommandIntent intent, string status)
+        {
+            if (!IsPendingRequest(intent.Command.RequestId.Value))
+            {
+                return;
+            }
+
+            _interactionState.ApplyClientOutcome(TablePendingOutcome.Abandoned);
+            UpdateStatusText(status);
+            if (_latestView != null)
+            {
+                RenderControl(_latestView);
+            }
+        }
+
+        private void MarkUnknownIfStillPending(string requestId, string status)
+        {
+            if (!IsPendingRequest(requestId))
+            {
+                return;
+            }
+
+            _interactionState.MarkDeliveryUnknown();
+            UpdateStatusText(status);
+            if (_latestView != null)
+            {
+                RenderControl(_latestView);
+            }
         }
 
         private TableCommandOwnerContext? BuildOwnerContext()

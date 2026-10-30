@@ -23,6 +23,11 @@ namespace Mahjong.Unity.TableModel.Tests
             return new TableCommandOwnerContext(Request, Scope);
         }
 
+        private static TableCommandOwnerContext Owner(string requestId)
+        {
+            return new TableCommandOwnerContext(new RequestId(requestId), Scope);
+        }
+
         [Fact]
         public void RapidReleaseClicksReuseOnePendingRequestAndDoNotRenewIt()
         {
@@ -88,6 +93,121 @@ namespace Mahjong.Unity.TableModel.Tests
             Assert.True(claim.Accepted, claim.Code);
             Assert.Equal(CommandKind.ClaimControl, state.Pending!.Intent.Kind);
             Assert.Equal(1UL, state.Pending.Intent.ControlEpoch);
+        }
+
+        [Fact]
+        public void OtherSeatControlVersionChangeDoesNotClearSendingControlRequest()
+        {
+            var clock = new ManualTableClock();
+            TableInteractionState state = new TableInteractionState(new TableCommandIntentFactory(clock));
+            state.ApplyConfirmedView(View(clock, P43TestData.PlayerSnapshot(controlEpoch: 7, controlVersion: 1)));
+            Assert.True(state.BuildIntent(TableIntentKind.ReleaseControl, Owner()).Accepted);
+            TablePendingIntent pending = state.Pending!;
+            string requestId = pending.Intent.Command.RequestId.Value;
+
+            // The table-wide control version advances because another seat
+            // changed, while this seat's epoch/controller stay identical.
+            state.ApplyConfirmedView(View(clock, P43TestData.PlayerSnapshot(
+                stateVersion: 6,
+                eventSeq: 106,
+                controlEpoch: 7,
+                controlVersion: 2)));
+
+            Assert.Same(pending, state.Pending);
+            Assert.Equal(requestId, state.Pending!.Intent.Command.RequestId.Value);
+            Assert.Null(state.Pending.LastOutcome);
+            TableInteractionOutcome duplicate = state.BuildIntent(TableIntentKind.ReleaseControl, Owner());
+            Assert.True(duplicate.Accepted);
+            Assert.Equal(TableInteractionCodes.AlreadyPending, duplicate.Code);
+            Assert.Same(pending, state.Pending);
+        }
+
+        [Fact]
+        public void OtherSeatControlVersionChangeDoesNotClearUnknownControlRequest()
+        {
+            var clock = new ManualTableClock();
+            TableInteractionState state = new TableInteractionState(new TableCommandIntentFactory(clock));
+            state.ApplyConfirmedView(View(clock, P43TestData.PlayerSnapshot(controlEpoch: 7, controlVersion: 1)));
+            Assert.True(state.BuildIntent(TableIntentKind.ReleaseControl, Owner()).Accepted);
+            Assert.True(state.MarkDeliveryUnknown().Accepted);
+            TablePendingIntent pending = state.Pending!;
+
+            state.ApplyConfirmedView(View(clock, P43TestData.PlayerSnapshot(
+                stateVersion: 6,
+                eventSeq: 106,
+                controlEpoch: 7,
+                controlVersion: 9)));
+
+            Assert.Same(pending, state.Pending);
+            Assert.Equal(TablePendingOutcome.Unknown, state.Pending!.LastOutcome);
+            Assert.True(state.Pending.NeedsReconciliation);
+            Assert.True(state.BuildIntent(TableIntentKind.ReleaseControl, Owner()).Accepted);
+            Assert.Equal(
+                TableInteractionCodes.AlreadyPending,
+                state.BuildIntent(TableIntentKind.ReleaseControl, Owner()).Code);
+        }
+
+        [Fact]
+        public void OtherSeatControlVersionChangeDoesNotDropPendingOrdinaryAction()
+        {
+            var clock = new ManualTableClock();
+            TableInteractionState state = new TableInteractionState(new TableCommandIntentFactory(clock));
+            PlayerTableViewState view = View(clock, P43TestData.PlayerSnapshot(controlEpoch: 7, controlVersion: 1));
+            state.ApplyConfirmedView(view);
+            Assert.True(state.SelectAction(view.Own!.Decision!.Candidates[0]).Accepted);
+            Assert.True(state.BuildIntent(TableIntentKind.SubmitAction, Owner()).Accepted);
+            TablePendingIntent pending = state.Pending!;
+
+            state.ApplyConfirmedView(View(clock, P43TestData.PlayerSnapshot(
+                stateVersion: 6,
+                eventSeq: 106,
+                controlEpoch: 7,
+                controlVersion: 2)));
+
+            Assert.Same(pending, state.Pending);
+            Assert.Equal(CommandKind.SubmitAction, state.Pending!.Intent.Kind);
+        }
+
+        [Fact]
+        public void OwnSeatAuthorityChangeClearsPendingAndAllowsNewClaim()
+        {
+            var clock = new ManualTableClock();
+            TableInteractionState state = new TableInteractionState(new TableCommandIntentFactory(clock));
+            state.ApplyConfirmedView(View(clock, P43TestData.PlayerSnapshot(controlEpoch: 7, controlVersion: 1)));
+            Assert.True(state.BuildIntent(TableIntentKind.ReleaseControl, Owner()).Accepted);
+
+            state.ApplyConfirmedView(View(clock, P43TestData.PlayerSnapshot(
+                stateVersion: 6,
+                eventSeq: 106,
+                controlledByComputer: true,
+                controlEpoch: 8,
+                controlVersion: 2)));
+
+            Assert.Null(state.Pending);
+            TableInteractionOutcome claim = state.BuildIntent(TableIntentKind.ClaimControl, Owner("request-after-own-change"));
+            Assert.True(claim.Accepted, claim.Code);
+            Assert.Equal(CommandKind.ClaimControl, state.Pending!.Intent.Kind);
+            Assert.Equal(8UL, state.Pending.Intent.ControlEpoch);
+        }
+
+        [Fact]
+        public void BaselineReconnectClearsPendingAndAllowsFreshRequest()
+        {
+            var clock = new ManualTableClock();
+            TableInteractionState state = new TableInteractionState(new TableCommandIntentFactory(clock));
+            state.ApplyConfirmedView(View(clock, P43TestData.PlayerSnapshot(controlEpoch: 7, controlVersion: 1)));
+            Assert.True(state.BuildIntent(TableIntentKind.ReleaseControl, Owner("request-before-reconnect")).Accepted);
+            string oldRequestId = state.Pending!.Intent.Command.RequestId.Value;
+            Assert.True(state.OnBaselineReset(2).Accepted);
+            Assert.Null(state.Pending);
+
+            state.ApplyConfirmedView(View(
+                clock,
+                P43TestData.PlayerSnapshot(stateVersion: 9, eventSeq: 120, controlEpoch: 7, controlVersion: 3),
+                generation: 2));
+            TableInteractionOutcome retry = state.BuildIntent(TableIntentKind.ReleaseControl, Owner("request-after-reconnect"));
+            Assert.True(retry.Accepted, retry.Code);
+            Assert.NotEqual(oldRequestId, state.Pending!.Intent.Command.RequestId.Value);
         }
 
         [Fact]
@@ -159,9 +279,10 @@ namespace Mahjong.Unity.TableModel.Tests
                 new TableCommandIntentFactory(new ManualTableClock()).CreateReleaseControl(spectator, Owner()));
         }
 
-        private static PlayerTableViewState View(ManualTableClock clock, PlayerSnapshot snapshot)
+        private static PlayerTableViewState View(ManualTableClock clock, PlayerSnapshot snapshot, long generation = 1)
         {
-            return new PlayerTableProjectionMapper(clock).Project(P43TestData.View(snapshot));
+            return new PlayerTableProjectionMapper(clock).Project(
+                P43TestData.View(snapshot, generation: generation));
         }
     }
 }
