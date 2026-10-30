@@ -112,6 +112,12 @@ function New-TestFixture {
         stateVersion = '3'
         eventSeq = '6'
         controlEpoch = '0'
+        controlEpochs = @(0, 0, 0, 0)
+        controlVersion = '0'
+        cheatVersion = '1'
+        cheatFingerprint = '1'
+        cheatStateSha256 = ('9' * 64)
+        controlRequests = @()
         requests = @([pscustomobject]@{
             requestId = 'fixture-request'
             receiptId = 'fixture-receipt'
@@ -141,7 +147,7 @@ $authorityBefore = $null
 $sealedBefore = Find-P45SealedPlayerObservation -Context $context -ObservationPath $beforePath
 if ($null -eq $sealedBefore) { throw 'The supplied run has no sealed Before export collection.' }
 $authorityBefore = $sealedBefore.AuthorityPath
-$verifiedBefore = Invoke-P45Verifier -AuthorityPath $authorityBefore -VerifierPath $VerifierPath -DotnetPath $DotnetPath
+$verifiedBefore = Invoke-P45Verifier -AuthorityPath $authorityBefore -VerifierPath $VerifierPath -DotnetPath $DotnetPath -CheatStatePath $sealedBefore.CheatStatePath
 $factsBefore = Get-P45Property $verifiedBefore 'facts'
 
 Invoke-Case 'Independent verifier decodes the persisted authority and all required facts' {
@@ -153,6 +159,39 @@ Invoke-Case 'Independent verifier decodes the persisted authority and all requir
     Assert-Equal '3' ([string]$factsBefore.requests.Count) 'confirmed request count'
     Assert-Equal 'local-main-r1' ([string]$factsBefore.roundId) 'round id'
     Assert-True ([string]$factsBefore.ledger.entriesSha256 -match '^[A-F0-9]{64}$') 'ledger digest'
+    Assert-True ([string]$factsBefore.cheatStateSha256 -match '^[A-F0-9]{64}$') 'cheat aggregate digest'
+    Assert-True ($null -ne $factsBefore.controlRequests) 'control request list'
+}
+
+Invoke-Case 'Stale checkpoint ledger without the current cheat aggregate is rejected' {
+    $failed = $false
+    try {
+        $null = Invoke-P45Verifier -AuthorityPath $authorityBefore -VerifierPath $VerifierPath -DotnetPath $DotnetPath
+    }
+    catch {
+        $failed = $true
+    }
+    Assert-True $failed 'authority-only decode accepted a stale ledger'
+}
+
+Invoke-Case 'Copied run cannot be re-sealed without the external collector key' {
+    $scratch = Join-Path $OutputDir 'copied-run'
+    New-Item -ItemType Directory -Path $scratch | Out-Null
+    foreach ($name in @('attempts', 'observations', 'build', 'ownership.json', 'player-package.json', 'state.json', 'run.json')) {
+        Copy-Item -LiteralPath (Join-Path $context.Root $name) -Destination $scratch -Recurse
+    }
+    $copiedRun = Read-P45Json -Path (Join-Path $scratch 'run.json')
+    $copiedRun.paths.root = $scratch
+    Write-P45JsonAtomic -Path (Join-Path $scratch 'run.json') -Object $copiedRun
+    $copiedContext = Get-P45Run -RunDir $scratch
+    $refused = $false
+    try {
+        $null = New-P45Collection -Context $copiedContext
+    }
+    catch {
+        $refused = $true
+    }
+    Assert-True $refused 'copied run was attested with the original collector key'
 }
 
 Invoke-Case 'Both sealed real export chains verify against their authority snapshots' {
@@ -309,6 +348,75 @@ Invoke-Case 'Fixed receipt and ledger difference is FAIL (16)' {
     $cmp = Compare-P45Observations -Context $context -BeforePath $leftPath -AfterPath $rightPath
     Assert-Equal 16 $cmp.ExitCode 'receipt/ledger difference must FAIL'
     Assert-Equal 'FAIL' $cmp.Result.outcome 'receipt/ledger difference outcome'
+}
+
+Invoke-Case 'Control epochs and control version differences are FAIL (16)' {
+    $left = New-TestFixture -Context $context -ObservationId 'diff-control-left' -Phase 'BEFORE_RECOVERY'
+    $right = New-TestFixture -Context $context -ObservationId 'diff-control-right' -Phase 'AFTER_RECOVERY'
+    $right.controlEpoch = '9'
+    $right.controlEpochs = @(9, 8, 7, 6)
+    $right.controlVersion = '100'
+    $right.integrity.canonicalSha256 = Get-P45ObservationDigest -Observation $right
+    $leftPath = Join-Path $OutputDir 'diff-control-left.json'
+    $rightPath = Join-Path $OutputDir 'diff-control-right.json'
+    Write-P45JsonAtomic -Path $leftPath -Object $left
+    Write-P45JsonAtomic -Path $rightPath -Object $right
+    $cmp = Compare-P45Observations -Context $context -BeforePath $leftPath -AfterPath $rightPath
+    Assert-Equal 16 $cmp.ExitCode 'control difference must FAIL'
+    Assert-Equal $false $cmp.Result.requiredFieldsEqual 'control difference must make requiredFieldsEqual false'
+}
+
+Invoke-Case 'Cheat aggregate binding differences are FAIL (16)' {
+    $left = New-TestFixture -Context $context -ObservationId 'diff-cheat-left' -Phase 'BEFORE_RECOVERY'
+    $right = New-TestFixture -Context $context -ObservationId 'diff-cheat-right' -Phase 'AFTER_RECOVERY'
+    $right.cheatVersion = '999'
+    $right.cheatFingerprint = '1234567'
+    $right.cheatStateSha256 = ('8' * 64)
+    $right.integrity.canonicalSha256 = Get-P45ObservationDigest -Observation $right
+    $leftPath = Join-Path $OutputDir 'diff-cheat-left.json'
+    $rightPath = Join-Path $OutputDir 'diff-cheat-right.json'
+    Write-P45JsonAtomic -Path $leftPath -Object $left
+    Write-P45JsonAtomic -Path $rightPath -Object $right
+    $cmp = Compare-P45Observations -Context $context -BeforePath $leftPath -AfterPath $rightPath
+    Assert-Equal 16 $cmp.ExitCode 'cheat aggregate difference must FAIL'
+}
+
+Invoke-Case 'Persisted control request differences are FAIL (16)' {
+    $left = New-TestFixture -Context $context -ObservationId 'diff-control-req-left' -Phase 'BEFORE_RECOVERY'
+    $right = New-TestFixture -Context $context -ObservationId 'diff-control-req-right' -Phase 'AFTER_RECOVERY'
+    $right.controlRequests = @([pscustomobject]@{
+        accountId = 'control-account'
+        scopeId = 'control-scope'
+        requestId = 'control-request'
+        digest = ('7' * 64)
+        kind = 'CLAIM_CONTROL'
+        evaluatedStateVersion = '7'
+    })
+    $right.integrity.canonicalSha256 = Get-P45ObservationDigest -Observation $right
+    $leftPath = Join-Path $OutputDir 'diff-control-req-left.json'
+    $rightPath = Join-Path $OutputDir 'diff-control-req-right.json'
+    Write-P45JsonAtomic -Path $leftPath -Object $left
+    Write-P45JsonAtomic -Path $rightPath -Object $right
+    $cmp = Compare-P45Observations -Context $context -BeforePath $leftPath -AfterPath $rightPath
+    Assert-Equal 16 $cmp.ExitCode 'control request difference must FAIL'
+}
+
+Invoke-Case 'Raw export identity fields cannot be changed independently of the observation' {
+    $copy = $before | ConvertTo-Json -Depth 30 | ConvertFrom-Json
+    $copy.exportBinding.pid = 1
+    $copy.exportBinding.processPath = 'C:\definitely-not-the-player.exe'
+    $copy.exportBinding.exporterVersion = 'UNREVIEWED_FAKE_EXPORTER'
+    $copy = Copy-JsonAndRecompute -Object $copy -Path (Join-Path $OutputDir 'tamper-raw-binding.json')
+    $exit = 0
+    try {
+        $cmp = Compare-P45Observations -Context $context -BeforePath (Join-Path $OutputDir 'tamper-raw-binding.json') -AfterPath $afterPath `
+            -VerifierPath $VerifierPath -DotnetPath $DotnetPath
+        $exit = $cmp.ExitCode
+    }
+    catch {
+        $exit = Get-P45ThrownExitCode $_
+    }
+    Assert-True ($exit -ne 0) 'raw binding tamper became PASS'
 }
 
 $summary = [pscustomobject]@{

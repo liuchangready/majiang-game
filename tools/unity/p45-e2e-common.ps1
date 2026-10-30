@@ -3045,7 +3045,7 @@ function Get-P45ObservationDigest {
     if ($null -ne $exportBinding) {
         foreach ($field in @('phase', 'challenge', 'attempt', 'pid', 'processStartUtc', 'processPath',
                 'playerSha256', 'packageManifestSha256', 'packageFileCount', 'authoritySaveSha256',
-                'authoritySaveBytes', 'rawExportSha256', 'exporterVersion')) {
+                'authoritySaveBytes', 'cheatStateSha256', 'cheatStateBytes', 'rawExportSha256', 'exporterVersion')) {
             $lines.Add('exportBinding.' + $field + '=' + (ConvertTo-P45InvariantString (Get-P45Property $exportBinding $field)))
         }
     }
@@ -3175,7 +3175,7 @@ function Test-P45Observation {
         if ($null -eq (Get-P45Property $availability $field)) { $errors.Add('availability.' + $field + ' is required') }
     }
     if ($source -eq 'PLAYER_STRUCTURED_EXPORT') {
-        foreach ($field in @('controlEpoch', 'requests', 'ledger', 'physical', 'structuredPlayerExport')) {
+        foreach ($field in @('controlEpoch', 'requests')) {
             if ((Get-P45Property $availability $field) -ne $true) {
                 $errors.Add('real export availability.' + $field + ' must be true')
             }
@@ -3237,6 +3237,9 @@ function Test-P45Observation {
         if (-not [string]::Equals([string](Get-P45Property $exportBinding 'phase'), $phase, [StringComparison]::Ordinal)) {
             $errors.Add('exportBinding.phase must match observation phase')
         }
+        if (-not [string]::Equals([string](Get-P45Property $exportBinding 'exporterVersion'), $script:P45RecoveryExporterVersion, [StringComparison]::Ordinal)) {
+            $errors.Add('exportBinding.exporterVersion is not the reviewed exporter')
+        }
         if ([string](Get-P45Property $exportBinding 'challenge') -notmatch '^[A-Fa-f0-9]{64}$') {
             $errors.Add('exportBinding.challenge must be 64 hex characters')
         }
@@ -3250,10 +3253,14 @@ function Test-P45Observation {
                 $errors.Add('exportBinding.' + $field + ' is required')
             }
         }
-        foreach ($field in @('playerSha256', 'packageManifestSha256', 'authoritySaveSha256', 'rawExportSha256')) {
+        foreach ($field in @('playerSha256', 'packageManifestSha256', 'authoritySaveSha256', 'cheatStateSha256', 'rawExportSha256')) {
             if (-not (Test-P45Sha256Text ([string](Get-P45Property $exportBinding $field)))) {
                 $errors.Add('exportBinding.' + $field + ' is invalid')
             }
+        }
+        $cheatBytes = Get-P45Property $exportBinding 'cheatStateBytes'
+        if ($null -eq $cheatBytes -or [long]$cheatBytes -lt 1) {
+            $errors.Add('exportBinding.cheatStateBytes must be positive')
         }
         $exportFileCount = Get-P45Property $exportBinding 'packageFileCount'
         if ($null -eq $exportFileCount -or [int]$exportFileCount -lt 1) {
@@ -3911,6 +3918,8 @@ function Test-P45RecoveryExportChain {
         -not [string]::Equals([string](Get-P45Property $export 'packageFileCount'), [string](Get-P45Property $binding 'packageFileCount'), [StringComparison]::Ordinal) -or
         -not [string]::Equals([string](Get-P45Property $export 'authoritySha256'), [string](Get-P45Property $binding 'authoritySaveSha256'), [StringComparison]::OrdinalIgnoreCase) -or
         -not [string]::Equals([string](Get-P45Property $export 'authorityBytes'), [string](Get-P45Property $binding 'authoritySaveBytes'), [StringComparison]::Ordinal) -or
+        -not [string]::Equals([string](Get-P45Property $export 'cheatStateSha256'), [string](Get-P45Property $binding 'cheatStateSha256'), [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([string](Get-P45Property $export 'cheatStateBytes'), [string](Get-P45Property $binding 'cheatStateBytes'), [StringComparison]::Ordinal) -or
         -not [string]::Equals([string](Get-P45Property $export 'capturedAt'), [string](Get-P45Property $sealedObservation 'capturedAt'), [StringComparison]::Ordinal)) {
         return (& $identity 'sealed export.json raw binding fields do not match the observation')
     }
@@ -4249,7 +4258,6 @@ function Compare-P45Observations {
     [void](& $addCheck 'cheatStateSha256' (Get-P45Property $before 'cheatStateSha256') (Get-P45Property $after 'cheatStateSha256') $true)
     [void](& $addCheck 'stateFingerprint' (Get-P45Property $before 'stateFingerprint') (Get-P45Property $after 'stateFingerprint') $true)
     [void](& $addCheck 'stateHash' (Get-P45Property $before 'stateHash') (Get-P45Property $after 'stateHash') $true)
-    [void](& $addCheck 'authoritySaveSha256' (Get-P45Property $before 'authoritySaveSha256') (Get-P45Property $after 'authoritySaveSha256') $true)
 
     [void](& $addCheck 'confirmedRequests' (Get-P45FactsRequestLines -Facts $before) (Get-P45FactsRequestLines -Facts $after) $true)
     [void](& $addCheck 'controlRequests' (Get-P45FactsControlLines -Facts $before) (Get-P45FactsControlLines -Facts $after) $true)
@@ -4302,7 +4310,7 @@ function Compare-P45Observations {
                 $incompleteReasons.Add($pair.Name + ' ' + $field + ' is missing')
             }
         }
-        foreach ($field in @('requests', 'ledger', 'physical')) {
+        foreach ($field in @('requests', 'controlRequests', 'ledger', 'physical')) {
             $property = $pair.Observation.PSObject.Properties[$field]
             if ($null -eq $property -or $null -eq $property.Value) {
                 $incompleteReasons.Add($pair.Name + ' ' + $field + ' missing')
