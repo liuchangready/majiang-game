@@ -194,13 +194,13 @@ Invoke-Case 'Copied run cannot be re-sealed without the external collector key' 
     Assert-True $refused 'copied run was attested with the original collector key'
 }
 
-Invoke-Case 'Both sealed real export chains verify against their authority snapshots' {
+Invoke-Case 'Both sealed real export chains are locally consistent but provenance is not trusted' {
     $b = Test-P45RecoveryExportChain -Context $context -ObservationPath $beforePath -Phase Before `
         -VerifierPath $VerifierPath -DotnetPath $DotnetPath
     $a = Test-P45RecoveryExportChain -Context $context -ObservationPath $afterPath -Phase After `
         -VerifierPath $VerifierPath -DotnetPath $DotnetPath
-    Assert-Equal 'VERIFIED' $b.Status ('before chain: ' + $b.Reason)
-    Assert-Equal 'VERIFIED' $a.Status ('after chain: ' + $a.Reason)
+    Assert-Equal 'UNTRUSTED_LOCAL' $b.Status ('before chain: ' + $b.Reason)
+    Assert-Equal 'UNTRUSTED_LOCAL' $a.Status ('after chain: ' + $a.Reason)
     Assert-Equal ([string]$b.Chain.manifestSha256) ([string]$b.Chain.manifestSha256) 'manifest hash'
     Assert-True ($b.Chain.challenge -match '^[A-F0-9]{64}$') 'challenge shape'
     Assert-True ($b.Chain.pid -gt 0) 'pid binding'
@@ -417,6 +417,31 @@ Invoke-Case 'Raw export identity fields cannot be changed independently of the o
         $exit = Get-P45ThrownExitCode $_
     }
     Assert-True ($exit -ne 0) 'raw binding tamper became PASS'
+}
+
+Invoke-Case 'Generic collector signer API cannot sign arbitrary JSON without an observed process' {
+    $fakeLaunch = [pscustomobject]@{
+        observation = 'launch'
+        runId = [string]$context.Run.runId
+        root = [string]$context.Root
+        attempt = 1
+        pid = 1
+        startTimeUtc = '2026-10-30T00:00:00.0000000Z'
+        playerPath = [string]$context.Run.player.path
+        playerSha256 = [string]$context.Run.player.sha256
+        commandArguments = @('--forged')
+        recoveryPhase = 'BEFORE_RECOVERY'
+        challenge = ('0' * 64)
+        exportDirectory = [string]$context.Root
+    }
+    $refused = $false
+    try {
+        Write-P45CollectorObservation -Context $context -Attempt 1 -Kind launch -Payload $fakeLaunch
+    }
+    catch {
+        $refused = $true
+    }
+    Assert-True $refused 'generic signer accepted arbitrary JSON without an observed process'
 }
 
 Invoke-Case 'Zero-player new Prepare cannot re-sign copied attempts' {

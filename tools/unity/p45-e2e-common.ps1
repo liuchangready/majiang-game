@@ -1210,8 +1210,20 @@ function Write-P45CollectorObservation {
         [Parameter(Mandatory = $true)][object]$Context,
         [Parameter(Mandatory = $true)][int]$Attempt,
         [Parameter(Mandatory = $true)][ValidateSet('launch', 'exit')][string]$Kind,
-        [Parameter(Mandatory = $true)][object]$Payload
+        [Parameter(Mandatory = $true)][object]$Payload,
+        [Parameter(Mandatory = $true)][System.Diagnostics.Process]$ObservedProcess
     )
+
+    $actualStart = $null
+    try { $actualStart = $ObservedProcess.StartTime.ToUniversalTime().ToString('o', [Globalization.CultureInfo]::InvariantCulture) } catch { $actualStart = $null }
+    if ([string]::IsNullOrWhiteSpace($actualStart) -or
+        [int](Get-P45Property $Payload 'pid' 0) -ne [int]$ObservedProcess.Id -or
+        -not [string]::Equals([string](Get-P45Property $Payload 'startTimeUtc'), $actualStart, [StringComparison]::Ordinal)) {
+        Throw-P45 4 'OWNERSHIP_OR_IDENTITY' ('Collector observation payload does not match the observed process PID/start time. pid=' +
+            [string](Get-P45Property $Payload 'pid') + ' actualPid=' + [string]$ObservedProcess.Id +
+            ' payloadStart=' + [string](Get-P45Property $Payload 'startTimeUtc') + ' actualStart=' + [string]$actualStart)
+    }
+
 
     $keyRecord = Read-P45CollectorKey -RunId ([string]$Context.Run.runId)
     if ($null -eq $keyRecord) {
@@ -1268,8 +1280,17 @@ function Write-P45CollectorExitObservation {
         [Parameter(Mandatory = $true)][object]$Context,
         [Parameter(Mandatory = $true)][int]$Attempt,
         [Parameter(Mandatory = $true)][object]$Launch,
-        [Parameter(Mandatory = $true)][object]$Exit
+        [Parameter(Mandatory = $true)][object]$Exit,
+        [Parameter(Mandatory = $true)][System.Diagnostics.Process]$ObservedProcess
     )
+
+    $observedStart = $null
+    try { $observedStart = $ObservedProcess.StartTime.ToUniversalTime().ToString('o', [Globalization.CultureInfo]::InvariantCulture) } catch { $observedStart = $null }
+    if ([int](Get-P45Property $Launch 'pid' 0) -ne [int]$ObservedProcess.Id -or
+        [string]::IsNullOrWhiteSpace($observedStart) -or
+        -not [string]::Equals([string](Get-P45Property $Launch 'startTimeUtc'), $observedStart, [StringComparison]::Ordinal)) {
+        Throw-P45 4 'OWNERSHIP_OR_IDENTITY' 'Collector exit observation does not match the observed process PID/start time.'
+    }
 
     $rawArtifacts = @()
     $recovery = Get-P45Property $Launch 'recoveryExport'
@@ -1309,7 +1330,7 @@ function Write-P45CollectorExitObservation {
         observedAt = [string](Get-P45Property $Exit 'observedAt')
         rawArtifacts = @($rawArtifacts)
     }
-    Write-P45CollectorObservation -Context $Context -Attempt $Attempt -Kind 'exit' -Payload $payload
+    Write-P45CollectorObservation -Context $Context -Attempt $Attempt -Kind 'exit' -Payload $payload -ObservedProcess $ObservedProcess
 }
 
 function Get-P45CollectorHmac {
@@ -1689,7 +1710,6 @@ function New-P45Attempt {
                 requested = $false
                 observedAt = (Get-P45UtcNowText)
             })
-            Write-P45CollectorExitObservation -Context $Context -Attempt $attemptNumber -Launch $launch -Exit (Read-P45Json -Path $exitJson)
             $state.activeProcess = $null
             $state.status = 'EXITED'
             Save-P45State -Context $Context -State $state
@@ -1761,7 +1781,7 @@ function New-P45Attempt {
         exportDirectory = $recoveryDirectory
         dataDirectory = [string]$Context.Run.paths.save
     }
-    Write-P45CollectorObservation -Context $Context -Attempt $attemptNumber -Kind 'launch' -Payload $launchObservation
+    Write-P45CollectorObservation -Context $Context -Attempt $attemptNumber -Kind 'launch' -Payload $launchObservation -ObservedProcess $process
 
     if (-not $Wait) {
         $launch.toolExitCode = 0
@@ -1830,7 +1850,7 @@ function New-P45Attempt {
                 $launch.toolExitCode = 0
                 $launch.toolStatus = $launch.disposition
                 Write-P45JsonAtomic -Path $attemptJson -Object $launch
-                Write-P45CollectorExitObservation -Context $Context -Attempt $attemptNumber -Launch $launch -Exit (Read-P45Json -Path $exitJson)
+                Write-P45CollectorExitObservation -Context $Context -Attempt $attemptNumber -Launch $launch -Exit (Read-P45Json -Path $exitJson) -ObservedProcess $process
                 $state.activeProcess = $null
                 $state.status = 'STOPPED'
                 Save-P45State -Context $Context -State $state
@@ -1915,7 +1935,7 @@ function New-P45Attempt {
             requested = $false
             observedAt = (Get-P45UtcNowText)
         })
-        Write-P45CollectorExitObservation -Context $Context -Attempt $attemptNumber -Launch $launch -Exit (Read-P45Json -Path $exitJson)
+        Write-P45CollectorExitObservation -Context $Context -Attempt $attemptNumber -Launch $launch -Exit (Read-P45Json -Path $exitJson) -ObservedProcess $process
         $state.activeProcess = $null
         $state.status = 'EXITED'
         Save-P45State -Context $Context -State $state
@@ -1964,7 +1984,7 @@ function New-P45Attempt {
         killReason = 'TOOL_TIMEOUT'
         observedAt = (Get-P45UtcNowText)
     })
-    Write-P45CollectorExitObservation -Context $Context -Attempt $attemptNumber -Launch $launch -Exit (Read-P45Json -Path $exitJson)
+    Write-P45CollectorExitObservation -Context $Context -Attempt $attemptNumber -Launch $launch -Exit (Read-P45Json -Path $exitJson) -ObservedProcess $process
     $state.activeProcess = $null
     $state.status = 'TIMED_OUT'
     Save-P45State -Context $Context -State $state
@@ -2167,7 +2187,7 @@ function Stop-P45OwnedProcess {
             killReason = $killReason
             observedAt = (Get-P45UtcNowText)
         })
-        Write-P45CollectorExitObservation -Context $Context -Attempt $attempt -Launch $launch -Exit (Read-P45Json -Path $exitPath)
+        Write-P45CollectorExitObservation -Context $Context -Attempt $attempt -Launch $launch -Exit (Read-P45Json -Path $exitPath) -ObservedProcess $process
     }
     finally {
         Exit-P45ExitLock -Mutex $exitLock
@@ -4445,8 +4465,8 @@ function Test-P45RecoveryExportChain {
     }
 
     return [pscustomobject]@{
-        Status = 'VERIFIED'
-        Reason = ''
+        Status = 'UNTRUSTED_LOCAL'
+        Reason = 'The artifacts are locally self-consistent, but the collector signer is invokable from the same fixture context; this is not a non-forgeable provenance root.'
         Facts = $facts
         Observation = $sealedObservation
         Chain = $chain
@@ -4507,8 +4527,13 @@ function Compare-P45Observations {
                 $chainStatus = 'BLOCKED'
                 $chainReason = (@($chainBefore.Reason, $chainAfter.Reason) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join '; '
             }
+            elseif ($statuses -notcontains 'UNTRUSTED_LOCAL') {
+                $chainStatus = 'BLOCKED'
+                $chainReason = 'Recovery export chain did not return a locally consistent result.'
+            }
             else {
-                $chainStatus = 'VERIFIED'
+                $chainStatus = 'UNTRUSTED_LOCAL'
+                $chainReason = (@($chainBefore.Reason, $chainAfter.Reason) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join '; '
                 $before = $chainBefore.Observation
                 $after = $chainAfter.Observation
                 $chainBeforeMeta = $chainBefore.Chain
@@ -4643,6 +4668,11 @@ function Compare-P45Observations {
         $exitCode = 16
         $rationale = 'One or more required recovery fields differ.'
     }
+    elseif ($isReal -and $chainStatus -eq 'UNTRUSTED_LOCAL') {
+        $outcome = 'BLOCKED'
+        $exitCode = 17
+        $rationale = 'Recovery facts are equal and the local artifacts are self-consistent, but the collector observation signer is invokable from the same fixture context; no non-forgeable provenance root exists.'
+    }
     elseif ($isReal -and $chainStatus -ne 'VERIFIED') {
         $outcome = 'BLOCKED'
         $exitCode = 17
@@ -4690,9 +4720,13 @@ function Compare-P45Observations {
         checks = @($checks.ToArray())
         mismatches = @($mismatches)
         requiredFieldsEqual = $requiredEqual
+        factsEqual = $requiredEqual
         eligibleForRealPass = ($isReal -and $chainStatus -eq 'VERIFIED' -and $eligible)
         realPassGate = if ($isReal -and $chainStatus -eq 'VERIFIED') {
             'PLAYER_EXPORT_CHAIN_VERIFIED_LOCAL_CONTROLLED'
+        }
+        elseif ($isReal -and $chainStatus -eq 'UNTRUSTED_LOCAL') {
+            'NO_NON_FORGEABLE_COLLECTOR_ATTESTATION'
         }
         elseif ($isReal) {
             'NO_VERIFIED_PLAYER_STRUCTURED_EXPORTER_IN_THIS_TOOL_VERSION'
