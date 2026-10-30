@@ -618,20 +618,23 @@ namespace Mahjong.Unity.App
                             yield break;
                         }
 
-                        if (action.Action == PlayerActionKind.DiscardTile)
+                        if (!SmokeActionEventPolicy.AllowsEmptyPublication(action.Action))
                         {
                             Debug.LogError(
-                                "SMOKE_OBSERVER: a committed discard must produce a visible event" +
+                                "SMOKE_OBSERVER: action requires a visible event, but its Applied publication was empty" +
                                 " action=" + lastAction +
+                                " requirement=" + SmokeActionEventPolicy.DescribeRequirement(action.Action) +
+                                " publicationStateVersion=" + publication.StateVersion +
+                                " publicationEventSeq=" + publication.EventSeq +
                                 " " + observer.ReceiptSummary +
                                 " " + observer.DescribeBatches());
-                            FailLocalSmoke("A committed discard produced no confirmed visible event", 31);
+                            FailLocalSmoke("Action requires a visible event but its publication was empty", 31);
                             yield break;
                         }
 
-                        // The action is confirmed but its event batch is empty
-                        // by contract. Continue with the next real decision; do
-                        // not synthesize an event from the snapshot.
+                        // Only the explicit state-only action above may continue.
+                        // Its confirmation still comes from a later real action;
+                        // this batch is never treated as the requested event.
                         continue;
                     }
 

@@ -40,6 +40,7 @@
     <Compile Include="$(MSBuildThisFileDirectory)..\..\..\unity\Mahjong.Unity\Assets\Scripts\Table\ClientVisibleEventMapper.cs" Link="Production\ClientVisibleEventMapper.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)..\..\..\unity\Mahjong.Unity\Assets\Scripts\UI\Session\ISessionView.cs" Link="Production\ISessionView.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)..\..\..\unity\Mahjong.Unity\Assets\Scripts\App\ConfirmedVisibleEventObserver.cs" Link="Production\ConfirmedVisibleEventObserver.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\unity\Mahjong.Unity\Assets\Scripts\App\SmokeActionEventPolicy.cs" Link="Production\SmokeActionEventPolicy.cs" />
   </ItemGroup>
 
 </Project>

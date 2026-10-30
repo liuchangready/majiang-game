@@ -6,6 +6,7 @@ using Mahjong.Client;
 using Mahjong.Contracts;
 using Mahjong.Contracts.Wire;
 using Mahjong.Unity.App;
+using Mahjong.Unity.Table;
 using Mahjong.Unity.UI.Session;
 using Xunit;
 using ContractCursor = Mahjong.Contracts.StreamCursor;
@@ -218,6 +219,8 @@ namespace Mahjong.Unity.TableModel.Tests
             view.Publish(stateOnly);
             Assert.True(observer.HasAppliedReceipt);
             Assert.Null(observer.TryGetConfirmation());
+            Assert.True(SmokeActionEventPolicy.AllowsEmptyPublication(PlayerActionKind.Pass));
+            Assert.Equal("state_only_response_pass", SmokeActionEventPolicy.DescribeRequirement(PlayerActionKind.Pass));
 
             observer.BeginAction(stateOnly, "smoke-discard", ScopeId, "DiscardTile/4");
             observer.RecordReceipt(Receipt("smoke-discard", ScopeId, 2, 3, 3));
@@ -236,7 +239,7 @@ namespace Mahjong.Unity.TableModel.Tests
         }
 
         [Fact]
-        public void ColdRecoveryPonEmptyBatchThenNextDiscardConfirms()
+        public void PonEmptyPublicationIsRejectedAndLaterDiscardConfirmsOnlyItsOwnRequest()
         {
             // Reproduces the observed cold-recovery shape from the preserved P4.5
             // baseline: the first real player action is a Pon whose domain event
@@ -260,6 +263,9 @@ namespace Mahjong.Unity.TableModel.Tests
             ObservedVisibleEventBatch? ponPublication = observer.FindActionPublication(5);
             Assert.NotNull(ponPublication);
             Assert.Empty(ponPublication!.Events);
+            Assert.False(SmokeActionEventPolicy.AllowsEmptyPublication(PlayerActionKind.DeclarePon),
+                "A Pon publication must never be skipped as a legal state-only action.");
+            Assert.Equal("requires: PonDeclared", SmokeActionEventPolicy.DescribeRequirement(PlayerActionKind.DeclarePon));
 
             observer.BeginAction(ponState, "smoke-discard-after-pon", ScopeId, "DiscardTile/4");
             observer.RecordReceipt(Receipt("smoke-discard-after-pon", ScopeId, 5, 6, 11));
@@ -274,6 +280,27 @@ namespace Mahjong.Unity.TableModel.Tests
             Assert.NotNull(confirmed);
             Assert.Equal(6UL, confirmed!.CommandVersion);
             Assert.Equal(11UL, confirmed.Event.EventSeq);
+        }
+
+        [Theory]
+        [InlineData(PlayerActionKind.Pass, true, "state_only_response_pass")]
+        [InlineData(PlayerActionKind.DiscardTile, false, "requires: TileDiscarded")]
+        [InlineData(PlayerActionKind.DrawTile, false, "requires: TileDrawn")]
+        [InlineData(PlayerActionKind.DeclareChi, false, "requires: ChiDeclared")]
+        [InlineData(PlayerActionKind.DeclarePon, false, "requires: PonDeclared")]
+        [InlineData(PlayerActionKind.DeclareKan, false, "requires: KanDeclared")]
+        [InlineData(PlayerActionKind.DeclareRiichi, false, "requires: RiichiDeclared/TileDiscarded")]
+        [InlineData(PlayerActionKind.DeclareTsumo, false, "requires: TsumoWin")]
+        [InlineData(PlayerActionKind.DeclareRon, false, "requires: RonWin")]
+        [InlineData(PlayerActionKind.DeclareAbortiveDraw, false, "requires: DrawGame")]
+        [InlineData(PlayerActionKind.DeclareAgariYame, false, "not_a_legal_invisible_action")]
+        public void OnlyResponsePassMayContinueWithAnEmptyPublication(
+            PlayerActionKind action,
+            bool allowsEmpty,
+            string requirement)
+        {
+            Assert.Equal(allowsEmpty, SmokeActionEventPolicy.AllowsEmptyPublication(action));
+            Assert.Equal(requirement, SmokeActionEventPolicy.DescribeRequirement(action));
         }
 
         private static object NewFence()
