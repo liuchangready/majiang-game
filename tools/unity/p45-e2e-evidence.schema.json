@@ -1,0 +1,461 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://majiang.local/schemas/p45-e2e-evidence.schema.json",
+  "title": "P4.5 Windows Player E2E evidence records",
+  "description": "Version 1 records emitted by tools/unity/run-p45-e2e.ps1. A run is not a PASS: GAME evidence remains smoke/partial until a real full-match and recovery review. TOOL_SELF_TEST records prove the harness only.",
+  "oneOf": [
+    { "$ref": "#/$defs/ownership" },
+    { "$ref": "#/$defs/run" },
+    { "$ref": "#/$defs/state" },
+    { "$ref": "#/$defs/attempt" },
+    { "$ref": "#/$defs/exit" },
+    { "$ref": "#/$defs/observation" },
+    { "$ref": "#/$defs/manifest" },
+    { "$ref": "#/$defs/compare" }
+  ],
+  "$defs": {
+    "schemaVersion": { "const": 1 },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[A-F0-9]{64}$",
+      "description": "Uppercase SHA-256 hex."
+    },
+    "decimalString": {
+      "type": "string",
+      "pattern": "^[0-9]+$",
+      "description": "Unsigned decimal stored as a string so PowerShell 5.1 JSON conversion cannot lose 64-bit precision."
+    },
+    "commitOrUnknown": {
+      "type": "string",
+      "pattern": "^(UNKNOWN|[0-9a-f]{40})$"
+    },
+    "timestamp": {
+      "type": "string",
+      "description": "ISO-8601 timestamp. Local values carry an explicit numeric offset."
+    },
+    "time": {
+      "type": "object",
+      "required": ["utc", "local", "label", "windowsTimeZoneId", "utcOffset", "localDate"],
+      "properties": {
+        "utc": { "$ref": "#/$defs/timestamp" },
+        "local": { "$ref": "#/$defs/timestamp" },
+        "label": { "type": "string", "examples": ["Asia/Shanghai"] },
+        "windowsTimeZoneId": { "type": "string", "examples": ["China Standard Time"] },
+        "utcOffset": { "type": "string", "pattern": "^[+-][0-9]{2}:[0-9]{2}$" },
+        "localDate": { "type": "string", "pattern": "^[0-9]{8}-[0-9]{6}$" }
+      },
+      "additionalProperties": true
+    },
+    "sourceSnapshot": {
+      "type": "object",
+      "required": ["head", "branch", "dirty", "dirtyKnown", "dirtyFileCount", "statusPorcelain", "statusSha256", "diffStat", "diffStatSha256"],
+      "properties": {
+        "head": { "type": "string", "pattern": "^([0-9a-f]{40}|UNKNOWN)$" },
+        "branch": { "type": "string" },
+        "dirty": { "type": ["boolean", "null"] },
+        "dirtyKnown": { "type": "boolean" },
+        "dirtyFileCount": { "type": "integer", "minimum": 0 },
+        "statusPorcelain": { "type": "string" },
+        "statusSha256": { "$ref": "#/$defs/sha256" },
+        "diffStat": { "type": "string" },
+        "diffStatSha256": { "$ref": "#/$defs/sha256" }
+      },
+      "additionalProperties": true
+    },
+    "player": {
+      "type": "object",
+      "required": ["path", "bytes", "sha256", "lastWriteUtc", "fileVersion", "productVersion", "productName", "companyName", "dataDirectory", "dataDirectoryExists", "knownBuildSource", "buildProvenance", "buildCommit", "buildCommitMatchesSourceHead"],
+      "properties": {
+        "path": { "type": "string" },
+        "bytes": { "type": "integer", "minimum": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "lastWriteUtc": { "$ref": "#/$defs/timestamp" },
+        "fileVersion": { "type": "string" },
+        "productVersion": { "type": "string" },
+        "productName": { "type": "string" },
+        "companyName": { "type": "string" },
+        "dataDirectory": { "type": "string" },
+        "dataDirectoryExists": { "type": "boolean" },
+        "appInfo": { "type": ["object", "null"] },
+        "bootConfig": { "type": ["object", "null"] },
+        "knownBuildSource": { "type": "string" },
+        "buildProvenance": { "enum": ["UNKNOWN", "USER_DECLARED", "BUILD_LOG_ATTACHED"] },
+        "buildCommit": { "$ref": "#/$defs/commitOrUnknown" },
+        "buildLog": { "type": ["object", "null"] },
+        "buildCommitMatchesSourceHead": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+    "paths": {
+      "type": "object",
+      "required": ["root", "save", "outbox", "log", "screenshots", "evidence", "attempts", "observations", "control", "localSave", "clientOutbox"],
+      "properties": {
+        "root": { "type": "string" },
+        "save": { "type": "string" },
+        "outbox": { "type": "string" },
+        "log": { "type": "string" },
+        "screenshots": { "type": "string" },
+        "evidence": { "type": "string" },
+        "attempts": { "type": "string" },
+        "observations": { "type": "string" },
+        "control": { "type": "string" },
+        "localSave": { "type": "string" },
+        "clientOutbox": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "scenario": {
+      "type": "object",
+      "required": ["name", "status", "evidence", "note"],
+      "properties": {
+        "name": { "type": "string" },
+        "status": { "enum": ["NOT_RUN", "BLOCKED", "PARTIAL", "PASS", "FAIL"] },
+        "evidence": { "type": "array", "items": { "type": "string" } },
+        "note": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "ownership": {
+      "type": "object",
+      "required": ["schemaVersion", "kind", "runId", "ownerToken", "createdAt", "timeZone", "sourceHead", "playerSha256"],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/schemaVersion" },
+        "kind": { "const": "p45-e2e-ownership" },
+        "runId": { "type": "string" },
+        "ownerToken": { "type": "string", "minLength": 16 },
+        "createdAt": { "$ref": "#/$defs/timestamp" },
+        "timeZone": { "type": "string" },
+        "sourceHead": { "type": "string" },
+        "playerSha256": { "$ref": "#/$defs/sha256" }
+      },
+      "additionalProperties": true
+    },
+    "run": {
+      "type": "object",
+      "required": ["schemaVersion", "kind", "runId", "toolVersion", "createdAt", "time", "platform", "evidenceClass", "status", "source", "player", "paths", "ownership", "launch", "attemptCount", "scenarios", "collections", "notes"],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/schemaVersion" },
+        "kind": { "const": "p45-e2e-run" },
+        "runId": { "type": "string" },
+        "toolVersion": { "type": "string" },
+        "createdAt": { "$ref": "#/$defs/timestamp" },
+        "time": { "$ref": "#/$defs/time" },
+        "platform": {
+          "type": "object",
+          "required": ["os", "is64BitOperatingSystem", "is64BitProcess", "processorCount", "powershellVersion", "powershellEdition", "culture"],
+          "properties": {
+            "os": { "type": "string" },
+            "is64BitOperatingSystem": { "type": "boolean" },
+            "is64BitProcess": { "type": "boolean" },
+            "processorCount": { "type": "integer", "minimum": 1 },
+            "powershellVersion": { "type": "string" },
+            "powershellEdition": { "type": "string" },
+            "culture": { "type": "string" }
+          },
+          "additionalProperties": true
+        },
+        "evidenceClass": { "enum": ["GAME", "TOOL_SELF_TEST"] },
+        "status": { "type": "string" },
+        "source": { "$ref": "#/$defs/sourceSnapshot" },
+        "player": { "$ref": "#/$defs/player" },
+        "paths": { "$ref": "#/$defs/paths" },
+        "ownership": {
+          "type": "object",
+          "required": ["marker", "markerSha256"],
+          "properties": {
+            "marker": { "type": "string" },
+            "markerSha256": { "$ref": "#/$defs/sha256" }
+          },
+          "additionalProperties": true
+        },
+        "launch": {
+          "type": "object",
+          "required": ["mode", "visible", "hiddenDefault", "argumentsRecorded"],
+          "properties": {
+            "mode": { "enum": ["LocalSmoke", "Manual", "ToolSelfTest"] },
+            "visible": { "type": "boolean" },
+            "hiddenDefault": { "type": "boolean" },
+            "argumentsRecorded": { "type": "boolean" }
+          },
+          "additionalProperties": true
+        },
+        "attemptCount": { "type": "integer", "minimum": 0 },
+        "scenarios": { "type": "array", "items": { "$ref": "#/$defs/scenario" } },
+        "collections": { "type": "array", "items": { "type": "object" } },
+        "notes": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": true
+    },
+    "state": {
+      "type": "object",
+      "required": ["schemaVersion", "kind", "runId", "updatedAt", "activeProcess", "status"],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/schemaVersion" },
+        "kind": { "const": "p45-e2e-state" },
+        "runId": { "type": "string" },
+        "updatedAt": { "$ref": "#/$defs/timestamp" },
+        "activeProcess": { "type": ["object", "null"] },
+        "status": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "attempt": {
+      "type": "object",
+      "required": ["schemaVersion", "kind", "runId", "attempt", "evidenceClass", "mode", "visible", "hidden", "status", "startedAt", "time", "player", "command", "logFile", "screenshotDirectory", "stopFile"],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/schemaVersion" },
+        "kind": { "const": "p45-e2e-attempt" },
+        "runId": { "type": "string" },
+        "attempt": { "type": "integer", "minimum": 1 },
+        "evidenceClass": { "enum": ["GAME", "TOOL_SELF_TEST"] },
+        "mode": { "enum": ["LocalSmoke", "Manual", "ToolSelfTest"] },
+        "visible": { "type": "boolean" },
+        "hidden": { "type": "boolean" },
+        "status": { "type": "string" },
+        "startedAt": { "$ref": "#/$defs/timestamp" },
+        "time": { "$ref": "#/$defs/time" },
+        "player": { "type": "object" },
+        "command": {
+          "type": "object",
+          "required": ["executable", "arguments", "argumentsText", "workingDirectory"],
+          "properties": {
+            "executable": { "type": "string" },
+            "arguments": { "type": "array", "items": { "type": "string" } },
+            "argumentsText": { "type": "string" },
+            "workingDirectory": { "type": "string" }
+          },
+          "additionalProperties": true
+        },
+        "logFile": { "type": "string" },
+        "stdoutFile": { "type": "string" },
+        "stderrFile": { "type": "string" },
+        "screenshotDirectory": { "type": "string" },
+        "stopFile": { "type": "string" },
+        "pid": { "type": ["integer", "null"] },
+        "startTimeUtc": { "type": ["string", "null"] },
+        "nativeExitCode": { "type": ["integer", "null"] },
+        "disposition": { "type": ["string", "null"] },
+        "toolExitCode": { "type": ["integer", "null"] },
+        "toolStatus": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "exit": {
+      "type": "object",
+      "required": ["schemaVersion", "kind", "runId", "attempt", "disposition", "nativeExitCode", "toolExitCode", "requested", "observedAt"],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/schemaVersion" },
+        "kind": { "const": "p45-e2e-exit" },
+        "runId": { "type": "string" },
+        "attempt": { "type": "integer", "minimum": 1 },
+        "disposition": { "enum": ["EXITED_OK", "EXITED_NONZERO", "TIMED_OUT", "FORCE_KILLED", "GRACEFUL_STOPPED", "ALREADY_EXITED", "EXITED_UNOBSERVED"] },
+        "nativeExitCode": { "type": ["integer", "null"] },
+        "toolExitCode": { "type": "integer" },
+        "requested": { "type": "boolean" },
+        "killReason": { "type": ["string", "null"] },
+        "observedAt": { "$ref": "#/$defs/timestamp" }
+      },
+      "additionalProperties": true
+    },
+    "runBinding": {
+      "type": "object",
+      "required": ["runId", "playerSha256", "sourceHead", "buildCommit", "buildProvenance", "rulesetVersion"],
+      "properties": {
+        "runId": { "type": "string" },
+        "playerSha256": { "$ref": "#/$defs/sha256" },
+        "sourceHead": { "type": "string", "pattern": "^([0-9a-f]{40}|UNKNOWN)$" },
+        "buildCommit": { "$ref": "#/$defs/commitOrUnknown" },
+        "buildProvenance": { "enum": ["UNKNOWN", "USER_DECLARED", "BUILD_LOG_ATTACHED"] },
+        "rulesetVersion": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": true
+    },
+    "availability": {
+      "type": "object",
+      "required": ["roundId", "stateVersion", "eventSeq", "controlEpoch", "requests", "ledger", "physical", "structuredPlayerExport"],
+      "properties": {
+        "roundId": { "type": "boolean" },
+        "stateVersion": { "type": "boolean" },
+        "eventSeq": { "type": "boolean" },
+        "controlEpoch": { "type": "boolean" },
+        "requests": { "type": "boolean" },
+        "ledger": { "type": "boolean" },
+        "physical": { "type": "boolean" },
+        "structuredPlayerExport": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+    "request": {
+      "type": "object",
+      "required": ["requestId", "receiptId", "confirmed", "payloadSha256"],
+      "properties": {
+        "requestId": { "type": "string", "minLength": 1 },
+        "receiptId": { "type": "string", "minLength": 1 },
+        "confirmed": { "type": "boolean" },
+        "payloadSha256": { "$ref": "#/$defs/sha256" }
+      },
+      "additionalProperties": true
+    },
+    "observation": {
+      "type": "object",
+      "required": ["schemaVersion", "kind", "observationId", "source", "phase", "capturedAt", "runBinding", "availability", "roundId", "stateVersion", "eventSeq", "controlEpoch", "requests", "ledger", "physical", "integrity"],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/schemaVersion" },
+        "kind": { "const": "p45-e2e-observation" },
+        "observationId": { "type": "string", "minLength": 1 },
+        "source": { "enum": ["PLAYER_STRUCTURED_EXPORT", "TOOL_SELF_TEST", "SAVE_HEADER_EXTRACT", "MANUAL_TRANSCRIPTION"] },
+        "phase": {
+          "enum": ["BEFORE_RECOVERY", "AFTER_RECOVERY", "UNKNOWN"],
+          "description": "UNKNOWN is only valid for a standalone save-header extraction. Import/Compare require the exact BEFORE_RECOVERY or AFTER_RECOVERY side."
+        },
+        "capturedAt": { "$ref": "#/$defs/timestamp" },
+        "runBinding": { "$ref": "#/$defs/runBinding" },
+        "availability": { "$ref": "#/$defs/availability" },
+        "roundId": { "type": ["string", "null"] },
+        "stateVersion": { "oneOf": [{ "$ref": "#/$defs/decimalString" }, { "type": "null" }] },
+        "eventSeq": { "oneOf": [{ "$ref": "#/$defs/decimalString" }, { "type": "null" }] },
+        "controlEpoch": { "oneOf": [{ "$ref": "#/$defs/decimalString" }, { "type": "null" }] },
+        "requests": {
+          "oneOf": [
+            { "type": "array", "items": { "$ref": "#/$defs/request" } },
+            { "type": "null" }
+          ]
+        },
+        "ledger": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["points", "entryCount", "entriesSha256"],
+              "properties": {
+                "points": { "type": "string", "pattern": "^-?[0-9]+$" },
+                "entryCount": { "type": "integer", "minimum": 0 },
+                "entriesSha256": { "$ref": "#/$defs/sha256" }
+              },
+              "additionalProperties": true
+            },
+            { "type": "null" }
+          ]
+        },
+        "physical": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["tileCount", "tilesSha256"],
+              "properties": {
+                "tileCount": { "type": "integer", "minimum": 0, "maximum": 136 },
+                "tilesSha256": { "$ref": "#/$defs/sha256" },
+                "wallCount": { "type": "integer", "minimum": 0 },
+                "deadWallCount": { "type": "integer", "minimum": 0 }
+              },
+              "additionalProperties": true
+            },
+            { "type": "null" }
+          ]
+        },
+        "reconnect": {
+          "type": ["object", "null"],
+          "properties": {
+            "sessionId": { "type": ["string", "null"] },
+            "cursor": { "type": ["string", "integer", "null"] }
+          },
+          "additionalProperties": true
+        },
+        "save": { "type": ["object", "null"] },
+        "integrity": {
+          "type": "object",
+          "required": ["algorithm", "canonicalSha256"],
+          "properties": {
+            "algorithm": { "const": "SHA-256" },
+            "canonicalSha256": {
+              "$ref": "#/$defs/sha256",
+              "description": "SHA-256 over the tool's canonical field lines, including build identity and all availability booleans. A self-computed checksum is not a trust signature."
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "manifestEntry": {
+      "type": "object",
+      "required": ["artifactPath", "sourcePath", "kind", "attempt", "bytes", "sha256", "sensitivity"],
+      "properties": {
+        "artifactPath": { "type": "string", "minLength": 1 },
+        "sourcePath": { "type": "string" },
+        "kind": { "type": "string" },
+        "attempt": { "type": "integer", "minimum": 0 },
+        "bytes": { "type": "integer", "minimum": 0 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "sensitivity": { "enum": ["public", "private-do-not-publish"] },
+        "redactedFrom": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "manifest": {
+      "type": "object",
+      "required": ["schemaVersion", "kind", "manifestId", "runId", "evidenceClass", "collection", "generatedAt", "status", "entries", "counts", "notes", "exclusions"],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/schemaVersion" },
+        "kind": { "const": "p45-e2e-evidence-manifest" },
+        "manifestId": { "type": "string" },
+        "runId": { "type": "string" },
+        "evidenceClass": { "enum": ["GAME", "TOOL_SELF_TEST"] },
+        "collection": { "type": "string", "pattern": "^[0-9]{4}$" },
+        "generatedAt": { "$ref": "#/$defs/timestamp" },
+        "status": { "enum": ["GAME_EVIDENCE_COLLECTED_PARTIAL", "TOOL_SELF_TEST_EVIDENCE_COLLECTED", "NOT_RUN", "BLOCKED"] },
+        "redactionPolicy": { "type": "string", "description": "Fail-closed log redaction policy that produced public copies." },
+        "entries": { "type": "array", "items": { "$ref": "#/$defs/manifestEntry" } },
+        "counts": {
+          "type": "object",
+          "required": ["artifacts", "attempts", "publicArtifacts", "privateArtifacts"],
+          "properties": {
+            "artifacts": { "type": "integer", "minimum": 1 },
+            "attempts": { "type": "integer", "minimum": 0 },
+            "publicArtifacts": { "type": "integer", "minimum": 0 },
+            "privateArtifacts": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": true
+        },
+        "notes": { "type": "array", "items": { "type": "string" } },
+        "exclusions": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": true
+    },
+    "compareCheck": {
+      "type": "object",
+      "required": ["name", "before", "after", "equal", "required"],
+      "properties": {
+        "name": { "type": "string" },
+        "before": { "type": "string" },
+        "after": { "type": "string" },
+        "equal": { "type": "boolean" },
+        "required": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+    "compare": {
+      "type": "object",
+      "required": ["schemaVersion", "kind", "compareId", "runId", "evidenceClass", "createdAt", "before", "after", "checks", "mismatches", "requiredFieldsEqual", "eligibleForRealPass", "realPassGate", "pass", "outcome", "rationale", "mutableFields"],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/schemaVersion" },
+        "kind": { "const": "p45-e2e-compare" },
+        "compareId": { "type": "string" },
+        "runId": { "type": "string" },
+        "evidenceClass": { "enum": ["GAME", "TOOL_SELF_TEST"] },
+        "createdAt": { "$ref": "#/$defs/timestamp" },
+        "before": { "type": "object" },
+        "after": { "type": "object" },
+        "checks": { "type": "array", "items": { "$ref": "#/$defs/compareCheck" } },
+        "mismatches": { "type": "array", "items": { "$ref": "#/$defs/compareCheck" } },
+        "requiredFieldsEqual": { "type": "boolean" },
+        "eligibleForRealPass": { "type": "boolean" },
+        "realPassGate": { "type": "string" },
+        "pass": { "type": "boolean" },
+        "outcome": { "enum": ["PASS", "FAIL", "BLOCKED", "TOOL_SELF_TEST_ONLY"] },
+        "rationale": { "type": "string" },
+        "mutableFields": { "type": "object" }
+      },
+      "additionalProperties": true
+    }
+  }
+}
