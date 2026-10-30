@@ -1,6 +1,7 @@
 #nullable enable
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
@@ -9,8 +10,10 @@ using UnityEngine;
 using UnityEngine.SceneManagement;
 using UnityEngine.TestTools;
 using Mahjong.Client;
+using Mahjong.Contracts;
 using Mahjong.Unity.App;
 using Mahjong.Unity.Platform;
+using Mahjong.Unity.Table;
 using Mahjong.Unity.UI;
 using Mahjong.Unity.UI.Session;
 
@@ -377,5 +380,87 @@ namespace Mahjong.Unity.Tests.PlayMode
 
             yield return Cleanup(app.Router, composition);
         }
+        [UnityTest]
+        public IEnumerator RealLocalHost_DiscardBatchConfirmedByIndependentObserver()
+        {
+            ResetAppRoot();
+            AppRoot app = AppRoot.EnsureInitialized(RealConfig(), null, NewRealRoot());
+            AppComposition composition = app.Composition;
+
+            Task<bool> lobby = app.Router.LoadAsync(SceneId.Lobby);
+            yield return WaitUntil(() => lobby.IsCompleted, 20f, "Lobby load");
+            Assert.IsTrue(lobby.Result);
+
+            Task<LocalGameStartResult> start = app.Router.StartLocalGameAsync();
+            yield return WaitUntil(() => start.IsCompleted, 60f, "real local start completion");
+            Assert.AreEqual(LocalGameStartStatus.Started, start.Result.Status);
+            yield return WaitForRealSnapshot(composition, 60f);
+
+            SessionCoordinator coordinator = composition.SessionCoordinator!;
+            var mapper = new PlayerTableProjectionMapper(new SystemTableClientClock());
+            var intentFactory = new TableCommandIntentFactory(new SystemTableClientClock());
+            PlayerLegalActionState? discard = null;
+            yield return WaitUntil(
+                () =>
+                {
+                    PlayerTableViewState projected = mapper.Project(coordinator.Current);
+                    IReadOnlyList<PlayerLegalActionState>? candidates = projected.Own?.Decision?.Candidates;
+                    if (candidates == null)
+                    {
+                        return false;
+                    }
+
+                    for (int i = 0; i < candidates.Count; i++)
+                    {
+                        if (candidates[i].Action == PlayerActionKind.DiscardTile)
+                        {
+                            discard = candidates[i];
+                            return true;
+                        }
+                    }
+
+                    return false;
+                },
+                30f,
+                "player decision with a discard candidate");
+
+            PlayerTableViewState view = mapper.Project(coordinator.Current);
+            string requestId = "playmode-observer-" + Guid.NewGuid().ToString("N");
+            var owner = new TableCommandOwnerContext(
+                new RequestId(requestId),
+                new RequestScopeId(view.Identity.ScopeId),
+                new StateVersion(view.Identity.StateVersion),
+                new OwnerEpoch(view.Identity.OwnerEpoch));
+            TableCommandIntent intent = intentFactory.CreateSubmitAction(view, discard!, owner);
+
+            using var observer = new ConfirmedVisibleEventObserver(coordinator);
+            coordinator.ReceiptResolved += observer.OnReceiptResolved;
+            try
+            {
+                observer.BeginAction(coordinator.Current, requestId, view.Identity.ScopeId, "DiscardTile/" + discard!.RawActionType);
+                Task<CommandSubmission> submit = coordinator.SubmitAsync(intent.Command, CancellationToken.None);
+                yield return WaitUntil(() => submit.IsCompleted, 10f, "discard submit");
+                Assert.IsTrue(submit.Result.Sent, "the discard must be handed to the transport");
+
+                yield return WaitUntil(() => observer.TryGetConfirmation() != null, 20f, "confirmed discard event");
+                ConfirmedVisibleActionEvent? confirmed = observer.TryGetConfirmation();
+                Assert.IsNotNull(confirmed);
+                Assert.AreEqual(ProtocolEventType.TileDiscarded, confirmed!.Event.Type);
+                Assert.AreEqual(0, confirmed.Event.Seat);
+                Debug.Log(
+                    "PLAYMODE_OBSERVER_ACTION request=" + requestId +
+                    " commandVersion=" + confirmed.CommandVersion +
+                    " batchStateVersion=" + confirmed.Batch.StateVersion +
+                    " eventSeq=" + confirmed.Event.EventSeq +
+                    " batches=" + observer.DescribeBatches());
+            }
+            finally
+            {
+                coordinator.ReceiptResolved -= observer.OnReceiptResolved;
+            }
+
+            yield return Cleanup(app.Router, composition);
+        }
+
     }
 }
