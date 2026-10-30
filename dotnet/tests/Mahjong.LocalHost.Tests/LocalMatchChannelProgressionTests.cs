@@ -1,4 +1,4 @@
-#nullable enable
+﻿#nullable enable
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -172,6 +172,123 @@ namespace Mahjong.LocalHost.Tests
             finally
             {
                 await restored.DisposeAsync();
+            }
+        }
+
+        [Fact]
+        public async Task LostReceiptIsReconciledThroughOriginalOutboxWithoutDuplicateSideEffect()
+        {
+            await using var harness = new P41Harness();
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            string root = Path.Combine(harness.Root, "match-outbox-reconcile");
+            var options = new LocalMatchHostOptions
+            {
+                SaveDirectory = root,
+                MatchId = "outbox-reconcile",
+                OwnerInstanceId = "outbox-reconcile-owner",
+                LeaseDuration = TimeSpan.FromMinutes(5),
+                Environment = harness.Options.Environment,
+                Rules = new MatchRuleConfig(MatchLength.Tonpuusen, handsPerWind: 2, allowWestExtension: false)
+            };
+            options.RoundFactory = (state, hostOptions) =>
+            {
+                // Keep the recovery deterministic: only our command may advance state.
+                hostOptions.AutoPlay = false;
+                return BuildRiichiWinRound(state.CurrentRoundId, state.Scores, state.RiichiSticks);
+            };
+
+            var outbox = new InMemoryOutboxStore();
+            LocalMatchCoordinator match = await LocalMatchCoordinator.OpenAsync(options, ct);
+            try
+            {
+                LocalMatchRound round = await match.OpenRoundAsync(ct);
+                string roundId = round.RoundId;
+                await round.Channel.OpenAsync(
+                    new TableChannelConnectRequest(round.Ticket, "outbox-reconcile", null), ct);
+                var session = new TableSession(round.Channel, outbox);
+                await session.OpenAsync(new TableSessionOpenRequest(round.Ticket, "outbox-reconcile"), ct);
+                for (int i = 0; i < 100 && session.State != TableConnectionState.Ready; i++)
+                {
+                    await session.PumpOnceAsync(ct);
+                }
+
+                Assert.Equal(TableConnectionState.Ready, session.State);
+                PlayerSnapshot baseline = session.PlayerSnapshot!;
+                uint tile = baseline.PrivateView.ClosedTiles[0];
+                BusinessPayload payload = CommandPayloadFactory.SubmitAction(
+                    baseline.RoundId,
+                    "local-direct",
+                    0UL,
+                    ProtocolActionType.DiscardTile,
+                    tileIds: new[] { tile });
+                var command = new ProtocolCommand(
+                    CommandKind.SubmitAction,
+                    payload,
+                    new RequestId("lost-receipt-assembly-1"),
+                    session.Binding!.Scope.ScopeId,
+                    new StateVersion(baseline.StateVersion),
+                    new RoundId(baseline.RoundId),
+                    decisionId: null,
+                    controlEpoch: new ControlEpoch(0));
+                CommandSubmission submission = await session.SubmitAsync(command, ct);
+                Assert.True(submission.Sent);
+
+                // Do not pump the receipt: the side effect is durable but the
+                // original scope/request remains unresolved in the same outbox.
+                Assert.Single(session.PendingCommands);
+                await session.CloseAsync("LOST_RECEIPT", CancellationToken.None);
+
+                LocalMatchRound recovered = await match.OpenRoundAsync(ct);
+                Assert.Equal(roundId, recovered.RoundId);
+                await recovered.Channel.OpenAsync(
+                    new TableChannelConnectRequest(recovered.Ticket, "outbox-reconcile", null), ct);
+                var recoveredSession = new TableSession(recovered.Channel, outbox);
+                await recoveredSession.OpenAsync(
+                    new TableSessionOpenRequest(recovered.Ticket, "outbox-reconcile"), ct);
+                for (int i = 0; i < 100 && recoveredSession.State != TableConnectionState.Ready; i++)
+                {
+                    await recoveredSession.PumpOnceAsync(ct);
+                }
+
+                Assert.Equal(TableConnectionState.Ready, recoveredSession.State);
+                Assert.Single(recoveredSession.PendingCommands);
+                PlayerSnapshot beforeReconcile = recoveredSession.PlayerSnapshot!;
+                TableReceiptResolvedEventArgs? resolution = null;
+                EventHandler<TableReceiptResolvedEventArgs> handler = (_, args) =>
+                {
+                    if (string.Equals(args.Command.Key.RequestId.Value, command.RequestId.Value, StringComparison.Ordinal))
+                    {
+                        resolution = args;
+                    }
+                };
+                recoveredSession.ReceiptResolved += handler;
+                try
+                {
+                    await recoveredSession.ReconcilePendingAsync(ct);
+                    for (int i = 0; i < 100 && recoveredSession.PendingCommands.Count > 0; i++)
+                    {
+                        await recoveredSession.PumpOnceAsync(ct);
+                    }
+                }
+                finally
+                {
+                    recoveredSession.ReceiptResolved -= handler;
+                }
+
+                Assert.Empty(recoveredSession.PendingCommands);
+                Assert.NotNull(resolution);
+                Assert.Equal(ReceiptStatus.Applied, resolution!.Resolution.ReceiptStatus);
+                Assert.True(resolution.Resolution.FromReceiptLookup);
+                Assert.False(string.IsNullOrEmpty(resolution.Resolution.CanonicalPayloadSha256));
+                PlayerSnapshot afterReconcile = recoveredSession.PlayerSnapshot!;
+                Assert.Equal(beforeReconcile.StateVersion, afterReconcile.StateVersion);
+                Assert.Equal(beforeReconcile.EventSeq, afterReconcile.EventSeq);
+
+                await recoveredSession.CloseAsync("RECONCILE_DONE", CancellationToken.None);
+            }
+            finally
+            {
+                await match.DisposeAsync();
             }
         }
 
