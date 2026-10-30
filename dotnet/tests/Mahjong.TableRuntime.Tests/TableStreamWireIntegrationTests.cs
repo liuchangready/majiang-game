@@ -178,7 +178,8 @@ namespace Mahjong.TableRuntime.Tests
             RoundStateMachine round = P31Fixtures.Dealt("round-1");
             var source = new TestProjectionSource
             {
-                EventFactsFactory = request => WireEventFacts.Build(request)
+                EventFactsFactory = request => WireEventFacts.Build(request),
+                PublicFactsFactory = request => BuildPublicFactsWithMelds(request.Round)
             };
             var codec = new StrictWireStreamCodec();
             await using StreamHarness harness = StreamHarness.Create(WireOptions(codec), source, initialRound: round);
@@ -224,6 +225,271 @@ namespace Mahjong.TableRuntime.Tests
             Assert.Equal(seatFrame.FromCursor.ProjectionSeq.Value, playerUpdate.FromCursor.ProjectionSeq);
             Assert.Equal(seatFrame.PayloadSize, RequireBytes(seatFrame).Length);
             Assert.Equal(spectatorFrame.PayloadSize, RequireBytes(spectatorFrame).Length);
+        }
+
+        [Fact]
+        public async Task real_domain_pon_commit_reaches_all_four_player_and_spectator_wire_batches()
+        {
+            TileId called = PonChiRiichiEventProjectionTests.Physical(30, 3);
+            TileId handA = PonChiRiichiEventProjectionTests.Physical(30, 0);
+            TileId handB = PonChiRiichiEventProjectionTests.Physical(30, 1);
+            RoundStateMachine round = PonChiRiichiEventProjectionTests.BuildRound(
+                "wire-real-pon", new[] { PonChiRiichiEventProjectionTests.Physical(0, 0) }, called,
+                new[] { handA, handB });
+            var source = new TestProjectionSource
+            {
+                EventFactsFactory = request => WireEventFacts.Build(request),
+                PublicFactsFactory = request => BuildPublicFactsWithMelds(request.Round, request.CommittedEvents)
+            };
+            var codec = new StrictWireStreamCodec();
+            await using StreamHarness harness = StreamHarness.Create(WireOptions(codec), source, initialRound: round);
+            var seats = Enumerable.Range(0, 4).Select(_ => new RecordingStreamSink()).ToArray();
+            var spectator = new RecordingStreamSink();
+            for (int seat = 0; seat < 4; seat++)
+                Assert.Equal(TableStreamControlStatus.Subscribed,
+                    (await harness.SubscribeSeatAsync(seat, "pon-seat-" + seat, 1UL, 1UL, seats[seat])).Status);
+            Assert.Equal(TableStreamControlStatus.Subscribed,
+                (await harness.SubscribeSpectatorAsync("pon-spectator", 1UL, 1UL, spectator)).Status);
+            for (int seat = 0; seat < 4; seat++) await seats[seat].WaitForCountAsync(1);
+            await spectator.WaitForCountAsync(1);
+            (TableSession client, QueueClientChannel channel) = await OpenReadyClientAsync(
+                (await seats[1].WaitForCountAsync(1))[0], TestContext.Current.CancellationToken);
+            TableSnapshotChangedEventArgs? clientUpdate = null;
+            client.SnapshotChanged += (_, args) => clientUpdate = args;
+
+            TableOperationResult discard = await harness.Actor.SubmitAsync(P31Fixtures.Command(
+                RoundCommand.Discard(round.RoundId, 0, called, new[] { 1 }), 0, "wire-pon-discard"),
+                TestContext.Current.CancellationToken);
+            Assert.Equal(TableOperationStatus.Accepted, discard.Status);
+            for (int seat = 0; seat < 4; seat++) await seats[seat].WaitForCountAsync(2);
+            await spectator.WaitForCountAsync(2);
+            channel.Enqueue(RequireBytes((await seats[1].WaitForCountAsync(2))[1]));
+            await client.PumpOnceAsync(TestContext.Current.CancellationToken);
+
+            TableOperationResult pon = await harness.Actor.SubmitAsync(P31Fixtures.Command(
+                RoundCommand.Pon(round.RoundId, 1, called, handA, handB), 1, "wire-pon-commit"),
+                TestContext.Current.CancellationToken);
+            Assert.True(pon.Status == TableOperationStatus.Accepted, pon.ReasonCode + ": " + pon.Detail);
+            Assert.Contains(pon.Events, value => value.Type == RoundEventType.PonDeclared && value.Seat == 1 && value.Tile == called);
+
+            channel.Enqueue(RequireBytes((await seats[1].WaitForCountAsync(3))[2]));
+            await client.PumpOnceAsync(TestContext.Current.CancellationToken);
+            TableVisibleEvent clientPon = Assert.Single(clientUpdate!.VisibleEventBatch.PlayableEvents);
+            Assert.Equal(ProtocolEventType.PonDeclared, clientPon.Type);
+            Assert.Equal(1, clientPon.Seat);
+            Assert.Equal(4ul, clientPon.EventSeq);
+            Assert.Equal(2ul, clientPon.CommandVersion);
+            Assert.Equal(1u, clientPon.EventOrdinal);
+            Assert.Equal((uint)called.Value, clientPon.Payload.Meld!.CalledTileId);
+            Assert.True(harness.Terminations.Terminations.Count == 0,
+                string.Join(Environment.NewLine, harness.Terminations.Terminations.Select(value => value.Detail)));
+
+            for (int seat = 0; seat < 4; seat++)
+            {
+                TableStreamFrame frame = (await seats[seat].WaitForCountAsync(3))[2];
+                Envelope envelope = StrictWireStreamCodec.DecodeAndStrict(RequireBytes(frame));
+                PlayerUpdate update = envelope.PlayerUpdate;
+                var visible = Assert.Single(update.VisibleEvents, value => value.EventType == EventType.PonDeclared);
+                Assert.Equal(4ul, visible.EventSeq);
+                Assert.Equal(2ul, visible.CommandVersion);
+                Assert.Equal(1u, visible.EventOrdinal);
+                Assert.Equal(1, visible.PonDeclared.Player);
+                Assert.Equal(1u, visible.PonDeclared.TurnNumber);
+                Assert.Equal(Mahjong.Contracts.Wire.MeldType.Pon, visible.PonDeclared.Meld.Type);
+                Assert.Equal(new uint[] { (uint)handA.Value, (uint)handB.Value, (uint)called.Value },
+                    visible.PonDeclared.Meld.TileIds.ToArray());
+                Assert.Equal((uint)called.Value, visible.PonDeclared.Meld.CalledTileId);
+                Assert.Equal(0, visible.PonDeclared.FromPlayer);
+            }
+
+            TableStreamFrame spectatorFrame = (await spectator.WaitForCountAsync(3))[2];
+            Envelope spectatorEnvelope = StrictWireStreamCodec.DecodeAndStrict(RequireBytes(spectatorFrame));
+            var publicPon = Assert.Single(spectatorEnvelope.PublicUpdate.VisibleEvents, value => value.EventType == EventType.PonDeclared);
+            Assert.Equal(1, publicPon.PonDeclared.Player);
+            Assert.Equal(new uint[] { (uint)handA.Value, (uint)handB.Value, (uint)called.Value },
+                publicPon.PonDeclared.Meld.TileIds.ToArray());
+            Assert.Equal(15, codec.EncodeCount);
+            Assert.Empty(harness.Terminations.Terminations);
+        }
+
+        [Fact]
+        public async Task real_domain_chi_commit_reaches_wire_batches_with_its_committed_meld()
+        {
+            TileId called = PonChiRiichiEventProjectionTests.Physical(2, 3);
+            TileId chiA = PonChiRiichiEventProjectionTests.Physical(0, 0);
+            TileId chiB = PonChiRiichiEventProjectionTests.Physical(1, 0);
+            RoundStateMachine round = PonChiRiichiEventProjectionTests.BuildRound(
+                "wire-real-chi", new[] { PonChiRiichiEventProjectionTests.Physical(0, 1) }, called,
+                new[] { chiA, chiB });
+            var source = new TestProjectionSource
+            {
+                EventFactsFactory = request => WireEventFacts.Build(request),
+                PublicFactsFactory = request => BuildPublicFactsWithMelds(request.Round, request.CommittedEvents)
+            };
+            var codec = new StrictWireStreamCodec();
+            await using StreamHarness harness = StreamHarness.Create(WireOptions(codec), source, initialRound: round);
+            var player = new RecordingStreamSink();
+            var spectator = new RecordingStreamSink();
+            Assert.Equal(TableStreamControlStatus.Subscribed,
+                (await harness.SubscribeSeatAsync(1, "chi-seat", 1UL, 1UL, player)).Status);
+            Assert.Equal(TableStreamControlStatus.Subscribed,
+                (await harness.SubscribeSpectatorAsync("chi-spectator", 1UL, 1UL, spectator)).Status);
+            await player.WaitForCountAsync(1);
+            await spectator.WaitForCountAsync(1);
+            (TableSession client, QueueClientChannel channel) = await OpenReadyClientAsync(
+                (await player.WaitForCountAsync(1))[0], TestContext.Current.CancellationToken);
+            TableSnapshotChangedEventArgs? clientUpdate = null;
+            client.SnapshotChanged += (_, args) => clientUpdate = args;
+
+            TableOperationResult discard = await harness.Actor.SubmitAsync(P31Fixtures.Command(
+                RoundCommand.Discard(round.RoundId, 0, called, new[] { 1 }), 0, "wire-chi-discard"),
+                TestContext.Current.CancellationToken);
+            Assert.Equal(TableOperationStatus.Accepted, discard.Status);
+            channel.Enqueue(RequireBytes((await player.WaitForCountAsync(2))[1]));
+            await client.PumpOnceAsync(TestContext.Current.CancellationToken);
+            await spectator.WaitForCountAsync(2);
+
+            TableOperationResult chi = await harness.Actor.SubmitAsync(P31Fixtures.Command(
+                RoundCommand.Chi(round.RoundId, 1, called, chiA, chiB), 1, "wire-chi-commit"),
+                TestContext.Current.CancellationToken);
+            Assert.True(chi.Status == TableOperationStatus.Accepted, chi.ReasonCode + ": " + chi.Detail);
+            Assert.Contains(chi.Events, value => value.Type == RoundEventType.ChiDeclared && value.Seat == 1 && value.Tile == called);
+            channel.Enqueue(RequireBytes((await player.WaitForCountAsync(3))[2]));
+            await client.PumpOnceAsync(TestContext.Current.CancellationToken);
+            TableVisibleEvent clientChi = Assert.Single(clientUpdate!.VisibleEventBatch.PlayableEvents);
+            Assert.Equal(ProtocolEventType.ChiDeclared, clientChi.Type);
+            Assert.Equal(1, clientChi.Seat);
+            Assert.Equal((uint)called.Value, clientChi.Payload.Meld!.CalledTileId);
+
+            Envelope playerEnvelope = StrictWireStreamCodec.DecodeAndStrict(RequireBytes((await player.WaitForCountAsync(3))[2]));
+            var visible = Assert.Single(playerEnvelope.PlayerUpdate.VisibleEvents, value => value.EventType == EventType.ChiDeclared);
+            Assert.Equal(1, visible.ChiDeclared.Player);
+            Assert.Equal(0, visible.ChiDeclared.FromPlayer);
+            Assert.Equal(Mahjong.Contracts.Wire.MeldType.Chi, visible.ChiDeclared.Meld.Type);
+            Assert.Equal(new uint[] { (uint)chiA.Value, (uint)chiB.Value, (uint)called.Value }, visible.ChiDeclared.Meld.TileIds.ToArray());
+            Assert.Equal((uint)called.Value, visible.ChiDeclared.Meld.CalledTileId);
+
+            Envelope spectatorEnvelope = StrictWireStreamCodec.DecodeAndStrict(RequireBytes((await spectator.WaitForCountAsync(3))[2]));
+            Assert.Single(spectatorEnvelope.PublicUpdate.VisibleEvents, value => value.EventType == EventType.ChiDeclared);
+            Assert.Empty(harness.Terminations.Terminations);
+        }
+
+        [Fact]
+        public async Task real_domain_riichi_commit_reaches_player_and_spectator_wire_batches()
+        {
+            TileId[] hand =
+            {
+                PonChiRiichiEventProjectionTests.Physical(0, 0), PonChiRiichiEventProjectionTests.Physical(1, 0),
+                PonChiRiichiEventProjectionTests.Physical(2, 0), PonChiRiichiEventProjectionTests.Physical(3, 0),
+                PonChiRiichiEventProjectionTests.Physical(4, 0), PonChiRiichiEventProjectionTests.Physical(5, 0),
+                PonChiRiichiEventProjectionTests.Physical(6, 0), PonChiRiichiEventProjectionTests.Physical(7, 0),
+                PonChiRiichiEventProjectionTests.Physical(8, 0), PonChiRiichiEventProjectionTests.Physical(9, 0),
+                PonChiRiichiEventProjectionTests.Physical(9, 1), PonChiRiichiEventProjectionTests.Physical(22, 0),
+                PonChiRiichiEventProjectionTests.Physical(23, 0)
+            };
+            TileId discardTile = PonChiRiichiEventProjectionTests.Physical(11, 0);
+            RoundStateMachine round = PonChiRiichiEventProjectionTests.BuildRound("wire-real-riichi", hand, discardTile, null);
+            var source = new TestProjectionSource
+            {
+                EventFactsFactory = request => WireEventFacts.Build(request),
+                PublicFactsFactory = request => BuildPublicFactsWithMelds(request.Round, request.CommittedEvents)
+            };
+            var codec = new StrictWireStreamCodec();
+            await using StreamHarness harness = StreamHarness.Create(WireOptions(codec), source, initialRound: round);
+            var player = new RecordingStreamSink();
+            var spectator = new RecordingStreamSink();
+            Assert.Equal(TableStreamControlStatus.Subscribed,
+                (await harness.SubscribeSeatAsync(0, "riichi-seat", 1UL, 1UL, player)).Status);
+            Assert.Equal(TableStreamControlStatus.Subscribed,
+                (await harness.SubscribeSpectatorAsync("riichi-spectator", 1UL, 1UL, spectator)).Status);
+            await player.WaitForCountAsync(1);
+            await spectator.WaitForCountAsync(1);
+            (TableSession client, QueueClientChannel channel) = await OpenReadyClientAsync(
+                (await player.WaitForCountAsync(1))[0], TestContext.Current.CancellationToken);
+            TableSnapshotChangedEventArgs? clientUpdate = null;
+            client.SnapshotChanged += (_, args) => clientUpdate = args;
+
+            TableOperationResult riichi = await harness.Actor.SubmitAsync(P31Fixtures.Command(
+                RoundCommand.Riichi(round.RoundId, 0, discardTile, new[] { 1, 2, 3 }), 0, "wire-riichi-commit"),
+                TestContext.Current.CancellationToken);
+            Assert.True(riichi.Status == TableOperationStatus.Accepted, riichi.ReasonCode + ": " + riichi.Detail);
+            channel.Enqueue(RequireBytes((await player.WaitForCountAsync(2))[1]));
+            await client.PumpOnceAsync(TestContext.Current.CancellationToken);
+            Assert.Equal(2, clientUpdate!.VisibleEventBatch.PlayableEvents.Count);
+            TableVisibleEvent clientRiichi = Assert.Single(clientUpdate.VisibleEventBatch.PlayableEvents,
+                value => value.Type == ProtocolEventType.RiichiDeclared);
+            Assert.Equal(ProtocolEventType.RiichiDeclared, clientRiichi.Type);
+            Assert.Equal(0, clientRiichi.Seat);
+            Assert.Equal((uint)discardTile.Value, clientRiichi.Payload.DiscardTileId);
+            Assert.True(clientRiichi.Payload.DoubleRiichi);
+            Assert.Equal(1ul, clientRiichi.EventSeq);
+            Assert.Equal(1ul, clientRiichi.CommandVersion);
+            Assert.Equal(0u, clientRiichi.EventOrdinal);
+
+            Envelope playerEnvelope = StrictWireStreamCodec.DecodeAndStrict(RequireBytes((await player.WaitForCountAsync(2))[1]));
+            var visible = Assert.Single(playerEnvelope.PlayerUpdate.VisibleEvents, value => value.EventType == EventType.RiichiDeclared);
+            Assert.Equal(0, visible.RiichiDeclared.Player);
+            Assert.Equal((uint)discardTile.Value, visible.RiichiDeclared.DiscardTileId);
+            Assert.True(visible.RiichiDeclared.DoubleRiichi);
+
+            Envelope spectatorEnvelope = StrictWireStreamCodec.DecodeAndStrict(RequireBytes((await spectator.WaitForCountAsync(2))[1]));
+            Assert.Single(spectatorEnvelope.PublicUpdate.VisibleEvents, value => value.EventType == EventType.RiichiDeclared);
+            Assert.Empty(harness.Terminations.Terminations);
+        }
+
+        private static IReadOnlyList<TableSeatPublicFacts> BuildPublicFactsWithMelds(
+            RoundStateMachine round,
+            IReadOnlyList<TableEventRecord>? records = null)
+        {
+            var result = new List<TableSeatPublicFacts>(4);
+            for (int seat = 0; seat < 4; seat++)
+            {
+                var melds = new List<TableMeldFact>();
+                foreach (RoundMeld meld in round.Melds.Where(value => value.Seat == seat))
+                {
+                    ProtocolMeldType type = meld.Kind == RoundMeldKind.Pon
+                        ? ProtocolMeldType.Pon
+                        : meld.Kind == RoundMeldKind.Chi
+                            ? ProtocolMeldType.Chi
+                            : throw new InvalidOperationException("This real-call fixture only supplies public Pon/Chi meld facts.");
+                    melds.Add(new TableMeldFact(type,
+                        meld.Tiles.Select(tile => unchecked((uint)tile.Value)).ToArray(),
+                        unchecked((uint)meld.CalledTile.Value), meld.FromSeat));
+                }
+
+                IReadOnlyList<TileId> river = round.Tiles.TilesInZone(TileZone.Discard, seat);
+                int zoneMeldCount = round.Tiles.TilesInZone(TileZone.Meld, seat).Count;
+                int factMeldCount = melds.Sum(value => value.TileIds.Count);
+                if (zoneMeldCount != factMeldCount)
+                    throw new InvalidOperationException("Test public meld fact mismatch seat=" + seat + " domainZone=" + zoneMeldCount + " facts=" + factMeldCount + " domainMelds=" + round.Melds.Count);
+                var riichiEvents = records == null
+                    ? Array.Empty<TableEventRecord>()
+                    : records.Where(value => value.Type == RoundEventType.RiichiDeclared && value.Seat == seat).ToArray();
+                var discards = river.Select((tile, index) => new Mahjong.Contracts.DiscardView(
+                    unchecked((uint)tile.Value), unchecked((uint)index),
+                    riichiEvents.Any(value => value.Tile == tile), false)).ToArray();
+                result.Add(new TableSeatPublicFacts(seat, riichiEvents.Length > 0, melds, discards));
+            }
+
+            return result;
+        }
+
+        private static async Task<(TableSession Session, QueueClientChannel Channel)> OpenReadyClientAsync(
+            TableStreamFrame baselineFrame,
+            CancellationToken cancellationToken)
+        {
+            Envelope baselineEnvelope = StrictWireStreamCodec.DecodeAndStrict(RequireBytes(baselineFrame));
+            var channel = new QueueClientChannel();
+            var session = new TableSession(channel, new InMemoryOutboxStore());
+            await session.OpenAsync(new TableSessionOpenRequest("projection-ticket", "projection-client"), cancellationToken);
+            channel.Enqueue(WireCodec.Encode(BuildWelcome(baselineFrame.Contract!, baselineEnvelope.PlayerUpdate.Snapshot)));
+            await session.PumpOnceAsync(cancellationToken);
+            Envelope syncRequest = channel.LastSent(MessageType.SyncRequest);
+            channel.Enqueue(WireCodec.Encode(BuildPlayerSync(
+                baselineFrame.Contract!, baselineEnvelope.PlayerUpdate.Snapshot, syncRequest.CorrelationId)));
+            await session.PumpOnceAsync(cancellationToken);
+            Assert.Equal(TableConnectionState.Ready, session.State);
+            return (session, channel);
         }
 
         [Fact]

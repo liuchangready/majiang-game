@@ -273,9 +273,13 @@ namespace Mahjong.TableRuntime
                     break;
                 case ProtocolEventType.ChiDeclared:
                 case ProtocolEventType.PonDeclared:
-                    if (tileCount != 3)
+                    // RoundEvent records the called physical tile only. The immutable
+                    // event facts carry the complete historical meld and the contract
+                    // mapper verifies that the called tile belongs to it before emitting
+                    // the public three-tile payload.
+                    if (tileCount != 1 && tileCount != 3)
                     {
-                        throw new ArgumentException(type + " requires exactly three tile identities.", nameof(tileCount));
+                        throw new ArgumentException(type + " requires one source called tile or three verified meld tile identities.", nameof(tileCount));
                     }
 
                     break;
@@ -777,6 +781,29 @@ namespace Mahjong.TableRuntime
                         (uint)record.Ordinal,
                         record.Seat,
                         new[] { RequireTile(record) });
+                case RoundEventType.PonDeclared:
+                    return new TableEventProjectionInput(
+                        ProtocolEventType.PonDeclared,
+                        record.Seq,
+                        record.CommandVersion,
+                        (uint)record.Ordinal,
+                        record.Seat,
+                        new[] { RequireTile(record) });
+                case RoundEventType.ChiDeclared:
+                    return new TableEventProjectionInput(
+                        ProtocolEventType.ChiDeclared,
+                        record.Seq,
+                        record.CommandVersion,
+                        (uint)record.Ordinal,
+                        record.Seat,
+                        new[] { RequireTile(record) });
+                case RoundEventType.RiichiDeclared:
+                    return new TableEventProjectionInput(
+                        ProtocolEventType.RiichiDeclared,
+                        record.Seq,
+                        record.CommandVersion,
+                        (uint)record.Ordinal,
+                        record.Seat);
                 case RoundEventType.KanDeclared:
                     return new TableEventProjectionInput(
                         ProtocolEventType.KanDeclared,

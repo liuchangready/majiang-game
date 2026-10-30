@@ -229,6 +229,8 @@ namespace Mahjong.TableRuntime.Tests
         /// <summary>Trusted public meld/discard/riichi facts; defaults to the empty fixture.</summary>
         public IReadOnlyList<TableSeatPublicFacts>? PublicFactsOverride { get; set; }
 
+        public Func<TableProjectionContextRequest, IReadOnlyList<TableSeatPublicFacts>>? PublicFactsFactory { get; set; }
+
         /// <summary>Explicit authoritative event facts bound to the committed event capture.</summary>
         public IReadOnlyList<TableProjectionEventFact>? EventFacts { get; set; }
 
@@ -261,7 +263,7 @@ namespace Mahjong.TableRuntime.Tests
                 StateVersionOverride ?? request.StateVersion,
                 7UL,
                 CheatOverride ?? (IncludeCheat ? V32Fixtures.Cheat() : null),
-                PublicFactsOverride ?? V32Fixtures.BuildPublicFacts(request.Round),
+                PublicFactsFactory?.Invoke(request) ?? PublicFactsOverride ?? V32Fixtures.BuildPublicFacts(request.Round),
                 V32Fixtures.BuildPrivateFacts(request.Round, furitenSnapshot: request.Furiten ?? FuritenOverride),
                 Session,
                 Policy,

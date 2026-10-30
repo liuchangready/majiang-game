@@ -702,6 +702,20 @@ namespace Mahjong.TableService
                     return new TableProjectionEventFacts(
                         turnNumber: turnNumber,
                         meld: meldFacts);
+                case RoundEventType.ChiDeclared:
+                case RoundEventType.PonDeclared:
+                    MeldView callMeld = TableCommittedCallFacts.RequireCallMeld(request.Round, record);
+                    return new TableProjectionEventFacts(
+                        turnNumber: turnNumber,
+                        meld: callMeld,
+                        fromSeat: callMeld.FromSeat);
+                case RoundEventType.RiichiDeclared:
+                    if (!record.Tile.HasValue)
+                        throw new InvalidOperationException("RiichiDeclared requires its committed discard tile.");
+                    return new TableProjectionEventFacts(
+                        turnNumber: turnNumber,
+                        discardTileId: unchecked((uint)record.Tile.Value.Value),
+                        doubleRiichi: TableCommittedCallFacts.RequireDoubleRiichi(request.Round, record));
                 case RoundEventType.TsumoWin:
                 case RoundEventType.RonWin:
                     // Yaku/han/fu/score are scoring-authority facts. Fail closed.
@@ -734,6 +748,9 @@ namespace Mahjong.TableService
                 case RoundEventType.RinshanDrawn: return ProtocolEventType.RinshanDraw;
                 case RoundEventType.TileDiscarded: return ProtocolEventType.TileDiscarded;
                 case RoundEventType.KanDeclared: return ProtocolEventType.KanDeclared;
+                case RoundEventType.ChiDeclared: return ProtocolEventType.ChiDeclared;
+                case RoundEventType.PonDeclared: return ProtocolEventType.PonDeclared;
+                case RoundEventType.RiichiDeclared: return ProtocolEventType.RiichiDeclared;
                 case RoundEventType.TsumoWin: return ProtocolEventType.TsumoWin;
                 case RoundEventType.RonWin: return ProtocolEventType.RonWin;
                 case RoundEventType.ExhaustiveDraw:

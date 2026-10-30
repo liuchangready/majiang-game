@@ -193,6 +193,20 @@ namespace Mahjong.TableRuntime.Tests
                         turnNumber: options.TurnNumber,
                         riichiDiscard: options.RiichiDiscard,
                         tsumogiri: options.Tsumogiri);
+                case RoundEventType.PonDeclared:
+                case RoundEventType.ChiDeclared:
+                    ContractMeldView call = TableCommittedCallFacts.RequireCallMeld(request.Round, record);
+                    return new TableProjectionEventFacts(
+                        turnNumber: TableCommittedCallFacts.RequireTurnNumber(request.Round, record),
+                        meld: call,
+                        fromSeat: call.FromSeat);
+                case RoundEventType.RiichiDeclared:
+                    if (!record.Tile.HasValue)
+                        throw new InvalidOperationException("RiichiDeclared requires its committed discard tile.");
+                    return new TableProjectionEventFacts(
+                        turnNumber: TableCommittedCallFacts.RequireTurnNumber(request.Round, record),
+                        discardTileId: unchecked((uint)record.Tile.Value.Value),
+                        doubleRiichi: TableCommittedCallFacts.RequireDoubleRiichi(request.Round, record));
                 case RoundEventType.KanDeclared:
                     if (options.KanMeld == null)
                     {
@@ -247,6 +261,9 @@ namespace Mahjong.TableRuntime.Tests
                 case RoundEventType.RinshanDrawn: return ProtocolEventType.RinshanDraw;
                 case RoundEventType.TileDiscarded: return ProtocolEventType.TileDiscarded;
                 case RoundEventType.KanDeclared: return ProtocolEventType.KanDeclared;
+                case RoundEventType.PonDeclared: return ProtocolEventType.PonDeclared;
+                case RoundEventType.ChiDeclared: return ProtocolEventType.ChiDeclared;
+                case RoundEventType.RiichiDeclared: return ProtocolEventType.RiichiDeclared;
                 case RoundEventType.TsumoWin: return ProtocolEventType.TsumoWin;
                 case RoundEventType.RonWin: return ProtocolEventType.RonWin;
                 case RoundEventType.ExhaustiveDraw:

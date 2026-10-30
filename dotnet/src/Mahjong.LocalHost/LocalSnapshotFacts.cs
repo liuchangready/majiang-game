@@ -176,7 +176,45 @@ namespace Mahjong.LocalHost
                 string.Equals(RecoveredFacts.RoundId, round.RoundId, StringComparison.Ordinal) &&
                 RecoveredFacts.StateVersion == request.StateVersion)
             {
-                return RecoveredFacts;
+                // Older checkpoints can contain the committed Pon/Chi/Riichi journal
+                // entries but predate their typed event facts. Rebuild only these newly
+                // public facts from this exact round/history; keep previously persisted
+                // tsumogiri, settlement and private facts intact.
+                var recoveredEventFacts = new List<TableProjectionEventFact>();
+                for (int i = 0; i < RecoveredFacts.EventFacts.Count; i++)
+                {
+                    TableProjectionEventFact fact = RecoveredFacts.EventFacts[i];
+                    if (fact.Type != ProtocolEventType.PonDeclared &&
+                        fact.Type != ProtocolEventType.ChiDeclared &&
+                        fact.Type != ProtocolEventType.RiichiDeclared)
+                    {
+                        recoveredEventFacts.Add(fact);
+                    }
+                }
+
+                IReadOnlyList<TableProjectionEventFact> rebuilt = BuildEventFacts(request);
+                for (int i = 0; i < rebuilt.Count; i++)
+                {
+                    TableProjectionEventFact fact = rebuilt[i];
+                    if (fact.Type == ProtocolEventType.PonDeclared ||
+                        fact.Type == ProtocolEventType.ChiDeclared ||
+                        fact.Type == ProtocolEventType.RiichiDeclared)
+                    {
+                        recoveredEventFacts.Add(fact);
+                    }
+                }
+
+                return new TableProjectionContextData(
+                    RecoveredFacts.RoundId,
+                    RecoveredFacts.StateVersion,
+                    RecoveredFacts.SessionVersion,
+                    RecoveredFacts.Cheat,
+                    RecoveredFacts.PublicFacts,
+                    RecoveredFacts.PrivateFacts,
+                    RecoveredFacts.Session,
+                    RecoveredFacts.Policy,
+                    recoveredEventFacts,
+                    RecoveredFacts.ConcealedMeldFacts);
             }
             var publicFacts = new List<TableSeatPublicFacts>(4);
             var privateFacts = new List<TableSeatPrivateFacts>(4);
@@ -411,8 +449,24 @@ namespace Mahjong.LocalHost
                         break;
                     case RoundEventType.ChiDeclared:
                     case RoundEventType.PonDeclared:
+                        type = record.Type == RoundEventType.ChiDeclared
+                            ? ProtocolEventType.ChiDeclared
+                            : ProtocolEventType.PonDeclared;
+                        MeldView callMeld = TableCommittedCallFacts.RequireCallMeld(round, record);
+                        value = new TableProjectionEventFacts(
+                            turnNumber: TableCommittedCallFacts.RequireTurnNumber(round, record),
+                            meld: callMeld,
+                            fromSeat: callMeld.FromSeat);
+                        break;
                     case RoundEventType.RiichiDeclared:
-                        continue;
+                        if (!record.Tile.HasValue)
+                            throw new InvalidOperationException("RiichiDeclared requires its committed discard tile.");
+                        type = ProtocolEventType.RiichiDeclared;
+                        value = new TableProjectionEventFacts(
+                            turnNumber: TableCommittedCallFacts.RequireTurnNumber(round, record),
+                            discardTileId: unchecked((uint)record.Tile.Value.Value),
+                            doubleRiichi: TableCommittedCallFacts.RequireDoubleRiichi(round, record));
+                        break;
                     case RoundEventType.TsumoWin:
                     case RoundEventType.RonWin:
                         type = record.Type == RoundEventType.TsumoWin

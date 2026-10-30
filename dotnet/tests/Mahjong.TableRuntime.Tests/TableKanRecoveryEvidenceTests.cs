@@ -1013,27 +1013,40 @@ namespace Mahjong.TableRuntime.Tests
                 }
 
                 RoundMeld meld = round.Melds[i];
+                TileId addedKanTile = default;
+                bool historicalPon = record.Type == RoundEventType.PonDeclared &&
+                    meld.Kind == RoundMeldKind.AddedKan &&
+                    record.Tile.Value == meld.CalledTile &&
+                    HasLaterAddedKan(round, record, meld, out addedKanTile);
                 bool kindMatches = record.Type == RoundEventType.ChiDeclared
                     ? meld.Kind == RoundMeldKind.Chi
                     : record.Type == RoundEventType.PonDeclared
-                        ? meld.Kind == RoundMeldKind.Pon
+                        ? meld.Kind == RoundMeldKind.Pon || historicalPon
                         : meld.Kind == RoundMeldKind.OpenKan ||
                           meld.Kind == RoundMeldKind.ClosedKan ||
                           meld.Kind == RoundMeldKind.AddedKan;
-                if (!kindMatches || !meld.Tiles.Contains(record.Tile.Value))
+                if (!kindMatches || (record.Type == RoundEventType.PonDeclared || record.Type == RoundEventType.ChiDeclared
+                        ? meld.CalledTile != record.Tile.Value
+                        : !meld.Tiles.Contains(record.Tile.Value)))
                 {
                     continue;
                 }
 
-                indices.Add(i);
-                var tiles = new uint[meld.Tiles.Count];
-                for (int t = 0; t < tiles.Length; t++)
+                if (!historicalPon) indices.Add(i);
+                var tiles = new List<uint>(3);
+                for (int t = 0; t < meld.Tiles.Count; t++)
                 {
-                    tiles[t] = unchecked((uint)meld.Tiles[t].Value);
+                    if (historicalPon && meld.Tiles[t] == addedKanTile) continue;
+                    tiles.Add(unchecked((uint)meld.Tiles[t].Value));
                 }
 
+                if (record.Type == RoundEventType.PonDeclared && tiles.Count != 3)
+                    throw new InvalidOperationException("Historical Pon does not reconstruct to exactly three tiles.");
+
                 bool closed = meld.Kind == RoundMeldKind.ClosedKan;
-                ProtocolMeldType type = meld.Kind == RoundMeldKind.Chi
+                ProtocolMeldType type = historicalPon
+                    ? ProtocolMeldType.Pon
+                    : meld.Kind == RoundMeldKind.Chi
                     ? ProtocolMeldType.Chi
                     : meld.Kind == RoundMeldKind.Pon
                         ? ProtocolMeldType.Pon
@@ -1050,6 +1063,36 @@ namespace Mahjong.TableRuntime.Tests
             }
 
             throw new InvalidOperationException("No matching recovered meld for " + record.Seq + ".");
+        }
+
+        private static bool HasLaterAddedKan(RoundStateMachine round, TableEventRecord record, RoundMeld meld, out TileId addedTile)
+        {
+            int sourceIndex = -1;
+            for (int i = 0; i < round.Events.Count; i++)
+            {
+                RoundEvent source = round.Events[i];
+                if (source.Type == record.Type && source.Seat == record.Seat && source.Tile == record.Tile &&
+                    string.Equals(source.Detail, record.Detail, StringComparison.Ordinal))
+                {
+                    sourceIndex = i;
+                    break;
+                }
+            }
+
+            for (int i = sourceIndex + 1; sourceIndex >= 0 && i < round.Events.Count; i++)
+            {
+                RoundEvent value = round.Events[i];
+                if (value.Type == RoundEventType.KanDeclared && value.Seat == meld.Seat &&
+                    string.Equals(value.Detail, "ADDED_KAN", StringComparison.Ordinal) && value.Tile.HasValue &&
+                    meld.Tiles.Contains(value.Tile.Value))
+                {
+                    addedTile = value.Tile.Value;
+                    return true;
+                }
+            }
+
+            addedTile = default;
+            return false;
         }
 
         private static Evidence BuildEvidence(Script script)
