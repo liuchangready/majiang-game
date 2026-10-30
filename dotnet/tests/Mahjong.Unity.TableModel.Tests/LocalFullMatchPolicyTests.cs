@@ -195,6 +195,28 @@ namespace Mahjong.Unity.TableModel.Tests
         }
 
         [Fact]
+        public void MandatoryDrawRequiresItsOwnVisibleEventAndStableRequestId()
+        {
+            var clock = new ManualTableClock();
+            WirePlayerSnapshot raw = P43TestData.PlayerSnapshot(includeDecision: false);
+            raw.PublicView.Board.Phase = GamePhase.Draw;
+            raw.PublicView.Board.CurrentSeat = 0;
+            PlayerTableViewState view = View(clock, raw);
+            SessionViewState session = P43TestData.View(raw);
+
+            Assert.True(LocalFullMatchPolicy.TryCreateMandatoryDrawPlan(
+                session, view, clock.MonotonicMilliseconds,
+                out FullMatchActionPlan? first, out _, out _));
+            Assert.True(LocalFullMatchPolicy.TryCreateMandatoryDrawPlan(
+                session, view, clock.MonotonicMilliseconds,
+                out FullMatchActionPlan? second, out _, out _));
+            Assert.Equal(first!.RequestId, second!.RequestId);
+            Assert.Equal(PlayerActionKind.DrawTile, first.Action);
+            Assert.True(first.RequiresVisibleEvent);
+            Assert.Equal(CommandKind.SubmitAction, first.Command.Kind);
+        }
+
+        [Fact]
         public void TerminalCommitRejectsAClientScoreThatDoesNotEqualTheDurableRecord()
         {
             var guard = new FullMatchRoundGuard();
