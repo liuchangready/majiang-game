@@ -3578,8 +3578,8 @@ function Test-P45RecoveryExportChain {
 
     $attemptRoot = Join-Path $Context.Root 'attempts'
     foreach ($otherLaunchPath in @(Get-ChildItem -LiteralPath $attemptRoot -Recurse -File -Filter 'launch.json' -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })) {
-        if ([string]::Equals((Get-P45FullPath $otherLaunchPath), (Get-P45FullPath $launchPath), [StringComparison]::OrdinalIgnoreCase)) { continue }
         $other = Read-P45Json -Path $otherLaunchPath
+        if ([int](Get-P45Property $other 'attempt' 0) -eq [int]$attempt) { continue }
         $otherRecovery = Get-P45Property $other 'recoveryExport'
         if ($null -ne $otherRecovery -and
             [string]::Equals([string](Get-P45Property $otherRecovery 'challenge'), [string]$sealedObservation.exportBinding.challenge, [StringComparison]::Ordinal)) {
