@@ -305,6 +305,13 @@ namespace Mahjong.Unity.Tests.PlayMode
 
                 if (!terminal)
                 {
+                    Debug.Log(
+                        "PLAYMODE_ROUND_STALL_DETAIL" +
+                        " immediateSleeve=" + (view.Own?.Cheat?.ImmediateSleeveBloom != null) +
+                        " offTurnSleeve=" + (view.Own?.Cheat?.OffTurnSleeveBloom != null) +
+                        " beamSwap=" + (view.Own?.Cheat?.BeamSwap != null) +
+                        " preparation=" + (view.Own?.Cheat?.Preparation != null) +
+                        " decision=" + (view.Own?.Decision != null));
                     LogAssert.Expect(LogType.Error, new Regex("PLAYMODE_ROUND_NOT_TERMINAL"));
                     Debug.LogError(
                         "PLAYMODE_ROUND_NOT_TERMINAL phase=" + view.Board.Phase +
