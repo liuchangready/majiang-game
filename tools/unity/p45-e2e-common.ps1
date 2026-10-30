@@ -3500,6 +3500,11 @@ function Test-P45RecoveryExportChain {
                 ([string](Get-P45Property $_ 'artifactPath')).Replace('/', '\') -eq $normalized
             }) | Select-Object -First 1
     }
+    $doneRelative = [IO.Path]::Combine([IO.Path]::GetDirectoryName([string]$sealed.ObservationEntry.artifactPath), 'export.done')
+    if ($null -eq (& $findEntry $doneRelative)) {
+        return (& $blocked 'sealed collection lacks the one-time export.done completion marker')
+    }
+
     $buildLogRecord = Get-P45Property $run.player 'buildLogArchived'
     if ($null -eq $buildLogRecord) {
         return (& $blocked 'sealed run has no archived Player build log')
@@ -3562,6 +3567,17 @@ function Test-P45RecoveryExportChain {
     if ([string]$exit.disposition -eq 'EXITED_OK' -and [int]$exit.nativeExitCode -ne 0) {
         return (& $invalid 'sealed EXITED_OK record has a nonzero native exit code')
     }
+    try {
+        $capturedAt = [DateTimeOffset]::Parse([string]$sealedObservation.capturedAt, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind)
+        $launchAt = [DateTimeOffset]::Parse([string]$launch.startedAt, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind)
+        $exitAt = [DateTimeOffset]::Parse([string]$exit.observedAt, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind)
+        if ($capturedAt -lt $launchAt.AddSeconds(-2) -or $capturedAt -gt $exitAt.AddSeconds(2)) {
+            return (& $invalid 'export capture timestamp is outside the launch/exit window')
+        }
+    }
+    catch {
+        return (& $invalid 'sealed launch/export/exit timestamps are not parseable')
+    }
 
     $arguments = @(Get-P45Property (Get-P45Property $launch 'command') 'arguments' @())
     $requiredArguments = @(
@@ -3604,6 +3620,7 @@ function Test-P45RecoveryExportChain {
         buildCommit = [string]$run.player.buildCommit
         sourceHead = [string]$run.source.head
         verifier = (Get-P45RelativePath -BaseDirectory $Context.Root -Path $VerifierPath)
+        verifierSha256 = Get-P45Sha256 -Path $VerifierPath
     }
 
     return [pscustomobject]@{
