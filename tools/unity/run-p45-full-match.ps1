@@ -492,8 +492,10 @@ function Write-SourceRecord {
 
     $dirtyPatchPath = Join-Path $logs 'source.dirty.patch'
     $stagedPatchPath = Join-Path $logs 'source.staged.patch'
-    & git -C $script:RepoRoot diff --binary | Set-Content -LiteralPath $dirtyPatchPath -Encoding UTF8
-    & git -C $script:RepoRoot diff --cached --binary | Set-Content -LiteralPath $stagedPatchPath -Encoding UTF8
+    $dirtyPatchText = (& git -C $script:RepoRoot diff --binary) -join "`n"
+    $stagedPatchText = (& git -C $script:RepoRoot diff --cached --binary) -join "`n"
+    [System.IO.File]::WriteAllText($dirtyPatchPath, $dirtyPatchText, (New-Object System.Text.UTF8Encoding($false)))
+    [System.IO.File]::WriteAllText($stagedPatchPath, $stagedPatchText, (New-Object System.Text.UTF8Encoding($false)))
 
     $untracked = New-Object System.Collections.Generic.List[object]
     $untrackedLines = @(& git -C $script:RepoRoot ls-files --others --exclude-standard)
@@ -509,7 +511,12 @@ function Write-SourceRecord {
         }
     }
     $untrackedPath = Join-Path $logs 'source.untracked.json'
-    $untracked | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $untrackedPath -Encoding UTF8
+    if ($untracked.Count -eq 0) {
+        [System.IO.File]::WriteAllText($untrackedPath, "[]`n", (New-Object System.Text.UTF8Encoding($false)))
+    }
+    else {
+        $untracked | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $untrackedPath -Encoding UTF8
+    }
 
     $statusPath = Join-Path $logs 'source.status.txt'
     [System.IO.File]::WriteAllText($statusPath, $status, (New-Object System.Text.UTF8Encoding($false)))
