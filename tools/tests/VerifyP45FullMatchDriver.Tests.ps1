@@ -19,7 +19,7 @@ $script:Failed = 0
 
 # Load the production ownership helpers without executing the tool's main body.
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($tool, [ref]$null, [ref]$null)
-$ownershipFunctions = @('Get-ProcessRecord', 'Test-OwnedPlayerProcess', 'Stop-OwnedPlayerProcess', 'Quote-ProcessArgument', 'Join-ProcessArguments')
+$ownershipFunctions = @('Write-ToolLog', 'Write-ExitRecordSafe', 'Get-OwnedExitCode', 'Get-ProcessRecord', 'Test-OwnedPlayerProcess', 'Stop-OwnedPlayerProcess', 'Quote-ProcessArgument', 'Join-ProcessArguments', 'Invoke-OwnedProcess')
 foreach ($name in $ownershipFunctions) {
     $fn = $ast.Find({
         param($node)
@@ -27,10 +27,6 @@ foreach ($name in $ownershipFunctions) {
     }, $true)
     if ($null -eq $fn) { throw "Production ownership function not found: $name" }
     Invoke-Expression $fn.Extent.Text
-}
-
-function Write-ToolLog {
-    param([string]$Message)
 }
 
 function Assert-True {
@@ -283,8 +279,90 @@ $argProcess = Start-Process -FilePath 'powershell.exe' -ArgumentList $argLine -P
 $received = (Get-Content -LiteralPath $probeOut -Raw).Trim()
 Assert-True ($argProcess.ExitCode -eq 0 -and $received -eq 'arg with spaces|plain|trailing\') 'Windows argument quoting preserves spaces and trailing backslash'
 
-Assert-True ($toolText -match '\$record\.path\s*=\s*\$record\.exe' -and $toolText -match '\$record\.sha256\s*=\s*\$record\.exeSha256') 'player record uses unified path/sha fields'
-Assert-True ($toolText -match 'UNITY_FINALLY' -and $toolText -match 'Stop-OwnedPlayerProcess\s+-Process\s+\$process\s+-Record\s+\$unityRecord') 'Unity timeout/finally uses owned identity stop'
+# 13) Production owned-process fault matrix.
+$faultRoot = Join-Path $outRoot 'process-faults'
+New-Item -ItemType Directory -Force -Path $faultRoot | Out-Null
+
+function New-FaultPaths {
+    param([string]$Name)
+    $dir = Join-Path $faultRoot $Name
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    return [ordered]@{
+        dir = $dir
+        processRecord = Join-Path $dir 'process.json'
+        exitRecord = Join-Path $dir 'exit.json'
+    }
+}
+
+# 13a) Normal exit preserves the real native code.
+$p1 = New-FaultPaths 'normal'
+$r1 = Invoke-OwnedProcess -FilePath 'powershell.exe' -Arguments @('-NoProfile', '-Command', 'exit 7') `
+    -TimeoutSeconds 10 -ProcessRecordPath $p1.processRecord -ExitRecordPath $p1.exitRecord `
+    -Kind 'test' -RunId 'fault-normal' -Label 'FAULT_NORMAL'
+$e1 = Get-Content -LiteralPath $p1.exitRecord -Raw | ConvertFrom-Json
+Assert-True ($r1.exitCode -eq 7 -and $e1.nativeExitCode -eq 7 -and $e1.disposition -eq 'EXITED_NONZERO') 'normal fault matrix preserves native exit'
+
+# 13b) Timeout stops the owned child and records a real/observed exit.
+$p2 = New-FaultPaths 'timeout'
+$pidFile2 = Join-Path $p2.dir 'child.pid'
+$cmd2 = '$PID | Set-Content -LiteralPath ''' + $pidFile2 + '''; Start-Sleep -Seconds 30'
+$r2 = Invoke-OwnedProcess -FilePath 'powershell.exe' -Arguments @('-NoProfile', '-Command', $cmd2) `
+    -TimeoutSeconds 1 -ProcessRecordPath $p2.processRecord -ExitRecordPath $p2.exitRecord `
+    -Kind 'test' -RunId 'fault-timeout' -Label 'FAULT_TIMEOUT'
+$child2 = [int](Get-Content -LiteralPath $pidFile2 -Raw)
+$alive2 = $null -ne (Get-Process -Id $child2 -ErrorAction SilentlyContinue)
+$e2 = Get-Content -LiteralPath $p2.exitRecord -Raw | ConvertFrom-Json
+Assert-True ($r2.timedOut -and -not $alive2 -and $e2.disposition -like 'TOOL_TIMEOUT_*' -and $null -ne $e2.nativeExitCode) 'timeout stops child and records exit'
+
+# 13c) Identity-record write failure still stops the child and writes exit evidence.
+$p3 = New-FaultPaths 'identity-write-failure'
+$pidDir3 = Join-Path $p3.dir 'process-is-a-directory'
+New-Item -ItemType Directory -Force -Path $pidDir3 | Out-Null
+$cmd3 = 'Start-Sleep -Seconds 30'
+$threw3 = $false
+try {
+    Invoke-OwnedProcess -FilePath 'powershell.exe' -Arguments @('-NoProfile', '-Command', $cmd3) `
+        -TimeoutSeconds 10 -ProcessRecordPath $pidDir3 -ExitRecordPath $p3.exitRecord `
+        -Kind 'test' -RunId 'fault-identity' -Label 'FAULT_IDENTITY' | Out-Null
+}
+catch {
+    $threw3 = $true
+}
+$e3 = Get-Content -LiteralPath $p3.exitRecord -Raw | ConvertFrom-Json
+$alive3 = $null -ne (Get-Process -Id $e3.pid -ErrorAction SilentlyContinue)
+Assert-True ($threw3 -and -not $alive3 -and $null -ne $e3.nativeExitCode -and $e3.disposition -like 'FINALIZE_STOP_*') 'identity write failure cleans child and records observed exit'
+
+# 13d) A continuously failing control logger cannot break finalization.
+$p4 = New-FaultPaths 'log-failure'
+$logRoot = Join-Path $p4.dir 'run'
+New-Item -ItemType Directory -Force -Path (Join-Path $logRoot 'logs\tool.log') | Out-Null
+$script:RunRoot = $logRoot
+try {
+    $r4 = Invoke-OwnedProcess -FilePath 'powershell.exe' -Arguments @('-NoProfile', '-Command', 'exit 0') `
+        -TimeoutSeconds 10 -ProcessRecordPath $p4.processRecord -ExitRecordPath $p4.exitRecord `
+        -Kind 'test' -RunId 'fault-log' -Label 'FAULT_LOG'
+}
+finally {
+    $script:RunRoot = $null
+}
+$e4 = Get-Content -LiteralPath $p4.exitRecord -Raw | ConvertFrom-Json
+Assert-True ($r4.exitCode -eq 0 -and $e4.nativeExitCode -eq 0) 'continuous log failure does not interrupt exit record'
+
+# 13e) Exit-record write failure falls back to a writable sibling.
+$p5 = New-FaultPaths 'exit-write-failure'
+$exitDir = Join-Path $p5.dir 'exit-is-a-directory'
+New-Item -ItemType Directory -Force -Path $exitDir | Out-Null
+$r5 = Invoke-OwnedProcess -FilePath 'powershell.exe' -Arguments @('-NoProfile', '-Command', 'exit 3') `
+    -TimeoutSeconds 10 -ProcessRecordPath $p5.processRecord -ExitRecordPath $exitDir `
+    -Kind 'test' -RunId 'fault-exit' -Label 'FAULT_EXIT'
+$fallback5 = $exitDir + '.fallback.json'
+$e5 = Get-Content -LiteralPath $fallback5 -Raw | ConvertFrom-Json
+Assert-True ($r5.exitCode -eq 3 -and (Test-Path -LiteralPath $fallback5) -and $e5.nativeExitCode -eq 3) 'exit record failure writes fallback evidence'
+
+# 12) Windows argument quoting: spaces and a trailing backslash survive exactly.
+
+Assert-True ($toolText -match 'path = \$FilePath' -and $toolText -match 'sha256 = \$hash') 'player/Unity record uses unified path/sha fields'
+Assert-True ($toolText -match '-Kind ''p45-full-match-unity''' -and $toolText -match 'FINALIZE_STOP_' -and $toolText -match 'Get-OwnedExitCode') 'Unity uses owned process cleanup and observed exit capture'
 Assert-True ($toolText -match 'executions\\' -and $toolText -match '\-full-match-run-id' -and $toolText -match 'driverSummaryRunIdMatches') 'run uses a fresh execution id bound to summary'
 Assert-True ($toolText -match 'Test-WholePlayerManifest' -and $toolText -match 'source\.dirty\.patch' -and $toolText -match 'source\.untracked\.json') 'whole-package and source-closure checks exist'
 

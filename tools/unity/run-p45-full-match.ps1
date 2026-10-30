@@ -64,10 +64,66 @@ function Write-ToolLog {
     param([string]$Message)
 
     $line = '[' + [DateTimeOffset]::Now.ToString('o') + '] ' + $Message
-    Write-Host $line
-    if ($script:RunRoot -and (Test-Path -LiteralPath (Join-Path $script:RunRoot 'logs'))) {
-        Add-Content -LiteralPath (Join-Path $script:RunRoot 'logs\tool.log') -Value $line -Encoding UTF8
+    try {
+        Write-Host $line
     }
+    catch {
+    }
+
+    try {
+        if ($script:RunRoot) {
+            $logsDir = Join-Path $script:RunRoot 'logs'
+            if (Test-Path -LiteralPath $logsDir -PathType Container) {
+                Add-Content -LiteralPath (Join-Path $logsDir 'tool.log') -Value $line -Encoding UTF8
+            }
+        }
+    }
+    catch {
+        # A failed logger must never break process cleanup or exit evidence.
+    }
+}
+
+function Write-ExitRecordSafe {
+    param($Record, [string]$ExitPath, [string]$Label)
+
+    $json = $Record | ConvertTo-Json -Depth 6
+    try {
+        [System.IO.File]::WriteAllText($ExitPath, ($json + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+        return $ExitPath
+    }
+    catch {
+        Write-ToolLog ($Label + '_EXIT_RECORD_PRIMARY_FAILED ' + $_.Exception.GetType().Name)
+    }
+
+    $fallback = $ExitPath + '.fallback.json'
+    try {
+        [System.IO.File]::WriteAllText($fallback, ($json + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+        return $fallback
+    }
+    catch {
+        try {
+            [Console]::Error.WriteLine($Label + '_EXIT_RECORD_FALLBACK ' + $json)
+        }
+        catch {
+        }
+
+        return ''
+    }
+}
+
+function Get-OwnedExitCode {
+    param([System.Diagnostics.Process]$Process)
+
+    try {
+        $Process.Refresh()
+        if ($Process.HasExited) {
+            return $Process.ExitCode
+        }
+    }
+    catch {
+    }
+
+    return $null
 }
 
 function Quote-ProcessArgument {
@@ -250,69 +306,26 @@ function Invoke-UnityBuild {
         '-logFile', $LogPath
     )
 
-    $argumentLine = Join-ProcessArguments -Arguments $arguments
-    $unityHash = (Get-FileHash -LiteralPath $UnityExe -Algorithm SHA256).Hash
-    $process = Start-Process -FilePath $UnityExe -ArgumentList $argumentLine -PassThru -WindowStyle Hidden
-    $unityRecord = $null
-    $disposition = 'ABORTED_AFTER_LAUNCH'
-    $nativeExit = $null
-    try {
-        $unityRecord = [ordered]@{
-            schemaVersion = 1
-            kind = 'p45-full-match-unity-process'
-            pid = $process.Id
-            startTimeUtc = $process.StartTime.ToUniversalTime().ToString('o')
-            path = $UnityExe
-            sha256 = $unityHash
-        }
-        $unityRecord | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path (Split-Path -Parent $LogPath) 'unity-process.json') -Encoding UTF8
-        Write-ToolLog ('UNITY_START pid=' + $process.Id + ' exe=' + $UnityExe + ' sha256=' + $unityRecord.sha256)
-
-        $exited = $process.WaitForExit(3600 * 1000)
-        if (-not $exited) {
-            Write-ToolLog ('UNITY_TIMEOUT pid=' + $process.Id)
-            $stop = Stop-OwnedPlayerProcess -Process $process -Record $unityRecord -Reason 'UNITY_TIMEOUT'
-            $disposition = if ($stop -eq 'KILLED') { 'TOOL_TIMEOUT_KILLED' } else { 'TOOL_TIMEOUT_' + $stop }
-            return 124
-        }
-
-        $process.Refresh()
-        $nativeExit = $process.ExitCode
-        $disposition = if ($nativeExit -eq 0) { 'EXITED_OK' } else { 'EXITED_NONZERO' }
-        if ($null -eq $nativeExit) {
-            Write-ToolLog ('UNITY_EXIT_CODE_UNAVAILABLE pid=' + $process.Id)
-            return 125
-        }
-
-        Write-ToolLog ('UNITY_EXIT pid=' + $process.Id + ' native=' + $nativeExit)
-        return [int]$nativeExit
+    $buildLogDir = Split-Path -Parent $LogPath
+    $owned = Invoke-OwnedProcess `
+        -FilePath $UnityExe `
+        -Arguments $arguments `
+        -TimeoutSeconds 3600 `
+        -ProcessRecordPath (Join-Path $buildLogDir 'unity-process.json') `
+        -ExitRecordPath (Join-Path $buildLogDir 'unity-exit.json') `
+        -Kind 'p45-full-match-unity' `
+        -RunId '' `
+        -Label 'UNITY'
+    if ($owned.timedOut) {
+        return 124
     }
-    finally {
-        if (-not $process.HasExited) {
-            if ($unityRecord -ne $null) {
-                $stop = Stop-OwnedPlayerProcess -Process $process -Record $unityRecord -Reason 'UNITY_FINALLY'
-                if ($stop -ne 'KILLED') {
-                    $disposition = 'FINALIZE_STOP_' + $stop
-                }
-            }
-            else {
-                $disposition = 'FINALIZE_IDENTITY_UNAVAILABLE'
-            }
-        }
 
-        try {
-            [ordered]@{
-                disposition = $disposition
-                nativeExitCode = $nativeExit
-                pid = if ($unityRecord) { $unityRecord.pid } else { $process.Id }
-                path = $UnityExe
-                sha256 = $unityHash
-            } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path (Split-Path -Parent $LogPath) 'unity-exit.json') -Encoding UTF8
-        }
-        catch {
-            Write-ToolLog ('UNITY_EXIT_RECORD_FAILED ' + $_.Exception.GetType().Name)
-        }
+    if ($null -eq $owned.exitCode) {
+        Write-ToolLog 'UNITY_EXIT_CODE_UNAVAILABLE'
+        return 125
     }
+
+    return [int]$owned.exitCode
 }
 
 function Get-WholeFileManifest {
@@ -779,6 +792,117 @@ function Stop-OwnedPlayerProcess {
     }
 }
 
+function Invoke-OwnedProcess {
+    param(
+        [string]$FilePath,
+        [string[]]$Arguments,
+        [int]$TimeoutSeconds,
+        [string]$ProcessRecordPath,
+        [string]$ExitRecordPath,
+        [string]$Kind,
+        [string]$RunId,
+        [string]$Label
+    )
+
+    if (-not [System.IO.Path]::IsPathRooted($FilePath)) {
+        $command = Get-Command $FilePath -ErrorAction Stop
+        $FilePath = $command.Source
+    }
+    else {
+        $FilePath = (Resolve-Path -LiteralPath $FilePath).Path
+    }
+
+    $hash = (Get-FileHash -LiteralPath $FilePath -Algorithm SHA256).Hash
+    $argumentLine = Join-ProcessArguments -Arguments $Arguments
+    $startedAt = [DateTimeOffset]::UtcNow
+    $process = Start-Process -FilePath $FilePath -ArgumentList $argumentLine -PassThru -WindowStyle Hidden
+    $record = $null
+    $nativeExit = $null
+    $disposition = 'ABORTED_AFTER_LAUNCH'
+    $timedOut = $false
+    $stopResult = ''
+    $exitWritten = ''
+    try {
+        $record = [ordered]@{
+            schemaVersion = 1
+            kind = $Kind + '-process'
+            runId = $RunId
+            startedAtUtc = $startedAt.ToString('o')
+            commandLine = $Arguments
+            pid = $process.Id
+            startTimeUtc = $process.StartTime.ToUniversalTime().ToString('o')
+            path = $FilePath
+            sha256 = $hash
+        }
+        $record | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $ProcessRecordPath -Encoding UTF8
+        Write-ToolLog ($Label + '_START runId=' + $RunId + ' pid=' + $process.Id + ' exe=' + $FilePath + ' sha256=' + $hash)
+
+        $exited = $process.WaitForExit([math]::Max(1, $TimeoutSeconds) * 1000)
+        if (-not $exited) {
+            $timedOut = $true
+            Write-ToolLog ($Label + '_TIMEOUT pid=' + $process.Id + ' timeoutSeconds=' + $TimeoutSeconds)
+            $stopResult = Stop-OwnedPlayerProcess -Process $process -Record $record -Reason ($Label + '_TIMEOUT')
+            $disposition = 'TOOL_TIMEOUT_' + $stopResult
+        }
+        else {
+            $nativeExit = Get-OwnedExitCode -Process $process
+            $disposition = if ($nativeExit -eq 0) { 'EXITED_OK' } else { 'EXITED_NONZERO' }
+        }
+    }
+    finally {
+        if (-not $process.HasExited) {
+            if ($record -ne $null) {
+                $stopResult = Stop-OwnedPlayerProcess -Process $process -Record $record -Reason ($Label + '_FINALLY')
+                $disposition = 'FINALIZE_STOP_' + $stopResult
+            }
+            else {
+                $disposition = 'FINALIZE_IDENTITY_UNAVAILABLE'
+            }
+        }
+
+        $observed = Get-OwnedExitCode -Process $process
+        if ($null -ne $observed) {
+            $nativeExit = $observed
+            if ($disposition -eq 'ABORTED_AFTER_LAUNCH' -or $disposition.StartsWith('FINALIZE_STOP_') -or $disposition.StartsWith('TOOL_TIMEOUT_')) {
+                $disposition = $disposition + '_EXIT_' + $observed
+            }
+        }
+        elseif ($disposition -eq 'ABORTED_AFTER_LAUNCH') {
+            $disposition = 'ABORTED_AFTER_LAUNCH_EXIT_UNAVAILABLE'
+        }
+
+        try {
+            $exitRecord = [ordered]@{
+                schemaVersion = 1
+                kind = $Kind + '-exit'
+                runId = $RunId
+                finishedAtUtc = [DateTimeOffset]::UtcNow.ToString('o')
+                disposition = $disposition
+                timedOut = $timedOut
+                stopResult = $stopResult
+                nativeExitCode = $nativeExit
+                pid = if ($record) { $record.pid } else { $process.Id }
+                path = $FilePath
+                sha256 = $hash
+            }
+            $exitWritten = Write-ExitRecordSafe -Record $exitRecord -ExitPath $ExitRecordPath -Label $Label
+            Write-ToolLog ($Label + '_EXIT runId=' + $RunId + ' disposition=' + $disposition + ' native=' + $nativeExit + ' exitRecord=' + $exitWritten)
+        }
+        catch {
+            Write-ToolLog ($Label + '_EXIT_FINALIZE_FAILED ' + $_.Exception.GetType().Name)
+        }
+    }
+
+    return [ordered]@{
+        exitCode = $nativeExit
+        disposition = $disposition
+        timedOut = $timedOut
+        stopResult = $stopResult
+        exitRecord = $exitWritten
+        pid = if ($record) { $record.pid } else { $process.Id }
+    }
+}
+
 function Invoke-Run {
     param([string]$RunRoot)
 
@@ -817,79 +941,18 @@ function Invoke-Run {
     )
 
     $startedAt = [DateTimeOffset]::UtcNow
-    $argumentLine = Join-ProcessArguments -Arguments $arguments
-    $playerHash = (Get-FileHash -LiteralPath $playerExe -Algorithm SHA256).Hash
-    $process = Start-Process -FilePath $playerExe -ArgumentList $argumentLine -PassThru -WindowStyle Hidden
-    $record = $null
-    $disposition = 'ABORTED_AFTER_LAUNCH'
-    $nativeExit = $null
-    try {
-        $record = [ordered]@{
-            schemaVersion = 1
-            kind = 'p45-full-match-player-process'
-            runId = $runId
-            startedAtUtc = $startedAt.ToString('o')
-            commandLine = $arguments
-            exe = $playerExe
-            exeSha256 = $playerHash
-            pid = $process.Id
-            startTimeUtc = $process.StartTime.ToUniversalTime().ToString('o')
-        }
-        $record.path = $record.exe
-        $record.sha256 = $record.exeSha256
-        $record | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $runtimeDir 'process.json') -Encoding UTF8
-        Write-ToolLog ('PLAYER_START runId=' + $runId + ' pid=' + $process.Id + ' exe=' + $playerExe + ' sha256=' + $record.sha256)
-
-        $exited = $process.WaitForExit([math]::Max(1, $TimeoutSeconds) * 1000)
-        if (-not $exited) {
-            Write-ToolLog ('PLAYER_TIMEOUT pid=' + $process.Id + ' timeoutSeconds=' + $TimeoutSeconds)
-            $stop = Stop-OwnedPlayerProcess -Process $process -Record $record -Reason 'PLAYER_TIMEOUT'
-            if ($stop -eq 'KILLED') {
-                $disposition = 'TOOL_TIMEOUT_KILLED'
-            }
-            elseif ($stop -eq 'KILL_FAILED') {
-                $disposition = 'TOOL_TIMEOUT_KILL_FAILED'
-            }
-            else {
-                $disposition = 'TOOL_TIMEOUT_NOT_OWNED'
-            }
-        }
-        else {
-            $process.Refresh()
-            $nativeExit = $process.ExitCode
-            $disposition = if ($nativeExit -eq 0) { 'EXITED_OK' } else { 'EXITED_NONZERO' }
-        }
-    }
-    finally {
-        if (-not $process.HasExited) {
-            if ($record -ne $null) {
-                $stop = Stop-OwnedPlayerProcess -Process $process -Record $record -Reason 'PLAYER_FINALLY'
-                if ($stop -ne 'KILLED') {
-                    $disposition = 'FINALIZE_STOP_' + $stop
-                }
-            }
-            else {
-                # Identity was never captured; do not kill an unproven process.
-                $disposition = 'FINALIZE_IDENTITY_UNAVAILABLE'
-            }
-        }
-
-        try {
-            [ordered]@{
-                schemaVersion = 1
-                kind = 'p45-full-match-player-exit'
-                runId = $runId
-                finishedAtUtc = [DateTimeOffset]::UtcNow.ToString('o')
-                disposition = $disposition
-                nativeExitCode = $nativeExit
-                timeoutSeconds = $TimeoutSeconds
-            } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $runtimeDir 'exit.json') -Encoding UTF8
-            Write-ToolLog ('PLAYER_EXIT runId=' + $runId + ' disposition=' + $disposition + ' native=' + $nativeExit)
-        }
-        catch {
-            Write-ToolLog ('PLAYER_EXIT_RECORD_FAILED ' + $_.Exception.GetType().Name)
-        }
-    }
+    $owned = Invoke-OwnedProcess `
+        -FilePath $playerExe `
+        -Arguments $arguments `
+        -TimeoutSeconds $TimeoutSeconds `
+        -ProcessRecordPath (Join-Path $runtimeDir 'process.json') `
+        -ExitRecordPath (Join-Path $runtimeDir 'exit.json') `
+        -Kind 'p45-full-match-player' `
+        -RunId $runId `
+        -Label 'PLAYER'
+    $nativeExit = $owned.exitCode
+    $disposition = $owned.disposition
+    $timedOut = $owned.timedOut
 
     $driverSummaryPath = Join-Path $driverDir 'summary.json'
     $driverSummary = $null
@@ -948,7 +1011,7 @@ function Invoke-Run {
     }
     $toolSummary | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $runtimeDir 'tool-summary.json') -Encoding UTF8
 
-    if ($disposition -eq 'TOOL_TIMEOUT_KILLED' -or $disposition -eq 'TOOL_TIMEOUT_NOT_OWNED' -or $disposition -eq 'TOOL_TIMEOUT_KILL_FAILED') {
+    if ($timedOut) {
         return 11
     }
 
