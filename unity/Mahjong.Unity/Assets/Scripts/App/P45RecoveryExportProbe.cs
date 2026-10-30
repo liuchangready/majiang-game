@@ -628,4 +628,3 @@ namespace Mahjong.Unity.App
         }
     }
 }
-
