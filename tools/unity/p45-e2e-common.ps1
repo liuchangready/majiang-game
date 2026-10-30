@@ -4310,7 +4310,9 @@ function Compare-P45Observations {
                 $incompleteReasons.Add($pair.Name + ' ' + $field + ' is missing')
             }
         }
-        foreach ($field in @('requests', 'controlRequests', 'ledger', 'physical')) {
+        $requiredObjects = @('requests', 'ledger', 'physical')
+        if ($isReal) { $requiredObjects += 'controlRequests' }
+        foreach ($field in $requiredObjects) {
             $property = $pair.Observation.PSObject.Properties[$field]
             if ($null -eq $property -or $null -eq $property.Value) {
                 $incompleteReasons.Add($pair.Name + ' ' + $field + ' missing')

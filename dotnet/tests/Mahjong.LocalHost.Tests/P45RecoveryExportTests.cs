@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Mahjong.Client;
 using Mahjong.Contracts;
+using Mahjong.Contracts.Wire;
 using Mahjong.Domain.Cheat;
 using Mahjong.LocalHost;
 using Mahjong.TableRuntime;
@@ -147,6 +148,83 @@ namespace Mahjong.LocalHost.Tests
             Assert.Equal(digest, control.Digest);
             Assert.Equal("CLAIM_CONTROL", control.Kind);
             Assert.Equal("7", control.EvaluatedStateVersion);
+        }
+
+        [Fact]
+        public async Task ReleaseControlThroughPublicSessionIsPersistedAndExported()
+        {
+            await using var harness = new P41Harness();
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            ITableChannel channel = await LocalTableHost.CreateChannelAsync(harness.Options, cts.Token);
+            string channelTicket = LocalTableHost.IssueTicket(harness.Options);
+            await channel.OpenAsync(new TableChannelConnectRequest(channelTicket, "p45-control-export", null), cts.Token);
+            var session = new TableSession(channel, new InMemoryOutboxStore());
+            await LocalHostCommandTests.PumpUntilReadyAsync(
+                session,
+                LocalTableHost.IssueTicket(harness.Options),
+                cts.Token);
+            try
+            {
+                PlayerSnapshot baseline = session.PlayerSnapshot!;
+                BusinessPayload payload = CommandPayloadFactory.ReleaseControl(baseline.RoundId, 0);
+                var requestId = new RequestId("p45-release-control-export");
+                var command = new ProtocolCommand(
+                    CommandKind.ReleaseControl,
+                    payload,
+                    requestId,
+                    session.Binding!.Scope.ScopeId,
+                    new StateVersion(baseline.StateVersion),
+                    new RoundId(baseline.RoundId),
+                    decisionId: null,
+                    controlEpoch: new ControlEpoch(0));
+                var resolved = new TaskCompletionSource<TableReceiptResolvedEventArgs>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                EventHandler<TableReceiptResolvedEventArgs> handler = (_, args) =>
+                {
+                    if (args.Command.Key.RequestId.Value == requestId.Value) { resolved.TrySetResult(args); }
+                };
+                session.ReceiptResolved += handler;
+                using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(cts.Token);
+#pragma warning disable xUnit1051
+                Task pump = Task.Run(async () =>
+                {
+                    while (!pumpCts.IsCancellationRequested)
+                    {
+                        try { await session.PumpOnceAsync(pumpCts.Token); }
+                        catch (OperationCanceledException) { break; }
+                    }
+                });
+#pragma warning restore xUnit1051
+                try
+                {
+                    CommandSubmission submission = await session.SubmitAsync(command, cts.Token);
+                    Assert.True(submission.Sent);
+                    TableReceiptResolvedEventArgs receipt = await LocalHostCommandTests.WithTimeoutAsync(resolved.Task, cts.Token);
+                    Assert.Equal(OutboxDisposition.Recorded, receipt.Resolution.Disposition);
+
+                    LocalTableRecoveryCapture capture = await LocalTableHost.CaptureRecoveryAsync(
+                        harness.Options.SaveDirectory,
+                        cts.Token);
+                    LocalTableRecoveryControlFact control = Assert.Single(capture.Facts.ControlRequests);
+                    Assert.Equal(requestId.Value, control.RequestId);
+                    Assert.Equal("ReleaseControl", control.Kind);
+                    Assert.Equal(
+                        CanonicalPayloadDigest.Compute(payload).ToHex().ToUpperInvariant(),
+                        control.Digest);
+                }
+                finally
+                {
+                    pumpCts.Cancel();
+                    try { await pump; } catch { }
+                    session.ReceiptResolved -= handler;
+                }
+            }
+            finally
+            {
+                await channel.CloseAsync(
+                    new TableChannelCloseReason("P45_CONTROL_EXPORT_CLOSE", true),
+                    CancellationToken.None);
+            }
         }
 
         private static async Task<LocalTableRecoveryCapture> OpenAndCaptureAsync(
