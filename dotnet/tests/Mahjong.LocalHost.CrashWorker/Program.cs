@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Google.Protobuf;
@@ -166,6 +167,62 @@ namespace Mahjong.LocalHost.CrashWorker
                     File.WriteAllLines(marker, boundaryLines);
                 }
 
+                return 0;
+            }
+
+            if (mode == "backup-recovery-read")
+            {
+                // Cold-process evidence for the missing-primary/valid-previous-copy decision.
+                // The child opens the real runtime (which performs the production recovery and
+                // publication path) and reports the durable state, round identity, 136-tile
+                // hash, and the complete receipt set. It never submits an action or edits a save.
+                string primaryPath = Path.Combine(saveDir, roomId + ".save");
+                string previousPath = primaryPath + ".prev";
+                bool primaryPresentBefore = File.Exists(primaryPath);
+                bool previousPresentBefore = File.Exists(previousPath);
+                var backupLines = new List<string>
+                {
+                    "mode=backup-recovery-read",
+                    "primary_present_before=" + primaryPresentBefore,
+                    "backup_present_before=" + previousPresentBefore,
+                    "backup_sha256_before=" + FileSha256OrAbsent(previousPath)
+                };
+                await using (LocalTableRuntime backupRuntime = await LocalTableRuntime.OpenAsync(
+                    options,
+                    CancellationToken.None))
+                {
+                    LocalTableStore backupStore = backupRuntime.StoreForTest;
+                    TableStateRow backupState = (await backupStore.LoadStateAsync(
+                        roomId,
+                        CancellationToken.None))!;
+                    RoundStateMachine backupRound = backupRuntime.ActorForTest.GetRoundStateForHost();
+                    ConservationReport backupConservation = TilePositionMap.Validate(backupRound.Tiles);
+                    var backupSaveField = typeof(LocalTableStore).GetField(
+                        "_save",
+                        BindingFlags.NonPublic | BindingFlags.Instance);
+                    var backupSave = backupSaveField?.GetValue(backupStore) as LocalSave;
+                    if (backupSave == null)
+                    {
+                        Console.Error.WriteLine("backup-recovery-read loaded store has no LocalSave.");
+                        return 6;
+                    }
+
+                    backupLines.Add("state_version=" + backupState.StateVersion.Value.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                    backupLines.Add("last_event_seq=" + backupState.LastEventSeq.Value.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                    backupLines.Add("state_fingerprint=" + backupState.StateFingerprint.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                    backupLines.Add("state_hash=" + backupState.StateHash.ToHex());
+                    backupLines.Add("round_id=" + backupRound.RoundId);
+                    backupLines.Add("tiles_hash=" + backupConservation.StateHash.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                    backupLines.Add("tiles_assigned=" + backupConservation.AssignedCount.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                    backupLines.Add("receipt_count=" + backupSave.Receipts.Count.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                    backupLines.Add("receipt_set_sha256=" + ReceiptSetDigest(backupSave.Receipts));
+                }
+
+                backupLines.Add("primary_present_after=" + File.Exists(primaryPath));
+                backupLines.Add("backup_present_after=" + File.Exists(previousPath));
+                backupLines.Add("primary_sha256=" + FileSha256OrAbsent(primaryPath));
+                backupLines.Add("backup_sha256=" + FileSha256OrAbsent(previousPath));
+                File.WriteAllLines(marker, backupLines);
                 return 0;
             }
 
@@ -1619,6 +1676,41 @@ namespace Mahjong.LocalHost.CrashWorker
                     return envelope;
                 }
             }
+        }
+
+        private static string ReceiptSetDigest(Dictionary<string, TableDurableReceipt> receipts)
+        {
+            var text = new StringBuilder();
+            foreach (KeyValuePair<string, TableDurableReceipt> pair in receipts.OrderBy(
+                p => p.Key,
+                StringComparer.Ordinal))
+            {
+                TableDurableReceipt receipt = pair.Value;
+                text.Append(pair.Key).Append('|')
+                    .Append(receipt.AccountId).Append('|')
+                    .Append(receipt.ScopeId.Value).Append('|')
+                    .Append(receipt.RequestId.Value).Append('|')
+                    .Append(receipt.Api).Append('|')
+                    .Append(((int)receipt.Receipt.Status).ToString(System.Globalization.CultureInfo.InvariantCulture)).Append('|')
+                    .Append(receipt.Receipt.ReasonCode).Append('|')
+                    .Append(receipt.Receipt.EvaluatedStateVersion.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)).Append('|')
+                    .Append((receipt.Receipt.CommandVersion?.Value ?? 0UL).ToString(System.Globalization.CultureInfo.InvariantCulture)).Append('|')
+                    .Append((receipt.Receipt.EventSeq?.Value ?? 0UL).ToString(System.Globalization.CultureInfo.InvariantCulture)).Append('|')
+                    .Append(receipt.Receipt.CanonicalPayloadSha256).Append('|')
+                    .Append(receipt.PayloadSha256.ToHex()).Append('|')
+                    .Append(receipt.CreatedAtUtcMs.ToString(System.Globalization.CultureInfo.InvariantCulture)).Append('|')
+                    .Append(receipt.ExpiresAtUtcMs.ToString(System.Globalization.CultureInfo.InvariantCulture))
+                    .Append('\n');
+            }
+
+            return TablePayloadSha256.Compute(Encoding.UTF8.GetBytes(text.ToString())).ToHex();
+        }
+
+        private static string FileSha256OrAbsent(string path)
+        {
+            return File.Exists(path)
+                ? TablePayloadSha256.Compute(File.ReadAllBytes(path)).ToHex()
+                : "ABSENT";
         }
 
         private static string BoundaryLedgerDigest(TableCheatLedgerCheckpoint cheat)

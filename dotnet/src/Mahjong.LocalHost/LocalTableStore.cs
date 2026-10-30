@@ -179,24 +179,43 @@ namespace Mahjong.LocalHost
 
         private LocalSave? LoadEnvelopeWithRecovery()
         {
-            LocalSave? primary = TryLoad(_primaryPath, out string? primaryError);
-            if (primary != null)
+            // "TryLoad returned null without an error" means only that the file did not exist
+            // at read time. It must never be conflated with "there is no durable state": a
+            // valid previous copy next to a missing primary is exactly the recoverable case.
+            bool primaryPresent = _files.FileExists(_primaryPath);
+            bool backupPresent = _files.FileExists(_backupPath);
+            if (!primaryPresent && !backupPresent)
             {
-                return primary;
+                // No durable copy exists: this is a legitimate first launch of the room.
+                return null;
             }
 
-            LocalSave? backup = TryLoad(_backupPath, out string? backupError);
-            if (primaryError == null && backupError == null)
+            LocalSave? primary = null;
+            string? primaryError = null;
+            if (primaryPresent)
             {
-                return null;
+                primary = TryLoad(_primaryPath, out primaryError);
+                if (primary != null)
+                {
+                    return primary;
+                }
+            }
+
+            LocalSave? backup = null;
+            string? backupError = null;
+            if (backupPresent)
+            {
+                backup = TryLoad(_backupPath, out backupError);
             }
 
             if (backup == null)
             {
                 throw new LocalTableException(
                     LocalTableErrorKind.CorruptState,
-                    "The local save and its previous copy are both unreadable. primary=" + primaryError +
-                    " backup=" + backupError);
+                    "The local save has no usable copy. primaryPresent=" + primaryPresent +
+                    " primary=" + (primaryError ?? "none") +
+                    " backupPresent=" + backupPresent +
+                    " backup=" + (backupError ?? "none"));
             }
 
             // The primary is missing/corrupt but the previous copy is valid: publish it through
