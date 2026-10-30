@@ -1188,6 +1188,130 @@ function Read-P45CollectorKey {
     return $record
 }
 
+function Get-P45CollectorRunDirectory {
+    param([Parameter(Mandatory = $true)][string]$RunId)
+    $path = Join-Path (Get-P45CollectorRoot) $RunId
+    [IO.Directory]::CreateDirectory($path) | Out-Null
+    return $path
+}
+
+function Get-P45CollectorObservationPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$RunId,
+        [Parameter(Mandatory = $true)][int]$Attempt,
+        [Parameter(Mandatory = $true)][ValidateSet('launch', 'exit')][string]$Kind
+    )
+    $name = $Attempt.ToString('0000', [Globalization.CultureInfo]::InvariantCulture) + '-' + $Kind + '.json'
+    return (Join-Path (Get-P45CollectorRunDirectory -RunId $RunId) $name)
+}
+
+function Write-P45CollectorObservation {
+    param(
+        [Parameter(Mandatory = $true)][object]$Context,
+        [Parameter(Mandatory = $true)][int]$Attempt,
+        [Parameter(Mandatory = $true)][ValidateSet('launch', 'exit')][string]$Kind,
+        [Parameter(Mandatory = $true)][object]$Payload
+    )
+
+    $keyRecord = Read-P45CollectorKey -RunId ([string]$Context.Run.runId)
+    if ($null -eq $keyRecord) {
+        Throw-P45 4 'OWNERSHIP_OR_IDENTITY' 'Collector key is missing; cannot record a trusted observation.'
+    }
+    if (-not [string]::Equals((Get-P45FullPath ([string]$keyRecord.root)), (Get-P45FullPath $Context.Root), [StringComparison]::OrdinalIgnoreCase)) {
+        Throw-P45 4 'OWNERSHIP_OR_IDENTITY' 'Collector key root does not match the run root.'
+    }
+    $payloadText = $Payload | ConvertTo-Json -Depth 20 -Compress
+    $canonical = [string]$Context.Run.runId + '|' + (Get-P45FullPath $Context.Root) + '|' +
+        $Attempt.ToString('0000', [Globalization.CultureInfo]::InvariantCulture) + '|' + $Kind + '|' + $payloadText
+    $record = [pscustomobject]@{
+        schemaVersion = 1
+        kind = 'p45-collector-observation'
+        runId = [string]$Context.Run.runId
+        root = (Get-P45FullPath $Context.Root)
+        attempt = $Attempt
+        observationKind = $Kind
+        payloadText = $payloadText
+        hmacSha256 = Get-P45CollectorHmac -KeyHex ([string]$keyRecord.key) -Text $canonical
+        createdAt = (Get-P45UtcNowText)
+    }
+    Write-P45JsonAtomic -Path (Get-P45CollectorObservationPath -RunId ([string]$Context.Run.runId) -Attempt $Attempt -Kind $Kind) -Object $record
+}
+
+function Read-P45CollectorObservation {
+    param(
+        [Parameter(Mandatory = $true)][object]$Context,
+        [Parameter(Mandatory = $true)][int]$Attempt,
+        [Parameter(Mandatory = $true)][ValidateSet('launch', 'exit')][string]$Kind
+    )
+
+    $path = Get-P45CollectorObservationPath -RunId ([string]$Context.Run.runId) -Attempt $Attempt -Kind $Kind
+    if (-not [IO.File]::Exists($path)) { return $null }
+    $record = Read-P45Json -Path $path
+    $keyRecord = Read-P45CollectorKey -RunId ([string]$Context.Run.runId)
+    if ($null -eq $keyRecord) { return $null }
+    if (-not [string]::Equals([string]$record.kind, 'p45-collector-observation', [StringComparison]::Ordinal) -or
+        -not [string]::Equals([string]$record.runId, [string]$Context.Run.runId, [StringComparison]::Ordinal) -or
+        -not [string]::Equals([string]$record.root, (Get-P45FullPath $Context.Root), [StringComparison]::OrdinalIgnoreCase) -or
+        [int]$record.attempt -ne $Attempt -or
+        -not [string]::Equals([string]$record.observationKind, $Kind, [StringComparison]::Ordinal)) {
+        return $null
+    }
+    $canonical = [string]$Context.Run.runId + '|' + (Get-P45FullPath $Context.Root) + '|' +
+        $Attempt.ToString('0000', [Globalization.CultureInfo]::InvariantCulture) + '|' + $Kind + '|' + [string]$record.payloadText
+    $expected = Get-P45CollectorHmac -KeyHex ([string]$keyRecord.key) -Text $canonical
+    if (-not [string]::Equals([string]$record.hmacSha256, $expected, [StringComparison]::OrdinalIgnoreCase)) { return $null }
+    try { return ($record.payloadText | ConvertFrom-Json) } catch { return $null }
+}
+
+function Write-P45CollectorExitObservation {
+    param(
+        [Parameter(Mandatory = $true)][object]$Context,
+        [Parameter(Mandatory = $true)][int]$Attempt,
+        [Parameter(Mandatory = $true)][object]$Launch,
+        [Parameter(Mandatory = $true)][object]$Exit
+    )
+
+    $rawArtifacts = @()
+    $recovery = Get-P45Property $Launch 'recoveryExport'
+    if ($null -ne $recovery) {
+        $exportDirectory = [string](Get-P45Property $recovery 'directory')
+        if ([IO.Directory]::Exists($exportDirectory)) {
+            foreach ($name in @('authority.save', 'cheat-state.bin', 'export.json', 'export.done')) {
+                $path = Join-Path $exportDirectory $name
+                if ([IO.File]::Exists($path)) {
+                    $rawArtifacts += [pscustomobject]@{
+                        name = $name
+                        bytes = [long](Get-Item -LiteralPath $path).Length
+                        sha256 = Get-P45Sha256 -Path $path
+                    }
+                }
+            }
+        }
+    }
+
+    $payload = [pscustomobject]@{
+        schemaVersion = 1
+        observation = 'exit'
+        runId = [string](Get-P45Property $Exit 'runId')
+        root = (Get-P45FullPath $Context.Root)
+        attempt = $Attempt
+        pid = [int](Get-P45Property $Launch 'pid' 0)
+        startTimeUtc = [string](Get-P45Property $Launch 'startTimeUtc')
+        playerPath = [string](Get-P45Property (Get-P45Property $Launch 'player') 'path')
+        playerSha256 = [string](Get-P45Property (Get-P45Property $Launch 'player') 'sha256')
+        recoveryPhase = if ($null -ne $recovery) { [string](Get-P45Property $recovery 'phase') } else { $null }
+        challenge = if ($null -ne $recovery) { [string](Get-P45Property $recovery 'challenge') } else { $null }
+        exportDirectory = if ($null -ne $recovery) { [string](Get-P45Property $recovery 'directory') } else { $null }
+        disposition = [string](Get-P45Property $Exit 'disposition')
+        nativeExitCode = Get-P45Property $Exit 'nativeExitCode'
+        requested = [bool](Get-P45Property $Exit 'requested' $false)
+        killReason = Get-P45Property $Exit 'killReason'
+        observedAt = [string](Get-P45Property $Exit 'observedAt')
+        rawArtifacts = @($rawArtifacts)
+    }
+    Write-P45CollectorObservation -Context $Context -Attempt $Attempt -Kind 'exit' -Payload $payload
+}
+
 function Get-P45CollectorHmac {
     param(
         [Parameter(Mandatory = $true)][string]$KeyHex,
@@ -1565,6 +1689,7 @@ function New-P45Attempt {
                 requested = $false
                 observedAt = (Get-P45UtcNowText)
             })
+            Write-P45CollectorExitObservation -Context $Context -Attempt $attemptNumber -Launch $launch -Exit (Read-P45Json -Path $exitJson)
             $state.activeProcess = $null
             $state.status = 'EXITED'
             Save-P45State -Context $Context -State $state
@@ -1611,6 +1736,32 @@ function New-P45Attempt {
     $Context.Run.launch.mode = $Mode
     $Context.Run.launch.visible = [bool]$Visible
     Save-P45Run -Context $Context
+
+    $launchObservation = [pscustomobject]@{
+        schemaVersion = 1
+        observation = 'launch'
+        runId = [string]$Context.Run.runId
+        root = (Get-P45FullPath $Context.Root)
+        attempt = $attemptNumber
+        mode = $Mode
+        visible = [bool]$Visible
+        pid = [int]$process.Id
+        startTimeUtc = $startTime
+        playerPath = $playerPath
+        playerSha256 = $playerHash
+        commandArguments = @($arguments)
+        launchedAt = (Get-P45UtcNowText)
+        packageManifestSha256 = if ($null -ne $package) { [string]$package.filesSha256 } else { $null }
+        packageFileCount = if ($null -ne $package) { [int]$package.fileCount } else { 0 }
+        sourceHead = [string]$Context.Run.source.head
+        buildCommit = [string]$Context.Run.player.buildCommit
+        buildProvenance = [string]$Context.Run.player.buildProvenance
+        recoveryPhase = $phaseText
+        challenge = $challenge
+        exportDirectory = $recoveryDirectory
+        dataDirectory = [string]$Context.Run.paths.save
+    }
+    Write-P45CollectorObservation -Context $Context -Attempt $attemptNumber -Kind 'launch' -Payload $launchObservation
 
     if (-not $Wait) {
         $launch.toolExitCode = 0
@@ -1679,6 +1830,7 @@ function New-P45Attempt {
                 $launch.toolExitCode = 0
                 $launch.toolStatus = $launch.disposition
                 Write-P45JsonAtomic -Path $attemptJson -Object $launch
+                Write-P45CollectorExitObservation -Context $Context -Attempt $attemptNumber -Launch $launch -Exit (Read-P45Json -Path $exitJson)
                 $state.activeProcess = $null
                 $state.status = 'STOPPED'
                 Save-P45State -Context $Context -State $state
@@ -1763,6 +1915,7 @@ function New-P45Attempt {
             requested = $false
             observedAt = (Get-P45UtcNowText)
         })
+        Write-P45CollectorExitObservation -Context $Context -Attempt $attemptNumber -Launch $launch -Exit (Read-P45Json -Path $exitJson)
         $state.activeProcess = $null
         $state.status = 'EXITED'
         Save-P45State -Context $Context -State $state
@@ -1811,6 +1964,7 @@ function New-P45Attempt {
         killReason = 'TOOL_TIMEOUT'
         observedAt = (Get-P45UtcNowText)
     })
+    Write-P45CollectorExitObservation -Context $Context -Attempt $attemptNumber -Launch $launch -Exit (Read-P45Json -Path $exitJson)
     $state.activeProcess = $null
     $state.status = 'TIMED_OUT'
     Save-P45State -Context $Context -State $state
@@ -2013,6 +2167,7 @@ function Stop-P45OwnedProcess {
             killReason = $killReason
             observedAt = (Get-P45UtcNowText)
         })
+        Write-P45CollectorExitObservation -Context $Context -Attempt $attempt -Launch $launch -Exit (Read-P45Json -Path $exitPath)
     }
     finally {
         Exit-P45ExitLock -Mutex $exitLock
@@ -2437,6 +2592,88 @@ function Copy-P45EvidenceFile {
     }
 }
 
+function Test-P45CollectorAttemptEvidence {
+    param(
+        [Parameter(Mandatory = $true)][object]$Context,
+        [Parameter(Mandatory = $true)][string]$AttemptDirectory
+    )
+
+    $launchPath = Join-Path $AttemptDirectory 'launch.json'
+    $exitPath = Join-Path $AttemptDirectory 'exit.json'
+    if (-not [IO.File]::Exists($launchPath) -or -not [IO.File]::Exists($exitPath)) {
+        Throw-P45 17 'EVIDENCE_INVALID' 'Attempt lacks launch/exit records; no trusted collector observation can be checked.'
+    }
+    $launch = Read-P45Json -Path $launchPath
+    $exit = Read-P45Json -Path $exitPath
+    $attempt = [int]$launch.attempt
+    $launchObs = Read-P45CollectorObservation -Context $Context -Attempt $attempt -Kind 'launch'
+    $exitObs = Read-P45CollectorObservation -Context $Context -Attempt $attempt -Kind 'exit'
+    if ($null -eq $launchObs -or $null -eq $exitObs) {
+        Throw-P45 4 'OWNERSHIP_OR_IDENTITY' ('No signed collector launch/exit observation exists for attempt ' + $attempt + '; copied or re-sealed run is refused.')
+    }
+
+    if (-not [string]::Equals([string]$launchObs.runId, [string]$Context.Run.runId, [StringComparison]::Ordinal) -or
+        -not [string]::Equals([string]$launchObs.root, (Get-P45FullPath $Context.Root), [StringComparison]::OrdinalIgnoreCase) -or
+        [int]$launchObs.attempt -ne [int]$launch.attempt -or
+        [int]$launchObs.pid -ne [int]$launch.pid -or
+        -not [string]::Equals([string]$launchObs.startTimeUtc, [string]$launch.startTimeUtc, [StringComparison]::Ordinal) -or
+        -not [string]::Equals([string]$launchObs.playerPath, [string]$launch.player.path, [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([string]$launchObs.playerSha256, [string]$launch.player.sha256, [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals((@($launchObs.commandArguments) -join "`n"), (@($launch.command.arguments) -join "`n"), [StringComparison]::Ordinal) -or
+        -not [string]::Equals([string]$launchObs.recoveryPhase, [string](Get-P45Property (Get-P45Property $launch 'recoveryExport') 'phase'), [StringComparison]::Ordinal) -or
+        -not [string]::Equals([string]$launchObs.challenge, [string](Get-P45Property (Get-P45Property $launch 'recoveryExport') 'challenge'), [StringComparison]::Ordinal) -or
+        -not [string]::Equals([string]$launchObs.exportDirectory, [string](Get-P45Property (Get-P45Property $launch 'recoveryExport') 'directory'), [StringComparison]::OrdinalIgnoreCase)) {
+        Throw-P45 4 'OWNERSHIP_OR_IDENTITY' ('Signed collector launch observation does not match attempt ' + $attempt + '.')
+    }
+
+    if (-not [string]::Equals([string]$exitObs.runId, [string]$Context.Run.runId, [StringComparison]::Ordinal) -or
+        -not [string]::Equals([string]$exitObs.root, (Get-P45FullPath $Context.Root), [StringComparison]::OrdinalIgnoreCase) -or
+        [int]$exitObs.attempt -ne [int]$exit.attempt -or
+        -not [string]::Equals([string]$exitObs.runId, [string]$exit.runId, [StringComparison]::Ordinal) -or
+        [int]$exitObs.attempt -ne [int]$attempt -or
+        -not [string]::Equals([string]$exitObs.disposition, [string]$exit.disposition, [StringComparison]::Ordinal) -or
+        -not [string]::Equals([string](Get-P45Property $exitObs 'nativeExitCode'), [string](Get-P45Property $exit 'nativeExitCode'), [StringComparison]::Ordinal) -or
+        [bool](Get-P45Property $exitObs 'requested' $false) -ne [bool](Get-P45Property $exit 'requested' $false) -or
+        -not [string]::Equals([string](Get-P45Property $exitObs 'killReason'), [string](Get-P45Property $exit 'killReason'), [StringComparison]::Ordinal)) {
+        Throw-P45 4 'OWNERSHIP_OR_IDENTITY' ('Signed collector exit observation does not match attempt ' + $attempt + '.')
+    }
+
+    $nativeProperty = $exit.PSObject.Properties['nativeExitCode']
+    if ($null -eq $nativeProperty -or $null -eq $nativeProperty.Value -or
+        ($nativeProperty.Value -isnot [int] -and $nativeProperty.Value -isnot [long])) {
+        Throw-P45 17 'EVIDENCE_INVALID' ('Attempt ' + $attempt + ' has no observable integer native exit code.')
+    }
+    if ([string]$exit.disposition -eq 'EXITED_OK' -and [int]$exit.nativeExitCode -ne 0) {
+        Throw-P45 18 'OBSERVATION_INVALID' ('Attempt ' + $attempt + ' is EXITED_OK with nonzero native exit.')
+    }
+
+    $recovery = Get-P45Property $launch 'recoveryExport'
+    if ($null -ne $recovery) {
+        $exportDirectory = [string](Get-P45Property $recovery 'directory')
+        $expectedNames = @('authority.save', 'cheat-state.bin', 'export.json', 'export.done')
+        $raw = @($exitObs.rawArtifacts)
+        if ($raw.Count -ne $expectedNames.Count) {
+            Throw-P45 17 'EVIDENCE_INVALID' ('Attempt ' + $attempt + ' collector exit record does not bind all recovery artifacts.')
+        }
+        foreach ($name in $expectedNames) {
+            $entry = @($raw | Where-Object { [string](Get-P45Property $_ 'name') -eq $name }) | Select-Object -First 1
+            $path = Join-Path $exportDirectory $name
+            if ($null -eq $entry -or -not [IO.File]::Exists($path)) {
+                Throw-P45 17 'EVIDENCE_INVALID' ('Attempt ' + $attempt + ' is missing bound artifact ' + $name + '.')
+            }
+            if ([long](Get-P45Property $entry 'bytes') -ne [long](Get-Item -LiteralPath $path).Length -or
+                -not [string]::Equals([string](Get-P45Property $entry 'sha256'), (Get-P45Sha256 -Path $path), [StringComparison]::OrdinalIgnoreCase)) {
+                Throw-P45 4 'OWNERSHIP_OR_IDENTITY' ('Attempt ' + $attempt + ' artifact ' + $name + ' differs from the collector-observed bytes.')
+            }
+        }
+    }
+
+    return [pscustomobject]@{
+        Launch = $launchObs
+        Exit = $exitObs
+    }
+}
+
 function New-P45Collection {
     param([Parameter(Mandatory = $true)][object]$Context)
 
@@ -2473,6 +2710,7 @@ function New-P45Collection {
 
     foreach ($attemptDir in $attempts) {
         $attemptNumber = [int]$attemptDir.Name
+        $null = Test-P45CollectorAttemptEvidence -Context $Context -AttemptDirectory $attemptDir.FullName
         foreach ($file in @(Get-ChildItem -LiteralPath $attemptDir.FullName -File -ErrorAction SilentlyContinue)) {
             $sensitivity = if ($file.Name -in @('stdout.log', 'stderr.log')) { 'private-do-not-publish' } else { 'public' }
             $dest = Join-Path $collectionDir ('attempts\' + $attemptDir.Name + '\' + $file.Name)
@@ -3644,6 +3882,11 @@ function Import-P45PlayerExport {
         -not [string]::Equals([string]$launch.player.sha256, [string](Get-P45Property $export 'playerSha256'), [StringComparison]::OrdinalIgnoreCase)) {
         Throw-P45 19 'OBSERVATION_IDENTITY' 'export.json does not match the launch PID/start/path/hash/challenge/phase binding.'
     }
+    $attemptEvidence = Test-P45CollectorAttemptEvidence -Context $Context `
+        -AttemptDirectory (Join-Path $Context.Root ('attempts\' + $attempt))
+    if (@($attemptEvidence.Exit.rawArtifacts).Count -ne 4) {
+        Throw-P45 17 'EVIDENCE_INVALID' 'Collector exit observation did not bind all recovery artifacts.'
+    }
 
     $authoritySha = Get-P45Sha256 -Path $authorityPath
     $authorityBytes = (Get-Item -LiteralPath $authorityPath).Length
@@ -4061,10 +4304,54 @@ function Test-P45RecoveryExportChain {
     }
     $launch = Read-P45Json -Path $launchPath
     $exit = Read-P45Json -Path $exitPath
+    if (-not [string]::Equals([string]$exit.runId, [string]$run.runId, [StringComparison]::Ordinal) -or
+        [int](Get-P45Property $exit 'attempt' 0) -ne [int]$attempt -or
+        [int](Get-P45Property $launch 'attempt' 0) -ne [int]$attempt) {
+        return (& $identity 'sealed exit/launch runId or attempt does not belong to this run')
+    }
+    $exitNativeProperty = $exit.PSObject.Properties['nativeExitCode']
+    if ($null -eq $exitNativeProperty -or $null -eq $exitNativeProperty.Value -or
+        ($exitNativeProperty.Value -isnot [int] -and $exitNativeProperty.Value -isnot [long])) {
+        return (& $blocked 'sealed exit has no observable integer native exit code')
+    }
     $recovery = Get-P45Property $launch 'recoveryExport'
     if ($null -eq $recovery) {
         return (& $blocked 'sealed launch has no recoveryExport binding')
     }
+    try {
+        $observedAttempt = Test-P45CollectorAttemptEvidence -Context $Context `
+            -AttemptDirectory (Join-Path $Context.Root ('attempts\' + $attempt))
+    }
+    catch {
+        return (& $blocked ('no trusted signed collector launch/exit observation matches this attempt: ' + (Get-P45ErrorMessage $_)))
+    }
+    if ([int]$observedAttempt.Launch.pid -ne [int]$launch.pid -or
+        -not [string]::Equals([string]$observedAttempt.Launch.startTimeUtc, [string]$launch.startTimeUtc, [StringComparison]::Ordinal) -or
+        -not [string]::Equals([string]$observedAttempt.Launch.playerPath, [string]$launch.player.path, [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([string]$observedAttempt.Launch.playerSha256, [string]$launch.player.sha256, [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals((@($observedAttempt.Launch.commandArguments) -join "`n"), (@($launch.command.arguments) -join "`n"), [StringComparison]::Ordinal)) {
+        return (& $identity 'signed collector launch observation does not match the sealed launch record')
+    }
+    if (-not [string]::Equals([string]$observedAttempt.Exit.runId, [string]$run.runId, [StringComparison]::Ordinal) -or
+        [int]$observedAttempt.Exit.attempt -ne [int]$exit.attempt -or
+        -not [string]::Equals([string]$observedAttempt.Exit.disposition, [string]$exit.disposition, [StringComparison]::Ordinal) -or
+        -not [string]::Equals([string](Get-P45Property $observedAttempt.Exit 'nativeExitCode'), [string](Get-P45Property $exit 'nativeExitCode'), [StringComparison]::Ordinal)) {
+        return (& $identity 'signed collector exit observation does not match the sealed exit record')
+    }
+    $sealedArtifactHashes = @{
+        'authority.save' = $authoritySha
+        'cheat-state.bin' = $cheatSha
+        'export.json' = $exportSha
+        'export.done' = (Get-P45Sha256 -Path (Join-Path ([IO.Path]::GetDirectoryName($sealed.AuthorityPath)) 'export.done'))
+    }
+    foreach ($name in @('authority.save', 'cheat-state.bin', 'export.json', 'export.done')) {
+        $bound = @($observedAttempt.Exit.rawArtifacts | Where-Object { [string](Get-P45Property $_ 'name') -eq $name }) | Select-Object -First 1
+        if ($null -eq $bound -or
+            -not [string]::Equals([string](Get-P45Property $bound 'sha256'), [string]$sealedArtifactHashes[$name], [StringComparison]::OrdinalIgnoreCase)) {
+            return (& $invalid ('collector-observed raw artifact differs from the sealed ' + $name))
+        }
+    }
+
     $expectedPhase = if ($Phase -eq 'Before') { 'BEFORE_RECOVERY' } else { 'AFTER_RECOVERY' }
     if (-not [string]::Equals([string]$sealedObservation.phase, $expectedPhase, [StringComparison]::Ordinal) -or
         -not [string]::Equals([string]$recovery.phase, $expectedPhase, [StringComparison]::Ordinal) -or
@@ -4086,7 +4373,8 @@ function Test-P45RecoveryExportChain {
         return (& $identity 'sealed launch PID/start/path/hash/attempt does not match the observation')
     }
     if ([string]$exit.disposition -ne 'EXITED_OK' -and
-        -not ([string]$exit.disposition -eq 'FORCE_KILLED' -and $Phase -eq 'Before' -and [string]$exit.killReason -eq 'TOOL_FORCE')) {
+        -not ([string]$exit.disposition -eq 'FORCE_KILLED' -and $Phase -eq 'Before' -and
+             [string]$exit.killReason -eq 'TOOL_FORCE' -and [bool](Get-P45Property $exit 'requested' $false))) {
         return (& $blocked ('sealed exit disposition ' + [string]$exit.disposition + ' does not prove the required before/after termination shape'))
     }
     if ([string]$exit.disposition -eq 'EXITED_OK' -and [int]$exit.nativeExitCode -ne 0) {
@@ -4424,11 +4712,6 @@ function Compare-P45Observations {
             reconnectSessionAndCursor = [pscustomobject]@{
                 before = $reconnectBeforeText
                 after = $reconnectAfterText
-                compared = $false
-            }
-            controlEpoch = [pscustomobject]@{
-                before = (ConvertTo-P45InvariantString (Get-P45Property $before 'controlEpoch'))
-                after = (ConvertTo-P45InvariantString (Get-P45Property $after 'controlEpoch'))
                 compared = $false
             }
         }
