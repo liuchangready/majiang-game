@@ -1743,8 +1743,10 @@ namespace Mahjong.LocalHost.Tests
             string decision = client.Runtime.ActorForTest.GetPendingDecisionId(0)!;
             var hold = new AiSubmitHold();
             hold.Attach(client.Runtime);
+            const string requestId = "probe-unauthorized";
             TableSnapshot? frozen = null;
             TableStateRow? parkedBaseline = null;
+            TableStateRow after;
             try
             {
                 if (revoke)
@@ -1785,73 +1787,107 @@ namespace Mahjong.LocalHost.Tests
                         ct);
                     parkedBaseline = (await client.Store.LoadStateAsync(P41Harness.RoomId, ct))!;
                 }
+
+                WireEnvelope rejected;
+                if (control)
+                {
+                    byte[] bytes = client.BuildCommandBytes(
+                        CommandKind.ClaimControl,
+                        0,
+                        requestId,
+                        payloadBytes: null,
+                        decisionId: decision);
+                    rejected = await client.SendRawAsync(bytes, requestId, ct);
+                }
+                else
+                {
+                    RoundStateMachine round = client.Runtime.ActorForTest.GetRoundStateForHost();
+                    TileId handTile = round.Tiles.TilesInZone(TileZone.Hand, 0)[0];
+                    BusinessPayload payload = CommandPayloadFactory.SubmitAction(
+                        round.RoundId,
+                        "probe-unauthorized",
+                        0UL,
+                        ProtocolActionType.DiscardTile,
+                        tileIds: new[] { (uint)handTile.Value });
+                    byte[] bytes = client.BuildCommandBytes(
+                        CommandKind.SubmitAction,
+                        0,
+                        requestId,
+                        payload.CopyBytes(),
+                        decisionId: decision);
+                    rejected = await client.SendRawAsync(bytes, requestId, ct);
+                }
+
+                AssertReceipt(rejected, WireReceiptStatus.Rejected, "the " + cell + " stale-decision command");
+                Assert.Equal(ProtocolErrorCode.RequestScopeExpired, rejected.Receipt.ReasonCode);
+
+                // Transport-only: nothing durable under the request key on either path,
+                // no control movement, no state movement, and the receipt query that a
+                // real outbox entry would send finds nothing. The hold is still attached
+                // here, so the parked valid AI follow-up cannot move StateVersion before
+                // the stillness assertion reads it.
+                Assert.Null(await client.Store.TryGetAsync(SeatAccount, scope, new RequestId(requestId), ct));
+                Assert.Null(client.Store.GetReceiptDigest(SeatAccount, scope, new RequestId(requestId)));
+                Assert.Null(client.Store.GetControlResult(SeatAccount, scope, new RequestId(requestId)));
+                Assert.Equal(0L, client.Store.ControlVersionForTest);
+                after = (await client.Store.LoadStateAsync(P41Harness.RoomId, ct))!;
+                if (frozen != null)
+                {
+                    Assert.Equal(frozen.StateVersion.Value, after.StateVersion.Value);
+                    Assert.Equal(frozen.LastEventSeq.Value, after.LastEventSeq.Value);
+                }
+                else
+                {
+                    Assert.NotNull(parkedBaseline);
+                    Assert.Equal(parkedBaseline!.StateVersion.Value, after.StateVersion.Value);
+                    Assert.Equal(parkedBaseline.LastEventSeq.Value, after.LastEventSeq.Value);
+                }
+
+                WireEnvelope probeLookup = await client.SendReceiptQueryAsync(
+                    scope.Value,
+                    requestId,
+                    "probe-unauthorized-lookup",
+                    ct);
+                Assert.Equal(WireLookupStatus.NotFound, probeLookup.ReceiptLookup!.Status);
             }
             finally
             {
+                // Release only after the probe and every stillness/receipt assertion
+                // above (or on failure). Releasing before them would let the parked,
+                // valid AI follow-up commit one or more versions under the read — the
+                // caller's `Expected: 1 / Actual: 2` ordering defect.
                 hold.Release();
                 hold.Detach(client.Runtime);
             }
 
-            const string requestId = "probe-unauthorized";
-            WireEnvelope rejected;
-            if (control)
+            if (revoke)
             {
-                byte[] bytes = client.BuildCommandBytes(
-                    CommandKind.ClaimControl,
-                    0,
-                    requestId,
-                    payloadBytes: null,
-                    decisionId: decision);
-                rejected = await client.SendRawAsync(bytes, requestId, ct);
-            }
-            else
-            {
-                RoundStateMachine round = client.Runtime.ActorForTest.GetRoundStateForHost();
-                TileId handTile = round.Tiles.TilesInZone(TileZone.Hand, 0)[0];
-                BusinessPayload payload = CommandPayloadFactory.SubmitAction(
-                    round.RoundId,
-                    "probe-unauthorized",
-                    0UL,
-                    ProtocolActionType.DiscardTile,
-                    tileIds: new[] { (uint)handTile.Value });
-                byte[] bytes = client.BuildCommandBytes(
-                    CommandKind.SubmitAction,
-                    0,
-                    requestId,
-                    payload.CopyBytes(),
-                    decisionId: decision);
-                rejected = await client.SendRawAsync(bytes, requestId, ct);
+                await WaitUntilFollowUpsSettleAsync(
+                    client.Runtime,
+                    "the released held-AI follow-ups after the " + cell + " unauthorized-scope probe",
+                    ct);
+
+                // Release behavior: the held AI is a real, current follow-up, so its
+                // release must land autonomous commits. The unauthorized probe still
+                // owns no durable receipt or control row after those commits.
+                TableStateRow afterRelease = (await client.Store.LoadStateAsync(P41Harness.RoomId, ct))!;
+                Assert.True(
+                    afterRelease.StateVersion.Value > after.StateVersion.Value,
+                    "the released held AI follow-up must advance the state after the " + cell +
+                    " probe (before release v" + after.StateVersion.Value + ", after release v" +
+                    afterRelease.StateVersion.Value + ").");
             }
 
-            AssertReceipt(rejected, WireReceiptStatus.Rejected, "the " + cell + " stale-decision command");
-            Assert.Equal(ProtocolErrorCode.RequestScopeExpired, rejected.Receipt.ReasonCode);
-
-            // Transport-only: nothing durable under the request key on either path,
-            // no control movement, no state movement, and the receipt query that a
-            // real outbox entry would send finds nothing.
             Assert.Null(await client.Store.TryGetAsync(SeatAccount, scope, new RequestId(requestId), ct));
             Assert.Null(client.Store.GetReceiptDigest(SeatAccount, scope, new RequestId(requestId)));
             Assert.Null(client.Store.GetControlResult(SeatAccount, scope, new RequestId(requestId)));
             Assert.Equal(0L, client.Store.ControlVersionForTest);
-            TableStateRow after = (await client.Store.LoadStateAsync(P41Harness.RoomId, ct))!;
-            if (frozen != null)
-            {
-                Assert.Equal(frozen.StateVersion.Value, after.StateVersion.Value);
-                Assert.Equal(frozen.LastEventSeq.Value, after.LastEventSeq.Value);
-            }
-            else
-            {
-                Assert.NotNull(parkedBaseline);
-                Assert.Equal(parkedBaseline!.StateVersion.Value, after.StateVersion.Value);
-                Assert.Equal(parkedBaseline.LastEventSeq.Value, after.LastEventSeq.Value);
-            }
-
-            WireEnvelope probeLookup = await client.SendReceiptQueryAsync(
+            WireEnvelope postReleaseLookup = await client.SendReceiptQueryAsync(
                 scope.Value,
                 requestId,
-                "probe-unauthorized-lookup",
+                revoke ? "probe-unauthorized-lookup-after-release" : "probe-unauthorized-lookup-after-expiry",
                 ct);
-            Assert.Equal(WireLookupStatus.NotFound, probeLookup.ReceiptLookup!.Status);
+            Assert.Equal(WireLookupStatus.NotFound, postReleaseLookup.ReceiptLookup!.Status);
         }
 
         [Fact]

@@ -109,6 +109,86 @@ namespace Mahjong.LocalHost.Tests
             };
         }
 
+        /// <summary>
+        /// Resolves the real dotnet host for a child worker process. Under
+        /// <c>dotnet test</c> the current process is the test apphost (for example
+        /// <c>Mahjong.LocalHost.Tests.exe</c>), which cannot execute another
+        /// assembly; only a host whose basename is <c>dotnet</c> may be reused.
+        /// </summary>
+        public static string ResolveDotnetHost()
+        {
+            string? processPath = System.Environment.ProcessPath;
+            if (IsDotnetExecutable(processPath))
+            {
+                return processPath!;
+            }
+
+            string? hostPath = System.Environment.GetEnvironmentVariable("DOTNET_HOST_PATH");
+            if (!string.IsNullOrEmpty(hostPath) && IsDotnetExecutable(hostPath) && File.Exists(hostPath))
+            {
+                return hostPath!;
+            }
+
+            string? dotnetRoot = System.Environment.GetEnvironmentVariable("DOTNET_ROOT");
+            if (!string.IsNullOrEmpty(dotnetRoot))
+            {
+                string candidate = Path.Combine(
+                    dotnetRoot,
+                    OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet");
+                if (File.Exists(candidate))
+                {
+                    return candidate;
+                }
+            }
+
+            // ProcessStartInfo resolves this through PATH; never the test apphost.
+            return "dotnet";
+        }
+
+        public static System.Diagnostics.ProcessStartInfo CreateWorkerStartInfo(
+            string workerDll,
+            string saveDirectory,
+            string roomId,
+            string markerPath,
+            string? mode = null)
+        {
+            string args = "\"" + workerDll + "\" \"" + saveDirectory + "\" \"" + roomId + "\" \"" + markerPath + "\"";
+            if (!string.IsNullOrEmpty(mode))
+            {
+                args += " " + mode;
+            }
+
+            string host = ResolveDotnetHost();
+            var startInfo = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = host,
+                Arguments = args,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+
+            string dotnetRoot = System.Environment.GetEnvironmentVariable("DOTNET_ROOT") ?? string.Empty;
+            if (string.IsNullOrEmpty(dotnetRoot) && Path.IsPathRooted(host))
+            {
+                dotnetRoot = Path.GetDirectoryName(host) ?? string.Empty;
+            }
+
+            if (!string.IsNullOrEmpty(dotnetRoot))
+            {
+                startInfo.Environment["DOTNET_ROOT"] = dotnetRoot;
+            }
+
+            return startInfo;
+        }
+
+        private static bool IsDotnetExecutable(string? path)
+        {
+            return !string.IsNullOrEmpty(path) &&
+                Path.GetFileNameWithoutExtension(path).Equals("dotnet", StringComparison.OrdinalIgnoreCase);
+        }
+
         public static string FindRepositoryRoot()
         {
             string? current = AppContext.BaseDirectory;

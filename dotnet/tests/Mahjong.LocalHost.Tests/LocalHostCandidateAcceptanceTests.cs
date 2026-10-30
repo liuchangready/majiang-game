@@ -775,6 +775,9 @@ namespace Mahjong.LocalHost.Tests
         {
             await using var harness = new P41Harness();
             CancellationToken ct = TestContext.Current.CancellationToken;
+            // Start the automatic driver explicitly so this test can stop it at the ron
+            // decision, instead of racing its autonomous AI response commits.
+            harness.Options.AutoPlay = false;
 
             // Seat 0: 1-9m (0,4,8,12,16,20,24,28,32), 1-2p (36,40), 1-1s (72,73), discard tile 132.
             // Tenpai waiting on 3p (44).
@@ -798,6 +801,9 @@ namespace Mahjong.LocalHost.Tests
             {
                 using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 pumpCts.CancelAfter(TimeSpan.FromSeconds(25));
+                LocalTableRuntime? startedRuntime = ((LocalTableChannel)channel).RuntimeForMatch;
+                Assert.NotNull(startedRuntime);
+                startedRuntime!.DriverForTest.Start();
                 Task pump = StartPump(session, pumpCts.Token);
 
                 // Seat 0 discards 132
@@ -832,7 +838,52 @@ namespace Mahjong.LocalHost.Tests
                     session,
                     ProtocolActionType.DeclareRon,
                     pumpCts.Token);
-                await Task.Delay(150, pumpCts.Token);
+                // Freeze the autonomous driver once seat 0's ron decision is open. The
+                // response window's AI seats can otherwise commit between the snapshot
+                // version read and the command submission, making the read stale. Stop
+                // before reading the version; after StopAsync returns no further commits
+                // can originate from this driver.
+                LocalTableRuntime runtime = ((LocalTableChannel)channel).RuntimeForMatch!;
+                Assert.NotNull(runtime);
+
+                // Let the automatic driver finish the other eligible seats' window
+                // responses before freezing it. The ron itself is held by seat 0's open
+                // decision, so the round cannot advance past this response window.
+                while (true)
+                {
+                    RoundResponseWindow? window = runtime.ActorForTest.GetRoundStateForHost().Window;
+                    bool waitingForAiResponse = false;
+                    if (window != null)
+                    {
+                        foreach (int eligibleSeat in window.EligibleSeats)
+                        {
+                            if (eligibleSeat != 0 && !window.HasResponded(eligibleSeat))
+                            {
+                                waitingForAiResponse = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (!waitingForAiResponse)
+                    {
+                        break;
+                    }
+
+                    await Task.Delay(10, pumpCts.Token);
+                }
+
+                await runtime.DriverForTest.StopAsync();
+                Assert.False(runtime.DriverRunning);
+                TableSnapshot authority = await runtime.ActorForTest.GetSnapshotAsync(pumpCts.Token);
+                while (session.PlayerSnapshot!.StateVersion != authority.StateVersion.Value)
+                {
+                    await Task.Delay(10, pumpCts.Token);
+                }
+
+                Assert.Equal(authority.StateVersion.Value, session.PlayerSnapshot!.StateVersion);
+                TableSnapshot authorityAfterStop = await runtime.ActorForTest.GetSnapshotAsync(pumpCts.Token);
+                Assert.Equal(authority.StateVersion.Value, authorityAfterStop.StateVersion.Value);
                 ronSnapshot = session.PlayerSnapshot!;
                 Assert.NotNull(ronSnapshot.PrivateView.Decision);
                 DecisionView ronDecision = ronSnapshot.PrivateView.Decision;
@@ -903,6 +954,7 @@ namespace Mahjong.LocalHost.Tests
         public async Task ClientPassOnRonSetsFuritenAndColdRestartKeepsItUntilTheNextDraw()
         {
             await using var harness = new P41Harness();
+            harness.Options.AutoPlay = false;
             CancellationToken ct = TestContext.Current.CancellationToken;
 
             // Same legal wall as RonCandidateAndSubmissionTest: seat 0 waits on 3p (44) and
@@ -919,7 +971,11 @@ namespace Mahjong.LocalHost.Tests
             harness.Options.InitialRound = BuildRoundWithSpecificSlots(specific);
 
             ulong versionAfterPass;
+            ulong passCommandVersion;
             (ITableChannel channel, TableSession session) = await OpenAsync(harness, ct);
+            LocalTableRuntime? runtime = ((LocalTableChannel)channel).RuntimeForMatch;
+            Assert.NotNull(runtime);
+            runtime!.DriverForTest.Start();
             try
             {
                 using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -971,6 +1027,15 @@ namespace Mahjong.LocalHost.Tests
                     ronDecision.Actions,
                     action => action.ActionType == (uint)ProtocolActionType.DeclareRon);
 
+                // Freeze the automatic driver while seat 0 has an open human decision. The
+                // response window cannot advance without the pass, and the stop happens before
+                // the pass commits, so no autonomous draw can clear furiten between the pass
+                // receipt and the durable-store read below.
+                ulong versionBeforeStop = session.PlayerSnapshot!.StateVersion;
+                await runtime.DriverForTest.StopAsync();
+                Assert.False(runtime.DriverRunning);
+                Assert.Equal(versionBeforeStop, session.PlayerSnapshot!.StateVersion);
+
                 var passResolved = new TaskCompletionSource<TableReceiptResolvedEventArgs>(
                     TaskCreationOptions.RunContinuationsAsynchronously);
                 session.ReceiptResolved += (_, args) =>
@@ -1000,6 +1065,8 @@ namespace Mahjong.LocalHost.Tests
                     passResolved.Task,
                     pumpCts.Token);
                 Assert.Equal(ReceiptStatus.Applied, passReceipt.Resolution.ReceiptStatus);
+                Assert.True(passReceipt.Resolution.CommandVersion.HasValue);
+                passCommandVersion = passReceipt.Resolution.CommandVersion!.Value.Value;
 
                 for (int i = 0; i < 50 && session.PlayerSnapshot?.PrivateView?.Furiten != true; i++)
                 {
@@ -1009,8 +1076,6 @@ namespace Mahjong.LocalHost.Tests
                 PlayerSnapshot afterPass = session.PlayerSnapshot!;
                 Assert.True(afterPass.PrivateView.Furiten, "the owner projection must carry temporary furiten");
                 versionAfterPass = afterPass.StateVersion;
-                LocalTableRuntime? runtime = ((LocalTableChannel)channel).RuntimeForMatch;
-                Assert.NotNull(runtime);
                 Assert.True(runtime!.ActorForTest.FuritenForHost.IsTemporary(0));
                 Assert.False(runtime.ActorForTest.FuritenForHost.IsTemporary(1));
 
@@ -1060,6 +1125,9 @@ namespace Mahjong.LocalHost.Tests
             // latest projection facts; inspect them before any recovery path can normalize them.
             using (LocalTableStore store = await LocalTableStore.OpenAsync(harness.Options, harness.Clock, null, ct))
             {
+                TableStateRow savedState = Assert.IsType<TableStateRow>(
+                    await store.LoadStateAsync(P41Harness.RoomId, ct));
+                Assert.Equal(passCommandVersion, savedState.StateVersion.Value);
                 Assert.True(store.LoadTemporaryFuriten()[0]);
                 Assert.False(store.LoadRiichiFuriten()[0]);
                 TableCommittedFactsSnapshot facts = Assert.IsType<TableCommittedFactsSnapshot>(
@@ -1075,24 +1143,27 @@ namespace Mahjong.LocalHost.Tests
             }
 
             // Cold restart: the furiten bit must come from the committed projection facts, not
-            // from process memory, and must survive until seat 0 actually draws.
+            // from process memory, and must survive until seat 0 actually draws. AutoPlay is
+            // still off, so the restored snapshot is inspected before any new draw can commit;
+            // only then is the real driver started to reach the clearing draw.
             (ITableChannel reopened, TableSession restored) = await OpenAsync(harness, ct);
+            LocalTableRuntime? restoredRuntime = ((LocalTableChannel)reopened).RuntimeForMatch;
+            Assert.NotNull(restoredRuntime);
+            Assert.False(restoredRuntime!.DriverRunning);
             try
             {
                 using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 pumpCts.CancelAfter(TimeSpan.FromSeconds(30));
                 Task pump = StartPump(restored, pumpCts.Token);
-                for (int i = 0; i < 50 && restored.PlayerSnapshot?.PrivateView?.Furiten != true; i++)
-                {
-                    await Task.Delay(20, pumpCts.Token);
-                }
 
                 Assert.True(restored.PlayerSnapshot!.PrivateView.Furiten, "cold restart lost the committed furiten fact");
-                Assert.True(restored.PlayerSnapshot.StateVersion >= versionAfterPass);
+                Assert.Equal(versionAfterPass, restored.PlayerSnapshot.StateVersion);
 
+                restoredRuntime.DriverForTest.Start();
                 PlayerSnapshot nextTurn = await WaitForDecisionAsync(restored, pumpCts.Token);
                 Assert.True(nextTurn.StateVersion > versionAfterPass);
                 Assert.False(nextTurn.PrivateView.Furiten, "the next draw must clear temporary furiten");
+                Assert.False(restoredRuntime.ActorForTest.FuritenForHost.IsTemporary(0));
 
                 pumpCts.Cancel();
                 await pump;
@@ -1201,18 +1272,19 @@ namespace Mahjong.LocalHost.Tests
                 "net8.0",
                 "Mahjong.LocalHost.CrashWorker.dll");
             Assert.True(File.Exists(workerDll), "CrashWorker was not built: " + workerDll);
-            var startInfo = new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = Environment.ProcessPath ?? "dotnet",
-                Arguments = "\"" + workerDll + "\" \"" + harness.Options.SaveDirectory + "\" \"" +
-                            P41Harness.RoomId + "\" \"" + marker + "\" furiten-read " +
-                            harness.Clock.MonotonicMillis.ToString(System.Globalization.CultureInfo.InvariantCulture) + " " +
-                            harness.Clock.UtcNowMs.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true
-            };
+            // Under `dotnet test` the current process is the xUnit apphost
+            // (Mahjong.LocalHost.Tests.exe), which rejects the worker DLL as an
+            // unknown option and exits 3. Resolve the real dotnet host instead;
+            // the worker DLL, argument vector, timeout and assertions stay intact.
+            var startInfo = P41Harness.CreateWorkerStartInfo(
+                workerDll,
+                harness.Options.SaveDirectory,
+                P41Harness.RoomId,
+                marker,
+                "furiten-read");
+            startInfo.Arguments += " " +
+                harness.Clock.MonotonicMillis.ToString(System.Globalization.CultureInfo.InvariantCulture) + " " +
+                harness.Clock.UtcNowMs.ToString(System.Globalization.CultureInfo.InvariantCulture);
             using (System.Diagnostics.Process process = System.Diagnostics.Process.Start(startInfo)!)
             {
                 using var waitCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
