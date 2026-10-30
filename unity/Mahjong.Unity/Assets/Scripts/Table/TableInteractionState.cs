@@ -203,9 +203,12 @@ namespace Mahjong.Unity.Table
         private long _requiredGeneration = -1;
         private ulong _requiredStateVersion;
         private long _revision;
-        private bool _hadControlState;
-        private ulong _lastControlEpoch;
-        private bool _lastControlledByComputer;
+        // Last trustworthy owner-seat authority. A snapshot that omits the
+        // optional control projection does not erase this memory: missing data
+        // is not proof that the authority changed or the request was resolved.
+        private bool _hasKnownControlAuthority;
+        private ulong _knownControlEpoch;
+        private bool _knownControlledByComputer;
 
         public TableInteractionState(TableCommandIntentFactory factory)
         {
@@ -235,15 +238,29 @@ namespace Mahjong.Unity.Table
 
             bool bindingChanged = _view != null && !SameBindingIdentity(_view.Identity, view.Identity);
             bool privateDisappeared = view.Own == null;
-            bool controlChanged = _hadControlState && !SameControlAuthority(_view?.Control, view.Control);
+            PlayerControlState? incomingControl = view.Control;
+            bool controlAuthorityChanged = _hasKnownControlAuthority &&
+                                           incomingControl != null &&
+                                           (_knownControlEpoch != incomingControl.ControlEpoch ||
+                                            _knownControlledByComputer != incomingControl.ControlledByComputer);
+            if (incomingControl != null)
+            {
+                _hasKnownControlAuthority = true;
+                _knownControlEpoch = incomingControl.ControlEpoch;
+                _knownControlledByComputer = incomingControl.ControlledByComputer;
+            }
 
+            // A missing optional control projection is not a control change:
+            // the old request may still be in flight or awaiting reconciliation,
+            // so it must keep its pending protection until a trustworthy
+            // authority transition or an explicit lifecycle/receipt resolves it.
             if (bindingChanged)
             {
                 _pending = null;
                 ClearSelectionCore();
             }
 
-            if (controlChanged)
+            if (controlAuthorityChanged)
             {
                 // A control transition invalidates any action selected under the
                 // old controller and any control request already superseded by a
@@ -267,9 +284,6 @@ namespace Mahjong.Unity.Table
             _requiredIdentity = null;
             _requiredGeneration = Math.Max(_requiredGeneration, view.Identity.Generation);
             _requiredStateVersion = view.Identity.StateVersion;
-            _hadControlState = view.Control != null;
-            _lastControlEpoch = view.Control?.ControlEpoch ?? 0UL;
-            _lastControlledByComputer = view.Control?.ControlledByComputer ?? false;
             _view = view;
             _revision++;
             return TableInteractionOutcome.Ok(bindingChanged ? TableInteractionCodes.PendingCleared : TableInteractionCodes.Applied);
@@ -646,6 +660,7 @@ namespace Mahjong.Unity.Table
 
             _pending = null;
             _view = null;
+            _hasKnownControlAuthority = false;
             ClearSelectionCore();
             _revision++;
             return TableInteractionOutcome.Ok(TableInteractionCodes.PendingCleared);
@@ -663,6 +678,7 @@ namespace Mahjong.Unity.Table
             _requiredStateVersion = identity.StateVersion;
             _pending = null;
             _view = null;
+            _hasKnownControlAuthority = false;
             ClearSelectionCore();
             _revision++;
             return TableInteractionOutcome.Ok(TableInteractionCodes.PendingCleared);
@@ -1000,22 +1016,6 @@ namespace Mahjong.Unity.Table
         private static bool IsControlIntent(CommandKind kind)
         {
             return kind == CommandKind.ClaimControl || kind == CommandKind.ReleaseControl;
-        }
-
-        private static bool SameControlAuthority(PlayerControlState? left, PlayerControlState? right)
-        {
-            if (left == null || right == null)
-            {
-                return left == null && right == null;
-            }
-
-            // ControlVersion is a table-wide control-event sequence. Another
-            // seat's change advances it without changing this seat's authority.
-            // Only this seat's epoch/controller (and presence) may invalidate a
-            // pending request; otherwise an in-flight Release/Claim would be
-            // cleared and the UI could create a second request id.
-            return left.ControlEpoch == right.ControlEpoch &&
-                   left.ControlledByComputer == right.ControlledByComputer;
         }
 
         private static bool SameBindingIdentity(PlayerTableIdentity left, PlayerTableIdentity right)

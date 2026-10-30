@@ -211,6 +211,118 @@ namespace Mahjong.Unity.TableModel.Tests
         }
 
         [Fact]
+        public void MissingThenRecoveredSameControlAuthorityKeepsSendingRequest()
+        {
+            var clock = new ManualTableClock();
+            TableInteractionState state = new TableInteractionState(new TableCommandIntentFactory(clock));
+            state.ApplyConfirmedView(View(clock, P43TestData.PlayerSnapshot(controlEpoch: 7, controlVersion: 1)));
+            Assert.True(state.BuildIntent(TableIntentKind.ReleaseControl, Owner()).Accepted);
+            TablePendingIntent pending = state.Pending!;
+            string requestId = pending.Intent.Command.RequestId.Value;
+
+            state.ApplyConfirmedView(View(clock, P43TestData.PlayerSnapshot(
+                stateVersion: 6,
+                eventSeq: 106,
+                includeControl: false)));
+            Assert.Same(pending, state.Pending);
+            Assert.Null(state.View!.Control);
+
+            state.ApplyConfirmedView(View(clock, P43TestData.PlayerSnapshot(
+                stateVersion: 7,
+                eventSeq: 107,
+                controlEpoch: 7,
+                controlVersion: 2)));
+
+            Assert.Same(pending, state.Pending);
+            Assert.Equal(requestId, state.Pending!.Intent.Command.RequestId.Value);
+            Assert.Equal(
+                TableInteractionCodes.AlreadyPending,
+                state.BuildIntent(TableIntentKind.ReleaseControl, Owner()).Code);
+        }
+
+        [Fact]
+        public void MissingThenRecoveredSameControlAuthorityKeepsUnknownRequest()
+        {
+            var clock = new ManualTableClock();
+            TableInteractionState state = new TableInteractionState(new TableCommandIntentFactory(clock));
+            state.ApplyConfirmedView(View(clock, P43TestData.PlayerSnapshot(controlEpoch: 7, controlVersion: 1)));
+            Assert.True(state.BuildIntent(TableIntentKind.ReleaseControl, Owner()).Accepted);
+            Assert.True(state.MarkDeliveryUnknown().Accepted);
+            TablePendingIntent pending = state.Pending!;
+
+            state.ApplyConfirmedView(View(clock, P43TestData.PlayerSnapshot(
+                stateVersion: 6,
+                eventSeq: 106,
+                includeControl: false)));
+            Assert.Same(pending, state.Pending);
+
+            state.ApplyConfirmedView(View(clock, P43TestData.PlayerSnapshot(
+                stateVersion: 7,
+                eventSeq: 107,
+                controlEpoch: 7,
+                controlVersion: 3)));
+            Assert.Same(pending, state.Pending);
+            Assert.True(state.Pending!.NeedsReconciliation);
+            Assert.Equal(TablePendingOutcome.Unknown, state.Pending.LastOutcome);
+            Assert.Equal(
+                TableInteractionCodes.AlreadyPending,
+                state.BuildIntent(TableIntentKind.ReleaseControl, Owner()).Code);
+        }
+
+        [Fact]
+        public void MissingThenRecoveredSameControlAuthorityKeepsOrdinaryAction()
+        {
+            var clock = new ManualTableClock();
+            TableInteractionState state = new TableInteractionState(new TableCommandIntentFactory(clock));
+            PlayerTableViewState view = View(clock, P43TestData.PlayerSnapshot(controlEpoch: 7, controlVersion: 1));
+            state.ApplyConfirmedView(view);
+            Assert.True(state.SelectAction(view.Own!.Decision!.Candidates[0]).Accepted);
+            Assert.True(state.BuildIntent(TableIntentKind.SubmitAction, Owner()).Accepted);
+            TablePendingIntent pending = state.Pending!;
+
+            state.ApplyConfirmedView(View(clock, P43TestData.PlayerSnapshot(
+                stateVersion: 6,
+                eventSeq: 106,
+                includeControl: false)));
+            Assert.Same(pending, state.Pending);
+
+            state.ApplyConfirmedView(View(clock, P43TestData.PlayerSnapshot(
+                stateVersion: 7,
+                eventSeq: 107,
+                controlEpoch: 7,
+                controlVersion: 2)));
+            Assert.Same(pending, state.Pending);
+            Assert.Equal(CommandKind.SubmitAction, state.Pending!.Intent.Kind);
+        }
+
+        [Fact]
+        public void MissingThenChangedControlAuthorityStillClearsPending()
+        {
+            var clock = new ManualTableClock();
+            TableInteractionState state = new TableInteractionState(new TableCommandIntentFactory(clock));
+            state.ApplyConfirmedView(View(clock, P43TestData.PlayerSnapshot(controlEpoch: 7, controlVersion: 1)));
+            Assert.True(state.BuildIntent(TableIntentKind.ReleaseControl, Owner()).Accepted);
+
+            state.ApplyConfirmedView(View(clock, P43TestData.PlayerSnapshot(
+                stateVersion: 6,
+                eventSeq: 106,
+                includeControl: false)));
+            Assert.NotNull(state.Pending);
+
+            state.ApplyConfirmedView(View(clock, P43TestData.PlayerSnapshot(
+                stateVersion: 7,
+                eventSeq: 107,
+                controlledByComputer: true,
+                controlEpoch: 8,
+                controlVersion: 2)));
+
+            Assert.Null(state.Pending);
+            TableInteractionOutcome claim = state.BuildIntent(TableIntentKind.ClaimControl, Owner("request-after-gap-change"));
+            Assert.True(claim.Accepted, claim.Code);
+            Assert.Equal(8UL, state.Pending!.Intent.ControlEpoch);
+        }
+
+        [Fact]
         public void AutomatedSeatRejectsPlayerActionsEvenWhenADecisionExists()
         {
             var clock = new ManualTableClock();
