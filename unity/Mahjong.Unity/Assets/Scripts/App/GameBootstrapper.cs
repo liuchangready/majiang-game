@@ -523,7 +523,7 @@ namespace Mahjong.Unity.App
 
                     lastIntent = intent;
                     ulong versionBefore = coordinator.Current.PlayerSnapshot?.StateVersion ?? 0UL;
-                    observer.BeginAction(coordinator.Current, requestId, view.Identity.ScopeId, lastAction);
+                    observer.BeginAction(coordinator.Current, requestId, view.Identity.ScopeId, action.Action);
                     Task<CommandSubmission> submit = coordinator.SubmitAsync(intent.Command, CancellationToken.None);
                     float submitTimer = 0f;
                     while (submitTimer < 10f && !submit.IsCompleted)
@@ -606,20 +606,22 @@ namespace Mahjong.Unity.App
                             yield break;
                         }
 
-                        if (publication.Events.Count > 0)
-                        {
-                            Debug.LogError(
-                                "SMOKE_OBSERVER: the action publication carried events, but none matched the Applied command version" +
-                                " action=" + lastAction +
-                                " publicationStateVersion=" + publication.StateVersion +
-                                " " + observer.ReceiptSummary +
-                                " " + observer.DescribeBatches());
-                            FailLocalSmoke("Action publication events did not match the Applied receipt", 31);
-                            yield break;
-                        }
-
                         if (!SmokeActionEventPolicy.AllowsEmptyPublication(action.Action))
                         {
+                            if (publication.Events.Count > 0)
+                            {
+                                Debug.LogError(
+                                    "SMOKE_OBSERVER: the action publication carried events, but none matched the required type/acting seat" +
+                                    " action=" + lastAction +
+                                    " requirement=" + SmokeActionEventPolicy.DescribeRequirement(action.Action) +
+                                    " publicationStateVersion=" + publication.StateVersion +
+                                    " publicationEventSeq=" + publication.EventSeq +
+                                    " " + observer.ReceiptSummary +
+                                    " " + observer.DescribeBatches());
+                                FailLocalSmoke("Action publication events did not match the action's required type/seat", 31);
+                                yield break;
+                            }
+
                             Debug.LogError(
                                 "SMOKE_OBSERVER: action requires a visible event, but its Applied publication was empty" +
                                 " action=" + lastAction +
@@ -633,8 +635,9 @@ namespace Mahjong.Unity.App
                         }
 
                         // Only the explicit state-only action above may continue.
-                        // Its confirmation still comes from a later real action;
-                        // this batch is never treated as the requested event.
+                        // A Pass publication may carry a window/settlement event
+                        // for another seat; it is never this request's confirmation.
+                        // The next real action must still confirm itself.
                         continue;
                     }
 

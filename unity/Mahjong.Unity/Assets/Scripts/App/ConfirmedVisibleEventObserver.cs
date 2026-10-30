@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Text;
 using Mahjong.Client;
 using Mahjong.Contracts;
+using Mahjong.Unity.Table;
 using Mahjong.Unity.UI.Session;
 
 namespace Mahjong.Unity.App
@@ -23,6 +24,7 @@ namespace Mahjong.Unity.App
             Visibility = source.Visibility;
             Seat = source.Seat;
             OwnerSeat = source.OwnerSeat;
+            Payload = source.Payload;
         }
 
         public ulong EventSeq { get; }
@@ -32,6 +34,7 @@ namespace Mahjong.Unity.App
         public ProtocolEventVisibility Visibility { get; }
         public int Seat { get; }
         public int OwnerSeat { get; }
+        public ProjectedEventPayload Payload { get; }
 
         public string Key => CommandVersion + ":" + EventSeq + ":" + EventOrdinal;
     }
@@ -165,6 +168,7 @@ namespace Mahjong.Unity.App
         private bool _actionBound;
         private string _requestId = string.Empty;
         private string _requestScopeId = string.Empty;
+        private PlayerActionKind _action;
         private string _actionKind = string.Empty;
         private string _sessionId = string.Empty;
         private string _roomId = string.Empty;
@@ -189,7 +193,7 @@ namespace Mahjong.Unity.App
             SessionViewState baseline,
             string requestId,
             string requestScopeId,
-            string actionKind)
+            PlayerActionKind action)
         {
             if (baseline == null) throw new ArgumentNullException(nameof(baseline));
             if (baseline.Binding == null)
@@ -207,7 +211,8 @@ namespace Mahjong.Unity.App
                 _actionBound = true;
                 _requestId = requestId ?? string.Empty;
                 _requestScopeId = requestScopeId ?? string.Empty;
-                _actionKind = actionKind ?? string.Empty;
+                _action = action;
+                _actionKind = action.ToString();
                 _sessionId = baseline.Binding.SessionId;
                 _roomId = baseline.Binding.RoomId;
                 _tableId = baseline.Binding.TableId;
@@ -299,10 +304,11 @@ namespace Mahjong.Unity.App
 
         /// <summary>
         /// Returns the first accepted incremental event whose command_version is
-        /// exactly the Applied receipt's command_version, under the same
-        /// binding/scope/round. Null means no confirmed visible event; the
-        /// caller must distinguish an applied state-only action by inspecting
-        /// <see cref="HasAppliedReceipt"/>.
+        /// exactly the Applied receipt's command_version, whose type and acting
+        /// seat match the selected action's contract, under the same
+        /// binding/scope/round. A matching command_version alone is not enough.
+        /// Null means no confirmed visible event; the caller must distinguish an
+        /// applied state-only action by inspecting <see cref="HasAppliedReceipt"/>.
         /// </summary>
         public ConfirmedVisibleActionEvent? TryGetConfirmation()
         {
@@ -312,6 +318,13 @@ namespace Mahjong.Unity.App
                     _receipt == null ||
                     _receipt.Disposition != OutboxDisposition.Applied ||
                     !_receipt.CommandVersion.HasValue)
+                {
+                    return null;
+                }
+
+                // Pass has no own playable event. Window/settlement events that
+                // share its command_version must never confirm the Pass.
+                if (SmokeActionEventPolicy.AllowsEmptyPublication(_action))
                 {
                     return null;
                 }
@@ -331,7 +344,8 @@ namespace Mahjong.Unity.App
                     for (int j = 0; j < batch.Events.Count; j++)
                     {
                         ObservedVisibleEvent ev = batch.Events[j];
-                        if (ev.CommandVersion == commandVersion)
+                        if (ev.CommandVersion == commandVersion &&
+                            SmokeActionEventPolicy.IsRequiredEvent(_action, _seat, ev))
                         {
                             return new ConfirmedVisibleActionEvent(
                                 batch,

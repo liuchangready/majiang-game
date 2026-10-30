@@ -437,7 +437,7 @@ namespace Mahjong.Unity.Tests.PlayMode
             coordinator.ReceiptResolved += observer.OnReceiptResolved;
             try
             {
-                observer.BeginAction(coordinator.Current, requestId, view.Identity.ScopeId, "DiscardTile/" + discard!.RawActionType);
+                observer.BeginAction(coordinator.Current, requestId, view.Identity.ScopeId, PlayerActionKind.DiscardTile);
                 Task<CommandSubmission> submit = coordinator.SubmitAsync(intent.Command, CancellationToken.None);
                 yield return WaitUntil(() => submit.IsCompleted, 10f, "discard submit");
                 Assert.IsTrue(submit.Result.Sent, "the discard must be handed to the transport");

@@ -11,6 +11,8 @@ using Mahjong.Unity.UI.Session;
 using Xunit;
 using ContractCursor = Mahjong.Contracts.StreamCursor;
 using ClientReceiptStatus = Mahjong.Contracts.ReceiptStatus;
+using WireMeld = Mahjong.Contracts.Wire.MeldView;
+using WireScore = Mahjong.Contracts.Wire.ScoreView;
 
 namespace Mahjong.Unity.TableModel.Tests
 {
@@ -47,7 +49,7 @@ namespace Mahjong.Unity.TableModel.Tests
             SessionViewState baseline = View(binding, 1, 1, baselineBatch, 1);
             var view = new FakeSessionView(baseline);
             using var observer = new ConfirmedVisibleEventObserver(view);
-            observer.BeginAction(baseline, RequestId, ScopeId, "DiscardTile/4");
+            observer.BeginAction(baseline, RequestId, ScopeId, PlayerActionKind.DiscardTile);
             observer.RecordReceipt(Receipt(RequestId, ScopeId, 1, 2, 2));
 
             TableVisibleEventBatch actionBatch = Project(
@@ -84,7 +86,7 @@ namespace Mahjong.Unity.TableModel.Tests
             SessionViewState baseline = View(binding, 1, 1, baselineBatch, 1);
             var view = new FakeSessionView(baseline);
             using var observer = new ConfirmedVisibleEventObserver(view);
-            observer.BeginAction(baseline, RequestId, ScopeId, "Pass/11");
+            observer.BeginAction(baseline, RequestId, ScopeId, PlayerActionKind.Pass);
             observer.RecordReceipt(Receipt(RequestId, ScopeId, 1, 2, 2));
             view.Publish(View(binding, 2, 2, Project(binding, fence, 2, 2, RoundId, false), 2));
 
@@ -101,7 +103,7 @@ namespace Mahjong.Unity.TableModel.Tests
             SessionViewState baseline = View(binding, 1, 1, baselineBatch, 1);
             var view = new FakeSessionView(baseline);
             using var observer = new ConfirmedVisibleEventObserver(view);
-            observer.BeginAction(baseline, RequestId, ScopeId, "DiscardTile/4");
+            observer.BeginAction(baseline, RequestId, ScopeId, PlayerActionKind.DiscardTile);
             observer.RecordReceipt(Receipt(RequestId, ScopeId, 1, 2, 2));
 
             view.Publish(View(
@@ -132,7 +134,7 @@ namespace Mahjong.Unity.TableModel.Tests
             SessionViewState baseline = View(binding, 1, 1, baselineBatch, 1);
             var view = new FakeSessionView(baseline);
             using var observer = new ConfirmedVisibleEventObserver(view);
-            observer.BeginAction(baseline, RequestId, ScopeId, "DiscardTile/4");
+            observer.BeginAction(baseline, RequestId, ScopeId, PlayerActionKind.DiscardTile);
             observer.RecordReceipt(Receipt(RequestId, ScopeId, 1, 2, 2));
 
             // A full baseline that happens to carry command 2 is history, not a
@@ -183,7 +185,7 @@ namespace Mahjong.Unity.TableModel.Tests
             SessionViewState baseline = View(binding, 1, 1, baselineBatch, 1);
             var view = new FakeSessionView(baseline);
             using var observer = new ConfirmedVisibleEventObserver(view);
-            observer.BeginAction(baseline, RequestId, ScopeId, "DiscardTile/4");
+            observer.BeginAction(baseline, RequestId, ScopeId, PlayerActionKind.DiscardTile);
             observer.RecordReceipt(Receipt(RequestId, ScopeId, 1, 2, 2));
 
             TableVisibleEventBatch actionBatch = Project(
@@ -212,7 +214,7 @@ namespace Mahjong.Unity.TableModel.Tests
             var view = new FakeSessionView(baseline);
             using var observer = new ConfirmedVisibleEventObserver(view);
 
-            observer.BeginAction(baseline, "smoke-pass", ScopeId, "Pass/11");
+            observer.BeginAction(baseline, "smoke-pass", ScopeId, PlayerActionKind.Pass);
             observer.RecordReceipt(Receipt("smoke-pass", ScopeId, 1, 2, 2));
             SessionViewState stateOnly = View(
                 binding, 2, 2, Project(binding, fence, 2, 2, RoundId, false), 2);
@@ -222,7 +224,7 @@ namespace Mahjong.Unity.TableModel.Tests
             Assert.True(SmokeActionEventPolicy.AllowsEmptyPublication(PlayerActionKind.Pass));
             Assert.Equal("state_only_response_pass", SmokeActionEventPolicy.DescribeRequirement(PlayerActionKind.Pass));
 
-            observer.BeginAction(stateOnly, "smoke-discard", ScopeId, "DiscardTile/4");
+            observer.BeginAction(stateOnly, "smoke-discard", ScopeId, PlayerActionKind.DiscardTile);
             observer.RecordReceipt(Receipt("smoke-discard", ScopeId, 2, 3, 3));
             view.Publish(View(
                 binding,
@@ -253,7 +255,7 @@ namespace Mahjong.Unity.TableModel.Tests
             var view = new FakeSessionView(baseline);
             using var observer = new ConfirmedVisibleEventObserver(view);
 
-            observer.BeginAction(baseline, "smoke-pon", ScopeId, "DeclarePon/6");
+            observer.BeginAction(baseline, "smoke-pon", ScopeId, PlayerActionKind.DeclarePon);
             observer.RecordReceipt(Receipt("smoke-pon", ScopeId, 4, 5, 10));
             SessionViewState ponState = View(
                 binding, 5, 10, Project(binding, fence, 5, 10, RoundId, false), 2);
@@ -267,7 +269,7 @@ namespace Mahjong.Unity.TableModel.Tests
                 "A Pon publication must never be skipped as a legal state-only action.");
             Assert.Equal("requires: PonDeclared", SmokeActionEventPolicy.DescribeRequirement(PlayerActionKind.DeclarePon));
 
-            observer.BeginAction(ponState, "smoke-discard-after-pon", ScopeId, "DiscardTile/4");
+            observer.BeginAction(ponState, "smoke-discard-after-pon", ScopeId, PlayerActionKind.DiscardTile);
             observer.RecordReceipt(Receipt("smoke-discard-after-pon", ScopeId, 5, 6, 11));
             view.Publish(View(
                 binding,
@@ -280,6 +282,148 @@ namespace Mahjong.Unity.TableModel.Tests
             Assert.NotNull(confirmed);
             Assert.Equal(6UL, confirmed!.CommandVersion);
             Assert.Equal(11UL, confirmed.Event.EventSeq);
+        }
+
+        [Fact]
+        public void PonWrongEventTypeDoesNotConfirmEvenWithMatchingCommandVersion()
+        {
+            TableSessionBinding binding = P43TestData.Binding();
+            object fence = NewFence();
+            SessionViewState baseline = View(binding, 1, 1, Project(binding, fence, 1, 1, RoundId, true), 1);
+            var view = new FakeSessionView(baseline);
+            using var observer = new ConfirmedVisibleEventObserver(view);
+            observer.BeginAction(baseline, "smoke-pon-wrong-type", ScopeId, PlayerActionKind.DeclarePon);
+            observer.RecordReceipt(Receipt("smoke-pon-wrong-type", ScopeId, 1, 2, 2));
+
+            view.Publish(View(
+                binding,
+                2,
+                2,
+                Project(binding, fence, 2, 2, RoundId, false, Discard(2, 2, seat: 0)),
+                2));
+
+            Assert.True(observer.HasAppliedReceipt);
+            Assert.Null(observer.TryGetConfirmation());
+            ObservedVisibleEventBatch? publication = observer.FindActionPublication(2);
+            Assert.NotNull(publication);
+            Assert.Single(publication!.Events);
+            Assert.Equal(ProtocolEventType.TileDiscarded, publication.Events[0].Type);
+            Assert.False(SmokeActionEventPolicy.IsRequiredEvent(
+                PlayerActionKind.DeclarePon, 0, publication.Events[0]));
+        }
+
+        [Fact]
+        public void PonOtherSeatDoesNotConfirmThePlayerAction()
+        {
+            TableSessionBinding binding = P43TestData.Binding();
+            object fence = NewFence();
+            SessionViewState baseline = View(binding, 1, 1, Project(binding, fence, 1, 1, RoundId, true), 1);
+            var view = new FakeSessionView(baseline);
+            using var observer = new ConfirmedVisibleEventObserver(view);
+            observer.BeginAction(baseline, "smoke-pon-other-seat", ScopeId, PlayerActionKind.DeclarePon);
+            observer.RecordReceipt(Receipt("smoke-pon-other-seat", ScopeId, 1, 2, 2));
+
+            view.Publish(View(
+                binding,
+                2,
+                2,
+                Project(binding, fence, 2, 2, RoundId, false, Pon(2, 0, 2, seat: 1)),
+                2));
+
+            Assert.True(observer.HasAppliedReceipt);
+            Assert.Null(observer.TryGetConfirmation());
+            ObservedVisibleEventBatch? publication = observer.FindActionPublication(2);
+            Assert.NotNull(publication);
+            Assert.Single(publication!.Events);
+            Assert.Equal(1, publication.Events[0].Seat);
+            Assert.False(SmokeActionEventPolicy.IsRequiredEvent(
+                PlayerActionKind.DeclarePon, 0, publication.Events[0]));
+        }
+
+        [Fact]
+        public void PassWindowSettlementEventDoesNotConfirmThePass()
+        {
+            TableSessionBinding binding = P43TestData.Binding();
+            object fence = NewFence();
+            SessionViewState baseline = View(binding, 1, 1, Project(binding, fence, 1, 1, RoundId, true), 1);
+            var view = new FakeSessionView(baseline);
+            using var observer = new ConfirmedVisibleEventObserver(view);
+            observer.BeginAction(baseline, "smoke-pass-settlement", ScopeId, PlayerActionKind.Pass);
+            observer.RecordReceipt(Receipt("smoke-pass-settlement", ScopeId, 1, 2, 2));
+
+            view.Publish(View(
+                binding,
+                2,
+                2,
+                Project(binding, fence, 2, 2, RoundId, false, DrawGameEvent(2, 0, 2)),
+                2));
+
+            Assert.True(observer.HasAppliedReceipt);
+            Assert.Null(observer.TryGetConfirmation());
+            ObservedVisibleEventBatch? publication = observer.FindActionPublication(2);
+            Assert.NotNull(publication);
+            Assert.Single(publication!.Events);
+            Assert.Equal(ProtocolEventType.DrawGame, publication.Events[0].Type);
+            Assert.True(SmokeActionEventPolicy.AllowsEmptyPublication(PlayerActionKind.Pass));
+            Assert.False(SmokeActionEventPolicy.IsRequiredEvent(
+                PlayerActionKind.Pass, 0, publication.Events[0]));
+        }
+
+        [Fact]
+        public void TsumoValidMultiEventConfirmsTheRequiredSeatEvent()
+        {
+            TableSessionBinding binding = P43TestData.Binding();
+            object fence = NewFence();
+            SessionViewState baseline = View(binding, 1, 1, Project(binding, fence, 1, 1, RoundId, true), 1);
+            var view = new FakeSessionView(baseline);
+            using var observer = new ConfirmedVisibleEventObserver(view);
+            observer.BeginAction(baseline, "smoke-tsumo", ScopeId, PlayerActionKind.DeclareTsumo);
+            observer.RecordReceipt(Receipt("smoke-tsumo", ScopeId, 1, 2, 3));
+
+            view.Publish(View(
+                binding,
+                2,
+                3,
+                Project(
+                    binding,
+                    fence,
+                    2,
+                    3,
+                    RoundId,
+                    false,
+                    ScoreSettledEvent(3, 0, 2),
+                    Tsumo(3, 1, 2, seat: 0)),
+                2));
+
+            ConfirmedVisibleActionEvent? confirmed = observer.TryGetConfirmation();
+            Assert.NotNull(confirmed);
+            Assert.Equal(ProtocolEventType.TsumoWin, confirmed!.Event.Type);
+            Assert.Equal(0, confirmed.Event.Seat);
+            Assert.Equal(2, confirmed.Batch.Events.Count);
+        }
+
+        [Fact]
+        public void RiichiDiscardWithRiichiFlagConfirmsTheRiichiAction()
+        {
+            TableSessionBinding binding = P43TestData.Binding();
+            object fence = NewFence();
+            SessionViewState baseline = View(binding, 1, 1, Project(binding, fence, 1, 1, RoundId, true), 1);
+            var view = new FakeSessionView(baseline);
+            using var observer = new ConfirmedVisibleEventObserver(view);
+            observer.BeginAction(baseline, "smoke-riichi", ScopeId, PlayerActionKind.DeclareRiichi);
+            observer.RecordReceipt(Receipt("smoke-riichi", ScopeId, 1, 2, 2));
+
+            view.Publish(View(
+                binding,
+                2,
+                2,
+                Project(binding, fence, 2, 2, RoundId, false, RiichiDiscard(2, 0, 2, seat: 0)),
+                2));
+
+            ConfirmedVisibleActionEvent? confirmed = observer.TryGetConfirmation();
+            Assert.NotNull(confirmed);
+            Assert.Equal(ProtocolEventType.TileDiscarded, confirmed!.Event.Type);
+            Assert.True(confirmed.Event.Payload.RiichiDiscard);
         }
 
         [Theory]
@@ -362,21 +506,116 @@ namespace Mahjong.Unity.TableModel.Tests
 
         private static EventEnvelope Discard(ulong eventSeq, ulong commandVersion, int seat)
         {
-            return new EventEnvelope
+            return Event(eventSeq, 0, commandVersion, EventType.TileDiscarded, EventVisibility.Public, e =>
             {
-                EventSchemaVersion = ProtocolConstants.EventSchemaVersion,
-                EventSeq = eventSeq,
-                CommandVersion = commandVersion,
-                EventOrdinal = 0,
-                EventType = EventType.TileDiscarded,
-                Visibility = EventVisibility.Public,
-                TileDiscarded = new TileDiscarded
+                e.TileDiscarded = new TileDiscarded
                 {
                     TurnNumber = 1,
                     Player = seat,
                     TileId = 5
-                }
+                };
+            });
+        }
+
+        private static EventEnvelope Pon(ulong eventSeq, uint ordinal, ulong commandVersion, int seat)
+        {
+            return Event(eventSeq, ordinal, commandVersion, EventType.PonDeclared, EventVisibility.Public, e =>
+            {
+                e.PonDeclared = new PonDeclared
+                {
+                    TurnNumber = 1,
+                    Player = seat,
+                    FromPlayer = 1,
+                    Meld = new WireMeld
+                    {
+                        Type = MeldType.Pon,
+                        CalledTileId = 5,
+                        FromSeat = 1,
+                        TileIds = { 5, 6, 7 }
+                    }
+                };
+            });
+        }
+
+        private static EventEnvelope RiichiDiscard(ulong eventSeq, uint ordinal, ulong commandVersion, int seat)
+        {
+            return Event(eventSeq, ordinal, commandVersion, EventType.TileDiscarded, EventVisibility.Public, e =>
+            {
+                e.TileDiscarded = new TileDiscarded
+                {
+                    TurnNumber = 1,
+                    Player = seat,
+                    TileId = 5,
+                    RiichiDiscard = true
+                };
+            });
+        }
+
+        private static EventEnvelope Tsumo(ulong eventSeq, uint ordinal, ulong commandVersion, int seat)
+        {
+            return Event(eventSeq, ordinal, commandVersion, EventType.TsumoWin, EventVisibility.SettlementPublic, e =>
+            {
+                e.TsumoWin = new TsumoWin
+                {
+                    TurnNumber = 1,
+                    Player = seat,
+                    WinTileId = 5,
+                    Han = 1,
+                    Fu = 30,
+                    Score = 1000
+                };
+            });
+        }
+
+        private static EventEnvelope ScoreSettledEvent(ulong eventSeq, uint ordinal, ulong commandVersion)
+        {
+            return Event(eventSeq, ordinal, commandVersion, EventType.ScoreSettled, EventVisibility.SettlementPublic, e =>
+            {
+                e.ScoreSettled = new ScoreSettled
+                {
+                    TurnNumber = 1,
+                    NewScores =
+                    {
+                        new WireScore { Seat = 0, Score = 26000 },
+                        new WireScore { Seat = 1, Score = 25000 },
+                        new WireScore { Seat = 2, Score = 25000 },
+                        new WireScore { Seat = 3, Score = 24000 }
+                    }
+                };
+            });
+        }
+
+        private static EventEnvelope DrawGameEvent(ulong eventSeq, uint ordinal, ulong commandVersion)
+        {
+            return Event(eventSeq, ordinal, commandVersion, EventType.DrawGame, EventVisibility.SettlementPublic, e =>
+            {
+                e.DrawGame = new DrawGame
+                {
+                    TurnNumber = 1,
+                    Reason = "EXHAUSTIVE_DRAW"
+                };
+            });
+        }
+
+        private static EventEnvelope Event(
+            ulong eventSeq,
+            uint ordinal,
+            ulong commandVersion,
+            EventType type,
+            EventVisibility visibility,
+            Action<EventEnvelope> body)
+        {
+            var envelope = new EventEnvelope
+            {
+                EventSchemaVersion = ProtocolConstants.EventSchemaVersion,
+                EventSeq = eventSeq,
+                CommandVersion = commandVersion,
+                EventOrdinal = ordinal,
+                EventType = type,
+                Visibility = visibility
             };
+            body(envelope);
+            return envelope;
         }
 
         private static TableReceiptResolvedEventArgs Receipt(
