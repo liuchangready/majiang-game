@@ -28,6 +28,7 @@
     <ProjectReference Include="..\..\src\Mahjong.Client\Mahjong.Client.csproj" />
     <ProjectReference Include="..\..\src\Mahjong.Contracts\Mahjong.Contracts.csproj" />
     <ProjectReference Include="..\..\src\Mahjong.Contracts.Wire\Mahjong.Contracts.Wire.csproj" />
+    <ProjectReference Include="..\..\src\Mahjong.LocalHost\Mahjong.LocalHost.csproj" />
   </ItemGroup>
 
   <!-- Compile the real production files, not copies. -->
@@ -41,6 +42,7 @@
     <Compile Include="$(MSBuildThisFileDirectory)..\..\..\unity\Mahjong.Unity\Assets\Scripts\UI\Session\ISessionView.cs" Link="Production\ISessionView.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)..\..\..\unity\Mahjong.Unity\Assets\Scripts\App\ConfirmedVisibleEventObserver.cs" Link="Production\ConfirmedVisibleEventObserver.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)..\..\..\unity\Mahjong.Unity\Assets\Scripts\App\SmokeActionEventPolicy.cs" Link="Production\SmokeActionEventPolicy.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\unity\Mahjong.Unity\Assets\Scripts\App\LocalFullMatchPolicy.cs" Link="Production\LocalFullMatchPolicy.cs" />
   </ItemGroup>
 
 </Project>
