@@ -61,7 +61,8 @@ namespace Mahjong.LocalHost
             TableActor actor,
             LocalSnapshotFacts facts,
             bool[] temporaryFuriten,
-            bool[] riichiFuriten)
+            bool[] riichiFuriten,
+            bool deferDriver)
         {
             _options = options;
             _environment = environment;
@@ -86,11 +87,13 @@ namespace Mahjong.LocalHost
             }
 
             _driver = new LocalTableDriver(actor, options, store, scopes, () => _sessionOpen, _temporaryFuriten, _riichiFuriten);
-            if (options.AutoPlay)
+            if (options.AutoPlay && !deferDriver)
             {
                 _driver.Start();
             }
         }
+
+
 
         public static async ValueTask<LocalTableRuntime> OpenAsync(
             LocalTableHostOptions options,
@@ -146,12 +149,48 @@ namespace Mahjong.LocalHost
                     riichiFuriten[seat] = committedFuriten.IsRiichi(seat);
                 }
 
-                var runtime = new LocalTableRuntime(options, environment, store, actor, facts, temporaryFuriten, riichiFuriten);
+                string diagnosticDirectory = LocalTableHostPaths.ResolveSaveDirectory(options.SaveDirectory);
+                bool pendingCapture = LocalTableDiagnosticRegistry.HasPendingCapture(diagnosticDirectory);
+                var runtime = new LocalTableRuntime(
+                    options,
+                    environment,
+                    store,
+                    actor,
+                    facts,
+                    temporaryFuriten,
+                    riichiFuriten,
+                    pendingCapture);
+                if (pendingCapture)
+                {
+                    try
+                    {
+                        LocalTableRecoveryCapture capture = await runtime.CaptureRecoveryAsync(cancellationToken).ConfigureAwait(false);
+                        LocalTableDiagnosticRegistry.CompletePendingCapture(diagnosticDirectory, capture);
+                    }
+                    catch (Exception exception)
+                    {
+                        LocalTableDiagnosticRegistry.FailPendingCapture(diagnosticDirectory, exception);
+                    }
+
+                    // The recovery probe is read-only: keeping the autonomous driver deferred
+                    // prevents a post-capture AI command from changing the baseline before the
+                    // process exits. Production runs never enter this branch.
+                }
+
+                LocalTableDiagnosticRegistry.Register(runtime.DiagnosticSaveDirectory, runtime);
                 return runtime;
             }
             catch
             {
                 store.Dispose();
+                if (LocalTableDiagnosticRegistry.HasPendingCapture(LocalTableHostPaths.ResolveSaveDirectory(options.SaveDirectory)))
+                {
+                    // The capture task would otherwise wait forever after a failed open.
+                    LocalTableDiagnosticRegistry.FailPendingCapture(
+                        LocalTableHostPaths.ResolveSaveDirectory(options.SaveDirectory),
+                        new LocalTableException(LocalTableErrorKind.CorruptState, "The local host did not open for the prepared capture."));
+                }
+
                 throw;
             }
         }
@@ -2345,6 +2384,70 @@ namespace Mahjong.LocalHost
             };
         }
 
+        internal string DiagnosticSaveDirectory =>
+            LocalTableHostPaths.ResolveSaveDirectory(_options.SaveDirectory);
+
+        /// <summary>
+        /// Captures one exact committed persisted version. The in-memory actor snapshot is used
+        /// only as a fence: the facts come from the primary envelope bytes, and the capture is
+        /// rejected until the decoded version/round/event/control generation match that snapshot.
+        /// No command is submitted and no file is written here.
+        /// </summary>
+        internal async Task<LocalTableRecoveryCapture> CaptureRecoveryAsync(CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            string primary = Path.Combine(DiagnosticSaveDirectory, _options.RoomId + ".save");
+            for (int attempt = 0; attempt < 40; attempt++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                TableSnapshot snapshot = await _actor.GetSnapshotAsync(cancellationToken).ConfigureAwait(false);
+                TableControlSnapshot control = await _actor.GetControlSnapshotAsync(cancellationToken).ConfigureAwait(false);
+                byte[] bytes;
+                try
+                {
+                    bytes = await Task.Run(() => File.ReadAllBytes(primary), cancellationToken).ConfigureAwait(false);
+                }
+                catch (IOException)
+                {
+                    await Task.Delay(25, cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                LocalTableRecoveryFacts facts = LocalTableRecoveryFactsReader.ReadPersistedFacts(bytes);
+                if (!string.Equals(facts.RoundId, snapshot.RoundId, StringComparison.Ordinal) ||
+                    !string.Equals(facts.StateVersion, snapshot.StateVersion.Value.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal) ||
+                    !string.Equals(facts.EventSeq, snapshot.LastEventSeq.Value.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal) ||
+                    !string.Equals(facts.StateFingerprint, snapshot.StateFingerprint.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal) ||
+                    !string.Equals(facts.ControlVersion, control.ControlVersion.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal))
+                {
+                    await Task.Delay(25, cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                bool controlMatches = true;
+                for (int seat = 0; seat < 4; seat++)
+                {
+                    if (facts.ControlEpochs[seat] != control.Seats[seat].ControlEpoch)
+                    {
+                        controlMatches = false;
+                        break;
+                    }
+                }
+
+                if (!controlMatches)
+                {
+                    await Task.Delay(25, cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                return new LocalTableRecoveryCapture(bytes, facts);
+            }
+
+            throw new LocalTableException(
+                LocalTableErrorKind.CorruptState,
+                "No stable persisted authority version matched the open runtime snapshot; refusing to stitch fields from different time points.");
+        }
+
         public async ValueTask DisposeAsync()
         {
             if (_disposed)
@@ -2353,6 +2456,7 @@ namespace Mahjong.LocalHost
             }
 
             _disposed = true;
+            LocalTableDiagnosticRegistry.Unregister(DiagnosticSaveDirectory, this);
             await _driver.StopAsync().ConfigureAwait(false);
             await CloseSessionAsync(CancellationToken.None).ConfigureAwait(false);
             try
