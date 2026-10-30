@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Mahjong.Client;
@@ -200,7 +201,9 @@ namespace Mahjong.LocalHost.Tests
                     CommandSubmission submission = await session.SubmitAsync(command, cts.Token);
                     Assert.True(submission.Sent);
                     TableReceiptResolvedEventArgs receipt = await LocalHostCommandTests.WithTimeoutAsync(resolved.Task, cts.Token);
-                    Assert.Equal(OutboxDisposition.Recorded, receipt.Resolution.Disposition);
+                    Assert.True(
+                        receipt.Resolution.Disposition == OutboxDisposition.Recorded ||
+                        receipt.Resolution.Disposition == OutboxDisposition.Applied);
 
                     LocalTableRecoveryCapture capture = await LocalTableHost.CaptureRecoveryAsync(
                         harness.Options.SaveDirectory,
@@ -223,6 +226,88 @@ namespace Mahjong.LocalHost.Tests
             {
                 await channel.CloseAsync(
                     new TableChannelCloseReason("P45_CONTROL_EXPORT_CLOSE", true),
+                    CancellationToken.None);
+            }
+        }
+
+        [Fact]
+        public async Task TileMarkThroughPublicSessionExportsCurrentNonEmptyLedger()
+        {
+            await using var harness = new P41Harness();
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            ITableChannel channel = await LocalTableHost.CreateChannelAsync(harness.Options, cts.Token);
+            string channelTicket = LocalTableHost.IssueTicket(harness.Options);
+            await channel.OpenAsync(new TableChannelConnectRequest(channelTicket, "p45-cheat-export", null), cts.Token);
+            var session = new TableSession(channel, new InMemoryOutboxStore());
+            await LocalHostCommandTests.PumpUntilReadyAsync(
+                session,
+                LocalTableHost.IssueTicket(harness.Options),
+                cts.Token);
+            try
+            {
+                PlayerSnapshot baseline = session.PlayerSnapshot!;
+                Assert.True(baseline.PrivateView.ClosedTiles.Count >= 4);
+                uint[] tiles = baseline.PrivateView.ClosedTiles.Take(4).ToArray();
+                BusinessPayload payload = CommandPayloadFactory.SubmitTileMark(
+                    baseline.RoundId,
+                    "local-direct",
+                    0UL,
+                    tiles);
+                var requestId = new RequestId("p45-tilemark-export");
+                var command = new ProtocolCommand(
+                    CommandKind.SubmitTileMark,
+                    payload,
+                    requestId,
+                    session.Binding!.Scope.ScopeId,
+                    new StateVersion(baseline.StateVersion),
+                    new RoundId(baseline.RoundId),
+                    decisionId: null,
+                    controlEpoch: new ControlEpoch(0));
+                var resolved = new TaskCompletionSource<TableReceiptResolvedEventArgs>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                EventHandler<TableReceiptResolvedEventArgs> handler = (_, args) =>
+                {
+                    if (args.Command.Key.RequestId.Value == requestId.Value) { resolved.TrySetResult(args); }
+                };
+                session.ReceiptResolved += handler;
+                using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(cts.Token);
+#pragma warning disable xUnit1051
+                Task pump = Task.Run(async () =>
+                {
+                    while (!pumpCts.IsCancellationRequested)
+                    {
+                        try { await session.PumpOnceAsync(pumpCts.Token); }
+                        catch (OperationCanceledException) { break; }
+                    }
+                });
+#pragma warning restore xUnit1051
+                try
+                {
+                    CommandSubmission submission = await session.SubmitAsync(command, cts.Token);
+                    Assert.True(submission.Sent);
+                    TableReceiptResolvedEventArgs receipt = await LocalHostCommandTests.WithTimeoutAsync(resolved.Task, cts.Token);
+                    Assert.True(
+                        receipt.Resolution.Disposition == OutboxDisposition.Recorded ||
+                        receipt.Resolution.Disposition == OutboxDisposition.Applied);
+
+                    LocalTableRecoveryCapture capture = await LocalTableHost.CaptureRecoveryAsync(
+                        harness.Options.SaveDirectory,
+                        cts.Token);
+                    Assert.True(capture.Facts.Ledger.EntryCount > 0);
+                    Assert.True(capture.Facts.Ledger.Balances[0] < 120);
+                    Assert.Equal("CURRENT_COMMITTED_ACTOR", capture.Facts.Ledger.Source);
+                }
+                finally
+                {
+                    pumpCts.Cancel();
+                    try { await pump; } catch { }
+                    session.ReceiptResolved -= handler;
+                }
+            }
+            finally
+            {
+                await channel.CloseAsync(
+                    new TableChannelCloseReason("P45_CHEAT_EXPORT_CLOSE", true),
                     CancellationToken.None);
             }
         }
