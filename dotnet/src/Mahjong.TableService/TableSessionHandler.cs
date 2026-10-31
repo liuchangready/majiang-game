@@ -8,6 +8,7 @@ using System.Threading.Channels;
 using System.Threading.Tasks;
 using Mahjong.Contracts;
 using Mahjong.Contracts.Wire;
+using Mahjong.Domain.Rules;
 using Mahjong.TableRuntime;
 using Microsoft.Extensions.Logging;
 
@@ -1447,9 +1448,30 @@ namespace Mahjong.TableService
                 Func<int, Mahjong.Domain.TileId, ulong, TableCommandRouteResponseEligibility?>? eligibility =
                     (seat, tile, expectedVersion) =>
                         decisionState.DeriveResponseEligibility(seat, tile, expectedVersion);
+                // P5.4b-B2-T: an abortive draw is mapped only when the committed round proves
+                // one of the frozen reasons. The actor/calculator re-validates it; an
+                // unprovable action fails closed before the actor with zero side effects.
+                Func<TableSettlementAction, int, SettlementAbortiveDrawReason?>? abortiveReason =
+                    (settlementAction, seat) =>
+                    {
+                        if (settlementAction != TableSettlementAction.AbortiveDraw)
+                        {
+                            return null;
+                        }
+
+                        try
+                        {
+                            return TableServiceAbortiveDraw.TryDerive(
+                                host.Actor.GetRoundStateForHost(), seat);
+                        }
+                        catch (Exception)
+                        {
+                            return null;
+                        }
+                    };
                 route = TableCommandMapper.Map(
                     identity, envelope, host.OwnerEpoch, host.RecoveryGeneration, _options,
-                    authoritativeRoundId, resolver, eligibility);
+                    authoritativeRoundId, resolver, eligibility, abortiveReason);
             }
             catch (ResponseEligibilityUnavailableException)
             {
@@ -1468,8 +1490,41 @@ namespace Mahjong.TableService
 
             if (route is TableCommandRoute.PreActorRejection rejection)
             {
-                EnqueueError(rejection.ErrorCode, rejection.FieldPath, rejection.DetailCode, retryable: rejection.Retryable);
-                return false;
+                if (string.Equals(
+                        rejection.DetailCode,
+                        TableCommandMapper.SettlementAbortiveReasonDetail,
+                        StringComparison.Ordinal))
+                {
+                    // A successful abortive draw leaves the round terminal, so the live
+                    // reason resolver cannot prove the original cause on a retry. Resolve the
+                    // original durable receipt first: an exact replay must reach the actor's
+                    // receipt ledger, while a new/unproven request still fails closed below.
+                    TableCommandRoute.Settlement? replay =
+                        await TryBuildAbortiveReplayAsync(host, identity, envelope, stopping)
+                            .ConfigureAwait(false);
+                    if (replay != null)
+                    {
+                        route = replay;
+                    }
+                    else
+                    {
+                        EnqueueError(
+                            rejection.ErrorCode,
+                            rejection.FieldPath,
+                            rejection.DetailCode,
+                            retryable: rejection.Retryable);
+                        return false;
+                    }
+                }
+                else
+                {
+                    EnqueueError(
+                        rejection.ErrorCode,
+                        rejection.FieldPath,
+                        rejection.DetailCode,
+                        retryable: rejection.Retryable);
+                    return false;
+                }
             }
 
             byte[] payloadBytes = envelope.Command.CanonicalPayload.ToByteArray();
@@ -1524,7 +1579,13 @@ namespace Mahjong.TableService
             }
 
             TableOperationResult result;
-            if (route is TableCommandRoute.BusinessCommand business)
+            if (route is TableCommandRoute.Settlement settlement)
+            {
+                result = await host.Actor
+                    .SubmitSettlementAsync(settlement.Request, stopping)
+                    .ConfigureAwait(false);
+            }
+            else if (route is TableCommandRoute.BusinessCommand business)
             {
                 result = await host.Actor.SubmitAsync(business.Envelope, stopping).ConfigureAwait(false);
             }
@@ -1556,6 +1617,82 @@ namespace Mahjong.TableService
             }
 
             return false;
+        }
+
+        /// <summary>
+        /// Resolves an abortive-draw retry against the original durable receipt before the
+        /// mapper's live-round reason derivation can reject it. The probe intent deliberately
+        /// names a non-current round and a placeholder reason: the actor's admitted-command
+        /// path returns the receipt first; if the receipt disappeared between the lookup and
+        /// admission, the core path rejects the fake round instead of creating a new terminal.
+        /// Scope/account/room/API/digest remain fenced by the same actor receipt key.
+        /// </summary>
+        private async Task<TableCommandRoute.Settlement?> TryBuildAbortiveReplayAsync(
+            RoomHost host,
+            TableConnectionIdentity identity,
+            Envelope envelope,
+            CancellationToken stopping)
+        {
+            if (envelope.Command == null ||
+                envelope.Command.Type != CommandType.SubmitAction ||
+                string.IsNullOrEmpty(envelope.RequestId))
+            {
+                return null;
+            }
+
+            RequestScopeId scopeId = new RequestScopeId(identity.ScopeId);
+            if (envelope.Scope != null && !string.IsNullOrEmpty(envelope.Scope.ScopeId))
+            {
+                var presented = new RequestScopeId(envelope.Scope.ScopeId);
+                if (!await IsAuthorizedReceiptScopeAsync(host, identity, presented, stopping)
+                        .ConfigureAwait(false))
+                {
+                    return null;
+                }
+
+                scopeId = presented;
+            }
+
+            var requestId = new RequestId(envelope.RequestId);
+            ReceiptLookupResult lookup;
+            try
+            {
+                lookup = await host.Actor
+                    .QueryReceiptAsync(identity.AccountId, scopeId, requestId, stopping)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+
+            if (lookup.Status != ReceiptLookupStatus.Found)
+            {
+                return null;
+            }
+
+            byte[] payload = envelope.Command.CanonicalPayload.ToByteArray();
+            var intent = new TableSettlementIntent(
+                "replay-probe",
+                TableSettlementAction.AbortiveDraw,
+                identity.Seat,
+                SettlementAbortiveDrawReason.NineTerminals);
+            var request = new TableSettlementRequest(
+                intent,
+                requestId,
+                new StateVersion(envelope.Command.ExpectedStateVersion),
+                host.OwnerEpoch,
+                new ControlEpoch(envelope.ControlEpoch),
+                decisionId: null,
+                recoveryGeneration: host.RecoveryGeneration,
+                scopeId: scopeId,
+                api: "SUBMIT_ACTION",
+                payloadSha256: TablePayloadSha256.Compute(payload));
+            return new TableCommandRoute.Settlement(request);
         }
 
         private async Task DispatchSyncAsync(Envelope envelope, CancellationToken stopping)

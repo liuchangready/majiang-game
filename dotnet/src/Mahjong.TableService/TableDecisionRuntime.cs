@@ -40,6 +40,34 @@ namespace Mahjong.TableService
         /// <summary>The one domain-truth snapshot the trusted projection capture supplied.</summary>
         private RoundDecisionNeed? _need;
 
+        /// <summary>The exact immutable round the snapshot was captured from.</summary>
+        private RoundStateMachine? _needRound;
+
+        /// <summary>The actor-committed furiten facts captured with the snapshot.</summary>
+        private TableFuritenSnapshot? _needFuriten;
+
+        /// <summary>
+        /// Host-only current furiten reader. Live projection captures do not carry the
+        /// snapshot, so the room binds the actor's committed value here; it is used only
+        /// when the capture itself did not supply one.
+        /// </summary>
+        private Func<TableFuritenSnapshot?>? _furitenProvider;
+
+        /// <summary>
+        /// P5.4b-B2-T: one exhaustive-draw identity per (round, committed state version). A
+        /// transient known-not-committed failure is retried under the SAME identity with a
+        /// bounded attempt count; an in-flight/concurrent tick is fenced; an unknown commit
+        /// result reconciles the original receipt and never creates a new identity.
+        /// </summary>
+        private string? _exhaustiveAttemptRoundId;
+        private ulong _exhaustiveAttemptVersion = ulong.MaxValue;
+        private int _exhaustiveAttempts;
+        private bool _exhaustiveInFlight;
+        private bool _exhaustiveStopped;
+        private string _exhaustiveFailure = string.Empty;
+
+        private const int MaxExhaustiveAttempts = 3;
+
         /// <summary>seat -> the open decision THIS service opened (or observed) for that seat.</summary>
         private readonly Dictionary<int, TableLiveDecision> _live = new Dictionary<int, TableLiveDecision>();
 
@@ -62,11 +90,30 @@ namespace Mahjong.TableService
         private ulong _autoDrawAttemptedVersion = ulong.MaxValue;
 
         /// <summary>
+        /// Binds the room's actor reader for the committed furiten bits that live projection
+        /// captures do not carry. Called once after actor construction, never per frame.
+        /// </summary>
+        internal void BindFuriten(Func<TableFuritenSnapshot?> provider)
+        {
+            _furitenProvider = provider ?? throw new ArgumentNullException(nameof(provider));
+        }
+
+        private TableFuritenSnapshot? EffectiveFuriten()
+        {
+            return _needFuriten ?? _furitenProvider?.Invoke();
+        }
+
+        /// <summary>
         /// Called only by the trusted projection-context source while the actor builds a stream
         /// frame: the only moment the service may read the exact committed Domain round as
         /// source truth.
         /// </summary>
-        internal void NoteCapture(string roomId, RoundStateMachine round, ulong stateVersion, long monotonicMs)
+        internal void NoteCapture(
+            string roomId,
+            RoundStateMachine round,
+            ulong stateVersion,
+            long monotonicMs,
+            TableFuritenSnapshot? furiten = null)
         {
             if (round == null)
             {
@@ -78,6 +125,8 @@ namespace Mahjong.TableService
                 if (round.IsFinished)
                 {
                     _need = null;
+                    _needRound = null;
+                    _needFuriten = null;
                     return;
                 }
 
@@ -90,6 +139,8 @@ namespace Mahjong.TableService
                 }
 
                 _need = RoundDecisionNeed.Snapshot(roomId, round, stateVersion, monotonicMs);
+                _needRound = round;
+                _needFuriten = furiten;
             }
         }
 
@@ -179,6 +230,15 @@ namespace Mahjong.TableService
 
                 if (need.Phase == RoundPhase.Draw)
                 {
+                    if (need.WallRemaining == 0)
+                    {
+                        // P5.4b-B2-T: the wall is exhausted. The trusted service now commits
+                        // the exhaustive draw through the actor's typed settlement entry; the
+                        // Domain still owns the terminal transition and the calculator.
+                        await AutoExhaustiveDrawAsync(host, need).ConfigureAwait(false);
+                        return 0;
+                    }
+
                     // D-1-01 round 3: no decision exists for a draw turn — the trusted runtime
                     // advances the wall draw itself; the commit publishes the next turn.
                     await AutoAdvanceDrawAsync(host, need).ConfigureAwait(false);
@@ -211,7 +271,8 @@ namespace Mahjong.TableService
                     continue;
                 }
 
-                IReadOnlyList<LegalActionOption>? candidates = DeriveCandidates(need!, seat);
+                IReadOnlyList<LegalActionOption>? candidates = DeriveCandidates(
+                    need!, seat, EffectiveFuriten());
                 if (candidates == null || candidates.Count == 0)
                 {
                     // D-1-01 round 3: no invention when the Domain truth offers nothing this
@@ -244,6 +305,218 @@ namespace Mahjong.TableService
             }
 
             return opened;
+        }
+
+        /// <summary>
+        /// P5.4b-B2-T: the trusted exhaustive draw. In DRAW with zero live wall tiles the
+        /// service submits one typed settlement intent through the actor's own durable
+        /// pipeline (scope/owner/control/state/version fences, receipt, event, result and
+        /// outbox in one commit). The request identity is deterministic over the exact
+        /// round/state/seat, so a restart-reconciled retry addresses the ORIGINAL request;
+        /// a second tick cannot issue a new identity or re-publish the terminal.
+        /// </summary>
+        private async Task AutoExhaustiveDrawAsync(RoomHost host, RoundDecisionNeed need)
+        {
+            TableActor actor = host.Actor;
+            Console.Error.WriteLine(
+                "tablesvc: drive exhaustive room=" + host.RoomId +
+                " round=" + need.RoundId + " version=" + need.StateVersion +
+                " seat=" + need.CurrentSeat);
+
+            TableControlSnapshot control;
+            try
+            {
+                control = await actor.GetControlSnapshotAsync().ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                return;
+            }
+
+            int seat = need.CurrentSeat;
+            if (seat < 0 || seat > 3 || control.Seats.Count <= seat)
+            {
+                return;
+            }
+
+            RequestId requestId;
+            try
+            {
+                requestId = new RequestId(
+                    "svc-exhaustive-" +
+                    need.RoundId + "-" +
+                    need.StateVersion.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                    "-" + seat.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
+            catch (ArgumentException)
+            {
+                return;
+            }
+
+            var intent = new TableSettlementIntent(
+                need.RoundId,
+                TableSettlementAction.ExhaustiveDraw,
+                seat);
+            byte[] identity = System.Text.Encoding.UTF8.GetBytes(
+                "SERVICE_EXHAUSTIVE|" + need.RoundId + "|" +
+                need.StateVersion.ToString(System.Globalization.CultureInfo.InvariantCulture) + "|" +
+                seat.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            var request = new TableSettlementRequest(
+                intent,
+                requestId,
+                new StateVersion(need.StateVersion),
+                host.OwnerEpoch,
+                new ControlEpoch((ulong)control.Seats[seat].ControlEpoch),
+                decisionId: null,
+                recoveryGeneration: host.RecoveryGeneration,
+                scopeId: host.ServiceScope.ScopeId,
+                api: TableRoomHostAutoDraw.ExhaustiveApi,
+                payloadSha256: TablePayloadSha256.Compute(identity));
+
+            int attempt;
+            lock (_gate)
+            {
+                if (!string.Equals(_exhaustiveAttemptRoundId, need.RoundId, StringComparison.Ordinal) ||
+                    _exhaustiveAttemptVersion != need.StateVersion)
+                {
+                    _exhaustiveAttemptRoundId = need.RoundId;
+                    _exhaustiveAttemptVersion = need.StateVersion;
+                    _exhaustiveAttempts = 0;
+                    _exhaustiveInFlight = false;
+                    _exhaustiveStopped = false;
+                    _exhaustiveFailure = string.Empty;
+                }
+
+                if (_exhaustiveInFlight || _exhaustiveStopped)
+                {
+                    return;
+                }
+
+                if (_exhaustiveAttempts >= MaxExhaustiveAttempts)
+                {
+                    _exhaustiveStopped = true;
+                    _exhaustiveFailure = "ATTEMPT_LIMIT";
+                    return;
+                }
+
+                // Reserve the one in-flight slot before awaiting the actor. A concurrent tick
+                // cannot submit a second terminal request for this exact state.
+                _exhaustiveInFlight = true;
+                _exhaustiveAttempts++;
+                attempt = _exhaustiveAttempts;
+            }
+
+            TableOperationResult result;
+            try
+            {
+                result = await actor.SubmitSettlementAsync(request).ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                Console.Error.WriteLine(
+                    "tablesvc: exhaustive draw submit fault room=" + host.RoomId +
+                    " round=" + need.RoundId + " version=" + need.StateVersion +
+                    " seat=" + seat + " attempt=" + attempt +
+                    " detail=" + exception.GetType().Name);
+                bool committed = await OriginalExhaustiveReceiptExistsAsync(
+                        actor, host, requestId).ConfigureAwait(false);
+                lock (_gate)
+                {
+                    _exhaustiveInFlight = false;
+                    _exhaustiveStopped = committed || _exhaustiveAttempts >= MaxExhaustiveAttempts;
+                    _exhaustiveFailure = committed
+                        ? "UNKNOWN_REPLAYED_ORIGINAL_RECEIPT"
+                        : "SUBMIT_FAULT";
+                }
+
+                return;
+            }
+
+            Console.Error.WriteLine(
+                "tablesvc: exhaustive draw result room=" + host.RoomId +
+                " round=" + need.RoundId + " version=" + need.StateVersion +
+                " seat=" + seat + " attempt=" + attempt +
+                " status=" + result.Status + " reason=" + result.ReasonCode +
+                " detail=" + result.Detail);
+
+            if (result.Status == TableOperationStatus.Failed &&
+                string.Equals(result.ReasonCode, TableRuntimeReasonCode.CommitOutcomeUnknown, StringComparison.Ordinal))
+            {
+                // The commit may or may not have landed. Reconcile the ORIGINAL request; never
+                // issue a new identity and never publish a second terminal from this path.
+                bool committed = await OriginalExhaustiveReceiptExistsAsync(
+                        actor, host, requestId).ConfigureAwait(false);
+                lock (_gate)
+                {
+                    _exhaustiveInFlight = false;
+                    _exhaustiveStopped = true;
+                    _exhaustiveFailure = committed
+                        ? "UNKNOWN_REPLAYED_ORIGINAL_RECEIPT"
+                        : "UNKNOWN_ORIGINAL_RECEIPT_NOT_FOUND";
+                }
+
+                Console.Error.WriteLine(
+                    "tablesvc: exhaustive draw unknown-outcome reconciled room=" + host.RoomId +
+                    " requestId=" + requestId.Value + " originalReceiptFound=" + committed);
+                return;
+            }
+
+            lock (_gate)
+            {
+                _exhaustiveInFlight = false;
+                if (result.Status == TableOperationStatus.Accepted ||
+                    result.Status == TableOperationStatus.Replayed)
+                {
+                    _exhaustiveStopped = true;
+                }
+                else if (result.Status == TableOperationStatus.Rejected ||
+                         result.Status == TableOperationStatus.Conflict)
+                {
+                    _exhaustiveStopped = true;
+                    _exhaustiveFailure = result.ReasonCode;
+                }
+                else if (result.Status == TableOperationStatus.Failed)
+                {
+                    bool retryable = IsRetryableExhaustiveFailure(result.ReasonCode);
+                    _exhaustiveStopped = !retryable || _exhaustiveAttempts >= MaxExhaustiveAttempts;
+                    _exhaustiveFailure = result.ReasonCode;
+                }
+                else
+                {
+                    _exhaustiveStopped = true;
+                    _exhaustiveFailure = result.Status.ToString();
+                }
+            }
+        }
+
+        private static bool IsRetryableExhaustiveFailure(string? reasonCode)
+        {
+            return !string.Equals(reasonCode, TableRuntimeReasonCode.CommitOutcomeUnknown, StringComparison.Ordinal) &&
+                   !string.Equals(reasonCode, TableRuntimeReasonCode.CommitCancelled, StringComparison.Ordinal) &&
+                   !string.Equals(reasonCode, TableRuntimeReasonCode.StaleOwnerEpoch, StringComparison.Ordinal) &&
+                   !string.Equals(reasonCode, TableRuntimeReasonCode.StaleStateVersion, StringComparison.Ordinal) &&
+                   !string.Equals(reasonCode, TableRuntimeReasonCode.LeaseLost, StringComparison.Ordinal) &&
+                   !string.Equals(reasonCode, TableRuntimeReasonCode.CheckpointInvalid, StringComparison.Ordinal);
+        }
+
+        private static async Task<bool> OriginalExhaustiveReceiptExistsAsync(
+            TableActor actor,
+            RoomHost host,
+            RequestId requestId)
+        {
+            try
+            {
+                ReceiptLookupResult lookup = await actor.QueryReceiptAsync(
+                        TableRoomHostAutoDraw.ServiceAccountId,
+                        host.ServiceScope.ScopeId,
+                        requestId)
+                    .ConfigureAwait(false);
+                return lookup.Status == ReceiptLookupStatus.Found;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
         }
 
         /// <summary>
@@ -390,11 +663,11 @@ namespace Mahjong.TableService
         ///  - a response window seat receives the always-legal PASS plus one honest marker
         ///    candidate per EXECUTABLE claim kind against this window's target tile (pon /
         ///    open kan / chi for the discarder's shimocha): the exact meld tiles stay a
-        ///    command fact the Domain re-verifies. Ron and chankan-Ron claims need a
-        ///    settlement authority P5.1 does not configure (the frozen boundary stays), so
-        ///    they are never advertised.
+        ///    command fact the Domain re-verifies. A Ron/chankan-Ron is advertised only when
+        ///    the frozen evaluator accepts the exact hand and the committed furiten snapshot
+        ///    does not forbid it; the actor still re-validates yaku, furiten and payments.
         /// </summary>
-        private static IReadOnlyList<LegalActionOption>? DeriveCandidates(RoundDecisionNeed need, int seat)
+        private IReadOnlyList<LegalActionOption>? DeriveCandidates(RoundDecisionNeed need, int seat, TableFuritenSnapshot? furiten)
         {
             switch (need.Phase)
             {
@@ -416,16 +689,27 @@ namespace Mahjong.TableService
                         return null;
                     }
 
-                    return ResponseWindowCandidates(need, seat, target, need.WindowIsChankan);
+                    return ResponseWindowCandidates(need, seat, target, need.WindowIsChankan, furiten);
                 default:
                     return null;
             }
         }
 
         /// <summary>Phase CHEAT_WINDOW / DISCARD candidates for the acting seat.</summary>
-        private static IReadOnlyList<LegalActionOption>? ActingTurnCandidates(RoundDecisionNeed need, int seat)
+        private IReadOnlyList<LegalActionOption>? ActingTurnCandidates(RoundDecisionNeed need, int seat)
         {
             var candidates = new List<LegalActionOption>();
+
+            // P5.4b-B2-T: a complete yaku-bearing hand on the committed draw is executable
+            // through SubmitSettlementAsync, so it is advertised from the frozen evaluator's
+            // own observation. The actor recomputes yaku/han/fu/payments and rejects a hand
+            // that no longer matches the exact committed source.
+            if (_needRound != null &&
+                need.CurrentSeat == seat &&
+                TableServiceRonEligibility.CanTsumo(_needRound, seat))
+            {
+                candidates.Add(new LegalActionOption(LegalActionKind.Tsumo, seat));
+            }
 
             if (need.IsRiichi(seat))
             {
@@ -555,25 +839,32 @@ namespace Mahjong.TableService
             return false;
         }
 
-        /// <summary>Response-window candidates. Windows whose only claim kinds are
-        /// settlement-bound (RON, chankan-Ron) stay Pass-only: a P5.1 table cannot execute a
-        /// settlement claim, so advertising one would publish an unexecutable "legal"
-        /// candidate. Pon/open-kan/chi targets are executable through the frozen wire.</summary>
-        private static IReadOnlyList<LegalActionOption> ResponseWindowCandidates(
+        /// <summary>Response-window candidates. A Ron (including chankan) is advertised only
+        /// when the frozen evaluator proves a yaku-bearing hand for the exact committed
+        /// window and the committed furiten snapshot allows it; the actor/calculator still
+        /// re-verify and produce every scoring fact. Pon/open-kan/chi targets are executable
+        /// through the frozen wire.</summary>
+        private IReadOnlyList<LegalActionOption> ResponseWindowCandidates(
             RoundDecisionNeed need,
             int seat,
             TileId target,
-            bool isChankan)
+            bool isChankan,
+            TableFuritenSnapshot? furiten)
         {
             var candidates = new List<LegalActionOption>
             {
                 new LegalActionOption(LegalActionKind.Pass, seat)
             };
 
+            if (_needRound != null &&
+                TableServiceRonEligibility.CanRon(_needRound, furiten, seat))
+            {
+                candidates.Add(new LegalActionOption(LegalActionKind.Ron, seat, target));
+            }
+
             if (isChankan)
             {
-                // Chankan resolution is a Ron claim (a scoring authority this table does not
-                // configure): Pass is the only executable response.
+                // A chankan window resolves only by Ron or Pass: no pon/chi/open-kan.
                 return candidates;
             }
 
@@ -660,10 +951,10 @@ namespace Mahjong.TableService
         /// client claim. Eligible seats are those whose claim is EXECUTABLE through this
         /// table's frozen wire: open kan (three same-type copies plus kan room on the wall),
         /// pon (two same-type copies) and chi (only the discarder's shimocha, one legal run
-        /// pairing). RON eligibility is a settlement-authority boundary P5.1 does not
-        /// configure; such seats stay outside this fence exactly as they stay outside every
-        /// advertised candidate, and the actor's AuthorityUnavailable semantics stay
-        /// untouched.
+        /// pairing). A Ron-eligible seat is inside the Domain window when the frozen evaluator
+        /// proves the exact hand; the actor still applies furiten/yaku/payment validation.
+        /// Such a seat is advertised by <see cref="ResponseWindowCandidates"/> only while the
+        /// committed furiten snapshot allows the claim.
         /// Returns null when the trusted state cannot serve this version: the mapper must
         /// fail closed instead of mapping a response window from stale or absent facts.
         /// </summary>
@@ -697,6 +988,7 @@ namespace Mahjong.TableService
                 }
 
                 var eligible = new List<int>();
+                TableFuritenSnapshot? eligibleFuriten = EffectiveFuriten();
                 for (int claimSeat = 0; claimSeat < 4; claimSeat++)
                 {
                     if (claimSeat == actingSeat)
@@ -704,15 +996,11 @@ namespace Mahjong.TableService
                         continue;
                     }
 
-                    if (need.IsRiichi(claimSeat))
-                    {
-                        continue;
-                    }
-
+                    // A riichi seat keeps its Ron right but cannot Pon/Chi/Kan; treating
+                    // "riichi" as "not in the window" would silently drop a legal Ron.
+                    bool riichi = need.IsRiichi(claimSeat);
                     IReadOnlyList<TileId> hand = need.HandTiles(claimSeat);
                     int copies = 0;
-                    bool kanPossible = false;
-                    bool ponPossible = false;
                     for (int i = 0; i < hand.Count; i++)
                     {
                         if (hand[i].TypeIndex == discardedTile.TypeIndex)
@@ -721,13 +1009,27 @@ namespace Mahjong.TableService
                         }
                     }
 
-                    kanPossible = need.KanAvailable && copies >= 3;
-                    ponPossible = copies >= 2;
-                    bool chiPossible = claimSeat == (actingSeat + 1) % 4 &&
+                    bool kanPossible = !riichi && need.KanAvailable && copies >= 3;
+                    bool ponPossible = !riichi && copies >= 2;
+                    bool chiPossible = !riichi &&
+                                       claimSeat == (actingSeat + 1) % 4 &&
                                        discardedTile.TypeIndex < 27 &&
                                        ResponseWindowCandidatesChiPairExists(need, claimSeat, discardedTile);
+                    // P5.4b-B2-T: a seat whose closed hand plus this exact tile is a complete
+                    // hand must be eligible in the Domain window, otherwise its Ron would be
+                    // silently dropped before the settlement authority could ever see it.
+                    // Missing temporary/riichi facts and complete discard furiten both fail
+                    // closed here; yaku and payments stay the actor/calculator's decision.
+                    bool ronPossible = _needRound != null &&
+                                       eligibleFuriten != null &&
+                                       !eligibleFuriten.IsFuriten(claimSeat) &&
+                                       !TableServiceRonEligibility.HasDiscardFuriten(
+                                           _needRound, claimSeat) &&
+                                       TableServiceRonEligibility.HandCanRon(
+                                           _needRound, claimSeat, discardedTile);
 
-                    if ((kanPossible || ponPossible || chiPossible) && !eligible.Contains(claimSeat))
+                    if ((ronPossible || kanPossible || ponPossible || chiPossible) &&
+                        !eligible.Contains(claimSeat))
                     {
                         eligible.Add(claimSeat);
                     }
@@ -760,6 +1062,7 @@ namespace Mahjong.TableService
     public static class TableRoomHostAutoDraw
     {
         public const string Api = "SERVICE_DRAW";
+        public const string ExhaustiveApi = "SERVICE_EXHAUSTIVE_DRAW";
         public const string ServiceAccountId = "tablesvc-draw-authority";
         public const long ServiceScopeLifetimeMs = 7L * 24L * 60L * 60L * 1000L;
     }

@@ -6,6 +6,8 @@ using System.Net.WebSockets;
 using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
+using Mahjong.TableRuntime;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Mahjong.TableService.Tests
 {
@@ -30,18 +32,40 @@ namespace Mahjong.TableService.Tests
 
         public string BaseUrl => "http://127.0.0.1:" + Port;
 
+        /// <summary>
+        /// The exact room host the production admission path created. Used only to inspect the
+        /// same durable store/outbox the actor committed through; it is never a second authority.
+        /// </summary>
+        public RoomHost GetRoomHost(string roomId)
+        {
+            if (_runtime == null)
+            {
+                throw new InvalidOperationException("The test host is not running.");
+            }
+
+            var registry = _runtime.Services.GetRequiredService<ITableHostRegistry>();
+            if (!registry.TryGet(roomId, out RoomHost? host) || host == null)
+            {
+                throw new InvalidOperationException("No production room host exists for '" + roomId + "'.");
+            }
+
+            return host;
+        }
+
         public static async Task<TableServiceTestHost> StartAsync(
             Action<TableServiceOptions>? configure = null,
-            ITableRoundSource? roundSource = null)
+            ITableRoundSource? roundSource = null,
+            ITableClock? clock = null)
         {
             var signer = new TableTestSigner("test-key-1");
-            return await StartAsync(new[] { signer }, configure, roundSource).ConfigureAwait(false);
+            return await StartAsync(new[] { signer }, configure, roundSource, clock).ConfigureAwait(false);
         }
 
         public static async Task<TableServiceTestHost> StartAsync(
             IReadOnlyList<TableTestSigner> signers,
             Action<TableServiceOptions>? configure = null,
-            ITableRoundSource? roundSource = null)
+            ITableRoundSource? roundSource = null,
+            ITableClock? clock = null)
         {
             if (signers == null || signers.Count == 0)
             {
@@ -66,7 +90,7 @@ namespace Mahjong.TableService.Tests
 
             var keys = new StaticTableTicketKeyProvider(tuples, DateTimeOffset.UtcNow);
             TableServiceHostRuntime runtime =
-                TableServiceWebHost.Build(options, keys, IPAddress.Loopback, 0, roundSource);
+                TableServiceWebHost.Build(options, keys, IPAddress.Loopback, 0, roundSource, clock);
             await runtime.StartAsync().ConfigureAwait(false);
             return new TableServiceTestHost
             {
