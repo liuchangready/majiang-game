@@ -29,6 +29,12 @@ namespace Mahjong.LocalHost
         private readonly string[] _lastDecisionKeys = new string[4];
         private long _requestCounter;
         private Task? _task;
+        private string _lastLoopErrorForTest = string.Empty;
+        private int _lastSeatForTest = -1;
+        private string _lastPhaseForTest = string.Empty;
+        private int _lastCandidateCountForTest = -1;
+        private bool _lastAiForTest;
+        private string _lastOpenResultForTest = string.Empty;
 
         /// <summary>Test-only gate after an AI decision is chosen and before it is submitted.</summary>
         internal Func<int, Mahjong.Ai.AiObservation, Task>? BeforeAiSubmitForTest { get; set; }
@@ -66,6 +72,22 @@ namespace Mahjong.LocalHost
         }
 
         public bool IsRunning => _task != null && !_task.IsCompleted;
+
+        public string DescribeDriverForTest()
+        {
+            return "running=" + IsRunning +
+                   ";lastError=" + (_lastLoopErrorForTest.Length == 0 ? "-" : _lastLoopErrorForTest) +
+                   ";lastSeat=" + _lastSeatForTest +
+                   ";lastPhase=" + (_lastPhaseForTest.Length == 0 ? "-" : _lastPhaseForTest) +
+                   ";lastAi=" + _lastAiForTest +
+                   ";lastCandidateCount=" + _lastCandidateCountForTest +
+                   ";lastOpen=" + (_lastOpenResultForTest.Length == 0 ? "-" : _lastOpenResultForTest) +
+                   ";tempFuriten=" + string.Join(",", _temporaryFuriten.Select(value => value ? "1" : "0")) +
+                   ";riichiFuriten=" + string.Join(",", _riichiFuriten.Select(value => value ? "1" : "0")) +
+                   ";keys=" + string.Join(
+                       "|",
+                       _lastDecisionKeys.Select((value, seat) => seat + ":" + (value ?? "-")));
+        }
 
         public async Task StopAsync()
         {
@@ -128,8 +150,9 @@ namespace Mahjong.LocalHost
                 {
                     return;
                 }
-                catch (Exception)
+                catch (Exception exception)
                 {
+                    _lastLoopErrorForTest = exception.GetType().Name + ":" + exception.Message;
                 }
 
                 try
@@ -154,6 +177,10 @@ namespace Mahjong.LocalHost
             }
 
             int seat = snapshot.CurrentSeat;
+            _lastSeatForTest = seat;
+            _lastPhaseForTest = snapshot.Phase.ToString();
+            _lastAiForTest = _aiSeats[seat];
+            _lastCandidateCountForTest = -1;
             switch (snapshot.Phase)
             {
                 case RoundPhase.Draw:
@@ -202,6 +229,7 @@ namespace Mahjong.LocalHost
                         seat,
                         _temporaryFuriten,
                         _riichiFuriten);
+                    _lastCandidateCountForTest = candidates.Count;
 
                     if (candidates.Count == 0)
                     {
@@ -327,6 +355,7 @@ namespace Mahjong.LocalHost
                 candidates,
                 drawnTile);
             TableOperationResult opened = await _actor.OpenDecisionAsync(pending, _stop.Token).ConfigureAwait(false);
+            _lastOpenResultForTest = opened.Status + ":" + opened.ReasonCode;
             if (opened.Status != TableOperationStatus.Configured)
             {
                 return false;

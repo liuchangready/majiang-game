@@ -1335,11 +1335,12 @@ namespace Mahjong.TableRuntime
                         command.Command,
                         CheatProtectionPredicate(),
                         defer);
-                    if (deferred.IsReady && deferred.Change!.NextState.Phase == RoundPhase.Draw)
+                    if (deferred.IsReady &&
+                        ShouldDeliverDeferredDraw(deferred.Change!))
                     {
                         RoundCheatPreparation delivery = RoundCheatTransition.PrepareDeferredDrawDelivery(
                             _round,
-                            deferred.Change,
+                            deferred.Change!,
                             _cheat,
                             now);
                         if (!delivery.IsReady)
@@ -2300,6 +2301,12 @@ namespace Mahjong.TableRuntime
             action == RoundCheatAction.SubmitSleeveBloomOffTurnChoice ||
             action == RoundCheatAction.SubmitSleeveBloomChoice ||
             action == RoundCheatAction.SubmitBeamSwapChoice;
+
+        internal static bool ShouldDeliverDeferredDraw(RoundChange change)
+        {
+            return change.NextState.Phase == RoundPhase.Draw &&
+                   change.NextState.Tiles.WallRemaining > 0;
+        }
 
         private Func<int, bool>? CheatDeferDrawPredicate()
         {
@@ -3430,11 +3437,12 @@ namespace Mahjong.TableRuntime
                         command,
                         CheatProtectionPredicate(),
                         defer);
-                    if (deferred.IsReady && deferred.Change!.NextState.Phase == RoundPhase.Draw)
+                    if (deferred.IsReady &&
+                        ShouldDeliverDeferredDraw(deferred.Change!))
                     {
                         RoundCheatPreparation delivery = RoundCheatTransition.PrepareDeferredDrawDelivery(
                             _round,
-                            deferred.Change,
+                            deferred.Change!,
                             _cheat,
                             now);
                         if (!delivery.IsReady)
@@ -4784,7 +4792,12 @@ namespace Mahjong.TableRuntime
             TableDurableContext durable = _durable!;
             ControlRegistrySnapshot control = controlOverride ?? _control.Capture();
             long controlVersion = controlVersionOverride ?? _controlVersion;
-            ulong utcNow = NowUtc();
+            // The checkpoint and its retained timing payload must use one coherent
+            // UTC capture. Reading the clock again here lets the two values diverge
+            // by an arbitrary millisecond, which the strict validator correctly
+            // rejects as CHECKPOINT_INVALID. Reuse the captured timing UTC whenever
+            // an override is supplied; otherwise read once for both.
+            ulong utcNow = timingOverride?.CapturedAtUtcMs ?? NowUtc();
             TableTimingCheckpoint timing;
             if (timingOverride != null)
             {

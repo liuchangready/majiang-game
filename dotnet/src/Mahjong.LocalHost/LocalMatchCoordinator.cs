@@ -18,7 +18,7 @@ namespace Mahjong.LocalHost
         public string MatchId { get; set; } = string.Empty;
         public int RulesetVersion { get; set; } = 1;
         public string OwnerInstanceId { get; set; } = Guid.NewGuid().ToString("N");
-        public TimeSpan LeaseDuration { get; set; } = TimeSpan.FromSeconds(10);
+        public TimeSpan LeaseDuration { get; set; } = TimeSpan.FromMinutes(10);
         public LocalHostEnvironment? Environment { get; set; }
 
         public MatchRuleConfig? Rules { get; set; }
@@ -125,6 +125,39 @@ namespace Mahjong.LocalHost
         public string FinishReason { get; }
         public IReadOnlyList<RankingEntry> Rankings { get; }
         public IReadOnlyList<LocalMatchRoundRecord> Records { get; }
+
+        /// <summary>
+        /// Domain-free final seat order for presentation/Unity consumers that must not
+        /// reference Mahjong.Domain. It is a projection of the authoritative rankings.
+        /// </summary>
+        public IReadOnlyList<int> RankingSeats
+        {
+            get
+            {
+                var seats = new int[Rankings.Count];
+                for (int i = 0; i < Rankings.Count; i++)
+                {
+                    seats[i] = Rankings[i].Seat;
+                }
+
+                return Array.AsReadOnly(seats);
+            }
+        }
+
+        /// <summary>Domain-free final score order aligned with <see cref="RankingSeats"/>.</summary>
+        public IReadOnlyList<long> RankingScores
+        {
+            get
+            {
+                var scores = new long[Rankings.Count];
+                for (int i = 0; i < Rankings.Count; i++)
+                {
+                    scores[i] = Rankings[i].Score;
+                }
+
+                return Array.AsReadOnly(scores);
+            }
+        }
     }
 
     public sealed class LocalMatchRoundRecord
@@ -154,6 +187,9 @@ namespace Mahjong.LocalHost
         public int LoserSeat { get; }
         public IReadOnlyList<long> FinalScores { get; }
         public int RemainingRiichiSticks { get; }
+
+        /// <summary>Domain-free outcome code for platform consumers.</summary>
+        public string OutcomeCode => OutcomeKind.ToString();
     }
 
     /// <summary>
@@ -263,6 +299,91 @@ namespace Mahjong.LocalHost
 
         public bool IsFinished => Snapshot.Finished;
 
+        /// <summary>
+        /// Read-only, hidden-tile-free runtime diagnostics for the local match
+        /// fixture. It exposes host-visible phase/seat, per-seat control, pending
+        /// decision ids and candidate counts so a PlayMode stall can be attributed
+        /// without modifying the runtime owner files.
+        /// </summary>
+        public string DescribeRuntimeForTest()
+        {
+            try
+            {
+                LocalTableChannel? channel = _channel;
+                if (channel?.RuntimeForMatch == null)
+                {
+                    return "runtime=null";
+                }
+
+                TableActor actor = channel.RuntimeForMatch.ActorForTest;
+                TableSnapshot snapshot = actor
+                    .GetSnapshotAsync(CancellationToken.None)
+                    .GetAwaiter()
+                    .GetResult();
+                TableControlSnapshot control = actor
+                    .GetControlSnapshotAsync(CancellationToken.None)
+                    .GetAwaiter()
+                    .GetResult();
+                Mahjong.Domain.RoundStateMachine round = actor.GetRoundStateForHost();
+                bool[] noFuriten = new bool[4];
+                var builder = new System.Text.StringBuilder();
+                builder.Append("phase=").Append(snapshot.Phase)
+                    .Append(";seat=").Append(snapshot.CurrentSeat)
+                    .Append(";state=").Append(snapshot.StateVersion.Value)
+                    .Append(";wall=").Append(round.Tiles.WallRemaining);
+                for (int seat = 0; seat < 4; seat++)
+                {
+                    string? pending = actor.GetPendingDecisionId(seat);
+                    int pendingCandidates = actor.GetPendingDecisionCandidates(seat).Count;
+                    int deriveCandidates = LocalCandidateProvider.DeriveTurnCandidates(
+                        round, seat, noFuriten, noFuriten).Count;
+                    int hand = round.Tiles.CountAt(Mahjong.Domain.TileZone.Hand, seat);
+                    builder.Append(";s").Append(seat)
+                        .Append(":kind=").Append(control.Seats[seat].Kind)
+                        .Append(",epoch=").Append(control.Seats[seat].ControlEpoch)
+                        .Append(",pending=").Append(pending ?? "-")
+                        .Append(",pendingCandidates=").Append(pendingCandidates)
+                        .Append(",deriveCandidates=").Append(deriveCandidates)
+                        .Append(",hand=").Append(hand)
+                        .Append(",cheatOffer=").Append(actor.HasActiveCheatOffer(seat));
+                }
+
+                if (snapshot.Phase == Mahjong.Domain.RoundPhase.ResponseWindow ||
+                    snapshot.Phase == Mahjong.Domain.RoundPhase.ChankanWindow)
+                {
+                    Mahjong.Domain.RoundResponseWindow? window = round.Window;
+                    builder.Append(";responseWindow=")
+                        .Append(window == null ? "null" : window.EligibleSeats.Count.ToString());
+                    if (window != null)
+                    {
+                        for (int i = 0; i < window.EligibleSeats.Count; i++)
+                        {
+                            int responseSeat = window.EligibleSeats[i];
+                            int responseCandidates = LocalCandidateProvider.DeriveResponseCandidates(
+                                round,
+                                responseSeat,
+                                window,
+                                noFuriten,
+                                noFuriten).Count;
+                            builder.Append(";resp").Append(responseSeat)
+                                .Append(":eligible=True")
+                                .Append(",responded=").Append(window.HasResponded(responseSeat))
+                                .Append(",responseCandidates=").Append(responseCandidates);
+                        }
+                    }
+                }
+
+                builder.Append(";driver=")
+                    .Append(channel.RuntimeForMatch.DriverForTest.DescribeDriverForTest());
+
+                return builder.ToString();
+            }
+            catch (Exception exception)
+            {
+                return "runtime-error=" + exception.GetType().Name + ":" + exception.Message;
+            }
+        }
+
         public async Task<LocalMatchRound> OpenRoundAsync(CancellationToken cancellationToken = default)
         {
             LocalMatchState state;
@@ -278,12 +399,23 @@ namespace Mahjong.LocalHost
 
                 if (_channel != null && _ticket != null)
                 {
-                    existing = new LocalMatchRound(
-                        _channel,
-                        _ticket,
-                        state.CurrentRoomId,
-                        state.CurrentRoundId,
-                        state.Ordinal);
+                    if (_channel.IsOpen)
+                    {
+                        existing = new LocalMatchRound(
+                            _channel,
+                            _ticket,
+                            state.CurrentRoomId,
+                            state.CurrentRoundId,
+                            state.Ordinal);
+                    }
+                    else
+                    {
+                        // A platform session owner closed the previous channel after a
+                        // transient stream stall. Re-open the same durable round below;
+                        // this is recovery, not a new round or a new match.
+                        _channel = null;
+                        _ticket = null;
+                    }
                 }
             }
 
@@ -341,7 +473,31 @@ namespace Mahjong.LocalHost
             return new LocalMatchRound(channel, ticket, state.CurrentRoomId, state.CurrentRoundId, state.Ordinal);
         }
 
+        /// <summary>
+        /// Commits the authoritative terminal result of the open round into the match and
+        /// releases the coordinator's round handle so the next round can be opened. The
+        /// concrete channel is closed exactly once by this method.
+        /// </summary>
         public Task<LocalMatchSnapshot> CompleteRoundAsync(CancellationToken cancellationToken = default)
+        {
+            return CompleteRoundCoreAsync(closeChannel: true, cancellationToken);
+        }
+
+        /// <summary>
+        /// Commits the terminal round result and advances the durable match state without
+        /// closing the round channel. This is the seam a platform composition uses when the
+        /// existing session owner (for example the Unity client lifecycle) still owns the
+        /// channel and will close it itself. The caller must close the channel before the
+        /// process exits; the returned snapshot is already durable.
+        /// </summary>
+        public Task<LocalMatchSnapshot> RecordRoundCompletionAsync(CancellationToken cancellationToken = default)
+        {
+            return CompleteRoundCoreAsync(closeChannel: false, cancellationToken);
+        }
+
+        private async Task<LocalMatchSnapshot> CompleteRoundCoreAsync(
+            bool closeChannel,
+            CancellationToken cancellationToken)
         {
             LocalTableChannel channel;
             lock (_gate)
@@ -371,13 +527,18 @@ namespace Mahjong.LocalHost
                 next = _state.ApplyResult(result, _options.MatchId, _options.Rules, _options.DeclareAgariYameAtFinalRound);
                 LocalMatchStateCodec.Save(_statePath, next, _state.Version);
                 _state = next;
+                _ticket = null;
+                _channel = null;
             }
 
-            _ticket = null;
-            _channel = null;
-            channel.CloseAsync(new TableChannelCloseReason("MATCH_ROUND_DONE", true), cancellationToken)
-                .GetAwaiter().GetResult();
-            return Task.FromResult(next.ToSnapshot());
+            if (closeChannel)
+            {
+                await channel.CloseAsync(
+                    new TableChannelCloseReason("MATCH_ROUND_DONE", true),
+                    cancellationToken).ConfigureAwait(false);
+            }
+
+            return next.ToSnapshot();
         }
 
         public async ValueTask DisposeAsync()

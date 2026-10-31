@@ -931,6 +931,64 @@ namespace Mahjong.TableRuntime.Tests
             Assert.Equal(before.Phase, after.Phase);
             Assert.Equal(before.Scores.ToArray(), after.Scores.ToArray());
         }
+
+        [Fact]
+        public async Task DurableTerminalUsesOneCoherentUtcCaptureWhenClockAdvances()
+        {
+            RoundStateMachine round = SettlementFixture.ExhaustiveDraw();
+            var clock = new AdvancingUtcClock();
+            await using N2DurableHarness harness = await N2DurableHarness.CreateAsync(
+                round,
+                clockOverride: clock);
+            TableSettlementRequest request = harness.Request(
+                new TableSettlementIntent(round.RoundId, TableSettlementAction.ExhaustiveDraw, round.CurrentSeat),
+                round.Version,
+                "advancing-terminal",
+                "SETTLEMENT_EXHAUSTIVE_DRAW",
+                "advancing-terminal-payload");
+
+            TableOperationResult result = await harness.Actor.SubmitSettlementAsync(
+                request,
+                TestContext.Current.CancellationToken);
+
+            Assert.True(
+                result.Status == TableOperationStatus.Accepted,
+                result.Status + " " + result.ReasonCode + " " + result.Detail);
+            Assert.Contains(result.Events, e => e.Type == RoundEventType.ExhaustiveDraw);
+            Assert.Contains(result.Events, e => e.Type == RoundEventType.RoundEnded);
+            TableCheckpoint? checkpoint = await harness.Store.LoadCheckpointAsync(
+                N2DurableHarness.Room,
+                TestContext.Current.CancellationToken);
+            Assert.NotNull(checkpoint);
+            TableTimingCheckpoint timing =
+                TableTimingCheckpointCodec.Decode(checkpoint!.TimingPayload);
+            Assert.Equal(timing.CapturedAtUtcMs, checkpoint.CreatedAtUtcMs);
+            Assert.Equal(timing.CapturedMonotonicMillis, checkpoint.CapturedMonotonicMillis);
+            Assert.Equal(timing.BootId, checkpoint.BootId);
+
+            int physical = 0;
+            foreach (TilePlacement placement in harness.Actor
+                .GetRoundStateForHost()
+                .Tiles
+                .AsPlacements())
+            {
+                if (placement.Position.Zone != TileZone.Unassigned)
+                {
+                    physical++;
+                }
+            }
+
+            Assert.Equal(136, physical);
+        }
+
+        private sealed class AdvancingUtcClock : ITableClock
+        {
+            private long _reads;
+
+            public long MonotonicMillis => 1000L;
+
+            public long UtcNowMs => DurableHarness.UtcBase + _reads++;
+        }
     }
 
     internal sealed class DelegateSettlementFactsPort : ITableSettlementFactsPort
@@ -1122,9 +1180,11 @@ namespace Mahjong.TableRuntime.Tests
         public static async Task<N2DurableHarness> CreateAsync(
             RoundStateMachine round,
             ITableSettlementFactsPort? port = null,
-            Action<TableActorOptions>? configure = null)
+            Action<TableActorOptions>? configure = null,
+            ITableClock? clockOverride = null)
         {
             var clock = new ManualTableClock { Now = 1000L };
+            ITableClock actorClock = clockOverride ?? clock;
             var scopes = new InMemoryRequestScopeAuthority();
             TableScopeRecord scope = scopes.Issue(
                 Account,
@@ -1132,7 +1192,7 @@ namespace Mahjong.TableRuntime.Tests
                 Room,
                 (ulong)DurableHarness.UtcBase,
                 (ulong)DurableHarness.UtcBase + 3_600_000UL);
-            var store = new InMemoryTableStore(clock, scopes);
+            var store = new InMemoryTableStore(actorClock, scopes);
             var ledger = DurableHarness.NewLedger();
             TableCheckpoint checkpoint = DurableHarness.InitialCheckpoint(round, ledger, boot: Boot);
             await store.CreateRoomAsync(checkpoint, CancellationToken.None);
@@ -1147,7 +1207,7 @@ namespace Mahjong.TableRuntime.Tests
                 Options(configure),
                 round,
                 commit,
-                clock,
+                actorClock,
                 new RecordingPublicationSink(commit),
                 null,
                 projectionSource,
