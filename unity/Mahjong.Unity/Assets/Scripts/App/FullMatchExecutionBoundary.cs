@@ -1,5 +1,6 @@
 #nullable enable
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
 using System.Threading;
@@ -100,17 +101,14 @@ namespace Mahjong.Unity.App
         public FullMatchExecutionBudget(
             long submitTimeoutMs,
             long confirmationTimeoutMs,
-            long decisionWaitTimeoutMs,
-            long reconcileAfterMs = 1_000L)
+            long decisionWaitTimeoutMs)
         {
             if (submitTimeoutMs <= 0) throw new ArgumentOutOfRangeException(nameof(submitTimeoutMs));
             if (confirmationTimeoutMs <= 0) throw new ArgumentOutOfRangeException(nameof(confirmationTimeoutMs));
             if (decisionWaitTimeoutMs <= 0) throw new ArgumentOutOfRangeException(nameof(decisionWaitTimeoutMs));
-            if (reconcileAfterMs <= 0) throw new ArgumentOutOfRangeException(nameof(reconcileAfterMs));
             SubmitTimeoutMs = submitTimeoutMs;
             ConfirmationTimeoutMs = confirmationTimeoutMs;
             DecisionWaitTimeoutMs = decisionWaitTimeoutMs;
-            ReconcileAfterMs = reconcileAfterMs;
         }
 
         public long SubmitTimeoutMs { get; }
@@ -119,15 +117,9 @@ namespace Mahjong.Unity.App
 
         public long DecisionWaitTimeoutMs { get; }
 
-        /// <summary>
-        /// A sent-but-unresolved request is reconciled with the server by looking up
-        /// the original request id after this interval; it is never resent.
-        /// </summary>
-        public long ReconcileAfterMs { get; }
-
-        /// <summary>The accepted production driver waits (20s / 30s / 60s / 1s reconcile).</summary>
+        /// <summary>The accepted production driver waits (20s / 30s / 60s).</summary>
         public static FullMatchExecutionBudget Production { get; } =
-            new FullMatchExecutionBudget(20_000L, 30_000L, 60_000L, 1_000L);
+            new FullMatchExecutionBudget(20_000L, 30_000L, 60_000L);
     }
 
     public sealed class FullMatchExecutionOutcome
@@ -212,13 +204,6 @@ namespace Mahjong.Unity.App
 
         Task<CommandSubmission> SubmitAsync(ProtocolCommand command, CancellationToken cancellationToken);
 
-        /// <summary>
-        /// Read-only receipt reconciliation for already-persisted commands. It must
-        /// query the original request ids/scopes; it must never mint or resend a
-        /// replacement request.
-        /// </summary>
-        Task ReconcileAsync(CancellationToken cancellationToken);
-
         event EventHandler<TableReceiptResolvedEventArgs>? ReceiptResolved;
     }
 
@@ -244,10 +229,6 @@ namespace Mahjong.Unity.App
         private Task<CommandSubmission>? _submit;
         private bool _submitObserved;
         private string _lastPendingDiagnostic = string.Empty;
-        private Task? _reconcileTask;
-        private bool _reconcileRequested;
-        private bool _reconcileFailureLogged;
-        private long _reconcileAfter;
         private long _submitDeadline;
         private long _confirmDeadline;
         private FullMatchExecutionOutcome? _terminalOutcome;
@@ -390,10 +371,6 @@ namespace Mahjong.Unity.App
             _matchingReceipt = null;
             _submitObserved = false;
             _lastPendingDiagnostic = string.Empty;
-            _reconcileTask = null;
-            _reconcileRequested = false;
-            _reconcileFailureLogged = false;
-            _reconcileAfter = Add(nowMs, _budget.ReconcileAfterMs);
             _decisionWaitStartedAt = -1L;
             _observer = new ConfirmedVisibleEventObserver(_transport.View);
             _observer.BeginAction(session, plan.RequestId, plan.ScopeId, plan.Action);
@@ -516,8 +493,6 @@ namespace Mahjong.Unity.App
                     FullMatchExecutionFailureStage.Submission);
             }
 
-            ObserveReconcile(plan, nowMs);
-
             ConfirmedVisibleActionEvent? confirmedEvent = _observer!.TryGetConfirmation();
             if (confirmedEvent != null &&
                 LocalFullMatchPolicy.IsOwnActionEvent(
@@ -530,9 +505,11 @@ namespace Mahjong.Unity.App
             }
 
             // The mandatory draw at an exhausted wall has no TileDrawn event; the
-            // authoritative RoundEnded settlement itself is the confirmation, but
-            // only under the exact Applied receipt command version and the current
-            // batch identity (round/seat/role/binding/scope).
+            // authoritative RoundEnded settlement itself is the confirmation. The
+            // observer already preserves every immutable accepted batch, so a later
+            // empty/different publication cannot erase a terminal observed before
+            // the Applied receipt arrived. Only the exact Applied receipt version and
+            // the existing identity/round/role/scope/version fence may pair a batch.
             if (plan.Action == PlayerActionKind.DrawTile &&
                 _matchingReceipt != null &&
                 _matchingReceipt.Resolution.Disposition == OutboxDisposition.Applied &&
@@ -540,18 +517,21 @@ namespace Mahjong.Unity.App
                 _matchingReceipt.Resolution.CommandVersion != null)
             {
                 ulong appliedVersion = _matchingReceipt.Resolution.CommandVersion.Value.Value;
-                SessionViewState state = _transport.View.Current;
-                ObservedVisibleEventBatch observedBatch = new ObservedVisibleEventBatch(state);
-                for (int i = 0; i < state.VisibleEventBatch.Events.Count; i++)
+                IReadOnlyList<ObservedVisibleEventBatch> observedBatches = _observer!.Batches;
+                for (int b = 0; b < observedBatches.Count; b++)
                 {
-                    var observedEvent = new ObservedVisibleEvent(state.VisibleEventBatch.Events[i]);
-                    if (LocalFullMatchPolicy.IsOwnActionEvent(
-                        plan,
-                        observedBatch,
-                        observedEvent,
-                        appliedVersion))
+                    ObservedVisibleEventBatch observedBatch = observedBatches[b];
+                    for (int i = 0; i < observedBatch.Events.Count; i++)
                     {
-                        return Confirm(plan, visibleEvent: true);
+                        ObservedVisibleEvent observedEvent = observedBatch.Events[i];
+                        if (LocalFullMatchPolicy.IsOwnActionEvent(
+                            plan,
+                            observedBatch,
+                            observedEvent,
+                            appliedVersion))
+                        {
+                            return Confirm(plan, visibleEvent: true);
+                        }
                     }
                 }
             }
@@ -641,49 +621,6 @@ namespace Mahjong.Unity.App
                 " pending=" + _transport.View.Current.PendingCommands.Count +
                 "; " + _observer.DescribeAction(),
                 FullMatchExecutionFailureStage.Confirmation);
-        }
-
-        private void ObserveReconcile(FullMatchActionPlan plan, long nowMs)
-        {
-            if (_reconcileTask != null && _reconcileTask.IsFaulted && !_reconcileFailureLogged)
-            {
-                _reconcileFailureLogged = true;
-                Diag(
-                    "client_reconcile_failed",
-                    "\"requestId\":\"" + plan.RequestId + "\"" +
-                    ",\"failure\":\"" + DescribeTaskFailure(_reconcileTask) + "\"");
-            }
-
-            if (_reconcileRequested ||
-                _matchingReceipt != null ||
-                nowMs < _reconcileAfter)
-            {
-                return;
-            }
-
-            // A sent command with no resolution is not blindly resent. The Client
-            // already owns a read-only receipt lookup for the original id/scope;
-            // asking it here can recover a lost push without changing the bytes or
-            // minting a replacement request.
-            _reconcileRequested = true;
-            Diag(
-                "client_reconcile_requested",
-                "\"requestId\":\"" + plan.RequestId + "\"" +
-                ",\"scopeId\":\"" + plan.ScopeId + "\"" +
-                ",\"roundId\":\"" + plan.RoundId + "\"" +
-                ",\"afterMs\":" + _budget.ReconcileAfterMs.ToString(CultureInfo.InvariantCulture));
-            try
-            {
-                _reconcileTask = _transport.ReconcileAsync(CancellationToken.None);
-            }
-            catch (Exception exception)
-            {
-                _reconcileFailureLogged = true;
-                Diag(
-                    "client_reconcile_failed",
-                    "\"requestId\":\"" + plan.RequestId + "\"" +
-                    ",\"failure\":\"" + exception.GetType().Name + ": " + exception.Message + "\"");
-            }
         }
 
         private void ObserveSubmission(FullMatchActionPlan plan)
@@ -856,9 +793,6 @@ namespace Mahjong.Unity.App
             _submit = null;
             _submitObserved = false;
             _lastPendingDiagnostic = string.Empty;
-            _reconcileTask = null;
-            _reconcileRequested = false;
-            _reconcileFailureLogged = false;
         }
 
         private void RecordCompleted(FullMatchActionPlan plan)

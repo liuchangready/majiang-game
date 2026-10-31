@@ -984,103 +984,127 @@ namespace Mahjong.Unity.TableModel.Tests
         }
 
         [Fact]
-        public void SentWithoutReceiptReconcilesTheOriginalRequestAndConfirms()
+        public void DrawTerminalObservedBeforeLaterEmptyPublicationStillConfirms()
         {
-            var clock = new ManualTableClock();
-            object fence = NewFence();
-            TableSessionBinding binding = P43TestData.Binding();
-            SessionViewState baseline = DrawState(binding, fence, 5, 105, baseline: true);
-            var transport = new ScriptedTransport(baseline);
-            var ledger = new FullMatchRequestLedger();
-            var boundary = new FullMatchExecutionBoundary(
-                transport,
-                ledger,
-                new FullMatchExecutionBudget(1_000L, 2_000L, 1_000L, 100L));
-            var mapper = new PlayerTableProjectionMapper(clock);
-            var factory = new TableCommandIntentFactory(clock);
-            FullMatchActionPlan expected = ExpectedDrawPlan(baseline, clock, factory);
-            SessionViewState terminal = DrawState(
-                binding,
-                fence,
-                6,
-                106,
+            GateFixture fixture = NewGateFixture();
+            SessionViewState terminal = TerminalState(fixture);
+            SessionViewState laterEmpty = DrawState(
+                fixture.Binding,
+                fixture.Fence,
+                7,
+                107,
                 baseline: false,
-                roundEndedCommandVersion: 6,
-                phase: GamePhase.RoundEnd);
+                phase: GamePhase.Draw);
+            fixture.Transport.Publish(terminal);
+            fixture.Transport.Publish(laterEmpty);
+            fixture.Transport.RaiseReceipt(AppliedReceipt(
+                fixture.Transport.Submitted[0], evaluated: 5, commandVersion: 6, eventSeq: 106));
+            var sink = new CommitSink();
 
-            boundary.Poll(baseline, mapper.Project(baseline), factory, 0L);
-            Assert.Equal(1, transport.SubmitCount);
-            transport.Publish(terminal);
-            transport.Reconcile = _ =>
-            {
-                transport.RaiseReceipt(AppliedReceipt(
-                    transport.Submitted[0], evaluated: 5, commandVersion: 6, eventSeq: 106));
-                return Task.CompletedTask;
-            };
+            FullMatchTerminalGateResult gate = PollTerminalGate(fixture, laterEmpty, 10L);
 
-            FullMatchExecutionOutcome outcome = boundary.Poll(
-                terminal,
-                mapper.Project(terminal),
-                factory,
-                100L);
-
-            Assert.Equal(FullMatchExecutionStatus.Confirmed, outcome.Status);
-            Assert.Equal(1, transport.SubmitCount);
-            Assert.Equal(1, transport.ReconcileCalls);
-            Assert.Equal(expected.RequestId, transport.Submitted[0].RequestId.Value);
-            Assert.False(ledger.IsUnresolved(expected));
-            Assert.Equal(0, transport.ReceiptHandlerCount);
+            Assert.Equal(FullMatchTerminalGateStatus.Confirmed, gate.Status);
+            Assert.True(gate.Outcome!.ConfirmedByVisibleEvent);
+            sink.Commit();
+            sink.OpenNext();
+            Assert.Equal(1, sink.Commits);
+            Assert.Equal(1, sink.NextOpens);
+            Assert.Equal(1, fixture.Transport.SubmitCount);
+            Assert.False(fixture.Ledger.IsUnresolved(fixture.Plan));
+            Assert.Equal(0, fixture.Transport.ReceiptHandlerCount);
         }
 
         [Fact]
-        public void ReconciledButStillUnresolvedFailsBoundedWithoutResendOrNewId()
+        public void DrawTerminalObservedAfterIntermediateEmptyPublicationStillConfirms()
         {
-            var clock = new ManualTableClock();
-            object fence = NewFence();
-            TableSessionBinding binding = P43TestData.Binding();
-            SessionViewState baseline = DrawState(binding, fence, 5, 105, baseline: true);
-            var transport = new ScriptedTransport(baseline);
-            var ledger = new FullMatchRequestLedger();
-            var boundary = new FullMatchExecutionBoundary(
-                transport,
-                ledger,
-                new FullMatchExecutionBudget(1_000L, 2_000L, 1_000L, 100L));
-            var mapper = new PlayerTableProjectionMapper(clock);
-            var factory = new TableCommandIntentFactory(clock);
-            FullMatchActionPlan expected = ExpectedDrawPlan(baseline, clock, factory);
-            SessionViewState terminal = DrawState(
-                binding,
-                fence,
+            GateFixture fixture = NewGateFixture();
+            SessionViewState intermediateEmpty = DrawState(
+                fixture.Binding,
+                fixture.Fence,
                 6,
                 106,
                 baseline: false,
-                roundEndedCommandVersion: 6,
+                phase: GamePhase.Draw);
+            SessionViewState terminal = DrawState(
+                fixture.Binding,
+                fixture.Fence,
+                7,
+                107,
+                baseline: false,
+                roundEndedCommandVersion: 7,
                 phase: GamePhase.RoundEnd);
+            fixture.Transport.Publish(intermediateEmpty);
+            fixture.Transport.Publish(terminal);
+            fixture.Transport.RaiseReceipt(AppliedReceipt(
+                fixture.Transport.Submitted[0], evaluated: 6, commandVersion: 7, eventSeq: 107));
+            var sink = new CommitSink();
 
-            boundary.Poll(baseline, mapper.Project(baseline), factory, 0L);
-            transport.Publish(terminal);
-            transport.Reconcile = _ => Task.CompletedTask;
+            FullMatchTerminalGateResult gate = PollTerminalGate(fixture, terminal, 10L);
 
-            FullMatchExecutionOutcome waiting = boundary.Poll(
-                terminal,
-                mapper.Project(terminal),
-                factory,
-                100L);
-            Assert.Equal(FullMatchExecutionStatus.Waiting, waiting.Status);
-            Assert.Equal(1, transport.ReconcileCalls);
+            Assert.Equal(FullMatchTerminalGateStatus.Confirmed, gate.Status);
+            sink.Commit();
+            sink.OpenNext();
+            Assert.Equal(1, sink.Commits);
+            Assert.Equal(1, sink.NextOpens);
+            Assert.Equal(1, fixture.Transport.SubmitCount);
+            Assert.Equal(0, fixture.Transport.ReceiptHandlerCount);
+        }
 
-            FullMatchExecutionOutcome failed = boundary.Poll(
-                terminal,
-                mapper.Project(terminal),
-                factory,
-                2_001L);
-            Assert.Equal(FullMatchExecutionStatus.Failed, failed.Status);
-            Assert.Equal("RECEIPT_UNRESOLVED", failed.Code);
-            Assert.Equal(1, transport.SubmitCount);
-            Assert.Equal(1, transport.ReconcileCalls);
-            Assert.Equal(expected.RequestId, transport.Submitted[0].RequestId.Value);
-            Assert.True(ledger.IsUnresolved(expected));
-            Assert.False(ledger.MayIssueNewRequestId(expected));
+        [Fact]
+        public void LaterDifferentVersionTerminalDoesNotEraseTheEarlierObservedTerminal()
+        {
+            GateFixture fixture = NewGateFixture();
+            SessionViewState terminal6 = TerminalState(fixture);
+            SessionViewState terminal7 = DrawState(
+                fixture.Binding,
+                fixture.Fence,
+                7,
+                107,
+                baseline: false,
+                roundEndedCommandVersion: 7,
+                phase: GamePhase.RoundEnd);
+            fixture.Transport.Publish(terminal6);
+            fixture.Transport.Publish(terminal7);
+            fixture.Transport.RaiseReceipt(AppliedReceipt(
+                fixture.Transport.Submitted[0], evaluated: 5, commandVersion: 6, eventSeq: 106));
+
+            FullMatchTerminalGateResult gate = PollTerminalGate(fixture, terminal7, 10L);
+
+            Assert.Equal(FullMatchTerminalGateStatus.Confirmed, gate.Status);
+            Assert.Equal(1, fixture.Transport.SubmitCount);
+            Assert.Equal(0, fixture.Transport.ReceiptHandlerCount);
+        }
+
+        [Fact]
+        public void DrawReceiptForAnUnobservedVersionDoesNotConfirmAnEarlierTerminal()
+        {
+            GateFixture fixture = NewGateFixture();
+            SessionViewState terminal6 = TerminalState(fixture);
+            SessionViewState laterEmpty = DrawState(
+                fixture.Binding,
+                fixture.Fence,
+                7,
+                107,
+                baseline: false,
+                phase: GamePhase.Draw);
+            fixture.Transport.Publish(terminal6);
+            fixture.Transport.Publish(laterEmpty);
+            fixture.Transport.RaiseReceipt(AppliedReceipt(
+                fixture.Transport.Submitted[0], evaluated: 6, commandVersion: 7, eventSeq: 107));
+            var sink = new CommitSink();
+
+            FullMatchTerminalGateResult gate = PollTerminalGate(
+                fixture, laterEmpty, FastBudget.ConfirmationTimeoutMs + 1L);
+
+            Assert.Equal(FullMatchTerminalGateStatus.Failed, gate.Status);
+            Assert.Equal("VISIBLE_EVENT_MISSING", gate.Code);
+            Assert.False(gate.MayCommit);
+            Assert.Equal(0, sink.Commits);
+            Assert.Equal(0, sink.NextOpens);
+            Assert.Equal(1, fixture.Transport.SubmitCount);
+            Assert.True(fixture.Ledger.IsUnresolved(fixture.Plan));
+            Assert.False(fixture.Ledger.MayIssueNewRequestId(fixture.Plan));
+            Assert.Equal(0, fixture.Transport.ReceiptHandlerCount);
         }
 
         private static FullMatchTerminalGateResult PollTerminalGate(
@@ -1442,16 +1466,6 @@ namespace Mahjong.Unity.TableModel.Tests
             public List<FullMatchExecutionNotice> Notices { get; } = new List<FullMatchExecutionNotice>();
 
             public int SubmitCount => Submitted.Count;
-
-            public Func<CancellationToken, Task>? Reconcile { get; set; }
-
-            public int ReconcileCalls { get; private set; }
-
-            public Task ReconcileAsync(CancellationToken cancellationToken)
-            {
-                ReconcileCalls++;
-                return Reconcile != null ? Reconcile(cancellationToken) : Task.CompletedTask;
-            }
 
             private readonly List<EventHandler<TableReceiptResolvedEventArgs>> _receiptHandlers =
                 new List<EventHandler<TableReceiptResolvedEventArgs>>();

@@ -1522,13 +1522,6 @@ namespace Mahjong.Unity.App
             return coordinator.SubmitAsync(command, cancellationToken);
         }
 
-        public Task ReconcileAsync(CancellationToken cancellationToken)
-        {
-            SessionCoordinator coordinator = _coordinator ??
-                throw new InvalidOperationException("No production session is attached.");
-            return coordinator.ReconcilePendingAsync(cancellationToken);
-        }
-
         public void Attach(SessionCoordinator coordinator)
         {
             if (coordinator == null) throw new ArgumentNullException(nameof(coordinator));

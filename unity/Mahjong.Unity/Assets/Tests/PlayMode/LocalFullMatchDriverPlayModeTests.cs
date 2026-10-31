@@ -503,14 +503,6 @@ namespace Mahjong.Unity.Tests.PlayMode
 
             public int SubmitCount => Submitted.Count;
 
-            public int ReconcileCalls { get; private set; }
-
-            public Task ReconcileAsync(CancellationToken cancellationToken)
-            {
-                ReconcileCalls++;
-                return Task.CompletedTask;
-            }
-
             public event EventHandler<TableReceiptResolvedEventArgs>? ReceiptResolved;
 
             public static PlayModeExecutionTransport DrawWithoutDecision()
