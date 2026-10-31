@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Net;
 using System.Net.Http;
@@ -6,6 +6,7 @@ using System.Net.WebSockets;
 using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
+using Mahjong.TableRuntime;
 
 namespace Mahjong.TableService.Tests
 {
@@ -32,16 +33,18 @@ namespace Mahjong.TableService.Tests
 
         public static async Task<TableServiceTestHost> StartAsync(
             Action<TableServiceOptions>? configure = null,
-            ITableRoundSource? roundSource = null)
+            ITableRoundSource? roundSource = null,
+            ITableClock? clock = null)
         {
             var signer = new TableTestSigner("test-key-1");
-            return await StartAsync(new[] { signer }, configure, roundSource).ConfigureAwait(false);
+            return await StartAsync(new[] { signer }, configure, roundSource, clock).ConfigureAwait(false);
         }
 
         public static async Task<TableServiceTestHost> StartAsync(
             IReadOnlyList<TableTestSigner> signers,
             Action<TableServiceOptions>? configure = null,
-            ITableRoundSource? roundSource = null)
+            ITableRoundSource? roundSource = null,
+            ITableClock? clock = null)
         {
             if (signers == null || signers.Count == 0)
             {
@@ -66,7 +69,7 @@ namespace Mahjong.TableService.Tests
 
             var keys = new StaticTableTicketKeyProvider(tuples, DateTimeOffset.UtcNow);
             TableServiceHostRuntime runtime =
-                TableServiceWebHost.Build(options, keys, IPAddress.Loopback, 0, roundSource);
+                TableServiceWebHost.Build(options, keys, IPAddress.Loopback, 0, roundSource, clock);
             await runtime.StartAsync().ConfigureAwait(false);
             return new TableServiceTestHost
             {

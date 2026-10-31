@@ -398,7 +398,14 @@ namespace Mahjong.TableService
                 CheatEconomy = TableProjectionContextSource.DefaultEconomy,
                 SleeveBloomConfig = TableProjectionContextSource.DefaultSleeveConfig
             };
-            return new TableActor(
+            // P5.4b-B2-T: the production settlement authority. The port resolves only the
+            // facts the frozen round cannot prove (furiten from the actor's committed
+            // snapshot, ippatsu from the committed event chain); the actor still derives
+            // every scoring input and calls the frozen calculator itself.
+            var settlementFactsPort = new TableServiceSettlementFactsPort();
+            TableProjectionContextSource source =
+                projectionContextSource ?? new TableProjectionContextSource(decisionState, round);
+            TableActor actor = new TableActor(
                 actorOptions,
                 round,
                 commitPort,
@@ -408,10 +415,21 @@ namespace Mahjong.TableService
                 // D-R1-01: cold recovery injects a source anchored on the room's own verified
                 // checkpoint so tsumogiri derivation never consults this process's freshly
                 // drawn placeholder round; every other path keeps the bootstrap anchor.
-                projectionContextSource: projectionContextSource ?? new TableProjectionContextSource(decisionState, round),
+                projectionContextSource: source,
                 streamOptions,
                 durable,
-                settlementFactsPort: null);
+                settlementFactsPort: settlementFactsPort);
+            settlementFactsPort.Bind(
+                () => actor.GetRoundStateForHost(),
+                () => actor.FuritenForHost);
+            // Live projection captures do not carry the furiten snapshot; bind the actor's
+            // committed bits for candidate eligibility (still re-validated by the actor).
+            decisionState.BindFuriten(() => actor.FuritenForHost);
+            // The terminal win projection needs the exact calculation the actor just
+            // accepted (yaku/han/fu/score). This is read-only actor evidence; the projection
+            // verifies the source/result identity before publishing it.
+            source.SettlementProvider = () => actor.LastSettlementCalculation;
+            return actor;
         }
 
         /// <summary>

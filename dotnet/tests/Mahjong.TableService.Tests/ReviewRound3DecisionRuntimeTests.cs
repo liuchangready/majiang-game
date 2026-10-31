@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -237,7 +237,15 @@ namespace Mahjong.TableService.Tests
                 roundSource: new FixedRoundSource(roomId =>
                 {
                     var fixture = new N1aTable { Dealer = 0 };
-                    fixture.Hand(1, new TileId(124), new TileId(125));
+                    // The pair plus eleven disconnected singles cannot complete a hand with
+                    // the discarded 127; this test isolates the executable pon window and
+                    // must not accidentally advertise the new Ron candidate.
+                    fixture.Hand(1,
+                        new TileId(124), new TileId(125),
+                        new TileId(0), new TileId(12), new TileId(24),
+                        new TileId(36), new TileId(48), new TileId(60),
+                        new TileId(72), new TileId(84), new TileId(96),
+                        new TileId(108), new TileId(112));
                     fixture.Drawn(0, new TileId(127));
                     return fixture.Build(roomId + "-r1");
                 }));

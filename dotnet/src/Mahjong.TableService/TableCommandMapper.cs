@@ -5,6 +5,7 @@ using Mahjong.Contracts;
 using Mahjong.Contracts.Wire;
 using Mahjong.Domain;
 using Mahjong.Domain.Cheat;
+using Mahjong.Domain.Rules;
 using Mahjong.TableRuntime;
 
 namespace Mahjong.TableService
@@ -108,6 +109,17 @@ namespace Mahjong.TableService
             public string Reason { get; }
         }
 
+        /// <summary>Submit the mapped typed settlement intent through SubmitSettlementAsync.</summary>
+        public sealed class Settlement : TableCommandRoute
+        {
+            public Settlement(TableSettlementRequest request)
+            {
+                Request = request;
+            }
+
+            public TableSettlementRequest Request { get; }
+        }
+
         /// <summary>Rejected before entering the actor: zero side effects, no receipt written.</summary>
         public sealed class PreActorRejection : TableCommandRoute
         {
@@ -150,15 +162,23 @@ namespace Mahjong.TableService
     ///    connection; mismatch is a protocol violation, not a business rejection;
     ///  - spectator side-effect commands are refused before the actor;
     ///  - the idempotency digest is SHA-256 over Command.canonical_payload exactly;
-    ///  - settlement-bearing actions are refused with the actor's authority semantics kept
-    ///    (no ITableSettlementFactsPort is configured in P5.1, and clients never supply
-    ///    trusted settlement facts);
+    ///  - settlement-bearing player declarations are mapped to the typed N-2 intent and go
+    ///    through <c>SubmitSettlementAsync</c>; the client supplies only its action/decision
+    ///    identity, never yaku, han, fu, payments or final scores. Abortive draw still needs a
+    ///    trusted abortive reason and AgariYame needs match-layer facts, so both stay
+    ///    fail-closed with explicit dependency codes;
     ///  - source versions (owner epoch, expected state version, control epoch) are passed
     ///    through untouched so the actor/commit-port fences — not the host — judge them.
     /// </summary>
     public static class TableCommandMapper
     {
         public const string SettlementAuthorityDetail = "SETTLEMENT_AUTHORITY_UNAVAILABLE";
+
+        /// <summary>Abortive draw needs a trusted reason this service cannot derive yet.</summary>
+        public const string SettlementAbortiveReasonDetail = "SETTLEMENT_ABORTIVE_REASON_UNAVAILABLE";
+
+        /// <summary>AgariYame is a match-layer declaration; no match coordinator exists yet.</summary>
+        public const string MatchAuthorityDetail = "MATCH_AUTHORITY_UNAVAILABLE";
 
         public const string NotTableScopeDetail = "COMMAND_KIND_NOT_TABLE_SCOPE";
 
@@ -183,7 +203,8 @@ namespace Mahjong.TableService
             TableServiceOptions options,
             string? authoritativeRoundId,
             Func<uint, TableBeamSwapSlotResolution?>? beamSwapSlotResolver = null,
-            Func<int, TileId, ulong, TableCommandRouteResponseEligibility?>? responseEligibilityResolver = null)
+            Func<int, TileId, ulong, TableCommandRouteResponseEligibility?>? responseEligibilityResolver = null,
+            Func<TableSettlementAction, int, SettlementAbortiveDrawReason?>? abortiveReasonResolver = null)
         {
             Command command = envelope.Command;
 
@@ -291,7 +312,7 @@ namespace Mahjong.TableService
                 case CommandKind.SubmitAction:
                     return MapSubmitAction(
                         identity, requestId, payload, expectedStateVersion, ownerEpoch, digest,
-                        recoveryGeneration, responseEligibilityResolver);
+                        recoveryGeneration, responseEligibilityResolver, abortiveReasonResolver);
 
                 case CommandKind.SubmitTileMark:
                 case CommandKind.SubmitSleeveBloom:
@@ -344,7 +365,8 @@ namespace Mahjong.TableService
             OwnerEpoch ownerEpoch,
             TablePayloadSha256 digest,
             long recoveryGeneration,
-            Func<int, TileId, ulong, TableCommandRouteResponseEligibility?>? responseEligibilityResolver)
+            Func<int, TileId, ulong, TableCommandRouteResponseEligibility?>? responseEligibilityResolver,
+            Func<TableSettlementAction, int, SettlementAbortiveDrawReason?>? abortiveReasonResolver)
         {
             CanonicalPayloadDocument document = CanonicalPayloadParser.Parse(payload);
             string roundId = RequireStringField(document, CommandPayloadFields.RoundIdField, "roundId");
@@ -412,15 +434,53 @@ namespace Mahjong.TableService
                     roundCommand = RoundCommand.Pass(roundId, identity.Seat);
                     break;
 
-                // Settlement-bearing declarations are admitted only through the actor's
-                // settlement authority (SubmitSettlementAsync with a configured facts port).
-                // P5.1 configures none; a client never supplies trusted settlement facts.
+                // Settlement-bearing declarations go through the actor's typed N-2 authority
+                // (SubmitSettlementAsync). The client supplies no scoring facts. Abortive draw
+                // is mapped only when the composition root can prove a trusted reason from the
+                // committed round; otherwise it fails closed. AgariYame is match-layer state
+                // that this service does not model and stays fail-closed.
                 case ProtocolActionType.DeclareTsumo:
                 case ProtocolActionType.DeclareRon:
+                    return MapSettlement(
+                        identity,
+                        requestId,
+                        roundId,
+                        decisionId,
+                        action == (uint)ProtocolActionType.DeclareTsumo
+                            ? TableSettlementAction.Tsumo
+                            : TableSettlementAction.Ron,
+                        expectedStateVersion,
+                        ownerEpoch,
+                        controlEpoch,
+                        digest,
+                        recoveryGeneration);
+
                 case ProtocolActionType.DeclareAbortiveDraw:
+                    SettlementAbortiveDrawReason? abortiveReason =
+                        abortiveReasonResolver?.Invoke(
+                            TableSettlementAction.AbortiveDraw, identity.Seat);
+                    if (!abortiveReason.HasValue)
+                    {
+                        return new TableCommandRoute.PreActorRejection(
+                            ProtocolErrorCode.InternalError, "command.type", SettlementAbortiveReasonDetail);
+                    }
+
+                    return MapSettlement(
+                        identity,
+                        requestId,
+                        roundId,
+                        decisionId,
+                        TableSettlementAction.AbortiveDraw,
+                        expectedStateVersion,
+                        ownerEpoch,
+                        controlEpoch,
+                        digest,
+                        recoveryGeneration,
+                        abortiveReason);
+
                 case ProtocolActionType.DeclareAgariYame:
                     return new TableCommandRoute.PreActorRejection(
-                        ProtocolErrorCode.InternalError, "command.type", SettlementAuthorityDetail);
+                        ProtocolErrorCode.InternalError, "command.type", MatchAuthorityDetail);
 
                 default:
                     return new TableCommandRoute.PreActorRejection(
@@ -439,6 +499,34 @@ namespace Mahjong.TableService
                 "SUBMIT_ACTION",
                 digest);
             return new TableCommandRoute.BusinessCommand(envelope);
+        }
+
+        private static TableCommandRoute MapSettlement(
+            TableConnectionIdentity identity,
+            RequestId requestId,
+            string roundId,
+            string decisionId,
+            TableSettlementAction action,
+            StateVersion expectedStateVersion,
+            OwnerEpoch ownerEpoch,
+            ControlEpoch controlEpoch,
+            TablePayloadSha256 digest,
+            long recoveryGeneration,
+            SettlementAbortiveDrawReason? abortiveReason = null)
+        {
+            var intent = new TableSettlementIntent(roundId, action, identity.Seat, abortiveReason);
+            var request = new TableSettlementRequest(
+                intent,
+                requestId,
+                expectedStateVersion,
+                ownerEpoch,
+                controlEpoch,
+                new DecisionId(decisionId),
+                recoveryGeneration,
+                new RequestScopeId(identity.ScopeId),
+                "SUBMIT_ACTION",
+                digest);
+            return new TableCommandRoute.Settlement(request);
         }
 
         private static TableCommandRoute MapCheat(

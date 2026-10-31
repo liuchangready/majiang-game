@@ -415,7 +415,7 @@ namespace Mahjong.TableService.Tests
 
                 var state = new TableRoomDecisionState();
                 GetInternal(state, "NoteCapture").Invoke(
-                    state, new object[] { "room-chi-" + name, round, 0UL, 100L });
+                    state, new object[] { "room-chi-" + name, round, 0UL, 100L, null! });
                 var eligibility = Assert.IsType<TableCommandRouteResponseEligibility>(
                     GetInternal(state, "DeriveResponseEligibility")
                         .Invoke(state, new object[] { 0, target, 0UL }));

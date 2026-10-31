@@ -8,6 +8,7 @@ using System.Threading.Channels;
 using System.Threading.Tasks;
 using Mahjong.Contracts;
 using Mahjong.Contracts.Wire;
+using Mahjong.Domain.Rules;
 using Mahjong.TableRuntime;
 using Microsoft.Extensions.Logging;
 
@@ -1447,9 +1448,30 @@ namespace Mahjong.TableService
                 Func<int, Mahjong.Domain.TileId, ulong, TableCommandRouteResponseEligibility?>? eligibility =
                     (seat, tile, expectedVersion) =>
                         decisionState.DeriveResponseEligibility(seat, tile, expectedVersion);
+                // P5.4b-B2-T: an abortive draw is mapped only when the committed round proves
+                // one of the frozen reasons. The actor/calculator re-validates it; an
+                // unprovable action fails closed before the actor with zero side effects.
+                Func<TableSettlementAction, int, SettlementAbortiveDrawReason?>? abortiveReason =
+                    (settlementAction, seat) =>
+                    {
+                        if (settlementAction != TableSettlementAction.AbortiveDraw)
+                        {
+                            return null;
+                        }
+
+                        try
+                        {
+                            return TableServiceAbortiveDraw.TryDerive(
+                                host.Actor.GetRoundStateForHost(), seat);
+                        }
+                        catch (Exception)
+                        {
+                            return null;
+                        }
+                    };
                 route = TableCommandMapper.Map(
                     identity, envelope, host.OwnerEpoch, host.RecoveryGeneration, _options,
-                    authoritativeRoundId, resolver, eligibility);
+                    authoritativeRoundId, resolver, eligibility, abortiveReason);
             }
             catch (ResponseEligibilityUnavailableException)
             {
@@ -1524,7 +1546,13 @@ namespace Mahjong.TableService
             }
 
             TableOperationResult result;
-            if (route is TableCommandRoute.BusinessCommand business)
+            if (route is TableCommandRoute.Settlement settlement)
+            {
+                result = await host.Actor
+                    .SubmitSettlementAsync(settlement.Request, stopping)
+                    .ConfigureAwait(false);
+            }
+            else if (route is TableCommandRoute.BusinessCommand business)
             {
                 result = await host.Actor.SubmitAsync(business.Envelope, stopping).ConfigureAwait(false);
             }

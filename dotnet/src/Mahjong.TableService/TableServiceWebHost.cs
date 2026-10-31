@@ -79,7 +79,8 @@ namespace Mahjong.TableService
             ITableTicketKeyProvider ticketKeys,
             IPAddress? bindAddress = null,
             int bindPort = 0,
-            ITableRoundSource? roundSource = null)
+            ITableRoundSource? roundSource = null,
+            ITableClock? testClock = null)
         {
             options.Validate();
 
@@ -110,7 +111,8 @@ namespace Mahjong.TableService
                 new InMemoryTicketConsumptionRegistry(options));
             builder.Services.AddSingleton<ITableSessionDirectory, InMemorySessionDirectory>();
             builder.Services.AddSingleton<ITableStreamContractCodec, WireTableStreamContractCodec>();
-            builder.Services.AddSingleton<ITableClock>(SystemTableClock.Instance);
+            ITableClock clock = testClock ?? SystemTableClock.Instance;
+            builder.Services.AddSingleton<ITableClock>(clock);
             builder.Services.AddSingleton<ITableRoundSource>(roundSource ?? CryptographicTableRoundSource.Instance);
 
             // P5.4b-A durable host assembly. Postgres mode binds the SAME P5.2 store to the
@@ -147,7 +149,7 @@ namespace Mahjong.TableService
                 hostRegistry = new PostgresTableHostRegistry(
                     options,
                     new WireTableStreamContractCodec(),
-                    SystemTableClock.Instance,
+                    clock,
                     roundSource ?? CryptographicTableRoundSource.Instance,
                     pgStore,
                     scopeAuthority,
@@ -165,7 +167,7 @@ namespace Mahjong.TableService
                 hostRegistry = new InMemoryTableHostRegistry(
                     options,
                     new WireTableStreamContractCodec(),
-                    SystemTableClock.Instance,
+                    clock,
                     roundSource ?? CryptographicTableRoundSource.Instance);
             }
 

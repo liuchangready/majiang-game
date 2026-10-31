@@ -78,6 +78,14 @@ namespace Mahjong.TableService
         /// still fails closed.</summary>
         private readonly TablePersistedOpeningAnchor? _persistedOpeningAnchor;
 
+        /// <summary>
+        /// P5.4b-B2-T: the actor's last accepted settlement calculation, exposed read-only for
+        /// the terminal win projection. It is used only after the projection proves it belongs
+        /// to the exact committed round/result; a missing or foreign calculation fails closed
+        /// instead of publishing a guessed yaku/han/fu breakdown.
+        /// </summary>
+        internal Func<Mahjong.Domain.Rules.RoundSettlementCalculation?>? SettlementProvider { get; set; }
+
         public TableProjectionContextSource(TableRoomDecisionState? decisionState = null, RoundStateMachine? initialRound = null)
         {
             _decisionState = decisionState;
@@ -113,7 +121,8 @@ namespace Mahjong.TableService
                     request.RoomId,
                     request.Round,
                     request.StateVersion.Value,
-                    request.MonotonicMillis);
+                    request.MonotonicMillis,
+                    request.Furiten);
             }
 
             return new TableProjectionContextData(
@@ -122,7 +131,7 @@ namespace Mahjong.TableService
                 1UL,
                 cheat: CheatState.Initialize(DefaultEconomy), // seat streams require a non-null trusted aggregate; the actor overlays its own
                 BuildPublicFacts(this, request),
-                BuildPrivateFacts(request.Round),
+                BuildPrivateFacts(request.Round, request.Furiten),
                 new TableSessionProjection(false, null, null, null),
                 new TableProjectionPolicy(),
                 BuildEventFacts(request),
@@ -495,7 +504,9 @@ namespace Mahjong.TableService
             return melds.Count == 0 ? null : melds;
         }
 
-        private static IReadOnlyList<TableSeatPrivateFacts> BuildPrivateFacts(RoundStateMachine round)
+        private static IReadOnlyList<TableSeatPrivateFacts> BuildPrivateFacts(
+            RoundStateMachine round,
+            TableFuritenSnapshot? furiten)
         {
             var result = new List<TableSeatPrivateFacts>(4);
             for (int seat = 0; seat < 4; seat++)
@@ -507,11 +518,18 @@ namespace Mahjong.TableService
                     history.Add(unchecked((uint)river[i].Value));
                 }
 
+                // The actor's committed snapshot is the only trusted furiten source; the
+                // checkpoint persists those bits so a recovered actor rebuilds exactly the
+                // same temporary/riichi state instead of defaulting to "not furiten".
+                bool temporary = furiten != null && furiten.IsTemporary(seat);
+                bool riichi = furiten != null && furiten.IsRiichi(seat);
                 result.Add(new TableSeatPrivateFacts(
                     seat,
-                    furiten: false, // the Domain does not model furiten; never asserted true
+                    furiten: temporary || riichi,
                     hasPreparation: false, // owner-preparation overlays stay actor-private facts
-                    history));
+                    history,
+                    temporaryFuriten: temporary,
+                    riichiFuriten: riichi));
             }
 
             return result;
@@ -657,7 +675,7 @@ namespace Mahjong.TableService
             public uint TileId { get; }
         }
 
-        private static TableProjectionEventFacts? BuildOne(
+        private TableProjectionEventFacts? BuildOne(
             TableProjectionContextRequest request,
             TableEventRecord record,
             uint? wallRemaining,
@@ -718,24 +736,87 @@ namespace Mahjong.TableService
                         doubleRiichi: TableCommittedCallFacts.RequireDoubleRiichi(request.Round, record));
                 case RoundEventType.TsumoWin:
                 case RoundEventType.RonWin:
-                    // Yaku/han/fu/score are scoring-authority facts. Fail closed.
-                    throw new InvalidOperationException(
-                        "Win projection requires scoring facts from a rules authority (P5.2+ boundary).");
+                    RoundResult win = request.Round.Result ??
+                        throw new InvalidOperationException(
+                            "A win event requires the committed round result.");
+                    Mahjong.Domain.Rules.RoundSettlementCalculation? calculation =
+                        SettlementProvider?.Invoke();
+                    if (calculation == null ||
+                        !string.Equals(calculation.SourceRoundId, request.Round.RoundId, StringComparison.Ordinal) ||
+                        !string.Equals(calculation.Settlement.ResultId, win.ResultId, StringComparison.Ordinal))
+                    {
+                        // No accepted calculation belongs to this exact committed terminal
+                        // result: publishing empty yaku/fu would be a guessed settlement.
+                        throw new InvalidOperationException(
+                            "Win projection requires the accepted settlement calculation for result '" +
+                            win.ResultId + "'.");
+                    }
+
+                    IReadOnlyList<YakuView>? yakuViews = null;
+                    uint? han = null;
+                    uint? fu = null;
+                    long? score = null;
+                    if (calculation.Breakdown != null)
+                    {
+                        var views = new List<YakuView>(calculation.Breakdown.Yaku.Count);
+                        for (int y = 0; y < calculation.Breakdown.Yaku.Count; y++)
+                        {
+                            Mahjong.Domain.Rules.YakuHit hit = calculation.Breakdown.Yaku[y];
+                            if (hit.Han > 0)
+                            {
+                                views.Add(new YakuView(hit.Code, unchecked((uint)hit.Han)));
+                            }
+                        }
+
+                        yakuViews = views;
+                        han = unchecked((uint)calculation.Breakdown.TotalYakuHan);
+                        fu = unchecked((uint)calculation.Breakdown.Fu.FinalFu);
+                        score = calculation.Breakdown.TotalPoints;
+                    }
+
+                    return new TableProjectionEventFacts(
+                        turnNumber: turnNumber,
+                        loserSeat: win.Outcome.LoserSeat >= 0 ? win.Outcome.LoserSeat : (int?)null,
+                        yaku: yakuViews,
+                        han: han,
+                        fu: fu,
+                        score: score,
+                        finalScores: Scores(win.FinalScores));
                 case RoundEventType.ExhaustiveDraw:
                 case RoundEventType.AbortiveDraw:
                     RoundResult draw = request.Round.Result ??
                         throw new InvalidOperationException("A draw event requires the committed round result.");
                     return new TableProjectionEventFacts(
                         turnNumber: turnNumber,
-                        tenpaiPlayers: draw.Outcome.TenpaiSeats);
+                        tenpaiPlayers: draw.Outcome.TenpaiSeats,
+                        finalScores: Scores(draw.FinalScores));
                 case RoundEventType.RoundEnded:
+                    // The frozen contract requires the terminal final-score list on
+                    // RoundEnded. It is the committed result's own final scores, not a
+                    // recomputation and not a client field; the checkpoint validator
+                    // rebuilds this projection and refuses a missing/foreign list.
+                    RoundResult ended = request.Round.Result ??
+                        throw new InvalidOperationException(
+                            "A RoundEnded event requires the committed round result.");
                     return new TableProjectionEventFacts(
                         turnNumber: turnNumber,
                         roundWind: unchecked((uint)request.Round.RoundWind),
-                        roundNumber: unchecked((uint)request.Round.RoundNumber));
+                        roundNumber: unchecked((uint)request.Round.RoundNumber),
+                        finalScores: Scores(ended.FinalScores));
                 default:
                     return null;
             }
+        }
+
+        private static IReadOnlyList<ScoreView> Scores(IReadOnlyList<long> values)
+        {
+            var list = new List<ScoreView>(values.Count);
+            for (int i = 0; i < values.Count; i++)
+            {
+                list.Add(new ScoreView(i, values[i]));
+            }
+
+            return list;
         }
 
         private static ProtocolEventType MapType(RoundEventType type)
