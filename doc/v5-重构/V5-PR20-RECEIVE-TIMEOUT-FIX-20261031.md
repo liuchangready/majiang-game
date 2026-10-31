@@ -263,7 +263,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/verify-v5.ps1 \
 
 ### 5.9 Hash manifest
 
-- `build/receive-timeout-fix/EVIDENCE-SHA256.txt`：**252 entries / 35,296 bytes / SHA-256 `74611D0E8E7B1A63D5BD832350DE4EDABD43706EF9C42A80A51ED4B7ACE8F6E1`**
+- `build/receive-timeout-fix/EVIDENCE-SHA256.txt`：**255 entries / 35,671 bytes / SHA-256 `F3C43588F1B1A363CDCD25A086E09EAE4CD91B10609CA4A2B8D223E7D0A6EEDE`**
 - 覆盖本任务 ignored 证据（日志、XML、脚本、首失败、red 源、20 轮隐私、unified 日志）及 caller baseline 探针；排除 manifest 自身、`final-head.txt`、`bin/`/`obj/`/`TestResults/` 构建产物。
 - 关键 SHA：
   - caller probe：`F9C67A9705163C2EB20ED9C35A4D4FF591FA9A317DF804C8FD6A23D847F8BB7B`
