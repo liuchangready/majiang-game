@@ -276,3 +276,59 @@ R2 的 Draw terminal 分支只读 `_transport.View.Current.VisibleEventBatch`；
 - R3 报告提交（最终 HEAD）：本文件所在提交
 - `git status --porcelain` 空；`git diff --check base..HEAD` 0；最终差异 9 个原 expectedFiles。
 - 未 push/PR/MR/merge/deploy/scheduler/complete.flag；未自行批准。
+
+---
+
+## 12. R4 返修（2026-11-01）：terminal checkpoint UTC 一致捕获
+
+本节关闭 C01-R1-02。R4 指令明确 `TableActor.cs` 在原 expectedFiles 内，并允许在既有 Runtime 测试文件新增确定性 advancing-clock 回归；R2-01/R2-03、Dispose unresolved、844/844、32/32、r15 与 D-1-05(b) 保持关闭，不重开。
+
+### 12.1 根因与修复
+
+**根因**：`TableActor.BuildCheckpoint` 在已有 `timingOverride`（携带第一次 `createdUtc`）时仍执行第二次 `NowUtc()`，并把第二次 UTC 写入 checkpoint；validator 严格比较 `timing.CapturedAtUtcMs != checkpoint.CreatedAtUtcMs` 时以 `CHECKPOINT_INVALID` 拒绝 terminal commit，导致没有 receipt/RoundEnd。
+
+**修复**（`dotnet/src/Mahjong.TableRuntime/TableActor.cs`）：
+
+```csharp
+ulong utcNow = timingOverride?.CapturedAtUtcMs ?? NowUtc();
+```
+
+- 有 timing override 时 checkpoint/timing 共用同一个 `CapturedAtUtcMs`；
+- 无 override 时只读一次，timing 与 checkpoint 共用该 `utcNow`；
+- 普通 durable terminal（`:3863`）与 cheat durable terminal（`:4279`）都经 `BuildCheckpoint`，同一修复覆盖；
+- monotonic 仍使用传入的 `now`，BootId 仍来自 durable context；
+- 未冻结时钟、未放宽/绕过 validator、未 catch-and-ignore、未延长确认界、未换 request id、未跳过 wall0/terminal 确认；
+- 未改 Client/LocalHost/Domain/Contracts/严格 observer。
+
+### 12.2 确定性 wall0 回归
+
+新增 `N2HostSettlementTests.DurableTerminalUsesOneCoherentUtcCaptureWhenClockAdvances`：
+
+- 真实 `SettlementFixture.ExhaustiveDraw()` wall0 round，136 张；
+- 真实 durable `N2DurableHarness` + 最终 canonical `ExhaustiveDraw` settlement；
+- `AdvancingUtcClock` 每次 `UtcNowMs` 读取 +1ms；
+- 断言 `Accepted`、`ExhaustiveDraw`/`RoundEnded`、`IsFinished`、136 张，以及 checkpoint 的 `CreatedAtUtcMs`/`CapturedMonotonicMillis`/`BootId` 与 timing payload **逐项相等**。
+
+**Mutation F**（恢复旧 `ulong utcNow = NowUtc();`）：`1 failed / 482 passed / 483 total`，失败正是该用例，错误为 `CHECKPOINT_INVALID ... Timing payload boot/UTC/monotonic origin does not match checkpoint metadata`；恢复后源哈希一致。旧错误与 caller 的独立 host probe 完全一致。
+
+### 12.3 最终计数与 fresh 验证
+
+| Suite | Total | Pass | Fail | Skip | native exit | XML SHA-256 |
+|---|---:|---:|---:|---:|---:|---|
+| TableRuntime | 483 | 483 | 0 | 0 | 0 | `A0464FBD...` |
+| TableModel | 235 | 235 | 0 | 0 | 0 | `8437387C...` |
+| LocalHost | 127 | 127 | 0 | 0 | 0 | `0FF88D29...` |
+| Tool | 32 | 32 | 0 | 0 | 0 | log `7B47D9A8...` |
+| PlayMode attempt-14 | 7 | 7 | 0 | 0 | 0 | `3777ED8F...` |
+| Player R4 full match | — | **PASS** | 0 | 0 | native 0 / tool 0 | summary `575BF95B...` |
+
+- fresh Player `p45-20261101-032455-f08dfc06`：12 局、`matchFinished=true`、`WestCompletion`、finalScores `[25000,25000,25000,25000]`、rankings `[0,1,2,3]`；205-file manifest `E48B7DC7...`；无 `CHECKPOINT_INVALID`。
+- build-shared / check-shared-plugins / Unity build native 均 0；Player native 0 / tool 0。
+- 既有 R2 成功样本、R1 首次失败、R2/R3 的失败 XML 与 ignored 证据全部保留；未删除或弱化探针。
+- `git status --porcelain` 空；`git diff --check base..HEAD` 0。
+- R4 代码/测试提交：`aec0c9a52c353b9220e06ed74343cfcb734b3749`；R4 报告提交（最终 HEAD）：本文件所在提交。
+- 最终差异 11 个文件：R1/R2/R3 的 9 个原 expectedFiles + `TableActor.cs` + `N2HostSettlementTests.cs`（R4 明确授权）。
+
+### 12.4 结论
+
+C01-R1-02 的已确认生产路径已修复并由 deterministic advancing-clock wall0 用例、mutation 反证、fresh PlayMode 7/7 和 fresh Player 12 局 PASS 覆盖。A/B 组件、D-1-05(b)、r15、Dispose unresolved 继续保持。G2-C01 仍需调用方独立验收；本报告不构成批准，未 push/PR/MR/merge/deploy/scheduler/complete.flag。
