@@ -1335,11 +1335,12 @@ namespace Mahjong.TableRuntime
                         command.Command,
                         CheatProtectionPredicate(),
                         defer);
-                    if (deferred.IsReady && deferred.Change!.NextState.Phase == RoundPhase.Draw)
+                    if (deferred.IsReady &&
+                        ShouldDeliverDeferredDraw(deferred.Change!))
                     {
                         RoundCheatPreparation delivery = RoundCheatTransition.PrepareDeferredDrawDelivery(
                             _round,
-                            deferred.Change,
+                            deferred.Change!,
                             _cheat,
                             now);
                         if (!delivery.IsReady)
@@ -2300,6 +2301,12 @@ namespace Mahjong.TableRuntime
             action == RoundCheatAction.SubmitSleeveBloomOffTurnChoice ||
             action == RoundCheatAction.SubmitSleeveBloomChoice ||
             action == RoundCheatAction.SubmitBeamSwapChoice;
+
+        internal static bool ShouldDeliverDeferredDraw(RoundChange change)
+        {
+            return change.NextState.Phase == RoundPhase.Draw &&
+                   change.NextState.Tiles.WallRemaining > 0;
+        }
 
         private Func<int, bool>? CheatDeferDrawPredicate()
         {
@@ -3430,11 +3437,12 @@ namespace Mahjong.TableRuntime
                         command,
                         CheatProtectionPredicate(),
                         defer);
-                    if (deferred.IsReady && deferred.Change!.NextState.Phase == RoundPhase.Draw)
+                    if (deferred.IsReady &&
+                        ShouldDeliverDeferredDraw(deferred.Change!))
                     {
                         RoundCheatPreparation delivery = RoundCheatTransition.PrepareDeferredDrawDelivery(
                             _round,
-                            deferred.Change,
+                            deferred.Change!,
                             _cheat,
                             now);
                         if (!delivery.IsReady)
