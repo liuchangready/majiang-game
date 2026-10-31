@@ -3,13 +3,14 @@
 - 日期：2026-10-31（Asia/Shanghai）
 - 工作树：`D:/majiang-wt/dotnettest-results-ds-20261031`
 - 分支：`wt/v5-dotnettest-results-ds-20261031`
-- HEAD：`355bf8750d7ea15fc586b87920ebfca2bfb72122`
+- Code fix HEAD：`6a0876d980c59cb5f4b69b2e17ad471423e77c67`（round 2 code fix；round 1 reviewed delivery `b4c04d31a85256e1d233e76995bd23cf9172d348`；docs commit 由提交后输出）
 - 基线：`8fd7c6cb701dfbb41c28938de4186749bdd1d6c7`（accepted `origin/v5`）；`git merge-base --is-ancestor` 对基线与 `355bf875` 均为 0
+- Round 2 结论：**REWORK 完成**；唯一 rework 缺陷组 **D-DNT-R1-01（MAJOR）** 已修复并重验；无其他已知 rework 缺陷留到下一轮
 - 源码树：`dotnet/`、`tools/`、`unity/`、`.github/` 在 `7fe7dbf3e37aefb437132d3584cb2ff09cff6af5` 与 `355bf875` 之间无差异；`355bf875` 仅新增调用方 CI 审计/报告
 - 任务性质：已记录 **D-A68-02（MAJOR）** 的实际工具修复与本地验证；不是再审计旧 CI，也不是 PR20/组件/阶段验收
 - 范围：仅本工作树实现/测试/提交；不 push、不 PR/MR、不 merge/deploy、不 approve、不 dispatch/rerun/cancel CI、不调用或委派 agent、不启动 Unity、不改共享插件或机器信任
 
-> **结论先行：** 本地已实现并验证真实 `dotnet test` 的 xunit.v3 4.0.2 / Microsoft.Testing.Platform 逐例原生 XML 捕获与生产门禁；`dotnetTest`-only 不再回退 direct，meta/summary 记录真实 runner、命令、head、产物路径、SHA-256 与精确 counts。历史 CI 的 direct 结论仍只属于 direct；**远端 CI 的 `dotnetTest` 仍是 NOT_RUN，D-A68-02 的远端证据口径没有被本轮关闭**。
+> **结论先行：** 本地已实现并验证真实 `dotnet test` 的 xunit.v3 4.0.2 / Microsoft.Testing.Platform 逐例原生 XML 捕获与生产门禁；round 2 修复 D-DNT-R1-01（runner 版本/尾随 junk/原生 schema 身份错误放行），`dotnetTest`-only 不再回退 direct，meta/summary 记录真实 runner、命令、head、产物路径、SHA-256 与精确 counts。历史 CI 的 direct 结论仍只属于 direct；**远端 CI 的 `dotnetTest` 仍是 NOT_RUN，D-A68-02 的远端证据口径没有被本轮关闭**。
 
 ---
 
@@ -18,7 +19,8 @@
 | 项目 | 状态 | 说明 |
 |---|---|---|
 | D-A68-02 本地工具修复 | **PASS（本地）** | 真实 `dotnet test` 原生逐例 XML、生产 gate、负例矩阵、真实正/负 live 探针均已落地 |
-| 本地 `dotnetTest` 两工程抽样 | **PASS** | TableService 180/180、Architecture 132/132；native XML 由本次 `dotnet test` 产生并被 gate 验证 |
+| **D-DNT-R1-01（round 2，MAJOR）** | **FIXED / PASS（本地）** | runner 版本锚定 4.0.2 + 合法 `+build` metadata；原生 schema 固定 3；caller 原 probe exit 0；扩展自测 48/48；14 XML replay 2,732/2,732 |
+| 本地 `dotnetTest` 两工程抽样 | **PASS** | 修复后统一入口重跑：TableService 180/180、Architecture 132/132，合计 312/312；native XML 由本次 `dotnet test` 产生并被 gate 验证 |
 | 本地 PG full 14 工程 | **PASS（本地）** | 真实独立 PostgreSQL cluster；`dotnetTest` 统一入口；14/2,732、0 fail/skip/notRun/errors；cleanup PASS，见 §5.6.2 |
 | 历史 CI（7fe，41181934433 / 41181937456） | **PASS（仅 historical direct）** | 两 run 仍是 direct runner；`direct-results.xml` 不是 dotnetTest XML |
 | 远端 CI `dotnetTest` | **NOT_RUN** | 本轮未 dispatch/rerun/cancel；后续调用方验收后才触发新远端证据 |
@@ -79,7 +81,7 @@ D:\Unity\dotnet\dotnet.exe test dotnet/tests/Mahjong.TableService.Tests/Mahjong.
 5. 新增 `Get-DotnetTestConsoleCounts`：解析 `dotnet test`/MTP 的 VSTest 风格汇总行（英文与 zh-CN），console 只作 cross-check，不作为逐例来源。
 6. 新增生产 gate `Test-DotnetTestInvocationEvidence`，严格校验：
    - XML 必须存在、非空、可解析，根为 `assemblies`，且恰有一个 `<assembly>`；
-   - `schema-version`、`xUnit.net v3` framework、assembly leaf 与**精确 assembly 文件路径**（rooted，Windows 大小写不敏感）匹配；
+   - `schema-version` 必须精确为支持的 **3**；framework 必须完整锚定 `xUnit.net v3 4.0.2`（允许合法 `+build` metadata，拒绝 4.0.20/4.0.200/INVALID/空 metadata/v2）；assembly leaf 与**精确 assembly 文件路径**（rooted，Windows 大小写不敏感）匹配；
    - 逐例 `<test>` 节点存在，`@id` 非空且全局唯一；display name **不要求唯一**；
    - assembly 的 total/passed/failed/skipped/errors/not-run 与节点、collection 聚合互相一致；
    - `total>0`、`passed==total`、failed/errors/skipped/not-run 全为 0；
@@ -90,13 +92,14 @@ D:\Unity\dotnet\dotnet.exe test dotnet/tests/Mahjong.TableService.Tests/Mahjong.
 8. `auto` 的既有 fallback 仅在“既无 console summary、也无 native XML、且无 build/restore error”时保留；fallback 后 runner 仍写 `in-process (direct)`，meta/summary 明确写“该行 counts 来自 direct，不是 dotnetTest 证据”。
 9. meta 新增 `dotnetTest xml` 路径、SHA-256、gate 结果与精确 counts（total/passed/failed/skipped/errors/not-run/nodes/framework）；summary 增加 `runner mode`、`dotnetTest xml`、`dotnetTest counts` 与独立 evidence root 说明。
 10. 未修改任何测试 csproj/package/production 源码，未增加 skip，未削弱 direct 门禁。
+11. Round 2 只加强新 `dotnetTest` gate：版本锚定与 schema 3 校验；`Test-DirectInvocationEvidence` 与 direct XML 策略未改。`Read-DirectResultXml` 已返回 `SchemaVersion`，新 gate 直接比较，不复制解析器。
 
 ### 3.2 `tools/ci/test-v5-dotnettest-results.ps1`（新增）
 
 - 用 PowerShell AST 从 `tools/verify-v5.ps1` 提取**真实生产函数**：`Invoke-Captured`、`Get-DotnetTestConsoleCounts`、`Get-DotnetTestResultsArgument`、`Read-DirectResultXml`、`Test-DotnetTestInvocationEvidence`；测试不复制 gate 算法。
 - 合成 XML 仅用于 gate 负例/正例，明确不是真实 `dotnet test` 产物。
-- 负例矩阵覆盖：missing/empty/malformed/truncated、zero、summary-only、错误 assembly leaf、同 leaf 错误路径、错误 framework、assembly/collection 聚合不一致、duplicate native IDs、stale、results 目录越界、XML 越界、路径 escape、错误文件名、fail/skip/notRun/errors、native 非零但 XML 绿色、native exit unknown、console 缺失/总数/失败/跳过不一致、results 参数含空格。
-- 正例包含：绿色 XML；含**两个完全相同 display name** 的合法 case（gate 必须通过，证明 display name 不被当作 native ID）；含空格的结果路径参数。
+- 负例矩阵覆盖：missing/empty/malformed/truncated、zero、summary-only、错误 assembly leaf、同 leaf 错误路径、错误 framework、assembly/collection 聚合不一致、duplicate native IDs、stale、results 目录越界、XML 越界、路径 escape、错误文件名、fail/skip/notRun/errors、native 非零但 XML 绿色、native exit unknown、console 缺失/总数/失败/跳过不一致、results 参数含空格；round 2 追加 4.0.1/4.0.20/4.0.200/4.0.2INVALID/4.0.2+ 空 metadata/v2 runner 与 schema 999/2/4。
+- 正例包含：绿色 XML；含**两个完全相同 display name** 的合法 case（gate 必须通过，证明 display name 不被当作 native ID）；含空格的结果路径参数；round 2 追加 exact `4.0.2`、`4.0.2+build.1`、`4.0.2+0c7aa4991f` + schema 3。
 - **真实 live 探针**（不是 fixture 冒充）：
   - 在 ignored `build/` 下动态创建两个独占 xunit.v3 4.0.2/MTP 工程；
   - 正向工程 3 个 case（其中两个同名 display name）真实 `dotnet test` 退出 0，原生 XML 3/3 Pass，production gate PASS；
@@ -162,36 +165,46 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/ci/verify-v5-table-pos
 | 日志 | `build/fresh-release-build-20261031.log` |
 | SHA-256 | `11DA8D3DB7A42F94ED5D76406DA8D89D74B4B3007B4143B9C5F5F4D127A98649` |
 
+Round 2 只改 PowerShell 工具（`tools/verify-v5.ps1` 与新自测脚本），未改任何 .NET 源码/测试/csproj；因此没有重跑 fresh build，沿用 round 1 的 0 warning / 0 error 结论。
+
 ### 5.2 既有回归（未修改脚本）
 
 | 脚本 | 结果 | native exit | 证据 |
 |---|---|---|---|
-| `test-v5-direct-results.ps1` | **19/19** cases behaved as expected | 0 | `build/regression-20261031/test-v5-direct-results.log`，SHA-256 `4D37EF0BA7D60DBFA32D4BD898C958BD51268B51620A86D7A98C149BC867FD3C` |
-| `test-v5-captured-exit.ps1` | **51/51** passed | 0 | 同上目录 `test-v5-captured-exit.log`，SHA-256 `B78FA935763F0A14E362A3D7A41597DFC5D0E1B1BBADCD00FB389F39BF429225` |
-| `test-v5-native-exit.ps1` | **6/6** cases behaved as expected | 0 | 同上目录 `test-v5-native-exit.log`，SHA-256 `7EFCEE63E4CB2F9ADBB4B0A2C91490D6FE9B6A129D42420AADAC19EB74D81512` |
+| `test-v5-direct-results.ps1` | **19/19** cases behaved as expected | 0 | `build/regression-r2/test-v5-direct-results.log`，SHA-256 `D6CABE47D158EF6644DA059139099D8B796975E1D753D24581403B7001A53D4B` |
+| `test-v5-captured-exit.ps1` | **51/51** passed | 0 | 同上目录 `test-v5-captured-exit.log`，SHA-256 `FCCE016FD5FDA1BFF270695C4A42C6FB077D21CF3BAB9600DCA72C3CC2A8B1ED` |
+| `test-v5-native-exit.ps1` | **6/6** cases behaved as expected | 0 | 同上目录 `test-v5-native-exit.log`，SHA-256 `B8094EA3F87BA3DD8B61C19F47831DF068282B77A50920945597BF1FD0D4549D` |
 
 ### 5.3 新 `dotnetTest` gate/负例/真实 live 探针
 
-- 最终结果：**36/36** cases behaved as expected；0 failed（`results.json`: cases=36, passed=36, failed=0）。
-- 组成：31 个 gate case（2 positive + 29 negative）、1 个 results 参数 helper case、2 个 console parser case、2 个真实 live dotnet test case。
+- 最终结果：**48/48** cases behaved as expected；0 failed（`results.json`: cases=48, passed=48, failed=0）。
+- 组成：31 个原有 gate case（2 positive + 29 negative）+ **12 个 D-DNT-R1-01 身份/schema gate case**（3 positive + 9 negative）+ 1 个 results 参数 helper case + 2 个 console parser case + 2 个真实 live dotnet test case = 48；原有 36 case 全部保留，未删除/弱化。
+- 新增身份/schema 正例：`xUnit.net v3 4.0.2`（无 metadata）、`4.0.2+build.1`、`4.0.2+0c7aa4991f` + schema 3；负例：`4.0.1`、`4.0.20`、`4.0.200`、`4.0.2INVALID`、`4.0.2+`（空 metadata）、`xUnit.net v2 ...`、schema 999/2/4；这些负例的 Reason 必须分别命中 `runner identity mismatch` 或 `schema identity mismatch`（v2 由共享解析器以 “not an xUnit.net v3” 拒绝，同属 runner 身份拒绝）。
 - 合成 fixture 只作 gate 负例/正例，不冒充真实产物；真实 live 记录只有两个 live case。
 - Live positive：真实 `dotnet test` 退出 **0**，native XML **3/3 Pass**，duplicate display name group=1，gate **PASS**（display name 未被误判为 native ID）。
 - Live negative：真实 `dotnet test` 退出 **1**，native XML `failed=1`，gate **FAIL**；首失败 `Probe.Negative.FailingTests.ControlledFailure`。该结果证明不是旧 DLL/未编译被掩盖。
-- 负例覆盖（实际全部拒绝）：missing/empty/malformed/truncated、zero、summary-only、wrong assembly leaf、wrong assembly path、wrong framework、assembly/collection aggregate mismatch、duplicate native IDs、stale、outside LogDir、outside results dir、path escape、unexpected filename、failed/skipped/not-run/errors、native nonzero + green XML、native exit unknown、missing console、console total/failed/skipped mismatch。
-- 证据：`artifacts/dotnettest-results-selftest-398ee3a304a34887bee8cf53463ba638/results.json`，SHA-256 `2F0FB3F9F89223F26F59A58FBC33AAC353C01041ADDAD6B91AA5CC3685EE4AFC`；live fixture 根路径 `build/dotnettest-selftest-82b7d73e13834fe2afa2c0013a029d20/live-fixtures`。
+- 负例覆盖（实际全部拒绝）：missing/empty/malformed/truncated、zero、summary-only、wrong assembly leaf、wrong assembly path、wrong framework、assembly/collection aggregate mismatch、duplicate native IDs、stale、outside LogDir、outside results dir、path escape、unexpected filename、failed/skipped/not-run/errors、native nonzero + green XML、native exit unknown、missing console、console total/failed/skipped mismatch，以及本轮的 runner patch/尾随 junk/空 metadata/v2/schema 999/2/4。
+- 证据：`artifacts/dotnettest-results-selftest-6a43fc279654406fbf507566f01181a0/results.json`，SHA-256 `5FD8E7EDDFE368CBF96A0CB3275275AAE23168D8656D980A63C43EF376FAA54E`；selftest 日志 `build/dotnettest-selftest-r2b.log`，SHA-256 `B7C33A6C145C388E6E42AEA3CB792B2DC5C5B72B72AE89E20C7261498D2089E6`；live fixture 根路径 `build/dotnettest-selftest-f025793c701b49e5b4da9a1c09bd5191/live-fixtures`。
 
 ### 5.4 统一入口 `RunnerMode dotnetTest`：TableService + Architecture
 
-scoped manifest 仅列两个真实非 PG 测试工程（`build/manifest-dotnettest-two.json`，ignored），`-NoProjectDiscovery`；plugin copy 与 companion gate 仍执行。
+scoped manifest 仅列两个真实非 PG 测试工程（`build/manifest-dotnettest-two.json`，ignored），`-NoProjectDiscovery`；plugin copy 与 companion gate 仍执行。实际命令：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/verify-v5.ps1 `
+  -Configuration Release -DotnetPath D:\Unity\dotnet\dotnet.exe -RunnerMode dotnetTest `
+  -ManifestPath <worktree>\build\manifest-dotnettest-two.json -NoProjectDiscovery `
+  -LogDir <worktree>\build\unified-dotnettest-r2-final-5bfc582c
+```
 
 | 工程 | 模式 | native total | passed | failed | skipped | errors | not-run | nodes | native XML SHA-256 | gate |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---|---|
-| `Mahjong.TableService.Tests` | dotnetTest/MTP | 180 | 180 | 0 | 0 | 0 | 0 | 180 | `0FC03FDAC2B50D638FB0C41C0021C93DCF01E6D4A7818A7F01FD384A3557001E` | PASS |
-| `Mahjong.Architecture.Tests` | dotnetTest/MTP | 132 | 132 | 0 | 0 | 0 | 0 | 132 | `CED8DEBC7C41C88ED67F4133B2DB8FFB0EECA8C289023BCA7F82DC516A016DA4` | PASS |
+| `Mahjong.TableService.Tests` | dotnetTest/MTP | 180 | 180 | 0 | 0 | 0 | 0 | 180 | `E141EBC9C976A593E7FC87FC07CAF1BFBD99DD1B20B1B08018BEE1572E1A44A5` | PASS |
+| `Mahjong.Architecture.Tests` | dotnetTest/MTP | 132 | 132 | 0 | 0 | 0 | 0 | 132 | `19B21963AC57DF8F5683B4002FA71577502C005F4B0F5CEB19DC4BCC795EAB97` | PASS |
 
-- 统一入口 native exit **0**；`OVERALL: PASS`；plugin copy PASS；companion 4/4 PASS。
-- 两个 meta 均记录 `runner used : dotnet test (MTP; native xunit.v3 XML)`、精确命令、exit 0、native XML 路径/SHA/gate/counts；命令含 `-- --report-xunit-xml --report-xunit-xml-filename dotnet-test-results.xml --results-directory ...`。
-- 证据：`build/unified-dotnettest-two-9ba400e0/`（summary.log、runs/*.meta.txt、dotnetTest-xml/*、test-results/*）。
+- 统一入口 native exit **0**；`OVERALL: PASS`；plugin copy PASS；companion 4/4 PASS；实际分母 **312/312**（180+132）。
+- 两个 meta 均记录 `runner used : dotnet test (MTP; native xunit.v3 XML)`、精确命令、exit 0、native XML 路径/SHA/gate/counts；head 为修复 commit `6a0876d9`，script SHA-256 为 `41510892820C6B1E72B8BD182C171C23778E992F0E8AD6B87505862CCB1C065B`。
+- 证据：`build/unified-dotnettest-r2-final-5bfc582c/`；`summary.log` SHA-256 `259DE9559732E6C7A45A8B3ED75FD9F4DC8E509DF5475EFC90C0EDCF28B235E2`；`run-info.txt` SHA-256 `BA24B14A1EFE85982168C07FE97DCA881894481A52FB418C2FCDE94B540986B5`；两个 meta 的 SHA-256 分别为 `DDAF86736741E184E7C62B286D5D94B5361F6321025BEFD7452B0D6A1E9DF255`（Architecture）和 `9B30C5F19505F4B14BF2832C67BC73D41B423505319A812A90CA2956159EE5C8`（TableService）。
 - 该 scoped manifest 只是抽样探针，不是默认 14 工程分母；不取代 §5.6。
 
 ### 5.5 无 PG 的 full 14 工程压力探针（非验收 full）
@@ -251,11 +264,58 @@ scoped manifest 仅列两个真实非 PG 测试工程（`build/manifest-dotnette
 
 
 
+### 5.7 D-DNT-R1-01（MAJOR）修复、原红例保留与重验
+
+#### 5.7.1 缺陷与原始红例
+
+- **ID/级别**：`D-DNT-R1-01`，**MAJOR**；本任务 round 1 新增发现，本轮完整已知 rework 缺陷组仅此 1 组（BLOCKER=0，MINOR=0）。
+- **位置**：`tools/verify-v5.ps1` `Test-DotnetTestInvocationEvidence`（round 1 约 921-930，尤其 928 的 `-notlike "$ExpectedFramework*"`）；共享 `Read-DirectResultXml` 约 651-656 只解析 schema 整数，dotnet gate 未校验支持 schema。
+- **复现**：
+  ```powershell
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -File build/caller-dnt-075f61/boundary-probes.ps1
+  ```
+- **原始红例实际**（round 1，`exit 1`）：control `xUnit.net v3 4.0.2+0c7aa4991f`/schema 3 => True；`4.0.20+other`/3 => **True（错误）**；`4.0.2INVALID`/3 => **True（错误）**；`4.0.2+0c7aa4991f`/999 => **True（错误）**；三者 Reason 均为 `3/3 test cases Pass; native dotnet test XML matches console and native exit 0`。
+- **期望**：仅 control True；其余 False，Reason 明确为 `runner identity mismatch` 或 `schema identity mismatch`；不能靠改路径/缺 console 等非身份原因伪修复。
+- **原红例保留**：
+  - `build/caller-dnt-075f61/boundary-probes.ps1`，SHA-256 `9DA07FFA1E5861C7EA082BE11BFA688F6D8AEF77DACFFBA42426EE551AC9CA71`（未修改）
+  - `build/caller-dnt-075f61/boundary-probe-results.red.json`，SHA-256 `1391B6EDAA0B8E25AD98B5C18A605C2F20D810BC2B73B4E6A5DEEEF1D99EC0C8`（原 caller 红 JSON，重放旧 gate 生成并单独保留）
+  - `build/caller-dnt-075f61/boundary-probes.red.log`，SHA-256 `0580FF820B864C9B646878BCB0872DA0A3152FB5DC6ACA661FF9849A481E1A4B`
+  - 原 4 个输入 XML 仍在 `build/caller-dnt-075f61/boundary/*/results/dotnet-test-results.xml`，未覆盖。
+
+#### 5.7.2 修复映射
+
+1. **版本完整锚定，不用前缀**：`Test-DotnetTestInvocationEvidence` 的 framework 检查改为大小写敏感锚定正则
+   `^<escaped ExpectedFramework>(?:\+[0-9A-Za-z][0-9A-Za-z.-]*)?$`。
+   - 接受：`xUnit.net v3 4.0.2`、`xUnit.net v3 4.0.2+0c7aa4991f`、`4.0.2+build.1`；
+   - 拒绝：`4.0.1`、`4.0.20`、`4.0.200`、`4.0.2INVALID`、`4.0.2+`（空 metadata）、`xUnit.net v2 ...`；
+   - 错误文本固定为 `dotnet test runner identity mismatch: expected 'xUnit.net v3 4.0.2' with optional '+build' metadata, got '...'`。
+2. **原生 schema 固定 3**：新增 `ExpectedSchemaVersion = '3'` 参数；解析器返回 `SchemaVersion` 后显式比较，失败文本为 `dotnet test result XML schema identity mismatch: expected supported schema '3', got '...'`。未知/不支持 schema 不再放行。
+3. **不改已验收 direct 策略**：只加强新 `dotnetTest` gate；`Test-DirectInvocationEvidence`/direct 行为未改，避免不必要回归。
+4. **生产自测扩展**：`tools/ci/test-v5-dotnettest-results.ps1` 新增 12 个身份/schema case（3 positive + 9 negative），原有 36 case 全部保留；新增 case 要求 Reason 命中身份/schema 文本。
+5. **证据重验而非重跑 PG**：用修复后的 gate 对已记录的 PG full 14 个 native XML + 原始 run start/meta exit/console 做 replay；未启动新 PG cluster，未重跑 2,732 业务。
+
+#### 5.7.3 修复后重验
+
+- **原 caller probe 原样重跑**：`exit 0`；control True；`wrong-patch-version` False（runner identity）；`framework-prefix-junk` False（runner identity）；`unsupported-schema` False（schema identity）。
+  - 绿 JSON：`build/caller-dnt-075f61/boundary-probe-results.json`，SHA-256 `8B1903B5522C46F80ED547254274B166E7028E112262BA0F7F853BDFE020FD10`
+  - 绿日志：`build/caller-dnt-075f61/boundary-probes.green-final.log`，SHA-256 `FBAE43728138F02DDB038596FC3EB0E5A1A01E49FE07C9A00A78002912379D34`
+- **生产自测**：48/48，exit 0；见 §5.3；新增 34-45 覆盖 exact 4.0.2、metadata、wrong patch、trailing junk、empty metadata、v2、schema 999/2/4。
+- **既有回归**：direct 19/19、capture 51/51、native-exit 6/6，全部 exit 0；见 §5.2。
+- **实际 scoped 统一入口重跑**：修复 commit `6a0876d9` 下重跑，312/312（TableService 180 + Architecture 132），native exit 0，plugin/companion PASS；见 §5.4。
+- **14 XML replay**：
+  - 模式：`evidence-replay-not-new-execution`；原始 run start `2026-10-31T09:59:48Z`；原始 head `355bf875`；原始 meta exit 全 0；console 从原 `dotnetTest-*.log` 解析。
+  - 结果：14/14 `ReplayOk=True`，2,732/2,732，0/0/0/0，schema 全 3，framework 全 `xUnit.net v3 4.0.2+0c7aa4991f`。
+  - `build/dnt-r2-replay-14/replay-results.json`，SHA-256 `6467394110E7B04A2F19D9C224CC9153E1BCDBAA27AE133847CEB9BC8745986D`
+  - `build/dnt-r2-replay-14/replay.log`，SHA-256 `B568ECF4EEEF1ACD065DA8CF9CE53B5A4EFD66DCAD9A4216FFEBF9448D087318`
+- **验收断言**：原 probe exit 0；生产自测 48/48；live 3/3 + native exit1；direct/capture/native 19/51/6；scoped 312/312；replay 14/2,732/2,732；全部满足。
+
+
+
 ---
 
 ## 6. 逐例总数、同名与首失败
 
-### 6.1 PG full 的 14 工程逐例总数（dotnetTest/MTP native XML）
+### 6.1 PG full 的 14 工程逐例总数（dotnetTest/MTP native XML；round 2 以修复后 gate replay 重验）
 
 | 工程 | total | passed | failed | skipped | errors | not-run | nodes | unique display names | duplicate-name groups | 首失败 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
@@ -279,6 +339,7 @@ scoped manifest 仅列两个真实非 PG 测试工程（`build/manifest-dotnette
 - 2,730 unique display names；两个合法同名 group：Architecture（132 total/131 unique）和 HTTPS Admission（54 total/53 unique）。同名 display name 不是 native ID，gate 不要求其唯一，因此 2,730 vs 2,732 不会被误判。
 - 首失败：**无**（14/14 全绿）。受控真实失败探针的首失败是 `Probe.Negative.FailingTests.ControlledFailure`，见 §5.3；无 PG 压力探针的首失败/首个 skip 见 §5.5。
 - 20 个 project rows = 14 test + 6 build-only helper；helper 不计测试、不计分母（D-A68-04 口径）。
+- Round 2 未启动新 PG，也未重跑 2,732 业务；上表 14 个 native XML 经修复后的 gate 以原始 `run start=2026-10-31T09:59:48Z`、原始 meta exit 0、原始 console 记录 replay，14/14 `ReplayOk=True`，总计 2,732/2,732，全部 schema=3、framework=`xUnit.net v3 4.0.2+0c7aa4991f`。这是**证据重验**，不是新执行；见 §5.7.3 与 `build/dnt-r2-replay-14/replay-results.json`。
 
 
 
@@ -289,8 +350,8 @@ scoped manifest 仅列两个真实非 PG 测试工程（`build/manifest-dotnette
 | 来源 | runner | 是否本轮 | 逐例产物 | 结论适用范围 |
 |---|---|---|---|---|
 | 历史 CI 41181934433 / 41181937456 | direct | 否 | `direct-results.xml` | 仅 historical direct 的 14 工程/2,732 |
-| 本轮 scoped local | `dotnet test` + MTP | 是 | `dotnetTest-xml/*/dotnet-test-results.xml` | TableService 180、Architecture 132 |
-| 本轮 PG full local | `dotnet test` + MTP | 是 | 14 个 `dotnetTest-xml/*/dotnet-test-results.xml` | 本地 14 工程/2,732（PG 环境） |
+| 本轮 scoped local（round 2，commit 6a0876d9） | `dotnet test` + MTP | 是 | `dotnetTest-xml/*/dotnet-test-results.xml` | TableService 180 + Architecture 132 = 312/312 |
+| 本轮 PG full local（round 1 执行；round 2 replay） | `dotnet test` + MTP | 执行：round 1；重验：round 2 | 14 个 `dotnetTest-xml/*/dotnet-test-results.xml` | 本地 14 工程/2,732（PG 环境）；round 2 仅 replay，不新执行 |
 | 未来 remote CI `dotnetTest` | `dotnet test` + MTP | **否 / NOT_RUN** | 无 | **不能由本轮本地结果外推** |
 
 - 历史 CI 的 `direct-results.xml` **不是** dotnetTest XML；本轮没有把它改名，也没有用 direct 冒充 dotnetTest。
@@ -301,6 +362,7 @@ scoped manifest 仅列两个真实非 PG 测试工程（`build/manifest-dotnette
 
 ## 8. Known defects / 限制（一次性列出）
 
+0. **round 2 rework 缺陷完整性**：本轮唯一已知 rework 缺陷组是 **D-DNT-R1-01（MAJOR）**，已在本轮修复并重验（§5.7）；BLOCKER=0，MINOR=0，无其他已知 rework 缺陷留到下一轮。以下 1–10 是继承边界/范围限制，不是本轮新增缺陷，也不构成本轮 blocked 或 rework 理由。
 1. **D-A68-02 远端证据仍 OPEN**：本轮只交付本地工具修复与本地证据；远端 CI 仍是 direct，dotnetTest NOT_RUN。后续调用方验收后才应触发新的远端 dotnetTest step/job。
 2. **D-A68-03 历史 whitespace 仍存在**：`git diff --check 8fd7c6cb..7fe7dbf` 仍为 1,573 条；本轮不重写历史 patch/evidence，只保证本轮 delta clean。
 3. **D-A68-04 口径**：20 个 project rows = 14 test + 6 build-only helper；2,732 分母只算 14 个测试工程，helper 不计测试。
@@ -320,37 +382,43 @@ scoped manifest 仅列两个真实非 PG 测试工程（`build/manifest-dotnette
 
 | 文件 | 变更 |
 |---|---|
-| `tools/verify-v5.ps1` | dotnetTest 原生 XML 参数、gate、meta/summary、短路径、absolute LogDir |
-| `tools/ci/test-v5-dotnettest-results.ps1` | 新增 36-case gate/负例/真实 live 探针 |
+| `tools/verify-v5.ps1` | dotnetTest 原生 XML 参数、gate、meta/summary、短路径、absolute LogDir；round 2 锚定 4.0.2 版本 + 合法 build metadata、强制 schema 3 |
+| `tools/ci/test-v5-dotnettest-results.ps1` | 新增 48-case gate/负例/真实 live 探针；round 2 增补 12 个 runner/schema 身份 case，原 36 case 保留 |
 | `tools/ci/verify-v5-table-postgres.ps1` | 新增 RunnerMode（默认 direct）并传递 |
 | `tools/ci/verify-v5-postgres.ps1` | 默认 direct；既有传递保持不变 |
 | `doc/v5-重构/V5-DOTNETTEST-CASE-EVIDENCE-DELIVERY-20261031.md` | 本报告 |
 
 未修改：`dotnet/tests/**` 业务断言、`dotnet/src/**` 生产、`*.csproj`/package、`dotnet/Mahjong.sln`、`tools/v5-verify.manifest.json`、workflow、Unity/Resources/Burst、B1 gate、其它 worktree。
 
-### 9.2 tracked 文件 SHA-256（提交前工作树内容）
+### 9.2 tracked 文件 SHA-256（round 2 提交前工作树内容）
 
 | 文件 | SHA-256 |
 |---|---|
-| `tools/verify-v5.ps1` | `15AC9CEB6005E49295B57FC7E85C7B927DC1740032A2FF7185C73466655ACDE0` |
-| `tools/ci/test-v5-dotnettest-results.ps1` | `609543E12AD6DFDB159676A85797B73F0C1682B8CEFAF23DE4A223B3383110CD` |
+| `tools/verify-v5.ps1` | `41510892820C6B1E72B8BD182C171C23778E992F0E8AD6B87505862CCB1C065B` |
+| `tools/ci/test-v5-dotnettest-results.ps1` | `A3402DCD81FC63B331557545F0614EE8BFE9827B19D22566670189A84AFBF17E` |
 | `tools/ci/verify-v5-table-postgres.ps1` | `85B67C3836CF82ACA84565AC92119F932DB9D17C79A471D8C0B46A031B43B965` |
 | `tools/ci/verify-v5-postgres.ps1` | `FCB3B35387FED80703A098000053EDF70BFDD8A1FB6E7CC456A8DE8E0E270D10` |
-| 本报告 `V5-DOTNETTEST-CASE-EVIDENCE-DELIVERY-20261031.md` | 不在文内自引用；最终提交 SHA/文件 SHA 由提交后输出 |
+| 本报告 `V5-DOTNETTEST-CASE-EVIDENCE-DELIVERY-20261031.md` | 不在文内自引用；最终 docs commit SHA/文件 SHA 由提交后输出 |
 
 ### 9.3 证据 SHA-256 manifest
 
 - 完整 evidence bundle manifest 由 PG wrapper 生成：`artifacts/dotnettest-pg2-20261031-175613/manifest.sha256.json`，SHA-256 `7AA561DC6D47041E98D2E04C5A80B4AA07DDE197841E589304E5E338FAB10CDE`（235 个条目，覆盖 `build-*`、`pg-*`、`psql-*`、`tests*`、`crash-*`、`restore-*`、`table_store.dump`、`wrapper-summary.json` 等）。
 - native XML 逐例 summary：`artifacts/dotnettest-pg2-20261031-175613/unified/native-xml-summary.json`，SHA-256 `5D6553F1779AFB1D02C674544BFE8B60E10E1466C7066715EB9CD3562C508A7B`。
 - 14 个 native XML 的 SHA-256 见 §5.6.2；原始 stdout/stderr/framework logs、meta、companion 证据保留在 PG LogDir 与 `unified/`；不提交 DLL、秘密、连接串、key、种子或 private saves。
+- Round 2 新证据：
+  - caller 原 probe：`build/caller-dnt-075f61/boundary-probes.ps1` `9DA07FFA1E5861C7EA082BE11BFA688F6D8AEF77DACFFBA42426EE551AC9CA71`
+  - 原红 JSON/绿 JSON：`1391B6EDAA0B8E25AD98B5C18A605C2F20D810BC2B73B4E6A5DEEEF1D99EC0C8` / `8B1903B5522C46F80ED547254274B166E7028E112262BA0F7F853BDFE020FD10`
+  - 原红/绿日志：`0580FF820B864C9B646878BCB0872DA0A3152FB5DC6ACA661FF9849A481E1A4B` / `FBAE43728138F02DDB038596FC3EB0E5A1A01E49FE07C9A00A78002912379D34`
+  - 48-case 自测 `results.json`：`5FD8E7EDDFE368CBF96A0CB3275275AAE23168D8656D980A63C43EF376FAA54E`
+  - scoped 312/312 `summary.log` / `run-info.txt`：`259DE9559732E6C7A45A8B3ED75FD9F4DC8E509DF5475EFC90C0EDCF28B235E2` / `BA24B14A1EFE85982168C07FE97DCA881894481A52FB418C2FCDE94B540986B5`
+  - 14 XML replay `replay-results.json` / `replay.log`：`6467394110E7B04A2F19D9C224CC9153E1BCDBAA27AE133847CEB9BC8745986D` / `B568ECF4EEEF1ACD065DA8CF9CE53B5A4EFD66DCAD9A4216FFEBF9448D087318`
 
 ### 9.4 Git/提交
 
-- 基线：`8fd7c6cb...`；冻结审计头：`355bf875...`；`git merge-base --is-ancestor` 两者均为 0。
-- 源码树身份：`git diff --quiet 7fe7dbf3e37aefb437132d3584cb2ff09cff6af5 HEAD -- dotnet tools unity .github` 为 exit 0；`355bf875` 只新增两份调用方 CI 文档，无源码差异。
-- `git diff --check`（本轮工作树）exit **0**。
-- 提交前 `git status --porcelain=v1` 只有 expectedFiles：3 个 M + 2 个 ??（新脚本、本报告）；提交后必须 clean。
-- 最小单提交，message：`tools(v5): capture real dotnet test per-case evidence`。最终 commit SHA 由提交后输出，不在文内自引用。
+- 基线：`8fd7c6cb...`；冻结审计头：`355bf875...`；round 1 reviewed delivery：`b4c04d31a85256e1d233e76995bd23cf9172d348`；round 2 code fix：`6a0876d980c59cb5f4b69b2e17ad471423e77c67`；`git merge-base --is-ancestor` 基线与 `355bf875` 均为 0。
+- 源码树身份：`git diff --quiet 7fe7dbf3e37aefb437132d3584cb2ff09cff6af5 355bf875 -- dotnet tools unity .github` 为 exit 0；`355bf875..6a0876d9` 只含本任务 expectedFiles 的 5 个路径（round 2 修改其中 2 个工具文件），没有 `dotnet/**` 源码、Unity、`.github` 变更。
+- `git diff --check`（round 2 工作树）exit **0**。
+- Round 2 提交安排：`6a0876d9` = 最小代码修复（`tools/verify-v5.ps1` + 自测脚本，2 files，28+/2-）；本报告作为 docs commit 紧接其后。提交后 `git status --porcelain=v1 -b` 应 clean。
 - 提交后应复核 `git status --porcelain=v1 -b` clean，且 `git diff --check 355bf875..HEAD` exit **0**。历史 `git diff --check 8fd7c6cb..7fe7dbf` 仍是 1,573 条，未修（D-A68-03）。
 - 本轮未 push、未建/改 PR/MR、未 merge、未 deploy、未 approve、未 dispatch/rerun/cancel CI。
 
@@ -358,9 +426,10 @@ scoped manifest 仅列两个真实非 PG 测试工程（`build/manifest-dotnette
 
 ## 10. 最终判定
 
-1. 本地已把 `dotnet test` 的真实逐例原生 XML 纳入生产 gate；缺失/损坏/过期/错误 assembly/路径逃逸/native 非零/console 不一致均 fail closed，`dotnetTest`-only 不回退 direct。
-2. 真实 TableService 180/180 与 Architecture 132/132 已由本轮 `dotnet test` 原生 XML 通过 gate；真实 PG full 的 14 工程/2,732 结果见 §5.6。
+1. 本地已把 `dotnet test` 的真实逐例原生 XML 纳入生产 gate；缺失/损坏/过期/错误 assembly/路径逃逸/native 非零/console 不一致均 fail closed，`dotnetTest`-only 不回退 direct；round 2 进一步锚定 xUnit.net v3 4.0.2（允许合法 build metadata）并强制原生 schema 3。
+2. 真实 TableService 180/180 与 Architecture 132/132 已在修复后统一入口重跑，合计 **312/312**；真实 PG full 的 14 工程/2,732 已由修复后 gate 以原始运行元数据 replay 重验，见 §5.6/§5.7。
 3. 同名 display name（2,730 unique / 2,732 total）被正确接受；native ID 唯一性单独校验，不把 display name 当 ID。
 4. 历史 CI direct、本轮 local dotnetTest、未来 remote dotnetTest 已严格区分；远端 dotnetTest 仍 NOT_RUN，D-A68-02 远端口径未关闭。
-5. 默认 direct 仍存在；本报告不因本地 dotnetTest 绿而宣称 CI D02 已关闭，也不宣称 PR20/G2–G5/Unity/Android/iOS/真机跨网通过。
-6. 本报告与证据供调用方独立验收；最终 PR20/publication 由调用方独占，本任务不 push/PR/merge/approve。
+5. **D-DNT-R1-01 已修复**：原 caller probe exit 0（control true，三个非法身份 false），48/48 扩展自测、direct 19/19、capture 51/51、native-exit 6/6、scoped 312/312、replay 2,732/2,732 全部满足；原红例/原 probe 哈希未变，没有删除或弱化既有 case。
+6. 默认 direct 仍存在；本报告不因本地 dotnetTest 绿而宣称 CI D02 已关闭，也不宣称 PR20/G2–G5/Unity/Android/iOS/真机跨网通过。
+7. 本报告与证据供调用方独立验收；最终 PR20/publication 由调用方独占，本任务不 push/PR/merge/approve。
