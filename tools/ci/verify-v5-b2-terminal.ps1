@@ -614,12 +614,26 @@ try {
         $outbox = Get-PgScalar -Database $script:TableDb -User 'b2_observer' -Sql "SELECT count(*) FROM table_store.settlement_outbox WHERE match_id='$($script:RoomId)'"
         $receipt = Get-PgScalar -Database $script:TableDb -User 'b2_observer' -Sql "SELECT count(*) FROM table_store.request_receipt WHERE room_id='$($script:RoomId)' AND request_id LIKE 'svc-exhaustive-%' AND status='APPLIED'"
         $stateVersion = Get-PgScalar -Database $script:TableDb -User 'b2_observer' -Sql "SELECT state_version FROM table_store.table_state WHERE room_id='$($script:RoomId)'"
+        $eventRows = Get-PgScalar -Database $script:TableDb -User 'b2_observer' -Sql "SELECT event_type::text || ':' || count(*)::text FROM table_store.table_event WHERE room_id='$($script:RoomId)' GROUP BY event_type ORDER BY event_type"
+        $receipts = Get-PgScalar -Database $script:TableDb -User 'b2_observer' -Sql "SELECT count(*) FROM table_store.request_receipt WHERE room_id='$($script:RoomId)'"
+        $applied = Get-PgScalar -Database $script:TableDb -User 'b2_observer' -Sql "SELECT count(*) FROM table_store.request_receipt WHERE room_id='$($script:RoomId)' AND status='APPLIED'"
+        $receiptStatuses = Get-PgScalar -Database $script:TableDb -User 'b2_observer' -Sql "SELECT status || ':' || count(*)::text FROM table_store.request_receipt WHERE room_id='$($script:RoomId)' GROUP BY status ORDER BY status"
+        $exhaustiveAny = Get-PgScalar -Database $script:TableDb -User 'b2_observer' -Sql "SELECT count(*) FROM table_store.request_receipt WHERE room_id='$($script:RoomId)' AND request_id LIKE 'svc-exhaustive-%'"
+        $exhaustiveStatuses = Get-PgScalar -Database $script:TableDb -User 'b2_observer' -Sql "SELECT status || ':' || count(*)::text FROM table_store.request_receipt WHERE room_id='$($script:RoomId)' AND request_id LIKE 'svc-exhaustive-%' GROUP BY status ORDER BY status"
+        $outboxPublished = Get-PgScalar -Database $script:TableDb -User 'b2_observer' -Sql "SELECT count(*) FROM table_store.settlement_outbox WHERE match_id='$($script:RoomId)' AND published_at IS NOT NULL"
         $dbFacts = [ordered]@{
             room = $script:RoomId
             stateVersion = $stateVersion
+            eventRows = $eventRows
+            receipts = $receipts
+            applied = $applied
+            receiptStatuses = $receiptStatuses
+            exhaustiveReceiptAnyStatus = $exhaustiveAny
+            exhaustiveReceiptStatuses = $exhaustiveStatuses
             wallExhaustedEvents = $wall
             exhaustiveDrawEvents = $draw
             outbox = $outbox
+            outboxPublished = $outboxPublished
             exhaustiveReceipt = $receipt
             terminalReached = $false
         }
