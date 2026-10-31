@@ -240,7 +240,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/verify-v5.ps1 \
 ```
 
 - native exit：**1**；`OVERALL: FAIL (17 PASS, 3 FAIL, 0 BLOCKED, 0 NOT_RUN)`。
-- 运行身份：`head=5bc8c18b75287a3e8bbe33c087585f62f3f5df95`（报告提交），branch `wt/v5-ci-receive-timeout-ds-20261031`，运行前 tracked clean；`run-info.txt` 可复核。
+- 运行身份：`head=5bc8c18b75287a3e8bbe33c087585f62f3f5df95`（报告主体提交；其后仅本文件证据口径修正），branch `wt/v5-ci-receive-timeout-ds-20261031`，运行前 tracked clean；`run-info.txt` 可复核。
 - 该 run 全部测试行使用 `dotnet test`，没有 direct XML；未把 direct XML 写成 dotnetTest。
 - 提交前同一工作树的同口径 run 归档在 `unified-dotnetTest-precommit/`，结果相同；本节数据引用提交后干净树的复跑。
 - companion gate：**PASS 4/4**，47 cases；7/11 fixture 未认证；git blob pins **NOT_RUN**。
