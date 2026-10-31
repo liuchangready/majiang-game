@@ -1,17 +1,54 @@
 #Requires -Version 5.1
 [CmdletBinding()]
 param([string]$UnityPath = 'D:\Unity\Hub\Editor\6000.3.27f1\Editor\Unity.exe', [string]$OutputRoot, [int]$MutexWaitSeconds = 30, [int]$UnityTimeoutSeconds = 7200,
-      [string]$AndroidToolchainManifest, [switch]$ProcessFixtureTest,[switch]$VerdictFixtureTest,[switch]$OutputFixtureTest)
+      [string]$AndroidToolchainManifest, [switch]$ProcessFixtureTest,[switch]$VerdictFixtureTest,[switch]$OutputFixtureTest,[switch]$SourceFixtureTest,[switch]$ArgumentFixtureTest)
 $ErrorActionPreference = 'Stop'
 function Assert-C05FreshOutputDirectory([string]$Path) { $full=[IO.Path]::GetFullPath($Path); if(Test-Path -LiteralPath $full){throw 'Refusing to reuse an existing evidence/output directory; old APKs and failure logs are preserved.'}; return $full }
+function ConvertTo-C05WindowsArgument([string]$Value) {
+  $builder=New-Object Text.StringBuilder; [void]$builder.Append('"'); $slashes=0
+  foreach($ch in $Value.ToCharArray()) {
+    if($ch -eq [char]92) { $slashes++; continue }
+    if($ch -eq [char]34) { for($i=0;$i -lt (2*$slashes+1);$i++){[void]$builder.Append([char]92)}; [void]$builder.Append([char]34); $slashes=0; continue }
+    for($i=0;$i -lt $slashes;$i++){[void]$builder.Append([char]92)}; $slashes=0; [void]$builder.Append($ch)
+  }
+  for($i=0;$i -lt (2*$slashes);$i++){[void]$builder.Append([char]92)}; [void]$builder.Append('"'); return $builder.ToString()
+}
+function Start-C05HiddenProcess([string]$FilePath,[string[]]$Arguments,[string]$WorkingDirectory) {
+  $line=( @($Arguments | ForEach-Object { ConvertTo-C05WindowsArgument ([string]$_) }) -join ' ' )
+  return Start-Process -FilePath $FilePath -ArgumentList $line -WorkingDirectory $WorkingDirectory -WindowStyle Hidden -PassThru
+}
+function Invoke-C05Git([string]$RepoRoot,[string[]]$GitArgs) {
+  $output=@(& git -C $RepoRoot -c core.quotepath=false @GitArgs 2>&1); $code=$LASTEXITCODE
+  if($code -ne 0){throw "FAIL: git $($GitArgs -join ' ') exited ${code}: $($output -join ' ')"}
+  return ,$output
+}
+function Get-C05SourceBoundary([string]$RepoRoot,[string[]]$AllowedPaths) {
+  $headLines=Invoke-C05Git $RepoRoot @('rev-parse','HEAD'); $head=([string]($headLines|Select-Object -First 1)).Trim()
+  $staged=@(Invoke-C05Git $RepoRoot @('diff','--cached','--name-only')) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+  $unstaged=@(Invoke-C05Git $RepoRoot @('diff','--name-only')) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+  $untracked=@(Invoke-C05Git $RepoRoot @('ls-files','--others','--exclude-standard')) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+  $all=@(@($staged)+@($unstaged)+@($untracked) | Select-Object -Unique)
+  $unexpected=@($all | Where-Object { $AllowedPaths -notcontains [string]$_ })
+  if($unexpected.Count){throw ('FAIL: staged/unstaged/untracked inputs outside C05 expectedFiles: '+($unexpected -join '; '))}
+  $hashes=@{}
+  foreach($path in $all) {
+    $full=Join-Path $RepoRoot ($path.Replace('/',[IO.Path]::DirectorySeparatorChar))
+    $worktreeHash=if(Test-Path -LiteralPath $full -PathType Leaf){(Get-FileHash -LiteralPath $full -Algorithm SHA256).Hash}else{$null}
+    $indexLines=Invoke-C05Git $RepoRoot @('ls-files','-s','--',$path); $indexLine=[string]($indexLines|Select-Object -First 1); $indexBlob=$null
+    if($indexLine -match '^\d+\s+([0-9a-f]+)\s+(\d+)\t'){$indexBlob=$Matches[1]}
+    $hashes[$path]=[pscustomobject]@{worktreeSha256=$worktreeHash;indexBlob=$indexBlob;staged=($staged -contains $path);unstaged=($unstaged -contains $path);untracked=($untracked -contains $path)}
+  }
+  return [pscustomobject]@{head=$head;staged=@($staged);unstaged=@($unstaged);untracked=@($untracked);dirtyPaths=@($all);unexpected=@();inputHashes=$hashes}
+}
 function Assert-C05BuildOutcome([object]$Report,[string]$ApkPath,[string]$Metadata,[datetime]$StartedAt,[string[]]$RequiredScenes) {
   if ($null -eq $Report) { throw 'FAIL: missing Unity BuildReport marker.' }
-  if ($Report.result -ne 'Succeeded' -or [int]$Report.errors -ne 0 -or $Report.target -ne 'Android' -or $Report.backend -ne 'IL2CPP' -or $Report.architectures -ne 'ARM64' -or -not $Report.tmpResources) { throw 'FAIL: Unity BuildReport did not satisfy full-game Android settings.' }
+  if ($Report.result -ne 'Succeeded' -or [int]$Report.errors -ne 0 -or $Report.target -ne 'Android' -or $Report.backend -ne 'IL2CPP' -or $Report.architectures -ne 'ARM64' -or -not $Report.tmpResources -or [int]$Report.minSdkVersion -lt 21 -or -not $Report.landscapeOnly -or -not $Report.fullscreen -or -not $Report.outsideSafeArea) { throw 'FAIL: Unity BuildReport did not satisfy full-game Android settings.' }
   foreach($scene in $RequiredScenes){ if ($Report.scenes -notcontains $scene) { throw "FAIL: enabled production scene missing from report: $scene" } }
   if (-not (Test-Path -LiteralPath $ApkPath -PathType Leaf)) { throw 'FAIL: fresh APK output missing.' }
   if ((Get-Item -LiteralPath $ApkPath).LastWriteTimeUtc -lt $StartedAt.ToUniversalTime()) { throw 'FAIL: APK is stale and predates this build attempt.' }
   if ($Report.output -ne [IO.Path]::GetFullPath($ApkPath)) { throw 'FAIL: BuildReport output path mismatch.' }
-  if ($Metadata -notmatch ("package: name='"+[regex]::Escape([string]$Report.packageId)+"'") -or $Metadata -notmatch "native-code: 'arm64-v8a'") { throw 'FAIL: APK package metadata does not match package id and ARM64 ABI.' }
+  $minMatch=[regex]::Match($Metadata,"minSdkVersion:'(?<min>\d+)'");$targetMatch=[regex]::Match($Metadata,"targetSdkVersion:'(?<target>\d+)'")
+  if ($Metadata -notmatch ("package: name='"+[regex]::Escape([string]$Report.packageId)+"'") -or $Metadata -notmatch "native-code: 'arm64-v8a'" -or -not $minMatch.Success -or -not $targetMatch.Success -or [int]$minMatch.Groups['min'].Value -lt 21 -or [int]$targetMatch.Groups['target'].Value -lt [int]$minMatch.Groups['min'].Value) { throw 'FAIL: APK package, SDK metadata or ARM64 ABI is invalid.' }
   return $true
 }
 function Stop-C05OwnedProcess([int]$ProcessId,[long]$ExpectedStartTicks) {
@@ -24,13 +61,14 @@ if ($VerdictFixtureTest) {
   $fixtureRoot=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..')); $testRoot=Join-Path $fixtureRoot ('build\p45-verdict-fixtures\'+[guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Force -Path $testRoot|Out-Null
   try {
     $apk=Join-Path $testRoot 'fixture.apk'; [IO.File]::WriteAllBytes($apk,[byte[]]@(1,2,3)); $now=[DateTime]::UtcNow.AddSeconds(-1)
-    $report=[pscustomobject]@{result='Succeeded';errors=0;target='Android';backend='IL2CPP';architectures='ARM64';tmpResources=$true;output=[IO.Path]::GetFullPath($apk);packageId='com.majiang.game';scenes=@('Assets/Scenes/Boot.unity','Assets/Scenes/Menu.unity','Assets/Scenes/Lobby.unity','Assets/Scenes/Table.unity','Assets/Scenes/Spectator.unity','Assets/Scenes/Settlement.unity')}
-    $metadata="package: name='com.majiang.game' versionCode='1'`nnative-code: 'arm64-v8a'"
+    $report=[pscustomobject]@{result='Succeeded';errors=0;target='Android';backend='IL2CPP';architectures='ARM64';tmpResources=$true;minSdkVersion=25;targetSdkSetting=0;landscapeOnly=$true;fullscreen=$true;outsideSafeArea=$true;output=[IO.Path]::GetFullPath($apk);packageId='com.majiang.game';scenes=@('Assets/Scenes/Boot.unity','Assets/Scenes/Menu.unity','Assets/Scenes/Lobby.unity','Assets/Scenes/Table.unity','Assets/Scenes/Spectator.unity','Assets/Scenes/Settlement.unity')}
+    $metadata="package: name='com.majiang.game' versionCode='1' minSdkVersion:'25' targetSdkVersion:'36'`nnative-code: 'arm64-v8a'"
     $rejected=0; foreach($bad in @($null,($report|Select-Object *))){if($null -ne $bad){$bad.result='Failed';$bad.errors=1};try{Assert-C05BuildOutcome $bad $apk $metadata $now $report.scenes|Out-Null}catch{$rejected++}}
+    $badSettings=$report|Select-Object *;$badSettings.landscapeOnly=$false;try{Assert-C05BuildOutcome $badSettings $apk $metadata $now $report.scenes|Out-Null}catch{$rejected++}
     $oldTime=[DateTime]::UtcNow.AddDays(-1); [IO.File]::SetLastWriteTimeUtc($apk,$oldTime); try{Assert-C05BuildOutcome $report $apk $metadata $now $report.scenes|Out-Null}catch{$rejected++}; [IO.File]::SetLastWriteTimeUtc($apk,[DateTime]::UtcNow)
     if (-not (Assert-C05BuildOutcome $report $apk $metadata $now $report.scenes)) { throw 'valid fixture artifact rejected' }
-    if ($rejected -ne 3) { throw "failed/missing/stale report cases rejected=$rejected expected=3" }
-    Write-Output 'VERDICT_FIXTURE PASS missing-marker failed-report stale-apk-rejected valid-fixture-accepted'; exit 0
+    if ($rejected -ne 4) { throw "failed/missing/settings-invalid/stale report cases rejected=$rejected expected=4" }
+    Write-Output 'VERDICT_FIXTURE PASS missing-marker failed-report invalid-landscape-settings stale-apk-rejected valid-fixture-accepted'; exit 0
   } finally { $full=[IO.Path]::GetFullPath($testRoot); $base=[IO.Path]::GetFullPath((Join-Path $fixtureRoot 'build'))+[IO.Path]::DirectorySeparatorChar; if(-not $full.StartsWith($base,[StringComparison]::OrdinalIgnoreCase)){throw 'unsafe verdict fixture cleanup'}; [IO.Directory]::Delete($full,$true) }
 }
 if ($ProcessFixtureTest) {
@@ -49,6 +87,40 @@ if ($OutputFixtureTest) {
   $fixtureRoot=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..')); $base=Join-Path $fixtureRoot ('build\p45-output-fixtures\'+[guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Force -Path $base|Out-Null
   try { [IO.File]::WriteAllBytes((Join-Path $base 'Mahjong.apk'),[byte[]]@(1,2,3)); try{[void](Assert-C05FreshOutputDirectory $base)}catch{if($_.Exception.Message -like 'Refusing to reuse*'){Write-Output 'OUTPUT_FIXTURE PASS existing-apk-output-rejected';exit 0};throw}; throw 'existing output was accepted' }
   finally { $full=[IO.Path]::GetFullPath($base); $allowed=[IO.Path]::GetFullPath((Join-Path $fixtureRoot 'build'))+[IO.Path]::DirectorySeparatorChar; if(-not $full.StartsWith($allowed,[StringComparison]::OrdinalIgnoreCase)){throw 'unsafe output fixture cleanup'}; [IO.Directory]::Delete($full,$true) }
+}
+if ($SourceFixtureTest) {
+  $fixtureRoot=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..')); $fixture=Join-Path $fixtureRoot ('build\p45-source-fixtures\'+[guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Force -Path $fixture|Out-Null
+  try {
+    & git -C $fixture init -q; if($LASTEXITCODE -ne 0){throw 'fixture git init failed'}
+    & git -C $fixture config user.email fixture@invalid; if($LASTEXITCODE -ne 0){throw 'fixture git config failed'}
+    & git -C $fixture config user.name C05Fixture; if($LASTEXITCODE -ne 0){throw 'fixture git config failed'}
+    $sceneDir=Join-Path $fixture 'unity\Mahjong.Unity\Assets\Scenes'; New-Item -ItemType Directory -Force -Path $sceneDir|Out-Null
+    $menu=Join-Path $sceneDir 'Menu.unity'; $allowedFile=Join-Path $fixture 'allowed-input.txt'; [IO.File]::WriteAllText($menu,'scene-base'); [IO.File]::WriteAllText($allowedFile,'allowed-base')
+    & git -C $fixture add --all; if($LASTEXITCODE -ne 0){throw 'fixture git add failed'}; & git -C $fixture commit -qm fixture; if($LASTEXITCODE -ne 0){throw 'fixture git commit failed'}
+    $relativeScene='unity/Mahjong.Unity/Assets/Scenes/Menu.unity'; $allowed=@('allowed-input.txt'); $rejected=0
+    [IO.File]::WriteAllText($menu,'scene-staged'); & git -C $fixture add -- $relativeScene; if($LASTEXITCODE -ne 0){throw 'fixture stage failed'}
+    try{Get-C05SourceBoundary $fixture $allowed|Out-Null}catch{if($_.Exception.Message -like 'FAIL: staged/unstaged/untracked*'){$rejected++}else{throw}}
+    & git -C $fixture reset --hard -q HEAD; if($LASTEXITCODE -ne 0){throw 'fixture reset staged failed'}
+    [IO.File]::WriteAllText($menu,'scene-unstaged'); try{Get-C05SourceBoundary $fixture $allowed|Out-Null}catch{if($_.Exception.Message -like 'FAIL: staged/unstaged/untracked*'){$rejected++}else{throw}}
+    [IO.File]::WriteAllText($menu,'scene-base'); [IO.File]::WriteAllText((Join-Path $fixture 'unexpected.txt'),'untracked'); try{Get-C05SourceBoundary $fixture $allowed|Out-Null}catch{if($_.Exception.Message -like 'FAIL: staged/unstaged/untracked*'){$rejected++}else{throw}}
+    [IO.File]::Delete((Join-Path $fixture 'unexpected.txt'))
+    [IO.File]::WriteAllText($allowedFile,'staged-content'); & git -C $fixture add -- allowed-input.txt; if($LASTEXITCODE -ne 0){throw 'fixture allowed stage failed'}; [IO.File]::WriteAllText($allowedFile,'built-worktree-content')
+    $result=Get-C05SourceBoundary $fixture $allowed; $expected=(Get-FileHash $allowedFile -Algorithm SHA256).Hash
+    if($rejected -ne 3 -or $result.dirtyPaths.Count -ne 1 -or $result.inputHashes['allowed-input.txt'].worktreeSha256 -ne $expected -or -not $result.inputHashes['allowed-input.txt'].indexBlob){throw 'source fixture failed to reject all states/bind permitted dirty bytes'}
+    $nonGit=Join-Path $fixture 'missing-repo-path'; $gitFailed=$false; try{Get-C05SourceBoundary $nonGit $allowed|Out-Null}catch{$gitFailed=$true}; if(-not $gitFailed){throw 'git native failure was not rejected'}
+    Write-Output 'SOURCE_FIXTURE PASS staged-unstaged-untracked-rejected allowed-bytes-bound git-failure-rejected'; exit 0
+  } finally {$full=[IO.Path]::GetFullPath($fixture);$base=[IO.Path]::GetFullPath((Join-Path $fixtureRoot 'build'))+[IO.Path]::DirectorySeparatorChar;if(-not $full.StartsWith($base,[StringComparison]::OrdinalIgnoreCase)){throw 'unsafe source fixture cleanup'};Get-ChildItem -LiteralPath $full -Force -Recurse -ErrorAction SilentlyContinue|ForEach-Object{$_.Attributes=[IO.FileAttributes]::Normal};[IO.Directory]::Delete($full,$true)}
+}
+if ($ArgumentFixtureTest) {
+  $fixtureRoot=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..')); $dir=Join-Path $fixtureRoot ('build\p45-argv-fixtures\'+[guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Force -Path $dir|Out-Null
+  try{$exe=Join-Path $dir 'argv recorder.exe';$record=Join-Path $dir 'args.json';$env:C05_ARGV_RECORD=$record
+    $source='using System;using System.IO;using System.Linq;using System.Text;public static class R{public static int Main(){var a=Environment.GetCommandLineArgs().Skip(1).Select(x=>Convert.ToBase64String(Encoding.UTF8.GetBytes(x))).ToArray();File.WriteAllLines(Environment.GetEnvironmentVariable("C05_ARGV_RECORD"),a);return 0;}}'
+    Add-Type -TypeDefinition $source -OutputAssembly $exe -OutputType ConsoleApplication -ReferencedAssemblies System.Web.Extensions
+    $expected=@('ordinary','D:\fixture space\Mahjong.apk','quote"inside','C:\tail\')
+    $child=Start-C05HiddenProcess $exe $expected $dir; if(-not $child.WaitForExit(10000)){[void](Stop-C05OwnedProcess $child.Id $child.StartTime.ToUniversalTime().Ticks);throw 'argv fixture timed out'}
+    if(-not(Test-Path $record)){throw "argv fixture recorder did not run exit=$($child.ExitCode)"};$actual=@(Get-Content $record|ForEach-Object{[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($_))}); if($child.ExitCode -ne 0 -or $actual.Count -ne $expected.Count){throw "argv fixture count/exit mismatch exit=$($child.ExitCode) count=$($actual.Count)"}; for($i=0;$i -lt $expected.Count;$i++){if($actual[$i] -cne $expected[$i]){throw "argv fixture mismatch at $i actual=[$($actual[$i])] expected=[$($expected[$i])]"}}
+    Write-Output 'ARGUMENT_FIXTURE PASS spaces-quotes-trailing-separator-preserved'; exit 0
+  }finally{Remove-Item Env:C05_ARGV_RECORD -ErrorAction SilentlyContinue;$full=[IO.Path]::GetFullPath($dir);$base=[IO.Path]::GetFullPath((Join-Path $fixtureRoot 'build'))+[IO.Path]::DirectorySeparatorChar;if(-not $full.StartsWith($base,[StringComparison]::OrdinalIgnoreCase)){throw 'unsafe argv fixture cleanup'};[IO.Directory]::Delete($full,$true)}
 }
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $project = Join-Path $root 'unity\Mahjong.Unity'
@@ -72,11 +144,15 @@ foreach($entry in @(@($toolchain.ninjaExe,$toolchain.ninjaSha256),@($toolchain.a
 if (-not $OutputRoot) { $OutputRoot = Join-Path $root ('build\p45-android-game\' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0,8)) }
 $run = Assert-C05FreshOutputDirectory $OutputRoot; New-Item -ItemType Directory -Force -Path $run | Out-Null
 $apk = Join-Path $run 'Mahjong.apk'; $marker = Join-Path $run 'build-report.json'; $editorLog = Join-Path $run 'build-report-detail.json'; $unityLog = Join-Path $run 'unity.log'
-$head = (& git -C $root rev-parse HEAD).Trim(); $dirty = @(& git -C $root -c core.quotepath=false diff --name-only) + @(& git -C $root -c core.quotepath=false ls-files --others --exclude-standard)
-$dirtyAllowed = @('tools/unity/build-p45-android-game.ps1','tools/unity/run-p45-android-game.ps1','tools/tests/VerifyP45AndroidGame.Tests.ps1','unity/Mahjong.Unity/Assets/Editor/C05FullGameAndroidBuild.cs','unity/Mahjong.Unity/Assets/Editor/C05FullGameAndroidBuild.cs.meta')
-$unexpected = @($dirty | Where-Object { $dirtyAllowed -notcontains $_ -and -not ($_ -like 'doc/*' -and (Split-Path $_ -Leaf) -eq 'V5-G2-C05-ANDROID-GAME-DELIVERY-20261101.md') })
-if ($unexpected.Count) { throw 'Unexpected dirty paths prevent C05 build: ' + ($unexpected -join ';') }
-$inputHashes=@{}; foreach($rel in @('unity/Mahjong.Unity/Assets/Editor/C05FullGameAndroidBuild.cs','unity/Mahjong.Unity/Assets/Editor/C05FullGameAndroidBuild.cs.meta','unity/Mahjong.Unity/ProjectSettings/EditorBuildSettings.asset','unity/Mahjong.Unity/ProjectSettings/ProjectSettings.asset','unity/Mahjong.Unity/Packages/manifest.json','unity/Mahjong.Unity/Packages/packages-lock.json')) { $inputHashes[$rel]=(Get-FileHash (Join-Path $root $rel) -Algorithm SHA256).Hash }
+$docDirs=@(Get-ChildItem -LiteralPath (Join-Path $root 'doc') -Directory | Where-Object { $_.Name -like 'v5-*' })
+$deliveryDoc=$null; foreach($dir in $docDirs){$candidate=Join-Path $dir.FullName 'V5-G2-C05-ANDROID-GAME-DELIVERY-20261101.md';if(Test-Path -LiteralPath $candidate){$deliveryDoc=$candidate;break}}
+if(-not $deliveryDoc){throw 'C05 delivery report expectedFile missing.'}
+$deliveryDocRelative=$deliveryDoc.Substring($root.Length+1).Replace('\','/')
+$requiredFiles=@('tools/unity/build-p45-android-game.ps1','tools/unity/run-p45-android-game.ps1','tools/tests/VerifyP45AndroidGame.Tests.ps1','unity/Mahjong.Unity/Assets/Editor/C05FullGameAndroidBuild.cs','unity/Mahjong.Unity/Assets/Editor/C05FullGameAndroidBuild.cs.meta',$deliveryDocRelative)
+foreach($relative in $requiredFiles){if(-not (Test-Path -LiteralPath (Join-Path $root $relative) -PathType Leaf)){throw "C05 expectedFile missing: $relative"}}
+$sourceState=Get-C05SourceBoundary $root $requiredFiles; $head=$sourceState.head; $dirty=@($sourceState.dirtyPaths)
+$inputHashes=[ordered]@{taskInputs=$sourceState.inputHashes;productionInputs=@{}}
+foreach($rel in @('unity/Mahjong.Unity/Assets/Editor/C05FullGameAndroidBuild.cs','unity/Mahjong.Unity/Assets/Editor/C05FullGameAndroidBuild.cs.meta','unity/Mahjong.Unity/ProjectSettings/EditorBuildSettings.asset','unity/Mahjong.Unity/ProjectSettings/ProjectSettings.asset','unity/Mahjong.Unity/Packages/manifest.json','unity/Mahjong.Unity/Packages/packages-lock.json')) { $inputHashes.productionInputs[$rel]=(Get-FileHash (Join-Path $root $rel) -Algorithm SHA256).Hash }
 $mutex = New-Object Threading.Mutex($false, 'Local\MahjongV5P45UnityValidation'); $held = $false
 try {
   $held = $mutex.WaitOne([TimeSpan]::FromSeconds($MutexWaitSeconds))
@@ -92,7 +168,7 @@ try {
   $env:ANDROID_CLI_BIN=$toolchain.androidCliBin; $env:JAVA_HOME=$toolchain.jdkHome; $env:PATH=($toolchain.ninjaDir + ';' + $oldPath)
   $args = @('-batchmode','-quit','-projectPath',$project,'-buildTarget','Android','-executeMethod','C05FullGameAndroidBuild.Build','-c05Output',$apk,'-c05Marker',$marker,'-c05EditorLog',$editorLog,'-logFile',$unityLog)
   $start = Get-Date
-  $proc = Start-Process -FilePath $unity -ArgumentList $args -WorkingDirectory $project -WindowStyle Hidden -PassThru
+  $proc = Start-C05HiddenProcess $unity $args $project
   $ownedPid=$proc.Id; $ownedStart=$proc.StartTime.ToUniversalTime().Ticks
   if (-not $proc.WaitForExit($UnityTimeoutSeconds * 1000)) {
     $killAttempted=Stop-C05OwnedProcess $ownedPid $ownedStart
