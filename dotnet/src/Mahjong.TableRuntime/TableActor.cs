@@ -4792,7 +4792,12 @@ namespace Mahjong.TableRuntime
             TableDurableContext durable = _durable!;
             ControlRegistrySnapshot control = controlOverride ?? _control.Capture();
             long controlVersion = controlVersionOverride ?? _controlVersion;
-            ulong utcNow = NowUtc();
+            // The checkpoint and its retained timing payload must use one coherent
+            // UTC capture. Reading the clock again here lets the two values diverge
+            // by an arbitrary millisecond, which the strict validator correctly
+            // rejects as CHECKPOINT_INVALID. Reuse the captured timing UTC whenever
+            // an override is supplied; otherwise read once for both.
+            ulong utcNow = timingOverride?.CapturedAtUtcMs ?? NowUtc();
             TableTimingCheckpoint timing;
             if (timingOverride != null)
             {
