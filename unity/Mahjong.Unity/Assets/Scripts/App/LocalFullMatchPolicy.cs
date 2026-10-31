@@ -758,6 +758,8 @@ namespace Mahjong.Unity.App
             if (plan == null) throw new ArgumentNullException(nameof(plan));
             if (batch == null) throw new ArgumentNullException(nameof(batch));
             if (ev == null) throw new ArgumentNullException(nameof(ev));
+            bool terminalDraw = plan.Action == PlayerActionKind.DrawTile &&
+                                ev.Type == Mahjong.Contracts.ProtocolEventType.RoundEnded;
             if (!batch.Incremental ||
                 batch.StateVersion <= plan.BaselineStateVersion ||
                 ev.CommandVersion != appliedCommandVersion ||
@@ -766,7 +768,7 @@ namespace Mahjong.Unity.App
                 !string.Equals(batch.RoomId, plan.RoomId, StringComparison.Ordinal) ||
                 !string.Equals(batch.TableId, plan.TableId, StringComparison.Ordinal) ||
                 !string.Equals(batch.ScopeId, plan.ScopeId, StringComparison.Ordinal) ||
-                batch.Seat != plan.Seat ||
+                (!terminalDraw && batch.Seat != plan.Seat) ||
                 batch.BindingEpoch != plan.BindingEpoch ||
                 batch.ConnectionEpoch != plan.ConnectionEpoch ||
                 batch.OwnerEpoch != plan.OwnerEpoch)
@@ -774,11 +776,12 @@ namespace Mahjong.Unity.App
                 return false;
             }
 
-            if (plan.Action == PlayerActionKind.DrawTile &&
-                ev.Type == Mahjong.Contracts.ProtocolEventType.RoundEnded)
+            if (terminalDraw)
             {
                 // A mandatory draw at an exhausted wall has no TileDrawn event;
                 // the authoritative exhaustive-draw settlement is the confirmation.
+                // The settlement batch is table-owned, so it need not carry the
+                // drawing seat; all identity/binding/scope checks above still apply.
                 return true;
             }
 
