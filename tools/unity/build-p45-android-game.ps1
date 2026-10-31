@@ -40,15 +40,43 @@ function Get-C05SourceBoundary([string]$RepoRoot,[string[]]$AllowedPaths) {
   }
   return [pscustomobject]@{head=$head;staged=@($staged);unstaged=@($unstaged);untracked=@($untracked);dirtyPaths=@($all);unexpected=@();inputHashes=$hashes}
 }
-function Assert-C05BuildOutcome([object]$Report,[string]$ApkPath,[string]$Metadata,[datetime]$StartedAt,[string[]]$RequiredScenes) {
+function Get-C05ProjectContract([string]$ProjectRoot) {
+  $sceneFile=Join-Path $ProjectRoot 'ProjectSettings/EditorBuildSettings.asset';$settingsFile=Join-Path $ProjectRoot 'ProjectSettings/ProjectSettings.asset'
+  if(-not(Test-Path -LiteralPath $sceneFile -PathType Leaf) -or -not(Test-Path -LiteralPath $settingsFile -PathType Leaf)){throw 'FAIL: Unity scene/Android project settings are missing.'}
+  $sceneText=Get-Content -LiteralPath $sceneFile -Raw;$sceneMatches=[regex]::Matches($sceneText,'(?m)^\s*- enabled:\s*1\s*\r?\n\s*path:\s*(?<path>[^\r\n]+)')
+  $enabled=@($sceneMatches|ForEach-Object{$_.Groups['path'].Value.Trim()})
+  $settings=Get-Content -LiteralPath $settingsFile -Raw;$minMatch=[regex]::Match($settings,'(?m)^\s*AndroidMinSdkVersion:\s*(?<value>\d+)\s*$');$targetMatch=[regex]::Match($settings,'(?m)^\s*AndroidTargetSdkVersion:\s*(?<value>\d+)\s*$')
+  if(-not $minMatch.Success -or -not $targetMatch.Success){throw 'FAIL: ProjectSettings lacks explicit Android SDK settings.'}
+  return [pscustomobject]@{enabledScenes=$enabled;minSdk=[int]$minMatch.Groups['value'].Value;targetSdkSetting=[int]$targetMatch.Groups['value'].Value}
+}
+function Get-C05BadgingContract([string]$Metadata) {
+  $packageLines=[regex]::Matches($Metadata,"(?m)^package:\s+name='(?<value>[^']+)'(?:\s|$).*$")
+  $minLines=[regex]::Matches($Metadata,"(?m)^minSdkVersion:'(?<value>\d+)'\s*$");$targetLines=[regex]::Matches($Metadata,"(?m)^targetSdkVersion:'(?<value>\d+)'\s*$")
+  $abiLines=[regex]::Matches($Metadata,'(?m)^native-code:\s*(?<value>[^\r\n]*)\s*$')
+  if($packageLines.Count -ne 1 -or $minLines.Count -ne 1 -or $targetLines.Count -ne 1 -or $abiLines.Count -ne 1){throw 'FAIL: APK badging package/SDK/native-code records are missing or duplicated.'}
+  $abiText=$abiLines[0].Groups['value'].Value;$abiList=[regex]::Match($abiText,"^'(?<abi>[A-Za-z0-9_.-]+)'(?:\s+'[A-Za-z0-9_.-]+')*$")
+  if(-not $abiList.Success){throw 'FAIL: malformed APK native-code ABI record.'}
+  $abis=@([regex]::Matches($abiText,"'(?<abi>[A-Za-z0-9_.-]+)'")|ForEach-Object{$_.Groups['abi'].Value})
+  return [pscustomobject]@{package=$packageLines[0].Groups['value'].Value;minSdk=[int]$minLines[0].Groups['value'].Value;targetSdk=[int]$targetLines[0].Groups['value'].Value;abis=$abis}
+}
+function Get-C05ResolvedAutoTargetSdk([object]$Platforms) {
+  $levels=@($Platforms|ForEach-Object{if([string]$_ -match '^android-(?<api>\d+)$'){[int]$Matches['api']}else{throw "FAIL: malformed accepted SDK platform entry '$_'."}})
+  if(-not $levels.Count){throw 'FAIL: accepted toolchain has no Android platform to resolve automatic targetSdk.'}
+  return [int](($levels|Measure-Object -Maximum).Maximum)
+}
+function Assert-C05BuildOutcome([object]$Report,[string]$ApkPath,[string]$Metadata,[datetime]$StartedAt,[string]$ProjectRoot,[int]$ResolvedAutoTargetSdk) {
   if ($null -eq $Report) { throw 'FAIL: missing Unity BuildReport marker.' }
   if ($Report.result -ne 'Succeeded' -or [int]$Report.errors -ne 0 -or $Report.target -ne 'Android' -or $Report.backend -ne 'IL2CPP' -or $Report.architectures -ne 'ARM64' -or -not $Report.tmpResources -or [int]$Report.minSdkVersion -lt 21 -or -not $Report.landscapeOnly -or -not $Report.fullscreen -or -not $Report.outsideSafeArea) { throw 'FAIL: Unity BuildReport did not satisfy full-game Android settings.' }
-  foreach($scene in $RequiredScenes){ if ($Report.scenes -notcontains $scene) { throw "FAIL: enabled production scene missing from report: $scene" } }
+  $required=@('Assets/Scenes/Boot.unity','Assets/Scenes/Menu.unity','Assets/Scenes/Lobby.unity','Assets/Scenes/Table.unity','Assets/Scenes/Spectator.unity','Assets/Scenes/Settlement.unity');$contract=Get-C05ProjectContract $ProjectRoot
+  foreach($scene in $required){if($contract.enabledScenes -notcontains $scene){throw "FAIL: required production scene is not enabled in project input: $scene"}}
+  $reported=@($Report.scenes);if(-not $reported.Count -or $reported.Count -ne $contract.enabledScenes.Count){throw 'FAIL: BuildReport scenes are empty or differ from enabled project scenes.'}
+  for($i=0;$i -lt $reported.Count;$i++){if([string]$reported[$i] -cne [string]$contract.enabledScenes[$i]){throw 'FAIL: BuildReport scene order/content differs from actual enabled project scenes.'}}
+  if([int]$Report.minSdkVersion -ne $contract.minSdk -or [int]$Report.targetSdkSetting -ne $contract.targetSdkSetting){throw 'FAIL: BuildReport Android SDK settings differ from ProjectSettings.'}
   if (-not (Test-Path -LiteralPath $ApkPath -PathType Leaf)) { throw 'FAIL: fresh APK output missing.' }
   if ((Get-Item -LiteralPath $ApkPath).LastWriteTimeUtc -lt $StartedAt.ToUniversalTime()) { throw 'FAIL: APK is stale and predates this build attempt.' }
   if ($Report.output -ne [IO.Path]::GetFullPath($ApkPath)) { throw 'FAIL: BuildReport output path mismatch.' }
-  $minMatch=[regex]::Match($Metadata,"minSdkVersion:'(?<min>\d+)'");$targetMatch=[regex]::Match($Metadata,"targetSdkVersion:'(?<target>\d+)'")
-  if ($Metadata -notmatch ("package: name='"+[regex]::Escape([string]$Report.packageId)+"'") -or $Metadata -notmatch "native-code: 'arm64-v8a'" -or -not $minMatch.Success -or -not $targetMatch.Success -or [int]$minMatch.Groups['min'].Value -lt 21 -or [int]$targetMatch.Groups['target'].Value -lt [int]$minMatch.Groups['min'].Value) { throw 'FAIL: APK package, SDK metadata or ARM64 ABI is invalid.' }
+  $badging=Get-C05BadgingContract $Metadata;$expectedTarget=if($contract.targetSdkSetting -gt 0){$contract.targetSdkSetting}else{$ResolvedAutoTargetSdk}
+  if($badging.package -cne [string]$Report.packageId -or $badging.abis.Count -ne 1 -or $badging.abis[0] -cne 'arm64-v8a' -or $badging.minSdk -lt 21 -or $badging.minSdk -ne [int]$Report.minSdkVersion -or $badging.targetSdk -ne $expectedTarget -or $badging.targetSdk -lt $badging.minSdk){throw 'FAIL: APK package, ARM64-only ABI or SDK metadata contradicts build/project settings.'}
   return $true
 }
 function Stop-C05OwnedProcess([int]$ProcessId,[long]$ExpectedStartTicks) {
@@ -61,14 +89,28 @@ if ($VerdictFixtureTest) {
   $fixtureRoot=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..')); $testRoot=Join-Path $fixtureRoot ('build\p45-verdict-fixtures\'+[guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Force -Path $testRoot|Out-Null
   try {
     $apk=Join-Path $testRoot 'fixture.apk'; [IO.File]::WriteAllBytes($apk,[byte[]]@(1,2,3)); $now=[DateTime]::UtcNow.AddSeconds(-1)
-    $report=[pscustomobject]@{result='Succeeded';errors=0;target='Android';backend='IL2CPP';architectures='ARM64';tmpResources=$true;minSdkVersion=25;targetSdkSetting=0;landscapeOnly=$true;fullscreen=$true;outsideSafeArea=$true;output=[IO.Path]::GetFullPath($apk);packageId='com.majiang.game';scenes=@('Assets/Scenes/Boot.unity','Assets/Scenes/Menu.unity','Assets/Scenes/Lobby.unity','Assets/Scenes/Table.unity','Assets/Scenes/Spectator.unity','Assets/Scenes/Settlement.unity')}
-    $metadata="package: name='com.majiang.game' versionCode='1' minSdkVersion:'25' targetSdkVersion:'36'`nnative-code: 'arm64-v8a'"
-    $rejected=0; foreach($bad in @($null,($report|Select-Object *))){if($null -ne $bad){$bad.result='Failed';$bad.errors=1};try{Assert-C05BuildOutcome $bad $apk $metadata $now $report.scenes|Out-Null}catch{$rejected++}}
-    $badSettings=$report|Select-Object *;$badSettings.landscapeOnly=$false;try{Assert-C05BuildOutcome $badSettings $apk $metadata $now $report.scenes|Out-Null}catch{$rejected++}
-    $oldTime=[DateTime]::UtcNow.AddDays(-1); [IO.File]::SetLastWriteTimeUtc($apk,$oldTime); try{Assert-C05BuildOutcome $report $apk $metadata $now $report.scenes|Out-Null}catch{$rejected++}; [IO.File]::SetLastWriteTimeUtc($apk,[DateTime]::UtcNow)
-    if (-not (Assert-C05BuildOutcome $report $apk $metadata $now $report.scenes)) { throw 'valid fixture artifact rejected' }
-    if ($rejected -ne 4) { throw "failed/missing/settings-invalid/stale report cases rejected=$rejected expected=4" }
-    Write-Output 'VERDICT_FIXTURE PASS missing-marker failed-report invalid-landscape-settings stale-apk-rejected valid-fixture-accepted'; exit 0
+    $projectRoot=Join-Path $testRoot 'project';$settingsDir=Join-Path $projectRoot 'ProjectSettings';New-Item -ItemType Directory -Force -Path $settingsDir|Out-Null
+    $scenes=@('Assets/Scenes/Boot.unity','Assets/Scenes/Menu.unity','Assets/Scenes/Lobby.unity','Assets/Scenes/Table.unity','Assets/Scenes/Spectator.unity','Assets/Scenes/Settlement.unity')
+    $sceneYaml="EditorBuildSettings:`n  m_Scenes:`n"+(@($scenes|ForEach-Object{"  - enabled: 1`n    path: $_`n"}) -join '')
+    [IO.File]::WriteAllText((Join-Path $settingsDir 'EditorBuildSettings.asset'),$sceneYaml);[IO.File]::WriteAllText((Join-Path $settingsDir 'ProjectSettings.asset'),"AndroidMinSdkVersion: 25`nAndroidTargetSdkVersion: 0`n")
+    $report=[pscustomobject]@{result='Succeeded';errors=0;target='Android';backend='IL2CPP';architectures='ARM64';tmpResources=$true;minSdkVersion=25;targetSdkSetting=0;landscapeOnly=$true;fullscreen=$true;outsideSafeArea=$true;output=[IO.Path]::GetFullPath($apk);packageId='com.majiang.game';scenes=$scenes}
+    $metadata="package: name='com.majiang.game' versionCode='1'`nminSdkVersion:'25'`ntargetSdkVersion:'36'`nnative-code: 'arm64-v8a'"
+    $rejected=0;foreach($bad in @($null,($report|Select-Object *))){if($null -ne $bad){$bad.result='Failed';$bad.errors=1};try{Assert-C05BuildOutcome $bad $apk $metadata $now $projectRoot 36|Out-Null}catch{$rejected++}}
+    $badSettings=$report|Select-Object *;$badSettings.landscapeOnly=$false;try{Assert-C05BuildOutcome $badSettings $apk $metadata $now $projectRoot 36|Out-Null}catch{$rejected++}
+    $oldTime=[DateTime]::UtcNow.AddDays(-1);[IO.File]::SetLastWriteTimeUtc($apk,$oldTime);try{Assert-C05BuildOutcome $report $apk $metadata $now $projectRoot 36|Out-Null}catch{$rejected++};[IO.File]::SetLastWriteTimeUtc($apk,[DateTime]::UtcNow)
+    $sceneFile=Join-Path $settingsDir 'EditorBuildSettings.asset';$originalScenes=[IO.File]::ReadAllText($sceneFile)
+    foreach($case in @('empty-scenes','missing-settlement')){$badReport=$report|Select-Object *;$badInput=if($case -eq 'empty-scenes'){@()}else{@($scenes|Where-Object{$_ -ne 'Assets/Scenes/Settlement.unity'})};$badReport.scenes=$badInput;$yaml="EditorBuildSettings:`n  m_Scenes:`n"+(@($badInput|ForEach-Object{"  - enabled: 1`n    path: $_`n"}) -join '');[IO.File]::WriteAllText($sceneFile,$yaml);try{Assert-C05BuildOutcome $badReport $apk $metadata $now $projectRoot 36|Out-Null}catch{$rejected++}}
+    [IO.File]::WriteAllText($sceneFile,$originalScenes)
+    $cases=New-Object System.Collections.Generic.List[string]
+    foreach($case in @(@{name='tmp-false';change={param($r)$r.tmpResources=$false}},@{name='tmp-missing';change={param($r)$r.PSObject.Properties.Remove('tmpResources')}},@{name='abi-extra';change={param($r,$m)@{report=$r;metadata=$m.Replace("native-code: 'arm64-v8a'","native-code: 'arm64-v8a' 'x86_64'")}}},@{name='abi-wrong';change={param($r,$m)@{report=$r;metadata=$m.Replace("native-code: 'arm64-v8a'","x86_64'")}}},@{name='abi-malformed';change={param($r,$m)@{report=$r;metadata=$m.Replace("native-code: 'arm64-v8a'","unrelated-native-code: 'arm64-v8a'")}}},@{name='abi-missing';change={param($r,$m)@{report=$r;metadata=$m.Replace("native-code: 'arm64-v8a'",'')}}},@{name='abi-duplicate';change={param($r,$m)@{report=$r;metadata=($m+"`nnative-code: 'arm64-v8a'")}}},@{name='sdk-min-contradiction';change={param($r,$m)@{report=$r;metadata=$m.Replace("minSdkVersion:'25'","minSdkVersion:'21'")}}},@{name='sdk-target-auto-mismatch';change={param($r,$m)@{report=$r;metadata=$m.Replace("targetSdkVersion:'36'","targetSdkVersion:'35'")}}})){
+      $badReport=$report|Select-Object *;$badMetadata=$metadata;$changed=& $case.change $badReport $badMetadata;if($changed -is [hashtable]){$badReport=$changed.report;$badMetadata=$changed.metadata};try{Assert-C05BuildOutcome $badReport $apk $badMetadata $now $projectRoot 36|Out-Null}catch{$rejected++;$cases.Add($case.name)}
+    }
+    $badMinReport=$report|Select-Object *;$badMinReport.minSdkVersion=21;$badMinMetadata=$metadata.Replace("minSdkVersion:'25'","minSdkVersion:'21'");try{Assert-C05BuildOutcome $badMinReport $apk $badMinMetadata $now $projectRoot 36|Out-Null}catch{$rejected++;$cases.Add('sdk-report-project-min-mismatch')}
+    $badTargetReport=$report|Select-Object *;$badTargetReport.targetSdkSetting=35;try{Assert-C05BuildOutcome $badTargetReport $apk $metadata $now $projectRoot 36|Out-Null}catch{$rejected++;$cases.Add('sdk-report-project-target-mismatch')}
+    $explicitSettings=Join-Path $settingsDir 'ProjectSettings.asset';[IO.File]::WriteAllText($explicitSettings,"AndroidMinSdkVersion: 25`nAndroidTargetSdkVersion: 35`n");$explicitReport=$report|Select-Object *;$explicitReport.targetSdkSetting=35;try{Assert-C05BuildOutcome $explicitReport $apk $metadata $now $projectRoot 36|Out-Null}catch{$rejected++;$cases.Add('sdk-target-explicit-mismatch')};[IO.File]::WriteAllText($explicitSettings,"AndroidMinSdkVersion: 25`nAndroidTargetSdkVersion: 0`n")
+    if (-not (Assert-C05BuildOutcome $report $apk $metadata $now $projectRoot 36)) { throw 'valid fixture artifact rejected' }
+    if ($rejected -ne 18 -or $cases.Count -ne 12) { throw "build gate negative matrix rejected=$rejected sdkAbiTmpCases=$($cases.Count) expectedRejected=18 expectedSdkAbiTmp=12" }
+    Write-Output 'VERDICT_FIXTURE PASS missing-marker failed-report invalid-landscape-settings stale-apk-rejected empty-missing-scene tmp-false-missing extra-wrong-missing-duplicate-malformed-ABI sdk-min-target-contradictions valid-fixture-accepted'; exit 0
   } finally { $full=[IO.Path]::GetFullPath($testRoot); $base=[IO.Path]::GetFullPath((Join-Path $fixtureRoot 'build'))+[IO.Path]::DirectorySeparatorChar; if(-not $full.StartsWith($base,[StringComparison]::OrdinalIgnoreCase)){throw 'unsafe verdict fixture cleanup'}; [IO.Directory]::Delete($full,$true) }
 }
 if ($ProcessFixtureTest) {
@@ -189,7 +231,8 @@ try {
   $metadataOutput=& $aapt2.FullName dump badging $apk 2>&1; $aaptExit=$LASTEXITCODE; $metadata=$metadataOutput|Out-String
   $metaPath = Join-Path $run 'apk-metadata.txt'; [IO.File]::WriteAllText($metaPath,$metadata)
   if ($aaptExit -ne 0) { throw "FAIL: aapt2 dump badging exited $aaptExit." }
-  [void](Assert-C05BuildOutcome $report $apk $metadata $start $report.scenes)
+  $resolvedAutoTarget=Get-C05ResolvedAutoTargetSdk $toolchain.sdkPackages.platforms
+  [void](Assert-C05BuildOutcome $report $apk $metadata $start $project $resolvedAutoTarget)
   [pscustomobject]@{ status='PASS';sourceHead=$head;dirtyPaths=@($dirty);inputSha256=$inputHashes;unityVersion=$unityVersion;unityPath='Unity Hub 6000.3.27f1';androidPlayer=(Test-Path $android);toolchainManifestSha256=$manifestSha;androidToolchain=[pscustomobject]@{jdkVersion=$toolchain.jdkVersion;ndkRevision=$toolchain.ndkRevision;cmakeVersion=$toolchain.cmakeVersion;ninjaVersion=$toolchain.ninjaVersion;androidCliMode=$toolchain.androidCliMode;sdkPackages=$toolchain.sdkPackages};apk=(Split-Path $apk -Leaf);apkBytes=$apkInfo.Length;apkSha256=$hash;nativeExit=$native;buildReport=$report;elapsedSeconds=[math]::Round(((Get-Date)-$start).TotalSeconds,1);evidenceRoot='build/p45-android-game/<run>';metadata='apk-metadata.txt';adbPresent=(Test-Path $adb) } | ConvertTo-Json -Depth 8 | Set-Content -Encoding UTF8 (Join-Path $run 'summary.json')
   Write-Host "PASS APK bytes=$($apkInfo.Length) SHA256=$hash evidence=build/p45-android-game/<run>"
 } catch {

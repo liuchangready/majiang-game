@@ -56,6 +56,20 @@ function Get-C05ActionEvidenceDir {
   New-Item -ItemType Directory -Force -Path $dir|Out-Null;return $dir
 }
 function Save-C05Json([string]$Path,[object]$Value){[IO.File]::WriteAllText($Path,($Value|ConvertTo-Json -Depth 20),[Text.Encoding]::UTF8)}
+function Get-C05RunBadgingContract([string]$Metadata){
+  $packageLines=[regex]::Matches($Metadata,"(?m)^package:\s+name='(?<value>[^']+)'(?:\s|$).*$")
+  $minLines=[regex]::Matches($Metadata,"(?m)^minSdkVersion:'(?<value>\d+)'\s*$");$targetLines=[regex]::Matches($Metadata,"(?m)^targetSdkVersion:'(?<value>\d+)'\s*$")
+  $abiLines=[regex]::Matches($Metadata,'(?m)^native-code:\s*(?<value>[^\r\n]*)\s*$')
+  if($packageLines.Count -ne 1 -or $minLines.Count -ne 1 -or $targetLines.Count -ne 1 -or $abiLines.Count -ne 1){throw 'FAIL: APK badging package/SDK/native-code records are missing or duplicated.'}
+  $abiText=$abiLines[0].Groups['value'].Value;if(-not[regex]::IsMatch($abiText,"^'[A-Za-z0-9_.-]+'(?:\s+'[A-Za-z0-9_.-]+')*$")){throw 'FAIL: malformed APK native-code ABI record.'}
+  $abis=@([regex]::Matches($abiText,"'(?<abi>[A-Za-z0-9_.-]+)'")|ForEach-Object{$_.Groups['abi'].Value})
+  return [pscustomobject]@{package=$packageLines[0].Groups['value'].Value;minSdk=[int]$minLines[0].Groups['value'].Value;targetSdk=[int]$targetLines[0].Groups['value'].Value;abis=$abis}
+}
+function Get-C05RunAutoTargetSdk([object]$Platforms){
+  $levels=@($Platforms|ForEach-Object{if([string]$_ -match '^android-(?<api>\d+)$'){[int]$Matches['api']}else{throw "FAIL: malformed accepted SDK platform entry '$_'."}})
+  if(-not$levels.Count){throw 'FAIL: selected build evidence lacks a resolved automatic targetSdk platform.'}
+  return [int](($levels|Measure-Object -Maximum).Maximum)
+}
 function Get-C05VerifiedArtifact([string]$Path,[string]$ExpectedPackage){
   if([string]::IsNullOrWhiteSpace($Path)){throw 'USAGE: this action requires -Apk bound to successful C05 build evidence.'}
   $apkPath=[IO.Path]::GetFullPath($Path)
@@ -65,10 +79,18 @@ function Get-C05VerifiedArtifact([string]$Path,[string]$ExpectedPackage){
   $summary=Get-Content $summaryPath -Raw|ConvertFrom-Json;$report=Get-Content $reportPath -Raw|ConvertFrom-Json;$metadata=Get-Content $metadataPath -Raw
   $file=Get-Item $apkPath;$sha=(Get-FileHash $apkPath -Algorithm SHA256).Hash;$reportPackage=[string]$report.packageId
   if($summary.status -ne 'PASS' -or [int]$summary.nativeExit -ne 0 -or [long]$summary.apkBytes -ne [long]$file.Length -or [string]$summary.apkSha256 -ine $sha){throw 'FAIL: selected APK does not match a successful fresh build summary.'}
-  if($report.result -ne 'Succeeded' -or [int]$report.errors -ne 0 -or $report.target -ne 'Android' -or $report.backend -ne 'IL2CPP' -or $report.architectures -ne 'ARM64' -or $reportPackage -ne $ExpectedPackage -or [int]$report.minSdkVersion -lt 21 -or -not $report.landscapeOnly -or -not $report.fullscreen -or -not $report.outsideSafeArea){throw 'FAIL: selected APK BuildReport/package/settings do not match requested Android game.'}
-  if([string]$summary.buildReport.packageId -ne $reportPackage -or [string]$summary.sourceHead -eq '' -or [string]$report.output -ne $apkPath){throw 'FAIL: build summary/report identity mismatch.'}
-  $minMatch=[regex]::Match($metadata,"minSdkVersion:'(?<min>\d+)'");$targetMatch=[regex]::Match($metadata,"targetSdkVersion:'(?<target>\d+)'")
-  if($metadata -notmatch ("package: name='"+[regex]::Escape($ExpectedPackage)+"'") -or $metadata -notmatch "native-code: 'arm64-v8a'" -or -not $minMatch.Success -or -not $targetMatch.Success -or [int]$minMatch.Groups['min'].Value -lt 21 -or [int]$targetMatch.Groups['target'].Value -lt [int]$minMatch.Groups['min'].Value){throw 'FAIL: APK metadata/package ABI/SDK mismatch.'}
+  $requiredScenes=@('Assets/Scenes/Boot.unity','Assets/Scenes/Menu.unity','Assets/Scenes/Lobby.unity','Assets/Scenes/Table.unity','Assets/Scenes/Spectator.unity','Assets/Scenes/Settlement.unity')
+  if($report.result -ne 'Succeeded' -or [int]$report.errors -ne 0 -or $report.target -ne 'Android' -or $report.backend -ne 'IL2CPP' -or $report.architectures -ne 'ARM64' -or $reportPackage -ne $ExpectedPackage -or [int]$report.minSdkVersion -lt 21 -or -not $report.tmpResources -or -not $report.landscapeOnly -or -not $report.fullscreen -or -not $report.outsideSafeArea){throw 'FAIL: selected APK BuildReport/package/settings do not match requested Android game.'}
+  $reportScenes=@($report.scenes);$summaryScenes=@($summary.buildReport.scenes)
+  foreach($scene in $requiredScenes){if($reportScenes -notcontains $scene -or $summaryScenes -notcontains $scene){throw "FAIL: successful build evidence lacks required production scene '$scene'."}}
+  if(-not $reportScenes.Count -or $reportScenes.Count -ne $summaryScenes.Count){throw 'FAIL: build summary/report scene set is empty or inconsistent.'};for($i=0;$i -lt $reportScenes.Count;$i++){if([string]$reportScenes[$i] -cne [string]$summaryScenes[$i]){throw 'FAIL: build summary/report scene identity mismatch.'}}
+  if([bool]$summary.buildReport.tmpResources -ne [bool]$report.tmpResources -or [int]$summary.buildReport.minSdkVersion -ne [int]$report.minSdkVersion -or [int]$summary.buildReport.targetSdkSetting -ne [int]$report.targetSdkSetting -or [string]$summary.buildReport.architectures -cne [string]$report.architectures -or [string]$summary.buildReport.backend -cne [string]$report.backend){throw 'FAIL: build summary/report settings identity mismatch.'}
+  if([string]$summary.buildReport.packageId -ne $reportPackage -or [string]$summary.sourceHead -notmatch '^[0-9a-fA-F]{40}$' -or [string]$report.output -ne $apkPath){throw 'FAIL: build summary/report identity mismatch.'}
+  $expectedInputs=@('unity/Mahjong.Unity/Assets/Editor/C05FullGameAndroidBuild.cs','unity/Mahjong.Unity/Assets/Editor/C05FullGameAndroidBuild.cs.meta','unity/Mahjong.Unity/ProjectSettings/EditorBuildSettings.asset','unity/Mahjong.Unity/ProjectSettings/ProjectSettings.asset')
+  foreach($input in $expectedInputs){$inputProperty=$summary.inputSha256.productionInputs.PSObject.Properties[$input];$inputHash=if($inputProperty){[string]$inputProperty.Value}else{''};if($inputHash -notmatch '^[0-9A-Fa-f]{64}$'){throw "FAIL: selected build evidence lacks production input hash for $input."}}
+  if([string]$summary.toolchainManifestSha256 -cne 'E4785B1BE9FD4CE158E6730C1F7E01C58A7C974D45A407EF7E9CC215F3BEE934'){throw 'FAIL: selected artifact was not built with accepted P2.2 toolchain manifest.'}
+  $badging=Get-C05RunBadgingContract $metadata;$autoTarget=Get-C05RunAutoTargetSdk $summary.androidToolchain.sdkPackages.platforms;$expectedTarget=if([int]$report.targetSdkSetting -gt 0){[int]$report.targetSdkSetting}else{$autoTarget}
+  if($badging.package -cne $ExpectedPackage -or $badging.abis.Count -ne 1 -or $badging.abis[0] -cne 'arm64-v8a' -or $badging.minSdk -lt 21 -or $badging.minSdk -ne [int]$report.minSdkVersion -or $badging.targetSdk -ne $expectedTarget -or $badging.targetSdk -lt $badging.minSdk){throw 'FAIL: APK metadata/package ABI/SDK contradicts BuildReport or accepted SDK intent.'}
   [pscustomobject]@{apkPath=$apkPath;apkName=(Split-Path $apkPath -Leaf);sha256=$sha;bytes=$file.Length;sourceHead=[string]$summary.sourceHead;packageId=$reportPackage;buildSummarySha256=(Get-FileHash $summaryPath -Algorithm SHA256).Hash;buildReportSha256=(Get-FileHash $reportPath -Algorithm SHA256).Hash;metadataSha256=(Get-FileHash $metadataPath -Algorithm SHA256).Hash;runDir=$runDir}
 }
 function Save-C05AdbResult([string]$Dir,[string]$Name,[object]$Result){Save-C05Json (Join-Path $Dir $Name) $Result}

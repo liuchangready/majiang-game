@@ -23,9 +23,17 @@ function Mark-C05Pass([string]$Name){$script:passed.Add($Name)}
 function New-C05TestArtifact([string]$Dir,[string]$Package='com.majiang.game'){
   New-Item -ItemType Directory -Force -Path $Dir|Out-Null;$apk=Join-Path $Dir 'Mahjong.apk';$bytes=New-Object byte[] 512;for($i=0;$i -lt $bytes.Length;$i++){$bytes[$i]=[byte](($i*17)%251)};[IO.File]::WriteAllBytes($apk,$bytes)
   $report=[pscustomobject]@{result='Succeeded';errors=0;warnings=0;target='Android';backend='IL2CPP';architectures='ARM64';tmpResources=$true;minSdkVersion=25;targetSdkSetting=0;landscapeOnly=$true;fullscreen=$true;outsideSafeArea=$true;output=[IO.Path]::GetFullPath($apk);packageId=$Package;scenes=@('Assets/Scenes/Boot.unity','Assets/Scenes/Menu.unity','Assets/Scenes/Lobby.unity','Assets/Scenes/Table.unity','Assets/Scenes/Spectator.unity','Assets/Scenes/Settlement.unity')}
-  $summary=[pscustomobject]@{status='PASS';nativeExit=0;apkBytes=$bytes.Length;apkSha256=(Get-FileHash $apk -Algorithm SHA256).Hash;sourceHead='fixture-source-head';buildReport=$report}
+  $inputNames=@('unity/Mahjong.Unity/Assets/Editor/C05FullGameAndroidBuild.cs','unity/Mahjong.Unity/Assets/Editor/C05FullGameAndroidBuild.cs.meta','unity/Mahjong.Unity/ProjectSettings/EditorBuildSettings.asset','unity/Mahjong.Unity/ProjectSettings/ProjectSettings.asset');$inputHashes=@{};foreach($input in $inputNames){$inputHashes[$input]='A'*64}
+  $summary=[pscustomobject]@{status='PASS';nativeExit=0;apkBytes=$bytes.Length;apkSha256=(Get-FileHash $apk -Algorithm SHA256).Hash;sourceHead=('a'*40);toolchainManifestSha256='E4785B1BE9FD4CE158E6730C1F7E01C58A7C974D45A407EF7E9CC215F3BEE934';androidToolchain=[pscustomobject]@{sdkPackages=[pscustomobject]@{platforms=@('android-36')}};inputSha256=[pscustomobject]@{productionInputs=$inputHashes};buildReport=$report}
   $summary|ConvertTo-Json -Depth 8|Set-Content -Encoding UTF8 (Join-Path $Dir 'summary.json');$report|ConvertTo-Json -Depth 8|Set-Content -Encoding UTF8 (Join-Path $Dir 'build-report.json')
-  "package: name='$Package' versionCode='1' minSdkVersion:'25' targetSdkVersion:'36'`nnative-code: 'arm64-v8a'"|Set-Content -Encoding ASCII (Join-Path $Dir 'apk-metadata.txt');return $apk
+  "package: name='$Package' versionCode='1'`nminSdkVersion:'25'`ntargetSdkVersion:'36'`nnative-code: 'arm64-v8a'"|Set-Content -Encoding ASCII (Join-Path $Dir 'apk-metadata.txt');return $apk
+}
+function Update-C05TestArtifact([string]$Dir,[scriptblock]$Mutation){
+  $reportPath=Join-Path $Dir 'build-report.json';$summaryPath=Join-Path $Dir 'summary.json';$metadataPath=Join-Path $Dir 'apk-metadata.txt'
+  $report=Get-Content $reportPath -Raw|ConvertFrom-Json;$summary=Get-Content $summaryPath -Raw|ConvertFrom-Json;$metadata=Get-Content $metadataPath -Raw
+  $changed=& $Mutation $report $summary $metadata
+  if($changed -is [string]){$metadata=$changed}
+  $summary.buildReport=$report;$report|ConvertTo-Json -Depth 12|Set-Content -Encoding UTF8 $reportPath;$summary|ConvertTo-Json -Depth 12|Set-Content -Encoding UTF8 $summaryPath;[IO.File]::WriteAllText($metadataPath,$metadata,[Text.Encoding]::ASCII)
 }
 try {
   $fixture=Join-Path $temp 'adb-fixture.exe'
@@ -87,7 +95,7 @@ public static class AdbFixture { public static int Main(string[] a) {
   $wrongDir=Join-Path $runRoot 'wrong-package';$wrongApk=New-C05TestArtifact $wrongDir 'com.reviewer.wrong';$callsBefore=$callsAfter
   $r=& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runner -Action Install -Serial fixture-01 -Apk $wrongApk 2>&1;$code=$LASTEXITCODE;$callsAfter=@(Get-Content $env:C05_FIXTURE_CALLS|Where-Object{$_ -match '\binstall\b'}).Count
   if($code -eq 0 -or $callsAfter -ne $callsBefore){throw 'wrong package artifact reached adb'};Mark-C05Pass 'wrong package rejected before adb mutation'
-  $settingsDir=Join-Path $runRoot 'invalid-build-settings';$settingsApk=New-C05TestArtifact $settingsDir;$reportPath=Join-Path $settingsDir 'build-report.json';$badSettings=Get-Content $reportPath -Raw|ConvertFrom-Json;$badSettings.landscapeOnly=$false;$badSettings|ConvertTo-Json -Depth 8|Set-Content -Encoding UTF8 $reportPath;$callsBefore=$callsAfter
+  $settingsDir=Join-Path $runRoot 'invalid-build-settings';$settingsApk=New-C05TestArtifact $settingsDir;Update-C05TestArtifact $settingsDir {param($r,$s,$m)$r.landscapeOnly=$false};$callsBefore=$callsAfter
   $r=& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runner -Action Install -Serial fixture-01 -Apk $settingsApk 2>&1;$code=$LASTEXITCODE;$callsAfter=@(Get-Content $env:C05_FIXTURE_CALLS|Where-Object{$_ -match '\binstall\b'}).Count
   if($code -eq 0 -or $callsAfter -ne $callsBefore){throw 'landscape-invalid build reached adb'};Mark-C05Pass 'landscape-invalid BuildReport rejected before adb mutation'
   $sdkDir=Join-Path $runRoot 'invalid-sdk-metadata';$sdkApk=New-C05TestArtifact $sdkDir;$metadataPath=Join-Path $sdkDir 'apk-metadata.txt';$badMetadata=(Get-Content $metadataPath -Raw) -replace "targetSdkVersion:'36'","targetSdkVersion:'24'";[IO.File]::WriteAllText($metadataPath,$badMetadata);$callsBefore=$callsAfter
@@ -96,7 +104,33 @@ public static class AdbFixture { public static int Main(string[] a) {
   $hashDir=Join-Path $runRoot 'hash-mismatch';$hashApk=New-C05TestArtifact $hashDir;[IO.File]::AppendAllText($hashApk,'altered');$callsBefore=$callsAfter
   $r=& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runner -Action Install -Serial fixture-01 -Apk $hashApk 2>&1;$code=$LASTEXITCODE;$callsAfter=@(Get-Content $env:C05_FIXTURE_CALLS|Where-Object{$_ -match '\binstall\b'}).Count
   if($code -eq 0 -or $callsAfter -ne $callsBefore){throw 'hash/report mismatch reached adb'};Mark-C05Pass 'APK hash/report mismatch rejected before adb mutation'
+  $artifactMatrix=@(
+    @{name='empty-scenes';mutate={param($r,$s,$m)$r.scenes=@()}},
+    @{name='missing-settlement';mutate={param($r,$s,$m)$r.scenes=@($r.scenes|Where-Object{$_ -ne 'Assets/Scenes/Settlement.unity'})}},
+    @{name='tmp-false';mutate={param($r,$s,$m)$r.tmpResources=$false}},
+    @{name='tmp-missing';mutate={param($r,$s,$m)[void]$r.PSObject.Properties.Remove('tmpResources')}},
+    @{name='abi-extra';mutate={param($r,$s,$m)$m.Replace("native-code: 'arm64-v8a'","native-code: 'arm64-v8a' 'x86_64'")}},
+    @{name='abi-wrong';mutate={param($r,$s,$m)$m.Replace("native-code: 'arm64-v8a'","native-code: 'x86_64'")}},
+    @{name='abi-malformed';mutate={param($r,$s,$m)$m.Replace("native-code: 'arm64-v8a'","unrelated-native-code: 'arm64-v8a'")}},
+    @{name='abi-missing';mutate={param($r,$s,$m)$m.Replace("native-code: 'arm64-v8a'",'')}},
+    @{name='abi-duplicate';mutate={param($r,$s,$m)$m+"`nnative-code: 'arm64-v8a'"}},
+    @{name='sdk-min-mismatch';mutate={param($r,$s,$m)$m.Replace("minSdkVersion:'25'","minSdkVersion:'21'")}},
+    @{name='sdk-auto-target-mismatch';mutate={param($r,$s,$m)$m.Replace("targetSdkVersion:'36'","targetSdkVersion:'35'")}},
+    @{name='sdk-explicit-target-mismatch';mutate={param($r,$s,$m)$r.targetSdkSetting=35}}
+  )
+  $matrixFailures=0;$matrixActions=@('Install','Start','Stop')
+  foreach($case in $artifactMatrix){$caseDir=Join-Path $runRoot ('artifact-'+$case.name);$caseApk=New-C05TestArtifact $caseDir;Update-C05TestArtifact $caseDir $case.mutate
+    foreach($action in $matrixActions){$callLines=if(Test-Path $env:C05_FIXTURE_CALLS){@(Get-Content $env:C05_FIXTURE_CALLS)}else{@()};$beforeMutation=@($callLines|Where-Object{$_ -match '(^| )install( |$)|(^| )monkey( |$)|(^| )force-stop( |$)'}).Count
+      $r=& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runner -Action $action -Serial fixture-01 -Apk $caseApk -EvidenceDir (Join-Path $runRoot ('entry-'+$case.name+'-'+$action)) 2>&1;$code=$LASTEXITCODE;$callLines=Get-Content $env:C05_FIXTURE_CALLS;$afterMutation=@($callLines|Where-Object{$_ -match '(^| )install( |$)|(^| )monkey( |$)|(^| )force-stop( |$)'}).Count
+      if($code -eq 0 -or $afterMutation -ne $beforeMutation){throw "invalid artifact case $($case.name) Action=$action passed or reached adb mutation"};$matrixFailures++
+    }
+  }
+  if($matrixFailures -ne 36){throw "artifact/settings matrix blocked=$matrixFailures expected=36"};Mark-C05Pass '12 incomplete or contradictory artifact cases blocked Install/Start/Stop before adb mutation (36/36)'
   $env:C05_FIXTURE_MODE='';$callsBefore=$callsAfter
+  $env:C05_FIXTURE_MODE='install-success';$validSuccessRoot=Join-Path $runRoot 'install-success';$r=& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runner -Action Install -Serial fixture-01 -Apk $validApk -EvidenceDir $validSuccessRoot 2>&1;$code=$LASTEXITCODE
+  if($code -ne 0 -or ($r -join "`n") -notmatch 'INSTALL PASS'){throw 'valid artifact did not reach successful install control'};Mark-C05Pass 'valid artifact accepted by full Install entry'
+  $stopRoot=Join-Path $runRoot 'stop-success';$r=& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runner -Action Stop -Serial fixture-01 -Apk $validApk -EvidenceDir $stopRoot 2>&1;$code=$LASTEXITCODE
+  if($code -ne 0 -or ($r -join "`n") -notmatch 'STOP PASS'){throw 'valid artifact did not reach successful Stop control'};Mark-C05Pass 'valid artifact accepted by full Stop entry';$env:C05_FIXTURE_MODE=''
   $r=& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runner -Action Install -Serial fixture-01 -Apk $validApk -EvidenceDir (Join-Path $runRoot 'install') 2>&1;$code=$LASTEXITCODE
   if($code -eq 0 -or ($r -join "`n") -notmatch 'Install failed status=FAIL exit=12'){throw 'adb install native failure was lost'}
   $install=Get-ChildItem (Join-Path $runRoot 'install') -Filter 'install-result.json' -Recurse|Select-Object -First 1;$installJson=Get-Content $install.FullName -Raw|ConvertFrom-Json
@@ -149,7 +183,7 @@ public static class AdbFixture { public static int Main(string[] a) {
   $r=& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $build -ProcessFixtureTest 2>&1; $code=$LASTEXITCODE
   if ($code -ne 0 -or ($r -join "`n") -notmatch 'PROCESS_FIXTURE PASS stale-identity-preserved exact-owned-instance-stopped') { throw 'process timeout ownership fixture failed' }
   $r=& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $build -VerdictFixtureTest 2>&1; $code=$LASTEXITCODE
-  if ($code -ne 0 -or ($r -join "`n") -notmatch 'VERDICT_FIXTURE PASS missing-marker failed-report invalid-landscape-settings stale-apk-rejected valid-fixture-accepted') { throw 'BuildReport/APK verdict fixture failed' }
+  if ($code -ne 0 -or ($r -join "`n") -notmatch 'VERDICT_FIXTURE PASS missing-marker failed-report invalid-landscape-settings stale-apk-rejected empty-missing-scene tmp-false-missing extra-wrong-missing-duplicate-malformed-ABI sdk-min-target-contradictions valid-fixture-accepted') { throw 'BuildReport/APK verdict fixture failed' }
   $r=& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $build -SourceFixtureTest 2>&1; $code=$LASTEXITCODE
   if ($code -ne 0 -or ($r -join "`n") -notmatch 'SOURCE_FIXTURE PASS staged-unstaged-untracked-rejected allowed-bytes-bound git-failure-rejected') { throw 'staged/unstaged/untracked source boundary fixture failed' }
   Mark-C05Pass 'source preflight rejects staged, unstaged and untracked inputs; binds allowed bytes'

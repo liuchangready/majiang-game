@@ -73,3 +73,37 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-andr
 | C05-R1-06 MINOR | tools/unity/run-p45-android-game.ps1:device selection；套件跑无 serial/明确 serial offline 和空设备。 | 原无 serial 时唯一 offline 被报 NOT_RUN；期望只有无设备为 NOT_RUN，offline/unauthorized 为 BLOCKED。 | device-list 与动作结果在 build/p45-tool-tests/acf32dcf94a6449db76e794485ed435e/。 | 多设备歧义、offline、unauthorized、无设备分别断言；BLOCKED 不增加 install 调用并保留原始列表。 |
 
 C03 最终统一候选验收时须在其确切 HEAD 重新跑工具套件、共享 DLL/provenance 和 clean-cache 完整 Android 构建；有授权设备时再执行安装、启动、截图/logcat 与人工视觉/输入矩阵。本轮只交付工具与开发构建证据，不宣布 C05/G2/G4/iOS 完成。
+## R2 返修结果：C05-R1-03 MAJOR 验证缺陷组
+
+R2 原始复核件 `D:/majiang-wt/caller-c05-r2-review-ec1af417/build/caller-review/REVIEW.md` SHA-256 `C9956F155FD6FB781281ED32135AEA80B662EEFB246E18FE5A7928F16A18593E`；证据清单 SHA-256 `C45E4CE2EC79E41DC579FBC5B3822C7657F9A7DC08E3353A53FC5B3C9F49D94C`。R2 仅有 1 个 MAJOR 缺陷组（0 BLOCKER、无单列 MINOR）；R1-01/02/04/05/06 按 caller 的独立探针已关闭，本轮没有重开。
+
+复现命令（caller 独立复核树）：
+
+```powershell
+Set-Location D:\majiang-wt\caller-c05-r2-review-ec1af417
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File build/caller-review/probe-verdict.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File build/caller-review/probe-entry.ps1
+```
+
+两个 probe 的 native exit 0 表示复现脚本完成，TOOL_FIXTURE，不是游戏 PASS。原件证据：`build/caller-review/verdict-results.json` SHA-256 `0C10E015E41A193E65A620B0F873E82F0D05BCE558AD7C82B478E8763E61BE3B`；`entry-results.json` SHA-256 `788D5F06BD0A64D27C86A247E1083CF6E3467C11A910FD11A745EE03285C949B`。caller 原件保持只读。
+
+| 子项（同属 C05-R1-03 MAJOR） | 位置与实际 vs 期望 | 修复映射及验收断言 |
+|---|---|---|
+| 场景/TMP | `tools/unity/build-p45-android-game.ps1:Get-C05ProjectContract/Assert-C05BuildOutcome` 与 `tools/unity/run-p45-android-game.ps1:Get-C05VerifiedArtifact`。旧构建门禁把 `Report.scenes` 自己作为 RequiredScenes，故空场景和缺 Settlement 也能过；旧安装门禁不查生产场景和 TMP，完整 Install 进 fake adb。期望场景期望集来自固定六个生产场景及实际启用的 `EditorBuildSettings.asset`，报告/摘要/输入彼此一致，TMP 必须存在。 | build 读取启用场景与 `ProjectSettings.asset`，固定验证 Boot/Menu/Lobby/Table/Spectator/Settlement；报告场景须按序与启用输入一致且包含六场。run 两侧证据报告均验证六场与 `tmpResources=true`。定向门禁拒绝 empty scene、missing Settlement、TMP false/missing；完整入口 12 种坏证据对 Install/Start/Stop 的副作用均 0。 |
+| ABI | 同上两个脚本的 `Get-C05BadgingContract`/`Get-C05RunBadgingContract`。旧子串匹配放过 `'arm64-v8a' 'x86_64'` 与 `unrelated-native-code`；only-x86 对照能被拒绝。期望仅接受恰好一条完整、锚定的 native-code 记录，内容恰为单一 `arm64-v8a` token。 | 按完整行解析且要求恰一条、恰一个 ABI token；额外、错误、缺失、重复、畸形记录均拒绝。构建与安装门禁均走实际解析函数；完整入口逐 Install/Start/Stop 断言 0 mutation。 |
+| SDK 关联 | 同上两个脚本。新安装门禁曾接受 BuildReport minSdk=25 与 APK metadata minSdk=21/targetSdk=36；两份记录分别看似合理但相互矛盾。期望 APK minSdk 精确绑定 report 和 ProjectSettings；显式 targetSdk 必须与项目设置相等，自动设置 0 时 targetSdk 必须等于已接受工具链中解析出的最高 Android platform，且 target>=min>=21。 | build 对齐真实 `ProjectSettings.asset`、BuildReport 和 aapt badging，并从已接受工具链 platforms 解析自动 target。run 要求 metadata minSdk 等于报告，target 对齐显式设置或 summary 中被记录的自动平台意图。覆盖 metadata/report、report/project min/target 矛盾、显式 target 与 APK 不同。错误输入均在 Install/Start/Stop 调用前失败。 |
+
+统一负例矩阵：两个 build gate 覆盖空/缺场景、TMP false/missing、ABI extra/wrong/missing/duplicate/malformed、metadata/report 与 report/project 的 SDK 矛盾，并保留 valid control；实际 run 脚本用套件 fake adb 为 12 类场景/TMP/ABI/SDK 无效证据分别调用 Install、Start、Stop 共 36 次，要求非零退出且 install/monkey/force-stop 调用计数保持 0。有效 APK fixture 的 Install、Start、Stop 正向控制仍通过；另保留 install 原生失败传播负例。
+
+返修验证：
+
+- `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/build-p45-android-game.ps1 -VerdictFixtureTest`：native exit 0，包含 18 个拒绝断言和有效对照；日志 `build/p45-verdict-r2-artifact-gates.log` SHA-256 `F67D6D0CB581AD33C6E3E387C9E093E2ED202ABFC77563542AA23A29DECB60D5`。
+- `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/tests/VerifyP45AndroidGame.Tests.ps1`：native exit 0，29/29 named assertions；内部连续两次完整运行，36/36 无效 run-entry mutation 断言通过。日志 `build/p45-tests-r2-artifact-gates-final.log` SHA-256 `FF3DF64B730B1C80207E67297233A5B9F08267DDBC677796631C7D248FE7F283`；实际完整证据目录 `build/p45-tool-tests/21738db247f64d56a220d03fdef51062/`。
+- PS5.1 parser：build/run/tests 三脚本各 0 parse errors；`git diff --check` 通过。
+- 仅修改原六 expectedFiles 中的 build/run/tests/交付报告四个文件；Editor 构建入口、ProjectSettings、场景、共享 verifier、业务代码和冻结 base 未改。R2 认可的 APK 仍是 `ce74c277` 加允许 dirty 输入的历史开发结果；本轮没有 Unity 重建，没有刷新或重新标记 APK 证据。工具链缺陷不影响其 caller 已确认的 aapt2/ZIP/场景结果。
+
+新增信息与轮次边界：安装前验证函数和 SDK/settings 字段是在 R2 新加入的验证面，因此 metadata/report SDK 矛盾本轮才可由新完整入口复现。空场景自引用和 ABI 子串缺陷已在补充 R1 caller 复核中发现，但当时同 caller 并行路径已派出 R2，未进入那份六项返修提示；这是 caller 反馈遗漏，不是接收方忽略显式要求，也不是 R2 引入的产品回归。现将同组问题一次列全并共同关闭。
+
+### 当前已知限制
+
+本轮没有为了门禁脚本修正重复构建 Unity；开发 APK 是历史证据，不代表新当前 HEAD、clean final tree 或 C03 候选。caller 的独立真实设备枚举为 0 台，安装/启动、视觉与输入矩阵仍为 NOT_RUN；caller 原 `real-devices.log` 是 daemon 继承句柄尚开文件，标记 UNSEALED，不为释放它去杀共享 adb server。无 C05/G2/G4/iOS 完成声明。
