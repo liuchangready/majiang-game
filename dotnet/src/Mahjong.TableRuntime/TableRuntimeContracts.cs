@@ -105,6 +105,13 @@ namespace Mahjong.TableRuntime
         /// </summary>
         public CheatState? InitialCheatState { get; set; }
 
+        /// <summary>
+        /// Optional host callback invoked on the actor consumer immediately after a committed
+        /// command installs its furiten snapshot. It is never called for rejections, failed
+        /// commits or replayed receipts, so a host mirror cannot advance ahead of durability.
+        /// </summary>
+        public Action<TableFuritenSnapshot>? FuritenCommitted { get; set; }
+
         internal void Validate()
         {
             if (string.IsNullOrWhiteSpace(RoomId))

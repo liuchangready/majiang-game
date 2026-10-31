@@ -1,0 +1,49 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Standalone P4.3-A table-model tests. This project is intentionally not
+    registered in Mahjong.sln (shared solution registration is owned by the
+    P4.2/P4.4 integration thread). Run it directly:
+      dotnet test dotnet/tests/Mahjong.Unity.TableModel.Tests/Mahjong.Unity.TableModel.Tests.csproj
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AssemblyName>Mahjong.Unity.TableModel.Tests</AssemblyName>
+    <RootNamespace>Mahjong.Unity.TableModel.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" Version="4.0.2" />
+    <PackageReference Include="Google.Protobuf" Version="3.28.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Mahjong.Client\Mahjong.Client.csproj" />
+    <ProjectReference Include="..\..\src\Mahjong.Contracts\Mahjong.Contracts.csproj" />
+    <ProjectReference Include="..\..\src\Mahjong.Contracts.Wire\Mahjong.Contracts.Wire.csproj" />
+    <ProjectReference Include="..\..\src\Mahjong.LocalHost\Mahjong.LocalHost.csproj" />
+  </ItemGroup>
+
+  <!-- Compile the real production files, not copies. -->
+  <ItemGroup>
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\unity\Mahjong.Unity\Assets\Scripts\Table\PlayerTableViewState.cs" Link="Production\PlayerTableViewState.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\unity\Mahjong.Unity\Assets\Scripts\Table\PlayerTableProjectionMapper.cs" Link="Production\PlayerTableProjectionMapper.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\unity\Mahjong.Unity\Assets\Scripts\Table\TableInteractionState.cs" Link="Production\TableInteractionState.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\unity\Mahjong.Unity\Assets\Scripts\Table\TableCommandIntentFactory.cs" Link="Production\TableCommandIntentFactory.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\unity\Mahjong.Unity\Assets\Scripts\Table\ConfirmedAnimationQueue.cs" Link="Production\ConfirmedAnimationQueue.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\unity\Mahjong.Unity\Assets\Scripts\Table\ClientVisibleEventMapper.cs" Link="Production\ClientVisibleEventMapper.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\unity\Mahjong.Unity\Assets\Scripts\UI\Session\ISessionView.cs" Link="Production\ISessionView.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\unity\Mahjong.Unity\Assets\Scripts\App\ConfirmedVisibleEventObserver.cs" Link="Production\ConfirmedVisibleEventObserver.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\unity\Mahjong.Unity\Assets\Scripts\App\SmokeActionEventPolicy.cs" Link="Production\SmokeActionEventPolicy.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\unity\Mahjong.Unity\Assets\Scripts\App\LocalFullMatchPolicy.cs" Link="Production\LocalFullMatchPolicy.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\unity\Mahjong.Unity\Assets\Scripts\App\FullMatchExecutionBoundary.cs" Link="Production\FullMatchExecutionBoundary.cs" />
+  </ItemGroup>
+
+</Project>

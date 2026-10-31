@@ -686,6 +686,16 @@ message PrivateCheatView {
   reserved "other_seats_cheat_points", "all_ledgers";
 }
 
+// Minimal owner-private seat control authority. The containing message field is
+// optional: absence means "unknown", which must not be interpreted as epoch 0.
+// It never appears in PublicSnapshot/PublicMatchView or another seat's stream.
+message PlayerControlView {
+  uint64 control_epoch = 1;
+  bool controlled_by_computer = 2;
+  uint64 control_version = 3;
+  reserved 4 to 8;
+}
+
 message PlayerPrivateView {
   int32 seat = 1;
   repeated uint32 closed_tiles = 2 [packed = true];
@@ -700,6 +710,10 @@ message PlayerPrivateView {
   // kan's four physical identities). They never exist in a public type.
   repeated uint32 sleeve_tiles = 16 [packed = true];
   repeated MeldView owner_melds = 17;
+
+  // Same-capture owner control fact. It is independent of `decision`, which may
+  // be absent while a computer/takeover controller holds this seat.
+  PlayerControlView control = 18;
   reserved 9 to 15;
   reserved "other_seats_hands", "opponent_closed_tiles", "wall", "seed";
 }

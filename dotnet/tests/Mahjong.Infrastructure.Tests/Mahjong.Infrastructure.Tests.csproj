@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    P5.2 PostgreSQL test assembly, registered in Mahjong.sln by caller integration.
+    Every test requires a real
+    isolated PostgreSQL database: a missing MAHJONG_P52_TEST_POSTGRES fails the
+    run instead of returning a fake green skip.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
+    <LangVersion>12.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AssemblyName>Mahjong.Infrastructure.Tests</AssemblyName>
+    <RootNamespace>Mahjong.Infrastructure.Tests</RootNamespace>
+    <NoWarn>$(NoWarn);xUnit1051</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" Version="4.0.2" />
+    <PackageReference Include="Npgsql" Version="8.0.9" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Mahjong.Infrastructure\Mahjong.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\Mahjong.TableRuntime\Mahjong.TableRuntime.csproj" />
+    <ProjectReference Include="..\..\src\Mahjong.Domain\Mahjong.Domain.csproj" />
+    <ProjectReference Include="..\..\src\Mahjong.Contracts\Mahjong.Contracts.csproj" />
+  </ItemGroup>
+
+</Project>

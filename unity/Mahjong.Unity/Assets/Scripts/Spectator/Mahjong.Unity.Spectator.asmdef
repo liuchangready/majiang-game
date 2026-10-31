@@ -1,13 +1,22 @@
 {
   "name": "Mahjong.Unity.Spectator",
   "rootNamespace": "Mahjong.Unity.Spectator",
-  "references": [],
+  "references": [
+    "Mahjong.Unity.UI",
+    "Unity.TextMeshPro",
+    "UnityEngine.UI"
+  ],
   "includePlatforms": [],
   "excludePlatforms": [],
   "allowUnsafeCode": false,
-  "overrideReferences": false,
-  "precompiledReferences": [],
-  "autoReferenced": true,
+  "overrideReferences": true,
+  "precompiledReferences": [
+    "Mahjong.Client.dll",
+    "Mahjong.Contracts.dll",
+    "Mahjong.Contracts.Wire.dll",
+    "Google.Protobuf.dll"
+  ],
+  "autoReferenced": false,
   "defineConstraints": [],
   "versionDefines": [],
   "noEngineReferences": false

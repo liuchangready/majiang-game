@@ -301,7 +301,8 @@ namespace Mahjong.TableRuntime
                 source.Private.Decision,
                 cheat,
                 owner.SleeveTiles,
-                ownerMelds);
+                ownerMelds,
+                source.Private.Control);
 
             PublicMatchView publicView = RebuildPublicMatchView(
                 source.Public,
@@ -900,16 +901,52 @@ namespace Mahjong.TableRuntime
                 throw Missing(source.Type, "meld");
             }
 
-            if (meld.TileIds.Count != source.TileIds.Count)
+            ProtocolMeldType requiredType = source.Type == ProtocolEventType.PonDeclared
+                ? ProtocolMeldType.Pon
+                : ProtocolMeldType.Chi;
+            if (meld.Type != requiredType || meld.TileIds.Count != 3)
             {
-                throw Invalid("Supplemental meld tiles do not match the projected " + source.Type + " tiles.");
+                throw Invalid("Supplemental " + source.Type + " facts require the matching three-tile meld type.");
             }
 
+            var seen = new HashSet<uint>();
+            bool containsCalled = false;
             for (int i = 0; i < meld.TileIds.Count; i++)
             {
-                if (meld.TileIds[i] != source.TileIds[i])
+                if (!seen.Add(meld.TileIds[i]))
                 {
-                    throw Invalid("Supplemental meld tile differs from the projected event tile at index " + i + ".");
+                    throw Invalid("Supplemental " + source.Type + " meld repeats a physical tile.");
+                }
+
+                if (meld.CalledTileId.HasValue && meld.TileIds[i] == meld.CalledTileId.Value)
+                    containsCalled = true;
+            }
+
+            if (!meld.CalledTileId.HasValue || !containsCalled || meld.FromSeat != facts!.FromSeat)
+            {
+                throw Invalid("Supplemental " + source.Type + " meld has inconsistent called tile/fromSeat facts.");
+            }
+
+            if (source.TileIds.Count == 1)
+            {
+                if (source.TileIds[0] != meld.CalledTileId.Value)
+                {
+                    throw Invalid("Supplemental called tile differs from the committed " + source.Type + " event.");
+                }
+            }
+            else
+            {
+                if (source.TileIds.Count != 3)
+                {
+                    throw Invalid("A public " + source.Type + " event requires its complete three-tile source or meld.");
+                }
+
+                for (int i = 0; i < meld.TileIds.Count; i++)
+                {
+                    if (meld.TileIds[i] != source.TileIds[i])
+                    {
+                        throw Invalid("Supplemental meld tile differs from the projected event tile at index " + i + ".");
+                    }
                 }
             }
 

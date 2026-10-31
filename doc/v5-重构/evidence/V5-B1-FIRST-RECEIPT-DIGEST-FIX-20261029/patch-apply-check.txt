@@ -1,0 +1,25 @@
+V5-B1 first-receipt digest fix — fresh-archive patch application
+Date: 2026-10-29
+Candidate archive: git archive a2a1bf9099ce6b607008cb017d7be60577166118
+Fresh extraction: build\b1-fix-pr20\applycheck2 (isolated, ignored; local scratch git repo)
+Patch: doc\v5-重构\patches\V5-B1-FIRST-RECEIPT-DIGEST-FIX-20261029.patch
+Patch SHA-256: 2E2A52D850FE8720F443EA21BF431DE2B7F6E04C7322FDCFE8B2A5861B3D8F29
+
+git apply --check <patch>
+  native exit 0
+git apply <patch>
+  native exit 0
+
+After application, byte-level SHA-256 comparison with the tested patched tree:
+  dotnet/tests/Mahjong.P5.4b.B1.HttpsAdmission.Worker/NegativeProbes.cs
+    805661F328D544A9D6E0825449547F5CB15C5F22E520185C71970A57630FCDBA  match=True
+  dotnet/tests/Mahjong.P5.4b.B1.HttpsAdmission.Worker/B1Models.cs
+    7C5FEF3B1117B355084CFE3A7A492EE73657584CD938C7BB1C968163DBEEED5F  match=True
+
+dotnet build ...Mahjong.P5.4b.B1.HttpsAdmission.Worker.csproj `
+  -c Release --no-incremental --nologo -v:minimal -nr:false
+  native exit 0 (0 warnings, 0 errors)
+
+The patch touches only the two B1 test-infrastructure files above. It does not
+touch production code, TLS validation, the verifier, or any candidate source
+outside the declared paths.

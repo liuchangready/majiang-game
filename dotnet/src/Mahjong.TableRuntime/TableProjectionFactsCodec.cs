@@ -16,7 +16,8 @@ namespace Mahjong.TableRuntime
     /// </summary>
     public static class TableProjectionFactsCodec
     {
-        public const int FormatVersion = 1;
+        public const int FormatVersion = 2;
+        private const int LegacyFormatVersion = 1;
         private const int Magic = 0x4D4A5046; // MJPF
         private const int MaxItems = 200;
 
@@ -75,6 +76,36 @@ namespace Mahjong.TableRuntime
             }
         }
 
+        /// <summary>
+        /// Reads only the envelope identity of a projection-facts payload. Hosts that persist a
+        /// whole commit candidate use it to avoid applying facts that belong to a different
+        /// state version (for example a baseline checkpoint reused by a synthetic commit).
+        /// </summary>
+        public static TableProjectionFactsIdentity ReadIdentity(byte[] payload)
+        {
+            if (payload == null || payload.Length < 8)
+            {
+                throw new InvalidDataException("Projection facts payload is empty or truncated.");
+            }
+
+            using (var stream = new MemoryStream(payload, writable: false))
+            using (var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: true))
+            {
+                if (reader.ReadInt32() != Magic)
+                {
+                    throw new InvalidDataException("Projection facts magic is invalid.");
+                }
+
+                int schema = reader.ReadInt32();
+                if (schema != LegacyFormatVersion && schema != FormatVersion)
+                {
+                    throw new InvalidDataException("Unsupported projection facts schema " + schema + ".");
+                }
+
+                return new TableProjectionFactsIdentity(reader.ReadString(), new StateVersion(reader.ReadUInt64()));
+            }
+        }
+
         public static TableProjectionContextData Decode(
             byte[] payload,
             string expectedRoundId,
@@ -94,7 +125,7 @@ namespace Mahjong.TableRuntime
                 }
 
                 int schema = reader.ReadInt32();
-                if (schema != FormatVersion)
+                if (schema != LegacyFormatVersion && schema != FormatVersion)
                 {
                     throw new InvalidDataException("Unsupported projection facts schema " + schema + ".");
                 }
@@ -129,7 +160,7 @@ namespace Mahjong.TableRuntime
                 var privateFacts = new List<TableSeatPrivateFacts>(privateCount);
                 for (int i = 0; i < privateCount; i++)
                 {
-                    privateFacts.Add(ReadPrivateFacts(reader));
+                    privateFacts.Add(ReadPrivateFacts(reader, schema));
                 }
 
                 TableSessionProjection? session = ReadSession(reader);
@@ -176,6 +207,19 @@ namespace Mahjong.TableRuntime
                     eventFacts,
                     concealed);
             }
+        }
+
+        public readonly struct TableProjectionFactsIdentity
+        {
+            public TableProjectionFactsIdentity(string roundId, StateVersion stateVersion)
+            {
+                RoundId = roundId;
+                StateVersion = stateVersion;
+            }
+
+            public string RoundId { get; }
+
+            public StateVersion StateVersion { get; }
         }
 
         private static void WritePublicFacts(BinaryWriter writer, TableSeatPublicFacts facts)
@@ -276,6 +320,8 @@ namespace Mahjong.TableRuntime
         {
             writer.Write(facts.Seat);
             writer.Write(facts.Furiten);
+            writer.Write(facts.TemporaryFuriten);
+            writer.Write(facts.RiichiFuriten);
             writer.Write(facts.HasPreparation);
             writer.Write(facts.DiscardHistory.Count);
             for (int i = 0; i < facts.DiscardHistory.Count; i++)
@@ -284,10 +330,12 @@ namespace Mahjong.TableRuntime
             }
         }
 
-        private static TableSeatPrivateFacts ReadPrivateFacts(BinaryReader reader)
+        private static TableSeatPrivateFacts ReadPrivateFacts(BinaryReader reader, int schema)
         {
             int seat = reader.ReadInt32();
             bool furiten = reader.ReadBoolean();
+            bool temporaryFuriten = schema >= 2 && reader.ReadBoolean();
+            bool riichiFuriten = schema >= 2 && reader.ReadBoolean();
             bool preparation = reader.ReadBoolean();
             int count = reader.ReadInt32();
             if (count < 0 || count > MaxItems)
@@ -301,7 +349,13 @@ namespace Mahjong.TableRuntime
                 history[i] = reader.ReadUInt32();
             }
 
-            return new TableSeatPrivateFacts(seat, furiten, preparation, history);
+            return new TableSeatPrivateFacts(
+                seat,
+                furiten,
+                preparation,
+                history,
+                temporaryFuriten,
+                riichiFuriten);
         }
 
         private static void WriteSession(BinaryWriter writer, TableSessionProjection? session)
