@@ -165,6 +165,7 @@ function Invoke-GateCase {
         [switch]$OutsideLog,
         [switch]$EscapePath,
         [string]$FileName = 'dotnet-test-results.xml',
+        [string]$ReasonPattern = '',
         [bool]$ExpectedOk
     )
     $caseDir = Join-Path $EvidenceDir $Case
@@ -202,6 +203,7 @@ function Invoke-GateCase {
         -ExpectedAssemblyPath $ExpectedAssemblyPath -ResultsDir $decisionResults -LogDir $decisionLog `
         -RunStartedUtc $started -ConsoleCounts $consoleCounts -NativeExit $NativeExit -ExpectedFramework $ExpectedFramework
     $passed = ([bool]$evidence.Ok -eq $ExpectedOk) -and (-not [string]::IsNullOrWhiteSpace($evidence.Reason))
+    if ($ReasonPattern) { $passed = $passed -and ($evidence.Reason -match $ReasonPattern) }
     $record = [pscustomobject]@{
         Case         = $Case
         ExpectedOk   = $ExpectedOk
@@ -298,6 +300,26 @@ $null = Invoke-GateCase -Case '28 console summary missing' -Xml $greenXml -Conso
 $null = Invoke-GateCase -Case '29 console total mismatch' -Xml $greenXml -Console (New-DotnetTestConsoleSummary -Total 2) -ExpectedOk $false
 $null = Invoke-GateCase -Case '30 console failed mismatch' -Xml $greenXml -Console (New-DotnetTestConsoleSummary -Total 3 -Passed 2 -Failed 1) -ExpectedOk $false
 $null = Invoke-GateCase -Case '31 console skipped mismatch' -Xml $greenXml -Console (New-DotnetTestConsoleSummary -Total 3 -Passed 2 -Skipped 1) -ExpectedOk $false
+
+# --- exact runner/version + native schema identity (D-DNT-R1-01) ---------------
+# The locked runner is xUnit.net v3 4.0.2; the native report schema emitted by
+# this runner is 3. The version token must be complete (not a prefix) and may
+# carry only real '+build' metadata. These cases are added to, not substituted
+# for, the 36 cases above.
+$identity = Invoke-GateCase -Case '34 identity exact 4.0.2 without metadata schema 3' `
+    -Xml (New-DotnetTestXml -Framework 'xUnit.net v3 4.0.2') -Console $greenConsole -ExpectedOk $true
+if (-not $identity.Pass) { throw "Exact 4.0.2 positive was rejected: $($identity.Reason)" }
+$null = Invoke-GateCase -Case '35 identity 4.0.2+build.1 schema 3' -Xml (New-DotnetTestXml -Framework 'xUnit.net v3 4.0.2+build.1') -Console $greenConsole -ExpectedOk $true
+$null = Invoke-GateCase -Case '36 identity wrong patch 4.0.1' -Xml (New-DotnetTestXml -Framework 'xUnit.net v3 4.0.1+probe') -Console $greenConsole -ReasonPattern 'runner identity mismatch' -ExpectedOk $false
+$null = Invoke-GateCase -Case '37 identity wrong patch 4.0.20' -Xml (New-DotnetTestXml -Framework 'xUnit.net v3 4.0.20+other') -Console $greenConsole -ReasonPattern 'runner identity mismatch' -ExpectedOk $false
+$null = Invoke-GateCase -Case '38 identity wrong patch 4.0.200' -Xml (New-DotnetTestXml -Framework 'xUnit.net v3 4.0.200+other') -Console $greenConsole -ReasonPattern 'runner identity mismatch' -ExpectedOk $false
+$null = Invoke-GateCase -Case '39 identity trailing junk 4.0.2INVALID' -Xml (New-DotnetTestXml -Framework 'xUnit.net v3 4.0.2INVALID') -Console $greenConsole -ReasonPattern 'runner identity mismatch' -ExpectedOk $false
+$null = Invoke-GateCase -Case '40 identity empty build metadata 4.0.2+' -Xml (New-DotnetTestXml -Framework 'xUnit.net v3 4.0.2+') -Console $greenConsole -ReasonPattern 'runner identity mismatch' -ExpectedOk $false
+$null = Invoke-GateCase -Case '41 identity wrong runner family v2' -Xml (New-DotnetTestXml -Framework 'xUnit.net v2 4.0.2+probe') -Console $greenConsole -ReasonPattern 'runner identity mismatch|not an xUnit\.net v3' -ExpectedOk $false
+$null = Invoke-GateCase -Case '42 schema 999 unsupported' -Xml (New-DotnetTestXml -SchemaVersion 999) -Console $greenConsole -ReasonPattern 'schema identity mismatch' -ExpectedOk $false
+$null = Invoke-GateCase -Case '43 schema 2 unsupported' -Xml (New-DotnetTestXml -SchemaVersion 2) -Console $greenConsole -ReasonPattern 'schema identity mismatch' -ExpectedOk $false
+$null = Invoke-GateCase -Case '44 schema 4 unsupported' -Xml (New-DotnetTestXml -SchemaVersion 4) -Console $greenConsole -ReasonPattern 'schema identity mismatch' -ExpectedOk $false
+$null = Invoke-GateCase -Case '45 schema 3 valid with metadata' -Xml (New-DotnetTestXml -Framework 'xUnit.net v3 4.0.2+0c7aa4991f') -Console $greenConsole -ExpectedOk $true
 
 # --- live fixture projects (the only real dotnet-test records) -----------------
 function New-LiveFixtureProject {

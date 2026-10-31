@@ -876,6 +876,7 @@ function Test-DotnetTestInvocationEvidence {
         [object]$ConsoleCounts,
         [object]$NativeExit,
         [string]$ExpectedFramework = 'xUnit.net v3 4.0.2',
+        [string]$ExpectedSchemaVersion = '3',
         [string]$ExpectedFileName = 'dotnet-test-results.xml'
     )
     $result = [ordered]@{
@@ -925,8 +926,11 @@ function Test-DotnetTestInvocationEvidence {
         if (-not $xml.Ok) { throw "invalid dotnet test result XML: $($xml.Reason)" }
         if ($null -eq $xml.Counts) { throw 'dotnet test result XML has no parsed counts' }
 
-        if ($xml.TestFramework -notlike "$ExpectedFramework*") {
-            throw "dotnet test runner identity mismatch: expected '$ExpectedFramework', got '$($xml.TestFramework)'"
+        if ($xml.TestFramework -cnotmatch ('^' + [regex]::Escape($ExpectedFramework) + '(?:\+[0-9A-Za-z][0-9A-Za-z.-]*)?$')) {
+            throw "dotnet test runner identity mismatch: expected '$ExpectedFramework' with optional '+build' metadata, got '$($xml.TestFramework)'"
+        }
+        if ($xml.SchemaVersion -ne $ExpectedSchemaVersion) {
+            throw "dotnet test result XML schema identity mismatch: expected supported schema '$ExpectedSchemaVersion', got '$($xml.SchemaVersion)'"
         }
         if (-not [string]::IsNullOrWhiteSpace($ExpectedAssemblyPath)) {
             if ([string]::IsNullOrWhiteSpace($xml.AssemblyName) -or -not [IO.Path]::IsPathRooted($xml.AssemblyName)) {
