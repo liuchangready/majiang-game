@@ -32,13 +32,26 @@
         individually before anything runs - in every runner mode - and a fresh
         build failure fails the project outright; stale outputs left by an
         earlier build are never executed
-      - if `dotnet test` cannot produce a parseable summary, the log is checked
-        for build/restore errors first: any compile error fails the project even
-        when an older DLL is sitting in bin. Only a project whose current source
-        verifiably built in this run (solution build or per-project build) and
-        whose log shows no build errors may fall back to the official in-process
-        runner (xunit.v3 / Microsoft.Testing.Platform executable) of the same
-        test assembly; the summary states which runner produced the counts
+      - every real `dotnet test` invocation passes the locked xunit.v3 4.0.2 /
+        Microsoft.Testing.Platform native report switches through `dotnet test`
+        (`-- --report-xunit-xml --report-xunit-xml-filename
+        dotnet-test-results.xml --results-directory <unique dir>`), so the
+        per-case report is produced by the test application in THIS invocation,
+        not from console output and not by a direct run renamed as dotnetTest.
+        The unique report is parsed and gated exactly like the direct XML
+        (schema, exact assembly file identity, one assembly, collection/case
+        totals, unique native test IDs, zero failed/errors/skipped/not-run,
+        non-zero case count, fresh file inside this run/project's results
+        directory, native exit 0 and agreement with the console summary).
+        Missing/corrupt/stale/out-of-run/wrong-assembly XML, a non-zero native
+        exit with a green XML, or a console/native mismatch fails the row and
+        the run; dotnetTest-only never falls back to direct. If `dotnet test`
+        cannot produce a parseable summary AND no native report exists, the log
+        is checked for build/restore errors first: any compile error fails the
+        project even when an older DLL is sitting in bin. Only then may `auto`
+        mode fall back to the official in-process runner of the same test
+        assembly; the meta/summary name the actual runner and never call that
+        fallback dotnetTest evidence.
       - each real in-process direct invocation writes the runner's native
         per-case result XML (-result-xml) to
         <log dir>\direct-xml\<project>\direct-results.xml, a path unique to this
@@ -51,7 +64,9 @@
         exact XML path and SHA-256 are recorded in the meta/summary, so CI's
         artifacts/verify-v5/** upload contains the evidence. The raw framework
         failure logs/meta provenance are retained unchanged; dotnetTest-only
-        mode never claims a direct XML run.
+        mode never claims a direct XML run. The two runners use distinct
+        evidence roots (<log dir>\dotnetTest-xml vs <log dir>\direct-xml) and
+        are never cross-labelled.
       - every test execution is attributable: run-info.txt records the exact head
         SHA / branch / CI run identity, and runs\<project>\<mode>.meta.txt records
         the exact command line, working directory, exit code (or the fact that
@@ -151,6 +166,12 @@ while (Test-Path $LogDir) {
     $suffix++
     $LogDir = "$LogDirBase-$suffix"
 }
+# The dotnet test application resolves --results-directory against its own
+# working directory (the test bin folder), not the verifier's cwd. A relative
+# LogDir would therefore put the native report somewhere else. Normalize once
+# here so every evidence path, gate containment check and meta record is
+# absolute and identical to the path handed to the runner.
+$LogDir = [IO.Path]::GetFullPath($LogDir)
 
 function Write-Step([string]$message) { Write-Host "[verify-v5] $message" }
 
@@ -467,6 +488,29 @@ function Resolve-UnderRoot([string]$Base, [string]$Path) {
     return Join-Path $Base $p
 }
 
+function Get-DotnetTestResultsArgument([string]$Path) {
+    # `dotnet test` passes MTP options through the MSBuild bridge as a
+    # space-joined argument string. A results-directory containing whitespace is
+    # split into several arguments and the test app exits before writing a
+    # report. On Windows use the directory's short (8.3) alias ONLY for the
+    # command-line argument; the real (long) path is still what the evidence
+    # gate checks and what the meta/summary records. If no space-free alias is
+    # available the original path is returned and the invocation fails closed
+    # (no report -> no PASS).
+    if ($Path -notmatch '\s') { return $Path }
+    if ([System.Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) { return $Path }
+    try {
+        $command = 'for %I in ("' + $Path + '") do @echo %~sI'
+        $cmd = $(if ($env:ComSpec) { $env:ComSpec } else { 'cmd.exe' })
+        $short = (& $cmd /d /c $command 2>$null | Out-String).Trim()
+        if ($short -and (Test-Path -LiteralPath $short) -and ($short -notmatch '\s')) {
+            return $short
+        }
+    }
+    catch { }
+    return $Path
+}
+
 function Get-CsprojProperty {
     param([string]$CsprojPath, [string]$Name)
     $xpath = '//*[local-name()="' + $Name + '"]'
@@ -486,6 +530,47 @@ function Get-TestSummaryFromVstest([string]$logPath) {
         Failed  = [int]$line.Matches[0].Groups[2].Value
         Skipped = [int]$line.Matches[0].Groups[4].Value
     }
+}
+
+function Get-DotnetTestConsoleCounts([string]$logPath) {
+    # `dotnet test` on this locked runner (xunit.v3 4.0.2 + Microsoft.Testing.Platform
+    # 2.5.1) prints the VSTest-style final line through the MTP MSBuild bridge:
+    #   Passed! - Failed: 0, Passed: 180, Skipped: 0, Total: 180, Duration: ...
+    # The SDK UI language is environment-controlled, so the zh-CN form is also
+    # accepted. This console summary is only a CROSS-CHECK: the native per-case
+    # XML remains authoritative. A missing/unparseable line is never treated as
+    # zero tests; the caller fails closed.
+    $patterns = @(
+        'Failed:\s*(?<failed>\d+)\s*[,\uFF0C]\s*Passed:\s*(?<passed>\d+)\s*[,\uFF0C]\s*Skipped:\s*(?<skipped>\d+)\s*[,\uFF0C]\s*Total:\s*(?<total>\d+)',
+        '\u5931\u8D25[:\uFF1A]\s*(?<failed>\d+)\s*[,\uFF0C]\s*\u901A\u8FC7[:\uFF1A]\s*(?<passed>\d+)\s*[,\uFF0C]\s*\u5DF2\u8DF3\u8FC7[:\uFF1A]\s*(?<skipped>\d+)\s*[,\uFF0C]\s*\u603B\u8BA1[:\uFF1A]\s*(?<total>\d+)'
+    )
+    foreach ($pattern in $patterns) {
+        $line = Select-String -Path $logPath -Pattern $pattern -ErrorAction SilentlyContinue | Select-Object -Last 1
+        if ($line) {
+            return [ordered]@{
+                Total   = [int]$line.Matches[0].Groups['total'].Value
+                Passed  = [int]$line.Matches[0].Groups['passed'].Value
+                Failed  = [int]$line.Matches[0].Groups['failed'].Value
+                Skipped = [int]$line.Matches[0].Groups['skipped'].Value
+            }
+        }
+    }
+
+    # Fallback for an MTP-native summary block (no VSTest bridge line). All four
+    # fields must be present in the SAME log; a partial block is unparseable.
+    $total = Select-String -Path $logPath -Pattern '^\s*total:\s*(\d+)\s*$' -ErrorAction SilentlyContinue | Select-Object -Last 1
+    $passed = Select-String -Path $logPath -Pattern '^\s*(?:succeeded|passed):\s*(\d+)\s*$' -ErrorAction SilentlyContinue | Select-Object -Last 1
+    $failed = Select-String -Path $logPath -Pattern '^\s*failed:\s*(\d+)\s*$' -ErrorAction SilentlyContinue | Select-Object -Last 1
+    $skipped = Select-String -Path $logPath -Pattern '^\s*skipped:\s*(\d+)\s*$' -ErrorAction SilentlyContinue | Select-Object -Last 1
+    if ($total -and $passed -and $failed -and $skipped) {
+        return [ordered]@{
+            Total   = [int]$total.Matches[0].Groups[1].Value
+            Passed  = [int]$passed.Matches[0].Groups[1].Value
+            Failed  = [int]$failed.Matches[0].Groups[1].Value
+            Skipped = [int]$skipped.Matches[0].Groups[1].Value
+        }
+    }
+    return $null
 }
 
 function Get-DirectRunnerCounts([string]$logPath) {
@@ -540,6 +625,7 @@ function Read-DirectResultXml {
         Ok              = $false
         Reason          = ''
         AssemblyName    = ''
+        TestFramework   = ''
         SchemaVersion   = ''
         TestNodeCount   = 0
         CollectionCount = 0
@@ -583,6 +669,7 @@ function Read-DirectResultXml {
         if ([string]::IsNullOrWhiteSpace($framework) -or $framework -notlike 'xUnit.net v3*') {
             throw "result XML is not an xUnit.net v3 result (test-framework='$framework')"
         }
+        $result.TestFramework = $framework
 
         $required = @('total', 'passed', 'failed', 'skipped', 'errors', 'not-run')
         $attrs = @{}
@@ -763,6 +850,115 @@ function Test-DirectInvocationEvidence {
 
         $result.Ok = $true
         $result.Reason = "$($c.Total)/$($c.Total) test cases Pass; XML matches console and native exit 0"
+    }
+    catch {
+        $result.Ok = $false
+        $result.Reason = $_.Exception.Message
+    }
+    return [pscustomobject]$result
+}
+
+function Test-DotnetTestInvocationEvidence {
+    # Production decision for one real `dotnet test` invocation. The file must
+    # be the xunit.v3 native per-case report produced by THIS invocation through
+    # the MTP report switches, inside this run/project's dedicated results
+    # directory, fresh, for the exact test assembly file, with one assembly and
+    # a complete all-Pass case set. The console summary and the native exit are
+    # cross-checks, never substitutes. A dotnetTest-only run must call this
+    # function and must never fall back to the direct runner on failure.
+    param(
+        [string]$XmlPath,
+        [string]$ExpectedAssemblyName,
+        [string]$ExpectedAssemblyPath,
+        [string]$ResultsDir,
+        [string]$LogDir,
+        [datetime]$RunStartedUtc,
+        [object]$ConsoleCounts,
+        [object]$NativeExit,
+        [string]$ExpectedFramework = 'xUnit.net v3 4.0.2',
+        [string]$ExpectedFileName = 'dotnet-test-results.xml'
+    )
+    $result = [ordered]@{
+        Ok              = $false
+        Reason          = ''
+        XmlCounts       = $null
+        TestNodeCount   = 0
+        AssemblyName    = ''
+        TestFramework   = ''
+        XmlSha256       = ''
+        XmlLastWriteUtc = $null
+    }
+    $pathComparison = $(if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+        [StringComparison]::OrdinalIgnoreCase
+    } else {
+        [StringComparison]::Ordinal
+    })
+    try {
+        if ([string]::IsNullOrWhiteSpace($XmlPath)) { throw 'no dotnet test result XML path was assigned' }
+        if ([string]::IsNullOrWhiteSpace($ResultsDir)) { throw 'no dotnet test results directory was assigned' }
+        if ([string]::IsNullOrWhiteSpace($LogDir)) { throw 'no run LogDir was assigned' }
+        $fullLog = [IO.Path]::GetFullPath($LogDir).TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+        if (-not (Test-Path -LiteralPath $ResultsDir)) { throw "dotnet test results directory is missing: $ResultsDir" }
+        $fullResults = [IO.Path]::GetFullPath($ResultsDir).TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+        if (-not $fullResults.StartsWith($fullLog, $pathComparison)) {
+            throw "dotnet test results directory is outside this run's LogDir: $fullResults"
+        }
+        if (-not (Test-Path -LiteralPath $XmlPath)) { throw "dotnet test result XML is missing: $XmlPath" }
+        $fullXml = [IO.Path]::GetFullPath($XmlPath)
+        if (-not $fullXml.StartsWith($fullResults, $pathComparison)) {
+            throw "dotnet test result XML is outside this run/project's results directory: $fullXml"
+        }
+        if ([IO.Path]::GetFileName($fullXml) -ine $ExpectedFileName) {
+            throw "dotnet test result XML has unexpected file name '$([IO.Path]::GetFileName($fullXml))' (expected '$ExpectedFileName')"
+        }
+        $lastWrite = (Get-Item -LiteralPath $fullXml).LastWriteTimeUtc
+        $result.XmlLastWriteUtc = $lastWrite
+        if ($lastWrite -lt $RunStartedUtc.AddSeconds(-5)) {
+            throw "dotnet test result XML predates this invocation (last write $($lastWrite.ToString('o')) < start $($RunStartedUtc.ToString('o')))"
+        }
+        try { $result.XmlSha256 = (Get-FileHash -LiteralPath $fullXml -Algorithm SHA256).Hash } catch { }
+
+        $xml = Read-DirectResultXml -XmlPath $fullXml -ExpectedAssemblyName $ExpectedAssemblyName
+        $result.TestNodeCount = $xml.TestNodeCount
+        $result.AssemblyName = $xml.AssemblyName
+        $result.TestFramework = $xml.TestFramework
+        if (-not $xml.Ok) { throw "invalid dotnet test result XML: $($xml.Reason)" }
+        if ($null -eq $xml.Counts) { throw 'dotnet test result XML has no parsed counts' }
+
+        if ($xml.TestFramework -notlike "$ExpectedFramework*") {
+            throw "dotnet test runner identity mismatch: expected '$ExpectedFramework', got '$($xml.TestFramework)'"
+        }
+        if (-not [string]::IsNullOrWhiteSpace($ExpectedAssemblyPath)) {
+            if ([string]::IsNullOrWhiteSpace($xml.AssemblyName) -or -not [IO.Path]::IsPathRooted($xml.AssemblyName)) {
+                throw "dotnet test result XML assembly name is not a rooted assembly path: '$($xml.AssemblyName)'"
+            }
+            $actualAssembly = [IO.Path]::GetFullPath($xml.AssemblyName)
+            $expectedAssembly = [IO.Path]::GetFullPath($ExpectedAssemblyPath)
+            if (-not [string]::Equals($actualAssembly, $expectedAssembly, $pathComparison)) {
+                throw "dotnet test result XML assembly path mismatch: expected '$expectedAssembly', got '$actualAssembly'"
+            }
+        }
+
+        $result.XmlCounts = $xml.Counts
+        $c = $xml.Counts
+        if ($null -eq $NativeExit) { throw 'native exit is unknown (invocation threw); never treated as 0' }
+        if ([int]$NativeExit -ne 0) { throw "native exit is $NativeExit, not 0" }
+        if ($c.Total -le 0) { throw 'dotnet test result XML contains zero executed test cases' }
+        if ($c.Total -ne $xml.TestNodeCount) { throw "result XML total=$($c.Total) but $($xml.TestNodeCount) test case node(s) exist" }
+        if ($c.Failed -gt 0 -or $c.Errors -gt 0 -or $c.Skipped -gt 0 -or $c.NotRun -gt 0) {
+            throw "dotnet test result XML is not green: failed=$($c.Failed), errors=$($c.Errors), skipped=$($c.Skipped), not-run=$($c.NotRun)"
+        }
+        if ($c.Passed -ne $c.Total) { throw "dotnet test result XML passed=$($c.Passed) does not equal total=$($c.Total)" }
+        if ($null -eq $ConsoleCounts) { throw 'raw `dotnet test` console summary is missing/unparseable; the native XML cannot be cross-checked' }
+        foreach ($name in @('Total', 'Passed', 'Failed', 'Skipped')) {
+            if ($null -eq $ConsoleCounts[$name]) { throw "raw console summary has no $name count" }
+            if ([int]$ConsoleCounts[$name] -ne [int]$c[$name]) {
+                throw "result XML $name=$($c[$name]) does not match console summary $name=$($ConsoleCounts[$name])"
+            }
+        }
+
+        $result.Ok = $true
+        $result.Reason = "$($c.Total)/$($c.Total) test cases Pass; native dotnet test XML matches console and native exit 0"
     }
     catch {
         $result.Ok = $false
@@ -990,7 +1186,9 @@ function Write-RunMetaFile {
         [string]$RunnerTag, [string]$Runner, [string]$Command, [string]$Cwd,
         [object]$ExitCode, [object]$Total, [object]$Failed, [object]$Skipped,
         [string[]]$Collected, [string[]]$ExcludedStale, [object[]]$PurgeStatuses, [hashtable]$Head,
-        [string]$ResultXml = '', [string]$ResultXmlSha256 = '', [string]$XmlGate = ''
+        [string]$ResultXml = '', [string]$ResultXmlSha256 = '', [string]$XmlGate = '',
+        [string]$NativeResultXml = '', [string]$NativeResultXmlSha256 = '', [string]$NativeXmlGate = '',
+        [string]$NativeCounts = ''
     )
     try {
         $dir = Join-Path $LogDir (Join-Path 'runs' $Name)
@@ -1015,6 +1213,12 @@ function Write-RunMetaFile {
             $text += "result xml  : $ResultXml"
             $text += "result xml sha256: $(if ($ResultXmlSha256) { $ResultXmlSha256 } else { '(unavailable)' })"
             $text += "result xml gate  : $XmlGate"
+        }
+        if ($NativeResultXml) {
+            $text += "dotnetTest xml  : $NativeResultXml"
+            $text += "dotnetTest xml sha256: $(if ($NativeResultXmlSha256) { $NativeResultXmlSha256 } else { '(unavailable)' })"
+            $text += "dotnetTest xml gate  : $NativeXmlGate"
+            $text += "dotnetTest counts    : $(if ($NativeCounts) { $NativeCounts } else { '(unavailable)' })"
         }
         foreach ($status in $PurgeStatuses) {
             $label = 'cleared'
@@ -1258,44 +1462,131 @@ foreach ($project in $ordered) {
         $projectDir = Resolve-UnderRoot $root (Split-Path $project.Path -Parent)
         $testResultsDirs = @(Get-TestResultsCandidates -ProjectDir $projectDir -Configuration $Configuration -Tfm $tfm)
         $dotnetTestPurges = @(Clear-TestResultsDirs -Dirs $testResultsDirs)
-        Write-Step "dotnet test : $name"
-        $dotnetTestCommand = "$DotnetPath test $csproj -c $Configuration --nologo"
-        $exit = Invoke-Captured -LogPath $project.DotnetTestLog -Command { & $DotnetPath test $csproj -c $Configuration --nologo }
+
+        # The native per-case report is produced by the test application through
+        # the xunit.v3/MTP report switches. Its directory is unique to this
+        # run/project and is removed before the invocation, so a report left by
+        # an earlier run can never be attributed to this one. If the purge fails
+        # the project fails before `dotnet test` starts (fail closed).
+        $project.DotnetTestResultsDir = Join-Path $LogDir (Join-Path 'dotnetTest-xml' $name)
+        $project.DotnetTestResultXml = Join-Path $project.DotnetTestResultsDir 'dotnet-test-results.xml'
+        $nativePrepareError = $null
+        try {
+            if (Test-Path -LiteralPath $project.DotnetTestResultsDir) {
+                Remove-Item -LiteralPath $project.DotnetTestResultsDir -Recurse -Force
+            }
+            New-Item -ItemType Directory -Force -Path $project.DotnetTestResultsDir | Out-Null
+            if (Test-Path -LiteralPath $project.DotnetTestResultXml) {
+                Remove-Item -LiteralPath $project.DotnetTestResultXml -Force
+            }
+        }
+        catch {
+            $nativePrepareError = "$($_.Exception.GetType().FullName): $($_.Exception.Message)"
+        }
+        if ($nativePrepareError) {
+            $project.Result = 'FAIL'
+            $project.Detail = "could not prepare a fresh dotnet test native results directory '$($project.DotnetTestResultsDir)': $nativePrepareError; refusing to run with potentially stale evidence"
+            $anyFail = $true
+            continue
+        }
+
+        Write-Step "dotnet test : $name (native xunit.v3 XML)"
+        $nativeResultsArgument = Get-DotnetTestResultsArgument $project.DotnetTestResultsDir
+        $project.DotnetTestResultsArgument = $nativeResultsArgument
+        $nativeArgs = @(
+            '--report-xunit-xml',
+            '--report-xunit-xml-filename', 'dotnet-test-results.xml',
+            '--results-directory', $nativeResultsArgument
+        )
+        $dotnetTestCommand = (@(@($DotnetPath, 'test', $csproj, '-c', $Configuration, '--nologo', '--') + $nativeArgs) |
+            ForEach-Object { ConvertTo-NativeArgument ([string]$_) }) -join ' '
+        $dotnetTestStartedUtc = [DateTime]::UtcNow
+        $exit = Invoke-Captured -LogPath $project.DotnetTestLog -Command {
+            & $DotnetPath test $csproj -c $Configuration --nologo -- `
+                --report-xunit-xml `
+                --report-xunit-xml-filename dotnet-test-results.xml `
+                --results-directory $nativeResultsArgument
+        }
         $dotnetTestSaved = Save-TestResults -ProjectName $name -Mode 'dotnetTest' -ProjectDir $projectDir -Dirs $testResultsDirs -PurgeStatuses $dotnetTestPurges
-        $summary = Get-TestSummaryFromVstest $project.DotnetTestLog
-        Write-RunMetaFile -Name $name -ProjectPath $project.Path -Kind $project.Kind -Mode $RunnerMode `
-            -RunnerTag 'dotnetTest' -Runner 'dotnet test' -Command $dotnetTestCommand -Cwd $cwd -ExitCode $exit `
-            -Total $(if ($summary) { $summary.Total } else { '(no parseable summary)' }) `
-            -Failed $(if ($summary) { $summary.Failed } else { '-' }) `
-            -Skipped $(if ($summary) { $summary.Skipped } else { '-' }) `
-            -Collected @($dotnetTestSaved.Collected) -ExcludedStale @($dotnetTestSaved.ExcludedStale) `
-            -PurgeStatuses $dotnetTestPurges -Head $headInfo
-        if ($summary) {
-            $project.Runner = 'dotnet test'
-            $project.Total = $summary.Total
-            $project.Failed = $summary.Failed
-            $project.Skipped = $summary.Skipped
+        $consoleCounts = Get-DotnetTestConsoleCounts $project.DotnetTestLog
+        $nativeExists = Test-Path -LiteralPath $project.DotnetTestResultXml -PathType Leaf
+
+        if ($consoleCounts -or $nativeExists) {
+            # Once dotnet test actually produced a summary or a native report,
+            # this is the runner for the row. A failed native gate is a row FAIL;
+            # auto mode must not silently replace it with a direct run.
+            $nativeEvidence = Test-DotnetTestInvocationEvidence -XmlPath $project.DotnetTestResultXml -ExpectedAssemblyName $assemblyName `
+                -ExpectedAssemblyPath $testDll -ResultsDir $project.DotnetTestResultsDir -LogDir $LogDir `
+                -RunStartedUtc $dotnetTestStartedUtc -ConsoleCounts $consoleCounts -NativeExit $exit
+            $project.NativeEvidence = $nativeEvidence
+            $project.Runner = 'dotnet test (MTP)'
             $project.ExitCode = $(if ($null -ne $exit) { $exit } else { 'EXCEPTION' })
+            if ($nativeEvidence.XmlCounts) {
+                $nc = $nativeEvidence.XmlCounts
+                $project.NativeCounts = $nc
+                $project.Total = $nc.Total
+                $project.Failed = $nc.Failed + $nc.Errors
+                $project.Skipped = $nc.Skipped + $nc.NotRun
+            }
+            elseif ($consoleCounts) {
+                $project.Total = $consoleCounts.Total
+                $project.Failed = $consoleCounts.Failed
+                $project.Skipped = $consoleCounts.Skipped
+            }
+            $nativeCountsText = $(if ($project.NativeCounts) {
+                "total=$($project.NativeCounts.Total); passed=$($project.NativeCounts.Passed); failed=$($project.NativeCounts.Failed); skipped=$($project.NativeCounts.Skipped); errors=$($project.NativeCounts.Errors); not-run=$($project.NativeCounts.NotRun); nodes=$($nativeEvidence.TestNodeCount); framework=$($nativeEvidence.TestFramework)"
+            } else { '(unavailable)' })
+            Write-RunMetaFile -Name $name -ProjectPath $project.Path -Kind $project.Kind -Mode $RunnerMode `
+                -RunnerTag 'dotnetTest' -Runner 'dotnet test (MTP; native xunit.v3 XML)' -Command $dotnetTestCommand -Cwd $cwd -ExitCode $exit `
+                -Total $(if ($nativeEvidence.XmlCounts) { $nativeEvidence.XmlCounts.Total } elseif ($consoleCounts) { $consoleCounts.Total } else { '(no parseable summary)' }) `
+                -Failed $(if ($nativeEvidence.XmlCounts) { $nativeEvidence.XmlCounts.Failed + $nativeEvidence.XmlCounts.Errors } elseif ($consoleCounts) { $consoleCounts.Failed } else { '-' }) `
+                -Skipped $(if ($nativeEvidence.XmlCounts) { $nativeEvidence.XmlCounts.Skipped + $nativeEvidence.XmlCounts.NotRun } elseif ($consoleCounts) { $consoleCounts.Skipped } else { '-' }) `
+                -Collected @($dotnetTestSaved.Collected) -ExcludedStale @($dotnetTestSaved.ExcludedStale) `
+                -PurgeStatuses $dotnetTestPurges -Head $headInfo `
+                -NativeResultXml $project.DotnetTestResultXml -NativeResultXmlSha256 $nativeEvidence.XmlSha256 `
+                -NativeXmlGate "$(if ($nativeEvidence.Ok) { 'PASS' } else { 'FAIL' }): $($nativeEvidence.Reason)" `
+                -NativeCounts $nativeCountsText
+            if (-not $nativeEvidence.Ok) {
+                $project.Result = 'FAIL'
+                $project.Detail = "dotnet test native XML gate FAIL: $($nativeEvidence.Reason); see $($project.DotnetTestResultXml) and $($project.DotnetTestLog)"
+                $anyFail = $true
+                continue
+            }
         }
         else {
-            # No parseable summary: inspect the log before any fallback. A build
-            # or restore error fails the project even if a previous run left a
-            # valid DLL in bin - the fallback path must never resurrect stale
-            # outputs as a green result.
+            # Neither a console summary nor a native report: inspect the log
+            # before any fallback. A build or restore error fails the project
+            # even if a previous run left a valid DLL in bin - the fallback path
+            # must never resurrect stale outputs as a green result.
             $buildErrors = @()
             if ($project.DotnetTestLog -and (Test-Path $project.DotnetTestLog)) {
                 $buildErrors = @(Select-String -Path $project.DotnetTestLog -Pattern 'error [A-Z]+[0-9]+' -ErrorAction SilentlyContinue)
             }
+            Write-RunMetaFile -Name $name -ProjectPath $project.Path -Kind $project.Kind -Mode $RunnerMode `
+                -RunnerTag 'dotnetTest' -Runner 'dotnet test (no native report)' -Command $dotnetTestCommand -Cwd $cwd -ExitCode $exit `
+                -Total '(no parseable summary)' -Failed '-' -Skipped '-' `
+                -Collected @($dotnetTestSaved.Collected) -ExcludedStale @($dotnetTestSaved.ExcludedStale) `
+                -PurgeStatuses $dotnetTestPurges -Head $headInfo `
+                -NativeResultXml $project.DotnetTestResultXml -NativeResultXmlSha256 '' `
+                -NativeXmlGate 'NOT_PRODUCED: no console summary and no native per-case XML' `
+                -NativeCounts '(unavailable)'
             if ($buildErrors.Count -gt 0) {
                 $project.Result = 'FAIL'
                 $project.Detail = "dotnet test hit build/restore errors (first: $($buildErrors[0].Line.Trim())); stale outputs were not used; see $($project.DotnetTestLog)"
                 $anyFail = $true
                 continue
             }
+            if ($RunnerMode -eq 'dotnetTest') {
+                $project.Result = 'FAIL'
+                $project.Detail = "dotnetTest-only: dotnet test produced neither a parseable console summary nor a native per-case XML report (exit $(Format-ExitCode $exit)); no direct fallback is permitted; see $($project.DotnetTestLog)"
+                $anyFail = $true
+                continue
+            }
             $project.FallbackReason =
-                "dotnet test produced no parseable test summary ($(if ($null -ne $exit) { "exit $exit" } else { 'invocation exception' })) and the log shows no build errors; " +
+                "dotnet test produced no parseable test summary and no native report ($(if ($null -ne $exit) { "exit $exit" } else { 'invocation exception' })) and the log shows no build errors; " +
                 "see $($project.DotnetTestLog). The current source built OK in this run, so this is treated as a " +
-                "runner/environment issue and the official in-process runner of the same test assembly decides the result."
+                "runner/environment issue and the official in-process runner of the same test assembly decides the result. " +
+                "This row's counts are direct-runner counts, NOT dotnetTest evidence."
         }
     }
 
@@ -1544,6 +1835,7 @@ $lines.Add("verify-v5 summary  $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')  config
 $lines.Add("dotnet SDK     : $sdkVersion  path: $DotnetPath  cwd: $cwd  log: $sdkLog")
 $ciLines = Get-CiProvenanceLines
 $lines.Add("head           : $($headInfo.Head)  branch: $($headInfo.Branch)")
+$lines.Add("runner mode    : $RunnerMode  (dotnetTest evidence root: dotnetTest-xml\<project>\dotnet-test-results.xml; direct evidence root: direct-xml\<project>\direct-results.xml; never cross-labelled)")
 $lines.Add("ci provenance  : $(if ($ciLines.Count) { $ciLines -join ' ' } else { '(none - local run)' })")
 $lines.Add("run identity   : run-info.txt; per-invocation command/exit/counts/result-xml: runs\<project>\<mode>.meta.txt; raw framework logs: test-results\<project>\; direct runner XML: direct-xml\<project>\direct-results.xml")
 $lines.Add("")
@@ -1589,6 +1881,12 @@ foreach ($project in $ordered) {
     }
     if ($project.ResultXml) {
         $lines.Add("    direct xml: $($project.ResultXml)  sha256: $(if ($project.DirectEvidence) { $project.DirectEvidence.XmlSha256 } else { '(unavailable)' })  gate: $(if ($project.DirectEvidence) { "$($project.XmlGate) - $($project.DirectEvidence.Reason)" } else { '(not evaluated)' })")
+    }
+    if ($project.DotnetTestResultXml) {
+        $lines.Add("    dotnetTest xml: $($project.DotnetTestResultXml)  sha256: $(if ($project.NativeEvidence) { $project.NativeEvidence.XmlSha256 } else { '(unavailable)' })  gate: $(if ($project.NativeEvidence) { "$(if ($project.NativeEvidence.Ok) { 'PASS' } else { 'FAIL' }) - $($project.NativeEvidence.Reason)" } else { 'NOT_PRODUCED/PARSEABLE SUMMARY ABSENT' })")
+        if ($project.NativeCounts) {
+            $lines.Add("    dotnetTest counts: total=$($project.NativeCounts.Total) passed=$($project.NativeCounts.Passed) failed=$($project.NativeCounts.Failed) skipped=$($project.NativeCounts.Skipped) errors=$($project.NativeCounts.Errors) not-run=$($project.NativeCounts.NotRun) nodes=$(if ($project.NativeEvidence) { $project.NativeEvidence.TestNodeCount } else { '?' }) framework=$(if ($project.NativeEvidence) { $project.NativeEvidence.TestFramework } else { '?' })")
+        }
     }
     if ($project.BuildNote) {
         $lines.Add("    build    : $($project.BuildNote)")

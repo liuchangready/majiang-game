@@ -41,6 +41,11 @@
       5. pg_dump from the live test DB -> restore into a new empty DB -> reader
       6. ownership-verified stop/delete, logs, XML, SHA-256 manifest and summary
 
+    -RunUnifiedVerification forwards -RunnerMode (default direct) to
+    tools/ci/verify-v5-postgres.ps1 -> tools/verify-v5.ps1 for the discovered
+    14-project run. Opt in to dotnetTest explicitly; the table-specific direct
+    stage and its XML gate are not changed by the mode.
+
     A missing PG binary/key/dotnet path is BLOCKED (exit 2), never a skipped or
     zero-test green.
 #>
@@ -48,6 +53,12 @@
 param(
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
+    # Unified-verifier runner mode for the -RunUnifiedVerification leg. The
+    # default stays 'direct', which is the current CI/acceptance behavior; a
+    # caller must opt in to 'dotnetTest' explicitly. The table-specific stages
+    # (including their native XML gate) are unchanged in every mode.
+    [ValidateSet('auto', 'dotnetTest', 'direct')]
+    [string]$RunnerMode = 'direct',
     [string]$DotnetPath,
     # Explicit port: used exactly or the run is BLOCKED; never substituted.
     [int]$Port,
@@ -992,7 +1003,7 @@ try {
         $unifiedCode = Invoke-Native -FilePath $hostExe -Arguments @(
             '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
             (Join-Path $script:RepoRoot 'tools/ci/verify-v5-postgres.ps1'),
-            '-Configuration', $Configuration, '-RunnerMode', 'direct',
+            '-Configuration', $Configuration, '-RunnerMode', $RunnerMode,
             '-DotnetPath', $DotnetPath, '-Root', $LobbyRoot, '-Port', "$LobbyPort",
             '-PgZipPath', (Join-Path $Root 'download/postgresql-binaries.zip'),
             '-LogDir', $UnifiedLogDir
