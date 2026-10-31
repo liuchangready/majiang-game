@@ -240,7 +240,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/verify-v5.ps1 \
 ```
 
 - native exit：**1**；`OVERALL: FAIL (17 PASS, 3 FAIL, 0 BLOCKED, 0 NOT_RUN)`。
+- 运行身份：`head=5bc8c18b75287a3e8bbe33c087585f62f3f5df95`（报告提交），branch `wt/v5-ci-receive-timeout-ds-20261031`，运行前 tracked clean；`run-info.txt` 可复核。
 - 该 run 全部测试行使用 `dotnet test`，没有 direct XML；未把 direct XML 写成 dotnetTest。
+- 提交前同一工作树的同口径 run 归档在 `unified-dotnetTest-precommit/`，结果相同；本节数据引用提交后干净树的复跑。
 - companion gate：**PASS 4/4**，47 cases；7/11 fixture 未认证；git blob pins **NOT_RUN**。
 - plugin copy：**NOT_RUN**（`-SkipPluginCopyCheck`；无共享插件构建授权）。
 
@@ -261,7 +263,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/verify-v5.ps1 \
 
 ### 5.9 Hash manifest
 
-- `build/receive-timeout-fix/EVIDENCE-SHA256.txt`：**199 entries / 26,674 bytes / SHA-256 `A9BEB9B74C7F48663BA7149C5D2442DBDEC827FE23A42346CC30818374140DB0`**
+- `build/receive-timeout-fix/EVIDENCE-SHA256.txt`：**252 entries / 35,296 bytes / SHA-256 `74611D0E8E7B1A63D5BD832350DE4EDABD43706EF9C42A80A51ED4B7ACE8F6E1`**
 - 覆盖本任务 ignored 证据（日志、XML、脚本、首失败、red 源、20 轮隐私、unified 日志）及 caller baseline 探针；排除 manifest 自身、`final-head.txt`、`bin/`/`obj/`/`TestResults/` 构建产物。
 - 关键 SHA：
   - caller probe：`F9C67A9705163C2EB20ED9C35A4D4FF591FA9A317DF804C8FD6A23D847F8BB7B`
@@ -269,7 +271,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/verify-v5.ps1 \
   - full direct XML：`B59315C60CAB43B05EFF1993DA020319E2535597DBAD421C0CECAC1B46BA5A25`
   - dotnet test log：`89C1342BD21329516B7CEEBC591A4B5AA8B8D36AF5BEB387C1A4B4EF715E0568`
   - new regressions XML：`834559E8FEA3437F16AD6F44C27268E6B53B4DE81CBE3204D52D9FD96D059A43`
-  - unified summary：`D5E5B83F264250B23D13BBABD3CEFFCB8297FED8E774FEC42353146FB9FC1DAC`
+  - unified summary：`100B769B953AFB2D3FADADEE4C02AE7CC914014D2F70987CFC808AD69F102863`
 
 ---
 
