@@ -102,22 +102,32 @@ namespace Mahjong.TableService.Tests
                 // the players join. Whatever arrives must be public projection data only:
                 // a PLAYER_UPDATE on this connection would already be a privacy breach.
                 var spectatorFrames = new List<Envelope> { baseline };
-                try
+                long deadline = Environment.TickCount64 + 2000;
+                while (true)
                 {
-                    long deadline = Environment.TickCount64 + 2000;
-                    while (Environment.TickCount64 < deadline)
+                    long remaining = deadline - Environment.TickCount64;
+                    if (remaining <= 0)
+                    {
+                        break;
+                    }
+
+                    try
                     {
                         Envelope frame = await spectator.ReadUntilAsync(
                             envelope => envelope.MessageType is MessageType.PublicUpdate or MessageType.PlayerUpdate,
-                            TimeSpan.FromMilliseconds(500));
+                            TimeSpan.FromMilliseconds(remaining));
                         spectatorFrames.Add(frame);
                     }
-                }
-                catch (OperationCanceledException)
-                {
-                    // Window closed; the frames observed so far are the sample.
+                    catch (OperationCanceledException)
+                    {
+                        // The total sampling deadline elapsed with no further frame. A read
+                        // timeout only ends this wait; the spectator socket must still be
+                        // open (asserted below) and a later frame must remain readable.
+                        break;
+                    }
                 }
 
+                Assert.Equal(System.Net.WebSockets.WebSocketState.Open, spectator.State);
                 Assert.True(spectatorFrames.Count >= 1);
                 foreach (Envelope frame in spectatorFrames)
                 {
