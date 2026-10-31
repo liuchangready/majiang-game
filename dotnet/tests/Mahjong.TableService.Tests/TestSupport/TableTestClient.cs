@@ -70,6 +70,29 @@ namespace Mahjong.TableService.Tests
 
         private const int MaxReplayFrames = 512;
 
+        /// <summary>
+        /// Serializes consumers. WebSocket permits exactly one outstanding ReceiveAsync per
+        /// connection, so two waits on the same client must never both drive the transport
+        /// (and must never both consume the same pending message).</summary>
+        private readonly SemaphoreSlim _readGate = new(1, 1);
+
+        /// <summary>Guards <see cref="_pendingReceive"/> (start, inspect, consume, dispose).</summary>
+        private readonly object _receiveGate = new();
+
+        /// <summary>Lifetime token only: dispose cancels the parked receive; a read timeout
+        /// must never cancel it.</summary>
+        private readonly CancellationTokenSource _receiveLifetime = new();
+
+        /// <summary>
+        /// A complete-message receive that outlives any single wait. A wait timeout abandons
+        /// only its own wait; the same task is picked up by the next wait and consumed once.
+        /// It is also the only task that ever calls <see cref="_ws"/>.ReceiveAsync.</summary>
+        private Task<TableWireMessage>? _pendingReceive;
+
+        private int _disposed;
+
+        private long _underlyingReceiveCalls;
+
         /// <summary>Highest snapshot state version any wait on this client has returned.
         /// A frame OLDER than the watermark is a leftover of an already-consumed past
         /// (river sizes are not monotonic — a claim takes the claimed tile back out) and
@@ -79,6 +102,33 @@ namespace Mahjong.TableService.Tests
         private TableTestClient(WebSocket ws)
         {
             _ws = ws;
+        }
+
+        /// <summary>
+        /// Test-only attachment to an already connected transport. The helper owns the
+        /// WebSocket exactly as it does for ConnectAsync; this accessor exists so helper
+        /// regressions can drive a controlled WebSocket without duplicating the receive
+        /// algorithm. It is internal to this file's type and has no production callers.
+        /// </summary>
+        internal static TableTestClient AttachForTransportTests(WebSocket ws)
+        {
+            return new TableTestClient(ws);
+        }
+
+        /// <summary>Number of actual ReceiveAsync calls made on the transport. Repeated
+        /// wait timeouts while one receive is parked must not increase this.</summary>
+        internal long UnderlyingReceiveCalls => Interlocked.Read(ref _underlyingReceiveCalls);
+
+        /// <summary>Whether a complete-message receive is currently parked on the socket.</summary>
+        internal bool HasPendingReceive
+        {
+            get
+            {
+                lock (_receiveGate)
+                {
+                    return _pendingReceive != null && !_pendingReceive.IsCompleted;
+                }
+            }
         }
 
         private static long? SnapshotStateVersion(TableWireMessage message)
@@ -310,13 +360,122 @@ namespace Mahjong.TableService.Tests
 
         public async Task<TableWireMessage> ReceiveAsync(TimeSpan? timeout = null)
         {
-            using var cts = TestTimeout.Linked(timeout);
+            long deadline = Deadline(timeout);
+            await AcquireReadGateAsync(deadline).ConfigureAwait(false);
+            try
+            {
+                return await ReceiveCoreAsync(deadline).ConfigureAwait(false);
+            }
+            finally
+            {
+                _readGate.Release();
+            }
+        }
+
+        private static long Deadline(TimeSpan? timeout)
+        {
+            return Environment.TickCount64 + (long)(timeout ?? TestTimeout.Default).TotalMilliseconds;
+        }
+
+        /// <summary>Milliseconds left, floored at 1 so a wait that starts exactly at its
+        /// deadline still observes an already-completed pending message.</summary>
+        private static int RemainingMilliseconds(long deadline)
+        {
+            long remaining = deadline - Environment.TickCount64;
+            if (remaining < 1)
+            {
+                return 1;
+            }
+
+            return remaining > int.MaxValue ? int.MaxValue : (int)remaining;
+        }
+
+        private async Task AcquireReadGateAsync(long deadline)
+        {
+            ThrowIfDisposed();
+            if (!await _readGate.WaitAsync(RemainingMilliseconds(deadline)).ConfigureAwait(false))
+            {
+                throw new OperationCanceledException(
+                    "Timed out waiting for another read on the same test client to finish.");
+            }
+        }
+
+        private void ThrowIfDisposed()
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+            {
+                throw new ObjectDisposedException(nameof(TableTestClient));
+            }
+        }
+
+        /// <summary>
+        /// Returns the single parked complete-message receive, starting it only when none is
+        /// in flight. A timed-out wait leaves that task untouched; the next wait observes the
+        /// same task, so a frame arriving after a timeout is delivered exactly once.
+        /// </summary>
+        private async Task<TableWireMessage> ReceiveCoreAsync(long deadline)
+        {
+            Task<TableWireMessage> pending;
+            lock (_receiveGate)
+            {
+                ThrowIfDisposed();
+                _pendingReceive ??= ReceiveOneMessageAsync();
+                pending = _pendingReceive;
+            }
+
+            TableWireMessage message;
+            if (pending.IsCompleted)
+            {
+                message = await pending.ConfigureAwait(false);
+            }
+            else
+            {
+                using var waitTimeout = new CancellationTokenSource(RemainingMilliseconds(deadline));
+                try
+                {
+                    message = await pending.WaitAsync(waitTimeout.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (waitTimeout.IsCancellationRequested)
+                {
+                    // WaitAsync cancels this wait only; the socket-level receive is still
+                    // parked. If it completed in the race window, deliver it rather than
+                    // falsely reporting a timeout.
+                    if (!pending.IsCompleted)
+                    {
+                        throw new OperationCanceledException(
+                            "Timed out waiting for a complete WebSocket message.");
+                    }
+
+                    message = await pending.ConfigureAwait(false);
+                }
+            }
+
+            lock (_receiveGate)
+            {
+                if (ReferenceEquals(_pendingReceive, pending))
+                {
+                    _pendingReceive = null;
+                }
+            }
+
+            return message;
+        }
+
+        /// <summary>
+        /// Reads exactly one complete WebSocket message (accumulating fragments up to the
+        /// 4 MiB test limit) using the lifetime token only. Close frames, protocol errors and
+        /// transport faults are returned/thrown unchanged; nothing here turns them into a
+        /// read timeout.
+        /// </summary>
+        private async Task<TableWireMessage> ReceiveOneMessageAsync()
+        {
             byte[] buffer = new byte[64 * 1024];
             using var accumulator = new System.IO.MemoryStream();
             while (true)
             {
+                Interlocked.Increment(ref _underlyingReceiveCalls);
                 ValueWebSocketReceiveResult received =
-                    await _ws.ReceiveAsync(buffer.AsMemory(), cts.Token).ConfigureAwait(false);
+                    await _ws.ReceiveAsync(buffer.AsMemory(), _receiveLifetime.Token).ConfigureAwait(false);
                 if (received.MessageType == WebSocketMessageType.Close)
                 {
                     return TableWireMessage.OfClose(
@@ -375,81 +534,88 @@ namespace Mahjong.TableService.Tests
             Func<Envelope, bool> predicate,
             TimeSpan? timeout = null)
         {
-            long deadline = Environment.TickCount64 + (long)(timeout ?? TestTimeout.Default).TotalMilliseconds;
-            while (true)
+            long deadline = Deadline(timeout);
+            await AcquireReadGateAsync(deadline).ConfigureAwait(false);
+            try
             {
-                lock (_replayGate)
+                while (true)
                 {
-                    for (int i = 0; i < _replay.Count; i++)
+                    lock (_replayGate)
                     {
-                        TableWireMessage candidate = _replay[i];
-                        if (candidate.IsClose)
+                        for (int i = 0; i < _replay.Count; i++)
                         {
-                            throw new InvalidOperationException(
-                                "Connection closed while waiting: " +
-                                candidate.WsCloseCode + " " + candidate.WsCloseReason);
-                        }
+                            TableWireMessage candidate = _replay[i];
+                            if (candidate.IsClose)
+                            {
+                                throw new InvalidOperationException(
+                                    "Connection closed while waiting: " +
+                                    candidate.WsCloseCode + " " + candidate.WsCloseReason);
+                            }
 
-                        if (candidate.Envelope!.MessageType == MessageType.Heartbeat &&
-                            candidate.Envelope.Heartbeat.BeatCase == Heartbeat.BeatOneofCase.Ping)
-                        {
-                            _replay.RemoveAt(i);
-                            i--;
-                            continue;
-                        }
+                            if (candidate.Envelope!.MessageType == MessageType.Heartbeat &&
+                                candidate.Envelope.Heartbeat.BeatCase == Heartbeat.BeatOneofCase.Ping)
+                            {
+                                _replay.RemoveAt(i);
+                                i--;
+                                continue;
+                            }
 
-                        if (IsStale(candidate))
-                        {
-                            _replay.RemoveAt(i);
-                            i--;
-                            continue;
-                        }
+                            if (IsStale(candidate))
+                            {
+                                _replay.RemoveAt(i);
+                                i--;
+                                continue;
+                            }
 
-                        if (predicate(candidate.Envelope))
+                            if (predicate(candidate.Envelope))
+                            {
+                                _replay.RemoveRange(0, i + 1);
+                                AdvanceWatermark(candidate);
+                                return candidate.Envelope;
+                            }
+                        }
+                    }
+
+                    TableWireMessage message = await ReceiveCoreAsync(deadline).ConfigureAwait(false);
+                    if (message.IsClose)
+                    {
+                        throw new InvalidOperationException(
+                            "Connection closed while waiting: " + message.WsCloseCode + " " + message.WsCloseReason);
+                    }
+
+                    // Server keep-alive pings interleave with application traffic and are noise
+                    // here — but a pong is exactly what the heartbeat tests assert on, so only
+                    // pings are skipped.
+                    if (message.Envelope!.MessageType == MessageType.Heartbeat &&
+                        message.Envelope.Heartbeat.BeatCase == Heartbeat.BeatOneofCase.Ping)
+                    {
+                        continue;
+                    }
+
+                    if (IsStale(message))
+                    {
+                        continue;
+                    }
+
+                    if (predicate(message.Envelope))
+                    {
+                        AdvanceWatermark(message);
+                        return message.Envelope;
+                    }
+
+                    lock (_replayGate)
+                    {
+                        _replay.Add(message);
+                        if (_replay.Count > MaxReplayFrames)
                         {
-                            _replay.RemoveRange(0, i + 1);
-                            AdvanceWatermark(candidate);
-                            return candidate.Envelope;
+                            _replay.RemoveRange(0, _replay.Count - MaxReplayFrames);
                         }
                     }
                 }
-
-                TimeSpan remaining = TimeSpan.FromMilliseconds(Math.Max(1, deadline - Environment.TickCount64));
-                TableWireMessage message = await ReceiveAsync(remaining).ConfigureAwait(false);
-                if (message.IsClose)
-                {
-                    throw new InvalidOperationException(
-                        "Connection closed while waiting: " + message.WsCloseCode + " " + message.WsCloseReason);
-                }
-
-                // Server keep-alive pings interleave with application traffic and are noise
-                // here — but a pong is exactly what the heartbeat tests assert on, so only
-                // pings are skipped.
-                if (message.Envelope!.MessageType == MessageType.Heartbeat &&
-                    message.Envelope.Heartbeat.BeatCase == Heartbeat.BeatOneofCase.Ping)
-                {
-                    continue;
-                }
-
-                if (IsStale(message))
-                {
-                    continue;
-                }
-
-                if (predicate(message.Envelope))
-                {
-                    AdvanceWatermark(message);
-                    return message.Envelope;
-                }
-
-                lock (_replayGate)
-                {
-                    _replay.Add(message);
-                    if (_replay.Count > MaxReplayFrames)
-                    {
-                        _replay.RemoveRange(0, _replay.Count - MaxReplayFrames);
-                    }
-                }
+            }
+            finally
+            {
+                _readGate.Release();
             }
         }
 
@@ -457,18 +623,25 @@ namespace Mahjong.TableService.Tests
         public async Task<(int WsCloseCode, string Reason, TableWireMessage[] Drained)> ExpectCloseAsync(
             TimeSpan? timeout = null)
         {
-            long deadline = Environment.TickCount64 + (long)(timeout ?? TestTimeout.Default).TotalMilliseconds;
-            var drained = new System.Collections.Generic.List<TableWireMessage>();
-            while (true)
+            long deadline = Deadline(timeout);
+            await AcquireReadGateAsync(deadline).ConfigureAwait(false);
+            try
             {
-                TimeSpan remaining = TimeSpan.FromMilliseconds(Math.Max(1, deadline - Environment.TickCount64));
-                TableWireMessage message = await ReceiveAsync(remaining).ConfigureAwait(false);
-                if (message.IsClose)
+                var drained = new System.Collections.Generic.List<TableWireMessage>();
+                while (true)
                 {
-                    return (message.WsCloseCode!.Value, message.WsCloseReason ?? string.Empty, drained.ToArray());
-                }
+                    TableWireMessage message = await ReceiveCoreAsync(deadline).ConfigureAwait(false);
+                    if (message.IsClose)
+                    {
+                        return (message.WsCloseCode!.Value, message.WsCloseReason ?? string.Empty, drained.ToArray());
+                    }
 
-                drained.Add(message);
+                    drained.Add(message);
+                }
+            }
+            finally
+            {
+                _readGate.Release();
             }
         }
 
@@ -490,18 +663,65 @@ namespace Mahjong.TableService.Tests
             }
         }
 
-        public ValueTask DisposeAsync()
+        public async ValueTask DisposeAsync()
         {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            {
+                return;
+            }
+
+            Task<TableWireMessage>? pending;
+            lock (_receiveGate)
+            {
+                pending = _pendingReceive;
+            }
+
+            try
+            {
+                _receiveLifetime.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+
             try
             {
                 _ws.Abort();
+            }
+            catch (Exception)
+            {
+            }
+
+            try
+            {
                 _ws.Dispose();
             }
             catch (Exception)
             {
             }
 
-            return ValueTask.CompletedTask;
+            if (pending != null)
+            {
+                // Observe the parked receive so teardown leaves no unobserved fault and no
+                // background task behind. Abort/Dispose above is what releases it.
+                try
+                {
+                    await pending.ConfigureAwait(false);
+                }
+                catch (Exception)
+                {
+                }
+
+                lock (_receiveGate)
+                {
+                    if (ReferenceEquals(_pendingReceive, pending))
+                    {
+                        _pendingReceive = null;
+                    }
+                }
+            }
+
+            _receiveLifetime.Dispose();
         }
     }
 
