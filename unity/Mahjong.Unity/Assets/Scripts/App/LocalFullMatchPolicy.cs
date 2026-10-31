@@ -774,6 +774,14 @@ namespace Mahjong.Unity.App
                 return false;
             }
 
+            if (plan.Action == PlayerActionKind.DrawTile &&
+                ev.Type == Mahjong.Contracts.ProtocolEventType.RoundEnded)
+            {
+                // A mandatory draw at an exhausted wall has no TileDrawn event;
+                // the authoritative exhaustive-draw settlement is the confirmation.
+                return true;
+            }
+
             return SmokeActionEventPolicy.IsRequiredEvent(plan.Action, plan.Seat, ev);
         }
 
