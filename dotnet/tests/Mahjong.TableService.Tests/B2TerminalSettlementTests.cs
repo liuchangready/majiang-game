@@ -1,13 +1,15 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Mahjong.Contracts;
 using Mahjong.Contracts.Wire;
 using Mahjong.Domain;
 using Mahjong.TableRuntime;
-using System.Diagnostics;
 using Xunit;
 
 namespace Mahjong.TableService.Tests
@@ -116,6 +118,20 @@ namespace Mahjong.TableService.Tests
                 Assert.True(
                     CountSettlementEvents(after) > settlementEventsBefore,
                     "the terminal projection carries the settlement event");
+
+                // The same durable in-memory commit wrote exactly one terminal outbox row.
+                // Its payload is decoded and compared with the committed result/final scores;
+                // later ticks must not add a second row or change the terminal version.
+                InMemoryTableStore store = await AssertSingleTerminalOutboxAsync(
+                    host, "room-b2-tsumo", after);
+                await Task.Delay(400);
+                Assert.Equal(1, store.OutboxCount);
+                await using TableTestClient observer =
+                    await host.ConnectSpectatorAsync("room-b2-tsumo", "acct-b2-tsumo-observer");
+                Envelope laterEnvelope = await observer.ReadUntilAsync(
+                    e => e.PublicUpdate?.Snapshot != null,
+                    TimeSpan.FromSeconds(5));
+                Assert.Equal(after.StateVersion, laterEnvelope.PublicUpdate.Snapshot.StateVersion);
             }
             finally
             {
@@ -186,6 +202,7 @@ namespace Mahjong.TableService.Tests
                 Assert.Equal(1, win.RonWin.Loser);
                 Assert.True(win.RonWin.Han > 0);
                 Assert.Equal(100000L, after.PublicView.Board.Scores.Sum(s => s.Score));
+                await AssertSingleTerminalOutboxAsync(host, "room-b2-ron", after);
             }
             finally
             {
@@ -456,6 +473,181 @@ namespace Mahjong.TableService.Tests
         }
 
         [Fact]
+        public async Task IllegalRon_NotAdvertised_IsRejectedWithZeroSettlementSideEffect()
+        {
+            await using TableServiceTestHost host = await TableServiceTestHost.StartAsync(
+                o => { o.RoomTickIntervalMs = 50; },
+                roundSource: new FixedRoundSource(roomId =>
+                {
+                    var fixture = new N1aTable { Dealer = 1 };
+                    // Seat 0 can pon the discarded 1m but its thirteen tiles plus 1m are
+                    // not a complete hand, so no Ron may be advertised or executed.
+                    fixture.Hand(0,
+                        new TileId(0), new TileId(1),
+                        new TileId(4), new TileId(8), new TileId(16), new TileId(20),
+                        new TileId(28), new TileId(40), new TileId(48), new TileId(56),
+                        new TileId(76), new TileId(84), new TileId(92));
+                    fixture.Hand(1, new TileId(2));
+                    fixture.Drawn(1, new TileId(127));
+                    return fixture.Build(roomId + "-r1");
+                }),
+                clock: FrozenUtcClock.Instance);
+            TableTestClient seat1 = await host.ConnectPlayerAsync(
+                "room-b2-illegal-ron", "acct-b2-illegal-ron-1", 1);
+            TableTestClient seat0 = await host.ConnectPlayerAsync(
+                "room-b2-illegal-ron", "acct-b2-illegal-ron-0", 0);
+            try
+            {
+                PlayerSnapshot dealer = await WaitForDecisionAsync(seat1, "room-b2-illegal-ron-r1");
+                Contracts.Wire.DecisionView discardDecision = dealer.PrivateView!.Decision;
+                Contracts.Wire.LegalActionView discard = discardDecision.Actions.First(
+                    a => a.ActionType == (uint)ProtocolActionType.DiscardTile &&
+                         a.TileIds.Contains(2u));
+                await seat1.SendAsync(TableWire.Command(
+                    seat1.Welcome!,
+                    TableWire.RandomId("req-b2-illegal-ron-discard"),
+                    Contracts.CommandKind.SubmitAction,
+                    TableWire.SubmitActionPayload(
+                        dealer.RoundId,
+                        discardDecision.DecisionId,
+                        discardDecision.ControlEpoch,
+                        (uint)ProtocolActionType.DiscardTile,
+                        new uint[] { 2 }),
+                    expectedStateVersion: dealer.StateVersion));
+                Envelope discardReceipt = await seat1.ReadUntilAsync(
+                    e => e.MessageType == MessageType.Receipt,
+                    TimeSpan.FromSeconds(20));
+                Assert.Equal(Contracts.Wire.ReceiptStatus.Applied, discardReceipt.Receipt.Status);
+
+                PlayerSnapshot response = await WaitForDecisionAsync(seat0, "room-b2-illegal-ron-r1");
+                Contracts.Wire.DecisionView responseDecision = response.PrivateView!.Decision;
+                Assert.DoesNotContain(
+                    responseDecision.Actions,
+                    a => a.ActionType == (uint)ProtocolActionType.DeclareRon);
+                ulong version = response.StateVersion;
+                string requestId = TableWire.RandomId("req-b2-illegal-ron");
+                await seat0.SendAsync(TableWire.Command(
+                    seat0.Welcome!,
+                    requestId,
+                    Contracts.CommandKind.SubmitAction,
+                    TableWire.SubmitActionPayload(
+                        response.RoundId,
+                        responseDecision.DecisionId,
+                        responseDecision.ControlEpoch,
+                        (uint)ProtocolActionType.DeclareRon,
+                        new uint[] { 2 }),
+                    expectedStateVersion: version));
+                Envelope receipt = await seat0.ReadUntilAsync(
+                    e => e.MessageType == MessageType.Receipt && e.RequestId == requestId,
+                    TimeSpan.FromSeconds(20));
+                Assert.Equal(Contracts.Wire.ReceiptStatus.Rejected, receipt.Receipt.Status);
+                Assert.False(string.IsNullOrEmpty(receipt.Receipt.ReasonCode));
+
+                PlayerSnapshot after = await ReadSnapshotAsync(seat0, TimeSpan.FromSeconds(5));
+                Assert.Equal(version, after.StateVersion);
+                Assert.NotEqual(GamePhase.RoundEnd, after.PublicView!.Board.Phase);
+                Assert.Empty(after.PublicView.SettlementEvents);
+                Assert.Equal(0, host.GetRoomHost("room-b2-illegal-ron")
+                    .Store is InMemoryTableStore s ? s.OutboxCount : -1);
+            }
+            finally
+            {
+                await seat0.DisposeAsync();
+                await seat1.DisposeAsync();
+            }
+        }
+
+        [Fact]
+        public async Task TerminalCommit_WithUtcAdvancingBetweenCheckpointReads_FailsClosedWithoutOutbox()
+        {
+            // Deterministic reproduction of the production terminal-checkpoint race: the
+            // actor reads UTC once for the timing snapshot and again while building the
+            // checkpoint. The real SystemTableClock can cross a millisecond between those
+            // reads (the formal PG run did); this clock makes that crossing certain. The
+            // required behavior is fail-closed: no RoundEnd, no result, no outbox.
+            await using TableServiceTestHost host = await TableServiceTestHost.StartAsync(
+                o => { o.RoomTickIntervalMs = 50; },
+                roundSource: new FixedRoundSource(DealerTsumoRound),
+                clock: new AdvancingUtcClock());
+            TableTestClient client = await host.ConnectPlayerAsync(
+                "room-b2-clock-race", "acct-b2-clock-race", 0);
+            try
+            {
+                PlayerSnapshot before = await WaitForDecisionAsync(client, "room-b2-clock-race-r1");
+                RoomHost room = host.GetRoomHost("room-b2-clock-race");
+                Contracts.Wire.DecisionView decision = before.PrivateView!.Decision;
+                var request = new TableSettlementRequest(
+                    new TableSettlementIntent(before.RoundId, TableSettlementAction.Tsumo, 0),
+                    new RequestId("req-b2-clock-race"),
+                    new StateVersion(before.StateVersion),
+                    room.OwnerEpoch,
+                    new ControlEpoch(decision.ControlEpoch),
+                    new DecisionId(decision.DecisionId),
+                    scopeId: room.ServiceScope.ScopeId,
+                    api: "SUBMIT_ACTION",
+                    payloadSha256: TablePayloadSha256.Compute(
+                        Encoding.UTF8.GetBytes("clock-race-settlement")));
+
+                TableOperationResult result = await room.Actor.SubmitSettlementAsync(request);
+                Assert.Equal(TableOperationStatus.Failed, result.Status);
+                Assert.Equal(TableRuntimeReasonCode.CheckpointInvalid, result.ReasonCode);
+                Assert.Equal((long)before.StateVersion, room.Actor.GetRoundStateForHost().Version);
+                Assert.False(room.Actor.GetRoundStateForHost().IsFinished);
+                Assert.Equal(0, ((InMemoryTableStore)room.Store).OutboxCount);
+            }
+            finally
+            {
+                await client.DisposeAsync();
+            }
+        }
+
+        [Fact]
+        public async Task RawSettlementBearingEnvelope_IsRejectedBeforeAnyScoring()
+        {
+            await using TableServiceTestHost host = await TableServiceTestHost.StartAsync(
+                o => { o.RoomTickIntervalMs = 50; },
+                roundSource: new FixedRoundSource(DealerTsumoRound),
+                clock: FrozenUtcClock.Instance);
+            TableTestClient client = await host.ConnectPlayerAsync(
+                "room-b2-raw", "acct-b2-raw", 0);
+            try
+            {
+                PlayerSnapshot before = await WaitForDecisionAsync(client, "room-b2-raw-r1");
+                RoomHost room = host.GetRoomHost("room-b2-raw");
+                RoundStateMachine current = room.Actor.GetRoundStateForHost();
+                var forgedSettlement = new RoundSettlement(
+                    "forged:" + current.RoundId,
+                    RoundOutcome.Tsumo(0),
+                    new long[] { 25000L, 25000L, 25000L, 25000L },
+                    0,
+                    new PersistedUtcTime(DateTimeOffset.UnixEpoch),
+                    0L);
+                byte[] rawPayload = Encoding.UTF8.GetBytes("forged-settlement-body");
+                var envelope = new TableCommandEnvelope(
+                    RoundCommand.Tsumo(current.RoundId, 0, forgedSettlement),
+                    new RequestId("req-b2-raw-settlement"),
+                    new StateVersion((ulong)current.Version),
+                    room.OwnerEpoch,
+                    new ControlEpoch(before.PrivateView!.Decision.ControlEpoch),
+                    scopeId: room.ServiceScope.ScopeId,
+                    api: "SUBMIT_ACTION",
+                    payloadSha256: TablePayloadSha256.Compute(rawPayload));
+                TableOperationResult result = await room.Actor.SubmitAsync(envelope);
+                Assert.Equal(TableOperationStatus.Rejected, result.Status);
+                Assert.Equal(TableSettlementReasonCode.RawEntryRejected, result.ReasonCode);
+                Assert.Equal((long)before.StateVersion, room.Actor.GetRoundStateForHost().Version);
+                Assert.NotEqual(GamePhase.RoundEnd, before.PublicView!.Board.Phase);
+
+                await Task.Delay(200);
+                Assert.Equal(0, ((InMemoryTableStore)room.Store).OutboxCount);
+            }
+            finally
+            {
+                await client.DisposeAsync();
+            }
+        }
+
+        [Fact]
         public async Task SettlementNegativeMatrix_WrongRoundVersionControlDecision_AllRejectedWithZeroSideEffect_ThenSameKeyReplay()
         {
             await using TableServiceTestHost host = await TableServiceTestHost.StartAsync(
@@ -469,7 +661,11 @@ namespace Mahjong.TableService.Tests
                 ulong version = before.StateVersion;
                 Contracts.Wire.DecisionView decision = before.PrivateView!.Decision;
 
-                async Task AssertRejectedAsync(string label, byte[] payload, ulong expectedVersion)
+                async Task AssertRejectedAsync(
+                    string label,
+                    byte[] payload,
+                    ulong expectedVersion,
+                    ulong? ownerEpoch = null)
                 {
                     string requestId = TableWire.RandomId("req-b2-neg-" + label);
                     await client.SendAsync(TableWire.Command(
@@ -477,6 +673,7 @@ namespace Mahjong.TableService.Tests
                         requestId,
                         Contracts.CommandKind.SubmitAction,
                         payload,
+                        ownerEpoch: ownerEpoch,
                         expectedStateVersion: expectedVersion));
                     Envelope response = await client.ReadUntilAsync(
                         e => (e.MessageType == MessageType.Receipt && e.RequestId == requestId) ||
@@ -502,6 +699,11 @@ namespace Mahjong.TableService.Tests
                     before.RoundId, decision.DecisionId, decision.ControlEpoch + 1UL,
                     (uint)ProtocolActionType.DeclareTsumo, new uint[] { 12 });
                 await AssertRejectedAsync("epoch", wrongControl, version);
+
+                byte[] wrongOwner = TableWire.SubmitActionPayload(
+                    before.RoundId, decision.DecisionId, decision.ControlEpoch,
+                    (uint)ProtocolActionType.DeclareTsumo, new uint[] { 12 });
+                await AssertRejectedAsync("owner", wrongOwner, version, client.Welcome!.OwnerEpoch + 1UL);
 
                 byte[] wrongDecision = TableWire.SubmitActionPayload(
                     before.RoundId, "not-the-open-decision", decision.ControlEpoch,
@@ -589,6 +791,28 @@ namespace Mahjong.TableService.Tests
             Assert.True(withFuriten.Seats[1].IsRiichiFuriten);
             Assert.False(withFuriten.Seats[0].IsRiichiFuriten);
             Assert.False(withFuriten.Seats[2].IsTemporaryFuriten);
+
+            // The service checkpoint projection persists the same two bits; the runtime
+            // actor restores them from this payload (cold-recovery matrix).
+            var projectionSource = new TableProjectionContextSource(initialRound: round);
+            TableProjectionContextData projected = projectionSource.Capture(
+                new TableProjectionContextRequest(
+                    "room-facts",
+                    round,
+                    new StateVersion(0),
+                    new EventSeq(0),
+                    new OwnerEpoch(1),
+                    0L,
+                    0L,
+                    100L,
+                    1_700_000_000_000L,
+                    furiten: new TableFuritenSnapshot(round.RoundId, temporaryMask: 1, riichiMask: 2)));
+            Assert.True(projected.PrivateFacts[0].TemporaryFuriten);
+            Assert.True(projected.PrivateFacts[0].Furiten);
+            Assert.False(projected.PrivateFacts[0].RiichiFuriten);
+            Assert.True(projected.PrivateFacts[1].RiichiFuriten);
+            Assert.True(projected.PrivateFacts[1].Furiten);
+            Assert.False(projected.PrivateFacts[2].Furiten);
         }
 
         [Fact]
@@ -743,6 +967,59 @@ namespace Mahjong.TableService.Tests
             return snapshot.PublicView?.SettlementEvents.Count ?? 0;
         }
 
+        /// <summary>
+        /// Reads the production room's durable store (the in-memory implementation of the same
+        /// frozen ports used by PostgreSQL) and proves the terminal outbox is unique and agrees
+        /// with the committed result: round id, version, outcome and all four final scores.
+        /// </summary>
+        private static async Task<InMemoryTableStore> AssertSingleTerminalOutboxAsync(
+            TableServiceTestHost host,
+            string roomId,
+            PlayerSnapshot terminal)
+        {
+            RoomHost room = host.GetRoomHost(roomId);
+            var store = Assert.IsType<InMemoryTableStore>(room.Store);
+            Assert.Equal(1, store.OutboxCount);
+            var outbox = Assert.IsAssignableFrom<ISettlementOutbox>(store);
+            IReadOnlyList<TableSettlementOutboxRecord> rows =
+                await outbox.ListUnpublishedAsync(CancellationToken.None);
+            TableSettlementOutboxRecord row = Assert.Single(rows);
+            Assert.Equal(roomId, row.MatchId);
+            Assert.Equal((int)terminal.StateVersion, row.ResultVersion);
+            Assert.Equal(TablePayloadSha256.Compute(row.Payload), row.PayloadSha256);
+
+            using var reader = new BinaryReader(
+                new MemoryStream(row.Payload),
+                Encoding.UTF8,
+                leaveOpen: false);
+            Assert.Equal(TableSettlementPayloadCodec.FormatVersion, reader.ReadInt32());
+            Assert.Equal(roomId, reader.ReadString());
+            _ = reader.ReadString(); // resultId is projected through the event, not needed here
+            Assert.Equal(terminal.RoundId, reader.ReadString());
+            _ = reader.ReadByte();   // outcome kind (Tsumo/Ron/Exhaustive/Abortive)
+            _ = reader.ReadInt32();  // winner seat
+            _ = reader.ReadInt32();  // loser seat
+            int tenpai = reader.ReadInt32();
+            for (int i = 0; i < tenpai; i++)
+            {
+                _ = reader.ReadInt32();
+            }
+
+            _ = reader.ReadString(); // outcome reason
+            var finalScores = new long[4];
+            for (int seat = 0; seat < 4; seat++)
+            {
+                finalScores[seat] = reader.ReadInt64();
+                _ = reader.ReadInt64(); // total delta
+            }
+
+            Assert.Equal(
+                terminal.PublicView!.Board.Scores.Select(s => s.Score).ToArray(),
+                finalScores);
+            Assert.Equal(100000L, finalScores.Sum());
+            return store;
+        }
+
         private static async Task<PlayerSnapshot> WaitForDecisionAsync(TableTestClient client, string roundId)
         {
             Envelope envelope = await client.ReadUntilAsync(
@@ -782,6 +1059,21 @@ namespace Mahjong.TableService.Tests
             // agree deterministically. Production uses SystemTableClock and is exercised by
             // the separate formal run; the TableRuntime terminal-commit race is reported there.
             public long UtcNowMs => 1_700_000_000_000L;
+        }
+
+        /// <summary>
+        /// Advance UTC by one millisecond on every read. Used only to make the production
+        /// two-read terminal-checkpoint defect deterministic for the fail-closed negative test.
+        /// </summary>
+        private sealed class AdvancingUtcClock : ITableClock
+        {
+            private long _utc = 1_700_000_000_000L;
+            private readonly long _start = Stopwatch.GetTimestamp();
+
+            public long MonotonicMillis =>
+                (long)((Stopwatch.GetTimestamp() - _start) * 1000.0 / Stopwatch.Frequency);
+
+            public long UtcNowMs => Interlocked.Increment(ref _utc);
         }
     }
 }

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Net;
 using System.Net.Http;
@@ -7,6 +7,7 @@ using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 using Mahjong.TableRuntime;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Mahjong.TableService.Tests
 {
@@ -30,6 +31,26 @@ namespace Mahjong.TableService.Tests
         public string WsUrl => "ws://127.0.0.1:" + Port + TableServiceWebHost.TablePath;
 
         public string BaseUrl => "http://127.0.0.1:" + Port;
+
+        /// <summary>
+        /// The exact room host the production admission path created. Used only to inspect the
+        /// same durable store/outbox the actor committed through; it is never a second authority.
+        /// </summary>
+        public RoomHost GetRoomHost(string roomId)
+        {
+            if (_runtime == null)
+            {
+                throw new InvalidOperationException("The test host is not running.");
+            }
+
+            var registry = _runtime.Services.GetRequiredService<ITableHostRegistry>();
+            if (!registry.TryGet(roomId, out RoomHost? host) || host == null)
+            {
+                throw new InvalidOperationException("No production room host exists for '" + roomId + "'.");
+            }
+
+            return host;
+        }
 
         public static async Task<TableServiceTestHost> StartAsync(
             Action<TableServiceOptions>? configure = null,
