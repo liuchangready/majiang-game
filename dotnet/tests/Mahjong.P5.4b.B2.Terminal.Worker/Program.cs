@@ -227,6 +227,7 @@ namespace Mahjong.P5_4b.B2.Terminal.Worker
                 int discards = 0;
                 int passes = 0;
                 int staleRejections = 0;
+                int cheatOfferSkips = 0;
                 string firstFailure = string.Empty;
                 DateTimeOffset deadline = DateTimeOffset.UtcNow.AddSeconds(durationSeconds);
                 PublicSnapshot? terminal = null;
@@ -290,6 +291,17 @@ namespace Mahjong.P5_4b.B2.Terminal.Worker
                                 continue;
                             }
 
+                            // An optional cheat offer can be open on the same turn. This
+                            // natural driver deliberately does not exercise cheat commands;
+                            // it declines by waiting for the offer deadline, then consumes the
+                            // next authoritative decision. The rejected request is not retried.
+                            if (string.Equals(reason, "CHEAT_RESERVATION_MISSING", StringComparison.Ordinal))
+                            {
+                                cheatOfferSkips++;
+                                await Task.Delay(100).ConfigureAwait(false);
+                                continue;
+                            }
+
                             firstFailure = "receipt_not_applied seat=" + i + " status=" +
                                            receipt.Resolution.ReceiptStatus + " reason=" + reason;
                             evidence["firstFailure"] = firstFailure;
@@ -324,6 +336,7 @@ namespace Mahjong.P5_4b.B2.Terminal.Worker
                 evidence["discards"] = discards;
                 evidence["passes"] = passes;
                 evidence["staleRejections"] = staleRejections;
+                evidence["cheatOfferSkips"] = cheatOfferSkips;
                 evidence["terminalReached"] = terminal != null;
                 if (terminal != null)
                 {

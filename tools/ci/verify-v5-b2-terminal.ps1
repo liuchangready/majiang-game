@@ -608,8 +608,21 @@ try {
         Add-Stage 'natural-terminal' 'PASS' 0 "room=$($script:RoomId) actions=$($script:Natural.actions) version=$($script:Natural.terminal.stateVersion)"
     }
     elseif ($naturalCode -eq 2) {
-        $script:Blocker = $true
         $wall = Get-PgScalar -Database $script:TableDb -User 'b2_observer' -Sql "SELECT count(*) FROM table_store.table_event WHERE room_id='$($script:RoomId)' AND event_type=14"
+        if ($wall -ne '1') {
+            $firstFailure = [string]$script:Natural.firstFailure
+            Add-Stage 'natural-terminal' 'FAIL' 2 "room=$($script:RoomId) actions=$($script:Natural.actions) wallExhausted=$wall firstFailure=$firstFailure"
+            throw "The natural worker ended before wall exhaustion (exit 2, wallExhausted=$wall, actions=$($script:Natural.actions), firstFailure=$firstFailure); this is not the terminal-commit blocker and must not be reported as BLOCKED."
+        }
+
+        $tableStderrPath = Join-Path $LogDir 'table.stderr.log'
+        $tableStderr = if (Test-Path -LiteralPath $tableStderrPath) { Get-Content -LiteralPath $tableStderrPath -Raw } else { '' }
+        if ($tableStderr -notmatch 'drive exhaustive') {
+            Add-Stage 'natural-terminal' 'FAIL' 2 "room=$($script:RoomId) actions=$($script:Natural.actions) wallExhausted=$wall noExhaustiveDrive"
+            throw "The wall was exhausted but the service emitted no trusted exhaustive draw drive; see table.stderr.log."
+        }
+
+        $script:Blocker = $true
         $draw = Get-PgScalar -Database $script:TableDb -User 'b2_observer' -Sql "SELECT count(*) FROM table_store.table_event WHERE room_id='$($script:RoomId)' AND event_type=12"
         $outbox = Get-PgScalar -Database $script:TableDb -User 'b2_observer' -Sql "SELECT count(*) FROM table_store.settlement_outbox WHERE match_id='$($script:RoomId)'"
         $receipt = Get-PgScalar -Database $script:TableDb -User 'b2_observer' -Sql "SELECT count(*) FROM table_store.request_receipt WHERE room_id='$($script:RoomId)' AND request_id LIKE 'svc-exhaustive-%' AND status='APPLIED'"
