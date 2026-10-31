@@ -9,6 +9,7 @@ using Mahjong.Client;
 using Mahjong.Contracts;
 using Mahjong.Domain;
 using Mahjong.Domain.Rules;
+using Mahjong.TableRuntime;
 using Xunit;
 using DecisionView = Mahjong.Contracts.Wire.DecisionView;
 using LegalActionView = Mahjong.Contracts.Wire.LegalActionView;
@@ -289,6 +290,118 @@ namespace Mahjong.LocalHost.Tests
                 Assert.Equal(beforeReconcile.EventSeq, afterReconcile.EventSeq);
 
                 await recoveredSession.CloseAsync("RECONCILE_DONE", CancellationToken.None);
+            }
+            finally
+            {
+                await match.DisposeAsync();
+            }
+        }
+
+        [Fact]
+        public async Task RealMatchChannelDeadlineRetiresDecisionAndRejectsStaleControl()
+        {
+            await using var harness = new P41Harness();
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            string root = Path.Combine(harness.Root, "match-deadline-reject");
+            var options = new LocalMatchHostOptions
+            {
+                SaveDirectory = root,
+                MatchId = "deadline-reject",
+                OwnerInstanceId = "deadline-reject-owner",
+                LeaseDuration = TimeSpan.FromMinutes(10),
+                Environment = harness.Options.Environment,
+                Rules = new MatchRuleConfig(MatchLength.Tonpuusen, handsPerWind: 2, allowWestExtension: false)
+            };
+            options.RoundFactory = (state, hostOptions) =>
+                BuildRiichiWinRound(state.CurrentRoundId, state.Scores, state.RiichiSticks);
+
+            LocalMatchCoordinator match = await LocalMatchCoordinator.OpenAsync(options, ct);
+            try
+            {
+                LocalMatchRound round = await match.OpenRoundAsync(ct);
+                await round.Channel.OpenAsync(
+                    new TableChannelConnectRequest(round.Ticket, "deadline-reject", null), ct);
+                var session = new TableSession(round.Channel, new InMemoryOutboxStore());
+                await session.OpenAsync(new TableSessionOpenRequest(round.Ticket, "deadline-reject"), ct);
+                PlayerSnapshot? snapshot = null;
+                for (int i = 0; i < 100; i++)
+                {
+                    await session.PumpOnceAsync(ct);
+                    snapshot = session.PlayerSnapshot;
+                    if (snapshot?.PrivateView?.Decision != null)
+                    {
+                        break;
+                    }
+                }
+
+                Assert.NotNull(snapshot?.PrivateView?.Decision);
+                string oldDecision = snapshot!.PrivateView.Decision!.DecisionId;
+                harness.Clock.MonotonicMillis += 30_000L;
+                harness.Clock.UtcNowMs += 30_000L;
+                for (int i = 0; i < 300; i++)
+                {
+                    await session.PumpOnceAsync(ct);
+                    string? pending = ((LocalTableChannel)round.Channel).RuntimeForMatch!.ActorForTest
+                        .GetPendingDecisionId(0);
+                    if (!string.Equals(pending, oldDecision, StringComparison.Ordinal))
+                    {
+                        break;
+                    }
+
+                    await Task.Delay(20, ct);
+                }
+
+                Assert.True(
+                    !string.Equals(
+                        ((LocalTableChannel)round.Channel).RuntimeForMatch!.ActorForTest
+                            .GetPendingDecisionId(0),
+                        oldDecision,
+                        StringComparison.Ordinal),
+                    "the authoritative deadline must retire the old decision");
+                PlayerSnapshot staleBase = session.PlayerSnapshot!;
+                TableControlSnapshot before = await ((LocalTableChannel)round.Channel).RuntimeForMatch!
+                    .ActorForTest.GetControlSnapshotAsync(ct);
+                var resolved = new TaskCompletionSource<TableReceiptResolvedEventArgs>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                EventHandler<TableReceiptResolvedEventArgs> handler = (_, args) =>
+                {
+                    if (string.Equals(args.Command.RequestId, "deadline-reject-release", StringComparison.Ordinal))
+                    {
+                        resolved.TrySetResult(args);
+                    }
+                };
+                session.ReceiptResolved += handler;
+                try
+                {
+                    await session.SubmitAsync(new ProtocolCommand(
+                        CommandKind.ReleaseControl,
+                        CommandPayloadFactory.ReleaseControl(staleBase.RoundId, 0),
+                        new RequestId("deadline-reject-release"),
+                        session.Binding!.Scope.ScopeId,
+                        new StateVersion(staleBase.StateVersion),
+                        new RoundId(staleBase.RoundId),
+                        decisionId: new DecisionId(oldDecision),
+                        controlEpoch: new ControlEpoch(0)), ct);
+                    for (int i = 0; i < 300 && !resolved.Task.IsCompleted; i++)
+                    {
+                        await session.PumpOnceAsync(ct);
+                        await Task.Delay(20, ct);
+                    }
+                }
+                finally
+                {
+                    session.ReceiptResolved -= handler;
+                }
+
+                Assert.True(resolved.Task.IsCompleted, "deadline stale-control rejection did not arrive");
+                TableReceiptResolvedEventArgs receipt = await resolved.Task;
+                Assert.Equal(OutboxDisposition.Rejected, receipt.Resolution.Disposition);
+                Assert.Equal(ProtocolErrorCode.DecisionMismatch, receipt.Resolution.ReasonCode);
+                TableControlSnapshot after = await ((LocalTableChannel)round.Channel).RuntimeForMatch!
+                    .ActorForTest.GetControlSnapshotAsync(ct);
+                Assert.Equal(before.ControlVersion, after.ControlVersion);
+                Assert.Equal(before.Seats[0].ControlEpoch, after.Seats[0].ControlEpoch);
+                await session.CloseAsync("DEADLINE_REJECT_DONE", CancellationToken.None);
             }
             finally
             {
