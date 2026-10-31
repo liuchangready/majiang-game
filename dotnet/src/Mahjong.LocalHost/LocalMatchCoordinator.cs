@@ -18,7 +18,7 @@ namespace Mahjong.LocalHost
         public string MatchId { get; set; } = string.Empty;
         public int RulesetVersion { get; set; } = 1;
         public string OwnerInstanceId { get; set; } = Guid.NewGuid().ToString("N");
-        public TimeSpan LeaseDuration { get; set; } = TimeSpan.FromSeconds(10);
+        public TimeSpan LeaseDuration { get; set; } = TimeSpan.FromMinutes(10);
         public LocalHostEnvironment? Environment { get; set; }
 
         public MatchRuleConfig? Rules { get; set; }
@@ -346,6 +346,31 @@ namespace Mahjong.LocalHost
                         .Append(",deriveCandidates=").Append(deriveCandidates)
                         .Append(",hand=").Append(hand)
                         .Append(",cheatOffer=").Append(actor.HasActiveCheatOffer(seat));
+                }
+
+                if (snapshot.Phase == Mahjong.Domain.RoundPhase.ResponseWindow ||
+                    snapshot.Phase == Mahjong.Domain.RoundPhase.ChankanWindow)
+                {
+                    Mahjong.Domain.RoundResponseWindow? window = round.Window;
+                    builder.Append(";responseWindow=")
+                        .Append(window == null ? "null" : window.EligibleSeats.Count.ToString());
+                    if (window != null)
+                    {
+                        for (int i = 0; i < window.EligibleSeats.Count; i++)
+                        {
+                            int responseSeat = window.EligibleSeats[i];
+                            int responseCandidates = LocalCandidateProvider.DeriveResponseCandidates(
+                                round,
+                                responseSeat,
+                                window,
+                                noFuriten,
+                                noFuriten).Count;
+                            builder.Append(";resp").Append(responseSeat)
+                                .Append(":eligible=True")
+                                .Append(",responded=").Append(window.HasResponded(responseSeat))
+                                .Append(",responseCandidates=").Append(responseCandidates);
+                        }
+                    }
                 }
 
                 builder.Append(";driver=")

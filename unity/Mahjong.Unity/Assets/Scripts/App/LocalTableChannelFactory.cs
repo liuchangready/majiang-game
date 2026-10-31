@@ -96,7 +96,7 @@ namespace Mahjong.Unity.App
                 ? "unity-local-" + Guid.NewGuid().ToString("N")
                 : ownerInstanceId!;
             _saveDirectory = paths.LocalSaveDirectory;
-            _leaseDuration = leaseDuration ?? TimeSpan.FromSeconds(10);
+            _leaseDuration = leaseDuration ?? TimeSpan.FromMinutes(10);
         }
 
         /// <summary>
