@@ -258,6 +258,28 @@ namespace Mahjong.Unity.Tests.PlayMode
                         view = mapper.Project(coordinator.Current);
                         if (view.Board.Phase == PlayerGamePhase.RoundEnd)
                         {
+                            // Same production terminal/commit fence as the driver:
+                            // a terminal phase is evidence, not confirmation. Keep
+                            // polling the shared boundary while an own request is
+                            // still in flight; never commit on the phase alone.
+                            FullMatchTerminalGateResult gate = FullMatchTerminalCommitGate.Poll(
+                                execution,
+                                coordinator.Current,
+                                view,
+                                intentFactory,
+                                (long)(Time.realtimeSinceStartup * 1000f));
+                            if (gate.Status == FullMatchTerminalGateStatus.Waiting)
+                            {
+                                elapsed += Time.unscaledDeltaTime;
+                                yield return null;
+                                continue;
+                            }
+
+                            if (gate.MustFail)
+                            {
+                                Assert.Fail(gate.Code + ": " + gate.Detail);
+                            }
+
                             terminal = true;
                             break;
                         }
@@ -480,6 +502,14 @@ namespace Mahjong.Unity.Tests.PlayMode
             public List<ProtocolCommand> Submitted { get; } = new List<ProtocolCommand>();
 
             public int SubmitCount => Submitted.Count;
+
+            public int ReconcileCalls { get; private set; }
+
+            public Task ReconcileAsync(CancellationToken cancellationToken)
+            {
+                ReconcileCalls++;
+                return Task.CompletedTask;
+            }
 
             public event EventHandler<TableReceiptResolvedEventArgs>? ReceiptResolved;
 

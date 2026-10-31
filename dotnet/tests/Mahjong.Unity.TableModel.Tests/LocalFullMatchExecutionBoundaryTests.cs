@@ -784,6 +784,402 @@ namespace Mahjong.Unity.TableModel.Tests
             Assert.Equal(0, transport.SubmitCount);
         }
 
+        [Fact]
+        public void TerminalGateWaitsForDelayedAppliedReceiptThenCommitsOnce()
+        {
+            GateFixture fixture = NewGateFixture();
+            SessionViewState terminal = TerminalState(fixture);
+            fixture.Transport.Publish(terminal);
+            var sink = new CommitSink();
+
+            FullMatchTerminalGateResult waiting = PollTerminalGate(fixture, terminal, 0L);
+            Assert.Equal(FullMatchTerminalGateStatus.Waiting, waiting.Status);
+            Assert.False(waiting.MayCommit);
+            Assert.Equal(0, sink.Commits);
+
+            fixture.Transport.RaiseReceipt(AppliedReceipt(
+                fixture.Transport.Submitted[0], evaluated: 5, commandVersion: 6, eventSeq: 106));
+            FullMatchTerminalGateResult confirmed = PollTerminalGate(fixture, terminal, 10L);
+
+            Assert.Equal(FullMatchTerminalGateStatus.Confirmed, confirmed.Status);
+            Assert.True(confirmed.MayCommit);
+            Assert.True(confirmed.Outcome!.ConfirmedByVisibleEvent);
+            sink.Commit();
+            sink.OpenNext();
+            Assert.Equal(1, sink.Commits);
+            Assert.Equal(1, sink.NextOpens);
+            Assert.Equal(1, fixture.Transport.SubmitCount);
+            Assert.False(fixture.Ledger.IsUnresolved(fixture.Plan));
+            Assert.Equal(0, fixture.Transport.ReceiptHandlerCount);
+            Assert.Contains(fixture.Transport.Notices, n =>
+                n.Kind == FullMatchExecutionNoticeKind.ActionConfirmed &&
+                n.Plan.RequestId == fixture.Plan.RequestId);
+        }
+
+        [Fact]
+        public void TerminalGateMissingReceiptFailsBoundedWithZeroCommitAndPreservesIdentity()
+        {
+            GateFixture fixture = NewGateFixture();
+            SessionViewState terminal = TerminalState(fixture);
+            fixture.Transport.Publish(terminal);
+            var sink = new CommitSink();
+
+            FullMatchTerminalGateResult gate = PollTerminalGate(
+                fixture, terminal, FastBudget.ConfirmationTimeoutMs + 1L);
+
+            Assert.Equal(FullMatchTerminalGateStatus.Failed, gate.Status);
+            Assert.True(gate.MustFail);
+            Assert.False(gate.MayCommit);
+            Assert.Equal("RECEIPT_UNRESOLVED", gate.Code);
+            Assert.Equal(0, sink.Commits);
+            Assert.Equal(0, sink.NextOpens);
+            Assert.Equal(1, fixture.Transport.SubmitCount);
+            Assert.True(fixture.Ledger.IsUnresolved(fixture.Plan));
+            Assert.Equal(fixture.Plan.RequestId, fixture.Transport.Submitted[0].RequestId.Value);
+
+            fixture.Boundary.Dispose();
+            Assert.True(fixture.Ledger.IsUnresolved(fixture.Plan));
+            Assert.False(fixture.Ledger.MayIssueNewRequestId(fixture.Plan));
+            Assert.Equal(0, fixture.Transport.ReceiptHandlerCount);
+        }
+
+        [Fact]
+        public void TerminalGateNeverCompletingSubmitFailsBoundedWithoutCommit()
+        {
+            var neverCompletes = new TaskCompletionSource<CommandSubmission>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            GateFixture fixture = NewGateFixture(_ => neverCompletes.Task);
+            SessionViewState terminal = TerminalState(fixture);
+            fixture.Transport.Publish(terminal);
+            var sink = new CommitSink();
+
+            FullMatchTerminalGateResult gate = PollTerminalGate(
+                fixture, terminal, FastBudget.SubmitTimeoutMs);
+
+            Assert.Equal(FullMatchTerminalGateStatus.Failed, gate.Status);
+            Assert.Equal("SUBMIT_TIMEOUT", gate.Code);
+            Assert.Equal(0, sink.Commits);
+            Assert.Equal(0, sink.NextOpens);
+            Assert.Equal(1, fixture.Transport.SubmitCount);
+            Assert.True(fixture.Ledger.IsUnresolved(fixture.Plan));
+
+            fixture.Boundary.Dispose();
+            Assert.True(fixture.Ledger.IsUnresolved(fixture.Plan));
+            Assert.False(fixture.Ledger.MayIssueNewRequestId(fixture.Plan));
+            Assert.Equal(0, fixture.Transport.ReceiptHandlerCount);
+        }
+
+        [Theory]
+        [InlineData("request")]
+        [InlineData("command-version")]
+        [InlineData("round")]
+        [InlineData("recipient-seat")]
+        [InlineData("role")]
+        [InlineData("binding")]
+        [InlineData("scope")]
+        public void TerminalGateRejectsMismatchedIdentityWithZeroCommit(string mutation)
+        {
+            GateFixture fixture = NewGateFixture();
+            TableSessionBinding binding = mutation switch
+            {
+                "recipient-seat" => P43TestData.Binding(seat: 1),
+                "binding" => P43TestData.Binding(bindingEpoch: P43TestData.BindingEpoch + 1),
+                "scope" => P43TestData.Binding(scopeId: "scope-other"),
+                _ => fixture.Binding
+            };
+            string roundId = mutation == "round" ? "round-other" : P43TestData.RoundId;
+            SessionViewState terminal = DrawState(
+                binding,
+                fixture.Fence,
+                6,
+                106,
+                baseline: false,
+                roundEndedCommandVersion: 6,
+                phase: GamePhase.RoundEnd,
+                roundId: roundId);
+            if (mutation == "role")
+            {
+                ForceRoleForFaultInjection(terminal.VisibleEventBatch, ProtocolRole.Spectator);
+            }
+
+            fixture.Transport.Publish(terminal);
+            bool wrongVersion = mutation == "command-version";
+            fixture.Transport.RaiseReceipt(AppliedReceipt(
+                fixture.Transport.Submitted[0],
+                evaluated: wrongVersion ? 4UL : 5UL,
+                commandVersion: wrongVersion ? 5UL : 6UL,
+                eventSeq: 106,
+                requestIdOverride: mutation == "request" ? "fm-someone-else" : null));
+            var sink = new CommitSink();
+
+            FullMatchTerminalGateResult gate = PollTerminalGate(
+                fixture, terminal, FastBudget.ConfirmationTimeoutMs + 1L);
+
+            Assert.Equal(FullMatchTerminalGateStatus.Failed, gate.Status);
+            Assert.False(gate.MayCommit);
+            Assert.Equal(0, sink.Commits);
+            Assert.Equal(0, sink.NextOpens);
+            Assert.Equal(1, fixture.Transport.SubmitCount);
+            Assert.True(fixture.Ledger.IsUnresolved(fixture.Plan));
+            Assert.Equal(fixture.Plan.RequestId, fixture.Transport.Submitted[0].RequestId.Value);
+
+            fixture.Boundary.Dispose();
+            Assert.True(fixture.Ledger.IsUnresolved(fixture.Plan));
+            Assert.False(fixture.Ledger.MayIssueNewRequestId(fixture.Plan));
+            Assert.Equal(0, fixture.Transport.ReceiptHandlerCount);
+        }
+
+        [Fact]
+        public void TerminalGateDefinitiveRejectionIsANoOpAndNeverConfirmed()
+        {
+            GateFixture fixture = NewGateFixture();
+            SessionViewState terminal = TerminalState(fixture);
+            fixture.Transport.Publish(terminal);
+            fixture.Transport.RaiseReceipt(RejectedReceipt(
+                fixture.Transport.Submitted[0], "STALE_STATE_VERSION"));
+            var sink = new CommitSink();
+
+            FullMatchTerminalGateResult gate = PollTerminalGate(
+                fixture, terminal, FastBudget.ConfirmationTimeoutMs + 1L);
+
+            Assert.Equal(FullMatchTerminalGateStatus.Replanned, gate.Status);
+            Assert.True(gate.MayCommit);
+            Assert.NotEqual(FullMatchTerminalGateStatus.Confirmed, gate.Status);
+            Assert.DoesNotContain(fixture.Transport.Notices, n =>
+                n.Kind == FullMatchExecutionNoticeKind.ActionConfirmed);
+            Assert.False(fixture.Ledger.IsUnresolved(fixture.Plan));
+            Assert.Equal(1, fixture.Transport.SubmitCount);
+            Assert.Equal(0, fixture.Transport.ReceiptHandlerCount);
+            sink.Commit();
+            sink.OpenNext();
+            Assert.Equal(1, sink.Commits);
+            Assert.Equal(1, sink.NextOpens);
+        }
+
+        [Fact]
+        public void TerminalGateWithNoActiveOwnRequestCommitsNormally()
+        {
+            FullMatchTerminalGateResult gate = FullMatchTerminalCommitGate.Poll(
+                null,
+                null!,
+                null!,
+                null!,
+                0L);
+            Assert.Equal(FullMatchTerminalGateStatus.NoActiveRequest, gate.Status);
+            Assert.True(gate.MayCommit);
+        }
+
+        [Fact]
+        public void DisposedActiveRequestRemainsUnresolvedAndNotReissuable()
+        {
+            GateFixture fixture = NewGateFixture();
+            Assert.True(fixture.Boundary.HasActiveRequest);
+
+            fixture.Boundary.Dispose();
+
+            Assert.True(fixture.Ledger.IsUnresolved(fixture.Plan));
+            Assert.False(fixture.Ledger.MayIssueNewRequestId(fixture.Plan));
+            Assert.False(fixture.Boundary.HasActiveRequest);
+            Assert.Equal(0, fixture.Transport.ReceiptHandlerCount);
+        }
+
+        [Fact]
+        public void SentWithoutReceiptReconcilesTheOriginalRequestAndConfirms()
+        {
+            var clock = new ManualTableClock();
+            object fence = NewFence();
+            TableSessionBinding binding = P43TestData.Binding();
+            SessionViewState baseline = DrawState(binding, fence, 5, 105, baseline: true);
+            var transport = new ScriptedTransport(baseline);
+            var ledger = new FullMatchRequestLedger();
+            var boundary = new FullMatchExecutionBoundary(
+                transport,
+                ledger,
+                new FullMatchExecutionBudget(1_000L, 2_000L, 1_000L, 100L));
+            var mapper = new PlayerTableProjectionMapper(clock);
+            var factory = new TableCommandIntentFactory(clock);
+            FullMatchActionPlan expected = ExpectedDrawPlan(baseline, clock, factory);
+            SessionViewState terminal = DrawState(
+                binding,
+                fence,
+                6,
+                106,
+                baseline: false,
+                roundEndedCommandVersion: 6,
+                phase: GamePhase.RoundEnd);
+
+            boundary.Poll(baseline, mapper.Project(baseline), factory, 0L);
+            Assert.Equal(1, transport.SubmitCount);
+            transport.Publish(terminal);
+            transport.Reconcile = _ =>
+            {
+                transport.RaiseReceipt(AppliedReceipt(
+                    transport.Submitted[0], evaluated: 5, commandVersion: 6, eventSeq: 106));
+                return Task.CompletedTask;
+            };
+
+            FullMatchExecutionOutcome outcome = boundary.Poll(
+                terminal,
+                mapper.Project(terminal),
+                factory,
+                100L);
+
+            Assert.Equal(FullMatchExecutionStatus.Confirmed, outcome.Status);
+            Assert.Equal(1, transport.SubmitCount);
+            Assert.Equal(1, transport.ReconcileCalls);
+            Assert.Equal(expected.RequestId, transport.Submitted[0].RequestId.Value);
+            Assert.False(ledger.IsUnresolved(expected));
+            Assert.Equal(0, transport.ReceiptHandlerCount);
+        }
+
+        [Fact]
+        public void ReconciledButStillUnresolvedFailsBoundedWithoutResendOrNewId()
+        {
+            var clock = new ManualTableClock();
+            object fence = NewFence();
+            TableSessionBinding binding = P43TestData.Binding();
+            SessionViewState baseline = DrawState(binding, fence, 5, 105, baseline: true);
+            var transport = new ScriptedTransport(baseline);
+            var ledger = new FullMatchRequestLedger();
+            var boundary = new FullMatchExecutionBoundary(
+                transport,
+                ledger,
+                new FullMatchExecutionBudget(1_000L, 2_000L, 1_000L, 100L));
+            var mapper = new PlayerTableProjectionMapper(clock);
+            var factory = new TableCommandIntentFactory(clock);
+            FullMatchActionPlan expected = ExpectedDrawPlan(baseline, clock, factory);
+            SessionViewState terminal = DrawState(
+                binding,
+                fence,
+                6,
+                106,
+                baseline: false,
+                roundEndedCommandVersion: 6,
+                phase: GamePhase.RoundEnd);
+
+            boundary.Poll(baseline, mapper.Project(baseline), factory, 0L);
+            transport.Publish(terminal);
+            transport.Reconcile = _ => Task.CompletedTask;
+
+            FullMatchExecutionOutcome waiting = boundary.Poll(
+                terminal,
+                mapper.Project(terminal),
+                factory,
+                100L);
+            Assert.Equal(FullMatchExecutionStatus.Waiting, waiting.Status);
+            Assert.Equal(1, transport.ReconcileCalls);
+
+            FullMatchExecutionOutcome failed = boundary.Poll(
+                terminal,
+                mapper.Project(terminal),
+                factory,
+                2_001L);
+            Assert.Equal(FullMatchExecutionStatus.Failed, failed.Status);
+            Assert.Equal("RECEIPT_UNRESOLVED", failed.Code);
+            Assert.Equal(1, transport.SubmitCount);
+            Assert.Equal(1, transport.ReconcileCalls);
+            Assert.Equal(expected.RequestId, transport.Submitted[0].RequestId.Value);
+            Assert.True(ledger.IsUnresolved(expected));
+            Assert.False(ledger.MayIssueNewRequestId(expected));
+        }
+
+        private static FullMatchTerminalGateResult PollTerminalGate(
+            GateFixture fixture,
+            SessionViewState terminal,
+            long nowMs)
+        {
+            return FullMatchTerminalCommitGate.Poll(
+                fixture.Boundary,
+                terminal,
+                fixture.Mapper.Project(terminal),
+                fixture.Factory,
+                nowMs);
+        }
+
+        private static SessionViewState TerminalState(GateFixture fixture)
+        {
+            return DrawState(
+                fixture.Binding,
+                fixture.Fence,
+                6,
+                106,
+                baseline: false,
+                roundEndedCommandVersion: 6,
+                phase: GamePhase.RoundEnd);
+        }
+
+        private static GateFixture NewGateFixture(
+            Func<ProtocolCommand, Task<CommandSubmission>>? submit = null)
+        {
+            var clock = new ManualTableClock();
+            object fence = NewFence();
+            TableSessionBinding binding = P43TestData.Binding();
+            SessionViewState baseline = DrawState(
+                binding, fence, 5, 105, baseline: true);
+            var transport = new ScriptedTransport(baseline, submit);
+            var ledger = new FullMatchRequestLedger();
+            var boundary = new FullMatchExecutionBoundary(
+                transport,
+                ledger,
+                FastBudget,
+                transport.Notices.Add);
+            var mapper = new PlayerTableProjectionMapper(clock);
+            var factory = new TableCommandIntentFactory(clock);
+            FullMatchActionPlan plan = ExpectedDrawPlan(baseline, clock, factory);
+            FullMatchExecutionOutcome first = boundary.Poll(
+                baseline,
+                mapper.Project(baseline),
+                factory,
+                0L);
+            Assert.Equal(FullMatchExecutionStatus.Waiting, first.Status);
+            Assert.Equal(1, transport.SubmitCount);
+            return new GateFixture(
+                clock, fence, binding, transport, ledger, boundary, mapper, factory, plan);
+        }
+
+        private sealed class GateFixture
+        {
+            public GateFixture(
+                ManualTableClock clock,
+                object fence,
+                TableSessionBinding binding,
+                ScriptedTransport transport,
+                FullMatchRequestLedger ledger,
+                FullMatchExecutionBoundary boundary,
+                PlayerTableProjectionMapper mapper,
+                TableCommandIntentFactory factory,
+                FullMatchActionPlan plan)
+            {
+                Clock = clock;
+                Fence = fence;
+                Binding = binding;
+                Transport = transport;
+                Ledger = ledger;
+                Boundary = boundary;
+                Mapper = mapper;
+                Factory = factory;
+                Plan = plan;
+            }
+
+            public ManualTableClock Clock { get; }
+            public object Fence { get; }
+            public TableSessionBinding Binding { get; }
+            public ScriptedTransport Transport { get; }
+            public FullMatchRequestLedger Ledger { get; }
+            public FullMatchExecutionBoundary Boundary { get; }
+            public PlayerTableProjectionMapper Mapper { get; }
+            public TableCommandIntentFactory Factory { get; }
+            public FullMatchActionPlan Plan { get; }
+        }
+
+        private sealed class CommitSink
+        {
+            public int Commits { get; private set; }
+            public int NextOpens { get; private set; }
+            public void Commit() => Commits++;
+            public void OpenNext() => NextOpens++;
+        }
+
         private static SessionViewState DrawState(
             TableSessionBinding binding,
             object fence,
@@ -1047,7 +1443,39 @@ namespace Mahjong.Unity.TableModel.Tests
 
             public int SubmitCount => Submitted.Count;
 
-            public event EventHandler<TableReceiptResolvedEventArgs>? ReceiptResolved;
+            public Func<CancellationToken, Task>? Reconcile { get; set; }
+
+            public int ReconcileCalls { get; private set; }
+
+            public Task ReconcileAsync(CancellationToken cancellationToken)
+            {
+                ReconcileCalls++;
+                return Reconcile != null ? Reconcile(cancellationToken) : Task.CompletedTask;
+            }
+
+            private readonly List<EventHandler<TableReceiptResolvedEventArgs>> _receiptHandlers =
+                new List<EventHandler<TableReceiptResolvedEventArgs>>();
+
+            public int ReceiptHandlerCount => _receiptHandlers.Count;
+
+            public event EventHandler<TableReceiptResolvedEventArgs>? ReceiptResolved
+            {
+                add
+                {
+                    if (value != null)
+                    {
+                        _receiptHandlers.Add(value);
+                    }
+                }
+
+                remove
+                {
+                    if (value != null)
+                    {
+                        _receiptHandlers.Remove(value);
+                    }
+                }
+            }
 
             public Task<CommandSubmission> SubmitAsync(
                 ProtocolCommand command,
@@ -1059,7 +1487,11 @@ namespace Mahjong.Unity.TableModel.Tests
 
             public void RaiseReceipt(TableReceiptResolvedEventArgs args)
             {
-                ReceiptResolved?.Invoke(this, args);
+                EventHandler<TableReceiptResolvedEventArgs>[] handlers = _receiptHandlers.ToArray();
+                for (int i = 0; i < handlers.Length; i++)
+                {
+                    handlers[i](this, args);
+                }
             }
 
             public void Publish(SessionViewState state)

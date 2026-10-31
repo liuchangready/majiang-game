@@ -454,6 +454,34 @@ namespace Mahjong.Unity.App
             return await queue.SubmitAsync(command, linkedCts.Token).ConfigureAwait(false);
         }
 
+        /// <summary>
+        /// Read-only reconciliation for already-persisted commands. It asks the
+        /// server for the original request ids/scopes and never mints or resends a
+        /// replacement request. The full-match driver uses this only after a sent
+        /// command stays unresolved past its bounded reconciliation interval.
+        /// </summary>
+        public async Task ReconcilePendingAsync(CancellationToken cancellationToken)
+        {
+            TableSessionOperationQueue? queue;
+            lock (_stateGate)
+            {
+                if (_terminal != null || _quarantined)
+                {
+                    throw new InvalidOperationException(
+                        $"SessionCoordinator is closed or quarantined (Outcome={_terminal?.Outcome}, Quarantined={_quarantined}).");
+                }
+
+                queue = _operationQueue;
+                if (queue == null)
+                {
+                    throw new InvalidOperationException("No active TableSessionOperationQueue to reconcile commands.");
+                }
+            }
+
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _runCts.Token);
+            await queue.ReconcilePendingAsync(linkedCts.Token).ConfigureAwait(false);
+        }
+
         public Task<ShutdownResult> ShutdownAsync(string reason = "APP_QUIT")
         {
             lock (_stateGate)

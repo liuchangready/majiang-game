@@ -141,7 +141,8 @@ namespace Mahjong.Unity.App
                 transport,
                 _requestLedger,
                 budget,
-                OnExecutionNotice);
+                OnExecutionNotice,
+                OnExecutionDiagnostic);
             var clock = new SystemTableClientClock();
             var mapper = new PlayerTableProjectionMapper(clock);
             var intentFactory = new TableCommandIntentFactory(clock);
@@ -625,8 +626,6 @@ namespace Mahjong.Unity.App
                                 yield break;
                             }
 
-                            _terminals.Add(terminal!);
-                            RecordScenarios(terminal!);
                             LogEvent(
                                 "round_terminal",
                                 "\"roundId\":\"" + Json(terminal!.RoundId) + "\"" +
@@ -636,12 +635,102 @@ namespace Mahjong.Unity.App
                                 ",\"scores\":[" + Scores(terminal.FinalScores) + "]" +
                                 ",\"riichiSticks\":" + Num(terminal.RemainingRiichiSticks));
 
-                            // A terminal round ends the lifetime of any in-flight
-                            // request. Detach the shared boundary before recording
-                            // and opening the next round so a late receipt (e.g. the
-                            // host's exhausted-wall settlement conversion) can never
-                            // be evaluated against the next round's state.
+                            // The terminal phase is evidence, not confirmation. If
+                            // this round still has an own in-flight request, resolve
+                            // it through the same production boundary before
+                            // committing, closing or opening the next round. A
+                            // missing/mismatched receipt fails closed with the
+                            // original request identity still unresolved; the
+                            // terminal view is never used to confirm a next-round
+                            // request and never silently erases the ledger fence.
+                            bool terminalGateWaitLogged = false;
+                            while (_execution != null && _execution.HasActiveRequest)
+                            {
+                                coordinator = composition.SessionCoordinator;
+                                if (coordinator == null)
+                                {
+                                    Fail(
+                                        ExitSession,
+                                        "SESSION_LOST",
+                                        "The Client session disappeared while the terminal request was still unresolved.");
+                                    yield return Finish();
+                                    yield break;
+                                }
+
+                                view = mapper.Project(coordinator.Current);
+                                FullMatchTerminalGateResult gate = FullMatchTerminalCommitGate.Poll(
+                                    _execution,
+                                    coordinator.Current,
+                                    view,
+                                    intentFactory,
+                                    NowMilliseconds());
+                                if (gate.Status == FullMatchTerminalGateStatus.Waiting)
+                                {
+                                    if (!terminalGateWaitLogged)
+                                    {
+                                        terminalGateWaitLogged = true;
+                                        LogEvent(
+                                            "terminal_gate_wait",
+                                            "\"roundId\":\"" + Json(view.Identity.RoundId) + "\"" +
+                                            ",\"stateVersion\":" + Num(view.Identity.StateVersion) +
+                                            ",\"outcome\":\"WAITING_FOR_OWN_REQUEST\"");
+                                    }
+
+                                    if (Time.realtimeSinceStartup > matchTimeout)
+                                    {
+                                        Fail(
+                                            ExitTimeout,
+                                            "MATCH_TIMEOUT",
+                                            "The full-match driver exceeded its bounded match time while resolving the terminal request.");
+                                        yield return Finish();
+                                        yield break;
+                                    }
+
+                                    if (Time.realtimeSinceStartup > roundDeadline)
+                                    {
+                                        Fail(
+                                            ExitTimeout,
+                                            "ROUND_TIMEOUT",
+                                            "Round '" + view.Identity.RoundId +
+                                            "' exceeded its bounded time while the terminal request was still unresolved.");
+                                        yield return Finish();
+                                        yield break;
+                                    }
+
+                                    yield return null;
+                                    continue;
+                                }
+
+                                if (gate.MustFail)
+                                {
+                                    LogEvent(
+                                        "terminal_gate_failed",
+                                        "\"roundId\":\"" + Json(view.Identity.RoundId) + "\"" +
+                                        ",\"code\":\"" + Json(gate.Code) + "\"" +
+                                        ",\"detail\":\"" + Json(gate.Detail) + "\"");
+                                    Fail(
+                                        ExitCodeForExecutionFailure(gate.Outcome!),
+                                        gate.Code,
+                                        gate.Detail);
+                                    yield return Finish();
+                                    yield break;
+                                }
+
+                                LogEvent(
+                                    "terminal_gate_resolved",
+                                    "\"roundId\":\"" + Json(view.Identity.RoundId) + "\"" +
+                                    ",\"status\":\"" + gate.Status + "\"" +
+                                    ",\"code\":\"" + Json(gate.Code) + "\"");
+                                break;
+                            }
+
                             AbandonExecutionBoundary();
+
+                            // Only a terminal whose own in-flight request is
+                            // resolved may enter the committed terminal set. A
+                            // gate failure above exits without this row.
+                            _terminals.Add(terminal!);
+                            RecordScenarios(terminal!);
 
                             Task<LocalMatchSnapshot> recordTask = matchControl.RecordRoundCompletionAsync(CancellationToken.None);
                             float recordDeadline = Time.realtimeSinceStartup + 20f;
@@ -818,12 +907,16 @@ namespace Mahjong.Unity.App
         {
             if (_executionTransport == null)
             {
-                _executionTransport = new FullMatchSessionTransport(coordinator);
+                _executionTransport = new FullMatchSessionTransport(coordinator)
+                {
+                    Diagnostic = OnExecutionDiagnostic
+                };
                 _execution = new FullMatchExecutionBoundary(
                     _executionTransport,
                     _requestLedger,
                     FullMatchExecutionBudget.Production,
-                    OnExecutionNotice);
+                    OnExecutionNotice,
+                    OnExecutionDiagnostic);
                 return;
             }
 
@@ -879,6 +972,16 @@ namespace Mahjong.Unity.App
                 default:
                     return ExitUnexpected;
             }
+        }
+
+        /// <summary>
+        /// Diagnostic facts from the production boundary/transport. These rows
+        /// identify the exact request/queue handoff and receipt resolution point;
+        /// they never substitute for a confirmation or add progress.
+        /// </summary>
+        private void OnExecutionDiagnostic(string kind, string fields)
+        {
+            LogEvent(kind, fields);
         }
 
         /// <summary>
@@ -1385,6 +1488,9 @@ namespace Mahjong.Unity.App
             Attach(coordinator);
         }
 
+        /// <summary>Optional diagnostic sink (kind, JSON fields) for evidence only.</summary>
+        public Action<string, string>? Diagnostic { get; set; }
+
         public ISessionView View =>
             _coordinator ?? throw new InvalidOperationException("No production session is attached.");
 
@@ -1416,15 +1522,60 @@ namespace Mahjong.Unity.App
             return coordinator.SubmitAsync(command, cancellationToken);
         }
 
+        public Task ReconcileAsync(CancellationToken cancellationToken)
+        {
+            SessionCoordinator coordinator = _coordinator ??
+                throw new InvalidOperationException("No production session is attached.");
+            return coordinator.ReconcilePendingAsync(cancellationToken);
+        }
+
         public void Attach(SessionCoordinator coordinator)
         {
             if (coordinator == null) throw new ArgumentNullException(nameof(coordinator));
+            if (ReferenceEquals(_coordinator, coordinator))
+            {
+                return;
+            }
+
+            if (_coordinator != null)
+            {
+                _coordinator.ReceiptResolved -= OnCoordinatorReceipt;
+            }
+
             _coordinator = coordinator;
+            _coordinator.ReceiptResolved += OnCoordinatorReceipt;
+            Diagnostic?.Invoke(
+                "transport_attach",
+                "\"generation\":" + coordinator.Generation.ToString(CultureInfo.InvariantCulture));
         }
 
         public void Detach()
         {
-            _coordinator = null;
+            if (_coordinator != null)
+            {
+                _coordinator.ReceiptResolved -= OnCoordinatorReceipt;
+                _coordinator = null;
+                Diagnostic?.Invoke("transport_detach", "\"detached\":true");
+            }
+        }
+
+        private void OnCoordinatorReceipt(object? sender, TableReceiptResolvedEventArgs args)
+        {
+            // Independent of the boundary's own event subscription: if this row
+            // exists, the coordinator dispatch reached the transport; if the
+            // boundary's matching row does not, the defect is in subscription or
+            // strict filtering, not in the Client resolution.
+            Diagnostic?.Invoke(
+                "transport_receipt_seen",
+                "\"requestId\":\"" + args.Command.RequestId + "\"" +
+                ",\"scopeId\":\"" + args.Command.ScopeId + "\"" +
+                ",\"disposition\":\"" + args.Resolution.Disposition + "\"" +
+                ",\"status\":\"" + args.Resolution.ReceiptStatus + "\"" +
+                ",\"reason\":\"" + args.Resolution.ReasonCode + "\"" +
+                ",\"commandVersion\":" + (args.Resolution.CommandVersion.HasValue
+                    ? args.Resolution.CommandVersion.Value.Value.ToString(CultureInfo.InvariantCulture)
+                    : "null") +
+                ",\"fromLookup\":" + (args.Resolution.FromReceiptLookup ? "true" : "false"));
         }
     }
 }

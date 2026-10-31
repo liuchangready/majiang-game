@@ -100,14 +100,17 @@ namespace Mahjong.Unity.App
         public FullMatchExecutionBudget(
             long submitTimeoutMs,
             long confirmationTimeoutMs,
-            long decisionWaitTimeoutMs)
+            long decisionWaitTimeoutMs,
+            long reconcileAfterMs = 1_000L)
         {
             if (submitTimeoutMs <= 0) throw new ArgumentOutOfRangeException(nameof(submitTimeoutMs));
             if (confirmationTimeoutMs <= 0) throw new ArgumentOutOfRangeException(nameof(confirmationTimeoutMs));
             if (decisionWaitTimeoutMs <= 0) throw new ArgumentOutOfRangeException(nameof(decisionWaitTimeoutMs));
+            if (reconcileAfterMs <= 0) throw new ArgumentOutOfRangeException(nameof(reconcileAfterMs));
             SubmitTimeoutMs = submitTimeoutMs;
             ConfirmationTimeoutMs = confirmationTimeoutMs;
             DecisionWaitTimeoutMs = decisionWaitTimeoutMs;
+            ReconcileAfterMs = reconcileAfterMs;
         }
 
         public long SubmitTimeoutMs { get; }
@@ -116,9 +119,15 @@ namespace Mahjong.Unity.App
 
         public long DecisionWaitTimeoutMs { get; }
 
-        /// <summary>The accepted production driver waits (20s / 30s / 60s).</summary>
+        /// <summary>
+        /// A sent-but-unresolved request is reconciled with the server by looking up
+        /// the original request id after this interval; it is never resent.
+        /// </summary>
+        public long ReconcileAfterMs { get; }
+
+        /// <summary>The accepted production driver waits (20s / 30s / 60s / 1s reconcile).</summary>
         public static FullMatchExecutionBudget Production { get; } =
-            new FullMatchExecutionBudget(20_000L, 30_000L, 60_000L);
+            new FullMatchExecutionBudget(20_000L, 30_000L, 60_000L, 1_000L);
     }
 
     public sealed class FullMatchExecutionOutcome
@@ -203,6 +212,13 @@ namespace Mahjong.Unity.App
 
         Task<CommandSubmission> SubmitAsync(ProtocolCommand command, CancellationToken cancellationToken);
 
+        /// <summary>
+        /// Read-only receipt reconciliation for already-persisted commands. It must
+        /// query the original request ids/scopes; it must never mint or resend a
+        /// replacement request.
+        /// </summary>
+        Task ReconcileAsync(CancellationToken cancellationToken);
+
         event EventHandler<TableReceiptResolvedEventArgs>? ReceiptResolved;
     }
 
@@ -212,6 +228,7 @@ namespace Mahjong.Unity.App
         private readonly FullMatchRequestLedger _ledger;
         private readonly FullMatchExecutionBudget _budget;
         private readonly Action<FullMatchExecutionNotice>? _onNotice;
+        private readonly Action<string, string>? _onDiagnostic;
         private readonly object _gate = new object();
 
         private string _lastCompletedDecisionKey = string.Empty;
@@ -222,8 +239,15 @@ namespace Mahjong.Unity.App
         private FullMatchActionPlan? _activePlan;
         private ConfirmedVisibleEventObserver? _observer;
         private EventHandler<TableReceiptResolvedEventArgs>? _receiptHandler;
+        private EventHandler<TableReceiptResolvedEventArgs>? _receiptDiagnosticHandler;
         private TableReceiptResolvedEventArgs? _matchingReceipt;
         private Task<CommandSubmission>? _submit;
+        private bool _submitObserved;
+        private string _lastPendingDiagnostic = string.Empty;
+        private Task? _reconcileTask;
+        private bool _reconcileRequested;
+        private bool _reconcileFailureLogged;
+        private long _reconcileAfter;
         private long _submitDeadline;
         private long _confirmDeadline;
         private FullMatchExecutionOutcome? _terminalOutcome;
@@ -233,12 +257,14 @@ namespace Mahjong.Unity.App
             IFullMatchExecutionTransport transport,
             FullMatchRequestLedger ledger,
             FullMatchExecutionBudget budget,
-            Action<FullMatchExecutionNotice>? onNotice = null)
+            Action<FullMatchExecutionNotice>? onNotice = null,
+            Action<string, string>? onDiagnostic = null)
         {
             _transport = transport ?? throw new ArgumentNullException(nameof(transport));
             _ledger = ledger ?? throw new ArgumentNullException(nameof(ledger));
             _budget = budget ?? throw new ArgumentNullException(nameof(budget));
             _onNotice = onNotice;
+            _onDiagnostic = onDiagnostic;
         }
 
         public bool HasActiveRequest
@@ -324,6 +350,20 @@ namespace Mahjong.Unity.App
                 }
 
                 _disposed = true;
+                // Disposal is not a confirmation. An in-flight request whose
+                // outcome is still unknown keeps its original id/bytes fence as
+                // unresolved; it must never become freely re-issuable under a
+                // replacement id.
+                if (_activePlan != null)
+                {
+                    _ledger.MarkUnresolved(_activePlan);
+                    Diag(
+                        "boundary_disposed_unresolved",
+                        "\"requestId\":\"" + _activePlan.RequestId + "\"" +
+                        ",\"roundId\":\"" + _activePlan.RoundId + "\"" +
+                        ",\"action\":\"" + _activePlan.Action + "\"");
+                }
+
                 CleanupActive();
             }
         }
@@ -348,6 +388,12 @@ namespace Mahjong.Unity.App
 
             _activePlan = plan;
             _matchingReceipt = null;
+            _submitObserved = false;
+            _lastPendingDiagnostic = string.Empty;
+            _reconcileTask = null;
+            _reconcileRequested = false;
+            _reconcileFailureLogged = false;
+            _reconcileAfter = Add(nowMs, _budget.ReconcileAfterMs);
             _decisionWaitStartedAt = -1L;
             _observer = new ConfirmedVisibleEventObserver(_transport.View);
             _observer.BeginAction(session, plan.RequestId, plan.ScopeId, plan.Action);
@@ -369,8 +415,34 @@ namespace Mahjong.Unity.App
                     }
                 }
             };
+            _receiptDiagnosticHandler = (_, args) =>
+            {
+                // Log every transport receipt, before the plan/scope filter, so
+                // evidence distinguishes "no resolution reached the boundary" from
+                // "a mismatched resolution was rejected by the strict fence".
+                bool matches =
+                    string.Equals(args.Command.RequestId, plan.RequestId, StringComparison.Ordinal) &&
+                    string.Equals(args.Command.ScopeId, plan.ScopeId, StringComparison.Ordinal);
+                Diag(
+                    "client_receipt_seen",
+                    "\"requestId\":\"" + args.Command.RequestId + "\"" +
+                    ",\"scopeId\":\"" + args.Command.ScopeId + "\"" +
+                    ",\"matchesPlan\":" + Bool(matches) +
+                    ",\"disposition\":\"" + args.Resolution.Disposition + "\"" +
+                    ",\"status\":\"" + args.Resolution.ReceiptStatus + "\"" +
+                    ",\"reason\":\"" + args.Resolution.ReasonCode + "\"" +
+                    ",\"commandVersion\":" + (args.Resolution.CommandVersion.HasValue
+                        ? args.Resolution.CommandVersion.Value.Value.ToString(CultureInfo.InvariantCulture)
+                        : "null") +
+                    ",\"evaluatedStateVersion\":" + args.Resolution.EvaluatedStateVersion.Value.ToString(CultureInfo.InvariantCulture) +
+                    ",\"eventSeq\":" + (args.Resolution.EventSeq.HasValue
+                        ? args.Resolution.EventSeq.Value.Value.ToString(CultureInfo.InvariantCulture)
+                        : "null") +
+                    ",\"fromLookup\":" + Bool(args.Resolution.FromReceiptLookup));
+            };
             _transport.ReceiptResolved += _receiptHandler;
             _transport.ReceiptResolved += _observer.OnReceiptResolved;
+            _transport.ReceiptResolved += _receiptDiagnosticHandler;
             _submitDeadline = Add(nowMs, _budget.SubmitTimeoutMs);
             _confirmDeadline = Add(nowMs, _budget.ConfirmationTimeoutMs);
 
@@ -399,6 +471,7 @@ namespace Mahjong.Unity.App
                     FullMatchExecutionFailureStage.Submission);
             }
 
+            ObserveSubmission(plan);
             return Advance(nowMs, view);
         }
 
@@ -422,6 +495,8 @@ namespace Mahjong.Unity.App
                 return FullMatchExecutionOutcome.Waiting("submit in flight");
             }
 
+            ObserveSubmission(plan);
+
             if (submit.IsFaulted || submit.IsCanceled)
             {
                 _ledger.MarkUnresolved(plan);
@@ -440,6 +515,8 @@ namespace Mahjong.Unity.App
                     plan.RequestId + "' stays unresolved.",
                     FullMatchExecutionFailureStage.Submission);
             }
+
+            ObserveReconcile(plan, nowMs);
 
             ConfirmedVisibleActionEvent? confirmedEvent = _observer!.TryGetConfirmation();
             if (confirmedEvent != null &&
@@ -484,6 +561,8 @@ namespace Mahjong.Unity.App
                 // The only legal state-only action is a response Pass.
                 return Confirm(plan, visibleEvent: false);
             }
+
+            ObservePending(plan);
 
             if (nowMs < _confirmDeadline)
             {
@@ -564,6 +643,147 @@ namespace Mahjong.Unity.App
                 FullMatchExecutionFailureStage.Confirmation);
         }
 
+        private void ObserveReconcile(FullMatchActionPlan plan, long nowMs)
+        {
+            if (_reconcileTask != null && _reconcileTask.IsFaulted && !_reconcileFailureLogged)
+            {
+                _reconcileFailureLogged = true;
+                Diag(
+                    "client_reconcile_failed",
+                    "\"requestId\":\"" + plan.RequestId + "\"" +
+                    ",\"failure\":\"" + DescribeTaskFailure(_reconcileTask) + "\"");
+            }
+
+            if (_reconcileRequested ||
+                _matchingReceipt != null ||
+                nowMs < _reconcileAfter)
+            {
+                return;
+            }
+
+            // A sent command with no resolution is not blindly resent. The Client
+            // already owns a read-only receipt lookup for the original id/scope;
+            // asking it here can recover a lost push without changing the bytes or
+            // minting a replacement request.
+            _reconcileRequested = true;
+            Diag(
+                "client_reconcile_requested",
+                "\"requestId\":\"" + plan.RequestId + "\"" +
+                ",\"scopeId\":\"" + plan.ScopeId + "\"" +
+                ",\"roundId\":\"" + plan.RoundId + "\"" +
+                ",\"afterMs\":" + _budget.ReconcileAfterMs.ToString(CultureInfo.InvariantCulture));
+            try
+            {
+                _reconcileTask = _transport.ReconcileAsync(CancellationToken.None);
+            }
+            catch (Exception exception)
+            {
+                _reconcileFailureLogged = true;
+                Diag(
+                    "client_reconcile_failed",
+                    "\"requestId\":\"" + plan.RequestId + "\"" +
+                    ",\"failure\":\"" + exception.GetType().Name + ": " + exception.Message + "\"");
+            }
+        }
+
+        private void ObserveSubmission(FullMatchActionPlan plan)
+        {
+            if (_submitObserved)
+            {
+                return;
+            }
+
+            Task<CommandSubmission> submit = _submit!;
+            if (!submit.IsCompleted)
+            {
+                return;
+            }
+
+            _submitObserved = true;
+            if (submit.IsFaulted || submit.IsCanceled)
+            {
+                Diag(
+                    "command_submission",
+                    "\"requestId\":\"" + plan.RequestId + "\"" +
+                    ",\"scopeId\":\"" + plan.ScopeId + "\"" +
+                    ",\"completed\":true" +
+                    ",\"sent\":false" +
+                    ",\"failure\":\"" + DescribeTaskFailure(submit) + "\"");
+                return;
+            }
+
+            CommandSubmission submission = submit.Result;
+            PendingCommandSnapshot pending = submission.Command;
+            Diag(
+                "command_submission",
+                "\"requestId\":\"" + plan.RequestId + "\"" +
+                ",\"scopeId\":\"" + plan.ScopeId + "\"" +
+                ",\"kind\":\"" + plan.Command.Kind + "\"" +
+                ",\"roundId\":\"" + plan.RoundId + "\"" +
+                ",\"expectedStateVersion\":" + plan.Command.ExpectedStateVersion.Value.ToString(CultureInfo.InvariantCulture) +
+                ",\"payloadBytes\":" + plan.Command.Payload.Length.ToString(CultureInfo.InvariantCulture) +
+                ",\"payloadDigest\":\"" + plan.Command.CanonicalDigest.ToString() + "\"" +
+                ",\"sent\":" + Bool(submission.Sent) +
+                ",\"wasDuplicate\":" + Bool(submission.WasDuplicate) +
+                ",\"handedToTransport\":" + Bool(pending.HandedToTransport) +
+                ",\"deliveryUnknown\":" + Bool(pending.DeliveryUnknown) +
+                ",\"needsReconciliation\":" + Bool(pending.NeedsReconciliation) +
+                ",\"lastLookup\":" + (pending.LastLookup.HasValue ? "\"" + pending.LastLookup.Value + "\"" : "null") +
+                ",\"lastReceipt\":" + (pending.LastReceipt.HasValue ? "\"" + pending.LastReceipt.Value + "\"" : "null") +
+                ",\"queryInFlight\":" + Bool(pending.QueryInFlight));
+        }
+
+        private void ObservePending(FullMatchActionPlan plan)
+        {
+            SessionViewState state = _transport.View.Current;
+            PendingCommandSnapshot? pending = null;
+            for (int i = 0; i < state.PendingCommands.Count; i++)
+            {
+                PendingCommandSnapshot candidate = state.PendingCommands[i];
+                if (string.Equals(candidate.RequestId, plan.RequestId, StringComparison.Ordinal) &&
+                    string.Equals(candidate.ScopeId, plan.ScopeId, StringComparison.Ordinal))
+                {
+                    pending = candidate;
+                    break;
+                }
+            }
+
+            string key = pending == null
+                ? "absent"
+                : pending.NeedsReconciliation + "|" + pending.LastReceipt + "|" +
+                  pending.QueryInFlight + "|" + pending.LastLookup + "|" + pending.DeliveryUnknown;
+            if (string.Equals(key, _lastPendingDiagnostic, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _lastPendingDiagnostic = key;
+            Diag(
+                "client_pending",
+                "\"requestId\":\"" + plan.RequestId + "\"" +
+                ",\"present\":" + Bool(pending != null) +
+                ",\"pendingCount\":" + state.PendingCommands.Count.ToString(CultureInfo.InvariantCulture) +
+                ",\"state\":\"" + state.State + "\"" +
+                ",\"lastError\":\"" + (state.LastError ?? string.Empty) + "\"" +
+                (pending == null
+                    ? string.Empty
+                    : ",\"needsReconciliation\":" + Bool(pending.NeedsReconciliation) +
+                      ",\"deliveryUnknown\":" + Bool(pending.DeliveryUnknown) +
+                      ",\"queryInFlight\":" + Bool(pending.QueryInFlight) +
+                      ",\"lastReceipt\":" + (pending.LastReceipt.HasValue ? "\"" + pending.LastReceipt.Value + "\"" : "null") +
+                      ",\"lastLookup\":" + (pending.LastLookup.HasValue ? "\"" + pending.LastLookup.Value + "\"" : "null")));
+        }
+
+        private void Diag(string kind, string fields)
+        {
+            if (_onDiagnostic != null)
+            {
+                _onDiagnostic(kind, fields);
+            }
+        }
+
+        private static string Bool(bool value) => value ? "true" : "false";
+
         private FullMatchExecutionOutcome Confirm(FullMatchActionPlan plan, bool visibleEvent)
         {
             _ledger.MarkResolved(plan);
@@ -618,6 +838,12 @@ namespace Mahjong.Unity.App
                 _receiptHandler = null;
             }
 
+            if (_receiptDiagnosticHandler != null)
+            {
+                _transport.ReceiptResolved -= _receiptDiagnosticHandler;
+                _receiptDiagnosticHandler = null;
+            }
+
             if (_observer != null)
             {
                 _transport.ReceiptResolved -= _observer.OnReceiptResolved;
@@ -628,6 +854,11 @@ namespace Mahjong.Unity.App
             _activePlan = null;
             _matchingReceipt = null;
             _submit = null;
+            _submitObserved = false;
+            _lastPendingDiagnostic = string.Empty;
+            _reconcileTask = null;
+            _reconcileRequested = false;
+            _reconcileFailureLogged = false;
         }
 
         private void RecordCompleted(FullMatchActionPlan plan)
@@ -830,6 +1061,104 @@ namespace Mahjong.Unity.App
             }
 
             return builder.ToString();
+        }
+    }
+
+    /// <summary>
+    /// Outcome of the production terminal/commit gate. A terminal snapshot may be
+    /// captured and logged, but the caller may commit/close/open the next round only
+    /// when this gate says the own in-flight request is resolved (or there is none).
+    /// </summary>
+    public enum FullMatchTerminalGateStatus
+    {
+        NoActiveRequest = 0,
+        Waiting = 1,
+        Confirmed = 2,
+        Replanned = 3,
+        Failed = 4
+    }
+
+    public sealed class FullMatchTerminalGateResult
+    {
+        internal FullMatchTerminalGateResult(
+            FullMatchTerminalGateStatus status,
+            FullMatchExecutionOutcome? outcome)
+        {
+            Status = status;
+            Outcome = outcome;
+        }
+
+        public FullMatchTerminalGateStatus Status { get; }
+
+        public FullMatchExecutionOutcome? Outcome { get; }
+
+        public bool MayCommit =>
+            Status == FullMatchTerminalGateStatus.NoActiveRequest ||
+            Status == FullMatchTerminalGateStatus.Confirmed ||
+            Status == FullMatchTerminalGateStatus.Replanned;
+
+        public bool MustFail => Status == FullMatchTerminalGateStatus.Failed;
+
+        public string Code => Outcome?.Code ?? string.Empty;
+
+        public string Detail => Outcome?.Detail ?? string.Empty;
+    }
+
+    /// <summary>
+    /// Production terminal/commit fence. It never treats the terminal phase itself
+    /// as confirmation: when this round still has an own in-flight request, the
+    /// same boundary must confirm it (Applied receipt + same-round event), resolve
+    /// it as a definitive no-op, or fail closed with the original request id still
+    /// unresolved. A null boundary or an already-resolved one has no active request
+    /// and may commit the authoritative terminal normally.
+    /// </summary>
+    public static class FullMatchTerminalCommitGate
+    {
+        public static FullMatchTerminalGateResult Poll(
+            FullMatchExecutionBoundary? boundary,
+            SessionViewState session,
+            PlayerTableViewState view,
+            TableCommandIntentFactory factory,
+            long nowMs)
+        {
+            if (boundary == null)
+            {
+                return new FullMatchTerminalGateResult(
+                    FullMatchTerminalGateStatus.NoActiveRequest,
+                    null);
+            }
+
+            if (session == null) throw new ArgumentNullException(nameof(session));
+            if (view == null) throw new ArgumentNullException(nameof(view));
+            if (factory == null) throw new ArgumentNullException(nameof(factory));
+
+            if (!boundary.HasActiveRequest)
+            {
+                return new FullMatchTerminalGateResult(
+                    FullMatchTerminalGateStatus.NoActiveRequest,
+                    null);
+            }
+
+            FullMatchExecutionOutcome outcome = boundary.Poll(session, view, factory, nowMs);
+            switch (outcome.Status)
+            {
+                case FullMatchExecutionStatus.Confirmed:
+                    return new FullMatchTerminalGateResult(
+                        FullMatchTerminalGateStatus.Confirmed,
+                        outcome);
+                case FullMatchExecutionStatus.Replanned:
+                    return new FullMatchTerminalGateResult(
+                        FullMatchTerminalGateStatus.Replanned,
+                        outcome);
+                case FullMatchExecutionStatus.Failed:
+                    return new FullMatchTerminalGateResult(
+                        FullMatchTerminalGateStatus.Failed,
+                        outcome);
+                default:
+                    return new FullMatchTerminalGateResult(
+                        FullMatchTerminalGateStatus.Waiting,
+                        outcome);
+            }
         }
     }
 }
