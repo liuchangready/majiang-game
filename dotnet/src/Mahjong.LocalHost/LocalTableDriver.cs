@@ -29,6 +29,7 @@ namespace Mahjong.LocalHost
         private readonly string[] _lastDecisionKeys = new string[4];
         private long _requestCounter;
         private Task? _task;
+        private string _lastLoopErrorForTest = string.Empty;
 
         /// <summary>Test-only gate after an AI decision is chosen and before it is submitted.</summary>
         internal Func<int, Mahjong.Ai.AiObservation, Task>? BeforeAiSubmitForTest { get; set; }
@@ -66,6 +67,15 @@ namespace Mahjong.LocalHost
         }
 
         public bool IsRunning => _task != null && !_task.IsCompleted;
+
+        public string DescribeDriverForTest()
+        {
+            return "running=" + IsRunning +
+                   ";lastError=" + (_lastLoopErrorForTest.Length == 0 ? "-" : _lastLoopErrorForTest) +
+                   ";keys=" + string.Join(
+                       "|",
+                       _lastDecisionKeys.Select((value, seat) => seat + ":" + (value ?? "-")));
+        }
 
         public async Task StopAsync()
         {
@@ -128,8 +138,9 @@ namespace Mahjong.LocalHost
                 {
                     return;
                 }
-                catch (Exception)
+                catch (Exception exception)
                 {
+                    _lastLoopErrorForTest = exception.GetType().Name + ":" + exception.Message;
                 }
 
                 try

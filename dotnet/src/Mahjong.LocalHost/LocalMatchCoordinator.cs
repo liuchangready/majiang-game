@@ -324,21 +324,32 @@ namespace Mahjong.LocalHost
                     .GetControlSnapshotAsync(CancellationToken.None)
                     .GetAwaiter()
                     .GetResult();
+                Mahjong.Domain.RoundStateMachine round = actor.GetRoundStateForHost();
+                bool[] noFuriten = new bool[4];
                 var builder = new System.Text.StringBuilder();
                 builder.Append("phase=").Append(snapshot.Phase)
                     .Append(";seat=").Append(snapshot.CurrentSeat)
                     .Append(";state=").Append(snapshot.StateVersion.Value)
-                    .Append(";wall=").Append(actor.GetRoundStateForHost().Tiles.WallRemaining);
+                    .Append(";wall=").Append(round.Tiles.WallRemaining);
                 for (int seat = 0; seat < 4; seat++)
                 {
                     string? pending = actor.GetPendingDecisionId(seat);
-                    int candidates = actor.GetPendingDecisionCandidates(seat).Count;
+                    int pendingCandidates = actor.GetPendingDecisionCandidates(seat).Count;
+                    int deriveCandidates = LocalCandidateProvider.DeriveTurnCandidates(
+                        round, seat, noFuriten, noFuriten).Count;
+                    int hand = round.Tiles.CountAt(Mahjong.Domain.TileZone.Hand, seat);
                     builder.Append(";s").Append(seat)
                         .Append(":kind=").Append(control.Seats[seat].Kind)
                         .Append(",epoch=").Append(control.Seats[seat].ControlEpoch)
                         .Append(",pending=").Append(pending ?? "-")
-                        .Append(",candidates=").Append(candidates);
+                        .Append(",pendingCandidates=").Append(pendingCandidates)
+                        .Append(",deriveCandidates=").Append(deriveCandidates)
+                        .Append(",hand=").Append(hand)
+                        .Append(",cheatOffer=").Append(actor.HasActiveCheatOffer(seat));
                 }
+
+                builder.Append(";driver=")
+                    .Append(channel.RuntimeForMatch.DriverForTest.DescribeDriverForTest());
 
                 return builder.ToString();
             }

@@ -1,4 +1,4 @@
-﻿#nullable enable
+#nullable enable
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -113,10 +113,10 @@ namespace Mahjong.LocalHost.Tests
                     Assert.NotEqual(
                         ronCommand!.ScopeId!.Value,
                         recoveredSession.Binding!.Scope.ScopeId);
-                    // A recovered local channel receives a new client scope. The
-                    // original request cannot be replayed through the new session;
-                    // fail closed instead of fabricating a new scope/request. This
-                    // is the documented LocalHost/Client scope contract gap.
+                    // A recovered local channel receives a new client scope, so a
+                    // brand-new SubmitAsync carrying the old scope fails closed. This
+                    // is distinct from the original outbox receipt lookup below,
+                    // which must reconcile the unresolved request by its old key.
                     await Assert.ThrowsAsync<ArgumentException>(
                         () => recoveredSession.SubmitAsync(ronCommand, recoveredPumpCts.Token));
                     Assert.Equal(terminalState!.StateVersion, recoveredSession.PlayerSnapshot!.StateVersion);
@@ -236,6 +236,9 @@ namespace Mahjong.LocalHost.Tests
                 // Do not pump the receipt: the side effect is durable but the
                 // original scope/request remains unresolved in the same outbox.
                 Assert.Single(session.PendingCommands);
+                PendingCommandSnapshot pending = session.PendingCommands.Single();
+                string expectedDigest = CanonicalPayloadDigest.Compute(command.Payload).ToHex();
+                Assert.Equal(expectedDigest, pending.DigestSha256);
                 await session.CloseAsync("LOST_RECEIPT", CancellationToken.None);
 
                 LocalMatchRound recovered = await match.OpenRoundAsync(ct);
@@ -279,7 +282,8 @@ namespace Mahjong.LocalHost.Tests
                 Assert.NotNull(resolution);
                 Assert.Equal(ReceiptStatus.Applied, resolution!.Resolution.ReceiptStatus);
                 Assert.True(resolution.Resolution.FromReceiptLookup);
-                Assert.False(string.IsNullOrEmpty(resolution.Resolution.CanonicalPayloadSha256));
+                Assert.Equal(pending.Key, resolution.Command.Key);
+                Assert.Equal(expectedDigest, resolution.Resolution.CanonicalPayloadSha256);
                 PlayerSnapshot afterReconcile = recoveredSession.PlayerSnapshot!;
                 Assert.Equal(beforeReconcile.StateVersion, afterReconcile.StateVersion);
                 Assert.Equal(beforeReconcile.EventSeq, afterReconcile.EventSeq);
