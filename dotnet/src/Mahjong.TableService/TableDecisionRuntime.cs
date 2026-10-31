@@ -54,12 +54,19 @@ namespace Mahjong.TableService
         private Func<TableFuritenSnapshot?>? _furitenProvider;
 
         /// <summary>
-        /// P5.4b-B2-T: one exhaustive-draw attempt per (round, committed state version). An
-        /// attempt is never repeated with a different request identity: a rejected/unknown
-        /// result stays that request's outcome and the next tick cannot re-publish a terminal.
+        /// P5.4b-B2-T: one exhaustive-draw identity per (round, committed state version). A
+        /// transient known-not-committed failure is retried under the SAME identity with a
+        /// bounded attempt count; an in-flight/concurrent tick is fenced; an unknown commit
+        /// result reconciles the original receipt and never creates a new identity.
         /// </summary>
-        private string? _exhaustiveAttemptedRoundId;
-        private ulong _exhaustiveAttemptedVersion = ulong.MaxValue;
+        private string? _exhaustiveAttemptRoundId;
+        private ulong _exhaustiveAttemptVersion = ulong.MaxValue;
+        private int _exhaustiveAttempts;
+        private bool _exhaustiveInFlight;
+        private bool _exhaustiveStopped;
+        private string _exhaustiveFailure = string.Empty;
+
+        private const int MaxExhaustiveAttempts = 3;
 
         /// <summary>seat -> the open decision THIS service opened (or observed) for that seat.</summary>
         private readonly Dictionary<int, TableLiveDecision> _live = new Dictionary<int, TableLiveDecision>();
@@ -365,37 +372,150 @@ namespace Mahjong.TableService
                 scopeId: host.ServiceScope.ScopeId,
                 api: TableRoomHostAutoDraw.ExhaustiveApi,
                 payloadSha256: TablePayloadSha256.Compute(identity));
-            try
-            {
-                lock (_gate)
-                {
-                    if (string.Equals(_exhaustiveAttemptedRoundId, need.RoundId, StringComparison.Ordinal) &&
-                        _exhaustiveAttemptedVersion == need.StateVersion)
-                    {
-                        return;
-                    }
 
-                    // Mark immediately before the submit: a concurrent tick or an unknown
-                    // result must not create a second terminal request for this exact state.
-                    _exhaustiveAttemptedRoundId = need.RoundId;
-                    _exhaustiveAttemptedVersion = need.StateVersion;
+            int attempt;
+            lock (_gate)
+            {
+                if (!string.Equals(_exhaustiveAttemptRoundId, need.RoundId, StringComparison.Ordinal) ||
+                    _exhaustiveAttemptVersion != need.StateVersion)
+                {
+                    _exhaustiveAttemptRoundId = need.RoundId;
+                    _exhaustiveAttemptVersion = need.StateVersion;
+                    _exhaustiveAttempts = 0;
+                    _exhaustiveInFlight = false;
+                    _exhaustiveStopped = false;
+                    _exhaustiveFailure = string.Empty;
                 }
 
-                TableOperationResult result = await actor.SubmitSettlementAsync(request).ConfigureAwait(false);
-                Console.Error.WriteLine(
-                    "tablesvc: exhaustive draw result room=" + host.RoomId +
-                    " round=" + need.RoundId + " version=" + need.StateVersion +
-                    " seat=" + seat + " status=" + result.Status + " reason=" + result.ReasonCode +
-                    " detail=" + result.Detail);
+                if (_exhaustiveInFlight || _exhaustiveStopped)
+                {
+                    return;
+                }
+
+                if (_exhaustiveAttempts >= MaxExhaustiveAttempts)
+                {
+                    _exhaustiveStopped = true;
+                    _exhaustiveFailure = "ATTEMPT_LIMIT";
+                    return;
+                }
+
+                // Reserve the one in-flight slot before awaiting the actor. A concurrent tick
+                // cannot submit a second terminal request for this exact state.
+                _exhaustiveInFlight = true;
+                _exhaustiveAttempts++;
+                attempt = _exhaustiveAttempts;
+            }
+
+            TableOperationResult result;
+            try
+            {
+                result = await actor.SubmitSettlementAsync(request).ConfigureAwait(false);
             }
             catch (Exception exception)
             {
                 Console.Error.WriteLine(
                     "tablesvc: exhaustive draw submit fault room=" + host.RoomId +
                     " round=" + need.RoundId + " version=" + need.StateVersion +
-                    " seat=" + seat + " detail=" + exception.GetType().Name);
-                // A faulted/closed actor surfaces through the tick driver; the one attempted
-                // identity is never silently reissued under a new id.
+                    " seat=" + seat + " attempt=" + attempt +
+                    " detail=" + exception.GetType().Name);
+                bool committed = await OriginalExhaustiveReceiptExistsAsync(
+                        actor, host, requestId).ConfigureAwait(false);
+                lock (_gate)
+                {
+                    _exhaustiveInFlight = false;
+                    _exhaustiveStopped = committed || _exhaustiveAttempts >= MaxExhaustiveAttempts;
+                    _exhaustiveFailure = committed
+                        ? "UNKNOWN_REPLAYED_ORIGINAL_RECEIPT"
+                        : "SUBMIT_FAULT";
+                }
+
+                return;
+            }
+
+            Console.Error.WriteLine(
+                "tablesvc: exhaustive draw result room=" + host.RoomId +
+                " round=" + need.RoundId + " version=" + need.StateVersion +
+                " seat=" + seat + " attempt=" + attempt +
+                " status=" + result.Status + " reason=" + result.ReasonCode +
+                " detail=" + result.Detail);
+
+            if (result.Status == TableOperationStatus.Failed &&
+                string.Equals(result.ReasonCode, TableRuntimeReasonCode.CommitOutcomeUnknown, StringComparison.Ordinal))
+            {
+                // The commit may or may not have landed. Reconcile the ORIGINAL request; never
+                // issue a new identity and never publish a second terminal from this path.
+                bool committed = await OriginalExhaustiveReceiptExistsAsync(
+                        actor, host, requestId).ConfigureAwait(false);
+                lock (_gate)
+                {
+                    _exhaustiveInFlight = false;
+                    _exhaustiveStopped = true;
+                    _exhaustiveFailure = committed
+                        ? "UNKNOWN_REPLAYED_ORIGINAL_RECEIPT"
+                        : "UNKNOWN_ORIGINAL_RECEIPT_NOT_FOUND";
+                }
+
+                Console.Error.WriteLine(
+                    "tablesvc: exhaustive draw unknown-outcome reconciled room=" + host.RoomId +
+                    " requestId=" + requestId.Value + " originalReceiptFound=" + committed);
+                return;
+            }
+
+            lock (_gate)
+            {
+                _exhaustiveInFlight = false;
+                if (result.Status == TableOperationStatus.Accepted ||
+                    result.Status == TableOperationStatus.Replayed)
+                {
+                    _exhaustiveStopped = true;
+                }
+                else if (result.Status == TableOperationStatus.Rejected ||
+                         result.Status == TableOperationStatus.Conflict)
+                {
+                    _exhaustiveStopped = true;
+                    _exhaustiveFailure = result.ReasonCode;
+                }
+                else if (result.Status == TableOperationStatus.Failed)
+                {
+                    bool retryable = IsRetryableExhaustiveFailure(result.ReasonCode);
+                    _exhaustiveStopped = !retryable || _exhaustiveAttempts >= MaxExhaustiveAttempts;
+                    _exhaustiveFailure = result.ReasonCode;
+                }
+                else
+                {
+                    _exhaustiveStopped = true;
+                    _exhaustiveFailure = result.Status.ToString();
+                }
+            }
+        }
+
+        private static bool IsRetryableExhaustiveFailure(string? reasonCode)
+        {
+            return !string.Equals(reasonCode, TableRuntimeReasonCode.CommitOutcomeUnknown, StringComparison.Ordinal) &&
+                   !string.Equals(reasonCode, TableRuntimeReasonCode.CommitCancelled, StringComparison.Ordinal) &&
+                   !string.Equals(reasonCode, TableRuntimeReasonCode.StaleOwnerEpoch, StringComparison.Ordinal) &&
+                   !string.Equals(reasonCode, TableRuntimeReasonCode.StaleStateVersion, StringComparison.Ordinal) &&
+                   !string.Equals(reasonCode, TableRuntimeReasonCode.LeaseLost, StringComparison.Ordinal) &&
+                   !string.Equals(reasonCode, TableRuntimeReasonCode.CheckpointInvalid, StringComparison.Ordinal);
+        }
+
+        private static async Task<bool> OriginalExhaustiveReceiptExistsAsync(
+            TableActor actor,
+            RoomHost host,
+            RequestId requestId)
+        {
+            try
+            {
+                ReceiptLookupResult lookup = await actor.QueryReceiptAsync(
+                        TableRoomHostAutoDraw.ServiceAccountId,
+                        host.ServiceScope.ScopeId,
+                        requestId)
+                    .ConfigureAwait(false);
+                return lookup.Status == ReceiptLookupStatus.Found;
+            }
+            catch (Exception)
+            {
+                return false;
             }
         }
 
@@ -876,15 +996,11 @@ namespace Mahjong.TableService
                         continue;
                     }
 
-                    if (need.IsRiichi(claimSeat))
-                    {
-                        continue;
-                    }
-
+                    // A riichi seat keeps its Ron right but cannot Pon/Chi/Kan; treating
+                    // "riichi" as "not in the window" would silently drop a legal Ron.
+                    bool riichi = need.IsRiichi(claimSeat);
                     IReadOnlyList<TileId> hand = need.HandTiles(claimSeat);
                     int copies = 0;
-                    bool kanPossible = false;
-                    bool ponPossible = false;
                     for (int i = 0; i < hand.Count; i++)
                     {
                         if (hand[i].TypeIndex == discardedTile.TypeIndex)
@@ -893,19 +1009,22 @@ namespace Mahjong.TableService
                         }
                     }
 
-                    kanPossible = need.KanAvailable && copies >= 3;
-                    ponPossible = copies >= 2;
-                    bool chiPossible = claimSeat == (actingSeat + 1) % 4 &&
+                    bool kanPossible = !riichi && need.KanAvailable && copies >= 3;
+                    bool ponPossible = !riichi && copies >= 2;
+                    bool chiPossible = !riichi &&
+                                       claimSeat == (actingSeat + 1) % 4 &&
                                        discardedTile.TypeIndex < 27 &&
                                        ResponseWindowCandidatesChiPairExists(need, claimSeat, discardedTile);
                     // P5.4b-B2-T: a seat whose closed hand plus this exact tile is a complete
                     // hand must be eligible in the Domain window, otherwise its Ron would be
                     // silently dropped before the settlement authority could ever see it.
-                    // A committed furiten bit excludes it from the Ron-only case; yaku and
-                    // payments stay the actor/calculator's decision.
+                    // Missing temporary/riichi facts and complete discard furiten both fail
+                    // closed here; yaku and payments stay the actor/calculator's decision.
                     bool ronPossible = _needRound != null &&
-                                       (eligibleFuriten == null ||
-                                        !eligibleFuriten.IsFuriten(claimSeat)) &&
+                                       eligibleFuriten != null &&
+                                       !eligibleFuriten.IsFuriten(claimSeat) &&
+                                       !TableServiceRonEligibility.HasDiscardFuriten(
+                                           _needRound, claimSeat) &&
                                        TableServiceRonEligibility.HandCanRon(
                                            _needRound, claimSeat, discardedTile);
 

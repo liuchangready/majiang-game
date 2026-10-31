@@ -48,6 +48,11 @@ namespace Mahjong.P5_4b.B2.Terminal.Worker
                 }
 
                 string mode = args[0];
+                if (string.Equals(mode, "gate-selftest", StringComparison.Ordinal))
+                {
+                    return RunGateSelfTest();
+                }
+
                 Options options = Options.Parse(args.Skip(1).ToArray());
                 if (string.Equals(mode, "health", StringComparison.Ordinal))
                 {
@@ -338,6 +343,8 @@ namespace Mahjong.P5_4b.B2.Terminal.Worker
                 evidence["staleRejections"] = staleRejections;
                 evidence["cheatOfferSkips"] = cheatOfferSkips;
                 evidence["terminalReached"] = terminal != null;
+                bool? postUnchanged = null;
+                bool? postNoRepublish = null;
                 if (terminal != null)
                 {
                     WirePublicMatchView view = terminal.View;
@@ -365,22 +372,43 @@ namespace Mahjong.P5_4b.B2.Terminal.Worker
                         TimeSpan.FromSeconds(5),
                         "post-terminal stable version").ConfigureAwait(false);
                     PublicSnapshot? later = observer.LatestPublic;
+                    postUnchanged = later != null && later.StateVersion == terminalVersion;
+                    postNoRepublish = later != null &&
+                                      later.StateVersion == terminalVersion &&
+                                      later.View.SettlementEvents.Count == terminalEvents;
                     evidence["postTerminal"] = new
                     {
                         stateVersion = later?.StateVersion ?? 0UL,
-                        unchanged = later != null && later.StateVersion == terminalVersion,
+                        unchanged = postUnchanged,
                         settlementEvents = later?.View?.SettlementEvents.Count ?? -1,
-                        noRepublish = later != null &&
-                                      later.StateVersion == terminalVersion &&
-                                      later.View.SettlementEvents.Count == terminalEvents
+                        noRepublish = postNoRepublish
                     };
                 }
 
+                bool playersPrivacyViolated = players.Any(p => p.PrivacyViolated);
+                evidence["playersPrivacyViolated"] = playersPrivacyViolated;
+                evidence["spectatorPrivacyViolated"] = spectator?.PrivacyViolated ?? false;
+                if (terminal == null)
+                {
+                    WriteJson(outputPath, evidence);
+                    Console.WriteLine("B2-TERMINAL-NATURAL BLOCKED room=" + roomId +
+                                      " actions=" + actions);
+                    return ExitBlocked;
+                }
+
+                bool ok = EvaluateNaturalSuccess(
+                    terminalReached: true,
+                    spectatorPrivacyViolated: spectator!.PrivacyViolated,
+                    playersPrivacyViolated: playersPrivacyViolated,
+                    postTerminalUnchanged: postUnchanged,
+                    postTerminalNoRepublish: postNoRepublish,
+                    out string gateFailure);
+                evidence["gate"] = new { ok, failure = gateFailure };
                 WriteJson(outputPath, evidence);
-                Console.WriteLine("B2-TERMINAL-NATURAL " +
-                                  (terminal == null ? "BLOCKED" : "OK") +
-                                  " room=" + roomId + " actions=" + actions);
-                return terminal == null ? ExitBlocked : ExitOk;
+                Console.WriteLine("B2-TERMINAL-NATURAL " + (ok ? "OK" : "FAIL") +
+                                  " room=" + roomId + " actions=" + actions +
+                                  " gate=" + gateFailure);
+                return ok ? ExitOk : ExitFailed;
             }
             catch (Exception exception)
             {
@@ -452,15 +480,142 @@ namespace Mahjong.P5_4b.B2.Terminal.Worker
             evidence["settlementEvents"] = snapshot.View.SettlementEvents.Count;
             evidence["sessionFinished"] = snapshot.View.Session?.Finished ?? false;
             evidence["spectatorPrivacyViolated"] = spectator.PrivacyViolated;
+            bool ok = EvaluateVerifySuccess(
+                phaseRoundEnd: snapshot.View.Board.Phase == GamePhase.RoundEnd,
+                versionMatch: snapshot.StateVersion == expectedVersion,
+                settlementEventCountMatch: expectedSettlementEvents < 0 ||
+                                           snapshot.View.SettlementEvents.Count == expectedSettlementEvents,
+                spectatorPrivacyViolated: spectator.PrivacyViolated,
+                out string gateFailure);
+            evidence["gate"] = new { ok, failure = gateFailure };
             WriteJson(outputPath, evidence);
-            bool ok = snapshot.StateVersion == expectedVersion &&
-                      snapshot.View.Board.Phase == GamePhase.RoundEnd &&
-                      snapshot.StateVersion == expectedVersion &&
-                      (expectedSettlementEvents < 0 ||
-                       snapshot.View.SettlementEvents.Count == expectedSettlementEvents);
             Console.WriteLine("B2-TERMINAL-VERIFY " + (ok ? "OK" : "FAIL") +
-                              " room=" + roomId + " version=" + snapshot.StateVersion);
+                              " room=" + roomId + " version=" + snapshot.StateVersion +
+                              " gate=" + gateFailure);
             return ok ? ExitOk : ExitFailed;
+        }
+
+        /// <summary>
+        /// The actual natural-run success gate. Null/absent evidence is a failure, not a
+        /// default success; privacy violations and post-terminal re-publication are blocking.
+        /// </summary>
+        public static bool EvaluateNaturalSuccess(
+            bool terminalReached,
+            bool? spectatorPrivacyViolated,
+            bool? playersPrivacyViolated,
+            bool? postTerminalUnchanged,
+            bool? postTerminalNoRepublish,
+            out string failure)
+        {
+            if (!terminalReached)
+            {
+                failure = "terminal-missing";
+                return false;
+            }
+
+            if (spectatorPrivacyViolated != false)
+            {
+                failure = "spectator-privacy";
+                return false;
+            }
+
+            if (playersPrivacyViolated != false)
+            {
+                failure = "player-privacy";
+                return false;
+            }
+
+            if (postTerminalUnchanged != true)
+            {
+                failure = "terminal-version-changed-or-missing";
+                return false;
+            }
+
+            if (postTerminalNoRepublish != true)
+            {
+                failure = "terminal-republished-or-missing";
+                return false;
+            }
+
+            failure = string.Empty;
+            return true;
+        }
+
+        /// <summary>Actual post-restart success gate; privacy evidence is mandatory.</summary>
+        public static bool EvaluateVerifySuccess(
+            bool phaseRoundEnd,
+            bool versionMatch,
+            bool settlementEventCountMatch,
+            bool? spectatorPrivacyViolated,
+            out string failure)
+        {
+            if (!phaseRoundEnd)
+            {
+                failure = "phase-not-round-end";
+                return false;
+            }
+
+            if (!versionMatch)
+            {
+                failure = "terminal-version-mismatch";
+                return false;
+            }
+
+            if (!settlementEventCountMatch)
+            {
+                failure = "settlement-event-count-mismatch";
+                return false;
+            }
+
+            if (spectatorPrivacyViolated != false)
+            {
+                failure = "spectator-privacy";
+                return false;
+            }
+
+            failure = string.Empty;
+            return true;
+        }
+
+        private static int RunGateSelfTest()
+        {
+            int failed = 0;
+            void Check(string id, bool actual, bool expected)
+            {
+                bool ok = actual == expected;
+                Console.WriteLine("GATE-SELFTEST " + id + ": actual=" + actual +
+                                  " expected=" + expected + " " + (ok ? "PASS" : "FAIL"));
+                if (!ok)
+                {
+                    failed++;
+                }
+            }
+
+            Check("natural-good", EvaluateNaturalSuccess(
+                true, false, false, true, true, out _), true);
+            Check("natural-spectator-privacy", EvaluateNaturalSuccess(
+                true, true, false, true, true, out _), false);
+            Check("natural-player-privacy", EvaluateNaturalSuccess(
+                true, false, true, true, true, out _), false);
+            Check("natural-republish", EvaluateNaturalSuccess(
+                true, false, false, true, false, out _), false);
+            Check("natural-version-changed", EvaluateNaturalSuccess(
+                true, false, false, false, true, out _), false);
+            Check("natural-missing-privacy", EvaluateNaturalSuccess(
+                true, null, false, true, true, out _), false);
+            Check("natural-missing-republish", EvaluateNaturalSuccess(
+                true, false, false, true, null, out _), false);
+            Check("natural-terminal-missing", EvaluateNaturalSuccess(
+                false, false, false, true, true, out _), false);
+
+            Check("verify-good", EvaluateVerifySuccess(true, true, true, false, out _), true);
+            Check("verify-privacy", EvaluateVerifySuccess(true, true, true, true, out _), false);
+            Check("verify-missing-privacy", EvaluateVerifySuccess(true, true, true, null, out _), false);
+            Check("verify-version", EvaluateVerifySuccess(true, false, true, false, out _), false);
+            Check("verify-events", EvaluateVerifySuccess(true, true, false, false, out _), false);
+            Check("verify-phase", EvaluateVerifySuccess(false, true, true, false, out _), false);
+            Console.WriteLine("GATE-SELFTEST SUMMARY: failures=" + failed);
+            return failed == 0 ? ExitOk : ExitFailed;
         }
 
         public static string Redact(string? message)

@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 using Mahjong.Contracts;
 using Mahjong.Contracts.Wire;
 using Mahjong.Domain;
+using Mahjong.Domain.Rules;
 using Mahjong.TableRuntime;
 using Xunit;
 
@@ -602,6 +603,435 @@ namespace Mahjong.TableService.Tests
         }
 
         [Fact]
+        public async Task ClosedKanRinshan_IsAdvertisedAndSettlesThroughTheRealActor()
+        {
+            RoundStateMachine kan = ClosedKanRinshanWin("room-b2-kan-r1");
+            Assert.Single(kan.Melds);
+            Assert.Equal(RoundMeldKind.ClosedKan, kan.Melds[0].Kind);
+            Assert.Equal(11, kan.Tiles.TilesInZone(TileZone.Hand, 0).Count);
+            Assert.True(
+                TableServiceRonEligibility.CanTsumo(kan, 0),
+                "a closed-kan rinshan win must be advertised from the frozen evaluator, not a 14-tile count");
+
+            await using TableActor actor = RoomHost.CreateActor(
+                "room-b2-kan",
+                new TableServiceOptions(),
+                new TableServiceCommitPort(new OwnerEpoch(1)),
+                FrozenUtcClock.Instance,
+                publicationSink: null,
+                new TableStreamOptions(),
+                durable: null,
+                new OwnerEpoch(1),
+                kan,
+                new TableRoomDecisionState());
+            TableOperationResult result = await actor.SubmitSettlementAsync(
+                new TableSettlementRequest(
+                    new TableSettlementIntent(kan.RoundId, TableSettlementAction.Tsumo, 0),
+                    new RequestId("req-b2-kan"),
+                    new StateVersion(0),
+                    new OwnerEpoch(1),
+                    new ControlEpoch(0)));
+            Assert.Equal(TableOperationStatus.Accepted, result.Status);
+            Assert.True(actor.GetRoundStateForHost().IsFinished);
+            Assert.Equal(100000L, actor.GetRoundStateForHost().Result!.FinalScores.Sum());
+        }
+
+        [Fact]
+        public async Task OpenKanRinshan_WithOpenMeld_IsAdvertisedAndSettlesThroughTheRealActor()
+        {
+            RoundStateMachine kan = OpenKanRinshanWin("room-b2-openkan-r1");
+            Assert.Single(kan.Melds);
+            Assert.Equal(RoundMeldKind.OpenKan, kan.Melds[0].Kind);
+            Assert.Equal(11, kan.Tiles.TilesInZone(TileZone.Hand, 0).Count);
+            Assert.True(
+                TableServiceRonEligibility.CanTsumo(kan, 0),
+                "an open-kan yakuhai rinshan win must not be filtered by a closed 14-tile count");
+
+            await using TableActor actor = RoomHost.CreateActor(
+                "room-b2-openkan",
+                new TableServiceOptions(),
+                new TableServiceCommitPort(new OwnerEpoch(1)),
+                FrozenUtcClock.Instance,
+                publicationSink: null,
+                new TableStreamOptions(),
+                durable: null,
+                new OwnerEpoch(1),
+                kan,
+                new TableRoomDecisionState());
+            TableOperationResult result = await actor.SubmitSettlementAsync(
+                new TableSettlementRequest(
+                    new TableSettlementIntent(kan.RoundId, TableSettlementAction.Tsumo, 0),
+                    new RequestId("req-b2-openkan"),
+                    new StateVersion(0),
+                    new OwnerEpoch(1),
+                    new ControlEpoch(0)));
+            Assert.Equal(TableOperationStatus.Accepted, result.Status);
+            Assert.True(actor.GetRoundStateForHost().IsFinished);
+        }
+
+        [Fact]
+        public void TsumoEligibility_RejectsIncompleteHandAndWrongSeat()
+        {
+            RoundStateMachine win = DealerTsumoRound("room-b2-eligibility");
+            Assert.False(
+                TableServiceRonEligibility.CanTsumo(win, 1),
+                "only the current seat may be advertised for tsumo");
+            var fixture = new N1aTable { Dealer = 0 };
+            fixture.Hand(0, Tiles(0, 12, 24, 36, 48, 60, 72, 84, 96, 108, 112, 116, 120));
+            fixture.Drawn(0, new TileId(124));
+            RoundStateMachine incomplete = fixture.Build("room-b2-incomplete-r1");
+            Assert.False(
+                TableServiceRonEligibility.CanTsumo(incomplete, 0),
+                "an incomplete hand is not a tsumo candidate");
+        }
+
+        [Fact]
+        public void TemporaryFuriten_FailsClosedForRonEvenWithACompleteHand()
+        {
+            var fixture = new N1aTable { Dealer = 1 };
+            fixture.Hand(0, Tiles(124, 125, 126, 4, 8, 48, 52, 56, 92, 96, 100, 16, 17));
+            fixture.Hand(1, new TileId(0));
+            fixture.Drawn(1, new TileId(127));
+            RoundStateMachine round = fixture.Build("room-b2-temp-furiten-r1");
+            round = Apply(
+                round,
+                RoundCommand.Discard(round.RoundId, 1, new TileId(0), new[] { 0 }));
+            Assert.True(
+                TableServiceRonEligibility.CanRon(
+                    round, TableFuritenSnapshot.Empty(round.RoundId), 0));
+            Assert.False(
+                TableServiceRonEligibility.CanRon(
+                    round,
+                    new TableFuritenSnapshot(round.RoundId, temporaryMask: 1, riichiMask: 0),
+                    0),
+                "temporary furiten must fail closed for Ron");
+        }
+
+        [Fact]
+        public async Task DiscardFuriten_NonTargetWaitInHistory_IsNotAdvertisedAndActorRejectsRon()
+        {
+            RoundStateMachine ron = DiscardFuritenWindow("room-b2-discard-furiten-r1");
+            IReadOnlyCollection<int> waits = HandDecomposer.CalculateWaits(
+                ron.Tiles.TilesInZone(TileZone.Hand, 0));
+            Assert.Contains(new TileId(12).TypeIndex, waits);
+            Assert.Contains(new TileId(0).TypeIndex, waits);
+            Assert.True(
+                TableServiceRonEligibility.HasDiscardFuriten(ron, 0),
+                "the seat discarded the other wait (4m), not only the current target (1m)");
+            Assert.False(
+                TableServiceRonEligibility.CanRon(
+                    ron, TableFuritenSnapshot.Empty(ron.RoundId), 0));
+            Assert.False(
+                TableServiceRonEligibility.CanRon(ron, null, 0),
+                "missing temporary/riichi facts must fail closed even without discard history");
+
+            await using TableActor actor = RoomHost.CreateActor(
+                "room-b2-discard-furiten",
+                new TableServiceOptions(),
+                new TableServiceCommitPort(new OwnerEpoch(1)),
+                FrozenUtcClock.Instance,
+                publicationSink: null,
+                new TableStreamOptions(),
+                durable: null,
+                new OwnerEpoch(1),
+                ron,
+                new TableRoomDecisionState());
+            TableOperationResult result = await actor.SubmitSettlementAsync(
+                new TableSettlementRequest(
+                    new TableSettlementIntent(ron.RoundId, TableSettlementAction.Ron, 0),
+                    new RequestId("req-b2-discard-furiten"),
+                    new StateVersion(0),
+                    new OwnerEpoch(1),
+                    new ControlEpoch(0)));
+            Assert.Equal(TableOperationStatus.Rejected, result.Status);
+            Assert.False(actor.GetRoundStateForHost().IsFinished);
+            Assert.Contains("FURITENRON", result.ReasonCode, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void DiscardFuriten_CompleteHistoryIncludesCalledAwayDiscard()
+        {
+            var fixture = new N1aTable { Dealer = 0 };
+            fixture.Hand(0, Tiles(0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48));
+            fixture.Drawn(0, new TileId(127));
+            fixture.Hand(1, Tiles(1, 2));
+            RoundStateMachine round = fixture.Build("room-b2-called-away-r1");
+            round = Apply(
+                round,
+                RoundCommand.Discard(round.RoundId, 0, new TileId(0), new[] { 1 }));
+            Assert.Equal(RoundPhase.ResponseWindow, round.Phase);
+            round = Apply(
+                round,
+                RoundCommand.Pon(round.RoundId, 1, new TileId(0), new TileId(1), new TileId(2)));
+            RoundMeld called = Assert.Single(round.Melds);
+            Assert.Equal(0, called.FromSeat);
+            Assert.Equal(0, called.CalledTile.TypeIndex);
+            Assert.Contains(
+                0,
+                TableServiceRonEligibility.CompleteDiscardHistoryTypes(round, 0));
+            Assert.DoesNotContain(
+                0,
+                TableServiceRonEligibility.CompleteDiscardHistoryTypes(round, 1));
+        }
+
+        [Fact]
+        public async Task AbortiveDraw_OriginalRequestReplaysFromReceiptAfterRoundEnd()
+        {
+            await using TableServiceTestHost host = await TableServiceTestHost.StartAsync(
+                o => { o.RoomTickIntervalMs = 50; },
+                roundSource: new FixedRoundSource(NineTerminals),
+                clock: FrozenUtcClock.Instance);
+            TableTestClient client = await host.ConnectPlayerAsync(
+                "room-b2-abortive-replay", "acct-b2-abortive-replay", 0);
+            try
+            {
+                PlayerSnapshot before = await WaitForDecisionAsync(client, "room-b2-abortive-replay-r1");
+                string requestId = TableWire.RandomId("req-b2-abortive-replay");
+                Envelope command = TableWire.Command(
+                    client.Welcome!,
+                    requestId,
+                    Contracts.CommandKind.SubmitAction,
+                    TableWire.SubmitActionPayload(
+                        before.RoundId,
+                        before.PrivateView!.Decision.DecisionId,
+                        before.PrivateView.Decision.ControlEpoch,
+                        (uint)ProtocolActionType.DeclareAbortiveDraw,
+                        null),
+                    expectedStateVersion: before.StateVersion);
+                await client.SendAsync(command);
+                Envelope first = await client.ReadUntilAsync(
+                    e => e.MessageType == MessageType.Receipt && e.RequestId == requestId,
+                    TimeSpan.FromSeconds(20));
+                Assert.Equal(Contracts.Wire.ReceiptStatus.Applied, first.Receipt.Status);
+
+                PlayerSnapshot terminal = await WaitForPhaseAsync(client, GamePhase.RoundEnd);
+                ulong terminalVersion = terminal.StateVersion;
+                int terminalEvents = terminal.PublicView!.SettlementEvents.Count;
+                InMemoryTableStore store = Assert.IsType<InMemoryTableStore>(
+                    host.GetRoomHost("room-b2-abortive-replay").Store);
+                Assert.Equal(1, store.OutboxCount);
+
+                // Byte-identical retry on the original identity/scope/requestId/digest.
+                await client.SendAsync(command);
+                Envelope replay = await client.ReadUntilAsync(
+                    e => e.MessageType == MessageType.Receipt && e.RequestId == requestId,
+                    TimeSpan.FromSeconds(20));
+                Assert.Equal(Contracts.Wire.ReceiptStatus.Applied, replay.Receipt.Status);
+                Assert.True(replay.Receipt.Replayed, "the original abortive draw receipt must answer the retry");
+                Assert.Equal(first.Receipt.CommandVersion, replay.Receipt.CommandVersion);
+                Assert.Equal(terminalVersion, first.Receipt.CommandVersion);
+                Assert.Equal(1, store.OutboxCount);
+
+                // Same request id but different payload bytes must conflict, never execute a
+                // second terminal under the old receipt.
+                Envelope tampered = TableWire.Command(
+                    client.Welcome!,
+                    requestId,
+                    Contracts.CommandKind.SubmitAction,
+                    TableWire.SubmitActionPayload(
+                        before.RoundId,
+                        "tampered-decision",
+                        before.PrivateView.Decision.ControlEpoch,
+                        (uint)ProtocolActionType.DeclareAbortiveDraw,
+                        null),
+                    expectedStateVersion: before.StateVersion);
+                await client.SendAsync(tampered);
+                Envelope conflict = await client.ReadUntilAsync(
+                    e => e.MessageType == MessageType.Error,
+                    TimeSpan.FromSeconds(10));
+                Assert.Equal(ProtocolErrorCode.RequestIdConflict, conflict.Error.Code);
+                Assert.Equal(1, store.OutboxCount);
+
+                Assert.Equal(1, store.OutboxCount);
+
+                await using TableTestClient observer = await host.ConnectSpectatorAsync(
+                    "room-b2-abortive-replay", "acct-b2-abortive-replay-observer");
+                Envelope baseline = await observer.ReadUntilAsync(
+                    e => e.PublicUpdate?.Snapshot != null,
+                    TimeSpan.FromSeconds(5));
+                Assert.Equal(terminalVersion, baseline.PublicUpdate.Snapshot.StateVersion);
+                Assert.Equal(terminalEvents, baseline.PublicUpdate.Snapshot.View.SettlementEvents.Count);
+            }
+            finally
+            {
+                await client.DisposeAsync();
+            }
+        }
+
+        [Fact]
+        public async Task TransientExhaustiveCommitFailure_RetriesSameIdentityAndSettlesOnce()
+        {
+            ExhaustiveFixture fixture = BuildExhaustiveFixture("room-b2-retry");
+            var failsOnce = new FailOnceCommitPort();
+            await using TableActor actor = RoomHost.CreateActor(
+                fixture.RoomId,
+                new TableServiceOptions(),
+                failsOnce,
+                FrozenUtcClock.Instance,
+                publicationSink: null,
+                new TableStreamOptions(),
+                durable: null,
+                new OwnerEpoch(1),
+                fixture.Round,
+                fixture.DecisionState,
+                fixture.Source);
+            var scope = new TableScopeRecord(
+                new RequestScopeId("scope-b2-retry"),
+                "svc-b2-retry",
+                TableScopeRole.Player,
+                fixture.RoomId,
+                1UL,
+                ulong.MaxValue);
+            var host = new RoomHost(
+                fixture.RoomId,
+                new TableServiceOptions(),
+                actor,
+                null!,
+                null!,
+                null!,
+                null!,
+                new OwnerEpoch(1),
+                fixture.DecisionState,
+                scope);
+            fixture.Source.Capture(new TableProjectionContextRequest(
+                fixture.RoomId,
+                fixture.Round,
+                new StateVersion(0),
+                new EventSeq(0),
+                new OwnerEpoch(1),
+                0L,
+                0L,
+                FrozenUtcClock.Instance.MonotonicMillis,
+                FrozenUtcClock.Instance.UtcNowMs));
+
+            await fixture.DecisionState.DriveAsync(host);
+            Assert.False(actor.GetRoundStateForHost().IsFinished);
+            Assert.Equal(1, failsOnce.Calls);
+            for (int i = 0; i < 3; i++)
+            {
+                await fixture.DecisionState.DriveAsync(host);
+            }
+
+            Assert.True(actor.GetRoundStateForHost().IsFinished);
+            Assert.Equal(2, failsOnce.Calls);
+            Assert.Equal(100000L, actor.GetRoundStateForHost().Result!.FinalScores.Sum());
+        }
+
+        [Fact]
+        public async Task ConcurrentExhaustiveTicks_SubmitOnlyOneInFlightRequest()
+        {
+            ExhaustiveFixture fixture = BuildExhaustiveFixture("room-b2-inflight");
+            var blocking = new BlockingCommitPort();
+            await using TableActor actor = RoomHost.CreateActor(
+                fixture.RoomId,
+                new TableServiceOptions(),
+                blocking,
+                FrozenUtcClock.Instance,
+                publicationSink: null,
+                new TableStreamOptions(),
+                durable: null,
+                new OwnerEpoch(1),
+                fixture.Round,
+                fixture.DecisionState,
+                fixture.Source);
+            var scope = new TableScopeRecord(
+                new RequestScopeId("scope-b2-inflight"),
+                "svc-b2-inflight",
+                TableScopeRole.Player,
+                fixture.RoomId,
+                1UL,
+                ulong.MaxValue);
+            var host = new RoomHost(
+                fixture.RoomId,
+                new TableServiceOptions(),
+                actor,
+                null!,
+                null!,
+                null!,
+                null!,
+                new OwnerEpoch(1),
+                fixture.DecisionState,
+                scope);
+            fixture.Source.Capture(new TableProjectionContextRequest(
+                fixture.RoomId,
+                fixture.Round,
+                new StateVersion(0),
+                new EventSeq(0),
+                new OwnerEpoch(1),
+                0L,
+                0L,
+                FrozenUtcClock.Instance.MonotonicMillis,
+                FrozenUtcClock.Instance.UtcNowMs));
+
+            Task first = fixture.DecisionState.DriveAsync(host);
+            await blocking.Started.WaitAsync(TimeSpan.FromSeconds(5));
+            // The concurrent tick may wait on the actor's timing snapshot, but it must never
+            // enter a second commit while the first is in flight.
+            Task second = fixture.DecisionState.DriveAsync(host);
+            await Task.Delay(100);
+            Assert.Equal(1, blocking.Calls);
+            blocking.Release();
+            await Task.WhenAll(first, second);
+            Assert.True(actor.GetRoundStateForHost().IsFinished);
+            Assert.Equal(1, blocking.Calls);
+        }
+
+        [Fact]
+        public async Task PersistentExhaustiveCommitFailure_StopsAfterBoundedAttemptsWithoutInfiniteRetry()
+        {
+            ExhaustiveFixture fixture = BuildExhaustiveFixture("room-b2-persistent");
+            var failing = new FailAlwaysCommitPort();
+            await using TableActor actor = RoomHost.CreateActor(
+                fixture.RoomId,
+                new TableServiceOptions(),
+                failing,
+                FrozenUtcClock.Instance,
+                publicationSink: null,
+                new TableStreamOptions(),
+                durable: null,
+                new OwnerEpoch(1),
+                fixture.Round,
+                fixture.DecisionState,
+                fixture.Source);
+            var scope = new TableScopeRecord(
+                new RequestScopeId("scope-b2-persistent"),
+                "svc-b2-persistent",
+                TableScopeRole.Player,
+                fixture.RoomId,
+                1UL,
+                ulong.MaxValue);
+            var host = new RoomHost(
+                fixture.RoomId,
+                new TableServiceOptions(),
+                actor,
+                null!,
+                null!,
+                null!,
+                null!,
+                new OwnerEpoch(1),
+                fixture.DecisionState,
+                scope);
+            fixture.Source.Capture(new TableProjectionContextRequest(
+                fixture.RoomId,
+                fixture.Round,
+                new StateVersion(0),
+                new EventSeq(0),
+                new OwnerEpoch(1),
+                0L,
+                0L,
+                FrozenUtcClock.Instance.MonotonicMillis,
+                FrozenUtcClock.Instance.UtcNowMs));
+
+            for (int i = 0; i < 8; i++)
+            {
+                await fixture.DecisionState.DriveAsync(host);
+            }
+
+            Assert.False(actor.GetRoundStateForHost().IsFinished);
+            Assert.InRange(failing.Calls, 1, 3);
+        }
+
+        [Fact]
         public async Task RawSettlementBearingEnvelope_IsRejectedBeforeAnyScoring()
         {
             await using TableServiceTestHost host = await TableServiceTestHost.StartAsync(
@@ -948,6 +1378,207 @@ namespace Mahjong.TableService.Tests
             finally
             {
                 await client.DisposeAsync();
+            }
+        }
+
+        private static TileId[] Tiles(params int[] ids)
+        {
+            return ids.Select(id => new TileId(id)).ToArray();
+        }
+
+        private static RoundStateMachine Apply(RoundStateMachine round, RoundCommand command)
+        {
+            RoundTransition transition = round.Execute(command);
+            Assert.True(
+                transition.IsAccepted,
+                "fixture transition rejected: " + (transition.Error == null ? "unknown" : transition.Error.ToString()));
+            return transition.State!;
+        }
+
+        private static RoundStateMachine ClosedKanRinshanWin(string roundId)
+        {
+            var fixture = new N1aTable { Dealer = 0 };
+            fixture.Hand(0, Tiles(0, 1, 2, 3, 36, 40, 44, 48, 52, 56, 60, 64, 68));
+            fixture.Drawn(0, new TileId(72));
+            fixture.DeadWall(new TileId(73));
+            return Apply(
+                fixture.Build(roundId),
+                RoundCommand.ClosedKan(
+                    roundId, 0, new TileId(0), new TileId(1), new TileId(2), new TileId(3)));
+        }
+
+        private static RoundStateMachine OpenKanRinshanWin(string roundId)
+        {
+            var fixture = new N1aTable { Dealer = 1 };
+            fixture.Hand(0, Tiles(
+                124, 125, 126,
+                40, 44, 48,
+                88, 92, 96,
+                24, 28,
+                68, 69));
+            fixture.Hand(1, new TileId(127));
+            fixture.Drawn(1, new TileId(0));
+            fixture.DeadWall(new TileId(32));
+            RoundStateMachine round = fixture.Build(roundId);
+            round = Apply(
+                round,
+                RoundCommand.Discard(round.RoundId, 1, new TileId(127), new[] { 0 }));
+            return Apply(
+                round,
+                RoundCommand.OpenKan(
+                    round.RoundId, 0, new TileId(127),
+                    new TileId(124), new TileId(125), new TileId(126)));
+        }
+
+        private static RoundStateMachine DiscardFuritenWindow(string roundId)
+        {
+            var fixture = new N1aTable { Dealer = 0 };
+            fixture.Hand(0, Tiles(124, 125, 126, 4, 8, 48, 52, 56, 92, 96, 100, 16, 17));
+            fixture.Drawn(0, new TileId(12));
+            fixture.Hand(1, new TileId(0));
+            fixture.WallPrefix(new TileId(128));
+            RoundStateMachine round = fixture.Build(roundId);
+            round = Apply(
+                round,
+                RoundCommand.Discard(round.RoundId, 0, new TileId(12), Array.Empty<int>()));
+            if (round.Phase == RoundPhase.Draw)
+            {
+                round = Apply(round, RoundCommand.Draw(round.RoundId, 1));
+            }
+
+            return Apply(
+                round,
+                RoundCommand.Discard(round.RoundId, 1, new TileId(0), new[] { 0 }));
+        }
+
+        private static RoundStateMachine NineTerminals(string roundId)
+        {
+            var fixture = new N1aTable { Dealer = 0 };
+            fixture.Hand(0, Tiles(0, 32, 36, 68, 72, 104, 108, 112, 116, 120, 124, 128, 132));
+            fixture.Drawn(0, new TileId(1));
+            return fixture.Build(roundId + "-r1");
+        }
+
+        private static ExhaustiveFixture BuildExhaustiveFixture(string roomId)
+        {
+            RoundStateMachine initial = new N1aTable { Dealer = 0 }
+                .Drawn(0, new TileId(12))
+                .Build(roomId + "-r1");
+            RoundStateMachine round = initial;
+            int transitions = 0;
+            while (round.Phase != RoundPhase.Draw || round.Tiles.WallRemaining != 0)
+            {
+                if (++transitions > 200)
+                {
+                    throw new InvalidOperationException("The fixture did not naturally exhaust the wall.");
+                }
+
+                if (round.Phase == RoundPhase.Draw)
+                {
+                    round = Apply(round, RoundCommand.Draw(round.RoundId, round.CurrentSeat));
+                    continue;
+                }
+
+                DrawnTileEvidence? drawn = round.Tiles.DrawnTile;
+                Assert.True(drawn.HasValue, "a discard phase must carry the authoritative drawn tile");
+                round = Apply(
+                    round,
+                    RoundCommand.Discard(
+                        round.RoundId,
+                        round.CurrentSeat,
+                        drawn.Value.Tile,
+                        Array.Empty<int>()));
+            }
+
+            var state = new TableRoomDecisionState();
+            var source = new TableProjectionContextSource(state, initial);
+            return new ExhaustiveFixture(roomId, round, state, source);
+        }
+
+        private sealed class ExhaustiveFixture
+        {
+            public ExhaustiveFixture(
+                string roomId,
+                RoundStateMachine round,
+                TableRoomDecisionState decisionState,
+                TableProjectionContextSource source)
+            {
+                RoomId = roomId;
+                Round = round;
+                DecisionState = decisionState;
+                Source = source;
+            }
+
+            public string RoomId { get; }
+
+            public RoundStateMachine Round { get; }
+
+            public TableRoomDecisionState DecisionState { get; }
+
+            public TableProjectionContextSource Source { get; }
+        }
+
+        private sealed class FailOnceCommitPort : ITableCommitPort
+        {
+            private readonly TableServiceCommitPort _inner = new TableServiceCommitPort(new OwnerEpoch(1));
+            public int Calls;
+
+            public ValueTask<TableCommitResult> CommitAsync(
+                TableCommitRequest request,
+                CancellationToken cancellationToken)
+            {
+                if (++Calls == 1)
+                {
+                    return new ValueTask<TableCommitResult>(
+                        TableCommitResult.Failed(
+                            "COMMIT_TEST_TRANSIENT",
+                            "one controlled fail-before-commit"));
+                }
+
+                return _inner.CommitAsync(request, cancellationToken);
+            }
+        }
+
+        private sealed class BlockingCommitPort : ITableCommitPort
+        {
+            private readonly TableServiceCommitPort _inner = new TableServiceCommitPort(new OwnerEpoch(1));
+            private readonly TaskCompletionSource<bool> _started =
+                new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            private readonly TaskCompletionSource<bool> _release =
+                new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            public int Calls;
+
+            public Task Started => _started.Task;
+
+            public void Release()
+            {
+                _release.TrySetResult(true);
+            }
+
+            public async ValueTask<TableCommitResult> CommitAsync(
+                TableCommitRequest request,
+                CancellationToken cancellationToken)
+            {
+                Calls++;
+                _started.TrySetResult(true);
+                await _release.Task.ConfigureAwait(false);
+                return await _inner.CommitAsync(request, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        private sealed class FailAlwaysCommitPort : ITableCommitPort
+        {
+            public int Calls;
+
+            public ValueTask<TableCommitResult> CommitAsync(
+                TableCommitRequest request,
+                CancellationToken cancellationToken)
+            {
+                Calls++;
+                return new ValueTask<TableCommitResult>(
+                    TableCommitResult.Failed(
+                        "COMMIT_TEST_PERSISTENT",
+                        "controlled persistent fail-before-commit"));
             }
         }
 

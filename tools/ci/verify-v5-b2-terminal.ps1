@@ -504,6 +504,14 @@ try {
     $null = Invoke-Native -FilePath $DotnetPath -Arguments @('build-server', 'shutdown') -LogPath (Join-Path $LogDir 'build-server-shutdown.log') -TimeoutSeconds 120
     Add-Stage 'fresh-build' 'PASS' 0 'B2-T worker, TableService tests, LobbyService and TableService built Release with --no-incremental -nr:false'
 
+    $gateLog = Join-Path $LogDir 'worker-gate-selftest.log'
+    $gateCode = Invoke-Native -FilePath $DotnetPath -Arguments @($script:WorkerDll, 'gate-selftest') -LogPath $gateLog -TimeoutSeconds 60
+    if ($gateCode -ne 0) {
+        Add-Stage 'worker-gate-selftest' 'FAIL' $gateCode 'actual natural/verify gate matrix failed; see worker-gate-selftest.log'
+        throw "Worker gate self-test failed with exit $gateCode."
+    }
+    Add-Stage 'worker-gate-selftest' 'PASS' $gateCode 'actual natural/verify gate positives and privacy/noRepublish/missing negatives'
+
     $testXml = Join-Path $LogDir 'table-service-tests.xml'
     $testLog = Join-Path $LogDir 'table-service-tests.log'
     $code = Invoke-Native -FilePath $DotnetPath -Arguments @($testsDll, '-noColor', '-noLogo', '-xml', $testXml) -LogPath $testLog -TimeoutSeconds $TestTimeoutSeconds
@@ -605,7 +613,18 @@ try {
     $script:Natural = Get-Content -LiteralPath $naturalOut -Raw | ConvertFrom-Json
     $script:RoomId = [string]$script:Natural.roomId
     if ($naturalCode -eq 0 -and $script:Natural.terminalReached -eq $true) {
-        Add-Stage 'natural-terminal' 'PASS' 0 "room=$($script:RoomId) actions=$($script:Natural.actions) version=$($script:Natural.terminal.stateVersion)"
+        $post = $script:Natural.postTerminal
+        $gateFailure = $null -eq $post -or
+                       $script:Natural.terminal.spectatorPrivacyViolated -ne $false -or
+                       $script:Natural.playersPrivacyViolated -ne $false -or
+                       $post.unchanged -ne $true -or
+                       $post.noRepublish -ne $true
+        if ($gateFailure) {
+            Add-Stage 'natural-terminal' 'FAIL' 1 "room=$($script:RoomId) actions=$($script:Natural.actions) terminalPrivacyOrRepublishGateFailed"
+            throw "Natural terminal evidence gate failed: spectatorPrivacy=$($script:Natural.terminal.spectatorPrivacyViolated) playersPrivacy=$($script:Natural.playersPrivacyViolated) unchanged=$($post.unchanged) noRepublish=$($post.noRepublish)."
+        }
+
+        Add-Stage 'natural-terminal' 'PASS' 0 "room=$($script:RoomId) actions=$($script:Natural.actions) version=$($script:Natural.terminal.stateVersion) privacy=false noRepublish=true"
     }
     elseif ($naturalCode -eq 2) {
         $wall = Get-PgScalar -Database $script:TableDb -User 'b2_observer' -Sql "SELECT count(*) FROM table_store.table_event WHERE room_id='$($script:RoomId)' AND event_type=14"
@@ -709,10 +728,14 @@ try {
     ) -LogPath $verifyLog -TimeoutSeconds 120
     if (-not (Test-Path -LiteralPath $verifyOut)) { throw "The B2 verify worker produced no evidence (exit $verifyCode)." }
     $verify = Get-Content -LiteralPath $verifyOut -Raw | ConvertFrom-Json
-    if ($verifyCode -ne 0 -or $verify.phase -ne 'GAME_PHASE_ROUND_END' -or $verify.stateVersion -ne $stateVersion) {
-        throw "Post-restart terminal verification failed: exit=$verifyCode phase=$($verify.phase) version=$($verify.stateVersion) expected=$stateVersion"
+    if ($verifyCode -ne 0 -or
+        $verify.phase -ne 'GAME_PHASE_ROUND_END' -or
+        $verify.stateVersion -ne $stateVersion -or
+        $verify.spectatorPrivacyViolated -ne $false -or
+        $verify.gate.ok -ne $true) {
+        throw "Post-restart terminal verification failed: exit=$verifyCode phase=$($verify.phase) version=$($verify.stateVersion) expected=$stateVersion privacy=$($verify.spectatorPrivacyViolated) gate=$($verify.gate.ok)"
     }
-    Add-Stage 'restart-terminal' 'PASS' 0 "room=$($script:RoomId) version=$stateVersion phase=ROUND_END events=$($verify.settlementEvents)"
+    Add-Stage 'restart-terminal' 'PASS' 0 "room=$($script:RoomId) version=$stateVersion phase=ROUND_END events=$($verify.settlementEvents) privacy=false"
 
     $postOutbox = Get-PgScalar -Database $script:TableDb -User 'b2_observer' -Sql "SELECT count(*) FROM table_store.settlement_outbox WHERE match_id='$($script:RoomId)'"
     $postVersion = Get-PgScalar -Database $script:TableDb -User 'b2_observer' -Sql "SELECT state_version FROM table_store.table_state WHERE room_id='$($script:RoomId)'"

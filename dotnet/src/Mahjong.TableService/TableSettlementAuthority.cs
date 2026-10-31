@@ -457,11 +457,15 @@ namespace Mahjong.TableService
             }
 
             IReadOnlyList<TileId> hand = round.Tiles.TilesInZone(TileZone.Hand, seat);
-            if (hand.Count != 14)
+            if (hand.Count == 0)
             {
                 return false;
             }
 
+            // A hand with a closed/open kan or another open meld is not a 14-tile closed
+            // shape: the concealed portion can be 11/8/5/2 tiles while the total physical
+            // shape is still complete. The frozen evaluator, not a hard-coded closed-hand
+            // count, owns that decision.
             try
             {
                 var playerHand = new Mahjong.Domain.Rules.PlayerHand(
@@ -532,10 +536,118 @@ namespace Mahjong.TableService
         }
 
         /// <summary>
+        /// Discard furiten: any tile in the seat's complete own discard history that is one
+        /// of its current theoretical waits forbids Ron, even when the current target tile is
+        /// not the discarded one. The history includes committed discard events, the current
+        /// river, and tiles called away from this seat's discard (the meld's FromSeat); the
+        /// temporary/riichi flags alone are not a substitute for this fact.
+        /// </summary>
+        public static bool HasDiscardFuriten(RoundStateMachine round, int seat)
+        {
+            if (round == null)
+            {
+                throw new ArgumentNullException(nameof(round));
+            }
+
+            if (seat < 0 || seat > 3)
+            {
+                throw new ArgumentOutOfRangeException(nameof(seat), seat, "Seat must be 0..3.");
+            }
+
+            IReadOnlyCollection<int> history = CompleteDiscardHistoryTypes(round, seat);
+            if (history.Count == 0)
+            {
+                return false;
+            }
+
+            IReadOnlyList<TileId> hand = round.Tiles.TilesInZone(TileZone.Hand, seat);
+            if (hand.Count == 0)
+            {
+                return false;
+            }
+
+            try
+            {
+                var playerHand = new Mahjong.Domain.Rules.PlayerHand(
+                    hand,
+                    BuildMelds(round, seat),
+                    null);
+                foreach (int wait in Mahjong.Domain.Rules.HandDecomposer.CalculateWaits(
+                             playerHand.AllClosedTiles))
+                {
+                    foreach (int discarded in history)
+                    {
+                        if (discarded == wait)
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+            catch (ArgumentException)
+            {
+                return false;
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Complete own-discard type history: committed discard events, the current river, and
+        /// tiles called away from this seat's discard by another seat's meld. This is the set
+        /// intersected with all theoretical waits above; a current-target-only check misses
+        /// the non-target wait case.
+        /// </summary>
+        public static IReadOnlyCollection<int> CompleteDiscardHistoryTypes(
+            RoundStateMachine round,
+            int seat)
+        {
+            if (round == null)
+            {
+                throw new ArgumentNullException(nameof(round));
+            }
+
+            if (seat < 0 || seat > 3)
+            {
+                throw new ArgumentOutOfRangeException(nameof(seat), seat, "Seat must be 0..3.");
+            }
+
+            var history = new HashSet<int>();
+            for (int i = 0; i < round.Events.Count; i++)
+            {
+                RoundEvent value = round.Events[i];
+                if (value.Type == RoundEventType.TileDiscarded &&
+                    value.Seat == seat &&
+                    value.Tile.HasValue)
+                {
+                    history.Add(value.Tile.Value.TypeIndex);
+                }
+            }
+
+            IReadOnlyList<TileId> river = round.Tiles.TilesInZone(TileZone.Discard, seat);
+            for (int i = 0; i < river.Count; i++)
+            {
+                history.Add(river[i].TypeIndex);
+            }
+
+            for (int i = 0; i < round.Melds.Count; i++)
+            {
+                RoundMeld meld = round.Melds[i];
+                if (meld.FromSeat == seat && meld.Kind != RoundMeldKind.ClosedKan)
+                {
+                    history.Add(meld.CalledTile.TypeIndex);
+                }
+            }
+
+            return history;
+        }
+
+        /// <summary>
         /// True when the exact committed response window offers this seat a Ron that the
         /// frozen evaluator would accept as a yaku-bearing hand and the actor's own committed
-        /// furiten snapshot does not forbid. The actor still re-verifies every fact and score;
-        /// this is the advertisement/furiten observation, never a settlement body.
+        /// furiten snapshot plus the complete discard history does not forbid. The actor still
+        /// re-verifies every fact and score; this is the advertisement/furiten observation,
+        /// never a settlement body.
         /// </summary>
         public static bool CanRon(
             RoundStateMachine round,
@@ -564,7 +676,8 @@ namespace Mahjong.TableService
 
             if (furiten == null ||
                 !string.Equals(furiten.RoundId, round.RoundId, StringComparison.Ordinal) ||
-                furiten.IsFuriten(seat))
+                furiten.IsFuriten(seat) ||
+                HasDiscardFuriten(round, seat))
             {
                 return false;
             }
