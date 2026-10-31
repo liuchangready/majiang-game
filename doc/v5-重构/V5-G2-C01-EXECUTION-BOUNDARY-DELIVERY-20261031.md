@@ -1,4 +1,4 @@
-﻿# V5 G2-C01 鐢熶骇鎵ц杈圭晫涓庡唴閮ㄨ€楀缁堝眬浜や粯锛?026-10-31锛?
+# V5 G2-C01 鐢熶骇鎵ц杈圭晫涓庡唴閮ㄨ€楀缁堝眬浜や粯锛?026-10-31锛?
 鏇存柊锛?026-10-31锛孉sia/Shanghai銆傛湰鏂囦欢鏄?**浜や粯涓庤瘉鎹姤鍛?*锛屼笉鏄獙鏀舵壒鍑嗭紝涔熶笉鏄?PR 鍚堝苟璁板綍銆?
 ## 0. 缁撹鍏堣
 
@@ -176,4 +176,3 @@ R2 鐨?Draw terminal 鍒嗘敮鍙 `_transport.View.Current.VisibleEventBat
 
 - R3 浠ｇ爜/娴嬭瘯鎻愪氦锛歚077c273b10f5c6d730be0afe2515781627e9f8c0`
 - R3 鎶ュ憡鎻愪氦锛堟渶缁?HEAD锛夛細鏈枃浠舵墍鍦ㄦ彁浜?- `git status --porcelain` 绌猴紱`git diff --check base..HEAD` 0锛涙渶缁堝樊寮?9 涓師 expectedFiles銆?- 鏈?push/PR/MR/merge/deploy/scheduler/complete.flag锛涙湭鑷鎵瑰噯銆?
-
