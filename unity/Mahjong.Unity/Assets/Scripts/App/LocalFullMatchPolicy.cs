@@ -86,6 +86,7 @@ namespace Mahjong.Unity.App
             string roundId,
             string decisionId,
             int seat,
+            ProtocolRole role,
             string sessionId,
             string roomId,
             string tableId,
@@ -102,6 +103,7 @@ namespace Mahjong.Unity.App
             RoundId = roundId ?? string.Empty;
             DecisionId = decisionId ?? string.Empty;
             Seat = seat;
+            Role = role;
             SessionId = sessionId ?? string.Empty;
             RoomId = roomId ?? string.Empty;
             TableId = tableId ?? string.Empty;
@@ -126,6 +128,9 @@ namespace Mahjong.Unity.App
         public string DecisionId { get; }
 
         public int Seat { get; }
+
+        /// <summary>Accepted binding role; a spectator batch can never confirm a player action.</summary>
+        public ProtocolRole Role { get; }
 
         public string SessionId { get; }
 
@@ -636,6 +641,7 @@ namespace Mahjong.Unity.App
                 view.Identity.RoundId,
                 decision.DecisionId,
                 view.Identity.Seat,
+                (ProtocolRole)(int)view.Identity.Role,
                 view.Identity.SessionId,
                 view.Identity.RoomId,
                 session.Binding!.TableId,
@@ -732,6 +738,7 @@ namespace Mahjong.Unity.App
                 view.Identity.RoundId,
                 string.Empty,
                 view.Identity.Seat,
+                (ProtocolRole)(int)view.Identity.Role,
                 view.Identity.SessionId,
                 view.Identity.RoomId,
                 session.Binding!.TableId,
@@ -764,6 +771,7 @@ namespace Mahjong.Unity.App
                 batch.StateVersion <= plan.BaselineStateVersion ||
                 ev.CommandVersion != appliedCommandVersion ||
                 !string.Equals(batch.RoundId, plan.RoundId, StringComparison.Ordinal) ||
+                batch.Role != plan.Role ||
                 !string.Equals(batch.SessionId, plan.SessionId, StringComparison.Ordinal) ||
                 !string.Equals(batch.RoomId, plan.RoomId, StringComparison.Ordinal) ||
                 !string.Equals(batch.TableId, plan.TableId, StringComparison.Ordinal) ||

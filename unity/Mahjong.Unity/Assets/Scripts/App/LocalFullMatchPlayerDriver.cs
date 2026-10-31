@@ -46,7 +46,6 @@ namespace Mahjong.Unity.App
         public const string DriverVersion = "p45-full-match-driver/1";
         public const string ArgumentName = "-full-match-driver";
         public const string RunIdArgumentName = "-full-match-run-id";
-        public const string TestUnconfirmedRequestId = "fm-test-unconfirmed";
 
         private const int ExitNavigation = 40;
         private const int ExitSession = 41;
@@ -61,8 +60,6 @@ namespace Mahjong.Unity.App
 
         private const float NavigationTimeoutSeconds = 30f;
         private const float SessionReadyTimeoutSeconds = 45f;
-        private const float SubmitTimeoutSeconds = 20f;
-        private const float ConfirmationTimeoutSeconds = 30f;
         private const float RoundTimeoutSeconds = 1200f;
         private const float MatchTimeoutSeconds = 5400f;
         private const float StallDetectionSeconds = 25f;
@@ -84,8 +81,6 @@ namespace Mahjong.Unity.App
         private string _failureDetail = string.Empty;
         private int _failureExit = ExitUnexpected;
         private string _finishedAt = string.Empty;
-        private string _lastCompletedDecisionKey = string.Empty;
-        private string _lastCompletedDrawKey = string.Empty;
         private string _lastObservedRoundId = string.Empty;
         private ulong _lastObservedStateVersion;
         private float _lastProgressAt;
@@ -93,11 +88,14 @@ namespace Mahjong.Unity.App
         private LocalMatchSnapshot? _lastMatch;
         private bool _suppressAutoStart;
         private Action<int>? _testExit;
+        private FullMatchSessionTransport? _executionTransport;
+        private FullMatchExecutionBoundary? _execution;
 
         /// <summary>
-        /// Test-only fixture entry. It deliberately does not start the normal UI
-        /// journey; the directed PlayMode test drives bounded failure paths through
-        /// the same Fail/Finish/summary/exit machinery as the Player driver.
+        /// Test-only transport/view entry. It deliberately does not start the
+        /// normal UI journey; the directed PlayMode test drives the shared
+        /// production execution boundary, which owns planning, the single submit,
+        /// the bounded waits, confirmation and the request ledger.
         /// </summary>
         public static LocalFullMatchPlayerDriver CreateForTest(
             string evidenceDir,
@@ -116,49 +114,76 @@ namespace Mahjong.Unity.App
         }
 
         /// <summary>
-        /// Directed failure fixture. It is not a full-match/Windows sample; it only
-        /// makes the driver's own bounded failure, summary and exit status executable
-        /// in PlayMode without an external Player quit.
+        /// Directed regression fixture. It runs the same
+        /// <see cref="FullMatchExecutionBoundary"/> as the production match loop
+        /// with a real-shaped session/view, a counting command sink and an explicit
+        /// clock budget. The failure code/detail and the action/request evidence
+        /// are produced by the boundary, never written by this fixture.
         /// </summary>
-        public IEnumerator RunFaultFixtureForTest(string mode)
+        public IEnumerator RunExecutionFixtureForTest(
+            IFullMatchExecutionTransport transport,
+            FullMatchExecutionBudget budget,
+            string label)
         {
             if (!_suppressAutoStart)
             {
                 yield break;
             }
 
+            // Let Start() open the evidence writer before the first production
+            // boundary notice is emitted.
+            yield return null;
             LogEvent(
                 "driver_test_fixture",
-                "\"mode\":\"" + Json(mode) + "\"" +
+                "\"mode\":\"" + Json(label) + "\"" +
                 ",\"runId\":\"" + Json(_runId) + "\"");
-            yield return new WaitForSecondsRealtime(0.05f);
-            switch (mode)
+            var execution = new FullMatchExecutionBoundary(
+                transport,
+                _requestLedger,
+                budget,
+                OnExecutionNotice);
+            var clock = new SystemTableClientClock();
+            var mapper = new PlayerTableProjectionMapper(clock);
+            var intentFactory = new TableCommandIntentFactory(clock);
+            try
             {
-                case "NO_DECISION":
+                float fixtureDeadline = Time.realtimeSinceStartup + 20f;
+                while (Time.realtimeSinceStartup < fixtureDeadline)
+                {
+                    SessionViewState state = transport.View.Current;
+                    PlayerTableViewState view = mapper.Project(state);
+                    FullMatchExecutionOutcome outcome = execution.Poll(
+                        state,
+                        view,
+                        intentFactory,
+                        NowMilliseconds());
+                    if (outcome.Status == FullMatchExecutionStatus.Failed)
+                    {
+                        Fail(ExitCodeForExecutionFailure(outcome), outcome.Code, outcome.Detail);
+                        break;
+                    }
+
+                    if (outcome.Status == FullMatchExecutionStatus.Confirmed ||
+                        outcome.Status == FullMatchExecutionStatus.RoundComplete)
+                    {
+                        _completed = true;
+                        break;
+                    }
+
+                    yield return null;
+                }
+
+                if (!_completed && !_failed)
+                {
                     Fail(
-                        ExitNoDecision,
-                        "NO_DECISION",
-                        "No server decision arrived within the bounded fixture window.");
-                    break;
-                case "SUBMIT_TIMEOUT":
-                    Fail(
-                        ExitActionUnconfirmed,
-                        "SUBMIT_TIMEOUT",
-                        "The original request did not resolve within the bounded fixture window; it is not retried under a new id.");
-                    break;
-                case "UNCONFIRMED":
-                    LogEvent(
-                        "action_plan",
-                        "\"roundId\":\"fixture\"");
-                    Fail(
-                        ExitActionUnconfirmed,
-                        "RECEIPT_UNRESOLVED",
-                        "No definitive Applied/rejected receipt arrived for request '" +
-                        TestUnconfirmedRequestId + "' action=DrawTile; request stays unresolved.");
-                    break;
-                default:
-                    Fail(ExitUnexpected, "FIXTURE_MODE_UNKNOWN", mode);
-                    break;
+                        ExitTimeout,
+                        "FIXTURE_TIMEOUT",
+                        "The shared execution boundary reached no terminal outcome within the fixture's bounded time.");
+                }
+            }
+            finally
+            {
+                execution.Dispose();
             }
 
             yield return Finish();
@@ -467,6 +492,7 @@ namespace Mahjong.Unity.App
                             _lastProgressAt = Time.realtimeSinceStartup;
                         }
                         else if (view.ConnectionState == TableConnectionState.Ready &&
+                                 (_execution == null || !_execution.HasActiveRequest) &&
                                  Time.realtimeSinceStartup - _lastProgressAt > StallDetectionSeconds)
                         {
                             if (_sessionRecoveries >= MaxSessionRecoveriesPerRound)
@@ -609,6 +635,13 @@ namespace Mahjong.Unity.App
                                 ",\"loserSeat\":" + Num(terminal.LoserSeat) +
                                 ",\"scores\":[" + Scores(terminal.FinalScores) + "]" +
                                 ",\"riichiSticks\":" + Num(terminal.RemainingRiichiSticks));
+
+                            // A terminal round ends the lifetime of any in-flight
+                            // request. Detach the shared boundary before recording
+                            // and opening the next round so a late receipt (e.g. the
+                            // host's exhausted-wall settlement conversion) can never
+                            // be evaluated against the next round's state.
+                            AbandonExecutionBoundary();
 
                             Task<LocalMatchSnapshot> recordTask = matchControl.RecordRoundCompletionAsync(CancellationToken.None);
                             float recordDeadline = Time.realtimeSinceStartup + 20f;
@@ -755,387 +788,152 @@ namespace Mahjong.Unity.App
                             break;
                         }
 
-                        // Action planning must use a fresh view after every state publication.
+                        // Action planning and submission use the same production
+                        // execution boundary as the PlayMode regression fixtures.
                         view = mapper.Project(coordinator.Current);
-                        FullMatchStep step = PlanStep(coordinator.Current, view, intentFactory);
-                        if (step.Kind == FullMatchStepKind.Wait)
+                        AttachExecution(coordinator);
+                        FullMatchExecutionOutcome execution = _execution!.Poll(
+                            coordinator.Current,
+                            view,
+                            intentFactory,
+                            NowMilliseconds());
+                        if (execution.Status == FullMatchExecutionStatus.Failed)
                         {
-                            yield return null;
-                            continue;
-                        }
-
-                        if (step.Kind == FullMatchStepKind.Failed)
-                        {
-                            Fail(ExitNoDecision, step.Code, step.Detail);
+                            Fail(
+                                ExitCodeForExecutionFailure(execution),
+                                execution.Code,
+                                execution.Detail);
                             yield return Finish();
                             yield break;
                         }
 
-                        if (step.Kind == FullMatchStepKind.SubmitAction ||
-                            step.Kind == FullMatchStepKind.SubmitMandatoryDraw)
-                        {
-                            FullMatchActionPlan plan = step.Plan!;
-                            if (!_requestLedger.Record(plan, out string existing))
-                            {
-                                Fail(
-                                    ExitActionUnconfirmed,
-                                    "REQUEST_ID_CONFLICT",
-                                    "The same logical action was issued two different request ids ('" +
-                                    existing + "' vs '" + plan.RequestId + "').");
-                                yield return Finish();
-                                yield break;
-                            }
-
-                            LogEvent(
-                                "action_plan",
-                                "\"roundId\":\"" + Json(plan.RoundId) + "\"" +
-                                ",\"decisionId\":\"" + Json(plan.DecisionId) + "\"" +
-                                ",\"action\":\"" + plan.Action + "\"" +
-                                ",\"requestId\":\"" + Json(plan.RequestId) + "\"" +
-                                ",\"baselineStateVersion\":" + Num(plan.BaselineStateVersion) +
-                                ",\"candidates\":[" + CandidateActions(view) + "]" +
-                                ",\"requiresVisibleEvent\":" + Bool(plan.RequiresVisibleEvent));
-
-                            var observer = new ConfirmedVisibleEventObserver(coordinator);
-                            coordinator.ReceiptResolved += observer.OnReceiptResolved;
-                            TableReceiptResolvedEventArgs? driverReceipt = null;
-                            EventHandler<TableReceiptResolvedEventArgs> driverReceiptHandler = (_, args) =>
-                            {
-                                if (string.Equals(args.Command.RequestId, plan.RequestId, StringComparison.Ordinal) &&
-                                    string.Equals(args.Command.ScopeId, plan.ScopeId, StringComparison.Ordinal))
-                                {
-                                    driverReceipt = args;
-                                }
-                            };
-                            coordinator.ReceiptResolved += driverReceiptHandler;
-                            try
-                            {
-                                observer.BeginAction(
-                                    coordinator.Current,
-                                    plan.RequestId,
-                                    plan.ScopeId,
-                                    plan.Action);
-
-                                Task<CommandSubmission> submit = coordinator.SubmitAsync(plan.Command, CancellationToken.None);
-                                float submitDeadline = Time.realtimeSinceStartup + SubmitTimeoutSeconds;
-                                while (!submit.IsCompleted && Time.realtimeSinceStartup < submitDeadline)
-                                {
-                                    yield return null;
-                                }
-
-                                if (!submit.IsCompleted)
-                                {
-                                    _requestLedger.MarkUnresolved(plan);
-                                    Fail(
-                                        ExitActionUnconfirmed,
-                                        "SUBMIT_TIMEOUT",
-                                        "The original request '" + plan.RequestId +
-                                        "' did not resolve; it will not be retried under a new id.");
-                                    yield return Finish();
-                                    yield break;
-                                }
-
-                                if (submit.IsFaulted || submit.IsCanceled || !submit.Result.Sent)
-                                {
-                                    _requestLedger.MarkUnresolved(plan);
-                                    Fail(
-                                        ExitActionUnconfirmed,
-                                        "SUBMIT_NOT_SENT",
-                                        describeTaskFailure(submit));
-                                    yield return Finish();
-                                    yield break;
-                                }
-
-                                bool confirmed = false;
-                                bool applied = false;
-                                float confirmDeadline = Time.realtimeSinceStartup + ConfirmationTimeoutSeconds;
-                                while (Time.realtimeSinceStartup < confirmDeadline)
-                                {
-                                    ConfirmedVisibleActionEvent? confirmedEvent = observer.TryGetConfirmation();
-                                    if (confirmedEvent != null &&
-                                        LocalFullMatchPolicy.IsOwnActionEvent(
-                                            plan,
-                                            confirmedEvent.Batch,
-                                            confirmedEvent.Event,
-                                            confirmedEvent.CommandVersion))
-                                    {
-                                        confirmed = true;
-                                        break;
-                                    }
-
-                                    if (plan.Action == PlayerActionKind.DrawTile &&
-                                        driverReceipt != null &&
-                                        driverReceipt.Resolution.ReceiptStatus == ReceiptStatus.Applied &&
-                                        driverReceipt.Resolution.CommandVersion != null)
-                                    {
-                                        ulong appliedVersion = driverReceipt.Resolution.CommandVersion.Value.Value;
-                                        SessionViewState state = coordinator.Current;
-                                        ObservedVisibleEventBatch observedBatch =
-                                            new ObservedVisibleEventBatch(state);
-                                        for (int i = 0; i < state.VisibleEventBatch.Events.Count; i++)
-                                        {
-                                            var observedEvent = new ObservedVisibleEvent(
-                                                state.VisibleEventBatch.Events[i]);
-                                            if (LocalFullMatchPolicy.IsOwnActionEvent(
-                                                plan,
-                                                observedBatch,
-                                                observedEvent,
-                                                appliedVersion))
-                                            {
-                                                confirmed = true;
-                                                break;
-                                            }
-                                        }
-
-                                        if (confirmed)
-                                        {
-                                            break;
-                                        }
-                                    }
-
-                                    if (observer.HasAppliedReceipt && !plan.RequiresVisibleEvent)
-                                    {
-                                        // The only legal state-only action is a response Pass.
-                                        applied = true;
-                                        break;
-                                    }
-
-                                    yield return null;
-                                }
-
-                                if (!confirmed && !applied)
-                                {
-                                    if (driverReceipt != null)
-                                    {
-                                        LogEvent(
-                                            "action_receipt",
-                                            "\"requestId\":\"" + Json(plan.RequestId) + "\"" +
-                                            ",\"status\":\"" + driverReceipt.Resolution.ReceiptStatus + "\"" +
-                                            ",\"reason\":\"" + Json(driverReceipt.Resolution.ReasonCode) + "\"" +
-                                            ",\"stateVersion\":" + Num(driverReceipt.Resolution.EvaluatedStateVersion.Value));
-                                    }
-
-                                    if (driverReceipt != null &&
-                                        driverReceipt.Resolution.ReceiptStatus == ReceiptStatus.Rejected &&
-                                        IsReplanableRejection(driverReceipt.Resolution.ReasonCode))
-                                    {
-                                        // A rejected request is a definitive no-op. The
-                                        // server decision that produced it cannot be
-                                        // submitted again under the same id; wait for the
-                                        // next confirmed decision/state. This never reuses
-                                        // or overwrites an unknown request id.
-                                        _requestLedger.MarkResolved(plan);
-                                        if (plan.DecisionId.Length > 0)
-                                        {
-                                            _lastCompletedDecisionKey = plan.RoundId + "|" + plan.DecisionId;
-                                        }
-                                        else
-                                        {
-                                            _lastCompletedDrawKey = plan.RoundId + "|" +
-                                                                   plan.BaselineStateVersion.ToString(CultureInfo.InvariantCulture);
-                                        }
-
-                                        LogEvent(
-                                            "action_replanned",
-                                            "\"requestId\":\"" + Json(plan.RequestId) + "\"" +
-                                            ",\"action\":\"" + plan.Action + "\"" +
-                                            ",\"reason\":\"" + Json(driverReceipt.Resolution.ReasonCode) + "\"");
-                                        yield return null;
-                                        continue;
-                                    }
-
-                                    if (driverReceipt != null &&
-                                        driverReceipt.Resolution.ReceiptStatus != ReceiptStatus.Applied)
-                                    {
-                                        _requestLedger.MarkResolved(plan);
-                                        Fail(
-                                            ExitActionUnconfirmed,
-                                            "ACTION_REJECTED",
-                                            "Request '" + plan.RequestId + "' action=" + plan.Action +
-                                            " was rejected: status=" + driverReceipt.Resolution.ReceiptStatus +
-                                            " reason=" + driverReceipt.Resolution.ReasonCode + ".");
-                                    }
-                                    else if (observer.HasAppliedReceipt)
-                                    {
-                                        Fail(
-                                            ExitMissingEvent,
-                                            "VISIBLE_EVENT_MISSING",
-                                            "Applied request '" + plan.RequestId + "' action=" + plan.Action +
-                                            " has no matching visible event; " + observer.DescribeAction() +
-                                            " " + observer.DescribeBatches());
-                                    }
-                                    else
-                                    {
-                                        _requestLedger.MarkUnresolved(plan);
-                                        Fail(
-                                            ExitActionUnconfirmed,
-                                            "RECEIPT_UNRESOLVED",
-                                            "No definitive Applied/rejected receipt arrived for request '" +
-                                            plan.RequestId + "' action=" + plan.Action +
-                                            " state=" + coordinator.Current.State +
-                                            " lastError=" + (coordinator.Current.LastError ?? "<none>") +
-                                            " pending=" + coordinator.Current.PendingCommands.Count +
-                                            "; " + observer.DescribeAction());
-                                    }
-
-                                    yield return Finish();
-                                    yield break;
-                                }
-
-                                _requestLedger.MarkResolved(plan);
-                                if (plan.DecisionId.Length > 0)
-                                {
-                                    _lastCompletedDecisionKey = plan.RoundId + "|" + plan.DecisionId;
-                                }
-                                else
-                                {
-                                    _lastCompletedDrawKey = plan.RoundId + "|" +
-                                                           plan.BaselineStateVersion.ToString(CultureInfo.InvariantCulture);
-                                }
-
-                                _actions.Add(new DriverActionRecord(
-                                    plan.RoundId,
-                                    plan.DecisionId,
-                                    plan.Action.ToString(),
-                                    plan.RequestId,
-                                    confirmed));
-                                RecordActionScenario(plan);
-                                LogEvent(
-                                    "action_confirmed",
-                                    "\"roundId\":\"" + Json(plan.RoundId) + "\"" +
-                                    ",\"action\":\"" + plan.Action + "\"" +
-                                    ",\"requestId\":\"" + Json(plan.RequestId) + "\"" +
-                                    ",\"visibleEvent\":" + Bool(confirmed) +
-                                    ",\"stateVersion\":" + Num(coordinator.Current.PlayerSnapshot?.StateVersion ?? 0UL));
-                            }
-                            finally
-                            {
-                                coordinator.ReceiptResolved -= observer.OnReceiptResolved;
-                                coordinator.ReceiptResolved -= driverReceiptHandler;
-                                observer.Dispose();
-                            }
-                        }
+                        yield return null;
                     }
                 }
 
                 yield return Finish();
         }
 
-        private static bool IsReplanableRejection(string reasonCode)
+        private void AttachExecution(SessionCoordinator coordinator)
         {
-            return string.Equals(reasonCode, "STALE_STATE_VERSION", StringComparison.Ordinal) ||
-                   string.Equals(reasonCode, "STALE_DECISION", StringComparison.Ordinal) ||
-                   string.Equals(reasonCode, "DECISION_MISMATCH", StringComparison.Ordinal) ||
-                   string.Equals(reasonCode, "ROUND_MISMATCH", StringComparison.Ordinal) ||
-                   string.Equals(reasonCode, "DEADLINE_EXPIRED", StringComparison.Ordinal) ||
-                   string.Equals(reasonCode, "NOT_YOUR_TURN", StringComparison.Ordinal) ||
-                   string.Equals(reasonCode, "SEAT_NOT_ELIGIBLE", StringComparison.Ordinal) ||
-                   string.Equals(reasonCode, "ROUND_FINISHED", StringComparison.Ordinal) ||
-                   string.Equals(reasonCode, "DECISION_ALREADY_OPEN", StringComparison.Ordinal) ||
-                   string.Equals(reasonCode, "ACTION_NOT_AVAILABLE", StringComparison.Ordinal) ||
-                   string.Equals(reasonCode, "ILLEGAL_ACTION", StringComparison.Ordinal);
+            if (_executionTransport == null)
+            {
+                _executionTransport = new FullMatchSessionTransport(coordinator);
+                _execution = new FullMatchExecutionBoundary(
+                    _executionTransport,
+                    _requestLedger,
+                    FullMatchExecutionBudget.Production,
+                    OnExecutionNotice);
+                return;
+            }
+
+            _executionTransport.Attach(coordinator);
         }
 
-        private static string CandidateActions(PlayerTableViewState view)
+        /// <summary>
+        /// Ends the lifetime of the current round's execution boundary. A late
+        /// receipt may still arrive after the authoritative RoundEnded; it must
+        /// never be evaluated against the next round's view.
+        /// </summary>
+        private void AbandonExecutionBoundary()
         {
-            PlayerDecisionState? decision = view.Own?.Decision;
-            if (decision == null)
+            if (_execution != null)
             {
-                return string.Empty;
+                _execution.Dispose();
+                _execution = null;
             }
 
-            var builder = new StringBuilder();
-            for (int i = 0; i < decision.Candidates.Count; i++)
+            if (_executionTransport != null)
             {
-                if (i > 0)
-                {
-                    builder.Append(',');
-                }
-
-                builder.Append('"').Append(decision.Candidates[i].Action).Append('"');
+                _executionTransport.Detach();
+                _executionTransport = null;
             }
-
-            return builder.ToString();
         }
 
-        private FullMatchStep PlanStep(
-            SessionViewState session,
-            PlayerTableViewState view,
-            TableCommandIntentFactory factory)
+        private static long NowMilliseconds()
         {
-            if (view.ConnectionState != TableConnectionState.Ready)
-            {
-                return FullMatchStep.Wait("session not Ready");
-            }
-
-            if (view.Board.Phase == PlayerGamePhase.RoundEnd)
-            {
-                return FullMatchStep.CompleteRound("confirmed ROUND_END");
-            }
-
-            if (view.Own?.Control?.ControlledByComputer == true)
-            {
-                return FullMatchStep.Wait("seat is under authoritative computer control");
-            }
-
-            PlayerDecisionState? decision = view.Own?.Decision;
-            if (decision != null)
-            {
-                string decisionKey = view.Identity.RoundId + "|" + decision.DecisionId;
-                if (string.Equals(decisionKey, _lastCompletedDecisionKey, StringComparison.Ordinal))
-                {
-                    return FullMatchStep.Wait("the same server decision was already committed");
-                }
-
-                if (decision.Countdown.IsExpired(factory.NowMonotonicMilliseconds))
-                {
-                    return FullMatchStep.Failed(
-                        "DEADLINE_EXPIRED",
-                        "The server decision deadline expired before a legal action was submitted.");
-                }
-
-                if (LocalFullMatchPolicy.TryCreateActionPlan(
-                        session,
-                        view,
-                        factory,
-                        factory.NowMonotonicMilliseconds,
-                        out FullMatchActionPlan? plan,
-                        out string code,
-                        out string detail))
-                {
-                    return FullMatchStep.SubmitAction(plan!);
-                }
-
-                return FullMatchStep.Failed(code, detail);
-            }
-
-            if ((view.Board.Phase == PlayerGamePhase.Draw || view.Board.Phase == PlayerGamePhase.KanDraw) &&
-                view.Board.CurrentSeat == view.Identity.Seat)
-            {
-                string drawKey = view.Identity.RoundId + "|" +
-                                 view.Identity.StateVersion.ToString(CultureInfo.InvariantCulture);
-                if (string.Equals(drawKey, _lastCompletedDrawKey, StringComparison.Ordinal))
-                {
-                    return FullMatchStep.Wait("the same mandatory draw was already committed");
-                }
-
-                if (LocalFullMatchPolicy.TryCreateMandatoryDrawPlan(
-                        session,
-                        view,
-                        factory.NowMonotonicMilliseconds,
-                        out FullMatchActionPlan? draw,
-                        out string drawCode,
-                        out string drawDetail))
-                {
-                    return FullMatchStep.SubmitMandatoryDraw(draw!);
-                }
-
-                return FullMatchStep.Failed(drawCode, drawDetail);
-            }
-
-            return FullMatchStep.Wait("no own decision");
+            return (long)(Time.realtimeSinceStartup * 1000f);
         }
 
+        private static int ExitCodeForExecutionFailure(FullMatchExecutionOutcome outcome)
+        {
+            // Preserve the accepted driver contract: a decision/planning failure
+            // keeps the historical no-decision status, while submit and
+            // confirmation failures keep their action-unconfirmed / missing-event
+            // statuses.
+            if (outcome.FailureStage == FullMatchExecutionFailureStage.Planning)
+            {
+                return ExitNoDecision;
+            }
+
+            switch (outcome.Code)
+            {
+                case "VISIBLE_EVENT_MISSING":
+                    return ExitMissingEvent;
+                case "REQUEST_ID_CONFLICT":
+                case "SUBMIT_TIMEOUT":
+                case "SUBMIT_NOT_SENT":
+                case "ACTION_REJECTED":
+                case "RECEIPT_UNRESOLVED":
+                    return ExitActionUnconfirmed;
+                default:
+                    return ExitUnexpected;
+            }
+        }
+
+        /// <summary>
+        /// Formats production boundary facts into the existing evidence schema.
+        /// The fixture never writes these rows itself.
+        /// </summary>
+        private void OnExecutionNotice(FullMatchExecutionNotice notice)
+        {
+            FullMatchActionPlan plan = notice.Plan;
+            switch (notice.Kind)
+            {
+                case FullMatchExecutionNoticeKind.PlanRecorded:
+                    LogEvent(
+                        "action_plan",
+                        "\"roundId\":\"" + Json(plan.RoundId) + "\"" +
+                        ",\"decisionId\":\"" + Json(plan.DecisionId) + "\"" +
+                        ",\"action\":\"" + plan.Action + "\"" +
+                        ",\"requestId\":\"" + Json(plan.RequestId) + "\"" +
+                        ",\"baselineStateVersion\":" + Num(plan.BaselineStateVersion) +
+                        ",\"candidates\":[" + notice.Candidates + "]" +
+                        ",\"requiresVisibleEvent\":" + Bool(plan.RequiresVisibleEvent));
+                    break;
+                case FullMatchExecutionNoticeKind.ActionConfirmed:
+                    _actions.Add(new DriverActionRecord(
+                        plan.RoundId,
+                        plan.DecisionId,
+                        plan.Action.ToString(),
+                        plan.RequestId,
+                        notice.VisibleEvent));
+                    RecordActionScenario(plan);
+                    LogEvent(
+                        "action_confirmed",
+                        "\"roundId\":\"" + Json(plan.RoundId) + "\"" +
+                        ",\"action\":\"" + plan.Action + "\"" +
+                        ",\"requestId\":\"" + Json(plan.RequestId) + "\"" +
+                        ",\"visibleEvent\":" + Bool(notice.VisibleEvent) +
+                        ",\"stateVersion\":" + Num(notice.StateVersion));
+                    break;
+                case FullMatchExecutionNoticeKind.ReceiptObserved:
+                    LogEvent(
+                        "action_receipt",
+                        "\"requestId\":\"" + Json(plan.RequestId) + "\"" +
+                        ",\"status\":\"" + notice.ReceiptStatus + "\"" +
+                        ",\"reason\":\"" + Json(notice.ReceiptReason) + "\"" +
+                        ",\"stateVersion\":" + Num(notice.EvaluatedStateVersion));
+                    break;
+                case FullMatchExecutionNoticeKind.ActionReplanned:
+                    LogEvent(
+                        "action_replanned",
+                        "\"requestId\":\"" + Json(plan.RequestId) + "\"" +
+                        ",\"action\":\"" + plan.Action + "\"" +
+                        ",\"reason\":\"" + Json(notice.ReceiptReason) + "\"");
+                    break;
+            }
+        }
         private void RecordScenarios(FullMatchRoundTerminal terminal)
         {
             for (int i = 0; i < terminal.SettlementEventTypes.Count; i++)
@@ -1218,6 +1016,8 @@ namespace Mahjong.Unity.App
                 _log.Dispose();
                 _log = null;
             }
+
+            AbandonExecutionBoundary();
 
             AppComposition? composition = AppRoot.Instance != null ? AppRoot.Instance.Composition : null;
             if (composition != null)
@@ -1566,6 +1366,65 @@ namespace Mahjong.Unity.App
             public string Action { get; }
             public string RequestId { get; }
             public bool VisibleEvent { get; }
+        }
+
+    }
+
+    /// <summary>
+    /// Production transport adapter over the real Client <see cref="SessionCoordinator"/>.
+    /// It forwards the view, the single canonical submit and the resolved-receipt
+    /// event without inventing any state. <see cref="Attach"/> is only used when
+    /// the session owner reopens a round; no request is in flight at that point.
+    /// </summary>
+    public sealed class FullMatchSessionTransport : IFullMatchExecutionTransport
+    {
+        private SessionCoordinator? _coordinator;
+
+        public FullMatchSessionTransport(SessionCoordinator coordinator)
+        {
+            Attach(coordinator);
+        }
+
+        public ISessionView View =>
+            _coordinator ?? throw new InvalidOperationException("No production session is attached.");
+
+        public event EventHandler<TableReceiptResolvedEventArgs>? ReceiptResolved
+        {
+            add
+            {
+                if (_coordinator != null)
+                {
+                    _coordinator.ReceiptResolved += value;
+                }
+            }
+
+            remove
+            {
+                if (_coordinator != null)
+                {
+                    _coordinator.ReceiptResolved -= value;
+                }
+            }
+        }
+
+        public Task<CommandSubmission> SubmitAsync(
+            ProtocolCommand command,
+            CancellationToken cancellationToken)
+        {
+            SessionCoordinator coordinator = _coordinator ??
+                throw new InvalidOperationException("No production session is attached.");
+            return coordinator.SubmitAsync(command, cancellationToken);
+        }
+
+        public void Attach(SessionCoordinator coordinator)
+        {
+            if (coordinator == null) throw new ArgumentNullException(nameof(coordinator));
+            _coordinator = coordinator;
+        }
+
+        public void Detach()
+        {
+            _coordinator = null;
         }
     }
 }

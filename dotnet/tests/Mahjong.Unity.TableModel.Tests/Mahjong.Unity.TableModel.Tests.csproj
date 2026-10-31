@@ -43,6 +43,7 @@
     <Compile Include="$(MSBuildThisFileDirectory)..\..\..\unity\Mahjong.Unity\Assets\Scripts\App\ConfirmedVisibleEventObserver.cs" Link="Production\ConfirmedVisibleEventObserver.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)..\..\..\unity\Mahjong.Unity\Assets\Scripts\App\SmokeActionEventPolicy.cs" Link="Production\SmokeActionEventPolicy.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)..\..\..\unity\Mahjong.Unity\Assets\Scripts\App\LocalFullMatchPolicy.cs" Link="Production\LocalFullMatchPolicy.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\unity\Mahjong.Unity\Assets\Scripts\App\FullMatchExecutionBoundary.cs" Link="Production\FullMatchExecutionBoundary.cs" />
   </ItemGroup>
 
 </Project>

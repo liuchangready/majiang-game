@@ -9,13 +9,17 @@ using System.Threading.Tasks;
 using System.Text.RegularExpressions;
 using Mahjong.Client;
 using Mahjong.Contracts;
+using Mahjong.Contracts.Wire;
 using Mahjong.Unity.App;
 using Mahjong.Unity.Table;
 using Mahjong.Unity.UI;
+using Mahjong.Unity.UI.Session;
 using NUnit.Framework;
 using UnityEngine;
 using UnityEngine.TestTools;
 using Object = UnityEngine.Object;
+using WirePlayerSnapshot = Mahjong.Contracts.Wire.PlayerSnapshot;
+using WirePlayerControlView = Mahjong.Contracts.Wire.PlayerControlView;
 
 namespace Mahjong.Unity.Tests.PlayMode
 {
@@ -117,39 +121,53 @@ namespace Mahjong.Unity.Tests.PlayMode
 
                 Assert.IsNotNull(view.Own?.Decision, "The server must provide a real decision.");
                 Assert.Greater(view.Own!.Decision!.Candidates.Count, 0);
-                PlayerLegalActionState action = view.Own.Decision.Candidates[0];
-                var owner = new TableCommandOwnerContext(
-                    new RequestId("playmode-match-" + Guid.NewGuid().ToString("N")),
-                    new RequestScopeId(view.Identity.ScopeId),
-                    new StateVersion(view.Identity.StateVersion),
-                    new OwnerEpoch(view.Identity.OwnerEpoch));
-                TableCommandIntent intent = intentFactory.CreateSubmitAction(view, action, owner);
                 ulong before = view.Identity.StateVersion;
-
-                Task<CommandSubmission> submit = coordinator.SubmitAsync(intent.Command, CancellationToken.None);
-                yield return WaitTask(submit, 20f, "action submit");
-                Assert.IsTrue(submit.Result.Sent, "The canonical action must reach the real transport.");
-
-                float advance = 0f;
-                while (advance < 30f)
+                var transport = new FullMatchSessionTransport(coordinator);
+                var execution = new FullMatchExecutionBoundary(
+                    transport,
+                    new FullMatchRequestLedger(),
+                    FullMatchExecutionBudget.Production);
+                bool confirmed = false;
+                float executeDeadline = 0f;
+                try
                 {
-                    coordinator = app.Composition.SessionCoordinator;
-                    if (coordinator == null)
+                    while (executeDeadline < 60f)
                     {
-                        break;
-                    }
+                        coordinator = app.Composition.SessionCoordinator;
+                        if (coordinator == null)
+                        {
+                            break;
+                        }
 
-                    view = mapper.Project(coordinator.Current);
-                    if (view.Identity.StateVersion > before ||
-                        view.Board.Phase == PlayerGamePhase.RoundEnd)
-                    {
-                        break;
-                    }
+                        transport.Attach(coordinator);
+                        view = mapper.Project(coordinator.Current);
+                        FullMatchExecutionOutcome outcome = execution.Poll(
+                            coordinator.Current,
+                            view,
+                            intentFactory,
+                            (long)(Time.realtimeSinceStartup * 1000f));
+                        if (outcome.Status == FullMatchExecutionStatus.Confirmed)
+                        {
+                            confirmed = true;
+                            break;
+                        }
 
-                    advance += Time.unscaledDeltaTime;
-                    yield return null;
+                        if (outcome.Status == FullMatchExecutionStatus.Failed)
+                        {
+                            Assert.Fail(outcome.Code + ": " + outcome.Detail);
+                        }
+
+                        executeDeadline += Time.unscaledDeltaTime;
+                        yield return null;
+                    }
+                }
+                finally
+                {
+                    execution.Dispose();
                 }
 
+                Assert.IsTrue(confirmed, "The shared production boundary must confirm the real action.");
+                view = mapper.Project(coordinator.Current);
                 Assert.IsTrue(view.Identity.StateVersion > before || view.Board.Phase == PlayerGamePhase.RoundEnd,
                     "The real authoritative state must advance after the submitted action.");
             }
@@ -218,91 +236,56 @@ namespace Mahjong.Unity.Tests.PlayMode
                 var clock = new SystemTableClientClock();
                 var mapper = new PlayerTableProjectionMapper(clock);
                 var intentFactory = new TableCommandIntentFactory(clock);
+                var transport = new FullMatchSessionTransport(coordinator);
+                var execution = new FullMatchExecutionBoundary(
+                    transport,
+                    new FullMatchRequestLedger(),
+                    FullMatchExecutionBudget.Production);
                 float elapsed = 0f;
                 bool terminal = false;
-                var submitted = new HashSet<string>();
                 PlayerTableViewState view = mapper.Project(coordinator.Current);
-                while (elapsed < 180f)
+                try
                 {
-                    coordinator = app.Composition.SessionCoordinator;
-                    if (coordinator == null)
+                    while (elapsed < 180f)
                     {
-                        break;
-                    }
+                        coordinator = app.Composition.SessionCoordinator;
+                        if (coordinator == null)
+                        {
+                            break;
+                        }
 
-                    view = mapper.Project(coordinator.Current);
-                    if (view.Board.Phase == PlayerGamePhase.RoundEnd)
-                    {
-                        terminal = true;
-                        break;
-                    }
+                        transport.Attach(coordinator);
+                        view = mapper.Project(coordinator.Current);
+                        if (view.Board.Phase == PlayerGamePhase.RoundEnd)
+                        {
+                            terminal = true;
+                            break;
+                        }
 
-                    FullMatchActionPlan? plan = null;
-                    if (view.Own?.Decision != null &&
-                        LocalFullMatchPolicy.TryCreateActionPlan(
+                        FullMatchExecutionOutcome outcome = execution.Poll(
                             coordinator.Current,
                             view,
                             intentFactory,
-                            clock.MonotonicMilliseconds,
-                            out plan,
-                            out _,
-                            out _))
-                    {
-                    }
-                    else if ((view.Board.Phase == PlayerGamePhase.Draw ||
-                              view.Board.Phase == PlayerGamePhase.KanDraw) &&
-                             view.Board.CurrentSeat == view.Identity.Seat &&
-                             LocalFullMatchPolicy.TryCreateMandatoryDrawPlan(
-                                 coordinator.Current,
-                                 view,
-                                 clock.MonotonicMilliseconds,
-                                 out plan,
-                                 out _,
-                                 out _))
-                    {
-                    }
-
-                    if (plan != null)
-                    {
-                        string key = plan.RoundId + "|" + plan.DecisionId + "|" + (int)plan.Action + "|" + plan.RequestId;
-                        if (!submitted.Add(key))
+                            (long)(Time.realtimeSinceStartup * 1000f));
+                        if (outcome.Status == FullMatchExecutionStatus.Failed)
                         {
-                            elapsed += Time.unscaledDeltaTime;
+                            Assert.Fail(outcome.Code + ": " + outcome.Detail);
+                        }
+
+                        if (outcome.Status == FullMatchExecutionStatus.Confirmed)
+                        {
                             yield return null;
                             continue;
                         }
 
-                        ulong before = plan.BaselineStateVersion;
-                        Task<CommandSubmission> submit = coordinator.SubmitAsync(plan.Command, CancellationToken.None);
-                        yield return WaitTask(submit, 20f, "round action submit");
-                        Assert.IsTrue(submit.Result.Sent);
-                        float advance = 0f;
-                        while (advance < 20f)
-                        {
-                            coordinator = app.Composition.SessionCoordinator;
-                            if (coordinator == null)
-                            {
-                                break;
-                            }
-
-                            PlayerTableViewState after = mapper.Project(coordinator.Current);
-                            if (after.Identity.StateVersion > before ||
-                                after.Board.Phase == PlayerGamePhase.RoundEnd)
-                            {
-                                break;
-                            }
-
-                            advance += Time.unscaledDeltaTime;
-                            yield return null;
-                        }
-                    }
-                    else
-                    {
                         elapsed += Time.unscaledDeltaTime;
                         yield return null;
                     }
                 }
-
+                finally
+                {
+                    execution.Dispose();
+                }
                 if (!terminal)
                 {
                     Debug.Log(
@@ -368,33 +351,77 @@ namespace Mahjong.Unity.Tests.PlayMode
         }
 
         [UnityTest]
-        public IEnumerator DriverFaultFixture_NoDecisionFailsBounded()
+        public IEnumerator DriverExecutionFixture_NoDecisionExpiresAtTheBoundedProductionWait()
         {
-            yield return RunFaultFixture("NO_DECISION", 42, "NO_DECISION");
+            PlayModeExecutionTransport transport = PlayModeExecutionTransport.DrawWithoutDecision();
+            yield return RunExecutionFixture(
+                transport,
+                new FullMatchExecutionBudget(1_000L, 1_000L, 120L),
+                "NO_DECISION_WAIT",
+                42,
+                "DECISION_WAIT_EXPIRED",
+                0);
+            Assert.AreEqual(0, transport.SubmitCount, "A missing decision must never submit a command.");
         }
 
         [UnityTest]
-        public IEnumerator DriverFaultFixture_SubmitTimeoutKeepsFailure()
+        public IEnumerator DriverExecutionFixture_NeverCompletingSubmitTimesOutOnce()
         {
-            yield return RunFaultFixture("SUBMIT_TIMEOUT", 43, "SUBMIT_TIMEOUT");
+            var neverCompletes = new TaskCompletionSource<CommandSubmission>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            PlayModeExecutionTransport transport = PlayModeExecutionTransport.DrawForSubmission(
+                _ => neverCompletes.Task);
+            yield return RunExecutionFixture(
+                transport,
+                new FullMatchExecutionBudget(120L, 1_000L, 1_000L),
+                "SUBMIT_TIMEOUT",
+                43,
+                "SUBMIT_TIMEOUT",
+                1);
+            Assert.AreEqual(1, transport.SubmitCount, "The unresolved original request must not be resent.");
         }
 
         [UnityTest]
-        public IEnumerator DriverFaultFixture_UnconfirmedRequestDoesNotRetry()
+        public IEnumerator DriverExecutionFixture_AppliedWithoutMatchingVisibleEventStaysUnresolved()
         {
-            yield return RunFaultFixture("UNCONFIRMED", 43, "RECEIPT_UNRESOLVED");
-            string evidence = Path.Combine(Application.temporaryCachePath, "p45-driver-fixture-UNCONFIRMED");
-            string jsonl = File.ReadAllText(Path.Combine(evidence, "full-match.jsonl"));
-            Assert.AreEqual(1, CountOccurrences(jsonl, "\"kind\":\"action_plan\""));
-            StringAssert.Contains("fm-test-unconfirmed", jsonl);
-            Directory.Delete(evidence, true);
+            PlayModeExecutionTransport transport =
+                PlayModeExecutionTransport.DrawForAppliedWithoutVisibleEvent();
+            yield return RunExecutionFixture(
+                transport,
+                new FullMatchExecutionBudget(1_000L, 120L, 1_000L),
+                "APPLIED_NO_EVENT",
+                44,
+                "VISIBLE_EVENT_MISSING",
+                1);
+            Assert.AreEqual(1, transport.SubmitCount, "An applied but unconfirmed request must not be resent.");
         }
 
-        private static IEnumerator RunFaultFixture(string mode, int expectedExit, string expectedCode)
+        [UnityTest]
+        public IEnumerator DriverExecutionFixture_SentWithoutReceiptStaysUnresolved()
+        {
+            PlayModeExecutionTransport transport = PlayModeExecutionTransport.DrawForSubmission(
+                command => Task.FromResult(PlayModeExecutionTransport.SentSubmission(command)));
+            yield return RunExecutionFixture(
+                transport,
+                new FullMatchExecutionBudget(1_000L, 120L, 1_000L),
+                "UNCONFIRMED",
+                43,
+                "RECEIPT_UNRESOLVED",
+                1);
+            Assert.AreEqual(1, transport.SubmitCount, "A sent but unconfirmed request must not be resent.");
+        }
+
+        private static IEnumerator RunExecutionFixture(
+            PlayModeExecutionTransport transport,
+            FullMatchExecutionBudget budget,
+            string label,
+            int expectedExit,
+            string expectedCode,
+            int expectedPlanCount)
         {
             string evidence = Path.Combine(
                 Application.temporaryCachePath,
-                "p45-driver-fixture-" + mode);
+                "p45-execution-fixture-" + label);
             if (Directory.Exists(evidence))
             {
                 Directory.Delete(evidence, true);
@@ -403,26 +430,190 @@ namespace Mahjong.Unity.Tests.PlayMode
             var completed = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
             LocalFullMatchPlayerDriver driver = LocalFullMatchPlayerDriver.CreateForTest(
                 evidence,
-                "fixture-" + mode,
+                "fixture-" + label,
                 code => completed.TrySetResult(code));
             LogAssert.Expect(LogType.Error, new Regex("FULL_MATCH_DRIVER_FAILED: code=" + expectedCode));
             try
             {
-                driver.StartCoroutine(driver.RunFaultFixtureForTest(mode));
-                yield return WaitTask(completed.Task, 15f, "driver fixture " + mode);
+                driver.StartCoroutine(driver.RunExecutionFixtureForTest(transport, budget, label));
+                yield return WaitTask(completed.Task, 15f, "driver execution fixture " + label);
                 Assert.AreEqual(expectedExit, completed.Task.Result);
                 string summary = File.ReadAllText(Path.Combine(evidence, "summary.json"));
                 StringAssert.Contains("\"outcome\": \"FAIL\"", summary);
                 StringAssert.Contains("\"failureCode\": \"" + expectedCode + "\"", summary);
                 StringAssert.Contains("\"exitCode\": " + expectedExit, summary);
                 StringAssert.Contains("\"matchFinished\": false", summary);
+                string jsonl = File.ReadAllText(Path.Combine(evidence, "full-match.jsonl"));
+                Assert.AreEqual(
+                    expectedPlanCount,
+                    CountOccurrences(jsonl, "\"kind\":\"action_plan\""),
+                    "action_plan rows must come from the production boundary ledger, not the fixture.");
             }
             finally
             {
                 Object.DestroyImmediate(driver.gameObject);
             }
         }
+        /// <summary>
+        /// Real-shaped scripted session/view plus a counting command sink. The
+        /// fixture supplies only data and the submit result; planning, ledger,
+        /// waits and confirmation remain in the production boundary.
+        /// </summary>
+        private sealed class PlayModeExecutionTransport : IFullMatchExecutionTransport
+        {
+            private readonly ScriptedSessionView _view;
+            private readonly Func<ProtocolCommand, Task<CommandSubmission>> _submit;
+            private readonly bool _raiseAppliedWithoutVisibleEvent;
 
+            public PlayModeExecutionTransport(
+                SessionViewState initial,
+                Func<ProtocolCommand, Task<CommandSubmission>>? submit = null,
+                bool raiseAppliedWithoutVisibleEvent = false)
+            {
+                _view = new ScriptedSessionView(initial);
+                _submit = submit ?? (command => Task.FromResult(SentSubmission(command)));
+                _raiseAppliedWithoutVisibleEvent = raiseAppliedWithoutVisibleEvent;
+            }
+
+            public ISessionView View => _view;
+
+            public List<ProtocolCommand> Submitted { get; } = new List<ProtocolCommand>();
+
+            public int SubmitCount => Submitted.Count;
+
+            public event EventHandler<TableReceiptResolvedEventArgs>? ReceiptResolved;
+
+            public static PlayModeExecutionTransport DrawWithoutDecision()
+            {
+                return new PlayModeExecutionTransport(BuildState(GamePhase.Discard));
+            }
+
+            public static PlayModeExecutionTransport DrawForSubmission(
+                Func<ProtocolCommand, Task<CommandSubmission>> submit)
+            {
+                return new PlayModeExecutionTransport(BuildState(GamePhase.Draw), submit);
+            }
+
+            public static PlayModeExecutionTransport DrawForAppliedWithoutVisibleEvent()
+            {
+                return new PlayModeExecutionTransport(
+                    BuildState(GamePhase.Draw),
+                    raiseAppliedWithoutVisibleEvent: true);
+            }
+
+            public static CommandSubmission SentSubmission(ProtocolCommand command)
+            {
+                var key = new IdempotencyKey(
+                    "local-player",
+                    command.ScopeId!.Value,
+                    command.RequestId);
+                var pending = new PendingCommandSnapshot(
+                    key,
+                    command.Kind,
+                    "digest",
+                    command.Payload.Length,
+                    true,
+                    false,
+                    false,
+                    null,
+                    null,
+                    false);
+                return new CommandSubmission(pending, sent: true, wasDuplicate: false);
+            }
+
+            public Task<CommandSubmission> SubmitAsync(
+                ProtocolCommand command,
+                CancellationToken cancellationToken)
+            {
+                Submitted.Add(command);
+                Task<CommandSubmission> submission = _submit(command);
+                if (_raiseAppliedWithoutVisibleEvent)
+                {
+                    ReceiptResolved?.Invoke(this, AppliedReceipt(command));
+                }
+
+                return submission;
+            }
+
+            private static TableReceiptResolvedEventArgs AppliedReceipt(ProtocolCommand command)
+            {
+                var key = new IdempotencyKey(
+                    "local-player",
+                    command.ScopeId!.Value,
+                    command.RequestId);
+                var pending = new PendingCommandSnapshot(
+                    key,
+                    command.Kind,
+                    "digest",
+                    command.Payload.Length,
+                    true,
+                    false,
+                    false,
+                    null,
+                    null,
+                    false);
+                OutboxResolution resolution = OutboxResolution.FromReceipt(
+                    Mahjong.Contracts.ReceiptStatus.Applied,
+                    string.Empty,
+                    new StateVersion(5),
+                    new StateVersion(6),
+                    new EventSeq(106),
+                    1,
+                    "digest",
+                    false);
+                return new TableReceiptResolvedEventArgs(pending, resolution);
+            }
+
+            private static SessionViewState BuildState(GamePhase phase)
+            {
+                TableSessionBinding binding = PlayModeScriptedTableChannel.CreateBinding(
+                    "session_fixture",
+                    "room_fixture",
+                    ProtocolRole.Player,
+                    0);
+                WirePlayerSnapshot snapshot = PlayModeScriptedTableChannel.CreatePlayerSync(
+                    "session_fixture",
+                    "room_fixture",
+                    0,
+                    1,
+                    500).SyncResponse.Player;
+                snapshot.PublicView.Board.Phase = phase;
+                snapshot.PublicView.Board.CurrentSeat = 0;
+                snapshot.PrivateView.Control = new WirePlayerControlView
+                {
+                    ControlEpoch = 7,
+                    ControlledByComputer = false,
+                    ControlVersion = 1
+                };
+                return new SessionViewState(
+                    1,
+                    TableConnectionState.Ready,
+                    binding,
+                    snapshot,
+                    null,
+                    null,
+                    null,
+                    null);
+            }
+        }
+
+        private sealed class ScriptedSessionView : ISessionView
+        {
+            public ScriptedSessionView(SessionViewState initial)
+            {
+                Current = initial;
+            }
+
+            public SessionViewState Current { get; private set; }
+
+            public event EventHandler<SessionViewState>? Changed;
+
+            public void Publish(SessionViewState state)
+            {
+                Current = state;
+                Changed?.Invoke(this, state);
+            }
+        }
         private static int CountOccurrences(string text, string value)
         {
             int count = 0;
