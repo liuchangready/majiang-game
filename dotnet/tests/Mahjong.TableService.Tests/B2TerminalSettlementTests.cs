@@ -559,13 +559,11 @@ namespace Mahjong.TableService.Tests
         }
 
         [Fact]
-        public async Task TerminalCommit_WithUtcAdvancingBetweenCheckpointReads_FailsClosedWithoutOutbox()
+        public async Task TerminalCommit_WithAdvancingUtc_UsesCoherentCheckpointAndReplaysOnce()
         {
-            // Deterministic reproduction of the production terminal-checkpoint race: the
-            // actor reads UTC once for the timing snapshot and again while building the
-            // checkpoint. The real SystemTableClock can cross a millisecond between those
-            // reads (the formal PG run did); this clock makes that crossing certain. The
-            // required behavior is fail-closed: no RoundEnd, no result, no outbox.
+            // This clock reproduced the old terminal-checkpoint UTC mismatch. After
+            // the Runtime correction, an advancing clock must produce a coherent
+            // terminal checkpoint and one outbox row, including original-request replay.
             await using TableServiceTestHost host = await TableServiceTestHost.StartAsync(
                 o => { o.RoomTickIntervalMs = 50; },
                 roundSource: new FixedRoundSource(DealerTsumoRound),
@@ -590,11 +588,24 @@ namespace Mahjong.TableService.Tests
                         Encoding.UTF8.GetBytes("clock-race-settlement")));
 
                 TableOperationResult result = await room.Actor.SubmitSettlementAsync(request);
-                Assert.Equal(TableOperationStatus.Failed, result.Status);
-                Assert.Equal(TableRuntimeReasonCode.CheckpointInvalid, result.ReasonCode);
-                Assert.Equal((long)before.StateVersion, room.Actor.GetRoundStateForHost().Version);
-                Assert.False(room.Actor.GetRoundStateForHost().IsFinished);
-                Assert.Equal(0, ((InMemoryTableStore)room.Store).OutboxCount);
+                Assert.Equal(TableOperationStatus.Accepted, result.Status);
+                Assert.True(room.Actor.GetRoundStateForHost().IsFinished);
+                PlayerSnapshot terminal = await WaitForPhaseAsync(client, GamePhase.RoundEnd);
+                Assert.Equal(before.StateVersion + 1UL, terminal.StateVersion);
+                InMemoryTableStore store = await AssertSingleTerminalOutboxAsync(
+                    host, "room-b2-clock-race", terminal);
+                TableCheckpoint? checkpoint = await store.LoadCheckpointAsync(
+                    "room-b2-clock-race", CancellationToken.None);
+                Assert.NotNull(checkpoint);
+                TableTimingCheckpoint timing = TableTimingCheckpointCodec.Decode(checkpoint!.TimingPayload);
+                Assert.Equal(timing.CapturedAtUtcMs, checkpoint.CreatedAtUtcMs);
+                Assert.Equal(timing.CapturedMonotonicMillis, checkpoint.CapturedMonotonicMillis);
+                Assert.Equal(timing.BootId, checkpoint.BootId);
+
+                TableOperationResult replay = await room.Actor.SubmitSettlementAsync(request);
+                Assert.Equal(TableOperationStatus.Replayed, replay.Status);
+                Assert.Equal((long)terminal.StateVersion, room.Actor.GetRoundStateForHost().Version);
+                Assert.Equal(1, store.OutboxCount);
             }
             finally
             {
