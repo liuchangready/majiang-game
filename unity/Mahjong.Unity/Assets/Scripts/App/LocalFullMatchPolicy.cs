@@ -768,7 +768,7 @@ namespace Mahjong.Unity.App
                 !string.Equals(batch.RoomId, plan.RoomId, StringComparison.Ordinal) ||
                 !string.Equals(batch.TableId, plan.TableId, StringComparison.Ordinal) ||
                 !string.Equals(batch.ScopeId, plan.ScopeId, StringComparison.Ordinal) ||
-                (!terminalDraw && batch.Seat != plan.Seat) ||
+                batch.Seat != plan.Seat ||
                 batch.BindingEpoch != plan.BindingEpoch ||
                 batch.ConnectionEpoch != plan.ConnectionEpoch ||
                 batch.OwnerEpoch != plan.OwnerEpoch)

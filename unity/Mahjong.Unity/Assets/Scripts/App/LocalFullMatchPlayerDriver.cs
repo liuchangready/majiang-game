@@ -863,6 +863,36 @@ namespace Mahjong.Unity.App
                                         break;
                                     }
 
+                                    if (plan.Action == PlayerActionKind.DrawTile &&
+                                        driverReceipt != null &&
+                                        driverReceipt.Resolution.ReceiptStatus == ReceiptStatus.Applied &&
+                                        driverReceipt.Resolution.CommandVersion != null)
+                                    {
+                                        ulong appliedVersion = driverReceipt.Resolution.CommandVersion.Value.Value;
+                                        SessionViewState state = coordinator.Current;
+                                        ObservedVisibleEventBatch observedBatch =
+                                            new ObservedVisibleEventBatch(state);
+                                        for (int i = 0; i < state.VisibleEventBatch.Events.Count; i++)
+                                        {
+                                            var observedEvent = new ObservedVisibleEvent(
+                                                state.VisibleEventBatch.Events[i]);
+                                            if (LocalFullMatchPolicy.IsOwnActionEvent(
+                                                plan,
+                                                observedBatch,
+                                                observedEvent,
+                                                appliedVersion))
+                                            {
+                                                confirmed = true;
+                                                break;
+                                            }
+                                        }
+
+                                        if (confirmed)
+                                        {
+                                            break;
+                                        }
+                                    }
+
                                     if (observer.HasAppliedReceipt && !plan.RequiresVisibleEvent)
                                     {
                                         // The only legal state-only action is a response Pass.
