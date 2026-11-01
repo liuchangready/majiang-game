@@ -282,6 +282,159 @@ namespace Mahjong.LocalHost
             options.Validate();
             return LocalTicketIssuer.Issue(options.RoomId);
         }
+
+        /// <summary>
+        /// Opt-in, read-only diagnostic capture for the already-open runtime that owns
+        /// <paramref name="saveDirectory"/>. It never creates a second host, acquires a lease or
+        /// writes the save; the runtime is located through the in-process registry below. The
+        /// production path never calls this method.
+        /// </summary>
+        public static Task<LocalTableRecoveryCapture> CaptureRecoveryAsync(
+            string saveDirectory,
+            CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(saveDirectory))
+            {
+                throw new LocalTableException(
+                    LocalTableErrorKind.InvalidOptions,
+                    "A recovery capture requires the exact local save directory.");
+            }
+
+            string full = LocalTableHostPaths.ResolveSaveDirectory(saveDirectory);
+            if (!LocalTableDiagnosticRegistry.TryGet(full, out LocalTableRuntime? runtime) || runtime == null)
+            {
+                throw new LocalTableException(
+                    LocalTableErrorKind.Unavailable,
+                    "No open local runtime owns the requested save directory.");
+            }
+
+            return runtime.CaptureRecoveryAsync(cancellationToken);
+        }
+
+        /// <summary>
+        /// Opt-in hook used by the recovery probe immediately before the first local open.
+        /// When the runtime opens, it captures the committed baseline before starting the
+        /// autonomous driver, so AFTER_RECOVERY is the first recovered state rather than a
+        /// later AI-advanced version. Production never calls this.
+        /// </summary>
+        public static void PrepareRecoveryCaptureOnNextOpen(string saveDirectory)
+        {
+            string full = LocalTableHostPaths.ResolveSaveDirectory(saveDirectory);
+            LocalTableDiagnosticRegistry.PreparePendingCapture(full);
+        }
+
+        /// <summary>Takes the baseline captured by the prepared open. Faults if none exists.</summary>
+        public static Task<LocalTableRecoveryCapture> TakePreparedRecoveryCaptureAsync(
+            string saveDirectory,
+            CancellationToken cancellationToken = default)
+        {
+            string full = LocalTableHostPaths.ResolveSaveDirectory(saveDirectory);
+            return LocalTableDiagnosticRegistry.TakePendingCaptureAsync(full, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// Process-local registry of opened local runtimes used by the opt-in recovery exporter.
+    /// It is not a second authority: it returns the one runtime that already owns the file
+    /// lease. Registration is removed by <see cref="LocalTableRuntime.DisposeAsync"/>.
+    /// </summary>
+    internal static class LocalTableDiagnosticRegistry
+    {
+        private static readonly object Gate = new object();
+        private static readonly Dictionary<string, LocalTableRuntime> Runtimes =
+            new Dictionary<string, LocalTableRuntime>(StringComparer.OrdinalIgnoreCase);
+        private static readonly Dictionary<string, TaskCompletionSource<LocalTableRecoveryCapture>> PendingCaptures =
+            new Dictionary<string, TaskCompletionSource<LocalTableRecoveryCapture>>(StringComparer.OrdinalIgnoreCase);
+
+        public static void PreparePendingCapture(string saveDirectory)
+        {
+            lock (Gate)
+            {
+                PendingCaptures[saveDirectory] = new TaskCompletionSource<LocalTableRecoveryCapture>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+            }
+        }
+
+        public static bool HasPendingCapture(string saveDirectory)
+        {
+            lock (Gate)
+            {
+                return PendingCaptures.ContainsKey(saveDirectory);
+            }
+        }
+
+        public static void CompletePendingCapture(string saveDirectory, LocalTableRecoveryCapture capture)
+        {
+            TaskCompletionSource<LocalTableRecoveryCapture>? completion = null;
+            lock (Gate)
+            {
+                PendingCaptures.TryGetValue(saveDirectory, out completion);
+            }
+
+            completion?.TrySetResult(capture);
+        }
+
+        public static void FailPendingCapture(string saveDirectory, Exception exception)
+        {
+            TaskCompletionSource<LocalTableRecoveryCapture>? completion = null;
+            lock (Gate)
+            {
+                PendingCaptures.TryGetValue(saveDirectory, out completion);
+            }
+
+            completion?.TrySetException(exception);
+        }
+
+        public static Task<LocalTableRecoveryCapture> TakePendingCaptureAsync(
+            string saveDirectory,
+            CancellationToken cancellationToken)
+        {
+            TaskCompletionSource<LocalTableRecoveryCapture>? completion;
+            lock (Gate)
+            {
+                if (!PendingCaptures.TryGetValue(saveDirectory, out completion))
+                {
+                    throw new LocalTableException(
+                        LocalTableErrorKind.Unavailable,
+                        "No recovery capture was prepared for the requested save directory.");
+                }
+
+                PendingCaptures.Remove(saveDirectory);
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            return completion!.Task;
+        }
+
+        public static void Register(string saveDirectory, LocalTableRuntime runtime)
+        {
+            string full = LocalTableHostPaths.ResolveSaveDirectory(saveDirectory);
+            lock (Gate)
+            {
+                Runtimes[full] = runtime;
+            }
+        }
+
+        public static void Unregister(string saveDirectory, LocalTableRuntime runtime)
+        {
+            string full = LocalTableHostPaths.ResolveSaveDirectory(saveDirectory);
+            lock (Gate)
+            {
+                if (Runtimes.TryGetValue(full, out LocalTableRuntime? existing) &&
+                    ReferenceEquals(existing, runtime))
+                {
+                    Runtimes.Remove(full);
+                }
+            }
+        }
+
+        public static bool TryGet(string saveDirectory, out LocalTableRuntime? runtime)
+        {
+            lock (Gate)
+            {
+                return Runtimes.TryGetValue(saveDirectory, out runtime);
+            }
+        }
     }
 
     /// <summary>Process-local opaque ticket registry. Nothing is written or uploaded.</summary>

@@ -172,7 +172,7 @@
           "type": "object",
           "required": ["mode", "visible", "hiddenDefault", "argumentsRecorded"],
           "properties": {
-            "mode": { "enum": ["LocalSmoke", "Manual", "ToolSelfTest"] },
+            "mode": { "enum": ["LocalSmoke", "Manual", "ToolSelfTest", "RecoveryProbe"] },
             "visible": { "type": "boolean" },
             "hiddenDefault": { "type": "boolean" },
             "argumentsRecorded": { "type": "boolean" }
@@ -208,7 +208,7 @@
         "runId": { "type": "string" },
         "attempt": { "type": "integer", "minimum": 1 },
         "evidenceClass": { "enum": ["GAME", "TOOL_SELF_TEST"] },
-        "mode": { "enum": ["LocalSmoke", "Manual", "ToolSelfTest"] },
+        "mode": { "enum": ["LocalSmoke", "Manual", "ToolSelfTest", "RecoveryProbe"] },
         "visible": { "type": "boolean" },
         "hidden": { "type": "boolean" },
         "status": { "type": "string" },
@@ -279,9 +279,24 @@
         "eventSeq": { "type": "boolean" },
         "controlEpoch": { "type": "boolean" },
         "requests": { "type": "boolean" },
+        "controlRequests": { "type": "boolean" },
+        "cheatAggregate": { "type": "boolean" },
         "ledger": { "type": "boolean" },
         "physical": { "type": "boolean" },
         "structuredPlayerExport": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+    "controlRequest": {
+      "type": "object",
+      "required": ["accountId", "scopeId", "requestId", "digest", "kind", "evaluatedStateVersion"],
+      "properties": {
+        "accountId": { "type": "string", "minLength": 1 },
+        "scopeId": { "type": "string", "minLength": 1 },
+        "requestId": { "type": "string", "minLength": 1 },
+        "digest": { "$ref": "#/$defs/sha256" },
+        "kind": { "type": "string", "minLength": 1 },
+        "evaluatedStateVersion": { "$ref": "#/$defs/decimalString" }
       },
       "additionalProperties": true
     },
@@ -292,7 +307,13 @@
         "requestId": { "type": "string", "minLength": 1 },
         "receiptId": { "type": "string", "minLength": 1 },
         "confirmed": { "type": "boolean" },
-        "payloadSha256": { "$ref": "#/$defs/sha256" }
+        "payloadSha256": { "$ref": "#/$defs/sha256" },
+        "accountId": { "type": "string", "minLength": 1 },
+        "scopeId": { "type": "string", "minLength": 1 },
+        "status": { "type": "string" },
+        "evaluatedStateVersion": { "$ref": "#/$defs/decimalString" },
+        "commandVersion": { "oneOf": [{ "$ref": "#/$defs/decimalString" }, { "type": "null" }] },
+        "eventSeq": { "oneOf": [{ "$ref": "#/$defs/decimalString" }, { "type": "null" }] }
       },
       "additionalProperties": true
     },
@@ -329,7 +350,13 @@
               "properties": {
                 "points": { "type": "string", "pattern": "^-?[0-9]+$" },
                 "entryCount": { "type": "integer", "minimum": 0 },
-                "entriesSha256": { "$ref": "#/$defs/sha256" }
+                "entriesSha256": { "$ref": "#/$defs/sha256" },
+                "initialPoints": { "type": "integer" },
+                "balances": { "type": "array", "items": { "type": "integer" }, "minItems": 4, "maxItems": 4 },
+                "balancesSha256": { "$ref": "#/$defs/sha256" },
+                "totalVersion": { "type": "integer" },
+                "checkpointVersion": { "type": "integer" },
+                "source": { "type": "string" }
               },
               "additionalProperties": true
             },
@@ -344,6 +371,7 @@
               "properties": {
                 "tileCount": { "type": "integer", "minimum": 0, "maximum": 136 },
                 "tilesSha256": { "$ref": "#/$defs/sha256" },
+                "uniqueCount": { "type": "integer", "minimum": 0, "maximum": 136 },
                 "wallCount": { "type": "integer", "minimum": 0 },
                 "deadWallCount": { "type": "integer", "minimum": 0 }
               },
@@ -352,6 +380,25 @@
             { "type": "null" }
           ]
         },
+        "roomId": { "type": "string" },
+        "rulesetVersion": { "type": "integer", "minimum": 1 },
+        "stateFingerprint": { "$ref": "#/$defs/decimalString" },
+        "stateHash": { "$ref": "#/$defs/sha256" },
+        "controlVersion": { "$ref": "#/$defs/decimalString" },
+        "cheatVersion": { "$ref": "#/$defs/decimalString" },
+        "cheatFingerprint": { "$ref": "#/$defs/decimalString" },
+        "cheatStateSha256": { "$ref": "#/$defs/sha256" },
+        "controlRequests": { "type": "array", "items": { "$ref": "#/$defs/controlRequest" } },
+        "authoritySaveSha256": { "$ref": "#/$defs/sha256" },
+        "authoritySaveBytes": { "type": "integer", "minimum": 1 },
+        "controlEpochs": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 0 },
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "exportBinding": { "$ref": "#/$defs/exportBinding" },
+        "excludedMutableFields": { "type": "array", "items": { "type": "string" } },
         "reconnect": {
           "type": ["object", "null"],
           "properties": {
@@ -373,6 +420,28 @@
           },
           "additionalProperties": true
         }
+      },
+      "additionalProperties": true
+    },
+    "exportBinding": {
+      "type": "object",
+      "required": ["exporterVersion", "phase", "challenge", "attempt", "pid", "processStartUtc", "processPath", "playerSha256", "packageManifestSha256", "packageFileCount", "authoritySaveSha256", "authoritySaveBytes", "rawExportSha256"],
+      "properties": {
+        "exporterVersion": { "type": "string", "minLength": 1 },
+        "phase": { "enum": ["BEFORE_RECOVERY", "AFTER_RECOVERY"] },
+        "challenge": { "type": "string", "pattern": "^[A-Fa-f0-9]{64}$" },
+        "attempt": { "type": "string", "pattern": "^[0-9]{4}$" },
+        "pid": { "type": "integer", "minimum": 1 },
+        "processStartUtc": { "$ref": "#/$defs/timestamp" },
+        "processPath": { "type": "string", "minLength": 1 },
+        "playerSha256": { "$ref": "#/$defs/sha256" },
+        "packageManifestSha256": { "$ref": "#/$defs/sha256" },
+        "packageFileCount": { "type": "integer", "minimum": 1 },
+        "authoritySaveSha256": { "$ref": "#/$defs/sha256" },
+        "authoritySaveBytes": { "type": "integer", "minimum": 1 },
+        "cheatStateSha256": { "$ref": "#/$defs/sha256" },
+        "cheatStateBytes": { "type": "integer", "minimum": 1 },
+        "rawExportSha256": { "$ref": "#/$defs/sha256" }
       },
       "additionalProperties": true
     },
@@ -450,8 +519,13 @@
         "requiredFieldsEqual": { "type": "boolean" },
         "eligibleForRealPass": { "type": "boolean" },
         "realPassGate": { "type": "string" },
+        "chainStatus": { "type": "string" },
+        "chainReason": { "type": "string" },
+        "beforeChain": { "type": ["object", "null"] },
+        "afterChain": { "type": ["object", "null"] },
+        "trustBoundary": { "type": "string" },
         "pass": { "type": "boolean" },
-        "outcome": { "enum": ["PASS", "FAIL", "BLOCKED", "TOOL_SELF_TEST_ONLY"] },
+        "outcome": { "enum": ["PASS", "FAIL", "BLOCKED", "TOOL_SELF_TEST_ONLY", "OBSERVATION_IDENTITY", "OBSERVATION_INVALID"] },
         "rationale": { "type": "string" },
         "mutableFields": { "type": "object" }
       },
