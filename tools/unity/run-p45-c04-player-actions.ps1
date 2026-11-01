@@ -115,7 +115,7 @@ function Get-C04StableArtifactFiles([string]$root) {
 function Get-C04SeparatedVolatileRoots([string]$root) {
     $unityRoot = if ($script:unityProjectRoot) { $script:unityProjectRoot } else { Join-Path $root 'p' }
     return @(
-        [ordered]@{ path=$unityRoot; classification='EXTERNAL_GUID_STAGED_UNITY_PROJECT'; boundBy='unity-short-path-staging.json source/byte/SHA-256 equality record and Unity input closures' },
+        [ordered]@{ path=(Split-Path -Parent $unityRoot); classification='EXTERNAL_GUID_STAGED_FROZEN_REPOSITORY'; boundBy='unity-short-path-staging.json complete source/byte/SHA-256 equality record and Unity input closures' },
         [ordered]@{ path=(Join-Path $unityRoot 'Library'); classification='VOLATILE_UNITY_CACHE'; boundBy='unity prebuild/postbuild input closures and script-assembly hashes' },
         [ordered]@{ path=(Join-Path $unityRoot 'Temp'); classification='VOLATILE_UNITY_PROCESS_FILES'; boundBy='native stage process identity/exit and Unity log' },
         [ordered]@{ path=(Join-Path $unityRoot 'Logs'); classification='VOLATILE_UNITY_PROCESS_FILES'; boundBy='captured stage stdout/stderr and designated Unity log under logs/' },
@@ -240,7 +240,7 @@ function Assert-C04UnityProjectCopy([string]$sourceProject,[string]$stagedProjec
     }
     $maximumPath = @($stagedEntries | ForEach-Object { [IO.Path]::GetFullPath($_.FullName).Length } | Measure-Object -Maximum).Maximum
     if ($maximumPath -gt 259) { throw "Short-path staged Unity project still exceeds the supported legacy path boundary: $maximumPath" }
-    $manifest = [ordered]@{ sourceProject='source/unity/Mahjong.Unity'; stagedProject='p'; files=$rows.Count; maximumAbsolutePathLength=[int]$maximumPath; windowsLegacyMaxPath=260; entries=$rows }
+    $manifest = [ordered]@{ sourceProject='source'; stagedProject=$stagedProject; files=$rows.Count; maximumAbsolutePathLength=[int]$maximumPath; windowsLegacyMaxPath=260; entries=$rows }
     [IO.File]::WriteAllText($evidencePath,(($manifest | ConvertTo-Json -Depth 8)+"`n"),(New-Object Text.UTF8Encoding($false)))
     return Get-Sha256 $evidencePath
 }
@@ -781,14 +781,14 @@ try {
     if ($extract.exitCode -ne 0) { throw 'Frozen source archive extraction failed.' }
     Assert-C04ArchiveHasNoGitMetadata $source | Out-Null
     $sourceClosureSha = Get-ClosureManifest $source (Join-Path $RunRoot 'source-prebuild-closure.json')
-    $sourceProject = Join-Path $source 'unity/Mahjong.Unity'
     $projectStageRoot = Join-Path 'E:\c04' $runId
-    if (Test-Path -LiteralPath $projectStageRoot) { throw 'Exclusive short-path Unity project staging root already exists; refusing to overwrite.' }
+    if (Test-Path -LiteralPath $projectStageRoot) { throw 'Exclusive short-path staging root already exists; refusing to overwrite.' }
     New-Item -ItemType Directory -Path $projectStageRoot | Out-Null
-    $project = Join-Path $projectStageRoot 'p'
+    $sourceRepo = Join-Path $projectStageRoot 'repo'
+    Copy-Item -LiteralPath $source -Destination $sourceRepo -Recurse
+    $shortPathProjectSha = Assert-C04UnityProjectCopy $source $sourceRepo (Join-Path $RunRoot 'unity-short-path-staging.json')
+    $project = Join-Path $sourceRepo 'unity/Mahjong.Unity'
     $script:unityProjectRoot = $project
-    Copy-Item -LiteralPath $sourceProject -Destination $project -Recurse
-    $shortPathProjectSha = Assert-C04UnityProjectCopy $sourceProject $project (Join-Path $RunRoot 'unity-short-path-staging.json')
     $userSettings = Join-Path $project 'UserSettings/EditorUserSettings.asset'
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $userSettings) | Out-Null
     $isolatedImportSettings = @'
@@ -802,14 +802,14 @@ EditorUserSettings:
 '@
     [IO.File]::WriteAllText($userSettings, $isolatedImportSettings + "`n", (New-Object Text.UTF8Encoding($false)))
     $isolatedImportSettingsSha = Get-Sha256 $userSettings
-    [IO.File]::WriteAllText((Join-Path $RunRoot 'unity-generated-inputs.json'), (([ordered]@{ path='p/UserSettings/EditorUserSettings.asset'; purpose='per-run project-scoped setting in the hash-verified short-path project copy; does not change machine preferences'; sha256=$isolatedImportSettingsSha; bytes=(Get-Item -LiteralPath $userSettings).Length } | ConvertTo-Json -Depth 4) + "`n"), (New-Object Text.UTF8Encoding($false)))
+    [IO.File]::WriteAllText((Join-Path $RunRoot 'unity-generated-inputs.json'), (([ordered]@{ path='repo/unity/Mahjong.Unity/UserSettings/EditorUserSettings.asset'; purpose='per-run project-scoped setting in the byte-verified frozen repository copy; does not change machine preferences'; sha256=$isolatedImportSettingsSha; bytes=(Get-Item -LiteralPath $userSettings).Length } | ConvertTo-Json -Depth 4) + "`n"), (New-Object Text.UTF8Encoding($false)))
 
     $dotnetResults = Join-Path $RunRoot 'dotnet-results'
     $dotnetArtifacts = Join-Path $RunRoot 'dotnet-artifacts'
     New-Item -ItemType Directory -Path $dotnetResults,$dotnetArtifacts | Out-Null
-    $dotnetProject = Join-Path $source 'dotnet/tests/Mahjong.LocalHost.Tests/Mahjong.LocalHost.Tests.csproj'
+    $dotnetProject = Join-Path $sourceRepo 'dotnet/tests/Mahjong.LocalHost.Tests/Mahjong.LocalHost.Tests.csproj'
     $buildArgs = @('build',(Quote-Arg $dotnetProject),'--configuration','Release','--artifacts-path',(Quote-Arg $dotnetArtifacts)) -join ' '
-    $localHostBuild = Invoke-OwnedNative -Name 'FreshLocalHostReleaseBuild' -FilePath $DotnetPath -Arguments $buildArgs -WorkingDirectory $source -StdoutPath (Join-Path $logs 'localhost-build.stdout.txt') -StderrPath (Join-Path $logs 'localhost-build.stderr.txt') -Timeout 1200
+    $localHostBuild = Invoke-OwnedNative -Name 'FreshLocalHostReleaseBuild' -FilePath $DotnetPath -Arguments $buildArgs -WorkingDirectory $sourceRepo -StdoutPath (Join-Path $logs 'localhost-build.stdout.txt') -StderrPath (Join-Path $logs 'localhost-build.stderr.txt') -Timeout 1200
     if ($localHostBuild.exitCode -ne 0) { throw "Fresh LocalHost Release build failed; nativeExit=$($localHostBuild.exitCode)." }
     $testAssembly = Join-Path $dotnetArtifacts 'bin/Mahjong.LocalHost.Tests/release/Mahjong.LocalHost.Tests.dll'
     if (-not (Test-Path -LiteralPath $testAssembly)) { throw 'Fresh LocalHost build did not produce its test assembly.' }
@@ -841,9 +841,9 @@ EditorUserSettings:
         $runtimeTests.exitCode -ne 0 -or $runtimePassed -ne $runtimeTotal -or $runtimeFailed -ne 0 -or $runtimeSkipped -ne 0) {
         throw "Affected TableRuntime tests did not fully pass; nativeExit=$($runtimeTests.exitCode) total=$runtimeTotal passed=$runtimePassed failed=$runtimeFailed skipped=$runtimeSkipped."
     }
-    $verifierProject = Join-Path $source 'dotnet/tools/C04PlayerActionVerifier/C04PlayerActionVerifier.csproj'
+    $verifierProject = Join-Path $sourceRepo 'dotnet/tools/C04PlayerActionVerifier/C04PlayerActionVerifier.csproj'
     $verifierBuildArgs = @('build',(Quote-Arg $verifierProject),'--configuration','Release','--artifacts-path',(Quote-Arg $dotnetArtifacts)) -join ' '
-    $verifierBuild = Invoke-OwnedNative -Name 'FreshC04ActionEvidenceVerifierBuild' -FilePath $DotnetPath -Arguments $verifierBuildArgs -WorkingDirectory $source -StdoutPath (Join-Path $logs 'c04-verifier-build.stdout.txt') -StderrPath (Join-Path $logs 'c04-verifier-build.stderr.txt') -Timeout 600
+    $verifierBuild = Invoke-OwnedNative -Name 'FreshC04ActionEvidenceVerifierBuild' -FilePath $DotnetPath -Arguments $verifierBuildArgs -WorkingDirectory $sourceRepo -StdoutPath (Join-Path $logs 'c04-verifier-build.stdout.txt') -StderrPath (Join-Path $logs 'c04-verifier-build.stderr.txt') -Timeout 600
     if ($verifierBuild.exitCode -ne 0) { throw 'Fresh generated-code verifier build failed.' }
     $script:C04VerifierPath = Join-Path $dotnetArtifacts 'bin/C04PlayerActionVerifier/release/Mahjong.C04PlayerActionVerifier.dll'
     if (-not (Test-Path -LiteralPath $script:C04VerifierPath -PathType Leaf)) { throw 'Generated-code verifier DLL is missing from the fresh artifact root.' }
@@ -855,14 +855,14 @@ EditorUserSettings:
     $projectPlugins = Join-Path $project 'Assets/Plugins/Mahjong'
     $frozenEnabledScenes = Get-EnabledScenes $project
     $sharedLog = Join-Path $logs 'build-shared.log'
-    $sharedArgs = @('-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',(Quote-Arg (Join-Path $source 'tools/unity/build-shared.ps1')),'-Configuration','Release','-DotnetPath',(Quote-Arg $DotnetPath),'-PluginOutputDir',(Quote-Arg $projectPlugins)) -join ' '
-    $shared = Invoke-OwnedNative -Name 'BuildSharedClosure' -FilePath 'powershell.exe' -Arguments $sharedArgs -WorkingDirectory $source -StdoutPath $sharedLog -StderrPath (Join-Path $logs 'build-shared.stderr.txt') -Timeout 900
+    $sharedArgs = @('-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',(Quote-Arg (Join-Path $sourceRepo 'tools/unity/build-shared.ps1')),'-Configuration','Release','-DotnetPath',(Quote-Arg $DotnetPath),'-PluginOutputDir',(Quote-Arg $projectPlugins)) -join ' '
+    $shared = Invoke-OwnedNative -Name 'BuildSharedClosure' -FilePath 'powershell.exe' -Arguments $sharedArgs -WorkingDirectory $sourceRepo -StdoutPath $sharedLog -StderrPath (Join-Path $logs 'build-shared.stderr.txt') -Timeout 900
     if ($shared.exitCode -ne 0) { throw 'Fresh shared plugin build failed; Unity stages were blocked.' }
     $sharedEvidence = Join-Path $projectPlugins 'shared-plugin-provenance.json'
-    $guardArgs = @('-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',(Quote-Arg (Join-Path $source 'tools/unity/check-shared-plugins.ps1')),'-ProjectRoot',(Quote-Arg $source),'-PluginDir',(Quote-Arg $projectPlugins),'-EvidencePath',(Quote-Arg $sharedEvidence),'-Quiet') -join ' '
-    $guard = Invoke-OwnedNative -Name 'VerifySharedPluginProvenance' -FilePath 'powershell.exe' -Arguments $guardArgs -WorkingDirectory $source -StdoutPath (Join-Path $logs 'shared-provenance.stdout.txt') -StderrPath (Join-Path $logs 'shared-provenance.stderr.txt') -Timeout 300
+    $guardArgs = @('-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',(Quote-Arg (Join-Path $sourceRepo 'tools/unity/check-shared-plugins.ps1')),'-ProjectRoot',(Quote-Arg $sourceRepo),'-PluginDir',(Quote-Arg $projectPlugins),'-EvidencePath',(Quote-Arg $sharedEvidence),'-Quiet') -join ' '
+    $guard = Invoke-OwnedNative -Name 'VerifySharedPluginProvenance' -FilePath 'powershell.exe' -Arguments $guardArgs -WorkingDirectory $sourceRepo -StdoutPath (Join-Path $logs 'shared-provenance.stdout.txt') -StderrPath (Join-Path $logs 'shared-provenance.stderr.txt') -Timeout 300
     if ($guard.exitCode -ne 0) { throw 'Fresh shared plugin provenance gate failed.' }
-    $checkCopied = Invoke-OwnedNative -Name 'VerifyCopiedProjectPlugins' -FilePath 'powershell.exe' -Arguments $guardArgs -WorkingDirectory $source -StdoutPath (Join-Path $logs 'copied-plugin.stdout.txt') -StderrPath (Join-Path $logs 'copied-plugin.stderr.txt') -Timeout 300
+    $checkCopied = Invoke-OwnedNative -Name 'VerifyCopiedProjectPlugins' -FilePath 'powershell.exe' -Arguments $guardArgs -WorkingDirectory $sourceRepo -StdoutPath (Join-Path $logs 'copied-plugin.stdout.txt') -StderrPath (Join-Path $logs 'copied-plugin.stderr.txt') -Timeout 300
     if ($checkCopied.exitCode -ne 0) { throw 'Freshly built Unity project plugin closure failed provenance validation.' }
     $pluginClosureSha = Get-ClosureManifest $projectPlugins (Join-Path $RunRoot 'shared-plugin-postbuild-closure.json')
     $provenanceSha = Get-Sha256 $sharedEvidence
@@ -934,7 +934,7 @@ EditorUserSettings:
         $caseResults.Add([ordered]@{ caseId=$case.id; status='PASS'; layer='WINDOWS_PLAYER'; nativeExitCode=$player.exitCode; summary=$summaryPath; summarySha256=(Get-Sha256 $summaryPath); actionEvidence=$actionEvidencePath; actionEvidenceSha256=(Get-Sha256 $actionEvidencePath); executionEvidence=$executionPath; executionEvidenceSha256=(Get-Sha256 $executionPath); playerLog=$nativeLog; playerLogSha256=(Get-Sha256 $nativeLog); payloadSha256=$summary.payloadSha256 }) | Out-Null
     }
 
-    $final = [ordered]@{ schemaVersion=1; task='G2-C04-D03'; status='PASS'; acceptedBase='8fd7c6cb701dfbb41c28938de4186749bdd1d6c7'; frozenCandidate=$gitHead; sourceTreeStatus=$gitStatus; sourceDiffCheck='PASS'; sourceClosureManifest='source-prebuild-closure.json'; sourceClosureManifestSha256=$sourceClosureSha; unityProjectRoot=$project; unityShortPathStaging='unity-short-path-staging.json'; unityShortPathStagingSha256=$shortPathProjectSha; generatedUnityInputs='unity-generated-inputs.json'; generatedUnityInputsSha256=(Get-Sha256 (Join-Path $RunRoot 'unity-generated-inputs.json')); unityResolvedPackageInputClosure='unity-resolved-package-input-closure.json'; unityResolvedPackageInputClosureSha256=$resolvedPackageInputsSha; unityPrebuildInputClosureSha256=$preBuildInputsSha; unityPostbuildInputClosureSha256=$postBuildInputsSha; unityPostbuildInputChanges='unity-postbuild-input-changes.json'; unityPostbuildInputChangesSha256=(Get-Sha256 (Join-Path $RunRoot 'unity-postbuild-input-changes.json')); upmDownloadCacheClosure='upm-cache-closure.json'; upmDownloadCacheClosureSha256=$upmCacheClosureSha; postBuildAssetsClosure='source-postbuild-assets-closure.json'; postBuildAssetsClosureSha256=$postBuildClosureSha; sharedPluginClosureSha256=$pluginClosureSha; sharedPluginProvenance=(Join-Path $projectPlugins 'shared-plugin-provenance.json'); sharedPluginProvenanceSha256=$provenanceSha; scriptAssembliesClosureSha256=$scriptAssembliesSha; localHostTests=$localHostTestEvidence; commands=$script:stageRecords; playMode=[ordered]@{ testCount=$testNodes.Count; passed=$testNodes.Count; failed=0; skipped=0; exactNames=$actualNames; xml=$playXml; xmlSha256=(Get-Sha256 $playXml) }; buildMarker=$buildMarker; buildMarkerSha256=(Get-Sha256 $buildMarker); playerPackageManifest='player-package.json'; cases=$caseResults; platforms=[ordered]@{ windowsPlayer='actual four fixed cases'; android='NOT_RUN (C05 owner)'; ios='NOT_RUN'; remoteTransport='NOT_IN_SCOPE' } }
+    $final = [ordered]@{ schemaVersion=1; task='G2-C04-D03'; status='PASS'; acceptedBase='8fd7c6cb701dfbb41c28938de4186749bdd1d6c7'; frozenCandidate=$gitHead; sourceTreeStatus=$gitStatus; sourceDiffCheck='PASS'; sourceClosureManifest='source-prebuild-closure.json'; sourceClosureManifestSha256=$sourceClosureSha; stagedRepositoryRoot=$sourceRepo; unityProjectRoot=$project; unityShortPathStaging='unity-short-path-staging.json'; unityShortPathStagingSha256=$shortPathProjectSha; generatedUnityInputs='unity-generated-inputs.json'; generatedUnityInputsSha256=(Get-Sha256 (Join-Path $RunRoot 'unity-generated-inputs.json')); unityResolvedPackageInputClosure='unity-resolved-package-input-closure.json'; unityResolvedPackageInputClosureSha256=$resolvedPackageInputsSha; unityPrebuildInputClosureSha256=$preBuildInputsSha; unityPostbuildInputClosureSha256=$postBuildInputsSha; unityPostbuildInputChanges='unity-postbuild-input-changes.json'; unityPostbuildInputChangesSha256=(Get-Sha256 (Join-Path $RunRoot 'unity-postbuild-input-changes.json')); upmDownloadCacheClosure='upm-cache-closure.json'; upmDownloadCacheClosureSha256=$upmCacheClosureSha; postBuildAssetsClosure='source-postbuild-assets-closure.json'; postBuildAssetsClosureSha256=$postBuildClosureSha; sharedPluginClosureSha256=$pluginClosureSha; sharedPluginProvenance=(Join-Path $projectPlugins 'shared-plugin-provenance.json'); sharedPluginProvenanceSha256=$provenanceSha; scriptAssembliesClosureSha256=$scriptAssembliesSha; localHostTests=$localHostTestEvidence; commands=$script:stageRecords; playMode=[ordered]@{ testCount=$testNodes.Count; passed=$testNodes.Count; failed=0; skipped=0; exactNames=$actualNames; xml=$playXml; xmlSha256=(Get-Sha256 $playXml) }; buildMarker=$buildMarker; buildMarkerSha256=(Get-Sha256 $buildMarker); playerPackageManifest='player-package.json'; cases=$caseResults; platforms=[ordered]@{ windowsPlayer='actual four fixed cases'; android='NOT_RUN (C05 owner)'; ios='NOT_RUN'; remoteTransport='NOT_IN_SCOPE' } }
     $summaryOut = Join-Path $RunRoot 'summary.json'
     [IO.File]::WriteAllText($summaryOut, (($final | ConvertTo-Json -Depth 12) + "`n"), (New-Object Text.UTF8Encoding($false)))
     Write-RunLog 'FINAL_SUMMARY_WRITTEN'
