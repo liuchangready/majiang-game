@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Mahjong.Client;
 using Mahjong.Contracts;
+using Mahjong.Domain;
 using Mahjong.LocalHost;
 using Xunit;
 using PlayerSnapshot = Mahjong.Contracts.Wire.PlayerSnapshot;
@@ -104,6 +105,12 @@ namespace Mahjong.LocalHost.Tests
                     PlayerSnapshot after = await WaitForVersionAsync(session, before.StateVersion, timeout.Token);
                     Assert.Equal(before.RoundId, after.RoundId);
                     Assert.True(after.StateVersion > before.StateVersion);
+                    var localChannel = Assert.IsType<LocalTableChannel>(channel);
+                    RoundStateMachine authoritativeRound = localChannel.RuntimeForMatch!.ActorForTest.GetRoundStateForHost();
+                    ConservationReport physicalAudit = TilePositionMap.Validate(authoritativeRound.Tiles);
+                    Assert.True(physicalAudit.IsValid, physicalAudit.ToString());
+                    Assert.Equal(136, physicalAudit.AssignedCount);
+                    Assert.Equal(0, physicalAudit.UnassignedCount);
                     TableVisibleEventBatch actionBatch = await WaitForActionEventAsync(
                         visibleEvents, receipt.Resolution.CommandVersion!.Value.Value, before.RoundId, actionType, timeout.Token);
                     TableVisibleEvent actionEvent = Assert.Single(actionBatch.Events, value =>
@@ -122,6 +129,11 @@ namespace Mahjong.LocalHost.Tests
                     if (expectedActionTiles.Length != 0)
                     {
                         Assert.Equal(expectedActionTiles.OrderBy(value => value), actionEvent.TileIds.OrderBy(value => value));
+                        uint[] authoritativeMeldTiles = authoritativeRound.Tiles.TilesInZone(TileZone.Meld, 0)
+                            .Select(tile => (uint)tile.Value).OrderBy(value => value).ToArray();
+                        Assert.All(expectedActionTiles, tile => Assert.Contains(tile, authoritativeMeldTiles));
+                        Assert.All(expectedActionTiles, tile => Assert.DoesNotContain(tile,
+                            authoritativeRound.Tiles.TilesInZone(TileZone.Hand, 0).Select(value => (uint)value.Value)));
                     }
 
                     if (actionType == ProtocolActionType.DeclareRiichi)
@@ -154,6 +166,7 @@ namespace Mahjong.LocalHost.Tests
                         Assert.Single(replacement.PrivateView.OwnerMelds);
                         Assert.Equal(new uint[] { 0, 1, 2, 3 },
                             replacement.PrivateView.OwnerMelds[0].TileIds.OrderBy(value => value));
+                        Assert.Contains(authoritativeRound.Tiles.TilesInZone(TileZone.Hand, 0), tile => tile.Value == 73);
                     }
                     else if (actionType == ProtocolActionType.DeclarePon || actionType == ProtocolActionType.DeclareChi)
                     {
