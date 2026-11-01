@@ -432,7 +432,8 @@ catch {
                 try {
                     [xml]$testXml = Get-Content -LiteralPath $trx -Raw
                     $needle = switch ($caseId) { 'C04-G2-01' { 'pon' } 'C04-G2-02' { 'chi' } 'C04-G2-03' { 'riichi' } 'C04-G2-04' { 'closed-kan' } }
-                    $nodes = @($testXml.SelectNodes("//*[local-name()='test']") | Where-Object { $_.name -match ('scenario:.*' + [regex]::Escape($needle) + '.*actionType') })
+                    $caseMarker = 'scenario: ' + [string][char]92 + [string][char]34 + $needle + [string][char]92 + [string][char]34
+                    $nodes = @($testXml.SelectNodes("//*[local-name()='test']") | Where-Object { $_.name.IndexOf($caseMarker, [StringComparison]::OrdinalIgnoreCase) -ge 0 })
                     if ($nodes.Count -eq 1) { $dotnetStatus = if ($nodes[0].result -eq 'Pass') { 'PASS' } else { 'FAIL' } }
                     elseif ($nodes.Count -gt 1) { $dotnetStatus = 'FAIL_DUPLICATE_EVIDENCE' }
                 } catch { $dotnetStatus = 'FAIL_UNPARSEABLE_XML' }
