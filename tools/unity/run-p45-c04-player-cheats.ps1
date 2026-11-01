@@ -95,11 +95,74 @@ function Assert-C04Evidence {
     return $errors
 }
 
+function Assert-C04EvidenceStrict {
+    param(
+        [Parameter(Mandatory = $true)] $Evidence,
+        [Parameter(Mandatory = $true)] [string]$ExpectedCase,
+        [Parameter(Mandatory = $true)] [int]$NativeExit,
+        [Parameter(Mandatory = $true)] [string]$ExpectedSourceHead
+    )
+
+    $errors = New-Object System.Collections.Generic.List[string]
+    if ($NativeExit -ne 0) { $errors.Add("NATIVE_EXIT_$NativeExit") | Out-Null }
+    if ([int]$Evidence.schemaVersion -ne 1) { $errors.Add('SCHEMA_VERSION') | Out-Null }
+    if ([string]$Evidence.layer -ne 'WINDOWS_PLAYER') { $errors.Add('LAYER') | Out-Null }
+    if ([string]$Evidence.caseName -ne $ExpectedCase) { $errors.Add('CASE_NAME') | Out-Null }
+    if ([string]$Evidence.sourceHead -ne $ExpectedSourceHead) { $errors.Add('SOURCE_HEAD') | Out-Null }
+    if ([string]::IsNullOrWhiteSpace([string]$Evidence.unityVersion)) { $errors.Add('UNITY_VERSION') | Out-Null }
+
+    if ([string]$Evidence.status -ne 'PASS') { $errors.Add('EVIDENCE_STATUS_NOT_PASS') | Out-Null }
+    if ([string]$Evidence.scenarioVersion -ne 'c04-g3-player-cheats-v1') { $errors.Add('SCENARIO_VERSION_EXACT') | Out-Null }
+    if (@($Evidence.blockedRows).Count -gt 0) { $errors.Add('BLOCKED_ROWS_PRESENT') | Out-Null }
+
+    $assertions = @($Evidence.assertions)
+    foreach ($assertion in $assertions) {
+        if ($assertion.pass -ne $true) { $errors.Add('ASSERTION_FAILED_' + [string]$assertion.id) | Out-Null }
+    }
+
+    $requests = @($Evidence.requests)
+    $ids = @{}
+    foreach ($request in $requests) {
+        $id = [string]$request.requestId
+        if ($ids.ContainsKey($id)) { $errors.Add('DUPLICATE_REQUEST_' + $id) | Out-Null }
+        $ids[$id] = $true
+        if ([string]::IsNullOrWhiteSpace([string]$request.roundId)) { $errors.Add('MISSING_ROUND') | Out-Null }
+        if ([string]::IsNullOrWhiteSpace([string]$request.decisionId)) { $errors.Add('MISSING_DECISION') | Out-Null }
+        if ([int]$request.seat -ne 0) { $errors.Add('WRONG_SEAT_' + [string]$request.seat) | Out-Null }
+        if ([string]$request.payloadSha256 -notmatch '^[0-9A-Fa-f]{64}$') { $errors.Add('BAD_CANONICAL_HASH') | Out-Null }
+        if ([string]$request.rawPayloadSha256 -notmatch '^[0-9A-Fa-f]{64}$') { $errors.Add('BAD_RAW_HASH') | Out-Null }
+    }
+
+    if ($ExpectedCase -eq 'authorized') {
+        foreach ($required in @('G3-01-RECEIPT','G3-02-RECEIPT','G3-02-CHOICE-RECEIPT','G3-03-RECEIPT','G3-03-CHOICE-RECEIPT','G3-04-FINAL-LEDGER')) {
+            if (-not ($assertions | Where-Object { $_.id -eq $required -and $_.pass -eq $true })) {
+                $errors.Add('MISSING_SUCCESS_ASSERTION_' + $required) | Out-Null
+            }
+        }
+        $applied = @($requests | Where-Object { $_.status -eq 'APPLIED' })
+        if ($applied.Count -lt 5) { $errors.Add('SUCCESS_REQUESTS_LT_5') | Out-Null }
+        foreach ($request in $requests) {
+            if ($request.status -ne 'APPLIED') { $errors.Add('NON_APPLIED_IN_AUTHORIZED') | Out-Null }
+        }
+    }
+    elseif ($ExpectedCase -eq 'negative') {
+        foreach ($required in @('G3-06-UNAUTHORIZED-REJECTED','G3-06-INSUFFICIENT-REJECTED','G3-06-UNAUTHORIZED-ZERO','G3-06-INSUFFICIENT-ZERO')) {
+            if (-not ($assertions | Where-Object { $_.id -eq $required -and $_.pass -eq $true })) {
+                $errors.Add('MISSING_NEGATIVE_ASSERTION_' + $required) | Out-Null
+            }
+        }
+        if (-not ($requests | Where-Object { $_.status -eq 'REJECTED' })) {
+            $errors.Add('NO_REJECTED_REQUEST') | Out-Null
+        }
+    }
+
+    return $errors
+}
 function Write-C04Manifest {
     param([string]$EvidenceRoot)
     $manifest = Join-Path $EvidenceRoot 'manifest.csv'
     $rows = foreach ($file in Get-ChildItem -Path $EvidenceRoot -File -Recurse |
-                        Where-Object { $_.Name -notmatch '^(manifest\.csv|summary\.txt)$' } |
+                        Where-Object { $_.Name -notmatch '^manifest\.csv$' } |
                         Sort-Object FullName) {
         $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $file.FullName).Hash
         '"{0}","{1}","{2}"' -f $file.FullName.Replace('"', '""'), $file.Length, $hash
@@ -129,6 +192,9 @@ if (-not (Test-Path -LiteralPath $PlayerPath)) {
 
 New-Item -ItemType Directory -Force -Path $EvidenceRoot | Out-Null
 $EvidenceRoot = (Resolve-Path -LiteralPath $EvidenceRoot).Path
+if (-not $EvidenceRoot.StartsWith((Join-Path $root 'build') + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "EVIDENCE_ROOT_OUTSIDE_BUILD: $EvidenceRoot"
+}
 $playerHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $PlayerPath).Hash
 $playerBytes = (Get-Item -LiteralPath $PlayerPath).Length
 
@@ -195,7 +261,7 @@ try {
         else {
             try {
                 $evidence = Get-Content -LiteralPath $evidencePath -Raw | ConvertFrom-Json
-                $errors.AddRange([string[]](Assert-C04Evidence -Evidence $evidence -ExpectedCase $caseName -NativeExit $nativeExit -ExpectedSourceHead $SourceHead))
+                $errors.AddRange([string[]](Assert-C04EvidenceStrict -Evidence $evidence -ExpectedCase $caseName -NativeExit $nativeExit -ExpectedSourceHead $SourceHead))
             }
             catch {
                 $errors.Add('EVIDENCE_PARSE_' + $_.Exception.Message) | Out-Null

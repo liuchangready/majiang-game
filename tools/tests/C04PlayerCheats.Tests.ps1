@@ -96,6 +96,37 @@ $unknownBlocked = New-Fixture
 $unknownBlocked.blockedRows = @('G3-99')
 Assert-ContainsError (Assert-C04Evidence -Evidence $unknownBlocked -ExpectedCase 'authorized' -NativeExit 0 -ExpectedSourceHead $head) 'UNKNOWN_BLOCKED_ROW' 'unknown-blocked'
 
+# Strict production guard: a PASS evidence object must carry all six-row success
+# assertions, five unique APPLIED requests with raw hashes, and no blocked rows.
+$strictIds = @('G3-01-RECEIPT','G3-02-RECEIPT','G3-02-CHOICE-RECEIPT','G3-03-RECEIPT','G3-03-CHOICE-RECEIPT','G3-04-FINAL-LEDGER')
+$strictBase = New-Fixture
+$strictBase.blockedRows = @()
+$strictBase.assertions = @($strictIds | ForEach-Object { [pscustomobject]@{ id = $_; pass = $true; expected = 'x'; actual = 'y' } })
+$strictBase.requests = @(1..5 | ForEach-Object {
+    $r = $strictBase.requests[0].PSObject.Copy()
+    $r.requestId = ('{0:x32}' -f $_)
+    $r.status = 'APPLIED'
+    $r.decisionId = 'decision-' + $_
+    $r
+})
+$strictErrors = Assert-C04EvidenceStrict -Evidence $strictBase -ExpectedCase 'authorized' -NativeExit 0 -ExpectedSourceHead $head
+if ($strictErrors.Count -eq 0) { $passed++ } else { $failures.Add('strict valid fixture rejected: ' + ($strictErrors -join ',')) | Out-Null }
+
+$variants = @(
+    @{ Name = 'status-fail'; Mutate = { param($e) $e.status = 'FAIL' } },
+    @{ Name = 'all-assertions-false'; Mutate = { param($e) foreach ($a in $e.assertions) { $a.pass = $false } } },
+    @{ Name = 'rejected-as-success'; Mutate = { param($e) $e.requests[0].status = 'REJECTED'; $e.requests[0].reason = 'MALFORMED_MESSAGE' } },
+    @{ Name = 'all-blocked'; Mutate = { param($e) $e.blockedRows = @('G3-01','G3-02') } },
+    @{ Name = 'foreign-identity'; Mutate = { param($e) $e.requests[0].seat = 99; $e.requests[0].decisionId = '' } },
+    @{ Name = 'bad-raw-hash'; Mutate = { param($e) $e.requests[0].rawPayloadSha256 = 'not-a-hash' } },
+    @{ Name = 'duplicate-request'; Mutate = { param($e) $e.requests[1].requestId = $e.requests[0].requestId } }
+)
+foreach ($variant in $variants) {
+    $copy = ($strictBase | ConvertTo-Json -Depth 8 | ConvertFrom-Json)
+    & $variant.Mutate $copy
+    $variantErrors = Assert-C04EvidenceStrict -Evidence $copy -ExpectedCase 'authorized' -NativeExit 0 -ExpectedSourceHead $head
+    if ($variantErrors.Count -gt 0) { $passed++ } else { $failures.Add('strict accepted invalid variant ' + $variant.Name) | Out-Null }
+}
 # Overwrite refusal is a real runner guard, not a fabricated verifier result.
 $temp = Join-Path ([System.IO.Path]::GetTempPath()) ('c04-tool-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $temp | Out-Null
