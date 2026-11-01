@@ -83,9 +83,11 @@
     code, a count, or a PASS/FAIL verdict - only add evidence. The internal
     TOOL_FIXTURE negative matrix (before S9) proves that the row/evidence
     assertions used above reject wrong runners, wrong or total=0 counts, a fake
-    PASS, missing failure case/assertion evidence, a success summary next to a
-    non-zero native exit, and missing/malformed native XML. Those are test-
-    assertion fixtures, not product test cases.
+    PASS, unknown (null)/Boolean/fractional native outcomes, missing failure
+    case/assertion evidence, a success summary next to a non-zero native exit,
+    duplicate IDs, missing XML attributes, wrong assembly/framework/schema,
+    and old marked raw evidence. Those are test-assertion fixtures, not product
+    test cases.
 
     This script does not touch the PostgreSQL work, production tests, or any
     tracked file outside tools\tests\.
@@ -129,6 +131,35 @@ if (-not (Test-Path -LiteralPath $DotnetPath)) {
 if (-not (Test-Path -LiteralPath $verifyScript)) {
     Write-Host "BLOCKED: verify script not found at $verifyScript"
     exit 2
+}
+
+# --- accepted structural XML contract (read-only reuse) --------------------------
+# Do not reimplement a weaker XML parser here. The accepted production
+# Read-DirectResultXml is extracted from the unchanged verifier with the AST and
+# used as the structural authority for IDs/attributes/collection aggregates.
+$script:acceptedXmlReaderReady = $false
+$script:acceptedXmlReaderError = 'not initialized'
+try {
+    $prodTokens = $null
+    $prodParseErrors = $null
+    $prodAst = [System.Management.Automation.Language.Parser]::ParseFile($verifyScript, [ref]$prodTokens, [ref]$prodParseErrors)
+    if ($prodParseErrors -and $prodParseErrors.Count) {
+        throw "production verifier parse failed: $($prodParseErrors[0].Message)"
+    }
+    $readerAst = $prodAst.Find({
+            param($n)
+            $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Read-DirectResultXml'
+        }, $true)
+    if ($null -eq $readerAst) { throw 'production Read-DirectResultXml function not found' }
+    Invoke-Expression $readerAst.Extent.Text
+    if (-not (Get-Command -Name Read-DirectResultXml -CommandType Function -ErrorAction SilentlyContinue)) {
+        throw 'extracted Read-DirectResultXml is not callable'
+    }
+    $script:acceptedXmlReaderReady = $true
+    $script:acceptedXmlReaderError = 'ok'
+}
+catch {
+    $script:acceptedXmlReaderError = $_.Exception.Message
 }
 
 # --- fixture definition -----------------------------------------------------------
@@ -283,10 +314,12 @@ function Set-ProbeSource([string]$Source) {
 function Invoke-Verify {
     param([string]$RunnerMode, [string]$LogDir)
     $consoleLog = Join-Path $LogDir '-parent-console.log'
+    $script:lastVerifyStartedUtc = [DateTime]::UtcNow
     $output = & powershell -NoProfile -ExecutionPolicy Bypass -File $verifyScript `
         -Configuration Release -RunnerMode $RunnerMode -ManifestPath $manifestPath `
         -LogDir $LogDir -SkipPluginCopyCheck -NoProjectDiscovery -DotnetPath $DotnetPath *>&1
     $exit = $LASTEXITCODE
+    $script:lastVerifyFinishedUtc = [DateTime]::UtcNow
     $outDir = Split-Path $consoleLog -Parent
     if (-not (Test-Path -LiteralPath $outDir)) { New-Item -ItemType Directory -Force -Path $outDir | Out-Null }
     ($output | Out-String) | Set-Content -Path $consoleLog -Encoding UTF8
@@ -452,54 +485,146 @@ function Get-DotnetTestEvidence {
     # Current accepted evidence contract: native per-case XML and the raw
     # xunit.v3/MTP framework log are written into the run's --results-directory
     # (LogDir\dotnetTest-xml\<project>), not into the project TestResults tree.
-    param([string]$LogDir)
+    # Structural validity is delegated to the accepted production
+    # Read-DirectResultXml; this function only adds diagnostics-specific exact
+    # identity/schema and invocation-currentness checks.
+    param([string]$LogDir, [object]$RunStartedUtc = $null)
     $xmlPath = Join-Path $LogDir (Join-Path 'dotnetTest-xml' (Join-Path 'Probe.Tests' 'dotnet-test-results.xml'))
     $rawDir = Join-Path $LogDir (Join-Path 'dotnetTest-xml' 'Probe.Tests')
     $metaPath = Join-Path $LogDir 'runs\Probe.Tests\dotnetTest.meta.txt'
+    $expectedAssemblyPath = $null
+    if ($script:probeDir) {
+        $expectedAssemblyPath = Join-Path $script:probeDir 'bin\Release\net8.0\Probe.Tests.dll'
+    }
     $result = [pscustomobject]@{
-        XmlOk = $false; XmlReason = 'not read'; XmlPath = $xmlPath; Counts = $null; Nodes = @(); Framework = '';
-        RawLogOk = $false; RawLogReason = 'not read'; RawLogPath = $null; RawLogText = '';
+        XmlOk = $false; XmlReason = 'not read'; XmlPath = $xmlPath; Counts = $null; Nodes = @()
+        Framework = ''; SchemaVersion = ''; XmlLastWriteUtc = $null; XmlSha256 = ''
+        RawLogOk = $false; RawLogReason = 'not read'; RawLogPath = $null; RawLogText = ''; RawLogLastWriteUtc = $null
         MetaOk = $false; MetaPath = $metaPath; MetaText = ''
+    }
+
+    # Make this function usable when a read-only probe AST-extracts only the
+    # shared diagnostics functions. The accepted structural reader still comes
+    # from the unchanged production verifier, never from a copied parser.
+    if (Get-Command -Name Read-DirectResultXml -CommandType Function -ErrorAction SilentlyContinue) {
+        $script:acceptedXmlReaderReady = $true
+        $script:acceptedXmlReaderError = 'ok'
+    }
+    if (-not (Get-Command -Name Read-DirectResultXml -CommandType Function -ErrorAction SilentlyContinue)) {
+        $candidates = @()
+        if ($verifyScript) { $candidates += $verifyScript }
+        if ($repo) { $candidates += (Join-Path $repo 'tools\verify-v5.ps1') }
+        $candidates += (Join-Path (Get-Location) 'tools\verify-v5.ps1')
+        if ($PSScriptRoot) { $candidates += (Join-Path $PSScriptRoot '..\..\tools\verify-v5.ps1') }
+        foreach ($candidate in @($candidates | Select-Object -Unique)) {
+            if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+            try {
+                $readerTokens = $null
+                $readerErrors = $null
+                $readerAst = [System.Management.Automation.Language.Parser]::ParseFile($candidate, [ref]$readerTokens, [ref]$readerErrors)
+                if ($readerErrors -and $readerErrors.Count) { continue }
+                $readerFn = $readerAst.Find({
+                        param($n)
+                        $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Read-DirectResultXml'
+                    }, $true)
+                if ($null -eq $readerFn) { continue }
+                Invoke-Expression $readerFn.Extent.Text
+                if (Get-Command -Name Read-DirectResultXml -CommandType Function -ErrorAction SilentlyContinue) {
+                    $script:acceptedXmlReaderReady = $true
+                    $script:acceptedXmlReaderError = 'ok'
+                    break
+                }
+            }
+            catch { }
+        }
+    }
+    if ($null -eq $RunStartedUtc) { $RunStartedUtc = [datetime]::MinValue }
+    else { $RunStartedUtc = [datetime]$RunStartedUtc }
+    if ($RunStartedUtc -eq [datetime]::MinValue) {
+        # Backward-compatible fallback for read-only probes that invoke these
+        # shared functions directly without an explicit invocation timestamp.
+        # Real scenarios always pass the observed start time. The fallback is
+        # anchored to this run's own meta/summary and is deliberately
+        # conservative; it is not used to bless an old/foreign raw log.
+        $anchor = $null
+        if (Test-Path -LiteralPath $metaPath -PathType Leaf) { $anchor = $metaPath }
+        elseif (Test-Path -LiteralPath (Join-Path $LogDir 'summary.log') -PathType Leaf) { $anchor = Join-Path $LogDir 'summary.log' }
+        if ($anchor) { $RunStartedUtc = (Get-Item -LiteralPath $anchor).LastWriteTimeUtc.AddMinutes(-10) }
+        else { $RunStartedUtc = [DateTime]::UtcNow.AddMinutes(-10) }
+    }
+    if (-not $script:acceptedXmlReaderReady -or -not (Get-Command -Name Read-DirectResultXml -CommandType Function -ErrorAction SilentlyContinue)) {
+        $result.XmlReason = "accepted structural reader unavailable: $($script:acceptedXmlReaderError)"
+        $result.RawLogReason = 'accepted structural reader unavailable'
+        return $result
     }
 
     if (-not (Test-Path -LiteralPath $xmlPath -PathType Leaf)) {
         $result.XmlReason = "native XML missing: $xmlPath"
     }
     else {
-        try {
-            [xml]$doc = Get-Content -LiteralPath $xmlPath -Raw -ErrorAction Stop
-            $assemblyNodes = @($doc.SelectNodes('/assemblies/assembly'))
-            if ($assemblyNodes.Count -ne 1) {
-                $result.XmlReason = "expected exactly one assembly node, found $($assemblyNodes.Count)"
+        $xml = Read-DirectResultXml -XmlPath $xmlPath -ExpectedAssemblyName 'Probe.Tests'
+        if (-not $xml.Ok) {
+            $result.XmlReason = $xml.Reason
+        }
+        else {
+            $lastWrite = (Get-Item -LiteralPath $xmlPath).LastWriteTimeUtc
+            $result.XmlLastWriteUtc = $lastWrite
+            try { $result.XmlSha256 = (Get-FileHash -LiteralPath $xmlPath -Algorithm SHA256).Hash } catch { }
+            if ($lastWrite -lt $RunStartedUtc.AddSeconds(-5)) {
+                $result.XmlReason = "native XML predates this invocation (last write $($lastWrite.ToString('o')) < start $($RunStartedUtc.ToString('o')))"
+            }
+            elseif ($xml.TestFramework -cnotmatch '^xUnit\.net v3 4\.0\.2(?:\+[0-9A-Za-z][0-9A-Za-z.-]*)?$') {
+                $result.XmlReason = "runner identity mismatch: expected xUnit.net v3 4.0.2 with optional '+build' metadata, got '$($xml.TestFramework)'"
+            }
+            elseif ($xml.SchemaVersion -ne '3') {
+                $result.XmlReason = "result XML schema identity mismatch: expected '3', got '$($xml.SchemaVersion)'"
             }
             else {
-                $a = $assemblyNodes[0]
-                $counts = [pscustomobject]@{
-                    Total   = [int]$a.total
-                    Passed  = [int]$a.passed
-                    Failed  = [int]$a.failed
-                    Skipped = [int]$a.skipped
-                    Errors  = [int]$a.errors
-                    NotRun  = [int]$a.'not-run'
+                try {
+                    $actualAssembly = [IO.Path]::GetFullPath([string]$xml.AssemblyName)
+                    $assemblyOk = $true
+                    if (-not [IO.Path]::IsPathRooted([string]$xml.AssemblyName)) {
+                        $result.XmlReason = "assembly name is not a rooted native path: '$($xml.AssemblyName)'"
+                        $assemblyOk = $false
+                    }
+                    elseif ($expectedAssemblyPath) {
+                        $expectedAssembly = [IO.Path]::GetFullPath($expectedAssemblyPath)
+                        if (-not [string]::Equals($actualAssembly, $expectedAssembly, [StringComparison]::OrdinalIgnoreCase)) {
+                            $result.XmlReason = "assembly path mismatch: expected '$expectedAssembly', got '$actualAssembly'"
+                            $assemblyOk = $false
+                        }
+                    }
+                    elseif (-not $actualAssembly.EndsWith('\Probe.Tests\bin\Release\net8.0\Probe.Tests.dll', [StringComparison]::OrdinalIgnoreCase)) {
+                        $result.XmlReason = "assembly path does not identify Probe.Tests Release output: '$actualAssembly'"
+                        $assemblyOk = $false
+                    }
+                    if ($assemblyOk) {
+                        [xml]$doc = Get-Content -LiteralPath $xmlPath -Raw -ErrorAction Stop
+                        $nodes = @($doc.SelectNodes('//test'))
+                        $c = $xml.Counts
+                        $failedNodes = @($nodes | Where-Object { $_.result -eq 'Fail' }).Count
+                        $passedNodes = @($nodes | Where-Object { $_.result -eq 'Pass' }).Count
+                        $skippedNodes = @($nodes | Where-Object { $_.result -eq 'Skip' }).Count
+                        $notRunNodes = @($nodes | Where-Object { $_.result -eq 'NotRun' }).Count
+                        if ($nodes.Count -ne $c.Total -or $failedNodes -ne $c.Failed -or
+                            $passedNodes -ne $c.Passed -or $skippedNodes -ne $c.Skipped -or
+                            $notRunNodes -ne $c.NotRun) {
+                            $result.XmlReason = 'test node status counts do not match the accepted XML aggregate counts'
+                        }
+                        else {
+                            $result.XmlOk = $true
+                            $result.XmlReason = 'ok'
+                            $result.Counts = $c
+                            $result.Nodes = $nodes
+                            $result.Framework = $xml.TestFramework
+                            $result.SchemaVersion = $xml.SchemaVersion
+                        }
+                    }
                 }
-                $nodes = @($doc.SelectNodes('//test'))
-                if ($counts.Total -ne ($counts.Passed + $counts.Failed + $counts.Skipped + $counts.NotRun)) {
-                    $result.XmlReason = "XML counts are internally inconsistent: total=$($counts.Total) passed=$($counts.Passed) failed=$($counts.Failed) skipped=$($counts.Skipped) not-run=$($counts.NotRun)"
-                }
-                elseif ($nodes.Count -ne $counts.Total) {
-                    $result.XmlReason = "XML has $($nodes.Count) test nodes but total=$($counts.Total)"
-                }
-                else {
-                    $result.XmlOk = $true
-                    $result.XmlReason = 'ok'
-                    $result.Counts = $counts
-                    $result.Nodes = $nodes
-                    $result.Framework = [string]$a.'test-framework'
+                catch {
+                    $result.XmlReason = "native XML identity/counts could not be validated: $($_.Exception.Message)"
                 }
             }
-        }
-        catch {
-            $result.XmlReason = "native XML is not parseable: $($_.Exception.Message)"
         }
     }
 
@@ -516,8 +641,16 @@ function Get-DotnetTestEvidence {
         }
         else {
             $text = Get-Content -LiteralPath $rawLogs[0].FullName -Raw
+            $lastWrite = $rawLogs[0].LastWriteTimeUtc
+            $result.RawLogLastWriteUtc = $lastWrite
             if ([string]::IsNullOrWhiteSpace($text)) {
                 $result.RawLogReason = 'raw framework log is empty'
+            }
+            elseif ($text.Contains('VERIFY-V5-STALE-OLD-RUN')) {
+                $result.RawLogReason = 'raw framework log contains the known stale-old-run marker'
+            }
+            elseif ($lastWrite -lt $RunStartedUtc.AddSeconds(-5)) {
+                $result.RawLogReason = "raw framework log predates this invocation (last write $($lastWrite.ToString('o')) < start $($RunStartedUtc.ToString('o')))"
             }
             else {
                 $result.RawLogOk = $true
@@ -539,17 +672,34 @@ function Test-DotnetTestEvidence {
     # Cross-check the summary row against native XML, raw framework log and the
     # per-invocation meta file. A PASS is impossible with a non-zero native
     # exit; a failure is impossible without the failing case and assertion.
+    # NativeExit is object-typed and an explicit null/unknown is rejected before
+    # any comparison; callers must pass the observed exit, not an expected one.
     param(
         [string]$LogDir, [string]$SummaryText, [string]$Runner, [int]$Total,
-        [int]$Failed, [int]$Skipped, [string]$Result, [int]$NativeExit,
-        [string]$CaseName = '', [string]$Message = '', [string]$ExpectedHead = '',
-        [switch]$AllowZeroTotal
+        [int]$Failed, [int]$Skipped, [string]$Result, [object]$NativeExit,
+        [object]$RunStartedUtc = $null, [string]$CaseName = '', [string]$Message = '',
+        [string]$ExpectedHead = '', [switch]$AllowZeroTotal
     )
+    if ($null -eq $NativeExit) {
+        return [pscustomobject]@{ Ok = $false; Reason = 'native exit is unknown (null); never treated as 0'; Evidence = $null }
+    }
+    $nativeTypeCode = [System.Type]::GetTypeCode($NativeExit.GetType())
+    $integralCodes = @(
+        [System.TypeCode]::SByte, [System.TypeCode]::Byte,
+        [System.TypeCode]::Int16, [System.TypeCode]::UInt16,
+        [System.TypeCode]::Int32, [System.TypeCode]::UInt32,
+        [System.TypeCode]::Int64, [System.TypeCode]::UInt64
+    )
+    if ($integralCodes -notcontains $nativeTypeCode) {
+        return [pscustomobject]@{ Ok = $false; Reason = "native exit is not an integral observation (type $($NativeExit.GetType().FullName), value '$NativeExit')"; Evidence = $null }
+    }
+    $nativeInt = [long]$NativeExit
+
     $row = Test-SummaryRow -Text $SummaryText -Runner $Runner -Total $Total -Failed $Failed `
         -Skipped $Skipped -Result $Result -AllowZeroTotal:$AllowZeroTotal
     if (-not $row.Ok) { return [pscustomobject]@{ Ok = $false; Reason = "summary row: $($row.Reason)"; Evidence = $null } }
 
-    $evidence = Get-DotnetTestEvidence -LogDir $LogDir
+    $evidence = Get-DotnetTestEvidence -LogDir $LogDir -RunStartedUtc $RunStartedUtc
     if (-not $evidence.XmlOk) { return [pscustomobject]@{ Ok = $false; Reason = "native XML: $($evidence.XmlReason)"; Evidence = $evidence } }
     if (-not $evidence.RawLogOk) { return [pscustomobject]@{ Ok = $false; Reason = "raw framework log: $($evidence.RawLogReason)"; Evidence = $evidence } }
     if (-not $evidence.MetaOk) { return [pscustomobject]@{ Ok = $false; Reason = "invocation meta missing: $($evidence.MetaPath)"; Evidence = $evidence } }
@@ -560,11 +710,15 @@ function Test-DotnetTestEvidence {
     if ($c.Total -ne $Total -or $xmlFailed -ne $Failed -or $xmlSkipped -ne $Skipped) {
         return [pscustomobject]@{ Ok = $false; Reason = "summary $Total/$Failed/$Skipped != XML $($c.Total)/$xmlFailed/$xmlSkipped"; Evidence = $evidence }
     }
-    if ($evidence.Framework -notmatch '^xUnit\.net v3 ') {
-        return [pscustomobject]@{ Ok = $false; Reason = "unexpected test framework '$($evidence.Framework)'"; Evidence = $evidence }
+    if ($c.Errors -ne 0) {
+        return [pscustomobject]@{ Ok = $false; Reason = "XML reports framework errors=$($c.Errors); the diagnostics fixture expects assertion failures only"; Evidence = $evidence }
     }
-    if ($evidence.MetaText -notmatch "(?m)^exit code\s*:\s*$NativeExit\s*$") {
-        return [pscustomobject]@{ Ok = $false; Reason = "meta native exit does not equal $NativeExit"; Evidence = $evidence }
+    $failedNodes = @($evidence.Nodes | Where-Object { $_.result -eq 'Fail' }).Count
+    if ($failedNodes -ne $c.Failed) {
+        return [pscustomobject]@{ Ok = $false; Reason = "XML has $failedNodes Fail test node(s) but declared failed=$($c.Failed)"; Evidence = $evidence }
+    }
+    if ($evidence.MetaText -notmatch "(?m)^exit code\s*:\s*$nativeInt\s*$") {
+        return [pscustomobject]@{ Ok = $false; Reason = "meta native exit does not equal the observed exit $nativeInt"; Evidence = $evidence }
     }
     if ($evidence.MetaText -notmatch "(?m)^total\s*:\s*$Total\s*$" -or
         $evidence.MetaText -notmatch "(?m)^failed\s*:\s*$Failed\s*$" -or
@@ -582,7 +736,7 @@ function Test-DotnetTestEvidence {
 
     if ($Total -eq 0) {
         if ($Result -ne 'FAIL') { return [pscustomobject]@{ Ok = $false; Reason = 'zero-test row is not FAIL'; Evidence = $evidence } }
-        if ($NativeExit -eq 0) { return [pscustomobject]@{ Ok = $false; Reason = 'zero-test run has native exit 0'; Evidence = $evidence } }
+        if ($nativeInt -eq 0) { return [pscustomobject]@{ Ok = $false; Reason = 'zero-test run has native exit 0'; Evidence = $evidence } }
         if ($evidence.RawLogText -notmatch '(?m)^Test run summary: (Failed!|Zero tests ran)') {
             return [pscustomobject]@{ Ok = $false; Reason = 'zero-test raw log is neither a failure nor a zero-tests-ran summary'; Evidence = $evidence }
         }
@@ -590,7 +744,7 @@ function Test-DotnetTestEvidence {
     }
 
     if ($Result -eq 'PASS') {
-        if ($NativeExit -ne 0) { return [pscustomobject]@{ Ok = $false; Reason = "PASS row has native exit $NativeExit"; Evidence = $evidence } }
+        if ($nativeInt -ne 0) { return [pscustomobject]@{ Ok = $false; Reason = "PASS row has native exit $nativeInt"; Evidence = $evidence } }
         if ($evidence.RawLogText -notmatch '(?m)^Test run summary: Passed!') {
             return [pscustomobject]@{ Ok = $false; Reason = 'PASS raw log is not a Passed summary'; Evidence = $evidence }
         }
@@ -600,7 +754,7 @@ function Test-DotnetTestEvidence {
         }
     }
     else {
-        if ($NativeExit -eq 0) { return [pscustomobject]@{ Ok = $false; Reason = 'FAIL row has native exit 0'; Evidence = $evidence } }
+        if ($nativeInt -eq 0) { return [pscustomobject]@{ Ok = $false; Reason = 'FAIL row has native exit 0'; Evidence = $evidence } }
         if ($evidence.RawLogText -notmatch '(?m)^Test run summary: Failed!') {
             return [pscustomobject]@{ Ok = $false; Reason = 'FAIL raw log is not a Failed summary'; Evidence = $evidence }
         }
@@ -631,13 +785,14 @@ function Test-DotnetTestEvidence {
 function Assert-DotnetTestEvidence {
     param(
         [string]$LogDir, [string]$Runner, [int]$Total, [int]$Failed, [int]$Skipped,
-        [string]$Result, [int]$NativeExit, [string]$CaseName = '', [string]$Message = '',
+        [string]$Result, [object]$NativeExit, [object]$RunStartedUtc = $null,
+        [string]$CaseName = '', [string]$Message = '',
         [string]$ExpectedHead = '', [string]$Label, [switch]$AllowZeroTotal
     )
     $summaryText = Get-Content -LiteralPath (Join-Path $LogDir 'summary.log') -Raw
     $checked = Test-DotnetTestEvidence -LogDir $LogDir -SummaryText $summaryText -Runner $Runner `
         -Total $Total -Failed $Failed -Skipped $Skipped -Result $Result -NativeExit $NativeExit `
-        -CaseName $CaseName -Message $Message -ExpectedHead $ExpectedHead -AllowZeroTotal:$AllowZeroTotal
+        -RunStartedUtc $RunStartedUtc -CaseName $CaseName -Message $Message -ExpectedHead $ExpectedHead -AllowZeroTotal:$AllowZeroTotal
     Assert-True $checked.Ok ("$Label [$($checked.Reason)]")
     return $checked
 }
@@ -686,6 +841,7 @@ try { $expectedHead = (& git -C $repoRoot rev-parse HEAD 2>$null | Out-String).T
 
 try {
     New-Workspace
+    Assert-True $script:acceptedXmlReaderReady "accepted production Read-DirectResultXml is available read-only [$($script:acceptedXmlReaderError)]"
 
     # --- S1: dotnetTest mode, real failing case -----------------------------------
     Write-Host ""
@@ -693,6 +849,7 @@ try {
     Set-ProbeSource $failSource
     $log1 = Join-Path $workspace 'logs-s1'
     $exit1 = Invoke-Verify -RunnerMode 'dotnetTest' -LogDir $log1
+    $started1 = $script:lastVerifyStartedUtc
     $summary1 = Get-Content -LiteralPath (Join-Path $log1 'summary.log') -Raw
     Assert-True ($exit1 -ne 0) "S1 exit code is non-zero (got $exit1)"
     Assert-True ($summary1 -match 'OVERALL: FAIL') "S1 summary reports OVERALL: FAIL"
@@ -709,15 +866,15 @@ try {
         if ($expectedHead) { Assert-True ($meta1Text.Contains($expectedHead)) "S1 meta records the real head SHA" }
     }
 
-    $evidence1 = Get-DotnetTestEvidence -LogDir $log1
+    $evidence1 = Get-DotnetTestEvidence -LogDir $log1 -RunStartedUtc $started1
     Assert-True ($evidence1.XmlOk -and $evidence1.Counts.Total -eq 2 -and $evidence1.Counts.Failed -eq 1 -and $evidence1.Counts.Errors -eq 0) "S1 native xunit.v3/MTP XML keeps real counts 2 total / 1 failed / 0 errors [$($evidence1.XmlReason)]"
     $xmlCase1 = @()
     if ($evidence1.XmlOk) { $xmlCase1 = @($evidence1.Nodes | Where-Object { $_.name -eq 'Probe.Tests.ProbeTests.ControlledFailure' }) }
     Assert-True ($xmlCase1.Count -eq 1 -and $xmlCase1[0].result -eq 'Fail' -and ([string]$xmlCase1[0].failure.message).Contains($sentinel)) "S1 native XML names the failing case and contains the assertion message"
     Assert-True ($evidence1.RawLogOk -and $evidence1.RawLogText.Contains($sentinel) -and $evidence1.RawLogText.Contains('Probe.Tests.ProbeTests.ControlledFailure')) "S1 raw framework log (dotnetTest-xml\Probe.Tests\<asm>_<tfm>_<arch>.log, not summary.log) names the failing case and assertion [$($evidence1.RawLogReason)]"
     Assert-DotnetTestEvidence -LogDir $log1 -Runner 'dotnet test (MTP)' -Total 2 -Failed 1 -Skipped 0 `
-        -Result 'FAIL' -NativeExit 1 -CaseName 'Probe.Tests.ProbeTests.ControlledFailure' -Message $sentinel `
-        -ExpectedHead $expectedHead -Label "S1 summary, native XML, raw framework log, meta and native exit agree on the controlled failure" | Out-Null
+        -Result 'FAIL' -NativeExit $exit1 -RunStartedUtc $started1 -CaseName 'Probe.Tests.ProbeTests.ControlledFailure' -Message $sentinel `
+        -ExpectedHead $expectedHead -Label "S1 summary, native XML, raw framework log, meta and observed native exit agree on the controlled failure" | Out-Null
 
     # --- S2: stale log planted, then current PASS run ------------------------------
     Write-Host ""
@@ -726,13 +883,16 @@ try {
     Seed-StaleLog
     $log2 = Join-Path $workspace 'logs-s2'
     $exit2 = Invoke-Verify -RunnerMode 'dotnetTest' -LogDir $log2
+    $started2 = $script:lastVerifyStartedUtc
     $summary2 = Get-Content -LiteralPath (Join-Path $log2 'summary.log') -Raw
     Assert-True ($exit2 -eq 0) "S2 exit code is 0 with the stale failure log planted beforehand (got $exit2)"
     Assert-True ($summary2 -match 'OVERALL: PASS') "S2 summary reports OVERALL: PASS"
     $row2 = Assert-SummaryRow -LogDir $log2 -Runner 'dotnet test (MTP)' -Total 2 -Failed 0 -Skipped 0 `
         -Result 'PASS' -Label "S2 row binds the MTP runner and keeps real counts 2 total / 0 failed / 0 skipped as PASS"
+    $evidence2 = Get-DotnetTestEvidence -LogDir $log2 -RunStartedUtc $started2
+    Assert-True ($evidence2.RawLogOk -and -not $evidence2.RawLogText.Contains($staleMarker)) "S2 accepted raw framework log is current-run evidence and carries no stale marker [$($evidence2.RawLogReason)]"
     Assert-DotnetTestEvidence -LogDir $log2 -Runner 'dotnet test (MTP)' -Total 2 -Failed 0 -Skipped 0 `
-        -Result 'PASS' -NativeExit 0 -Label "S2 summary, native XML, raw framework log and native exit agree on the PASS run" | Out-Null
+        -Result 'PASS' -NativeExit $exit2 -RunStartedUtc $started2 -Label "S2 summary, native XML, raw framework log and observed native exit agree on the PASS run" | Out-Null
 
     $collected2 = Join-Path $log2 'test-results'
     $staleLeaked = $false
@@ -840,16 +1000,17 @@ try {
     Set-ProbeSource $zeroSource
     $log5 = Join-Path $workspace 'logs-s5'
     $exit5 = Invoke-Verify -RunnerMode 'dotnetTest' -LogDir $log5
+    $started5 = $script:lastVerifyStartedUtc
     $summary5 = Get-Content -LiteralPath (Join-Path $log5 'summary.log') -Raw
     Assert-True ($exit5 -ne 0) "S5 exit code is non-zero for a zero-test project (got $exit5)"
     Assert-True ($summary5 -match 'OVERALL: FAIL') "S5 summary reports OVERALL: FAIL"
     $row5 = Assert-SummaryRow -LogDir $log5 -Runner 'dotnet test (MTP)' -Total 0 -Failed 0 -Skipped 0 `
         -Result 'FAIL' -AllowZeroTotal -Label "S5 zero-test row is a real FAIL with 0 total (never PASS)"
     Assert-True ($summary5 -match 'detail\s*:.*(native exit is 1|zero executed test cases)') "S5 zero-test diagnosis is present (current native-exit gate or the zero-test gate text)"
-    $evidence5 = Get-DotnetTestEvidence -LogDir $log5
+    $evidence5 = Get-DotnetTestEvidence -LogDir $log5 -RunStartedUtc $started5
     Assert-True ($evidence5.XmlOk -and $evidence5.Counts.Total -eq 0) "S5 native XML reports total=0 and no test nodes [$($evidence5.XmlReason)]"
     Assert-DotnetTestEvidence -LogDir $log5 -Runner 'dotnet test (MTP)' -Total 0 -Failed 0 -Skipped 0 `
-        -Result 'FAIL' -NativeExit 1 -AllowZeroTotal -Label "S5 summary, native XML, raw framework log and native exit agree that a zero-test run failed" | Out-Null
+        -Result 'FAIL' -NativeExit $exit5 -RunStartedUtc $started5 -AllowZeroTotal -Label "S5 summary, native XML, raw framework log and observed native exit agree that a zero-test run failed" | Out-Null
 
     # --- S6: locked OLD log -> purge fails -> current PASS run ----------------------
     Write-Host ""
@@ -861,13 +1022,15 @@ try {
     try {
         $log6 = Join-Path $workspace 'logs-s6'
         $exit6 = Invoke-Verify -RunnerMode 'dotnetTest' -LogDir $log6
+        $started6 = $script:lastVerifyStartedUtc
         $summary6 = Get-Content -LiteralPath (Join-Path $log6 'summary.log') -Raw
         Assert-True ($exit6 -eq 0) "S6 exit code is 0 even though the purge failed (got $exit6)"
         Assert-True ($summary6 -match 'OVERALL: PASS') "S6 summary reports OVERALL: PASS"
         $row6 = Assert-SummaryRow -LogDir $log6 -Runner 'dotnet test (MTP)' -Total 2 -Failed 0 -Skipped 0 `
             -Result 'PASS' -Label "S6 row still binds the MTP runner and real 2/0/0 PASS counts despite the purge failure"
-        $evidence6 = Get-DotnetTestEvidence -LogDir $log6
+        $evidence6 = Get-DotnetTestEvidence -LogDir $log6 -RunStartedUtc $started6
         Assert-True ($evidence6.RawLogOk -and $evidence6.RawLogText -match '(?m)^Test run summary: Passed!') "S6 current-run raw framework log is present under the run's dotnetTest-xml results root despite the purge failure [$($evidence6.RawLogReason)]"
+        Assert-True ($evidence6.RawLogOk -and -not $evidence6.RawLogText.Contains($staleMarker)) "S6 accepted raw framework log is current-run evidence and carries no stale marker"
         $staleLeaked6 = $false
         $evidence6Dir = Join-Path $log6 'test-results'
         if (Test-Path -LiteralPath $evidence6Dir) {
@@ -882,7 +1045,7 @@ try {
         Assert-True ($meta6Text -match 'NOT CLEARED') "S6 meta records the purge failure"
         Assert-True ($meta6Text -match 'excluded stale files') "S6 meta records the excluded stale file(s)"
         Assert-DotnetTestEvidence -LogDir $log6 -Runner 'dotnet test (MTP)' -Total 2 -Failed 0 -Skipped 0 `
-            -Result 'PASS' -NativeExit 0 -Label "S6 summary, native XML, raw framework log and native exit agree on the PASS run" | Out-Null
+            -Result 'PASS' -NativeExit $exit6 -RunStartedUtc $started6 -Label "S6 summary, native XML, raw framework log and observed native exit agree on the PASS run" | Out-Null
     }
     finally { $lockedHandle6.Dispose() }
 
@@ -894,12 +1057,13 @@ try {
     try {
         $log7 = Join-Path $workspace 'logs-s7'
         $exit7 = Invoke-Verify -RunnerMode 'dotnetTest' -LogDir $log7
+        $started7 = $script:lastVerifyStartedUtc
         $summary7 = Get-Content -LiteralPath (Join-Path $log7 'summary.log') -Raw
         Assert-True ($exit7 -ne 0) "S7 exit code is non-zero (got $exit7)"
         Assert-True ($summary7 -match 'OVERALL: FAIL') "S7 summary reports OVERALL: FAIL"
         $row7 = Assert-SummaryRow -LogDir $log7 -Runner 'dotnet test (MTP)' -Total 2 -Failed 1 -Skipped 0 `
             -Result 'FAIL' -Label "S7 row binds the MTP runner and keeps real counts 2 total / 1 failed / 0 skipped as FAIL"
-        $evidence7 = Get-DotnetTestEvidence -LogDir $log7
+        $evidence7 = Get-DotnetTestEvidence -LogDir $log7 -RunStartedUtc $started7
         Assert-True ($evidence7.RawLogOk -and $evidence7.RawLogText.Contains($sentinel) -and $evidence7.RawLogText.Contains('Probe.Tests.ProbeTests.ControlledFailure')) "S7 current failing run's raw framework log carries the CURRENT case and failure content [$($evidence7.RawLogReason)]"
         Assert-True ($evidence7.RawLogOk -and -not $evidence7.RawLogText.Contains($staleMarker)) "S7 current raw framework log carries no stale marker"
         $staleLeaked7 = $false
@@ -914,8 +1078,8 @@ try {
         $meta7Text = Get-Content -LiteralPath (Join-Path $log7 'runs\Probe.Tests\dotnetTest.meta.txt') -Raw
         Assert-True ($meta7Text -match 'NOT CLEARED' -and $meta7Text -match 'excluded stale files' -and $meta7Text -match 'Stale_OldRun') "S7 meta records the locked stale exclusion while keeping the current failure"
         Assert-DotnetTestEvidence -LogDir $log7 -Runner 'dotnet test (MTP)' -Total 2 -Failed 1 -Skipped 0 `
-            -Result 'FAIL' -NativeExit 1 -CaseName 'Probe.Tests.ProbeTests.ControlledFailure' -Message $sentinel `
-            -Label "S7 summary, native XML, raw framework log, meta and native exit agree on the current failure" | Out-Null
+            -Result 'FAIL' -NativeExit $exit7 -RunStartedUtc $started7 -CaseName 'Probe.Tests.ProbeTests.ControlledFailure' -Message $sentinel `
+            -Label "S7 summary, native XML, raw framework log, meta and observed native exit agree on the current failure" | Out-Null
     }
     finally { $lockedHandle7.Dispose() }
 
@@ -1028,10 +1192,71 @@ try {
     $r = Test-SummaryRow -Text (& $makeNegSummary 'Probe.Tests' 'dotnet test (MTP)' 2 1 0 'FAIL' 2) -Runner 'dotnet test (MTP)' -Total 2 -Failed 1 -Skipped 0 -Result 'FAIL'
     Assert-True (-not $r.Ok) "TOOL_FIXTURE reject ambiguous duplicate Probe.Tests rows [$($r.Reason)]"
 
-    $negXmlFail = '<assemblies schema-version="3"><assembly name="X" test-framework="xUnit.net v3 4.0.2" total="2" passed="1" failed="1" skipped="0" not-run="0" errors="0"><collection><test name="Probe.Tests.ProbeTests.ControlledFailure" result="Fail"><failure><message>DIAGNOSTIC-PROBE-SENTINEL failing assertion</message></failure></test><test name="Probe.Tests.ProbeTests.AlwaysPasses" result="Pass" /></collection></assembly></assemblies>'
-    $negXmlWrongCase = '<assemblies schema-version="3"><assembly name="X" test-framework="xUnit.net v3 4.0.2" total="2" passed="1" failed="1" skipped="0" not-run="0" errors="0"><collection><test name="Probe.Tests.ProbeTests.SomeOtherCase" result="Fail"><failure><message>DIAGNOSTIC-PROBE-SENTINEL failing assertion</message></failure></test><test name="Probe.Tests.ProbeTests.AlwaysPasses" result="Pass" /></collection></assembly></assemblies>'
-    $negXmlPass = '<assemblies schema-version="3"><assembly name="X" test-framework="xUnit.net v3 4.0.2" total="2" passed="2" failed="0" skipped="0" not-run="0" errors="0"><collection><test name="Probe.Tests.ProbeTests.AlwaysPasses" result="Pass" /><test name="Probe.Tests.ProbeTests.SecondPasses" result="Pass" /></collection></assembly></assemblies>'
-    $negXmlIncomplete = '<assemblies schema-version="3"><assembly name="X" test-framework="xUnit.net v3 4.0.2" total="2" passed="1" failed="1" skipped="0" not-run="0" errors="0"><collection><test name="Probe.Tests.ProbeTests.ControlledFailure" result="Fail"><failure><message>DIAGNOSTIC-PROBE-SENTINEL failing assertion</message></failure></test></collection></assembly></assemblies>'
+    $negAssemblyPath = ((Join-Path $probeDir 'bin\Release\net8.0\Probe.Tests.dll') -replace '\\', '/')
+    $negXmlFail = @"
+<assemblies schema-version="3">
+  <assembly name="$negAssemblyPath" test-framework="xUnit.net v3 4.0.2+0c7aa4991f" total="2" passed="1" failed="1" skipped="0" not-run="0" errors="0">
+    <collection name="Test collection for Probe.Tests.ProbeTests" total="2" passed="1" failed="1" skipped="0" not-run="0">
+      <test id="11111111-1111-1111-1111-111111111111" name="Probe.Tests.ProbeTests.ControlledFailure" result="Fail"><failure exception-type="Xunit.Sdk.FailException"><message>DIAGNOSTIC-PROBE-SENTINEL failing assertion</message></failure></test>
+      <test id="22222222-2222-2222-2222-222222222222" name="Probe.Tests.ProbeTests.AlwaysPasses" result="Pass" />
+    </collection>
+  </assembly>
+</assemblies>
+"@
+    $negXmlWrongCase = @"
+<assemblies schema-version="3">
+  <assembly name="$negAssemblyPath" test-framework="xUnit.net v3 4.0.2+0c7aa4991f" total="2" passed="1" failed="1" skipped="0" not-run="0" errors="0">
+    <collection name="Test collection for Probe.Tests.ProbeTests" total="2" passed="1" failed="1" skipped="0" not-run="0">
+      <test id="11111111-1111-1111-1111-111111111111" name="Probe.Tests.ProbeTests.SomeOtherCase" result="Fail"><failure exception-type="Xunit.Sdk.FailException"><message>DIAGNOSTIC-PROBE-SENTINEL failing assertion</message></failure></test>
+      <test id="22222222-2222-2222-2222-222222222222" name="Probe.Tests.ProbeTests.AlwaysPasses" result="Pass" />
+    </collection>
+  </assembly>
+</assemblies>
+"@
+    $negXmlPass = @"
+<assemblies schema-version="3">
+  <assembly name="$negAssemblyPath" test-framework="xUnit.net v3 4.0.2+0c7aa4991f" total="2" passed="2" failed="0" skipped="0" not-run="0" errors="0">
+    <collection name="Test collection for Probe.Tests.ProbeTests" total="2" passed="2" failed="0" skipped="0" not-run="0">
+      <test id="11111111-1111-1111-1111-111111111111" name="Probe.Tests.ProbeTests.AlwaysPasses" result="Pass" />
+      <test id="22222222-2222-2222-2222-222222222222" name="Probe.Tests.ProbeTests.SecondPasses" result="Pass" />
+    </collection>
+  </assembly>
+</assemblies>
+"@
+    $negXmlIncomplete = @"
+<assemblies schema-version="3">
+  <assembly name="$negAssemblyPath" test-framework="xUnit.net v3 4.0.2+0c7aa4991f" total="2" passed="1" failed="1" skipped="0" not-run="0" errors="0">
+    <collection name="Test collection for Probe.Tests.ProbeTests" total="2" passed="1" failed="1" skipped="0" not-run="0">
+      <test id="11111111-1111-1111-1111-111111111111" name="Probe.Tests.ProbeTests.ControlledFailure" result="Fail"><failure exception-type="Xunit.Sdk.FailException"><message>DIAGNOSTIC-PROBE-SENTINEL failing assertion</message></failure></test>
+    </collection>
+  </assembly>
+</assemblies>
+"@
+    $negXmlTwoFailNodes = @"
+<assemblies schema-version="3">
+  <assembly name="$negAssemblyPath" test-framework="xUnit.net v3 4.0.2+0c7aa4991f" total="2" passed="1" failed="1" skipped="0" not-run="0" errors="0">
+    <collection name="Test collection for Probe.Tests.ProbeTests" total="2" passed="1" failed="1" skipped="0" not-run="0">
+      <test id="11111111-1111-1111-1111-111111111111" name="Probe.Tests.ProbeTests.ControlledFailure" result="Fail"><failure exception-type="Xunit.Sdk.FailException"><message>DIAGNOSTIC-PROBE-SENTINEL failing assertion</message></failure></test>
+      <test id="22222222-2222-2222-2222-222222222222" name="Probe.Tests.ProbeTests.AlwaysPasses" result="Fail"><failure exception-type="Xunit.Sdk.FailException"><message>SECOND_ACTUAL_FAILURE</message></failure></test>
+    </collection>
+  </assembly>
+</assemblies>
+"@
+    $negXmlDuplicateIds = $negXmlPass.Replace('id="22222222-2222-2222-2222-222222222222"', 'id="11111111-1111-1111-1111-111111111111"')
+    $negXmlMissingAttrs = @"
+<assemblies schema-version="3">
+  <assembly name="$negAssemblyPath" test-framework="xUnit.net v3 4.0.2+0c7aa4991f" total="2" passed="2">
+    <collection name="Test collection for Probe.Tests.ProbeTests" total="2" passed="2" failed="0" skipped="0" not-run="0">
+      <test id="11111111-1111-1111-1111-111111111111" name="Probe.Tests.ProbeTests.AlwaysPasses" result="Pass" />
+      <test id="22222222-2222-2222-2222-222222222222" name="Probe.Tests.ProbeTests.SecondPasses" result="Pass" />
+    </collection>
+  </assembly>
+</assemblies>
+"@
+    $negXmlWrongAssembly = $negXmlPass.Replace($negAssemblyPath, 'Other.Tests.dll')
+    $negXmlWrongFramework = $negXmlPass.Replace('xUnit.net v3 4.0.2+0c7aa4991f', 'xUnit.net v3 4.0.20')
+    $negXmlWrongSchema = $negXmlPass.Replace('schema-version="3"', 'schema-version="999"')
+    $negXmlMissingCollection = $negXmlPass -replace '(?s)<collection\b.*?</collection>', ''
     $negRawFail = "failed Probe.Tests.ProbeTests.ControlledFailure`n  DIAGNOSTIC-PROBE-SENTINEL failing assertion`nTest run summary: Failed!`n  total: 2`n  failed: 1`n  skipped: 0`n"
     $negRawPass = "Test run summary: Passed!`n  total: 2`n  failed: 0`n  skipped: 0`n"
 
@@ -1041,23 +1266,36 @@ try {
         New-Item -ItemType Directory -Force -Path (Join-Path $dir 'dotnetTest-xml\Probe.Tests'), (Join-Path $dir 'runs\Probe.Tests') | Out-Null
         Write-Utf8File -Path (Join-Path $dir 'summary.log') -Content $Summary
         if ($null -ne $Xml) { Write-Utf8File -Path (Join-Path $dir 'dotnetTest-xml\Probe.Tests\dotnet-test-results.xml') -Content $Xml }
-        if ($null -ne $Raw) { Write-Utf8File -Path (Join-Path $dir 'dotnetTest-xml\Probe.Tests\Probe.Tests_net8.0_x64.log') -Content $Raw }
+        if ($null -ne $Raw) {
+            $artifactPath = Join-Path $dir 'dotnetTest-xml\Probe.Tests\dotnet-test-results.xml'
+            $rawWithContext = "  In process file artifacts produced:`n    - $artifactPath`n" + $Raw
+            Write-Utf8File -Path (Join-Path $dir 'dotnetTest-xml\Probe.Tests\Probe.Tests_net8.0_x64.log') -Content $rawWithContext
+        }
         $meta = "exit code   : $Exit`ntotal       : $Total`nfailed      : $Failed`nskipped     : $Skipped`nhead        : deadbeef`n"
         Write-Utf8File -Path (Join-Path $dir 'runs\Probe.Tests\dotnetTest.meta.txt') -Content $meta
         return $dir
     }
+    function Set-StaleRawEvidence {
+        param([string]$Dir)
+        $p = Join-Path $Dir 'dotnetTest-xml\Probe.Tests\Probe.Tests_net8.0_x64.log'
+        $text = Get-Content -LiteralPath $p -Raw
+        [IO.File]::WriteAllText($p, ($staleMarker + [Environment]::NewLine + $text), (New-Object System.Text.UTF8Encoding($false)))
+        (Get-Item -LiteralPath $p).LastWriteTimeUtc = [DateTime]::UtcNow.AddDays(-2)
+    }
     function Assert-NegEvidence-Rejected {
         param($Dir, $Summary, $Runner, $Total, $Failed, $Skipped, $Result, $Exit, $CaseName, $Message, $Label, [switch]$AllowZeroTotal)
+        $started = [DateTime]::UtcNow
         $r = Test-DotnetTestEvidence -LogDir $Dir -SummaryText $Summary -Runner $Runner -Total $Total -Failed $Failed `
-            -Skipped $Skipped -Result $Result -NativeExit $Exit -CaseName $CaseName -Message $Message -AllowZeroTotal:$AllowZeroTotal
+            -Skipped $Skipped -Result $Result -NativeExit $Exit -RunStartedUtc $started -CaseName $CaseName -Message $Message -AllowZeroTotal:$AllowZeroTotal
         Assert-True (-not $r.Ok) "TOOL_FIXTURE $Label [$($r.Reason)]"
     }
 
     $negSummaryFail = & $makeNegSummary 'Probe.Tests' 'dotnet test (MTP)' 2 1 0 'FAIL'
     $negSummaryPass = & $makeNegSummary 'Probe.Tests' 'dotnet test (MTP)' 2 0 0 'PASS'
     $negGood = Write-NegEvidence -Name 'baseline' -Summary $negSummaryFail -Xml $negXmlFail -Raw $negRawFail -Exit 1 -Total 2 -Failed 1 -Skipped 0
-    $r = Test-DotnetTestEvidence -LogDir $negGood -SummaryText $negSummaryFail -Runner 'dotnet test (MTP)' -Total 2 -Failed 1 -Skipped 0 -Result 'FAIL' -NativeExit 1 -CaseName 'Probe.Tests.ProbeTests.ControlledFailure' -Message $sentinel
-    Assert-True $r.Ok "TOOL_FIXTURE baseline: consistent synthetic row/XML/raw/meta is accepted [$($r.Reason)]"
+    $negGoodStart = [DateTime]::UtcNow
+    $r = Test-DotnetTestEvidence -LogDir $negGood -SummaryText $negSummaryFail -Runner 'dotnet test (MTP)' -Total 2 -Failed 1 -Skipped 0 -Result 'FAIL' -NativeExit 1 -RunStartedUtc $negGoodStart -CaseName 'Probe.Tests.ProbeTests.ControlledFailure' -Message $sentinel
+    Assert-True $r.Ok "TOOL_FIXTURE baseline: consistent native-shaped row/XML/raw/meta is accepted [$($r.Reason)]"
     $d = Write-NegEvidence -Name 'summary-pass-xml-fail' -Summary $negSummaryPass -Xml $negXmlFail -Raw $negRawFail -Exit 0 -Total 2 -Failed 0 -Skipped 0
     Assert-NegEvidence-Rejected -Dir $d -Summary $negSummaryPass -Runner 'dotnet test (MTP)' -Total 2 -Failed 0 -Skipped 0 -Result 'PASS' -Exit 0 -Label 'reject a PASS summary whose XML still reports a failure'
     $d = Write-NegEvidence -Name 'nonzero-exit-success' -Summary $negSummaryPass -Xml $negXmlPass -Raw $negRawPass -Exit 1 -Total 2 -Failed 0 -Skipped 0
@@ -1081,6 +1319,36 @@ try {
     $d = Write-NegEvidence -Name 'xml-incomplete' -Summary $negSummaryFail -Xml $negXmlIncomplete -Raw $negRawFail -Exit 1 -Total 2 -Failed 1 -Skipped 0
     Assert-NegEvidence-Rejected -Dir $d -Summary $negSummaryFail -Runner 'dotnet test (MTP)' -Total 2 -Failed 1 -Skipped 0 -Result 'FAIL' -Exit 1 -CaseName 'Probe.Tests.ProbeTests.ControlledFailure' -Message $sentinel -Label 'reject XML whose node count does not match total'
 
+    $negGoodPass = Write-NegEvidence -Name 'baseline-pass' -Summary $negSummaryPass -Xml $negXmlPass -Raw $negRawPass -Exit 0 -Total 2 -Failed 0 -Skipped 0
+    $r = Test-DotnetTestEvidence -LogDir $negGoodPass -SummaryText $negSummaryPass -Runner 'dotnet test (MTP)' -Total 2 -Failed 0 -Skipped 0 -Result 'PASS' -NativeExit 0 -RunStartedUtc ([DateTime]::UtcNow)
+    Assert-True $r.Ok "TOOL_FIXTURE baseline PASS: consistent native-shaped row/XML/raw/meta is accepted [$($r.Reason)]"
+    $d = Write-NegEvidence -Name 'pass-native-null' -Summary $negSummaryPass -Xml $negXmlPass -Raw $negRawPass -Exit $null -Total 2 -Failed 0 -Skipped 0
+    Assert-NegEvidence-Rejected -Dir $d -Summary $negSummaryPass -Runner 'dotnet test (MTP)' -Total 2 -Failed 0 -Skipped 0 -Result 'PASS' -Exit $null -Label 'reject an explicitly unknown (null) native exit even when row/XML/raw look successful'
+    $d = Write-NegEvidence -Name 'pass-native-bool' -Summary $negSummaryPass -Xml $negXmlPass -Raw $negRawPass -Exit $false -Total 2 -Failed 0 -Skipped 0
+    Assert-NegEvidence-Rejected -Dir $d -Summary $negSummaryPass -Runner 'dotnet test (MTP)' -Total 2 -Failed 0 -Skipped 0 -Result 'PASS' -Exit $false -Label 'reject a Boolean native observation instead of an integral exit'
+    $d = Write-NegEvidence -Name 'pass-native-fraction' -Summary $negSummaryPass -Xml $negXmlPass -Raw $negRawPass -Exit 0.1 -Total 2 -Failed 0 -Skipped 0
+    Assert-NegEvidence-Rejected -Dir $d -Summary $negSummaryPass -Runner 'dotnet test (MTP)' -Total 2 -Failed 0 -Skipped 0 -Result 'PASS' -Exit 0.1 -Label 'reject a fractional native observation instead of an integral exit'
+    $d = Write-NegEvidence -Name 'fail-two-failed-nodes' -Summary $negSummaryFail -Xml $negXmlTwoFailNodes -Raw $negRawFail -Exit 1 -Total 2 -Failed 1 -Skipped 0
+    Assert-NegEvidence-Rejected -Dir $d -Summary $negSummaryFail -Runner 'dotnet test (MTP)' -Total 2 -Failed 1 -Skipped 0 -Result 'FAIL' -Exit 1 -CaseName 'Probe.Tests.ProbeTests.ControlledFailure' -Message $sentinel -Label 'reject two actual Fail nodes when the aggregate declares one failure'
+    $d = Write-NegEvidence -Name 'duplicate-test-ids' -Summary $negSummaryPass -Xml $negXmlDuplicateIds -Raw $negRawPass -Exit 0 -Total 2 -Failed 0 -Skipped 0
+    Assert-NegEvidence-Rejected -Dir $d -Summary $negSummaryPass -Runner 'dotnet test (MTP)' -Total 2 -Failed 0 -Skipped 0 -Result 'PASS' -Exit 0 -Label 'reject duplicate native test IDs'
+    $d = Write-NegEvidence -Name 'missing-count-attributes' -Summary $negSummaryPass -Xml $negXmlMissingAttrs -Raw $negRawPass -Exit 0 -Total 2 -Failed 0 -Skipped 0
+    Assert-NegEvidence-Rejected -Dir $d -Summary $negSummaryPass -Runner 'dotnet test (MTP)' -Total 2 -Failed 0 -Skipped 0 -Result 'PASS' -Exit 0 -Label 'reject missing required failed/errors/skipped/not-run attributes'
+    $d = Write-NegEvidence -Name 'wrong-assembly' -Summary $negSummaryPass -Xml $negXmlWrongAssembly -Raw $negRawPass -Exit 0 -Total 2 -Failed 0 -Skipped 0
+    Assert-NegEvidence-Rejected -Dir $d -Summary $negSummaryPass -Runner 'dotnet test (MTP)' -Total 2 -Failed 0 -Skipped 0 -Result 'PASS' -Exit 0 -Label 'reject a wrong assembly identity'
+    $d = Write-NegEvidence -Name 'wrong-framework' -Summary $negSummaryPass -Xml $negXmlWrongFramework -Raw $negRawPass -Exit 0 -Total 2 -Failed 0 -Skipped 0
+    Assert-NegEvidence-Rejected -Dir $d -Summary $negSummaryPass -Runner 'dotnet test (MTP)' -Total 2 -Failed 0 -Skipped 0 -Result 'PASS' -Exit 0 -Label 'reject a fourth-component xUnit runner identity (4.0.20)'
+    $d = Write-NegEvidence -Name 'wrong-schema' -Summary $negSummaryPass -Xml $negXmlWrongSchema -Raw $negRawPass -Exit 0 -Total 2 -Failed 0 -Skipped 0
+    Assert-NegEvidence-Rejected -Dir $d -Summary $negSummaryPass -Runner 'dotnet test (MTP)' -Total 2 -Failed 0 -Skipped 0 -Result 'PASS' -Exit 0 -Label 'reject an unsupported native XML schema 999'
+    $d = Write-NegEvidence -Name 'missing-collection' -Summary $negSummaryPass -Xml $negXmlMissingCollection -Raw $negRawPass -Exit 0 -Total 2 -Failed 0 -Skipped 0
+    Assert-NegEvidence-Rejected -Dir $d -Summary $negSummaryPass -Runner 'dotnet test (MTP)' -Total 2 -Failed 0 -Skipped 0 -Result 'PASS' -Exit 0 -Label 'reject test nodes without the required collection aggregate'
+    $d = Write-NegEvidence -Name 'fail-stale-raw' -Summary $negSummaryFail -Xml $negXmlFail -Raw $negRawFail -Exit 1 -Total 2 -Failed 1 -Skipped 0
+    Set-StaleRawEvidence -Dir $d
+    Assert-NegEvidence-Rejected -Dir $d -Summary $negSummaryFail -Runner 'dotnet test (MTP)' -Total 2 -Failed 1 -Skipped 0 -Result 'FAIL' -Exit 1 -CaseName 'Probe.Tests.ProbeTests.ControlledFailure' -Message $sentinel -Label 'reject an old marked raw log even when its case/assertion/counts match'
+    $d = Write-NegEvidence -Name 'pass-stale-raw' -Summary $negSummaryPass -Xml $negXmlPass -Raw $negRawPass -Exit 0 -Total 2 -Failed 0 -Skipped 0
+    Set-StaleRawEvidence -Dir $d
+    Assert-NegEvidence-Rejected -Dir $d -Summary $negSummaryPass -Runner 'dotnet test (MTP)' -Total 2 -Failed 0 -Skipped 0 -Result 'PASS' -Exit 0 -Label 'reject an old marked raw log on a PASS row'
+
     # --- S9: EXCLUSIVE lock (FileShare.None) released mid-run + current PASS --------
     # Round-2-review regression: the snapshot cannot hash an exclusively locked
     # file, but once the lock is released mid-run the collection re-hash succeeds
@@ -1098,6 +1366,7 @@ try {
     $unlocker9 = Start-MidRunUnlocker -LockStream $exclusiveStream9 -UnlockedSentinel $sentinelFile9 -PurgeFailureMarker (Join-Path $log9 'collection-errors.log') -ResultBox $unlockBox9
     try {
         $exit9 = Invoke-Verify -RunnerMode 'dotnetTest' -LogDir $log9
+        $started9 = $script:lastVerifyStartedUtc
         $null = Wait-UnlockerReleased $unlockBox9
         $summary9 = Get-Content -LiteralPath (Join-Path $log9 'summary.log') -Raw
         Assert-True $unlockBox9.PurgedObserved "S9 scenario valid: the purge was observed before the lock was released"
@@ -1105,8 +1374,9 @@ try {
         Assert-True ($summary9 -match 'OVERALL: PASS') "S9 summary reports OVERALL: PASS"
         $row9 = Assert-SummaryRow -LogDir $log9 -Runner 'dotnet test (MTP)' -Total 2 -Failed 0 -Skipped 0 `
             -Result 'PASS' -Label "S9 row binds the MTP runner and real 2/0/0 PASS counts"
-        $evidence9 = Get-DotnetTestEvidence -LogDir $log9
+        $evidence9 = Get-DotnetTestEvidence -LogDir $log9 -RunStartedUtc $started9
         Assert-True ($evidence9.RawLogOk -and $evidence9.RawLogText -match '(?m)^Test run summary: Passed!') "S9 current-run raw framework log is present under the run's dotnetTest-xml results root [$($evidence9.RawLogReason)]"
+        Assert-True ($evidence9.RawLogOk -and -not $evidence9.RawLogText.Contains($staleMarker)) "S9 accepted raw framework log is current-run evidence and carries no stale marker"
         $staleLeaked9 = $false
         $evidence9Dir = Join-Path $log9 'test-results'
         if (Test-Path -LiteralPath $evidence9Dir) {
@@ -1120,7 +1390,7 @@ try {
         Assert-True ($meta9Text -match 'NOT CLEARED') "S9 meta records the purge failure"
         Assert-True ($meta9Text -match 'hash unavailable at snapshot time') "S9 meta records the conservative exclusion reason"
         Assert-DotnetTestEvidence -LogDir $log9 -Runner 'dotnet test (MTP)' -Total 2 -Failed 0 -Skipped 0 `
-            -Result 'PASS' -NativeExit 0 -Label "S9 summary, native XML, raw framework log and native exit agree on the PASS run" | Out-Null
+            -Result 'PASS' -NativeExit $exit9 -RunStartedUtc $started9 -Label "S9 summary, native XML, raw framework log and observed native exit agree on the PASS run" | Out-Null
     }
     finally {
         Stop-MidRunUnlocker $unlocker9
@@ -1140,6 +1410,7 @@ try {
     $unlocker10 = Start-MidRunUnlocker -LockStream $exclusiveStream10 -UnlockedSentinel $sentinelFile10 -PurgeFailureMarker (Join-Path $log10 'collection-errors.log') -ResultBox $unlockBox10
     try {
         $exit10 = Invoke-Verify -RunnerMode 'dotnetTest' -LogDir $log10
+        $started10 = $script:lastVerifyStartedUtc
         $null = Wait-UnlockerReleased $unlockBox10
         $summary10 = Get-Content -LiteralPath (Join-Path $log10 'summary.log') -Raw
         Assert-True $unlockBox10.PurgedObserved "S10 scenario valid: the purge was observed before the lock was released"
@@ -1147,7 +1418,7 @@ try {
         Assert-True ($summary10 -match 'OVERALL: FAIL') "S10 summary reports OVERALL: FAIL"
         $row10 = Assert-SummaryRow -LogDir $log10 -Runner 'dotnet test (MTP)' -Total 2 -Failed 1 -Skipped 0 `
             -Result 'FAIL' -Label "S10 row binds the MTP runner and keeps real counts 2 total / 1 failed / 0 skipped as FAIL"
-        $evidence10 = Get-DotnetTestEvidence -LogDir $log10
+        $evidence10 = Get-DotnetTestEvidence -LogDir $log10 -RunStartedUtc $started10
         Assert-True ($evidence10.RawLogOk -and $evidence10.RawLogText.Contains($sentinel) -and $evidence10.RawLogText.Contains('Probe.Tests.ProbeTests.ControlledFailure')) "S10 current failing run's raw framework log carries the CURRENT failure content [$($evidence10.RawLogReason)]"
         Assert-True ($evidence10.RawLogOk -and -not $evidence10.RawLogText.Contains($staleMarker)) "S10 current raw framework log carries no stale marker"
         $staleLeaked10 = $false
@@ -1162,8 +1433,8 @@ try {
         $meta10Text = Get-Content -LiteralPath (Join-Path $log10 'runs\Probe.Tests\dotnetTest.meta.txt') -Raw
         Assert-True ($meta10Text -match 'NOT CLEARED' -and $meta10Text -match 'hash unavailable at snapshot time') "S10 meta records the purge failure and conservative hash exclusion"
         Assert-DotnetTestEvidence -LogDir $log10 -Runner 'dotnet test (MTP)' -Total 2 -Failed 1 -Skipped 0 `
-            -Result 'FAIL' -NativeExit 1 -CaseName 'Probe.Tests.ProbeTests.ControlledFailure' -Message $sentinel `
-            -Label "S10 summary, native XML, raw framework log, meta and native exit agree on the current failure" | Out-Null
+            -Result 'FAIL' -NativeExit $exit10 -RunStartedUtc $started10 -CaseName 'Probe.Tests.ProbeTests.ControlledFailure' -Message $sentinel `
+            -Label "S10 summary, native XML, raw framework log, meta and observed native exit agree on the current failure" | Out-Null
     }
     finally {
         Stop-MidRunUnlocker $unlocker10
