@@ -32,6 +32,12 @@ param(
 
     [string]$PlayerPath,
 
+    [string]$BuildRecordPath,
+
+    [string]$PackageManifestPath,
+
+    [string]$OutputDir,
+
     [string]$UnityPath = 'D:\Unity\Hub\Editor\6000.3.27f1\Editor\Unity.exe',
 
     [string]$DotnetPath = 'D:\Unity\dotnet\dotnet.exe',
@@ -55,6 +61,9 @@ $script:Player = $null
 $script:PlayerSha = $null
 $script:PackageSha = $null
 $script:PackageCount = 0
+$script:HelperPath = $null
+$script:BuildRecordPath = $null
+$script:PackageManifestPath = $null
 $script:SourceHead = $null
 $script:BuildCommit = $null
 $script:OldTemp = $null
@@ -334,7 +343,7 @@ function Apply-Fault {
 }
 
 function New-CaseInput {
-    param([string]$CaseDir, [string]$CaseId, [string]$Fault, [string]$Outcome, $Prepare)
+    param([string]$CaseDir, [string]$CaseId, [string]$Fault, [string]$Outcome, $Prepare, [bool]$Force)
     $copy = @('local', 'outbox', 'expected.txt')
     foreach ($name in $copy) {
         $source = Join-Path $Prepare $name
@@ -354,6 +363,7 @@ function New-CaseInput {
         caseId = $CaseId
         fault = $Fault
         expectedOutcome = $Outcome
+        force = $Force
         playerSha256 = $script:PlayerSha
         packageSha256 = $script:PackageSha
         packageFileCount = $script:PackageCount
@@ -381,35 +391,117 @@ function Get-CaseDefinition {
     }
 }
 
+function Invoke-UnityProcess {
+    param([string]$UnityExe, [string[]]$Arguments, [int]$TimeoutSeconds)
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $UnityExe
+    $psi.Arguments = ($Arguments | ForEach-Object {
+        if ($_ -match '[\s"]') { '"' + ($_ -replace '"', '\"') + '"' } else { $_ }
+    }) -join ' '
+    $psi.WorkingDirectory = Split-Path -Parent $UnityExe
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.EnvironmentVariables['TEMP'] = $script:Temp
+    $psi.EnvironmentVariables['TMP'] = $script:Temp
+    $process = [System.Diagnostics.Process]::Start($psi)
+    $started = $process.StartTime.ToUniversalTime().ToString('o')
+    $finished = $process.WaitForExit($TimeoutSeconds * 1000)
+    if (-not $finished) {
+        try { $process.Kill() } catch { }
+        try { [void]$process.WaitForExit(5000) } catch { }
+        throw ('UNITY_TIMEOUT pid=' + $process.Id)
+    }
+    $process.Refresh()
+    $exit = [int]$process.ExitCode
+    return [pscustomobject]@{
+        pid = $process.Id
+        startUtc = $started
+        path = $UnityExe
+        nativeExitCode = $exit
+    }
+}
+
 function Build-Player {
     $project = Join-Path $script:RepoRoot 'unity\Mahjong.Unity'
-    $pluginDir = Join-Path $project 'Assets\Plugins\Mahjong'
-    $dirty = (& git -C $script:RepoRoot status --porcelain=v1 -- unity/Mahjong.Unity/Assets/Plugins/Mahjong) -join "`n"
-    if (-not [string]::IsNullOrWhiteSpace($dirty)) {
-        throw ('PLUGIN_DIR_DIRTY: refusing to build over existing plugin changes: ' + $dirty)
+    $clean = (& git -C $script:RepoRoot status --porcelain=v1 --untracked-files=no) -join "`n"
+    if (-not [string]::IsNullOrWhiteSpace($clean)) {
+        throw ('SOURCE_DIRTY: freeze the code commit before building: ' + $clean)
     }
-    $before = @{}
-    Get-ChildItem -LiteralPath $pluginDir -File | ForEach-Object { $before[$_.Name] = Get-Sha256 $_.FullName }
-    Write-JsonFile -Path (Join-Path $script:Root 'plugin-before.json') -Object $before | Out-Null
+    $head = (& git -C $script:RepoRoot rev-parse HEAD).Trim()
+    $script:SourceHead = $head
+    $script:BuildCommit = $head
+    $tree = (& git -C $script:RepoRoot ls-tree -r --full-tree HEAD) -join "`n"
+    $sourceInputs = @(
+        'dotnet/tests/Mahjong.LocalHost.Tests/C04RecoveryRequestReconciliationTests.cs',
+        'dotnet/tools/C04RecoveryReconciliationVerifier/C04RecoveryReconciliationVerifier.csproj',
+        'dotnet/tools/C04RecoveryReconciliationVerifier/Program.cs',
+        'tools/unity/run-p45-c04-recovery-reconciliation.ps1',
+        'tools/unity/verify-p45-c04-recovery-reconciliation.ps1',
+        'tools/tests/VerifyP45C04RecoveryReconciliation.Tests.ps1',
+        'unity/Mahjong.Unity/Assets/Scripts/App/C04RecoveryReconciliationProbe.cs',
+        'unity/Mahjong.Unity/Assets/Editor/C04RecoveryReconciliationBuild.cs'
+    )
+    $inputHashes = [ordered]@{}
+    foreach ($relative in $sourceInputs) {
+        $path = Join-Path $script:RepoRoot $relative
+        if (-not (Test-Path -LiteralPath $path)) { throw ('SOURCE_INPUT_MISSING ' + $relative) }
+        $inputHashes[$relative] = Get-Sha256 $path
+    }
+    $snapshot = [ordered]@{
+        schemaVersion = 1
+        kind = 'c04-recovery-source-snapshot'
+        sourceHead = $head
+        treeSha256 = Get-StringSha256 $tree
+        inputs = $inputHashes
+        generatedAt = [DateTimeOffset]::UtcNow.ToString('o')
+    }
+    Write-JsonFile -Path (Join-Path $script:Root 'source-snapshot.json') -Object $snapshot | Out-Null
 
+    # Import/build in a private staging copy. The source tree is never restored,
+    # cleaned or enumerated for deletion; no other user/process bytes are touched.
+    $staging = Join-Path $script:Root 'staging-project'
+    New-Item -ItemType Directory -Force -Path $staging | Out-Null
+    foreach ($name in @('Assets', 'Packages', 'ProjectSettings', 'Mahjong.Unity.slnx')) {
+        $source = Join-Path $project $name
+        if (Test-Path -LiteralPath $source) {
+            Copy-Item -LiteralPath $source -Destination (Join-Path $staging $name) -Recurse -Force
+        }
+    }
+    $stagingProbe = Join-Path $staging 'Assets\Scripts\App\C04RecoveryReconciliationProbe.cs'
+    $stagingEditor = Join-Path $staging 'Assets\Editor\C04RecoveryReconciliationBuild.cs'
+    if ((Get-Sha256 $stagingProbe) -ne $inputHashes['unity/Mahjong.Unity/Assets/Scripts/App/C04RecoveryReconciliationProbe.cs'] -or
+        (Get-Sha256 $stagingEditor) -ne $inputHashes['unity/Mahjong.Unity/Assets/Editor/C04RecoveryReconciliationBuild.cs']) {
+        throw 'STAGING_SOURCE_MISMATCH'
+    }
+
+    $pluginDir = Join-Path $staging 'Assets\Plugins\Mahjong'
     $sharedLog = Join-Path $script:Root 'logs\build-shared.log'
     $sharedExit = Invoke-Native -FilePath 'powershell.exe' -Arguments @(
         '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
-        (Join-Path $script:RepoRoot 'tools\unity\build-shared.ps1'), '-Configuration', 'Release') -LogPath $sharedLog
+        (Join-Path $script:RepoRoot 'tools\unity\build-shared.ps1'), '-Configuration', 'Release',
+        '-PluginOutputDir', $pluginDir) -LogPath $sharedLog
     if ($sharedExit -ne 0) { throw ('BUILD_SHARED_FAILED exit=' + $sharedExit) }
 
     $checkLog = Join-Path $script:Root 'logs\check-shared-plugins.log'
     $checkExit = Invoke-Native -FilePath 'powershell.exe' -Arguments @(
         '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
-        (Join-Path $script:RepoRoot 'tools\unity\check-shared-plugins.ps1'), '-Configuration', 'Release') -LogPath $checkLog
+        (Join-Path $script:RepoRoot 'tools\unity\check-shared-plugins.ps1'),
+        '-ProjectRoot', $script:RepoRoot, '-PluginDir', $pluginDir,
+        '-EvidencePath', (Join-Path $pluginDir 'shared-plugin-provenance.json'),
+        '-Configuration', 'Release') -LogPath $checkLog
     if ($checkExit -ne 0) { throw ('CHECK_SHARED_PLUGINS_FAILED exit=' + $checkExit) }
 
-    $after = @{}
-    Get-ChildItem -LiteralPath $pluginDir -File | ForEach-Object { $after[$_.Name] = Get-Sha256 $_.FullName }
-    Write-JsonFile -Path (Join-Path $script:Root 'plugin-after.json') -Object $after | Out-Null
+    $helperProject = Join-Path $script:RepoRoot 'dotnet\tools\C04RecoveryReconciliationVerifier\C04RecoveryReconciliationVerifier.csproj'
+    $helperOut = Join-Path $script:Root 'helper'
+    $helperLog = Join-Path $script:Root 'logs\build-helper.log'
+    $helperExit = Invoke-Native -FilePath $DotnetPath -Arguments @(
+        'build', $helperProject, '-c', 'Release', '-o', $helperOut, '--nologo') -LogPath $helperLog
+    if ($helperExit -ne 0) { throw ('HELPER_BUILD_FAILED exit=' + $helperExit) }
+    $script:HelperPath = Join-Path $helperOut 'C04RecoveryReconciliationVerifier.dll'
+    if (-not (Test-Path -LiteralPath $script:HelperPath)) { throw 'HELPER_MISSING' }
 
-    if (@(Get-UnityProcesses -ProjectPath $project).Count -ne 0) {
-        throw ('UNITY_BUSY: another Editor already owns ' + $project)
+    if (@(Get-UnityProcesses -ProjectPath $staging).Count -ne 0) {
+        throw ('UNITY_BUSY: another Editor already owns ' + $staging)
     }
     $playerDir = Join-Path $script:Root 'player'
     New-Item -ItemType Directory -Force -Path $playerDir | Out-Null
@@ -418,7 +510,7 @@ function Build-Player {
     $buildMarker = Join-Path $script:Root 'build-marker.json'
     $arguments = @(
         '-batchmode', '-quit', '-nographics',
-        '-projectPath', $project,
+        '-projectPath', $staging,
         '-executeMethod', 'C04RecoveryReconciliationBuild.Build',
         '-c04Output', $playerExe,
         '-c04Marker', $buildMarker,
@@ -428,22 +520,35 @@ function Build-Player {
         '-logFile', $unityLog
     )
     Write-ToolLog ('COMMAND ' + $UnityPath + ' ' + ($arguments -join ' '))
-    $unityProcess = Start-Process -FilePath $UnityPath -ArgumentList ($arguments | ForEach-Object {
-        if ($_ -match '[\s"]') { '"' + ($_ -replace '"', '\"') + '"' } else { $_ }
-    }) -PassThru -WindowStyle Hidden
-    $finished = Wait-UnityExit -ProjectPath $project -Seconds 3600
-    if (-not $finished) {
-        try { if (-not $unityProcess.HasExited) { $unityProcess.Kill() } } catch { }
-        throw 'UNITY_BUILD_TIMEOUT'
-    }
-    Start-Sleep -Seconds 2
+    $unity = Invoke-UnityProcess -UnityExe $UnityPath -Arguments $arguments -TimeoutSeconds 3600
+    Write-JsonFile -Path (Join-Path $script:Root 'logs\unity-exit.json') -Object $unity | Out-Null
+    if ($unity.nativeExitCode -ne 0) { throw ('UNITY_NATIVE_NONZERO ' + $unity.nativeExitCode) }
     if (-not (Test-Path -LiteralPath $buildMarker)) {
         $tail = if (Test-Path -LiteralPath $unityLog) { (Get-Content -LiteralPath $unityLog -Tail 80) -join "`n" } else { '<no log>' }
         throw ('UNITY_BUILD_NO_MARKER: ' + $tail)
     }
+    $marker = [IO.File]::ReadAllText($buildMarker) | ConvertFrom-Json
+    if ([string]$marker.result -ne 'Succeeded' -or [int]$marker.errors -ne 0) {
+        throw ('BUILD_MARKER_REJECTED result=' + $marker.result + ' errors=' + $marker.errors)
+    }
     if (-not (Test-Path -LiteralPath $playerExe)) { throw 'PLAYER_EXE_MISSING' }
+    if ([string]$marker.sourceHead -ne $script:SourceHead -or [string]$marker.buildCommit -ne $script:BuildCommit) {
+        throw 'BUILD_MARKER_SOURCE_MISMATCH'
+    }
+    if ([string]$marker.output -ne [IO.Path]::GetFullPath($playerExe)) { throw 'BUILD_MARKER_OUTPUT_MISMATCH' }
     $script:Player = [IO.Path]::GetFullPath($playerExe)
     $script:PlayerSha = Get-Sha256 $playerExe
+    if (-not [string]::Equals([string]$marker.playerSha256, $script:PlayerSha, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'BUILD_MARKER_PLAYER_SHA_MISMATCH'
+    }
+    foreach ($property in $marker.plugins.PSObject.Properties) {
+        $pluginPath = Join-Path $pluginDir $property.Name
+        if (-not (Test-Path -LiteralPath $pluginPath) -or
+            (Get-Sha256 $pluginPath) -ne [string]$property.Value) {
+            throw ('BUILD_MARKER_PLUGIN_MISMATCH ' + $property.Name)
+        }
+    }
+
     $files = @(Get-ChildItem -LiteralPath $playerDir -Recurse -File | Sort-Object FullName)
     $total = ($files | Measure-Object Length -Sum).Sum
     $manifest = [ordered]@{
@@ -463,44 +568,55 @@ function Build-Player {
     $manifestPath = Join-Path $script:Root 'player-files.json'
     $script:PackageSha = Write-JsonFile -Path $manifestPath -Object $manifest
     $script:PackageCount = $files.Count
-    Write-ToolLog ('PLAYER_BOUND sha=' + $script:PlayerSha + ' files=' + $script:PackageCount + ' manifest=' + $script:PackageSha)
-
-    # Restore the tracked plugin bytes after the Player has copied them into its
-    # package. The build evidence keeps both the pre/post hashes and the manifest.
-    # Unity may rewrite tracked generated font/performance resources and the
-    # solution while importing. They are build by-products, not deliverables, so
-    # restore every tracked Unity asset and remove only untracked plugin copies.
-    & git -C $script:RepoRoot restore --source=HEAD -- unity/Mahjong.Unity/Assets unity/Mahjong.Unity/ProjectSettings unity/Mahjong.Unity/Mahjong.Unity.slnx | Out-Null
-    & git -C $script:RepoRoot clean -fd -- unity/Mahjong.Unity/Assets/Plugins/Mahjong | Out-Null
-    $restored = (& git -C $script:RepoRoot status --porcelain=v1 --untracked-files=no) -join "`n"
-    if (-not [string]::IsNullOrWhiteSpace($restored)) {
-        throw ('GENERATED_ASSET_RESTORE_FAILED: ' + $restored)
-    }
+    $script:BuildRecordPath = $buildMarker
+    $script:PackageManifestPath = $manifestPath
+    Write-ToolLog ('PLAYER_BOUND sha=' + $script:PlayerSha + ' files=' + $script:PackageCount +
+        ' manifest=' + $script:PackageSha + ' unityNative=' + $unity.nativeExitCode)
 }
 
 function Bind-ExistingPlayer {
     if (-not (Test-Path -LiteralPath $PlayerPath)) { throw ('PLAYER_NOT_FOUND ' + $PlayerPath) }
+    if ([string]::IsNullOrWhiteSpace($BuildRecordPath) -or -not (Test-Path -LiteralPath $BuildRecordPath)) {
+        throw 'EXISTING_PLAYER_BUILD_RECORD_REQUIRED'
+    }
+    if ([string]::IsNullOrWhiteSpace($PackageManifestPath) -or -not (Test-Path -LiteralPath $PackageManifestPath)) {
+        throw 'EXISTING_PLAYER_PACKAGE_MANIFEST_REQUIRED'
+    }
     $script:Player = [IO.Path]::GetFullPath($PlayerPath)
     $script:PlayerSha = Get-Sha256 $script:Player
     $playerDir = Split-Path -Parent $script:Player
-    $files = @(Get-ChildItem -LiteralPath $playerDir -Recurse -File | Sort-Object FullName)
-    $total = ($files | Measure-Object Length -Sum).Sum
-    $manifest = [ordered]@{
-        schemaVersion = 1
-        kind = 'c04-recovery-player-files'
-        root = $playerDir
-        fileCount = $files.Count
-        totalBytes = [long]$total
-        files = @($files | ForEach-Object {
-            [ordered]@{
-                path = $_.FullName.Substring($playerDir.Length).TrimStart('\', '/').Replace('\', '/')
-                bytes = [long]$_.Length
-                sha256 = Get-Sha256 $_.FullName
-            }
-        })
+    $marker = [IO.File]::ReadAllText($BuildRecordPath) | ConvertFrom-Json
+    if ([string]$marker.result -ne 'Succeeded' -or [int]$marker.errors -ne 0) {
+        throw ('EXISTING_PLAYER_BUILD_RECORD_REJECTED result=' + $marker.result + ' errors=' + $marker.errors)
     }
-    $script:PackageSha = Write-JsonFile -Path (Join-Path $script:Root 'player-files.json') -Object $manifest
-    $script:PackageCount = $files.Count
+    if ([string]$marker.output -ne $script:Player) { throw 'EXISTING_PLAYER_BUILD_RECORD_OUTPUT_MISMATCH' }
+    if (-not [string]::Equals([string]$marker.playerSha256, $script:PlayerSha, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'EXISTING_PLAYER_BUILD_RECORD_SHA_MISMATCH'
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$marker.sourceHead) -or
+        [string]::IsNullOrWhiteSpace([string]$marker.buildCommit)) {
+        throw 'EXISTING_PLAYER_BUILD_RECORD_SOURCE_MISSING'
+    }
+    $manifest = [IO.File]::ReadAllText($PackageManifestPath) | ConvertFrom-Json
+    if ([string]$manifest.kind -ne 'c04-recovery-player-files' -or
+        [string]$manifest.root -ne $playerDir -or
+        [int]$manifest.fileCount -lt 1) {
+        throw 'EXISTING_PLAYER_PACKAGE_MANIFEST_INVALID'
+    }
+    foreach ($entry in @($manifest.files)) {
+        $path = Join-Path $playerDir ([string]$entry.path)
+        if (-not (Test-Path -LiteralPath $path) -or
+            (Get-Sha256 $path) -ne [string]$entry.sha256 -or
+            (Get-Item -LiteralPath $path).Length -ne [long]$entry.bytes) {
+            throw ('PACKAGE_MANIFEST_MISMATCH ' + [string]$entry.path)
+        }
+    }
+    $script:SourceHead = [string]$marker.sourceHead
+    $script:BuildCommit = [string]$marker.buildCommit
+    $script:PackageSha = Get-Sha256 $PackageManifestPath
+    $script:PackageCount = [int]$manifest.fileCount
+    $script:BuildRecordPath = [IO.Path]::GetFullPath($BuildRecordPath)
+    $script:PackageManifestPath = [IO.Path]::GetFullPath($PackageManifestPath)
     Write-ToolLog ('PLAYER_BOUND_REUSE sha=' + $script:PlayerSha + ' files=' + $script:PackageCount)
 }
 
@@ -524,7 +640,7 @@ function Run-Cases {
         $caseDir = Join-Path $script:Root ('cases\' + $caseId)
         New-Item -ItemType Directory -Force -Path $caseDir | Out-Null
         $baseline = if ($definition.Force) { $forcePrepare } else { $normalPrepare }
-        New-CaseInput -CaseDir $caseDir -CaseId $caseId -Fault $definition.Fault -Outcome $definition.Outcome -Prepare $baseline
+        New-CaseInput -CaseDir $caseDir -CaseId $caseId -Fault $definition.Fault -Outcome $definition.Outcome -Prepare $baseline -Force ([bool]$definition.Force)
         $launch = Invoke-Player -Directory $caseDir -ProbeMode 'Recover' -CaseId $caseId -Fault $definition.Fault -Outcome $definition.Outcome -Force $false
         $resultPath = Join-Path $caseDir 'result.json'
         $verificationPath = Join-Path $caseDir 'verification.json'
@@ -547,7 +663,9 @@ function Run-Cases {
             '-ResultPath', $resultPath,
             '-ExpectedPath', (Join-Path $caseDir 'expected.txt'),
             '-InputPath', (Join-Path $caseDir 'input.json'),
-            '-OutputPath', $verificationPath) -LogPath (Join-Path $caseDir 'verify.log')
+            '-OutputPath', $verificationPath,
+            '-HelperPath', $script:HelperPath,
+            '-DotnetPath', $DotnetPath) -LogPath (Join-Path $caseDir 'verify.log')
         $caseResult = [ordered]@{
             caseId = $caseId
             fault = $definition.Fault
@@ -578,16 +696,22 @@ function Write-Summary {
         playerSha256 = $script:PlayerSha
         packageManifestSha256 = $script:PackageSha
         packageFileCount = $script:PackageCount
+        helperPath = $script:HelperPath
+        helperSha256 = if ($script:HelperPath -and (Test-Path -LiteralPath $script:HelperPath)) { Get-Sha256 $script:HelperPath } else { '' }
+        buildRecordPath = $script:BuildRecordPath
+        packageManifestPath = $script:PackageManifestPath
         mutex = $script:MutexName
         cases = [object[]]$script:CaseResults.ToArray()
     }
     $summaryPath = Join-Path $script:Root 'summary.json'
     $summarySha = Write-JsonFile -Path $summaryPath -Object $summary
+    Write-ToolLog ('SUMMARY ' + $status + ' sha=' + $summarySha + ' cases=' + $script:CaseResults.Count)
     $entries = New-Object System.Collections.Generic.List[object]
     Get-ChildItem -LiteralPath $script:Root -Recurse -File | Sort-Object FullName | ForEach-Object {
         $relative = $_.FullName.Substring($script:Root.Length).TrimStart('\', '/').Replace('\', '/')
         if ($relative -ne 'evidence-sha256.csv' -and
-            -not $relative.StartsWith('temp/', [StringComparison]::OrdinalIgnoreCase)) {
+            -not $relative.StartsWith('temp/', [StringComparison]::OrdinalIgnoreCase) -and
+            -not $relative.StartsWith('staging-project/', [StringComparison]::OrdinalIgnoreCase)) {
             $entries.Add([pscustomobject]@{
                 path = $relative
                 bytes = [long]$_.Length
@@ -597,7 +721,6 @@ function Write-Summary {
     }
     $csv = $entries | ForEach-Object { $_.sha256 + ',' + $_.bytes + ',' + $_.path }
     [IO.File]::WriteAllLines((Join-Path $script:Root 'evidence-sha256.csv'), $csv, (New-Object Text.UTF8Encoding($false)))
-    Write-ToolLog ('SUMMARY ' + $status + ' sha=' + $summarySha + ' cases=' + $script:CaseResults.Count)
     return $status
 }
 
@@ -610,9 +733,22 @@ try {
     }
 
     if ($Mode -eq 'Verify') {
-        Initialize-ExistingRoot
-        $summaryPath = Join-Path $script:Root 'summary.json'
+        if ([string]::IsNullOrWhiteSpace($EvidenceRoot) -or
+            -not (Test-Path -LiteralPath $EvidenceRoot -PathType Container)) {
+            throw 'VERIFY_SOURCE_ROOT_REQUIRED'
+        }
+        if ([string]::IsNullOrWhiteSpace($OutputDir)) {
+            throw 'VERIFY_OUTPUT_DIR_REQUIRED'
+        }
+        $sourceRoot = [IO.Path]::GetFullPath($EvidenceRoot)
+        $script:Root = [IO.Path]::GetFullPath($OutputDir)
+        if (Test-Path -LiteralPath $script:Root) {
+            throw ('VERIFY_OUTPUT_REUSE ' + $script:Root)
+        }
+        New-Item -ItemType Directory -Force -Path $script:Root, (Join-Path $script:Root 'logs') | Out-Null
+        $summaryPath = Join-Path $sourceRoot 'summary.json'
         if (-not (Test-Path -LiteralPath $summaryPath)) { throw 'SUMMARY_NOT_FOUND' }
+        Copy-Item -LiteralPath $summaryPath -Destination (Join-Path $script:Root 'source-summary.json') -Force
         $summary = [IO.File]::ReadAllText($summaryPath) | ConvertFrom-Json
         $script:Player = [string]$summary.playerPath
         $script:PlayerSha = [string]$summary.playerSha256
@@ -620,19 +756,40 @@ try {
         $script:PackageCount = [int]$summary.packageFileCount
         $script:SourceHead = [string]$summary.sourceHead
         $script:BuildCommit = [string]$summary.buildCommit
+        $script:HelperPath = [string]$summary.helperPath
+        if ([string]::IsNullOrWhiteSpace($script:HelperPath) -or
+            -not (Test-Path -LiteralPath $script:HelperPath)) {
+            throw 'VERIFY_HELPER_MISSING'
+        }
+        $verifyRows = New-Object System.Collections.Generic.List[object]
         foreach ($caseResult in @($summary.cases)) {
-            $caseDir = Join-Path $script:Root ('cases\' + [string]$caseResult.caseId)
+            $caseId = [string]$caseResult.caseId
+            $caseDir = Join-Path $sourceRoot ('cases\' + $caseId)
             $resultPath = Join-Path $caseDir 'result.json'
             if (-not (Test-Path -LiteralPath $resultPath)) { throw ('RESULT_MISSING ' + $resultPath) }
+            $caseOut = Join-Path $script:Root ('cases\' + $caseId)
+            New-Item -ItemType Directory -Force -Path $caseOut | Out-Null
             $verifyExit = Invoke-Native -FilePath 'powershell.exe' -Arguments @(
                 '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
                 (Join-Path $script:RepoRoot 'tools\unity\verify-p45-c04-recovery-reconciliation.ps1'),
                 '-ResultPath', $resultPath,
                 '-ExpectedPath', (Join-Path $caseDir 'expected.txt'),
                 '-InputPath', (Join-Path $caseDir 'input.json'),
-                '-OutputPath', (Join-Path $caseDir 'verification.json')) -LogPath (Join-Path $caseDir 'verify.log')
-            if ($verifyExit -ne 0) { throw ('VERIFY_FAILED ' + $caseResult.caseId) }
+                '-OutputPath', (Join-Path $caseOut 'verification.json'),
+                '-HelperPath', $script:HelperPath,
+                '-DotnetPath', $DotnetPath) -LogPath (Join-Path $caseOut 'verify.log')
+            $verifyRows.Add([pscustomobject]@{ caseId = $caseId; status = if ($verifyExit -eq 0) { 'PASS' } else { 'FAIL' }; verifyExitCode = $verifyExit }) | Out-Null
+            if ($verifyExit -ne 0) { throw ('VERIFY_FAILED ' + $caseId) }
         }
+        Write-JsonFile -Path (Join-Path $script:Root 'verification-summary.json') -Object ([ordered]@{
+            schemaVersion = 1
+            kind = 'c04-recovery-offline-verification'
+            sourceRoot = $sourceRoot
+            outputDir = $script:Root
+            status = 'PASS'
+            cases = [object[]]$verifyRows.ToArray()
+            generatedAt = [DateTimeOffset]::UtcNow.ToString('o')
+        }) | Out-Null
         Write-Output 'C04_VERIFY_PASS'
         exit 0
     }
@@ -654,17 +811,11 @@ try {
     }
     else {
         if ([string]::IsNullOrWhiteSpace($PlayerPath)) {
-            $script:Player = Join-Path $script:Root 'player\Mahjong.exe'
-            if (-not (Test-Path -LiteralPath $script:Player)) { throw 'PLAYER_NOT_FOUND_IN_RUN_ROOT' }
-            $script:PlayerSha = Get-Sha256 $script:Player
-            $manifestPath = Join-Path $script:Root 'player-files.json'
-            if (-not (Test-Path -LiteralPath $manifestPath)) { throw 'PLAYER_MANIFEST_MISSING' }
-            $script:PackageSha = Get-Sha256 $manifestPath
-            $script:PackageCount = @((Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json).files).Count
+            $PlayerPath = Join-Path $script:Root 'player\Mahjong.exe'
+            $BuildRecordPath = Join-Path $script:Root 'build-marker.json'
+            $PackageManifestPath = Join-Path $script:Root 'player-files.json'
         }
-        else {
-            Bind-ExistingPlayer
-        }
+        Bind-ExistingPlayer
     }
 
     if ($Mode -eq 'All' -or $Mode -eq 'Run') {

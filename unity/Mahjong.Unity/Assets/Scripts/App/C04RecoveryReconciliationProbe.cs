@@ -125,6 +125,8 @@ namespace Mahjong.Unity.App
             LocalTableRecoveryCapture initial = await LocalTableHost.TakePreparedRecoveryCaptureAsync(
                 arguments.LocalDirectory,
                 CancellationToken.None).ConfigureAwait(false);
+            WriteArtifact(arguments, "authority/prepare-pre.save", initial.AuthoritySaveBytes);
+            WriteArtifact(arguments, "authority/prepare-pre-cheat.bin", initial.CheatStatePayload);
             var outbox = new FileOutboxStore(arguments.OutboxDirectory);
             var session = new TableSession(channel, outbox);
             int visibleDiscards = 0;
@@ -192,6 +194,9 @@ namespace Mahjong.Unity.App
                 LocalTableRecoveryCapture post = await LocalTableHost.CaptureRecoveryAsync(
                     arguments.LocalDirectory,
                     CancellationToken.None).ConfigureAwait(false);
+                WriteArtifact(arguments, "authority/prepare-post.save", post.AuthoritySaveBytes);
+                WriteArtifact(arguments, "authority/prepare-post-cheat.bin", post.CheatStatePayload);
+                CopyArtifact(arguments, Path.Combine(arguments.OutboxDirectory, "outbox.dat"), "authority/prepare-outbox.dat");
                 LocalTableRecoveryFacts facts = post.Facts;
                 IReadOnlyList<OutboxEntry> unresolved = await outbox.LoadUnresolvedAsync(CancellationToken.None)
                     .ConfigureAwait(false);
@@ -222,7 +227,8 @@ namespace Mahjong.Unity.App
                         receipt.AccountId, receipt.Status, receipt.PayloadSha256, receipt.EvaluatedStateVersion,
                         receipt.CommandVersion, receipt.EventSeq),
                     ["canonicalDigest"] = CanonicalPayloadDigest.Compute(payload).ToHex(),
-                    ["api"] = receipt.Status,
+                    ["api"] = "SUBMIT_ACTION",
+                    ["authority"] = AuthorityMap(arguments),
                     ["pre"] = new Dictionary<string, object>(StringComparer.Ordinal)
                     {
                         ["stateVersion"] = before.StateVersion,
@@ -342,9 +348,15 @@ namespace Mahjong.Unity.App
                         .ConfigureAwait(false);
                 }
 
-                LocalTableRecoveryFacts baseline = (await LocalTableHost.TakePreparedRecoveryCaptureAsync(
+                LocalTableRecoveryCapture baselineCapture = await LocalTableHost.TakePreparedRecoveryCaptureAsync(
                     arguments.LocalDirectory,
-                    CancellationToken.None).ConfigureAwait(false)).Facts;
+                    CancellationToken.None).ConfigureAwait(false);
+                LocalTableRecoveryFacts baseline = baselineCapture.Facts;
+                WriteArtifact(arguments, "authority/recover-baseline.save", baselineCapture.AuthoritySaveBytes);
+                WriteArtifact(arguments, "authority/recover-baseline-cheat.bin", baselineCapture.CheatStatePayload);
+                CopyArtifact(arguments,
+                    Path.Combine(arguments.OutboxDirectory, "outbox.dat"),
+                    "authority/recover-baseline-outbox.dat");
                 LocalTableRecoveryRequestFact? original = baseline.Requests.FirstOrDefault(r =>
                     string.Equals(r.RequestId, expected.RequestId, StringComparison.Ordinal) &&
                     string.Equals(r.ScopeId, expected.ScopeId, StringComparison.Ordinal));
@@ -441,14 +453,22 @@ namespace Mahjong.Unity.App
                 LocalTableRecoveryCapture afterCapture = await LocalTableHost.CaptureRecoveryAsync(
                     arguments.LocalDirectory,
                     CancellationToken.None).ConfigureAwait(false);
+                WriteArtifact(arguments, "authority/recover-after.save", afterCapture.AuthoritySaveBytes);
+                WriteArtifact(arguments, "authority/recover-after-cheat.bin", afterCapture.CheatStatePayload);
+                CopyArtifact(arguments,
+                    Path.Combine(arguments.OutboxDirectory, "outbox.dat"),
+                    "authority/recover-after-outbox.dat");
                 LocalTableRecoveryFacts after = afterCapture.Facts;
                 PlayerSnapshot snapshot = session.PlayerSnapshot!;
                 int sentBeforeRepeat = channel.SentCount;
                 await session.ReconcilePendingAsync(CancellationToken.None).ConfigureAwait(false);
                 bool repeatSentNothing = channel.SentCount == sentBeforeRepeat;
-                LocalTableRecoveryFacts repeated = (await LocalTableHost.CaptureRecoveryAsync(
+                LocalTableRecoveryCapture repeatCapture = await LocalTableHost.CaptureRecoveryAsync(
                     arguments.LocalDirectory,
-                    CancellationToken.None).ConfigureAwait(false)).Facts;
+                    CancellationToken.None).ConfigureAwait(false);
+                WriteArtifact(arguments, "authority/recover-repeat.save", repeatCapture.AuthoritySaveBytes);
+                WriteArtifact(arguments, "authority/recover-repeat-cheat.bin", repeatCapture.CheatStatePayload);
+                LocalTableRecoveryFacts repeated = repeatCapture.Facts;
 
                 bool zeroDelta = string.Equals(after.StateVersion, repeated.StateVersion, StringComparison.Ordinal) &&
                     string.Equals(after.EventSeq, repeated.EventSeq, StringComparison.Ordinal) &&
@@ -532,6 +552,7 @@ namespace Mahjong.Unity.App
                         ["digest"] = resolution.Resolution.CanonicalPayloadSha256,
                     },
                     ["checks"] = checks,
+                    ["authority"] = AuthorityMap(arguments),
                     ["frames"] = channel.Frames(),
                     ["oldOutboxUnresolved"] = unresolved.Count,
                     ["process"] = ProcessIdentity(),
@@ -606,6 +627,7 @@ namespace Mahjong.Unity.App
                         ["oldOutboxKept"] = oldUnresolved == 1,
                         ["oldReceiptAbsent"] = baseline.Requests.Count == 0,
                     },
+                    ["authority"] = AuthorityMap(arguments),
                     ["frames"] = channel.Frames(),
                     ["process"] = ProcessIdentity(),
                     ["build"] = arguments.Build,
@@ -635,6 +657,15 @@ namespace Mahjong.Unity.App
                 ? Sha256File(Path.Combine(arguments.LocalDirectory, RoomId + ".save")) : string.Empty;
             string backupAfter = File.Exists(Path.Combine(arguments.LocalDirectory, RoomId + ".save.prev"))
                 ? Sha256File(Path.Combine(arguments.LocalDirectory, RoomId + ".save.prev")) : string.Empty;
+            CopyArtifact(arguments,
+                Path.Combine(arguments.LocalDirectory, RoomId + ".save"),
+                "authority/rejected-primary.save");
+            CopyArtifact(arguments,
+                Path.Combine(arguments.LocalDirectory, RoomId + ".save.prev"),
+                "authority/rejected-backup.save");
+            CopyArtifact(arguments,
+                Path.Combine(arguments.OutboxDirectory, "outbox.dat"),
+                "authority/rejected-outbox.dat");
             var result = new Dictionary<string, object>(StringComparer.Ordinal)
             {
                 ["schemaVersion"] = 1,
@@ -664,6 +695,7 @@ namespace Mahjong.Unity.App
                     ["unchangedPrimary"] = string.Equals(primaryBefore, primaryAfter, StringComparison.OrdinalIgnoreCase),
                     ["unchangedBackup"] = string.Equals(backupBefore, backupAfter, StringComparison.OrdinalIgnoreCase),
                 },
+                ["authority"] = AuthorityMap(arguments),
                 ["frames"] = channel.Frames(),
                 ["fileHashes"] = new Dictionary<string, object>(StringComparer.Ordinal)
                 {
@@ -857,6 +889,49 @@ namespace Mahjong.Unity.App
             File.Move(temporary, path);
         }
 
+        private static void WriteArtifact(ProbeArguments arguments, string relative, byte[] bytes)
+        {
+            string path = Path.Combine(arguments.Root, relative);
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            string temporary = path + ".tmp." + Guid.NewGuid().ToString("N");
+            File.WriteAllBytes(temporary, bytes);
+            File.Move(temporary, path);
+        }
+
+        private static void CopyArtifact(ProbeArguments arguments, string source, string relative)
+        {
+            if (!File.Exists(source))
+            {
+                throw new InvalidDataException("Required raw authority artifact is missing: " + source);
+            }
+
+            WriteArtifact(arguments, relative, File.ReadAllBytes(source));
+        }
+
+        private static Dictionary<string, object> AuthorityMap(ProbeArguments arguments)
+        {
+            string authority = Path.Combine(arguments.Root, "authority");
+            var files = new List<object>();
+            if (Directory.Exists(authority))
+            {
+                foreach (string file in Directory.GetFiles(authority).OrderBy(p => p, StringComparer.Ordinal))
+                {
+                    var info = new FileInfo(file);
+                    files.Add(new Dictionary<string, object>(StringComparer.Ordinal)
+                    {
+                        ["path"] = "authority/" + Path.GetFileName(file),
+                        ["bytes"] = info.Length,
+                        ["sha256"] = Sha256File(file),
+                    });
+                }
+            }
+
+            return new Dictionary<string, object>(StringComparer.Ordinal)
+            {
+                ["files"] = files,
+            };
+        }
+
         private sealed class FactSummary
         {
             public string RequestId { get; private set; } = string.Empty;
@@ -937,6 +1012,7 @@ namespace Mahjong.Unity.App
             private readonly object _gate = new object();
             private readonly ITableChannel _inner;
             private readonly string _framesDirectory;
+            private readonly List<FrameInfo> _frames = new List<FrameInfo>();
             private int _sequence;
             private int _droppedReceipts;
 
@@ -1013,8 +1089,8 @@ namespace Mahjong.Unity.App
             {
                 lock (_gate)
                 {
-                    var result = new List<Dictionary<string, object>>(SentFrames.Count);
-                    foreach (FrameInfo info in SentFrames)
+                    var result = new List<Dictionary<string, object>>(_frames.Count);
+                    foreach (FrameInfo info in _frames)
                     {
                         result.Add(new Dictionary<string, object>(StringComparer.Ordinal)
                         {
@@ -1083,6 +1159,7 @@ namespace Mahjong.Unity.App
                 };
                 lock (_gate)
                 {
+                    _frames.Add(info);
                     if (outbound)
                     {
                         SentFrames.Add(info);

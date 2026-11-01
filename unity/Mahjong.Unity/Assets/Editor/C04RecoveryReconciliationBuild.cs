@@ -87,21 +87,18 @@ public static class C04RecoveryReconciliationBuild
             pluginHashes.Add("\"" + Escape(plugin) + "\":\"" + Sha256File(path) + "\"");
         }
 
+        string playerSha = Sha256File(outputExe);
         string json = "{\"schemaVersion\":1,\"kind\":\"c04-recovery-player-build\"," +
             "\"result\":\"" + summary.result + "\",\"errors\":" + summary.totalErrors +
             ",\"warnings\":" + summary.totalWarnings + ",\"target\":\"" + summary.platform + "\"" +
-            ",\"output\":\"" + Escape(outputExe) + "\",\"bytes\":" + summary.totalSize +
+            ",\"output\":\"" + Escape(outputExe) + "\",\"playerSha256\":\"" + playerSha + "\",\"bytes\":" + summary.totalSize +
             ",\"durationSeconds\":" + summary.totalTime.TotalSeconds.ToString("F3", CultureInfo.InvariantCulture) +
             ",\"sourceHead\":\"" + Escape(sourceHead) + "\",\"buildCommit\":\"" + Escape(buildCommit) + "\"" +
             ",\"scenes\":[\"" + String.Join("\",\"", scenes.Select(Escape)) + "\"]" +
             ",\"plugins\":{" + String.Join(",", pluginHashes) + "}}";
         File.WriteAllText(log, json, new UTF8Encoding(false));
         Debug.Log("C04_BUILD_REPORT: " + json);
-        // Unity 6 can report a small number of non-fatal diagnostics in
-        // summary.totalErrors while the BuildReport result is Succeeded and all
-        // player files exist. The exact count is preserved in the marker/log; only
-        // a non-Succeeded result or a missing executable is a build failure.
-        if (summary.result != BuildResult.Succeeded || !File.Exists(outputExe))
+        if (summary.result != BuildResult.Succeeded || summary.totalErrors != 0 || !File.Exists(outputExe))
         {
             throw new InvalidOperationException(
                 "C04 BuildReport rejected: result=" + summary.result + " errors=" + summary.totalErrors);
