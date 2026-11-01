@@ -160,7 +160,7 @@ namespace Mahjong.Unity.App
             };
             coordinator.ReceiptResolved += receiptHandler;
             observer.BeginAction(coordinator.Current, requestId, view.Identity.ScopeId, candidate.Action);
-            string payloadHash = Sha256(intent.Command.Payload.CopyBytes());
+            string payloadHash = intent.Command.Payload.Digest.ToHex();
             string payloadBase64 = Convert.ToBase64String(intent.Command.Payload.CopyBytes());
             CanonicalPayloadDocument actionPayload = CanonicalPayloadParser.Parse(intent.Command.Payload);
             if (actionPayload.CommandKind != (ushort)CommandKind.SubmitAction ||

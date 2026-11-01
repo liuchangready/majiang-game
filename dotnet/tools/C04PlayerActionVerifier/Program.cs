@@ -2,10 +2,15 @@ using System;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Text.Json;
 using Google.Protobuf;
 using Mahjong.Contracts.Wire;
 using Mahjong.LocalHost;
+using BusinessPayload = Mahjong.Contracts.BusinessPayload;
+using CanonicalPayloadDigest = Mahjong.Contracts.CanonicalPayloadDigest;
+using CanonicalPayloadWriter = Mahjong.Contracts.CanonicalPayloadWriter;
+using CommandKind = Mahjong.Contracts.CommandKind;
 
 internal static class Program
 {
@@ -14,6 +19,12 @@ internal static class Program
         try
         {
             if (args.Length == 1 && args[0] == "selftest") return SelfTest();
+            if (args.Length == 3 && args[0] == "verify-payload")
+            {
+                ValidateCanonicalPayload(Convert.FromBase64String(args[1]), args[2]);
+                Console.WriteLine("C04_CANONICAL_PAYLOAD_DIGEST_PASS");
+                return 0;
+            }
             if (args.Length != 2 || args[0] != "verify") throw new ArgumentException("Usage: verify <action-evidence.json> or selftest");
             Verify(args[1]);
             Console.WriteLine("C04_PROTOBUF_AND_AUTHORITY_IMAGE_PASS");
@@ -44,7 +55,20 @@ internal static class Program
             try { PlayerSnapshot.Parser.ParseFrom(invalid); } catch (Google.Protobuf.InvalidProtocolBufferException) { rejected = true; }
             if (!rejected) throw new InvalidDataException("Generated PlayerSnapshot.Parser accepted malformed bytes.");
         }
-        Console.WriteLine("C04_PROTOBUF_FIXTURE_PASS valid=1 invalid=2");
+        BusinessPayload payload = new CanonicalPayloadWriter((ushort)CommandKind.SubmitAction)
+            .WriteString(1, "c04-fixture-round")
+            .WriteString(2, "c04-fixture-decision")
+            .WriteUInt64(3, 1)
+            .WriteUInt32(4, 6)
+            .WriteString(5, "pon-0-1")
+            .WriteRepeatedUInt32(6, new uint[] { 0, 1, 2 })
+            .Build();
+        ValidateCanonicalPayload(payload.CopyBytes(), payload.Digest.ToHex());
+        string wrongDigest = Convert.ToHexString(SHA256.HashData(payload.CopyBytes())).ToLowerInvariant();
+        bool wrongDigestRejected = false;
+        try { ValidateCanonicalPayload(payload.CopyBytes(), wrongDigest); } catch (InvalidDataException) { wrongDigestRejected = true; }
+        if (!wrongDigestRejected) throw new InvalidDataException("Canonical payload digest verifier accepted the unprefixed raw SHA-256.");
+        Console.WriteLine("C04_PROTOBUF_FIXTURE_PASS valid=1 invalid=2 canonicalDigest=PASS wrongDigestRejected=1");
         return 0;
     }
 
@@ -52,6 +76,14 @@ internal static class Program
     {
         using JsonDocument document = JsonDocument.Parse(File.ReadAllText(path));
         JsonElement evidence = document.RootElement;
+        byte[] canonicalPayload = Convert.FromBase64String(RequiredString(evidence, "PayloadBase64"));
+        string payloadDigest = RequiredString(evidence, "PayloadSha256");
+        ValidateCanonicalPayload(canonicalPayload, payloadDigest);
+        Equal(payloadDigest, RequiredString(evidence, "ReceiptDigest"), "typed Applied receipt canonical payload digest");
+        Equal(RequiredString(evidence, "RequestId"), RequiredString(evidence, "ReceiptRequestId"), "typed Applied receipt request id");
+        Equal(RequiredString(evidence, "ScopeId"), RequiredString(evidence, "ReceiptScopeId"), "typed Applied receipt scope id");
+        Equal("Applied", RequiredString(evidence, "ReceiptDisposition"), "typed receipt disposition");
+        Equal("Applied", RequiredString(evidence, "ReceiptStatus"), "typed receipt status");
         PlayerSnapshot baseline = ParseRequired(evidence, "BaselinePlayerSnapshotBase64");
         PlayerSnapshot after = ParseRequired(evidence, "AfterPlayerSnapshotBase64");
         string baselineSave = RequiredString(evidence, "BaselineAuthoritySaveBase64");
@@ -85,6 +117,14 @@ internal static class Program
         VerifyPlayerView(evidence, baseline, "Baseline", true);
         VerifyPlayerView(evidence, after, "After", false);
         VerifyActionEffects(evidence, baseline, after, baselineFacts.Physical, afterFacts.Physical);
+    }
+
+    private static void ValidateCanonicalPayload(byte[] canonicalPayload, string expectedDigest)
+    {
+        if (canonicalPayload.Length == 0) throw new InvalidDataException("Canonical business payload bytes are empty.");
+        string actual = CanonicalPayloadDigest.Compute(canonicalPayload).ToHex();
+        if (expectedDigest.Length != 64 || !string.Equals(actual, expectedDigest, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("Canonical payload bytes do not match the existing contract digest.");
     }
 
     private static void VerifyPlayerView(JsonElement evidence, PlayerSnapshot snapshot, string prefix, bool baseline)

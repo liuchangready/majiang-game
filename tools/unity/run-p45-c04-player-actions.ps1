@@ -418,8 +418,6 @@ function Test-C04CaseSummary {
     if ($Summary.payloadSha256 -notmatch '^[0-9a-f]{64}$') { throw 'C04 canonical payload hash is missing or malformed.' }
     if ([string]::IsNullOrWhiteSpace($Summary.canonicalPayloadBase64)) { throw 'C04 canonical payload bytes are missing.' }
     $payloadBytes = [Convert]::FromBase64String($Summary.canonicalPayloadBase64)
-    $payloadHash = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($payloadBytes)).Replace('-','').ToLowerInvariant()
-    if ($payloadHash -ne $Summary.payloadSha256) { throw 'C04 canonical payload bytes do not match the recorded hash.' }
     $payload = ConvertFrom-C04CanonicalPayload $payloadBytes
     $expectedAction = @{ 'C04-G2-01'=6; 'C04-G2-02'=5; 'C04-G2-03'=8; 'C04-G2-04'=7 }[$ExpectedCase]
     $expectedEventTiles = @{ 'C04-G2-01'='0,1,2'; 'C04-G2-02'='0,4,8'; 'C04-G2-03'=''; 'C04-G2-04'='0,1,2,3' }[$ExpectedCase]
@@ -459,8 +457,6 @@ function Test-C04ActionEvidence {
     if ($Evidence.caseId -cne $ExpectedCase -or $Evidence.requestId -cne $Summary.requestId -or $Evidence.scopeId -cne $Summary.scopeId) { throw 'Raw action evidence is not bound to the case/request/scope.' }
     if ($Evidence.payloadBase64 -cne $Summary.canonicalPayloadBase64 -or $Evidence.payloadSha256 -cne $Summary.payloadSha256) { throw 'Raw action evidence payload differs from the submitted summary payload.' }
     $rawPayload = [Convert]::FromBase64String($Evidence.payloadBase64)
-    $rawHash = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($rawPayload)).Replace('-','').ToLowerInvariant()
-    if ($rawHash -cne $Evidence.payloadSha256) { throw 'Raw Player action payload hash is invalid.' }
     $parsed = ConvertFrom-C04CanonicalPayload $rawPayload
     if ([string]$parsed[1] -cne $Evidence.baselineRoundId -or [string]$parsed[2] -cne $Evidence.baselineDecisionId -or
         [UInt64]$parsed[3] -ne [UInt64]$Evidence.baselineControlEpoch) { throw 'Raw canonical action is not bound to its captured Player baseline.' }
