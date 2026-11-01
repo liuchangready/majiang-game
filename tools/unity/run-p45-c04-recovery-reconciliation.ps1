@@ -650,6 +650,10 @@ function Bind-ExistingPlayer {
     $script:PackageCount = [int]$manifest.fileCount
     $script:BuildRecordPath = [IO.Path]::GetFullPath($BuildRecordPath)
     $script:PackageManifestPath = [IO.Path]::GetFullPath($PackageManifestPath)
+    $helperCandidate = Join-Path (Split-Path -Parent $script:BuildRecordPath) 'helper\C04RecoveryReconciliationVerifier.dll'
+    if (Test-Path -LiteralPath $helperCandidate) {
+        $script:HelperPath = $helperCandidate
+    }
     Write-ToolLog ('PLAYER_BOUND_REUSE sha=' + $script:PlayerSha + ' files=' + $script:PackageCount)
 }
 
