@@ -20,6 +20,24 @@
 5. **选定最小方案只改 LocalHost 组合边界，不改 wire/actor/domain。** 新增一个 room 所有者（单 store/单 lease/单 actor）和每连接 connection runtime；role/seat/account 由 room 颁发的单次 ticket 决定，Hello 仍无 role/seat。四个玩家 + 独立 spectator 复用现有 actor stream/visibility API；关闭 viewer 只 detach 自己的 connection。默认单机 seat0+AI 保留旧路径，存档/恢复/幂等/LOCAL 语义不变。
 6. **D03 交集必须等待。** 四人类座位的初始 controller 需要改 `LocalSnapshotFacts.CreateInitialCheckpoint`；Unity 多视图工厂需要改 `LocalTableChannelFactory`。两者都是 D03 当前独占，D05 不得在本任务或 D03 验收前编辑。三绝技 scope 完全不触碰。
 
+### R1 返修映射（2026-11-02）
+
+Caller R1 结论：**0 BLOCKER / 4 MAJOR / 0 MINOR**，全部是本前置报告的下一实施合同问题；不是正式 D05 实现要求，不以 D03/D04 未交付否决本任务。四组均在本报告一次修复；未改 production/既有测试/旧 census；未重跑同源码探针（原 18/18 证据保持，且本轮只改文字）。
+
+| R1 ID | 修复结果 | 主要改动位置 | 验证 |
+|---|---|---|---|
+| D05-PREP-R1-01 | 已接受 D01 不再写成未完成依赖；N7/P2 改为“新 room 未集成/未重绑”，不是等待该组件 | §1.1、§4.8、N7、P2、D05-14、§8 | 引用 D01 接受报告 SHA；全文不再把 D01 列为未完成/等待 |
+| D05-PREP-R1-02 | ticket 改为“Connect 预留、channel.Open 唯一消费、HELLO 只用已验证 claim”；新增 issued/reserved/consumed/attached/detached/failed/expired 状态表 | §4.2、§4.4、§4.5、N1/N2/N4 | 状态表覆盖正常/重复/并发/取消/HELLO 失败/transient/permanent/role switch |
+| D05-PREP-R1-03 | 删除“SeatPlan.HumanSeats 每席 live 才 Tick”的静态谓词；新增 initial plan/current controller/controlEpoch/live binding/room phase/open deadline 状态动作表 | §4.4、§4.7、N5/N6/U3、D05-06/13、§8 | released→AI 可前进；spectator close 不影响；已开放 deadline 不被无限推迟 |
+| D05-PREP-R1-04 | 隐私矩阵改为 owner+audience+stateVersion+current visibility；允许各席自己的私有值和合法 public discard/reveal；禁止 foreign owner 未授权秘密 | N2/N3、§6.3、D05-10 | 结构化解码+字段归属；不用裸字节/相同 scalar；未真实产生的对照仍 BLOCKED |
+
+R1 复核原件（只读、未覆盖）：
+
+- `E:/majiang-review/caller-d05-boundary-r1-62a7c4e9/build/caller-review/REVIEW.txt` SHA256 `63DEDED93A422259B28956D46FC037E652126E67B4C7B504CCE5FC806A921577`
+- `review-manifest.sha256.json` SHA256 `69C56E4BD6C25ABEE8AD85BE8A05EACACC62038B2A544FF924D3EC444BBF9329`（92 项/0 bad）
+- `contract-counterexamples.json` SHA256 `DB58B4F2AE67369F7980E2E9ACD75948AA2AAA0870A8FCDA3D863BBDF83521C6`；后 3 项为 `DOCUMENT_CONTRACT_MODEL`/`DOCUMENT_PRIVACY_MODEL`，不是未实现生产代码运行失败/通过。
+- 已接受 D01：`doc/v5-重构/V5-G2-C04-RECOVERY-REQUEST-DELIVERY-20261101.md` §5（76 行起，78 行“D01 自身范围通过，D01-R1-01..04 全部关闭”），SHA256 `2FCCEC27B28CB72F54E78D4B9F8D5DDD05B6FA7521881E419FEBD18BC1F15A3C`。
+
 ---
 
 ## 1. 范围、输入与不可越界
@@ -34,6 +52,7 @@
 | `doc/v5-重构/V5-G2-C04-PLAYER-SCENARIO-READINESS-20261101.md` | D05/G5 冻结行 | D05 在第 86 行；G5-01..03 在第 150–152 行，均 `NOT_RUN` |
 | `doc/v5-重构/V5-G2-C04-PLAYER-SCENARIO-CENSUS-20261101.json` | D05 缺陷与 G5 case | D05 `MAJOR`；G5-01..03 均 `NOT_RUN`；固定分母 8 父/33 子不扩 |
 | `doc/v5-重构/V5-P4.4-SPECTATOR-SETTLEMENT-DELIVERY.md` | 已接受 P4.4 边界 | §4.2 明确使用 `PlayModeScriptedTableChannel`，未将测试通道伪造为生产通道 |
+| `doc/v5-重构/V5-G2-C04-RECOVERY-REQUEST-DELIVERY-20261101.md` | 已接受 D01 组件 | §5（76 行起）明确 D01 自身范围通过、D01-R1-01..04 全部关闭；143/143 LocalHost、59/59 工具、8/8 案卷、原请求 Applied 零重复 |
 | `D:/majiang/doc/v5-重构/V5-G2-CLOSEOUT-TASKS-20261031.md` | 调用方 03:15 最新节 | 唯一活动 Luna 四动作第 4 轮 reworking；三绝技人工裁决预约 1 个；PR20 头 `156f87e6`；本任务边界 |
 | `doc/v5-重构/V5-REVIEW-REWORK-PROTOCOL.md` | 一次性缺陷清单格式 | 每项 ID/级别/位置/复现/实际 vs 期望/证据/修复/验收断言 |
 
@@ -42,6 +61,7 @@
 - readiness md：`3C487762F488C686185FF2698D21BF05FAA7E61FE816664FB9B8523385B2980A`
 - census JSON：`720EB795AD5680F0859AB9BD5215C39D1EE19DD18D0B33F05049C0309B75A16E`
 - P4.4 已接受报告：`8DE8A2FFB67EE8731CB8079773E716083FC6C98073CF77CB867469ACD7E1D259`
+- 已接受 D01 §5：`2FCCEC27B28CB72F54E78D4B9F8D5DDD05B6FA7521881E419FEBD18BC1F15A3C`
 - 外部 closeout：`B40A4BFED9D6BB9FAE630F3B436A36FE34E9559E7BA8FE84A0D4351181BB8F4B`
 
 ### 1.2 台账与并发边界（本接收方）
@@ -194,9 +214,9 @@ Welcome = new Welcome
 影响：
 
 - 若只给 1/2/3 发 player ticket，但初始 controller 仍是 `Computer`，driver 会继续为这些座位自动决策；人类连接提交同一 decision 时，actor 串行裁决，可能 AI 先提交，产生 `DECISION_MISMATCH` 或人类动作被 AI 抢先。**“绑定”本身不会改变 control kind。**
-- 若把 1/2/3 改成 `LocalHuman`，但某个座位没有连接，driver 仍会为它 `OpenDecisionAsync`，之后不自动完成；表格会等待，不会静默 AI。这是可接受的“hold”语义，但必须与 `DisconnectPolicy`/timeout 明确分开。
+- 若把 1/2/3 改成 `LocalHuman`，但某个座位没有连接，当前 driver 仍可能为它 `OpenDecisionAsync`；必须按 §4.7 的 `RoomPhase/CanOpenDecision` 约束：`AwaitingSeats` 不打开，`Playing` 下无 live binding 时不新开 decision；不能简单用静态 `HumanSeats` 停整桌。
 - driver 为 1..3 预发的 scope 使用 `local-<room>-seatN`（`LocalTableRuntime.cs:83-95`），这是 AI 提交用的服务端 scope；人类连接不应复用这些 scope 冒充 AI。四席实现必须让人类命令只走自己的 server-issued scope，AI 命令只由 driver 在 `Computer/Takeover` 座位提交。
-- 当前 `TickAsync` 是桌级超时执行器；如果某个 `LocalHuman` 座位断线但仍 tick，会发生超时自动 Pass/Discard（`TableActor.cs:2534-2753` 的 tick/timeout 路径）。多视图方案必须规定“没有 live human binding 时不 tick 该桌”，或显式 `ReleaseControl` 后才允许 AI/timeout；不能靠关闭一个 viewer 来隐式产生 AI 动作。
+- 当前 `TickAsync` 是桌级超时执行器；如果某个 `LocalHuman` 座位断线但仍 tick，已开放的 decision 会按 deadline 执行（`TableActor.cs:2534-2753` 的 tick/timeout 路径）。多视图方案必须区分“已开放 deadline”（Playing 下照常执行）与“新 decision”（无 live binding 不打开）；显式 `ReleaseControl` 后 current controller 变 AI，AI 可按 epoch 前进；不能靠关闭一个 viewer 来隐式产生 AI 动作，也不能用静态 `HumanSeats` 无连接条件把整桌 Tick/AI 永久停住（§4.7）。
 
 ### 2.7 已存在、可直接复用的权威/客户端能力
 
@@ -343,7 +363,7 @@ Hello 帧的原始字节包含一次性 ticket，因此存档为 `*.redacted.bin
 - 默认公开路径确实走 `LocalTableChannel` → `LocalTableRuntime` → `TableSession`，并得到 `Player/0`、真实 13 张暗牌、真实 serialized Welcome/SyncResponse/PlayerUpdate/Receipt。
 - 公开的 options/connect request/session open/Hello 都没有 role/seat 字段；每次成功 open 都是 `Player/0`。
 - 同一存档目录第二 channel 在 Hello 之前被 lease 拒绝；第一 session 不受影响。
-- 同一 room id、不同存档目录是两个 actor：A 真实 discard 后 `stateVersion 0→1`，B 仍 0，session id 不同。
+- 同一 room id、不同存档目录是两个 actor：A 真实 discard 后 `stateVersion 0→1`，B 仍 0，session id 不同。**B 的 cache version 不变本身只是 session 观察，单独不足以证明 actor 隔离**；充分源码依据是每个 channel 在 `LocalTableChannel.cs:207` 创建独立 `LocalTableRuntime`，后者在 `LocalTableRuntime.cs:112` 独立 `LocalTableStore.OpenAsync`，并在 `LocalTableRuntime.cs:119-148` 各自创建 `TableActor`；不同目录因此是不同 runtime/store/actor。
 - 关闭唯一 channel 会释放 runtime/lease，关闭后没有 open runtime；同目录可重新打开。
 - raw HELLO 可以在 fresh host 上回显另一个 host 的 session id，说明 session id 没有 host-owned 校验。
 
@@ -407,7 +427,7 @@ namespace Mahjong.LocalHost
 
     public enum LocalSeatDisconnectPolicy : byte
     {
-        // D05 默认：没有 live human binding 时暂停 tick，不静默 AI/超时。
+        // D05 默认：不因断线新开 decision；已开放 deadline 照常；显式 release 后 AI 可前进。
         HoldForReconnect = 0,
         // 未来显式策略：宽限后 takeover；D05 不实现隐式版本。
         GraceThenAi = 1
@@ -458,7 +478,8 @@ namespace Mahjong.LocalHost
         // AllowSpectators=false 或达到 MaxSpectators 时抛 InvalidOptions。
         public LocalTableConnectionTicket CreateSpectatorTicket();
 
-        // 消费 ticket 并返回一个只拥有该连接的 ITableChannel。
+        // 验证并预留 ticket，返回尚未打开的 channel；实际消费在 channel.OpenAsync 的
+        // 唯一线性化点（reserved -> attached），ConnectAsync 不消费。
         public ValueTask<ITableChannel> ConnectAsync(
             LocalTableConnectionTicket ticket,
             CancellationToken cancellationToken = default);
@@ -502,8 +523,8 @@ public static class LocalTableHost
 | `LocalTableRoom` | App composition（Unity/测试） | `OpenRoomAsync` 获取一次 lease；`DisposeAsync` 释放 | 唯一 store/actor/driver/lease；不因单个 viewer close 而 dispose |
 | `LocalTableStore` | Room | Room open/dispose | 仍是 `<room>.lock` `FileShare.None`；同目录第二 room 仍 `LeaseConflict` |
 | `TableActor` | Room | Room open/recovery；Room dispose close | 四席/观战 stream 由 actor 注册；room 不直接改 actor 状态 |
-| `LocalTableDriver` | Room | Room open start；Room dispose stop | `CanTick` 由 room 控制；human seat 不自动完成 |
-| `LocalTableRuntime`（connection runtime） | 一个 `LocalTableChannel` | 首次 `OpenAsync` attach；channel permanent close detach | 只拥有 session/binding/sync/scope/cursor/outbound/stream handle |
+| `LocalTableDriver` | Room | Room open start；Room dispose stop | room 控制 `RoomPhase/CanTickAuthority/CanOpenDecision`；human seat 不自动完成 |
+| `LocalTableRuntime`（connection runtime） | 一个 `LocalTableChannel` | `ConnectAsync` 只预留；首次 `channel.OpenAsync` attach；channel permanent close detach | 只拥有 session/binding/sync/scope/cursor/outbound/stream handle |
 | `TableSession` | App composition（每 viewer 一个） | `OpenAsync`；`CloseAsync` | 关闭 viewer 不关闭 room；role switch 建新 session |
 | `SessionCoordinator` | App composition（每 viewer 一个） | 绑定一个 session/channel | 关闭/切换只影响本 view；不共享 cache |
 | `TableStreamHandle` | connection runtime | `SubscribeStreamAsync`；detach/Unsubscribe | 旧 handle 不能 unsub 新 binding；actor fence |
@@ -511,23 +532,38 @@ public static class LocalTableHost
 ### 4.4 数据流
 
 1. **Room open**：`LocalTableRoom.OpenAsync(options)` 校验 `SeatPlan`、`MaxSpectators`、存档目录；获取一次 `<room>.lock`；加载/创建 checkpoint；创建唯一 actor/driver；不创建任何 viewer。
-2. **Ticket**：App 为 4 个 human seat 调 `CreatePlayerTicket(seat)`，为 spectator 调 `CreateSpectatorTicket()`。ticket 记录 `(role, seat, accountId, roomInstanceId, expiresAt, used)`，用 `RandomNumberGenerator` 生成 32 字节 opaque value；只在内存；单次；不写日志/outbox。
-3. **Channel attach**：每个 viewer 一个 `ITableChannel`，`OpenAsync(TableChannelConnectRequest(ticket,...))` 消费 ticket 并创建 connection runtime；若 ticket 无效/过期/已用/角色/seat 不匹配/seat 已绑定 → 拒绝，不创建 session。ticket 不匹配时不碰 store/actor。
-4. **HELLO**：client `TableSession` 发送 Hello（只有 ticket）。connection runtime 校验 `hello.Ticket` 与 attach 的 ticket 常量时间一致；使用 **ticket 记录**的 role/seat/account，不使用 client 字段（wire 也没有）。`BuildWelcome` 用该记录；scope 由 `LocalTableStore.IssueScope(account, role, roomId, ...)` 颁发（spectator 用 `TableScopeRole.Spectator`）。
-5. **SYNC**：`TableStreamIdentity(sessionId, audience, bindingEpoch, syncEpoch)`；Player 用 `TableStreamAudience.ForSeat(seat)`，spectator 用 `TableStreamAudience.Spectator`。`SubscribeStreamAsync` 在 actor 单 turn 内注册并排入第一份 full baseline；`TableStreamSubscribeRequest.OwnerEpoch = store.LeaseEpoch`，`RecoveryGeneration = actor.RecoveryGeneration`。
-6. **更新**：`OnFrame` 按 `frame.Identity.Audience`：
+2. **Ticket issued**：App 为 4 个 human seat 调 `CreatePlayerTicket(seat)`，为 spectator 调 `CreateSpectatorTicket()`。ticket 记录 `(role, seat, accountId, roomInstanceId, expiresAt, state)`，用 `RandomNumberGenerator` 生成 32 字节 opaque value；只在内存；单次；不写日志/outbox。此时状态 `Issued`，**尚未消费**。
+3. **Connect reserve**：`LocalTableRoom.ConnectAsync(ticket)` 只做原子 `Issued -> Reserved`：校验 role/seat/account/expiry、seat 唯一、spectator 上限；返回一个尚未打开的 channel。它**不**消费 ticket，也**不**创建 session；重复/并发用同一 ticket 的第二个 `ConnectAsync` 在 `Reserved` 检查处拒绝（`AlreadyBound`/`Unauthenticated`）。`Reserved` 会占用该 seat 或 spectator 名额。
+4. **Channel open = 唯一消费点**：`TableSession.OpenAsync` 调 `channel.OpenAsync(request)`；`LocalTableChannel.OpenInitialCoreAsync` 在 room actor 之外做 `Reserved -> Attached` 的线性化，**恰好一次**消费 ticket 并创建 connection runtime。此点之前取消/失败：`Reserved -> Failed` 并释放 seat/spectator 预约；此点之后失败：`Attached -> Detached`，同样释放预约；ticket 永不复用。成功 attach 后 connection 持有 `Claim`（role/seat/account/ticketHash）；sessionId 在 HELLO 成功时由 host 生成/恢复并写入 connection。
+5. **HELLO uses claim**：client `TableSession` 发送 Hello（只有 ticket）。connection runtime 校验 `hello.Ticket` 与已 Attached 的 `Claim` 常量时间一致；使用 **Claim** 的 role/seat/account，不调用全局 `TryConsume`、不再消费 ticket、不使用 client 字段（wire 也没有）。若 HELLO 失败，连接进入 `Failed`（不再 Ready），调用方必须关闭；不得回退 legacy seat0。`BuildWelcome` 用 Claim；scope 由 `LocalTableStore.IssueScope(account, role, roomId, ...)` 颁发（spectator 用 `TableScopeRole.Spectator`）。
+6. **SYNC**：`TableStreamIdentity(sessionId, audience, bindingEpoch, syncEpoch)`；Player 用 `TableStreamAudience.ForSeat(seat)`，spectator 用 `TableStreamAudience.Spectator`。`SubscribeStreamAsync` 在 actor 单 turn 内注册并排入第一份 full baseline；`TableStreamSubscribeRequest.OwnerEpoch = store.LeaseEpoch`，`RecoveryGeneration = actor.RecoveryGeneration`。
+7. **更新**：`OnFrame` 按 `frame.Identity.Audience`：
    - seat：`contract.Player` → `MapPlayerSnapshot/MapPlayerUpdate`，`MessageType.PlayerUpdate`；
    - spectator：`contract.Public` → `MapPublicSnapshot/MapPublicUpdate`，`SyncTarget.PublicStream/MessageType.PublicUpdate`。
    每连接自己的 `_outbound`/`_streamGeneration`/`_sink`；慢 consumer 不影响其他连接。
-7. **命令**：`HandleCommandAsync` 使用 connection 的 `_seat/_connectionScopeId/_connectionAccount`；先校验 envelope scope 与当前 connection scope 一致；spectator 直接拒绝（见 4.6）。玩家命令仍走现有 `TableCommandEnvelope`/`TableSettlementRequest`/cheat/settlement 分支；控制命令仍走 `HandleControlCommandAsync`。
-8. **Detach**：channel permanent close → `room.DetachAsync(connection)`：取消/等待本连接 outbound、`UnsubscribeStreamAsync(handle)`、标记 session closed、释放该座位 ticket 绑定；**不**停止 driver、不关闭 actor、不 dispose store。`CanTick` 重算；若仍有其他 player/spectator，桌子继续。
-9. **Role switch**：关闭旧 session/channel → 新 ticket（新 role/seat）→ 新 channel/session → 新 binding epoch/sync epoch → 新 full baseline。旧 session 不再 pump；旧 channel 的 `_streamGeneration` fence 旧帧；新 `TableSession` 的 `_binding` 从 null 建立，旧 cache 不存在。
-10. **Room close**：`LocalTableRoom.DisposeAsync` 关闭所有 connections、停止 driver、关闭 actor、释放 lease；之后同目录才可重新 open。
+8. **命令**：`HandleCommandAsync` 使用 connection 的 `_seat/_connectionScopeId/_connectionAccount`；先校验 envelope scope 与当前 connection scope 一致；spectator 直接拒绝（见 4.6）。玩家命令仍走现有 `TableCommandEnvelope`/`TableSettlementRequest`/cheat/settlement 分支；控制命令仍走 `HandleControlCommandAsync`。
+9. **Detach**：channel permanent close → `room.DetachAsync(connection)`：取消/等待本连接 outbound、`UnsubscribeStreamAsync(handle)`、标记 session closed、`Attached -> Detached`、释放该 seat/spectator 预约；**不**停止 driver、不关闭 actor、不 dispose store。ticket 已消费且不可复用；重连/切换必须新 ticket。room 只更新 readiness/current controller 派生的 per-seat drive 资格，不用静态 `SeatPlan` live 谓词停整桌（见 4.7）。
+10. **Transient reconnect**：同一个 `LocalTableChannel` 的 transient close/reopen 复用已 Attached 的 connection/Claim；`LocalTableChannel.ReopenCoreAsync` 调 `runtime.ReconnectAsync`，**不**重新消费 ticket、不创建新 connection。`TableSession` 若再次发 HELLO，仍用同一 Claim 校验 `hello.Ticket`/`ResumeSessionId`，不查全局 used；新 ticket 或不同 session 不能在 transient 通道上 rebind。
+11. **Role switch**：旧 channel permanent close（`Detached`）→ 新 ticket（新 role/seat）→ `Connect` 预留 → `channel.Open` 消费 → 新 session/binding/sync/baseline。旧 Claim 不复活、旧 ticket 不复用；旧 session 不再 pump；旧 channel 的 `_streamGeneration` fence 旧帧；新 `TableSession` 的 `_binding` 从 null 建立，旧 cache 不存在。
+12. **Room close**：`LocalTableRoom.DisposeAsync` 关闭所有 connections、停止 driver、关闭 actor、释放 lease；之后同目录才可重新 open。
 
 ### 4.5 ticket/session/scope/seat 的权威规则
 
-- **ticket 是唯一绑定来源**：`LocalTableRoom` 的 registry 记录 role/seat/account；`HandleHello` 不接受 client 的 role/seat（wire 没有），也不接受 client 替换 ticket。
-- **兼容分支（必须显式）**：旧 `LocalTableHost.CreateChannelAsync` + `LocalTableHost.IssueTicket` 路径继续使用现有 static `LocalTicketIssuer`（roomId-only；无 room ticket 时回退 seat0/Player），保证默认单机行为不变；新 `LocalTableRoom` 路径只用 per-room ticket 记录。`LocalTableChannel` 在 attach 时标记 ticket 来源，`HandleHello` 只有在 connection 没有 room ticket 时才走 legacy fallback；两条路径不混用。由于同一存档目录仍由 lease 保证只有一个 room，不会同时存在新旧两个 owner。
+- **ticket 是唯一绑定来源**：`LocalTableRoom` 的 registry 记录 role/seat/account；`HandleHello` 不接受 client 的 role/seat（wire 没有），也不接受 client 替换 ticket。ticket 生命周期只允许以下状态，**唯一消费点**是 `channel.OpenAsync` 的 `Reserved -> Attached` 线性化；`ConnectAsync` 只做 `Issued -> Reserved`。
+
+| 状态 | 进入动作 | 允许的下一状态 | seat/spectator 预约 | 说明 |
+|---|---|---|---|---|
+| `Issued` | `CreatePlayerTicket`/`CreateSpectatorTicket` | `Reserved` / `Expired` | 不占 | 未验证、未预留；TTL 过期即 `Expired` |
+| `Reserved` | `LocalTableRoom.ConnectAsync` 原子 CAS | `Attached` / `Failed` / `Expired` | **占用** seat 或 spectator 名额 | 同一 ticket 第二个 Connect/并发 Connect 拒绝；取消/超时释放 |
+| `Attached`（= `Consumed`） | `channel.OpenAsync` 唯一线性化 | `Detached` / `Failed` | 占用 | ticket 恰好消费一次；connection 持有 `Claim`；HELLO 只验证 Claim |
+| `Detached` | channel permanent close / role switch | 终态（新 ticket 才能再连） | 释放 | 旧 ticket/Claim 不复活；transient reopen 不经过此状态 |
+| `Failed` | Open 失败/取消、HELLO 失败/协议拒绝 | 终态（新 ticket） | 释放 | 不从 room ticket 回退 legacy seat0；不泄漏名额 |
+| `Expired` | TTL 到期且尚未 Attached | 终态（新 ticket） | 释放 | Attached 后的会话不因 ticket TTL 被中途踢出 |
+
+- **线性化/并发**：`Reserved` 用单次 CAS；同一 ticket 只允许一个 channel 成功。`Attached` 后 ticket 不再查全局 `TryConsume`；重复 HELLO 只验证 Claim。`ConnectAsync` 取消、`OpenAsync` 取消、HELLO 失败都必须走 `Detached`/`Failed` 释放预约；不允许 seat/spectator 名额泄漏。
+- **transient reconnect**：保持 `Attached`，同一 connection/Claim，`runtime.ReconnectAsync`；不重新消费 ticket、不创建新 connection。`TableSession` 重新发 HELLO 时仍用 Claim 校验同一 ticket/`ResumeSessionId`；新 ticket 不能在旧 transient channel 上 rebind。
+- **permanent detach / role switch**：`Detached`；旧 ticket 已消费且不可复用；新连接必须新 ticket。role switch 不复用旧 session/binding/cursor。
+- **legacy 兼容**：旧 `CreateChannelAsync` + `IssueTicket` 路径在 channel 构造时标记 legacy 来源，使用 static `LocalTicketIssuer` 并回退 seat0/Player；room ticket 路径永远不走 legacy fallback，room ticket 验证失败也不得降级为 seat0。
 - **seat 唯一**：同一 room 同一 seat 同时最多一个 player binding；重复 `CreatePlayerTicket` 或 attach 失败，不踢掉旧 binding（要顶号必须显式 close/claim）。
 - **spectator 独立**：每个 spectator 一个 sessionId/bindingEpoch/syncEpoch/scope/cursor；`TableStreamAudience.Spectator` 的 identity key 含 `Kind=Spectator, Seat=-1`；不同 spectator 不共享 cursor。
 - **session resume**：只允许 `hello.ResumeSessionId == 当前 connection 已签发 sessionId`；fresh host/其他 host 的 session id 一律重新签发或拒绝（修复探针 B5）。当前 `HandleHelloAsync` 直接采纳 client 的 resume id（`LocalTableRuntime.cs:485-490`），必须改。
@@ -546,9 +582,39 @@ public static class LocalTableHost
 
 - fresh room 的 `SeatPlan.HumanSeats` 决定 initial controllers：human → `LocalHuman`，其余 → `Computer`；默认 `[0]` 与现状一致。
 - `LocalTableDriver` 只对 `Computer/Takeover` 自动完成；`LocalHuman` 即使有 pending decision 也不自动提交。
-- **绑定不改变 control kind**。Player 绑定到 `Computer` 座位时，host 拒绝 seat action（`STALE_CONTROL_EPOCH`/现有 `CONTROL_NOT_HELD` 语义），直到显式 `ClaimControl`；`ClaimControl` 增加 epoch，旧 AI decision 被 actor fence。
-- **关闭 viewer 不隐式释放 control**。若产品要 AI 接管，调用方必须显式发送 `ReleaseControl`/`LeaveTable`；`GraceThenAi` 是未来显式策略，D05 不实现静默版本。
-- `CanTick` 规则（D05 默认 `HoldForReconnect`）：room open 且 `SeatPlan.HumanSeats` 中每个座位都有 live player binding 时才 `TickAsync`；否则不 tick，避免对断线人类执行 timeout/AI。Spectator close 不影响 `CanTick`。四人类局中任一人类断线 → 桌子等待，不静默 AI；这是安全的本地语义，产品若需宽限接管再单独评审。
+- **绑定不改变 control kind**。Player 绑定到 `Computer/Takeover` 座位时，host 拒绝 seat action（`STALE_CONTROL_EPOCH`/现有 `CONTROL_NOT_HELD` 语义），直到显式 `ClaimControl`；`ClaimControl` 增加 epoch，旧 AI decision 被 actor fence。
+- **关闭 viewer 不隐式释放 control**。若产品要 AI 接管，调用方必须显式发送 `ReleaseControl`/`LeaveTable`；`GraceThenAi` 是未来显式策略，D05 不实现静默版本。仅关闭 spectator 不改变任何 seat control。
+- **三个正交维度（不得混用）**：
+  1. `SeatPlan.HumanSeats` 只决定 **fresh checkpoint 的 initial controllers** 和允许发放的 player ticket；它不是运行期 `Tick` 谓词，也不随 `ReleaseControl` 删除座位。
+  2. `currentController/controlEpoch` 来自 actor control snapshot（`LocalHuman`/`Computer`/`Takeover`）；运行期只以当前 controller 决定谁可行动、谁可 AI。
+  3. `live binding` 只表示连接可用；**绑定不等于控制权**。spectator 没有 seat 控制权。
+- **RoomPhase**：`AwaitingSeats` → `Playing`。`AwaitingSeats` 持续到每个初始 human seat 要么有 live player binding，要么当前 controller 已不是 `LocalHuman`（显式 release 或 recovered AI）；此阶段不打开 decision、不 `Tick`、不产生 authority deadline，spectator binding 不计入。进入 `Playing` 后，单个 viewer 断线**不**回退到 `AwaitingSeats`。
+- **CanTickAuthority**：room open 且 `RoomPhase == Playing`。`TickAsync` 在 `Playing` 始终运行，**任何已经开放的 decision deadline 都按现行权威规则执行，不因连接/动画无限推迟**；断线不暂停、不延长 deadline。
+- **CanOpenDecision(seat)**：
+  - `currentController == Computer/Takeover`：可以；由 driver/AI 打开并完成。
+  - `currentController == LocalHuman && live binding`：可以；打开后等待人类，driver 不自动完成。
+  - `currentController == LocalHuman && no live binding`：**不打开新 decision**；若断线前已有 open decision，它保留，`TickAsync` 仍按 deadline 处理。返回的旧 binding 若 control/decision 已变化，命令按 `ControlEpoch`/decision 拒绝。
+- **CanCompleteAi(seat)**：仅 `Computer/Takeover`；`LocalHuman` 永不自动完成。
+- **显式 ReleaseControl / ClaimControl**：`ReleaseControl` 使 current controller → `Computer/Takeover` 并递增 `controlEpoch`；该座位不再阻塞 `AwaitingSeats`/`Playing`，也不再被 `SeatPlan.HumanSeats` 条件卡住，AI 可按 epoch fence 前进。`ClaimControl` 使 current controller → `LocalHuman` 并递增 epoch；旧 AI decision 被 fence。两者都不改 `SeatPlan` 本身。
+- **recovered controller 与 SeatPlan 不同**：以 recovered controller 为准；若 recovered 是 `Computer/Takeover`，按 AI 路径；若是 `LocalHuman`，需要 binding 或显式 release。不得用 `SeatPlan` 覆盖持久化控制状态。
+- **spectator close**：不影响 `RoomPhase`、`CanTickAuthority`、任何 seat 的 `CanOpenDecision`/`CanCompleteAi`。
+- **动画/UI**：不得 gate `TickAsync`；`presentationBusy` 之类的 UI 节奏不能推迟已开放 deadline。产品若要额外暂停，只能是未来显式配置，不能作为本默认方案。
+
+**状态动作表（D05 默认；均为报告模型，不是运行时实现证据）**
+
+| 场景 | current controller | live player binding | open decision | CanTickAuthority | 打开新 decision | AI 完成 | deadline/动作 |
+|---|---|---|---|---|---|---|---|
+| 开局前未齐 | LocalHuman | 否 | 无 | 否（AwaitingSeats） | 否 | 否 | 无 deadline；等待 binding/release |
+| 开局前已齐 | LocalHuman | 是 | 无 | 否→是（全部 human 齐/release 后转 Playing） | 转 Playing 后可 | 否 | 无 deadline，直至 Playing |
+| 已开局，人类在线 | LocalHuman | 是 | 无/有 | 是 | 是 | 否 | 人类提交；open 后按 deadline |
+| 已开局，人类断线且无 open decision | LocalHuman | 否 | 无 | 是（为其他 seat/deadline） | 否（本 seat） | 否 | 本 seat 等待；不新开 deadline |
+| 已开局，人类断线但有 open decision | LocalHuman | 否 | 有 | 是 | 否（本 seat） | 否 | deadline 照常执行/timeout；旧 binding 回来按 stale 拒绝 |
+| 显式 release 后无 binding | Takeover/Computer | 否 | 任意 | 是 | 是（AI） | 是 | AI 按 epoch 前进；不被 SeatPlan 卡住 |
+| 旧 human binding 仍在但已 release | Takeover/Computer | 是（旧） | 任意 | 是 | 是（AI） | 是 | 旧 binding 命令按 stale epoch 拒绝；AI 不被阻断 |
+| spectator close | 任意 | 不影响 | 任意 | 不变 | 不变 | 不变 | 不影响玩家/整桌 |
+| recovered controller 与 SeatPlan 不同 | recovered | 按上面行 | 按上面行 | 按 Playing/Awaiting | 按 current controller | 按 current controller | 不覆盖 recovered |
+| 已开放 deadline + 任一 viewer close | 任意 | 可能变化 | 有 | 是 | 按 seat | 按 controller | deadline 不延长、不受 UI 动画影响 |
+
 - `ControlEpoch` 与 `BindingEpoch` 分离：binding 只用于连接/流身份，不能当出牌授权；命令携带的 `ControlEpoch` 由 actor 校验。角色切换/控制变化后重建 session/baseline，不复用旧 cursor/decision cache。
 
 ### 4.8 默认单机、恢复、幂等、LOCAL 兼容
@@ -556,7 +622,7 @@ public static class LocalTableHost
 - **默认单机**：`LocalTableHost.CreateChannelAsync` + `IssueTicket` 旧路径保持；seat0 `LocalHuman`、1..3 `Computer`、`AutoPlay=true` 行为不变；不改存档格式/room id/owner/lease 规则。
 - **四席**：使用新 `LocalTableRoom` 路径；`SeatPlan.AllFourHumanSeats`；四个 ticket/四个 `TableSession`/四个 `SessionCoordinator`；同一 `LocalTableStore`/`TableActor`/`RoundId`。
 - **恢复**：`LocalTableRoom.OpenAsync` 复用 `LocalTableStore` 的 cold recovery；recovered controllers 来自 checkpoint，不因 `SeatPlan` 覆盖持久化控制状态（若要改变，必须显式 claim/release）。
-- **幂等/原请求**：不改变 `TableSession.SubmitAsync/ReconcilePendingAsync/RetryPendingAsync` 与 outbox 语义；account 稳定，旧 scope 的 receipt query 仍可读。C04-D01 的未完成 reconciliation 不在本任务内实现；D05 的 room 设计不得阻断它（见 7 的依赖）。
+- **幂等/原请求**：不改变 `TableSession.SubmitAsync/ReconcilePendingAsync/RetryPendingAsync` 与 outbox 语义；account 稳定，旧 scope 的 receipt query 仍可读。**C04-D01 组件已接受**：`V5-G2-C04-RECOVERY-REQUEST-DELIVERY-20261101.md` §5（76 行起）明确 D01 自身范围通过、D01-R1-01..04 全部关闭（143/143 LocalHost、59/59 工具、8/8 案卷、原 request Query Applied / 零重复）。未来新 room 的恢复/幂等仍是 `NOT_RUN`，原因是 **new room 尚未集成、最终同版本证据尚未重绑**，不是等待 D01 组件。新 room 必须沿 accepted 原 request/account/canonical bytes/scope 合同做 query/reconcile 和零重复副作用；**不得自动把旧 scope 改成新 scope，也不得把任意旧 scope 重发当成已接受**。自然 Unknown / 显式 retry 的边界沿用 D01 已接受范围，不因本报告扩大。
 - **LOCAL**：仍由 LocalHost 生成 `origin=LOCAL` 语义，不生成线上 token/wallet/排位；不改变 `LocalTableStore`/`LocalSave`/`LocalMatchCoordinator` 的 LOCAL 边界。
 - **存档**：一个 room 一个 store；四个 viewer 不各自写存档；room close 才 flush/dispose；`AutoFlushInterval` 仍由 store 负责。
 
@@ -578,7 +644,7 @@ public static class LocalTableHost
 | `dotnet/src/Mahjong.LocalHost/LocalTableHost.cs` | 新增 `LocalTableRoom`/`LocalTableConnectionTicket`/`LocalViewerRole`/`LocalTableSeatPlan`；每 room ticket registry；`LocalTableHostOptions` 新属性校验；保留旧 `CreateChannelAsync/IssueTicket` | 必要生产 |
 | `dotnet/src/Mahjong.LocalHost/LocalTableChannel.cs` | channel 从“拥有 runtime”改为“拥有 connection”；`OpenInitialCoreAsync` attach room；`PermanentCloseCoreAsync` detach 而非 `runtime.DisposeAsync`；旧单机路径的 owner 语义保留 | 必要生产 |
 | `dotnet/src/Mahjong.LocalHost/LocalTableRuntime.cs` | 拆 room core 与 connection runtime；`HandleHelloAsync` 用 ticket 记录而非 seat0/Player；`BuildWelcome` 用 binding；`BuildSyncResponse/BuildPlayerUpdate` 按 audience 映射 Player/Public；`HandleCommandAsync` 用 connection seat/scope；spectator 命令拒绝；`DisposeAsync` 只 detach | 必要生产（最大改动） |
-| `dotnet/src/Mahjong.LocalHost/LocalTableDriver.cs` | `CanTick` gate；human seat 不自动完成；绑定不改变 control；AI scope 只用于 AI 座位；不因单个 viewer close 停止整桌 | 必要生产 |
+| `dotnet/src/Mahjong.LocalHost/LocalTableDriver.cs` | `RoomPhase/CanTickAuthority` + per-seat `CanOpenDecision/CanCompleteAi` gate；human seat 不自动完成；绑定不改变 control；AI scope 只用于 AI 座位；不因单个 viewer close 停止整桌 | 必要生产 |
 | `unity/Mahjong.Unity/Assets/Scripts/App/AppComposition.cs` | 一个 room + N view 的装配；每 view 独立 `TableSession/OperationQueue/SessionCoordinator`；room dispose 只在退出整桌 | 必要 Unity 集成 |
 | `unity/Mahjong.Unity/Assets/Scripts/App/SessionCoordinator.cs` | 确认每 view 独立 coordinator/generation；role switch 新建 coordinator；close 只关本 view | 可能无需改动；若改动，限定生命周期，不改 UI 语义 |
 
@@ -626,13 +692,15 @@ public static class LocalTableHost
 | ID | 场景 | 命令/入口 | 必断言 | 状态 |
 |---|---|---|---|---|
 | N1 四席同 actor | room + 4 player tickets + 4 `TableSession` | 真实 `LocalTableRoom/ITableChannel/TableSession`；`SaveDirectory` 同一目录 | 四个 Ready；`Welcome.Role=Player`；seats `{0,1,2,3}` 唯一；同 `RoundId`；一条真实 discard 提交后四席在**同一 stateVersion** 收到 push；每个 seat 的 `PlayerSnapshot.PrivateView.Seat` 只等于自己；四连接 session/binding/cursor 独立 | NOT_RUN |
-| N2 独立 spectator 公共流 | room + spectator ticket + `TableSession` | 同一 room，真实 spectator scope | Ready、`Role=Spectator`、`SeatId=-1`；`PublicSnapshot != null`、`PlayerSnapshot == null`；`SyncResponse.Target=PublicStream`；后续 `PublicUpdate` 可解析；public cursor 独立；不出现 `private_view`/`ledger_entries`/`tile_mark`/`sleeve_bloom`/`beam_swap`/`seed`/`wall` | NOT_RUN |
-| N3 受保护值 raw scan | N1+N2 的帧 | 捕获 `ITableChannel.ReceiveAsync` 原始 bytes；逐 seat/spectator 解析+结构扫描 | 暗牌/袖牌/种子等价随机材料/私有费用各有**非空正对照**；自己的私有值可见；其他 seat/spectator 为 0；见 6.3 | NOT_RUN |
+| N2 独立 spectator 公共流 | room + spectator ticket + `TableSession` | 同一 room，真实 spectator scope | Ready、`Role=Spectator`、`SeatId=-1`；`PublicSnapshot != null`、`PlayerSnapshot == null`；`SyncResponse.Target=PublicStream`；后续 `PublicUpdate` 可解析；public cursor 独立；**只允许 public 白名单**（`hand_count`/discards/public melds/`wall_remaining`/dora/last_discard/public settlement），不得出现 `private_view`/`PrivateCheatView`/per-owner `cheat_points`/`ledger_entries`/sleeve identities/完整 ordered wall/seed | NOT_RUN |
+| N3 受保护值 raw scan | N1+N2 的帧 | 捕获 `ITableChannel.ReceiveAsync` 原始 bytes；真实 `WireCodec.Decode` + typed message/字段归属；逐 owner/audience/stateVersion | 每席自己的已授权私有字段**非空正对照**（自己的闭牌/袖牌/私有费用可见）；禁止 foreign owner 的未授权秘密；合法 public discard/reveal（如 owner0 的 tile33 在 v1 合法弃牌）允许出现在 public，但 v0 hidden 时不得出现；见 6.3 | NOT_RUN |
 | N4 role switch + 旧 binding | player0 → spectator → player1 → player0；每步新 session | 真实 room/ticket/channel | 每步新 sessionId/bindingEpoch/scope/baseline；旧 PlayerSnapshot/private cache 不在新 session；延迟旧帧注入被 `sessionId/audience/bindingEpoch` 拒绝；新基线正确；无旧私有值残留 | NOT_RUN |
-| N5 独立 cursor + close viewer | 4 player + 2 spectator；只推进一个 viewer；关闭一个 spectator/一个 player | 真实 room | 其他 viewer 不阻塞；关闭 spectator 整桌继续；关闭 player 不关闭整桌；关闭后新 viewer 可 attach；关闭的 player 座位不静默 AI（`HoldForReconnect`）；各 cursor 独立 | NOT_RUN |
-| N6 默认 AI 回归 | 默认 `SeatPlan.SingleHumanSeatZero` | 旧 `CreateChannelAsync` 路径 | seat0 人类可行动；1..3 AI 仍自动摸打/响应；`controlEpoch` 正确；四人类 room 中 1..3 不自动提交；claim/release 后 stale AI decision 被拒 | NOT_RUN |
-| N7 恢复/幂等兼容 | room 保存→关闭→重开；旧 outbox pending | 同一 room/seat/account；`ReconcilePendingAsync`/receipt query | account/seat 稳定；旧 scope 的 receipt query 仍按 account 读取；同 request replay 返回 existing；不重复 event/version/ledger/entity；LOCAL 不变 | NOT_RUN（D01 依赖） |
+| N5 独立 cursor + close viewer | 4 player + 2 spectator；只推进一个 viewer；关闭一个 spectator/一个 player | 真实 room | 其他 viewer 不阻塞；关闭 spectator 整桌继续；关闭 player 不关闭整桌；关闭后新 viewer 可 attach；关闭的 player 按 §4.7 状态表：不新开 decision，已开放 deadline 照常，显式 release 后 AI 可前进；各 cursor 独立 | NOT_RUN |
+| N6 默认 AI/控制回归 | 默认 `SeatPlan.SingleHumanSeatZero`；四人类；release/claim；recovered controller | 旧 `CreateChannelAsync` + 新 room | seat0 人类可行动；1..3 AI 仍自动摸打/响应；四人类 room 中 LocalHuman 不自动提交；released→Computer/Takeover 无 binding 仍可 AI 前进；recovered controller 与 SeatPlan 不同时按 recovered；claim/release epoch 后 stale AI decision 被拒 | NOT_RUN |
+| N7 恢复/幂等兼容 | room 保存→关闭→重开；accepted D01 原 request/account/bytes/scope | 同一 room/seat/account；`ReconcilePendingAsync`/receipt query | account/seat 稳定；按 accepted D01 合同查询原 request Applied，零重复副作用；同 request replay 返回 existing；不自动重写 scope/不重提交；自然 Unknown/显式旧 scope retry 不冒充 accepted；**new room 未集成/未同版本重绑，故 NOT_RUN** | NOT_RUN（new room + 最终同版本证据，非 D01 依赖） |
 | N8 lease/actor 负例 | 同目录第二 room；同 room 不同目录 | 真实 `LocalTableRoom.OpenAsync` | 同目录第二 room `LeaseConflict`，第一 room 不受影响；不同目录两个 actor，A 命令不改 B version；room close 后 lease 释放 | NOT_RUN |
+
+N5/N6 必须逐行覆盖 §4.7 状态动作表：connected human、disconnected human（无/有 open decision）、released→AI 无 binding、旧 human binding 仍在但已 release、spectator close、recovered controller 与 SeatPlan 不同、`AwaitingSeats` 未齐、`Playing` 已开放 deadline。任何显式 release/AI 行不得被旧 `SeatPlan.HumanSeats` 无连接条件永久阻断；已开放 deadline 不得因 viewer close/动画无限推迟。
 
 ### 6.2 Unity PlayMode / Windows Player
 
@@ -640,20 +708,30 @@ public static class LocalTableHost
 |---|---|---|---|---|
 | U1 | UNITY_PLAYMODE | 生产 room 装配四席 + spectator | 四个 `SessionCoordinator`/view 独立；真实 `ITableChannel`（非 scripted）；四席同 stateVersion；spectator 无私有字段；关闭一个 view 不关整桌 | NOT_RUN；等 room API + D03 |
 | U2 | UNITY_PLAYMODE | role switch/cache/stale binding | player→spectator→player；旧 cache 清空；旧帧丢弃；新基线正确；私有账本/袖牌不跨角色 | NOT_RUN |
-| U3 | UNITY_PLAYMODE | 控制/AI/关闭 | 默认 AI 回归；人类座位不双写；claim/release；关闭 spectator 不影响；关闭 player 按 Hold 等待 | NOT_RUN |
+| U3 | UNITY_PLAYMODE | 控制/AI/关闭 | 默认 AI 回归；人类座位不双写；claim/release；关闭 spectator 不影响；关闭 player 按 §4.7：不新开 decision、已开放 deadline 照常、显式 release 后 AI 可前进 | NOT_RUN |
 | P1 | WINDOWS_PLAYER | 最终 C03 候选四席/观战 | 实际 Player 证据绑定 source/build/package/player identity；四席/观战 raw/结构化证据；不出现受保护值；关闭 viewer 不关整桌 | NOT_RUN/BLOCKED（最终候选未绑定） |
-| P2 | WINDOWS_PLAYER | 恢复/幂等 | 真实 Player 存档/恢复；原 request 对账；无重复副作用 | NOT_RUN/BLOCKED（D01 + 最终候选） |
+| P2 | WINDOWS_PLAYER | 恢复/幂等 | 真实 Player 存档/恢复；按 accepted D01 原 request/account/bytes/scope 对账；无重复副作用 | NOT_RUN/BLOCKED（最终候选 + new room 同版本证据；D01 组件已接受，不是依赖） |
 
 ### 6.3 受保护值与“独立非空正对照”
 
-| 类别 | 真实正对照（必须非空） | 负例断言 |
-|---|---|---|
-| 暗牌 | 每个 seat 的真实 `private_view.closed_tiles`（13/14 张）非空；seat 自己的 `private_view.seat` 等于绑定 seat | 其他 seat 的 `PlayerSnapshot` 只包含自己的 `private_view`；spectator `PublicSnapshot` 无 `private_view`；foreign tile IDs 不出现在其他 seat/spectator 的结构化字段/可见事件 |
-| 袖牌 | 真实 SleeveBloom 成功后 owner 的 `private_view.sleeve_tiles`/offer 非空 | 其他 seat/spectator 的 `sleeve_tiles`、`sleeve_bloom`、reservation 为空；public 无 sleeve 字段 |
-| 种子/随机材料 | V5 没有 seed 字段；等价受保护材料是真实 `ShuffleRandomTrace.BaseWall`（136 张有序）与 `Doubles`。正对照：该真实 trace 非空且由测试持有 | 任何 serialized player/foreign/public payload 不含完整 136 张 ordered wall/`Doubles` 序列；`PublicBoardView` 只有 `wall_remaining`，无 wall/seed；proto `seed` 仅为 reserved。若未来新增 seed 字段，本行必须重绑 |
-| 私有费用 | 真实 TileMark/SleeveBloom/BeamSwap 成功后 owner 的 `private_view.cheat.cheat_points`/`ledger_entries` 非空，金额/余额为实际服务端值 | 其他 seat/spectator 的 `cheat_points`/`ledger_entries` 为空；public session summary 无 `cheat_points/cheat_entries`；receipt/event 不带未授权费用 |
+| 类别 | 归属/受众 | 真实非空正对照 | 允许的 public/reveal | 禁止/负例 |
+|---|---|---|---|---|
+| 暗牌 | 每个 player owner 自己的 `private_view.seat` 必须等于绑定 seat | 每个 seat 自己的 `closed_tiles`（13/14 张）非空；其他 seat 也可以有自己的非空 closed_tiles（不是“其他 seat 全空”） | 该 owner 合法弃牌/副露/立直后在当前 stateVersion 的 public discard/meld；spectator 只允许 public 白名单（含 `hand_count`/discards/public melds/dora/scores 等） | 该 owner 的 `closed_tiles` 在**未授权/未揭示**的当前 stateVersion 出现在 foreign seat 或 spectator；不能用“曾经是某 owner 暗牌”对 tile ID 做永久全局禁止 |
+| 袖牌 | 每个 owner 自己的 sleeve/offer | 真实 SleeveBloom 成功后该 owner 的 `private_view.sleeve_tiles`/offer 非空；其他 owner 也可以有自己的非空 sleeve | 只允许 public 的合法副露/揭示；sleeve 身份不属于 public | 该 owner 的 sleeve identities/reservation 出现在 foreign seat 或 spectator；不能用“其他 seat 的 sleeve 字段必须为空”误伤其他 owner 自己的合法 sleeve |
+| 随机材料 | authority 的 `ShuffleRandomTrace.BaseWall`/`Doubles` | 真实 trace 非空且由测试持有；V5 没有 seed 字段 | `PublicBoardView.wall_remaining`、dora indicators、last_discard 等公开字段 | 任何 player/foreign/spectator payload 含完整 136 张 ordered wall/`Doubles`/seed；proto `seed` 仅 reserved。未来新增 seed 字段必须重绑本行 |
+| 私有费用 | 每个 owner 自己的 `PrivateCheatView` | 真实 TileMark/SleeveBloom/BeamSwap 成功后该 owner 的 `cheat_points`/`ledger_entries` 非空，金额/余额为实际服务端值；其他 owner 也可以有自己的非空 ledger | public settlement summary 只允许公开得分/排名；授权揭示按该版本 public 白名单 | 该 owner 的 `cheat_points`/`ledger_entries` 出现在 foreign seat/spectator；**两席余额 scalar 相等不构成泄漏证据**；receipt/event 不得携带未授权 private fee |
+| 已合法公开的实体 | 当前 stateVersion + 当前可见性 | 例：owner0 在 v0 的 hidden tile 33，在 v1 合法弃牌后，public `TileDiscarded`/`PublicBoard` 可含 `tile_id=33` | 该实体在当前版本的 public discard/meld/reveal；在它成为 public 的 stateVersion 之后允许 | v0 的 foreign hidden 状态不得显示 tile33；v1 显示是合法 public，不得因 v0 历史而拒绝；归属/版本必须是判定依据，不是 tile ID 黑名单 |
 
-说明：上表的“正对照”必须来自真实 authority/真实命令，不是手写 DTO；如果某个值不能用真实命令产生，必须标 `BLOCKED`，不得用 fixture 顶替。
+判定方法（未来 N2/N3 必须执行）：
+
+1. 在 `ITableChannel.ReceiveAsync` 边界捕获原始 bytes；用真实 `WireCodec.Decode` 得到 typed `Envelope`/`PlayerSnapshot`/`PublicSnapshot`/event，不用裸字节 grep 或相同 scalar 代替归属。
+2. 对每个 frame 记录 `sessionId/audience/seat/bindingEpoch/stateVersion/eventSeq`；按 **owner + audience + 当前 stateVersion + 当前可见性** 检查字段路径。
+3. 正例：四席各自的私有字段非空、可读；合法 public discard/reveal 在对应 stateVersion 可读。
+4. 负例：把 seat1 的真实 `PlayerSnapshot`（含 seat1 自己的私有值）投递到 seat0 的 session/decoder，必须因 session/seat/audience 不匹配被丢弃；若未被丢弃，typed 字段归属检查必须报 foreign owner 泄漏。
+5. 真实无法产生的 sleeve/随机材料/费用对照仍标 `BLOCKED`；不得用本轮模型或 DTO fixture 冒充正式 C04/G5 通过。
+6. role switch（player↔spectator、seat 重绑）后必须按**新 sessionId/audience/seat/bindingEpoch/stateVersion** 重跑同一矩阵；旧 owner 的私有事实不得因旧 cache 或旧 binding 进入新 view。
+
+说明：上表的“正对照”必须来自真实 authority/真实命令；其他 seat 自己的私有数据不是本 audience 的泄漏对象，只有 **foreign owner 的未授权事实** 才是负例。public 白名单字段（wall_remaining/dora/last_discard/public players/settlement）不能被“全字段为空”误杀。
 
 ### 6.4 G5 状态与正式边界
 
@@ -732,7 +810,7 @@ public static class LocalTableHost
 - 实际（静态；本轮无四席注入路径，未实跑竞争）：绑定 seat1 后 AI 仍控制 seat1；无 host-level “human must claim” gate；竞争结果取决于 actor 串行顺序，可能在 AI 先提交后使人类收到 `DECISION_MISMATCH`，或反之。
 - 期望：human binding 不改变 control；human 在 Computer/Takeover 座位提交 seat action 被拒，直到 `ClaimControl`；AI 只提交 Computer/Takeover；关闭 viewer 不隐式 release。
 - 证据：源码 SHA `2795E366...`、`C4A237EF...`；默认 controller 证据。
-- 最小修复：`CanTick` + human/AI control gate + claim/release；AI scope 只由 driver 使用（§4.7）。
+- 最小修复：current controller/controlEpoch gate + per-seat `CanOpenDecision/CanCompleteAi` + claim/release；AI scope 只由 driver 使用（§4.7）。
 - 验收断言：N6；claim/release epoch；stale AI decision 拒绝；四人类无 AI 提交。
 
 ### D05-07 客户端可断言任意 resume session id
@@ -806,22 +884,22 @@ public static class LocalTableHost
 - 级别：**MAJOR**
 - 位置：`TableActor.cs:2534-2753`（桌级 tick/timeout）；`LocalTableDriver.cs:169-183`
 - 复现：静态检查；当前 `_isActive` 由单 session 控制，关闭 session 会暂停 driver；多视图下关闭一个 view 不能停整桌。
-- 实际：若多视图仍桌级 tick，断线 human 会 timeout 自动 Pass/Discard；若停止整桌 tick，AI 也停。
-- 期望：`HoldForReconnect` 下 human 无 live binding 时不 tick/AI；显式 `ReleaseControl` 后才允许 AI/timeout；spectator close 不影响。
-- 证据：`TableActor.cs:2534-2753`；`LocalTableDriver.cs:169-183`。
-- 最小修复：room `CanTick` + per-seat human binding set + explicit release（§4.7）。
-- 验收断言：N6；断线 human 不产生自动动作；显式 release 后 AI 接管；stale decision 拒绝。
+- 实际（静态）：旧报告的静态 `HumanSeats` 谓词会停整桌 Tick；若改为一律不 tick，已开放 deadline 被无限推迟；若照常 tick 但不区分“新 decision/已开放 deadline”，又可能对断线 human 新开 decision。需要 §4.7 的逐状态动作表。
+- 期望：`HoldForReconnect` 下 human 无 live binding 时不**新开** decision，但已开放 deadline 由 `CanTickAuthority` 按权威规则执行；显式 `ReleaseControl` 后 current controller 变 AI，AI 可按 epoch 前进；spectator close 不影响。
+- 证据：`TableActor.cs:2534-2753`；`LocalTableDriver.cs:169-183`；§4.7 状态动作表。
+- 最小修复：`RoomPhase/CanTickAuthority` + per-seat `CanOpenDecision/CanCompleteAi` + current controller/epoch + explicit release；不用静态 `SeatPlan.HumanSeats` 停整桌（§4.7）。
+- 验收断言：N6；断线 human 不新开 decision；已有 open deadline 按权威执行；显式 release 后 AI 接管；stale decision 拒绝。
 
-### D05-14 resume/旧 scope 与 D01 的兼容依赖（依赖风险）
+### D05-14 新 room 恢复/旧 scope 与 accepted D01 的边界（R1-01 已修正）
 
-- 级别：**MAJOR（依赖，不是本任务新缺陷）**
-- 位置：`LocalTableRuntime.HandleCommandAsync:780-785`（只接受当前 `_connectionScopeId`）；`HandleReceiptQueryAsync:1829-1845`（允许旧 scope，按 account）；C04-D01 未完成。
-- 复现：静态检查；新 session 的 scope 与 outbox 旧 scope 不同；`RetryPendingAsync` 用旧 scope。
-- 实际：D05 若改变 account/scope 语义，会让 D01 的同 request reconciliation 更难；当前旧 scope retry 的最终合同未在 LocalHost 完成。
-- 期望：account 稳定（`local-<room>-seat<N>`）；receipt query 按 account 读取旧 scope；retry 的 scope 合同由 D01 统一决定，D05 不另造第二套。
-- 证据：`LocalTableRuntime.cs:780-785,1829-1845`；C04-D01 报告/readiness。
-- 最小修复：D05 只保证 account/seat 稳定 + connection scope 隔离；不修改 `TableSession` outbox；D01 完成后再做 room 级 recovery 验收。
-- 验收断言：N7；旧 account/scope receipt query 成功；不重复副作用；D01 完成前 N7 标 `BLOCKED`。
+- 状态：原报告把 D01 列为未完成依赖的表述已删除；D01 组件已接受。以下只是新 room 集成边界，不是 D01 缺陷，也不重开 D01。
+- 位置：`LocalTableRuntime.HandleCommandAsync:780-785`（命令只接受当前 `_connectionScopeId`）；`HandleReceiptQueryAsync:1829-1845`（receipt query 允许旧 scope，按 account）；已接受 D01 报告 §5。
+- 复现：静态检查；新 session 的 current scope 与 outbox 旧 scope 不同；`RetryPendingAsync` 使用旧 scope。新 room 尚未实现，N7/P2 未运行。
+- 实际：D01 已接受（143/143 LocalHost、59/59 工具、8/8 案卷、原 request Query Applied / 零重复）；LocalHost 当前 command 仍只接受 current connection scope，旧 scope 仅用于 receipt query。accepted D01 不证明自然 Unknown 或任意旧 scope resend。
+- 期望：account 稳定（`local-<room>-seat<N>`）；新 room 沿 accepted D01 原 request/account/canonical bytes/scope 合同做 query/reconcile 与零重复副作用；不自动重写 scope、不重提交；自然 Unknown/显式 retry 仍按 D01 已接受边界，不扩大。
+- 证据：`LocalTableRuntime.cs:780-785,1829-1845`；`doc/v5-重构/V5-G2-C04-RECOVERY-REQUEST-DELIVERY-20261101.md` §5（76 行起）SHA256 `2FCCEC27B28CB72F54E78D4B9F8D5DDD05B6FA7521881E419FEBD18BC1F15A3C`。
+- 最小修复：只修本报告状态/依赖；不修改 D01 代码/协议/旧 census；未来 room 实现只保证 account/seat 稳定 + connection scope 隔离，不另造 recovery 协议。
+- 验收断言：N7/P2 因 **new room 未集成/未同版本重绑** 保持 `NOT_RUN`（不是等 D01）；原 request/account/bytes/scope 对账零重复；不自动改 scope/重提交；D01 不复开。
 
 ### D05-15 无 .NET `SpectatorSession` 类型（边界说明，不是缺陷）
 
@@ -853,10 +931,10 @@ public static class LocalTableHost
 |---|---|---|
 | D03 独占 `LocalSnapshotFacts.cs` | 四人类 initial controllers 不能在本任务实现 | 等 D03 验收；串行集成；本任务只读 |
 | D03 独占 `LocalTableChannelFactory.cs` / full-match driver | Unity 多视图工厂不能在本任务实现 | 等 D03；另开范围评审 |
-| D01 旧 scope/reconciliation 未完成 | N7/P2 不能提前宣称通过 | D01 完成后绑定同一 account/scope 合同 |
+| new room 恢复/幂等尚未集成与最终同版本重绑（D01 组件已接受） | N7/P2 不能提前宣称通过 | 沿 accepted D01 原 request/account/bytes/scope 合同；new room + 最终候选同版本证据；不自动改 scope/重提交 |
 | 控制 epoch 与 binding epoch 混用 | 旧 AI/旧 view 可能双写 | 只用 `ControlEpoch` 授权命令；binding 只做流身份；role switch 重建 session |
 | 慢 spectator | 内存/延迟 | 每 connection bounded outbound + MaxSpectators + slow consumer close/full baseline |
-| 断线 human timeout | 静默自动动作 | `HoldForReconnect` + `CanTick` + explicit release；不静默 AI |
+| 断线 human 的已开放 deadline | 误暂停/无限延长或静默 AI | §4.7 状态表：不新开 decision；已开放 deadline 按权威执行；显式 release 后 AI/epoch 前进；不用静态 `HumanSeats` 停整桌 |
 | 公开流新增字段 | 未来私有泄露 | 新字段默认 private；public whitelist + sentinel scan 每次新增重绑 |
 | ticket/session secret 持久化 | 凭证泄露 | 仅内存；不写 outbox/log；一次性/过期；redacted 证据 |
 | 用 P4.4 scripted/旧 PlayMode 冒充生产 | 假绿 | 只接受真实 `ITableChannel` + 生产 room；G5 仍 NOT_RUN |
@@ -930,6 +1008,6 @@ public static class LocalTableHost
 
 ## 11. 报告哈希
 
-- 正文哈希（文件开头至本文件唯一一个 HTML 正文结束注释行，含该行）SHA256：`9B365C3C32A6B4D2E7B29F486441CFA8D5ABA17AF09946C53BAFCBEA32AE7F71`。
+- 正文哈希（文件开头至本文件唯一一个 HTML 正文结束注释行，含该行）SHA256：`8310A61AAB25DF70C70732CCDFF5B585B9EF7445467107B55036F2D603EBF53D`。
 - 该哈希不覆盖本节，避免自引用；复算时截取到标记行即可。
 - 最终提交后的整文件 SHA256 由提交记录标识；本任务不把未提交的中间 hash 当作验收。
