@@ -74,9 +74,9 @@ function Assert-C04RunCacheIsolation([string]$root) {
 
 function Get-C04StableArtifactFiles([string]$root) {
     $volatileRoots = @(
-        (Join-Path $root 'source/unity/Mahjong.Unity/Library'),
-        (Join-Path $root 'source/unity/Mahjong.Unity/Temp'),
-        (Join-Path $root 'source/unity/Mahjong.Unity/Logs'),
+        (Join-Path $root 'p/Library'),
+        (Join-Path $root 'p/Temp'),
+        (Join-Path $root 'p/Logs'),
         (Join-Path $root 'temp'),
         (Join-Path $root 'nuget'),
         (Join-Path $root 'dotnet-home'),
@@ -112,9 +112,9 @@ function Get-C04StableArtifactFiles([string]$root) {
 
 function Get-C04SeparatedVolatileRoots([string]$root) {
     return @(
-        [ordered]@{ path='source/unity/Mahjong.Unity/Library'; classification='VOLATILE_UNITY_CACHE'; boundBy='unity prebuild/postbuild input closures and script-assembly hashes' },
-        [ordered]@{ path='source/unity/Mahjong.Unity/Temp'; classification='VOLATILE_UNITY_PROCESS_FILES'; boundBy='native stage process identity/exit and Unity log' },
-        [ordered]@{ path='source/unity/Mahjong.Unity/Logs'; classification='VOLATILE_UNITY_PROCESS_FILES'; boundBy='captured stage stdout/stderr and designated Unity log under logs/' },
+        [ordered]@{ path='p/Library'; classification='VOLATILE_UNITY_CACHE'; boundBy='unity prebuild/postbuild input closures and script-assembly hashes' },
+        [ordered]@{ path='p/Temp'; classification='VOLATILE_UNITY_PROCESS_FILES'; boundBy='native stage process identity/exit and Unity log' },
+        [ordered]@{ path='p/Logs'; classification='VOLATILE_UNITY_PROCESS_FILES'; boundBy='captured stage stdout/stderr and designated Unity log under logs/' },
         [ordered]@{ path='source/dotnet/**/obj'; classification='VOLATILE_DOTNET_INTERMEDIATES'; boundBy='fresh dotnet-build-artifacts-closure.json' },
         [ordered]@{ path='source/dotnet/**/bin'; classification='VOLATILE_DOTNET_INTERMEDIATES'; boundBy='fresh dotnet-build-artifacts-closure.json' },
         [ordered]@{ path='temp'; classification='VOLATILE_PROCESS_TEMP'; boundBy='not a build input or review artifact' },
@@ -720,7 +720,7 @@ Start-Sleep -Seconds 25
     [IO.File]::WriteAllText((Join-Path $RunRoot 'fixture-result.json'), (($valid | ConvertTo-Json -Depth 5) + "`n"), (New-Object Text.UTF8Encoding($false)))
     [IO.File]::WriteAllText((Join-Path $RunRoot 'foreign-sentinel.txt'), 'foreign-owner-preserved' + "`n", (New-Object Text.UTF8Encoding($false)))
     $stableFixtureFile = Join-Path $RunRoot 'logs/stable-review-log.txt'
-    $volatileFixtureFile = Join-Path $RunRoot 'source/unity/Mahjong.Unity/Library/PackageCache/cache-entry.tmp'
+    $volatileFixtureFile = Join-Path $RunRoot 'p/Library/PackageCache/cache-entry.tmp'
     $upmVolatileFixtureFile = Join-Path $RunRoot 'upm-cache/cache-entry.tmp'
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $stableFixtureFile),(Split-Path -Parent $volatileFixtureFile),(Split-Path -Parent $upmVolatileFixtureFile) | Out-Null
     [IO.File]::WriteAllText($stableFixtureFile, 'stable-log-content' + "`n", (New-Object Text.UTF8Encoding($false)))
@@ -728,7 +728,7 @@ Start-Sleep -Seconds 25
     [IO.File]::WriteAllText($upmVolatileFixtureFile, 'volatile-upm-cache-content' + "`n", (New-Object Text.UTF8Encoding($false)))
     $stableArtifacts = Get-C04StableArtifactFiles $RunRoot
     $stablePaths = @($stableArtifacts | ForEach-Object { $_.FullName.Substring($RunRoot.Length).TrimStart('\','/').Replace('\','/') })
-    if ($stablePaths -notcontains 'logs/stable-review-log.txt' -or $stablePaths -contains 'source/unity/Mahjong.Unity/Library/PackageCache/cache-entry.tmp' -or $stablePaths -contains 'upm-cache/cache-entry.tmp') {
+    if ($stablePaths -notcontains 'logs/stable-review-log.txt' -or $stablePaths -contains 'p/Library/PackageCache/cache-entry.tmp' -or $stablePaths -contains 'upm-cache/cache-entry.tmp') {
         throw 'Stable artifact manifest did not retain logs or separate volatile Unity/UPM package caches.'
     }
     $verifierProject = Join-Path $repo 'dotnet/tools/C04PlayerActionVerifier/C04PlayerActionVerifier.csproj'
@@ -847,7 +847,7 @@ EditorUserSettings:
     $sharedArgs = @('-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',(Quote-Arg (Join-Path $source 'tools/unity/build-shared.ps1')),'-Configuration','Release','-DotnetPath',(Quote-Arg $DotnetPath),'-PluginOutputDir',(Quote-Arg $projectPlugins)) -join ' '
     $shared = Invoke-OwnedNative -Name 'BuildSharedClosure' -FilePath 'powershell.exe' -Arguments $sharedArgs -WorkingDirectory $source -StdoutPath $sharedLog -StderrPath (Join-Path $logs 'build-shared.stderr.txt') -Timeout 900
     if ($shared.exitCode -ne 0) { throw 'Fresh shared plugin build failed; Unity stages were blocked.' }
-    $sharedEvidence = Join-Path $project 'Library/SharedPluginProvenance/provenance.json'
+    $sharedEvidence = Join-Path $projectPlugins 'shared-plugin-provenance.json'
     $guardArgs = @('-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',(Quote-Arg (Join-Path $source 'tools/unity/check-shared-plugins.ps1')),'-ProjectRoot',(Quote-Arg $source),'-PluginDir',(Quote-Arg $projectPlugins),'-EvidencePath',(Quote-Arg $sharedEvidence),'-Quiet') -join ' '
     $guard = Invoke-OwnedNative -Name 'VerifySharedPluginProvenance' -FilePath 'powershell.exe' -Arguments $guardArgs -WorkingDirectory $source -StdoutPath (Join-Path $logs 'shared-provenance.stdout.txt') -StderrPath (Join-Path $logs 'shared-provenance.stderr.txt') -Timeout 300
     if ($guard.exitCode -ne 0) { throw 'Fresh shared plugin provenance gate failed.' }
@@ -923,7 +923,7 @@ EditorUserSettings:
         $caseResults.Add([ordered]@{ caseId=$case.id; status='PASS'; layer='WINDOWS_PLAYER'; nativeExitCode=$player.exitCode; summary=$summaryPath; summarySha256=(Get-Sha256 $summaryPath); actionEvidence=$actionEvidencePath; actionEvidenceSha256=(Get-Sha256 $actionEvidencePath); executionEvidence=$executionPath; executionEvidenceSha256=(Get-Sha256 $executionPath); playerLog=$nativeLog; playerLogSha256=(Get-Sha256 $nativeLog); payloadSha256=$summary.payloadSha256 }) | Out-Null
     }
 
-    $final = [ordered]@{ schemaVersion=1; task='G2-C04-D03'; status='PASS'; acceptedBase='8fd7c6cb701dfbb41c28938de4186749bdd1d6c7'; frozenCandidate=$gitHead; sourceTreeStatus=$gitStatus; sourceDiffCheck='PASS'; sourceClosureManifest='source-prebuild-closure.json'; sourceClosureManifestSha256=$sourceClosureSha; unityShortPathStaging='unity-short-path-staging.json'; unityShortPathStagingSha256=$shortPathProjectSha; generatedUnityInputs='unity-generated-inputs.json'; generatedUnityInputsSha256=(Get-Sha256 (Join-Path $RunRoot 'unity-generated-inputs.json')); unityResolvedPackageInputClosure='unity-resolved-package-input-closure.json'; unityResolvedPackageInputClosureSha256=$resolvedPackageInputsSha; unityPrebuildInputClosureSha256=$preBuildInputsSha; unityPostbuildInputClosureSha256=$postBuildInputsSha; unityPostbuildInputChanges='unity-postbuild-input-changes.json'; unityPostbuildInputChangesSha256=(Get-Sha256 (Join-Path $RunRoot 'unity-postbuild-input-changes.json')); upmDownloadCacheClosure='upm-cache-closure.json'; upmDownloadCacheClosureSha256=$upmCacheClosureSha; postBuildAssetsClosure='source-postbuild-assets-closure.json'; postBuildAssetsClosureSha256=$postBuildClosureSha; sharedPluginClosureSha256=$pluginClosureSha; sharedPluginProvenance=$sharedEvidence; sharedPluginProvenanceSha256=$provenanceSha; scriptAssembliesClosureSha256=$scriptAssembliesSha; localHostTests=$localHostTestEvidence; commands=$script:stageRecords; playMode=[ordered]@{ testCount=$testNodes.Count; passed=$testNodes.Count; failed=0; skipped=0; exactNames=$actualNames; xml=$playXml; xmlSha256=(Get-Sha256 $playXml) }; buildMarker=$buildMarker; buildMarkerSha256=(Get-Sha256 $buildMarker); playerPackageManifest='player-package.json'; cases=$caseResults; platforms=[ordered]@{ windowsPlayer='actual four fixed cases'; android='NOT_RUN (C05 owner)'; ios='NOT_RUN'; remoteTransport='NOT_IN_SCOPE' } }
+    $final = [ordered]@{ schemaVersion=1; task='G2-C04-D03'; status='PASS'; acceptedBase='8fd7c6cb701dfbb41c28938de4186749bdd1d6c7'; frozenCandidate=$gitHead; sourceTreeStatus=$gitStatus; sourceDiffCheck='PASS'; sourceClosureManifest='source-prebuild-closure.json'; sourceClosureManifestSha256=$sourceClosureSha; unityShortPathStaging='unity-short-path-staging.json'; unityShortPathStagingSha256=$shortPathProjectSha; generatedUnityInputs='unity-generated-inputs.json'; generatedUnityInputsSha256=(Get-Sha256 (Join-Path $RunRoot 'unity-generated-inputs.json')); unityResolvedPackageInputClosure='unity-resolved-package-input-closure.json'; unityResolvedPackageInputClosureSha256=$resolvedPackageInputsSha; unityPrebuildInputClosureSha256=$preBuildInputsSha; unityPostbuildInputClosureSha256=$postBuildInputsSha; unityPostbuildInputChanges='unity-postbuild-input-changes.json'; unityPostbuildInputChangesSha256=(Get-Sha256 (Join-Path $RunRoot 'unity-postbuild-input-changes.json')); upmDownloadCacheClosure='upm-cache-closure.json'; upmDownloadCacheClosureSha256=$upmCacheClosureSha; postBuildAssetsClosure='source-postbuild-assets-closure.json'; postBuildAssetsClosureSha256=$postBuildClosureSha; sharedPluginClosureSha256=$pluginClosureSha; sharedPluginProvenance='p/Assets/Plugins/Mahjong/shared-plugin-provenance.json'; sharedPluginProvenanceSha256=$provenanceSha; scriptAssembliesClosureSha256=$scriptAssembliesSha; localHostTests=$localHostTestEvidence; commands=$script:stageRecords; playMode=[ordered]@{ testCount=$testNodes.Count; passed=$testNodes.Count; failed=0; skipped=0; exactNames=$actualNames; xml=$playXml; xmlSha256=(Get-Sha256 $playXml) }; buildMarker=$buildMarker; buildMarkerSha256=(Get-Sha256 $buildMarker); playerPackageManifest='player-package.json'; cases=$caseResults; platforms=[ordered]@{ windowsPlayer='actual four fixed cases'; android='NOT_RUN (C05 owner)'; ios='NOT_RUN'; remoteTransport='NOT_IN_SCOPE' } }
     $summaryOut = Join-Path $RunRoot 'summary.json'
     [IO.File]::WriteAllText($summaryOut, (($final | ConvertTo-Json -Depth 12) + "`n"), (New-Object Text.UTF8Encoding($false)))
     Write-RunLog 'FINAL_SUMMARY_WRITTEN'
