@@ -467,15 +467,13 @@ function Build-Player {
             Copy-Item -LiteralPath $source -Destination (Join-Path $staging $name) -Recurse -Force
         }
     }
-    # Reuse only Unity's immutable package cache/resolution metadata; the staging
-    # project still gets its own Library and a fresh script/asset build.
-    $stagingLibrary = Join-Path $staging 'Library'
-    New-Item -ItemType Directory -Force -Path $stagingLibrary | Out-Null
-    foreach ($libraryName in @('PackageCache', 'PackageManager')) {
-        $sourceLibrary = Join-Path $project ('Library\' + $libraryName)
-        if (Test-Path -LiteralPath $sourceLibrary) {
-            Copy-Item -LiteralPath $sourceLibrary -Destination (Join-Path $stagingLibrary $libraryName) -Recurse -Force
-        }
+    # Reuse Unity's local Library only inside the isolated staging copy. This keeps
+    # package resolution and asset import deterministic without ever touching the
+    # source project; plugin/script changes still force the staging recompile.
+    $sourceLibrary = Join-Path $project 'Library'
+    if (Test-Path -LiteralPath $sourceLibrary) {
+        & robocopy $sourceLibrary (Join-Path $staging 'Library') /E /XJ /R:1 /W:1 /NFL /NDL /NJH /NJS | Out-Null
+        if ($LASTEXITCODE -ge 8) { throw ('STAGING_LIBRARY_COPY_FAILED ' + $LASTEXITCODE) }
     }
     $stagingProbe = Join-Path $staging 'Assets\Scripts\App\C04RecoveryReconciliationProbe.cs'
     $stagingEditor = Join-Path $staging 'Assets\Editor\C04RecoveryReconciliationBuild.cs'
