@@ -496,3 +496,99 @@ Self-test evidence：
   未触发/未重跑，未 push/改 PR/record MR/approve/merge/deploy；Unity/Player/Android/
   设备及 lobby/unified leg 未运行。
 - 单条 durable table 状态不是自然整场终局或 G2 结算验收；D-02/D-09 继续 INFO。
+
+## 14. Caller independent acceptance (2026-11-01)
+
+The caller independently accepts **this CI table evidence repair scope** at code
+commit `4c5ad07e70bf7d4ed89dba83da2b3b461f40cbb0`. All four R1 MAJOR groups are
+closed, including the two R2 residual grammar/XML cases. The publication adds
+only this caller acceptance section after the tested receiver commit. The total
+delta from `06e892cf41a48c751370143c490699a26439a637` remains the six authorized
+files. No business, protocol, Runtime, LocalHost, Unity or device files change.
+
+Caller evidence tree:
+`E:/majiang-review/caller-table-evidence-r3-5d38a27c/build/caller-review/`.
+The full caller review, source checks, commands, separate stdout/stderr, native
+exit records and evidence hashes are retained there. Receiver final report
+before this appendix has SHA-256
+`1CD06E0537A61536AFA6B695528DF424E34DCC40D1CD403BB5DAA888CFD627DC`.
+
+### 14.1 Fresh caller execution
+
+All five PowerShell 5.1 child processes actually exit 0:
+
+| Execution | Result |
+|---|---|
+| Native metadata / exit / timeout / redaction | 24/24 |
+| Table XML / ownership / restore / seal gate | 82/82 |
+| Direct-result gate | 19/19 |
+| dotnetTest-result gate | 48/48; not the full suite |
+| Startup / port / real owned PG / environment regression | 149/149, zero skip/not-run |
+
+The caller separately executes the exact production functions against the
+previous two accepted Npgsql grammar counterexamples: both real native child
+calls exit 0, receive original lengths 60/55, and persist neither credential
+head nor tail in JSON/text metadata. The same production XML decision rejects
+the original test failure and all three malformed assembly-errors examples;
+valid Pass and empty-errors controls remain accepted. Actual finalizer AST
+fixtures with summary, log and manifest paths blocked independently return
+exit 1 / `SealOk=false`. The nonempty sealed-output refusal retains its files.
+These are tool fixtures, not claims about a malformed real runner result.
+
+### 14.2 Fresh caller full table-only PostgreSQL execution
+
+Command and actual retained native exit are in `run-real-pg.ps1` and
+`real-pg.native.json`. The caller uses the unchanged official SHA-pinned
+PostgreSQL 16.10 ZIP read-only, a new owned GUID root under this worktree's
+`artifacts`, Release configuration, default-port candidates starting at 55612,
+and no unified-verification option. Actual wrapper native exit is **0** and
+the original stdout ends in `P52-TABLE-POSTGRES-PASS`.
+
+The caller rechecks all **196** final manifest rows: zero length/hash mismatches,
+zero manifest self rows. Manifest SHA-256:
+`02F3772A92F20AF026E4AAE5A4EF98AB36438832F6A519E585E618D0327B68E1`.
+All **33** actual native invocation metadata records bind their three original
+streams by length/hash and carry integer exits, process identity and timing.
+The forced writer records native exit **-1**, agreeing with its original kill
+record; normal helpers exit 0. Quiet helper output remains genuinely empty.
+
+Fresh builds and real XML show **42/42** full selected table cases and **13/13**
+targeted cases, all Pass with unique IDs. The 13 are a repeated subset of the
+42, not additional unique coverage. Crash/kill, immediate PG restart and reader
+recovery execute, followed by dump, actual empty-target query, restore and
+independent reader. All five backup/restore closure facts are true. The custom
+dump has `PGDMP` magic, 44,725 bytes, SHA-256
+`B538BFD6283AFD604E4F50C12567499E5A85E976D1917A58785404AA62BD435C`.
+
+Ownership cleanup verifies the live data directory, retains marker/final server
+and stop logs, records stop native 0, one pre-stop process and zero post-stop
+processes, and removes the owned root. Final caller process inspection finds
+no owned PostgreSQL process. Every captured environment variable is restored;
+no payload-key value is recorded. The original files and detailed checks are in
+`real-pg-audit.json` and its referenced GUID log directory.
+
+The caller also independently rehashes receiver R3 real **196** and startup
+**1,817** original manifest rows: zero mismatches; the hashes in section 13 match.
+This is an audit of receiver execution, distinct from the new caller run above.
+All earlier receiver/caller product failures remain retained. A caller audit
+helper initially needed PowerShell array-return normalization; its initial
+source is retained separately, and the corrected audit passes against the same
+unchanged product records. A compact metadata summary avoids serializing
+Get-Content's extended PowerShell properties; original diagnostic JSON remains.
+
+### 14.3 Publication boundary
+
+Publish this accepted six-file increment into the existing **PR20** source
+`feat/v5-post-g1-batch`; keep it OPEN/Draft. The previous accepted remote head is
+`06e892cf41a48c751370143c490699a26439a637`, an ancestor of the tested candidate;
+there are no unaccepted D03/D04 changes in this increment. Only this appendix
+is added after testing. PR24 and the accepted `v5` base remain unchanged.
+
+This accepts local CI evidence tooling and table-only PG verification, not a
+new remote-head CI result. Pushing may trigger the existing workflow; no manual
+rerun/dispatch or remote-success claim is made. The full dotnetTest mode,
+historical git pins, unresolved `39970580589` framework evidence, lobby/unified
+execution, natural full-match PG terminal/outbox, Unity/Player/device evidence,
+formal C04/C05 and G2-G5 remain at their separately recorded statuses. Historical
+frozen-head CI audit findings are preserved as historical facts. V4 remains
+production; no merge, deployment or scheduler change is part of this acceptance.
