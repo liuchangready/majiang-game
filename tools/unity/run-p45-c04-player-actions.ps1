@@ -66,10 +66,10 @@ function Import-C04NugetSeed([string]$seedRoot,[string]$auditPath,[string]$desti
     $auditFull = [IO.Path]::GetFullPath($auditPath)
     $sourcePrefix = $sourceRoot.TrimEnd([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
     if (-not (Test-Path -LiteralPath $sourceRoot -PathType Container) -or -not (Test-Path -LiteralPath $auditFull -PathType Leaf)) { throw 'NuGet seed source/audit is missing.' }
-    $rows = @(Get-Content -LiteralPath $auditFull -Raw -Encoding UTF8 | ConvertFrom-Json)
-    if ($rows.Count -eq 0) { throw 'NuGet seed SHA audit is empty.' }
+    $rows = ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($auditFull, [Text.Encoding]::UTF8))
+    if ($null -eq $rows -or @($rows).Count -eq 0) { throw 'NuGet seed SHA audit is empty.' }
     $copied = New-Object System.Collections.Generic.List[object]
-    foreach ($row in $rows) {
+    foreach ($row in @($rows)) {
         $relative = [string]$row.path
         if ([string]::IsNullOrWhiteSpace($relative) -or $relative -match '(^|[\\/])\.\.([\\/]|$)' -or [IO.Path]::IsPathRooted($relative) -or $relative -notmatch '^[^\\/:]+[\\/][^\\/:]+[\\/][^\\/:]+\.nupkg$') { throw "Invalid NuGet seed relative path: $relative" }
         $normalized = $relative.Replace('/',[IO.Path]::DirectorySeparatorChar).Replace('\',[IO.Path]::DirectorySeparatorChar)
@@ -860,10 +860,23 @@ Start-Sleep -Seconds 25
     $seedSha = [Security.Cryptography.SHA512]::Create()
     try { $seedStream = [IO.File]::OpenRead($seedPackagePath); try { $seedSha512 = [Convert]::ToBase64String($seedSha.ComputeHash($seedStream)) } finally { $seedStream.Dispose() } } finally { $seedSha.Dispose() }
     [IO.File]::WriteAllText(($seedPackagePath + '.sha512'),$seedSha512,(New-Object Text.UTF8Encoding($false)))
+    $seedPackage2Directory = Join-Path $seedSource 'fixture.second/4.5.6'
+    New-Item -ItemType Directory -Force -Path $seedPackage2Directory | Out-Null
+    $seedPackage2Path = Join-Path $seedPackage2Directory 'fixture.second.4.5.6.nupkg'
+    [IO.File]::WriteAllBytes($seedPackage2Path,[Text.Encoding]::UTF8.GetBytes('c04-second-owned-nupkg-fixture'))
+    $seedSha256_2 = Get-Sha256 $seedPackage2Path
+    $seedSha_2 = [Security.Cryptography.SHA512]::Create()
+    try { $seedStream2 = [IO.File]::OpenRead($seedPackage2Path); try { $seedSha512_2 = [Convert]::ToBase64String($seedSha_2.ComputeHash($seedStream2)) } finally { $seedStream2.Dispose() } } finally { $seedSha_2.Dispose() }
+    [IO.File]::WriteAllText(($seedPackage2Path + '.sha512'),$seedSha512_2,(New-Object Text.UTF8Encoding($false)))
     $seedAudit = Join-Path $RunRoot 'nuget-seed-fixture-audit.json'
-    [IO.File]::WriteAllText($seedAudit,(@([ordered]@{ path='fixture.package/1.2.3/fixture.package.1.2.3.nupkg'; sha256=$seedSha256; sha512=$seedSha512; bytes=(Get-Item $seedPackagePath).Length }) | ConvertTo-Json -Depth 4), (New-Object Text.UTF8Encoding($false)))
+    $seedRows = @(
+        [ordered]@{ path='fixture.package/1.2.3/fixture.package.1.2.3.nupkg'; sha256=$seedSha256; sha512=$seedSha512; bytes=(Get-Item $seedPackagePath).Length },
+        [ordered]@{ path='fixture.second/4.5.6/fixture.second.4.5.6.nupkg'; sha256=$seedSha256_2; sha512=$seedSha512_2; bytes=(Get-Item $seedPackage2Path).Length }
+    )
+    [IO.File]::WriteAllText($seedAudit,(ConvertTo-Json -InputObject $seedRows -Depth 4), (New-Object Text.UTF8Encoding($false)))
     $seedCopy = Import-C04NugetSeed $seedSource $seedAudit $seedDestination (Join-Path $RunRoot 'nuget-seed-fixture-copy.json')
-    if ($seedCopy.packageCount -ne 1 -or (Get-Sha256 (Join-Path $seedDestination 'fixture.package/1.2.3/fixture.package.1.2.3.nupkg')) -cne $seedSha256) { throw 'Verified NuGet seed package did not copy into the owned fresh cache.' }
+    if ($seedCopy.packageCount -ne 2 -or (Get-Sha256 (Join-Path $seedDestination 'fixture.package/1.2.3/fixture.package.1.2.3.nupkg')) -cne $seedSha256 -or
+        (Get-Sha256 (Join-Path $seedDestination 'fixture.second/4.5.6/fixture.second.4.5.6.nupkg')) -cne $seedSha256_2) { throw 'Verified NuGet seed audit array did not copy every package into the owned fresh cache.' }
     $seedBadAudit = Join-Path $RunRoot 'nuget-seed-fixture-badhash.json'
     [IO.File]::WriteAllText($seedBadAudit,(@([ordered]@{ path='fixture.package/1.2.3/fixture.package.1.2.3.nupkg'; sha256=('0'*64); sha512=$seedSha512; bytes=(Get-Item $seedPackagePath).Length }) | ConvertTo-Json -Depth 4), (New-Object Text.UTF8Encoding($false)))
     $seedBadHashRejected = $false
