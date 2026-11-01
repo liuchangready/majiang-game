@@ -64,6 +64,12 @@ function Get-C04StableArtifactFiles([string]$root) {
     while ($pending.Count -gt 0) {
         $directory = $pending.Pop()
         $excluded = $false
+        $dotnetSource = [IO.Path]::GetFullPath((Join-Path $root 'source/dotnet')).TrimEnd([IO.Path]::DirectorySeparatorChar)
+        $directoryLeaf = Split-Path -Leaf $directory
+        if ($directory.StartsWith($dotnetSource + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -and
+            $directoryLeaf -in @('obj','bin')) {
+            continue
+        }
         foreach ($volatile in $volatileRoots) {
             if ($directory.Equals($volatile, [StringComparison]::OrdinalIgnoreCase) -or
                 $directory.StartsWith($volatile + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
@@ -85,6 +91,8 @@ function Get-C04SeparatedVolatileRoots([string]$root) {
         [ordered]@{ path='source/unity/Mahjong.Unity/Library'; classification='VOLATILE_UNITY_CACHE'; boundBy='unity prebuild/postbuild input closures and script-assembly hashes' },
         [ordered]@{ path='source/unity/Mahjong.Unity/Temp'; classification='VOLATILE_UNITY_PROCESS_FILES'; boundBy='native stage process identity/exit and Unity log' },
         [ordered]@{ path='source/unity/Mahjong.Unity/Logs'; classification='VOLATILE_UNITY_PROCESS_FILES'; boundBy='captured stage stdout/stderr and designated Unity log under logs/' },
+        [ordered]@{ path='source/dotnet/**/obj'; classification='VOLATILE_DOTNET_INTERMEDIATES'; boundBy='fresh dotnet-build-artifacts-closure.json' },
+        [ordered]@{ path='source/dotnet/**/bin'; classification='VOLATILE_DOTNET_INTERMEDIATES'; boundBy='fresh dotnet-build-artifacts-closure.json' },
         [ordered]@{ path='temp'; classification='VOLATILE_PROCESS_TEMP'; boundBy='not a build input or review artifact' },
         [ordered]@{ path='nuget'; classification='VOLATILE_PACKAGE_CACHE'; boundBy='resolved source closure and build output hashes' },
         [ordered]@{ path='dotnet-home'; classification='VOLATILE_TOOL_CACHE'; boundBy='pinned dotnet executable and native command record' }
@@ -690,7 +698,7 @@ try {
     $provenanceSha = Get-Sha256 $sharedEvidence
 
     $playXml = Join-Path $logs 'playmode.xml'; $playLog = Join-Path $logs 'playmode.unity.log'
-    $unityTestArgs = @('-batchmode','-nographics','-projectPath',(Quote-Arg $project),'-runTests','-testPlatform','PlayMode','-testFilter','Mahjong.Unity.Tests.PlayMode.C04PlayerActionScenarioTests','-testResults',(Quote-Arg $playXml),'-logFile',(Quote-Arg $playLog),'-quit') -join ' '
+    $unityTestArgs = @('-batchmode','-nographics','-projectPath',(Quote-Arg $project),'-runTests','-testPlatform','PlayMode','-testFilter','Mahjong.Unity.Tests.PlayMode.C04PlayerActionScenarioTests','-testResults',(Quote-Arg $playXml),'-logFile',(Quote-Arg $playLog)) -join ' '
     $play = Invoke-OwnedNative -Name 'UnityPlayModeC04' -FilePath $UnityPath -Arguments $unityTestArgs -WorkingDirectory $project -StdoutPath (Join-Path $logs 'playmode.stdout.txt') -StderrPath (Join-Path $logs 'playmode.stderr.txt') -Timeout 900
     if ($play.exitCode -ne 0 -or -not (Test-Path -LiteralPath $playXml)) { throw 'Targeted Unity PlayMode run failed or produced no XML.' }
     [xml]$playResults = Get-Content -LiteralPath $playXml -Raw
