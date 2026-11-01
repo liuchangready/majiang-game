@@ -39,6 +39,7 @@ $script:mutex = $null
 $script:mutexHeld = $false
 $script:C04VerifierPath = $null
 $script:unityProjectRoot = $null
+$script:stagedRepositoryRoot = $null
 $script:stageRecords = New-Object System.Collections.Generic.List[object]
 $gitHead = ''
 $trx = Join-Path $RunRoot 'dotnet-results/LocalHost.xml'
@@ -114,8 +115,9 @@ function Get-C04StableArtifactFiles([string]$root) {
 
 function Get-C04SeparatedVolatileRoots([string]$root) {
     $unityRoot = if ($script:unityProjectRoot) { $script:unityProjectRoot } else { Join-Path $root 'p' }
+    $stagedRepo = if ($script:stagedRepositoryRoot) { $script:stagedRepositoryRoot } else { Split-Path -Parent $unityRoot }
     return @(
-        [ordered]@{ path=(Split-Path -Parent $unityRoot); classification='EXTERNAL_GUID_STAGED_FROZEN_REPOSITORY'; boundBy='unity-short-path-staging.json complete source/byte/SHA-256 equality record and Unity input closures' },
+        [ordered]@{ path=$stagedRepo; classification='EXTERNAL_GUID_STAGED_FROZEN_REPOSITORY'; boundBy='unity-short-path-staging.json complete source/byte/SHA-256 equality record and Unity input closures' },
         [ordered]@{ path=(Join-Path $unityRoot 'Library'); classification='VOLATILE_UNITY_CACHE'; boundBy='unity prebuild/postbuild input closures and script-assembly hashes' },
         [ordered]@{ path=(Join-Path $unityRoot 'Temp'); classification='VOLATILE_UNITY_PROCESS_FILES'; boundBy='native stage process identity/exit and Unity log' },
         [ordered]@{ path=(Join-Path $unityRoot 'Logs'); classification='VOLATILE_UNITY_PROCESS_FILES'; boundBy='captured stage stdout/stderr and designated Unity log under logs/' },
@@ -784,8 +786,12 @@ try {
     $projectStageRoot = Join-Path 'E:\c04' $runId
     if (Test-Path -LiteralPath $projectStageRoot) { throw 'Exclusive short-path staging root already exists; refusing to overwrite.' }
     New-Item -ItemType Directory -Path $projectStageRoot | Out-Null
-    $sourceRepo = Join-Path $projectStageRoot 'repo'
-    Copy-Item -LiteralPath $source -Destination $sourceRepo -Recurse
+    $sourceRepo = $projectStageRoot
+    $script:stagedRepositoryRoot = $sourceRepo
+    $stageExtractArgs = @('-xf',(Quote-Arg $archive),'-C',(Quote-Arg $sourceRepo)) -join ' '
+    $stageExtract = Invoke-OwnedNative -Name 'ExtractFrozenSourceToShortRoot' -FilePath 'tar.exe' -Arguments $stageExtractArgs -WorkingDirectory $RunRoot -StdoutPath (Join-Path $logs 'short-root-extract.stdout.txt') -StderrPath (Join-Path $logs 'short-root-extract.stderr.txt') -Timeout 300
+    if ($stageExtract.exitCode -ne 0) { throw 'Frozen source archive extraction to the short E-drive root failed.' }
+    Assert-C04ArchiveHasNoGitMetadata $sourceRepo | Out-Null
     $shortPathProjectSha = Assert-C04UnityProjectCopy $source $sourceRepo (Join-Path $RunRoot 'unity-short-path-staging.json')
     $project = Join-Path $sourceRepo 'unity/Mahjong.Unity'
     $script:unityProjectRoot = $project
@@ -802,7 +808,7 @@ EditorUserSettings:
 '@
     [IO.File]::WriteAllText($userSettings, $isolatedImportSettings + "`n", (New-Object Text.UTF8Encoding($false)))
     $isolatedImportSettingsSha = Get-Sha256 $userSettings
-    [IO.File]::WriteAllText((Join-Path $RunRoot 'unity-generated-inputs.json'), (([ordered]@{ path='repo/unity/Mahjong.Unity/UserSettings/EditorUserSettings.asset'; purpose='per-run project-scoped setting in the byte-verified frozen repository copy; does not change machine preferences'; sha256=$isolatedImportSettingsSha; bytes=(Get-Item -LiteralPath $userSettings).Length } | ConvertTo-Json -Depth 4) + "`n"), (New-Object Text.UTF8Encoding($false)))
+    [IO.File]::WriteAllText((Join-Path $RunRoot 'unity-generated-inputs.json'), (([ordered]@{ path='unity/Mahjong.Unity/UserSettings/EditorUserSettings.asset'; purpose='per-run project-scoped setting in the byte-verified frozen repository copy; does not change machine preferences'; sha256=$isolatedImportSettingsSha; bytes=(Get-Item -LiteralPath $userSettings).Length } | ConvertTo-Json -Depth 4) + "`n"), (New-Object Text.UTF8Encoding($false)))
 
     $dotnetResults = Join-Path $RunRoot 'dotnet-results'
     $dotnetArtifacts = Join-Path $RunRoot 'dotnet-artifacts'
