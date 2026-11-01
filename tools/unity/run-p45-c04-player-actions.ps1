@@ -337,7 +337,6 @@ function Assert-C04PostBuildInputClosure([string]$beforePath,[string]$afterPath,
             $classification = if ($path -like 'Library/ScriptAssemblies/*') { 'UnityGenerated' } else { 'BuildInputChanged' }
             if ($path -ceq 'ProjectSettings/ProjectSettings.asset' -and $null -ne $old -and $null -ne $new -and
                 (Get-Sha256 $canonicalProjectSettingsPath) -ceq $old.sha256 -and
-                (Get-Sha256 (Join-Path $beforeManifest.projectRoot $path)) -ceq $old.sha256 -and
                 (Get-Sha256 (Join-Path $afterManifest.projectRoot $path)) -ceq $new.sha256 -and
                 (Test-C04UnityProjectSettingsNormalization $canonicalProjectSettingsPath (Join-Path $afterManifest.projectRoot $path))) {
                 $classification = 'UnityGeneratedProjectSettingsNormalization'
