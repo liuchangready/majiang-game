@@ -5,8 +5,8 @@ Status: **UI repair delivered; not C04, P4.5, G2, or G2-G5 acceptance. V4 remain
 ## Binding and scope
 
 - Worktree base/publication: cde5da1649d42151abaefc2edc5f558a287d703f; parent merge db9e5d536f618a9a6991e67498b73ce34d056f4d; accepted C03 code b33f0aad21c962a6f147dbfdb8a63fd98942d4a2.
-- Final commit da1cec538da89130893845931ea9cc70c3ed8416 (parent cde5da1649d42151abaefc2edc5f558a287d703f).
-- Sole tracked change: unity/Mahjong.Unity/Assets/Tests/PlayMode/TablePlayModeTests.cs; source SHA-256 4310C51D48EA45D9E5EF02C8ED67E236AE77E7317845AC322D896BAB8AE5A684; Git blob 73d06b7e64efffd27db43c0b381dbbe5af740672.
+- Frozen fixture code commit da1cec538da89130893845931ea9cc70c3ed8416 (parent cde5da1649d42151abaefc2edc5f558a287d703f).
+- Round 1 code-only tracked change: unity/Mahjong.Unity/Assets/Tests/PlayMode/TablePlayModeTests.cs; source SHA-256 4310C51D48EA45D9E5EF02C8ED67E236AE77E7317845AC322D896BAB8AE5A684; Git blob 73d06b7e64efffd27db43c0b381dbbe5af740672.
 - Fresh shared build: Unity 6000.3.27f1, .NET SDK 8.0.426, Release netstandard2.1; 150 input files, 19 plugin closure outputs; build 0 warnings / 0 errors, native exit 0. Provenance check passed before Unity runs. Snapshot shared-plugin-provenance.json SHA-256 A36CF4B8A9CF75656E0F01E24373BE11E26233B088B492B519D4752D576E461C; shared-build.log SHA-256 3D7A2C548EB6702A7D1CF9F6B2A9545D3CB58884738D7F08C0511DB6F137ACCA; provenance-check.log SHA-256 5DBD51D862DD4B950EC193277B42FDED8CC2550EE17BE82E1F4B024C6EB33130.
 - Unity PlayMode omitted -nographics and ran on this worktree with fresh shared assemblies. Unity operations were serialized under Local\MahjongV5P45UnityValidation. Evidence/log/temp outputs are under ignored build/ui15-luna-c4edf2fb5d26490d8e32fbee0321a390.
 
@@ -59,7 +59,7 @@ Earlier .NET invocation failures were command syntax/report-output errors, not t
 
 ## Final scope
 
-- Commit contains only the authorized PlayMode test file. Unity-generated plugin DLL/PDB and asset diffs were restored. git diff HEAD^ HEAD --check passed; worktree is clean.
+- Round 1 code commit contains only the authorized PlayMode test file. Unity-generated plugin DLL/PDB and asset diffs were restored. git diff HEAD^ HEAD --check passed; worktree is clean.
 - PASS: shared build/provenance, TableModel 235, targeted 15, full PlayMode 148.
 - NOT_RUN: EditMode (fixture-only PlayMode change), Android/device, Windows Player/device, formal C04/C05/G2-G5. This UI repair does not approve those phases.
 - Old Compare remains BLOCKED17 / UNTRUSTED_LOCAL and LOCAL G7-02 remains BLOCKED. No push, PR change, merge, deployment, scheduler, or completion flag action.
@@ -146,3 +146,13 @@ git show --stat --oneline da1cec538da89130893845931ea9cc70c3ed8416 -- doc/v5-重
 ## Final document-only return binding
 
 This report correction is based on review of the immutable execution bound to `da1cec538da89130893845931ea9cc70c3ed8416`; it does not claim that commit contained this report. The final document-return commit and this tracked report's SHA-256 are recorded in the handoff. Relative to accepted base `cde5da1649d42151abaefc2edc5f558a287d703f`, the authorized paths are exactly the fixture file listed above and this report. No push, PR change, approval, merge, deployment, scheduler or completion-flag action was performed.
+
+## Caller independent acceptance (2026-11-01)
+
+UI15-R1-01 is closed. Receiver Round 2 final `1f9f2bf33a68def072bd2bdeb284a13ed990114f` adds only this report to the accepted fixture code `da1cec538da89130893845931ea9cc70c3ed8416`; its submitted report SHA-256 was `B4319CFB254435E6B32ACD87F24D32D57C5F35C5C019C5D463CE160DC5A98DFB`. This caller publication changes only report wording and adds this acceptance; the tested fixture blob remains `73d06b7e64efffd27db43c0b381dbbe5af740672`. The graphical tests ran before the code commit, against the matching modified fixture; the later binding record identifies those exact bytes rather than proving a clean commit checkout at execution time.
+
+Caller Round 2 actual local checks, under `E:/majiang-review/caller-ui15-r2-closeout-6035a8f1/build/caller-review`, pass **13/13** evidence checks and **10/10** report/scope checks. They compare all old 147 names, the exact old failed-15 set, the added no-owner case, the existing wrong-epoch case, original native graphical completion, exact recorded Unity argument sequences, the report's retained artifact hashes, the tracked report path and the two-file diff. Evidence audit SHA-256: `DFA255A85FBA71B461EAA9E6E24037D1A348AE88F42005A216D90CF4ECA2ABF8`; report-check results: `50B8DC0E1E3410171A37E516D64386206632D2734E6B27C990280F31A45D1EB1`; retained artifact inventory: `76089E73126C7358470B8679C6EE68F78D4059B1151C3F2DC6D90DD5539771D7`. The initial caller inventory omitted the separately referenced source file and failed; its script and explanation are retained, and the corrected inventory includes that exact file. No receiver evidence was edited.
+
+The caller's preceding fresh Release Rebuild and **235/235** TableModel execution remain valid because Round 2 changes documentation only. **148/148** graphical PlayMode and the **15/15** targeted subset are receiver executions independently audited by the caller, with no duplicate case-count claim. No new Unity, Player, PostgreSQL, Android, device or CI run was performed for this correction. Production authorization and all original business assertions remain unchanged.
+
+This accepts the UI15 task and resolves the historical PlayMode fixture failures in the current source. Historical C03 baseline results remain 132/147 with the original 15 failures; they are not rewritten. Formal C04 recovery/LOCAL semantics, final APK/device/visual/input, natural PG full-match terminal/outbox and G2-G5 acceptance remain separate. Publish through the single existing PR20, keep it OPEN/Draft, leave PR24 unchanged, and do not merge, release, deploy or change scheduling.
