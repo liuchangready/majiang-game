@@ -8,11 +8,31 @@
 
 - 本交付是**已接受组件的集成候选复验**，不是 G2/C03 通过，不是最终 G2 裁决，不是 C01/C02 重启，也不批准 P4.5/G2–G5。V4 仍是唯一生产架构。
 - 14 文件 accepted exporter 增量已按源提交精确应用；`bae6..b33f0aad` 只改这 14 文件，`diff-check=0`，没有回退 C01/C02/C05，没有合并 PR24 整分支或旧 driver。
-- 冻结代码 `b33f0aad21c962a6f147dbfdb8a63fd98942d4a2` 的定向 .NET/工具/12 局 Player/8 场景受控恢复均有本轮原件。**统一全量 .NET 门禁因无 PostgreSQL 而 FAIL（3 个 PG 依赖行），全量 PlayMode 因 15 个既有 UI probe 失败而 FAIL**；两者均未被改写成 PASS。
+- 冻结代码 `b33f0aad21c962a6f147dbfdb8a63fd98942d4a2` 的定向 .NET/工具/12 局 Player/8 场景受控恢复均有本轮原件。**统一全量 .NET 门禁在仓库自有隔离 PostgreSQL wrapper 下 PASS（2,820/2,820，21 行全 PASS，0 fail/skip/notrun）；未配置首次 FAIL 保留。全量 PlayMode 仍 132/147 FAIL，但已在 bae6 baseline 逐例复现同一 15 个失败（R1 归因关闭；C03 不修 UI、不宣称 147 全绿）。**
 - 旧 RecoveryExport Compare 在候选上保持 **BLOCKED / exit 17 / pass=false / factsEqual=true / UNTRUSTED_LOCAL**；负例矩阵 22/22。旧 Compare 的历史 `NO_NON_FORGEABLE_COLLECTOR_ATTESTATION` 门禁没有被删除或放宽。
 - 受控恢复 8 场景全部是**本轮同一 Player、同一冻结源码的 GAME 采集**：collector exit 0、offline verifier exit 0、collection chain PASS、`gamePositive=true`；`callerAcceptance` 一律 `PENDING_INDEPENDENT_REVIEW`，本报告不自行接受。
 - 不声称 C04 的恢复后 outbox 实际重提/零重复副作用已经覆盖；不声称 Android/adb/iOS/IL2CPP/远端正例、当前头 CI 或 G2–G5 通过。
 - 未 push、未创建/修改 PR、未 record MR、未 approve、未 merge v5、未部署、未改 scheduler、未创建 `complete.flag`。
+
+---
+
+## 0. R1 复核返修结果（2026-11-01，同 thread/session/model）
+
+本轮只处理 caller `C03 R1` 的 2 个 MAJOR 验证缺口；**没有改代码、没有重建 Player、没有重跑 8 GAME**，14 文件集成 blob 与 205 文件 Player 包保持不变。两个缺口均以实际执行关闭：
+
+| 复核项 | 处理 | 结果 |
+|---|---|---|
+| C03-R1-01 全量 PlayMode 15 失败归因 | 在 E 盘独立 `bae6b8b0` 工作树，fresh baseline plugins + fresh Library + 同图形 Unity + 同名 mutex 跑完整 PlayMode | **baseline 同样 147 total / 132 pass / 15 fail / native2**；15 个 name 集合完全一致，15/15 结果一致，路径归一化后的 failure message 15/15 一致。候选 132/147 FAIL 保留；归因为既有 fixture/产品边界，不是 14 文件 delta 引入。 |
+| C03-R1-02 受控 PG 统一复验 | 先用仓库 `tools/ci/verify-v5-table-postgres.ps1 -RunUnifiedVerification`；第一次 LobbyRoot 放在 worktree 内被其安全门拒绝；改用 ignored `artifacts/` 与 worktree 外 LobbyRoot 重跑 | **wrapper native0 / exit0**；table 42/42、targeted 13/13、crash/restart/restore 全 PASS；unified **2,820/2,820，0 fail / 0 skip / 0 not-run**，21 行全 PASS；env restored=true，cluster 已按 ownership 删除。 |
+| 范围/证据 | 仍仅 14 个集成文件 + 本报告 15 路径；R1 证据在 ignored `build/`、`artifacts/` 与独立 E baseline | 无 push/PR/MR/approve/merge/deploy/scheduler；无 C04/C05 正式矩阵扩展。 |
+
+R1 证据索引：
+
+- baseline XML：`build/g2-c03-20261101-ds/r1-baseline/baseline/playmode-baseline.xml`，SHA-256 `B24A0F8D2C969F403B541B724C8BE8A60B2D11BDE5BF0751B96972B3020B3CC6`；native2。
+- baseline/candidate 逐例对照：`r1-baseline/failure-comparison.json`，SHA-256 `08D23E2A8EFB8978F8EF95E7214512AC1827603B601E13BA85AA20579D117669`；15/15 same result、15/15 same normalized message。
+- baseline identity：`r1-baseline/baseline-identity.json`，SHA-256 `6D5B2BF617281E03BA7C860116C4DF9C782649A419B9FBC771C150FA95FDEFB6`。
+- PG wrapper：`r1-pg/wrapper-summary.json`，SHA-256 `75AF068289F08F48ADE75F9BEA7A95A74CB0EBC9A4DE73E76455380CCECF8434`；`r1-pg/unified-summary.log` SHA `C9F25CFFAABAAC4F912D5421EC3271579AF85C685EDDF6141DFF8C505CB71570`；逐工程 count `r1-pg/unified-project-counts.json` SHA `5C388D65D0ED69A837FBFB57BA6A748E0762ABC4DAEA1B641969714B527D0183`。
+- R1 合并证据清单：`r1-evidence-sha256.csv`，23,711 行，SHA-256 `2074F524A303CA2451236F9578B8D86F4C872437AD186B7311EE8D6493FDE131`。
 
 ---
 
@@ -22,7 +42,8 @@
 
 | 项 | 值 |
 |---|---|
-| 起始 HEAD / 当前 PR20 候选 | `bae6b8b0c98c9ed80256373060a9e754d6fc4296` |
+| 起始 HEAD（本树 bae6） | `bae6b8b0c98c9ed80256373060a9e754d6fc4296` |
+| 当前发布 PR20（R1 时间快照） | `d1c8a2e3`（调用方提供；不认证 `b33f0aad`，也不继承 bae6 CI） |
 | 分支 | `wt/v5-g2-c03-unification-ds-20261101-0943` |
 | 起始 status | clean（`git status --porcelain` 空），`diff-check=0` |
 | accepted `origin/v5` | `8fd7c6cb701dfbb41c28938de4186749bdd1d6c7`（仍为该值） |
@@ -57,7 +78,7 @@
 | .NET SDK | `8.0.426`，`D:\Unity\dotnet\dotnet.exe` |
 | PowerShell | Windows PowerShell 5.1.19041.6456（Desktop） |
 | Unity | `D:\Unity\Hub\Editor\6000.3.27f1\Editor\Unity.exe` |
-| PostgreSQL | **无服务、5432 不可连**；三个 PG 测试工程因此 fail-closed |
+| PostgreSQL | 无系统服务、5432 不可连；R1 用仓库固定 PG 16.10 ZIP、独占 loopback cluster 55592/55593 成功完成受控复验，未安装/停止共享服务 |
 | 磁盘 | 工作全部在 E:；D: 仅读取既有 baseline，未写新大产物 |
 
 ---
@@ -110,16 +131,17 @@ git diff --stat 2a3a359412fd555bcbb78dec119531c3bde35713..6750b4362063169cd43530
 git commit -m "feat(v5): integrate accepted P4.5 recovery export into G2-C03 candidate"
 # b33f0aad21c962a6f147dbfdb8a63fd98942d4a2
 
-git diff --stat bae6b8b0c98c9ed80256373060a9e754d6fc4296..HEAD
+git diff --stat bae6b8b0c98c9ed80256373060a9e754d6fc4296..b33f0aad21c962a6f147dbfdb8a63fd98942d4a2
 # 14 files changed, 5207 insertions(+), 117 deletions(-)
-git diff --check bae6b8b0c98c9ed80256373060a9e754d6fc4296..HEAD
+git diff --check bae6b8b0c98c9ed80256373060a9e754d6fc4296..b33f0aad21c962a6f147dbfdb8a63fd98942d4a2
 # exit 0
 ```
 
 - 代码冻结 SHA：`b33f0aad21c962a6f147dbfdb8a63fd98942d4a2`
+- R1 返修**只改报告**，没有改代码；`b33f0aad` 的 14 个 blob 与本轮初提交完全一致，205 文件 Player/8 GAME 案卷未重建。
 - 测试/工具冻结 blob（节选）：`P45RecoveryExportTests.cs=b8292c7d7b72310ef63f0a276066debf22a3a45c`；`P45RecoveryVerifier/Program.cs=24a44b5c6d8369905ec09c0b44d8c902c90a0f7f`；`VerifyP45RecoveryExport.Tests.ps1=fffd6adf9d9e49042fa87c599bf5106b0cfa1d4a`；`run-p45-recovery-export.ps1=272e3385153de23edd811a06af8f81a170ccbc2b`；`VerifyP45ControlledRecoveryCollection.Tests.ps1=144a70756c4c2a7c6f471c631eff57e7474ac950`；`run-p45-controlled-recovery-collection.ps1=210f14c8a348cdcef5eb836214a3a15867d4b448`；`verify-p45-controlled-recovery-collection.ps1=8ee62d03e1b2ed9da8b98d8f9803b62614a7185f`。
 - 报告 SHA：见 §14 的交付说明（报告无法自引用自身字节 SHA；提交后由 `git hash-object`/SHA-256 记录在交付消息）。
-- 所有临时脚本、原始日志、下载与构建均在 ignored `build/g2-c03-20261101-ds/`，未提交。
+- 所有临时脚本、原始日志、下载与构建均在 ignored `build/g2-c03-20261101-ds/`、`build/c03-r1-*`、`artifacts/c03-r1-*` 与独立 E baseline，未提交。
 
 ---
 
@@ -149,7 +171,9 @@ D:\Unity\dotnet\dotnet.exe build dotnet/tools/P45RecoveryVerifier/P45RecoveryVer
 
 原始 XML 在 `build/g2-c03-20261101-ds/tests/*-final-xml/`（冻结 HEAD 重跑），提交前首次运行 XML 保留在 `tests/xml/`；测试日志在 `logs/`。
 
-### 3.3 统一 .NET 门禁：实际执行、实际 FAIL（PG 环境缺失）
+### 3.3 统一 .NET 门禁：未配置首次 FAIL → 受控 PG wrapper PASS（R1 关闭）
+
+**首次未配置（保留，不覆盖）**
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/verify-v5.ps1 `
@@ -158,14 +182,29 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/verify-v5.ps1 `
 # native exit 1；OVERALL: FAIL
 ```
 
-- 21 个项目；18 行 PASS、3 行 FAIL（脚本口径不是 BLOCKED）。
-- 实际执行 **2,820** 个 case：**2,746 pass / 62 fail / 12 skipped / 0 errors / 0 not-run**。
-- 3 个 FAIL 行全部是 PostgreSQL 依赖，不是 C03 代码回归：
-  - `Mahjong.TableService.DurableHost.Tests`：59 total，**38 pass / 21 fail**；`BLOCKED: MAHJONG_P54B_TEST_PG_ADMIN is required ... This assembly deliberately has no skipped/missing-PG fake-green path.`（`DurableTableHostEnvironment.cs:163`）。
-  - `Mahjong.Infrastructure.Tests`：42 total，**1 pass / 41 fail**；`BLOCKED: MAHJONG_P52_TEST_POSTGRES_ADMIN is required ...`（`PostgresTableTestEnvironment.cs:182`）。
-  - `Mahjong.LobbyService.Tests`：89 total，**77 pass / 12 skipped**；缺 `MAHJONG_LOBBY_TEST_POSTGRES`（`PostgresLobbyTestSupport.cs:30`），统一门禁把 skip 判 FAIL。
-- 证据：`verify-v5/summary.log`、`verify-v5.log`（SHA `8D94561420CAF4AE7EF131C09B6044548CE011215DFFBD65DAB7CE3AF0A4B22B`）、逐工程日志与原生日志；未启动/安装 PostgreSQL、未改环境变量、未把 skip 改写为 pass。
-- 统一门禁结论：**FAIL（环境 BLOCKED，见 C03-D-02）**；定向 .NET 结果不受影响。
+- 21 个项目；18 行 PASS、3 行 FAIL（脚本口径不是 BLOCKED）；2,820 case：2,746 pass / 62 fail / 12 skipped。
+- 3 行均为 PG 依赖：DurableHost 38/59（21 fail，缺 `MAHJONG_P54B_TEST_PG_ADMIN`）、Infrastructure 1/42（41 fail，缺 `MAHJONG_P52_TEST_POSTGRES_ADMIN`）、Lobby 77/89（12 skip，缺 `MAHJONG_LOBBY_TEST_POSTGRES`）。summary SHA `63E4A9A0E80CC6021A85AA6F1058BBEC36F8A73C5B0776B2BF042B962263DDA9`；log SHA `8D94561420CAF4AE7EF131C09B6044548CE011215DFFBD65DAB7CE3AF0A4B22B`。
+
+**受控 PG wrapper（R1 实际执行，native0）**
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File tools/ci/verify-v5-table-postgres.ps1 -Configuration Release `
+  -DotnetPath D:\Unity\dotnet\dotnet.exe -RunUnifiedVerification `
+  -Root <repo>/artifacts/c03-r1-pg-r2/cluster `
+  -LogDir build/c03-r1-pg-r2/table-evidence `
+  -UnifiedLogDir build/c03-r1-pg-r2/unified-evidence `
+  -LobbyRoot E:/majiang-review/c03-r1-pg-lobby-r2 `
+  -PgZipPath D:/majiang-pg-tmp/cache/postgresql-16.10-1-windows-x64-binaries.zip
+# native exit 0；P52-TABLE-POSTGRES-PASS
+```
+
+- 固定 PG zip SHA `EBB3B6AF4FA69DEA9951B66855BC4D42DC04E56CCB9AA7024CE3C58BD89D6B0C`（与脚本常量一致）；默认 bounded loopback 选择 `127.0.0.1:55592`（mode=default，candidateIndex=0）；lobby 55593；未安装/停止共享服务，未改机器环境。
+- wrapper stages：port-preflight / pg-start / cluster（server 16.10）/ xml selfcheck（7 负例）/ fresh-build / tests **42/42** / tests-targeted **13/13** / crash-writer KILLED / crash-restart / crash-reader / backup-restore 全部 PASS；`environmentRestored=true`；ownership cleanup 已删除 cluster。unified run-info head `82a95f7b`（代码仍 `b33f0aad`，其后仅报告提交），tracked 工作树 clean。
+- unified 实际 **2,820 / 2,820 pass，0 fail / 0 skip / 0 not-run**；21 project rows 全 PASS；companion 4/4 PASS；`OVERALL: PASS`。逐工程计数 `r1-pg/unified-project-counts.json`（SHA `5C388D65D0ED69A837FBFB57BA6A748E0762ABC4DAEA1B641969714B527D0183`）与原生 direct XML 一致，不是硬抄旧 2813。
+- 证据：`r1-pg/wrapper-summary.json` SHA `75AF068289F08F48ADE75F9BEA7A95A74CB0EBC9A4DE73E76455380CCECF8434`；`r1-pg/unified-summary.log` SHA `C9F25CFFAABAAC4F912D5421EC3271579AF85C685EDDF6141DFF8C505CB71570`；`r1-pg/tests.xml` SHA `DE42DE9B4B5CCAD48123BAA77F4ABF0A070A57960F6F8969BC8228B1E596D134`；`r1-pg/tests-targeted.xml` SHA `620986B1D0423A22A630DB55C9D8F00C9021AC657FB5D36485F287E346BBB4FF`。
+- 首次 PG 尝试保留：把 `LobbyRoot` 放在 worktree 内被 lobby wrapper 安全门拒绝（`BLOCKED: refusing a disposable cluster root inside the worktree: .../build/c03-r1-pg/lobby-cluster`），table 各 stage 已 PASS；wrapper cleanup 又因 `Root` 不在 `artifacts` 下拒绝删除，但 server 已停止、无 5432/55592 监听。第二次改用 ignored `artifacts/` 与 worktree 外 LobbyRoot 后通过。首失败 `build/c03-r1-pg/wrapper-console.log` SHA `2B4D72408FD1EACBDF665E2B1C00CB96C2067C56452FFF556F6CC47B8308367C`。
+- 边界：这是受控 PG 的 wrapper/readback/crash/restore 证据，不是自然整场终局、远端 WSS/G3 或发布认证。
 
 ---
 
@@ -206,12 +245,35 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/check-shared
 |---|---|---:|---|---|
 | 首次（插件未同步） | `-batchmode -nographics -runTests -testPlatform PlayMode` | 1 | 编译失败：`TableVisibleEventBatch` 未在旧 plugin DLL；未生成 XML | log `7226389D6E6A88A4D38A926A1428773E9BE482E4FD556CD2FB98DF2F65BBBAAF` |
 | 全量 `-nographics` | 同上（fresh plugin 后） | 2 | **147 total / 117 pass / 30 fail**；TMP importer + RenderTexture 无图形设备 | `0E85ECA47D6698FB37CE428090037E4E1C5C67E18B9D2D7AA64F95ED7EE25FC9` |
-| 全量（有图形设备） | `-batchmode -runTests -testPlatform PlayMode`（不加 `-nographics`） | 2 | **147 / 132 pass / 15 fail / 0 skip**；失败均位于既有 `TablePlayModeTests` 的 UI probes（C03 未改该文件；未建第二工作树做 base rerun） | `36B332C646FE2A92B5E1A4E71D1A347887CB93E7F4CD6DAAF82F5F968E875E98` |
+| 全量（有图形设备） | `-batchmode -runTests -testPlatform PlayMode`（不加 `-nographics`） | 2 | **147 / 132 pass / 15 fail / 0 skip**；失败位于 `TablePlayModeTests` 的 UI probes；R1 已在 bae6 baseline 复现同一 15 例 | `36B332C646FE2A92B5E1A4E71D1A347887CB93E7F4CD6DAAF82F5F968E875E98` |
+| **baseline bae6 全量（R1）** | 独立 E worktree `c03-r1-baseline-bae6-20261101`；fresh baseline plugins（149 inputs/19 outputs）+ fresh Library；同一有图形命令、同一 mutex | 2 | **147 / 132 pass / 15 fail / 0 skip**；15 个失败 name 集合与候选完全一致 | `B24A0F8D2C969F403B541B724C8BE8A60B2D11BDE5BF0751B96972B3020B3CC6` |
 | C01 执行边界套件 | `-testFilter Mahjong.Unity.Tests.PlayMode.LocalFullMatchDriverPlayModeTests`（有图形） | 0 | **7/7** | `ADBF0B1CA1D1E8D6859168527CA3E999F11706355417CD7C1642237067E5B964` |
 | 控制 UI 套件 | `-testFilter Mahjong.Unity.Tests.PlayMode.TableControlPlayModeTests`（有图形） | 0 | **2/2** | `DA2FC43E88676D72BABA87200F7217390FB5B631ED1237BCC194F94F2521AA5A` |
 | 控制 UI（首次 `-nographics`） | 同上，TMP importer 干扰 | 2 | 2 total / 1 pass / 1 fail | `97D2661E3F2249BB5E19F43389A6B1995EC93D3555F4F43EE474AA36730DB071` |
 
-**全量 PlayMode 不绿**是候选层的真实事实，见 C03-D-01；C01 相关 7/7 与控制 UI 2/2 已通过，不能把“全量 132/147”写成 147/147。
+**R1 归因结论**：baseline 147/132/15 与 candidate 逐例一致；15/15 失败集合相同，15/15 `result=Failed`，路径归一化后的 failure message 15/15 相同（仅 `Step10` 的堆栈路径不同，异常类型/行号 `TablePlayModeTests.cs:799`/offset 相同）。UI/test 源 blob 在 `bae6` 与 `b33f0aad` 完全相同：`TablePlayModeTests.cs=4abcf599...`、`TableCommandIntentFactory.cs=315f4f31...`、`PlayModeScriptedTableChannel.cs=05974d80...`；C03 14 文件 delta 不含这些路径。失败根因是 fixture `CreatePlayerBaselineEnvelope`（`TablePlayModeTests.cs:141-291`）未提供 authoritative owner control，而生产 `TableCommandIntentFactory.RequireSubmittable`（`TableCommandIntentFactory.cs:803-810`）在 `view.Own.Control == null` 时以 `CONTROL_STATE_UNAVAILABLE` fail-closed；不得移除生产门禁迁就 fixture。其余 outbox/pending 失败是该 admission 失败的级联，`Step10` 为 fixture 缺少对象的 NRE。候选 **132/147 FAIL 保留**，C03 不修无关 UI、不宣称 147 全绿。
+
+对照证据：`r1-baseline/failure-comparison.json` SHA `08D23E2A8EFB8978F8EF95E7214512AC1827603B601E13BA85AA20579D117669`；baseline identity SHA `6D5B2BF617281E03BA7C860116C4DF9C782649A419B9FBC771C150FA95FDEFB6`；baseline shared-build log SHA `4CDC879F967800D29E6451304E61F5F0D70908D3EB5CBF92587E24011A031E6D`；baseline provenance SHA `D42D235DF3728DF05C1109BE5A445225D96216106456E1EA798F392FF77F5843`。
+
+| # | 失败 probe（`TablePlayModeTests.`） | candidate | baseline | 首个 failure message（两边一致，路径归一化） |
+|---:|---|---|---|---|
+| 1 | `ProbeReview01_SentWithoutReceipt...` | Failed | Failed | `Expected: 1 / But was: 0` |
+| 2 | `ProbeReview02_NextRoundDoubleClick...` | Failed | Failed | `next-round buttons must use pending gate` |
+| 3 | `ProbeReview08_RealPointerTileMark...` | Failed | Failed | `real pointer confirmation must reach client outbox` |
+| 4 | `R2FormalProbe01_RealAppliedReceipt...` | Failed | Failed | `Expected: 1 / But was: 0` |
+| 5 | `R2FormalProbe08_PauseResume...` | Failed | Failed | `Expected: True / But was: False` |
+| 6 | `R2FormalProbe10_AvailableCheat...` | Failed | Failed | `no authoritative owner control state; actions fail closed` |
+| 7 | `R3FormalProbe07_OffTurnWindow...` | Failed | Failed | `no authoritative owner control state; actions fail closed` |
+| 8 | `R4FormalProbe04_UnchangedNoDecision...` | Failed | Failed | `unchanged confirmed offer was closed by duplicate snapshot` |
+| 9 | `R5FormalProbe04_UnexpiredCheat...` | Failed | Failed | `unexpired sleeve dialog must remain open across non-decision public updates` |
+| 10 | `Step02_RealClick...` | Failed | Failed | `Hand tile selection active`（Expected True/False） |
+| 11 | `Step03_RepeatedClicks...` | Failed | Failed | `Pending intent must be active`（Expected not null/actual null） |
+| 12 | `Step04_Cheat_TileMark...` | Failed | Failed | `TileMark canonical command must be persisted to outbox`（1/0） |
+| 13 | `Step05_Cheat_SleeveBloom...` | Failed | Failed | `Sleeve choice must be persisted to outbox`（1/0） |
+| 14 | `Step06_Cheat_BeamSwap...` | Failed | Failed | `Beam keep original choice must be persisted to outbox`（1/0） |
+| 15 | `Step10_NegativeMatrix...` | Failed | Failed | `NullReferenceException ... TablePlayModeTests.cs:799` |
+
+
 
 ### 5.3 Windows Player 构建
 
@@ -347,6 +409,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-reco
 4. **PlayMode `-nographics`**：TMP importer 与 `RenderTexture.Create` 失败，30 fail；改用有图形 batch 后 15 个既有 UI probe 仍失败。XML `0E85...` / `36B3...`。
 5. **PlayMode control `-nographics`**：TMP 窗口导致 1/2；有图形 2/2。XML `97D2...` / `DA2F...`。
 6. **fullmatch diffCheck=2**：生成字体 asset 行尾空白，不是源码 delta；恢复后 `bae6..b33f0aad` 的 `diff-check=0`。
+7. **PG wrapper attempt-1（R1）**：table 各 stage 已 PASS；unified 因 `LobbyRoot` 在 worktree 内被 lobby wrapper 安全门 BLOCKED，随后 cleanup 又因 table `Root` 不在 `artifacts` 下拒绝删除（server 已停）；保留 console/summary，第二次改用 ignored `artifacts/` + worktree 外 LobbyRoot 后 native0。首失败 SHA `2B4D72408FD1EACBDF665E2B1C00CB96C2067C56452FFF556F6CC47B8308367C`。
+8. **baseline PlayMode（R1）**：bae6 独立树 fresh plugin/Library 下复现同样 15 fail / native2；XML `B24A...`。这不是失败纠正，而是归因原件。
 
 没有删除、重写或改名任何历史失败；首次失败日志/XML 与后续成功结果并存。
 
@@ -354,36 +418,25 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-reco
 
 ## 10. 完整缺陷/观察清单（一次给全）
 
-### C03-D-01（MAJOR，开放，候选层；本 14 文件 delta 不含该测试/UI 路径，但未用 base 工作树重跑证明“历史既有”）
+### C03-D-01（MAJOR，R1 已关闭“归因”；候选 132/147 FAIL 保留，不是 C03 UI 修复项）
 
-- **位置**：`unity/Mahjong.Unity/Assets/Tests/PlayMode/TablePlayModeTests.cs:344,361,459,560,587,624,665,717,799,880,970,1002,1105,1185,1378`（15 个 probe）。
-- **原样复现**：
-  ```powershell
-  D:\Unity\Hub\Editor\6000.3.27f1\Editor\Unity.exe -batchmode `
-    -projectPath unity/Mahjong.Unity -runTests -testPlatform PlayMode `
-    -testResults build/g2-c03-20261101-ds/unity/playmode-gfx.xml `
-    -logFile build/g2-c03-20261101-ds/unity/playmode-gfx.log
-  ```
-- **实际**：native 2；147 total / 132 pass / 15 fail / 0 skip。失败包括 `ProbeReview01`（Expected 1 But was 0）、`ProbeReview02`、`ProbeReview08`、`R2FormalProbe01/08/10`、`R3FormalProbe07`、`R4FormalProbe04`、`R5FormalProbe04`、`Step02/03/04/05/06/10`。
-- **期望**：全量 PlayMode exit 0；若这些 probe 只适用于单独/人工场景，应在测试清单中显式隔离并给出理由，不能用 skip/空断言伪造绿色。
-- **证据**：`unity/playmode-gfx.xml` SHA `36B332C646FE2A92B5E1A4E71D1A347887CB93E7F4CD6DAAF82F5F968E875E98`；log；`-nographics` 首失败 XML `0E85...`。
-- **修复要求**：单独 UI/PlayMode 任务定位这些 probe 的产品/测试夹具问题；不得在 C03 内改 UI、放宽断言或删除 probe。C03 的受影响件是 C01 `LocalFullMatchDriverPlayModeTests` 7/7 与 `TableControlPlayModeTests` 2/2，均已绿。
-- **验收断言**：全量 PlayMode 147/147 exit 0，或经调用方批准的显式隔离清单；隔离后仍须实际执行剩余用例并给出逐例 XML。
+- **位置**：`unity/Mahjong.Unity/Assets/Tests/PlayMode/TablePlayModeTests.cs:141-291`（`CreatePlayerBaselineEnvelope`）、`:344,361,459,560,587,624,665,717,799,880,970,1002,1105,1185,1378`；生产门禁 `unity/Mahjong.Unity/Assets/Scripts/Table/TableCommandIntentFactory.cs:803-810`。
+- **原样复现**：候选命令见 §5.2；baseline 在 `E:/majiang-review/c03-r1-baseline-bae6-20261101`（detached `bae6b8b0`）执行同一条 `-batchmode -runTests -testPlatform PlayMode`（无 `-nographics`，同名 mutex），fresh baseline plugins + fresh Library。
+- **实际**：candidate native2 / 147-132-15；baseline native2 / 147-132-15；15 个 name 集合相同，15/15 `Failed`，路径归一化的 failure message 15/15 相同。`Step10` 两边均为 `NullReferenceException` 于 `TablePlayModeTests.cs:799`，仅堆栈 worktree 路径不同。阵容：`ProbeReview01/02/08`、`R2FormalProbe01/08/10`、`R3FormalProbe07`、`R4FormalProbe04`、`R5FormalProbe04`、`Step02/03/04/05/06/10`。
+- **期望**：先证明归因再决定是否修；不得用“源码未改”代替因果证据，也不得把自动 probe 改称人工/可跳过。
+- **证据**：candidate XML SHA `36B332C646FE2A92B5E1A4E71D1A347887CB93E7F4CD6DAAF82F5F968E875E98`；baseline XML SHA `B24A0F8D2C969F403B541B724C8BE8A60B2D11BDE5BF0751B96972B3020B3CC6`；baseline log SHA `CA648192195F58EFECF4D8099B3AC3BA6FD900CC7F9D77F0B2BC1B3EAFBE9216`；对照 JSON SHA `08D23E2A8EFB8978F8EF95E7214512AC1827603B601E13BA85AA20579D117669`；baseline identity SHA `6D5B2BF617281E03BA7C860116C4DF9C782649A419B9FBC771C150FA95FDEFB6`。baseline 检出时 detached `bae6b8b0` clean；build-shared 后仅 14 个生成 plugin 路径 dirty，identity JSON 逐条记录，未复用候选 Library/DLL。
+- **修复要求**：归因已证明为**既有 fixture/产品边界**：`CreatePlayerBaselineEnvelope` 只构造 `PrivateView.Decision`，未构造 authoritative owner control；生产 `RequireSubmittable` 在 `view.Own.Control == null` 时 fail-closed，测试却在无控制态下期待提交/outbox。生产门禁不得移除；C03 不扩展 UI/测试路径，不修这 15 个无关 probe。若调用方要修，应另立 UI/测试任务并为 fixture 补真实 owner control，而不是改断言。
+- **验收断言**：本轮验收为本归因闭环：baseline 与 candidate 的 15 例身份/消息逐例一致，候选仍记录 132/147 FAIL；C01 `LocalFullMatchDriverPlayModeTests` 7/7 与 `TableControlPlayModeTests` 2/2 保持通过。不要求 C03 内把全量改绿。
 
-### C03-D-02（BLOCKED 环境，开放，门禁完整性）
+### C03-D-02（BLOCKED→R1 已关闭；受控 PG wrapper 实际 PASS，未配置首失败保留）
 
-- **位置**：`dotnet/tests/Mahjong.TableService.DurableHost.Tests/DurableTableHostEnvironment.cs:163`；`dotnet/tests/Mahjong.Infrastructure.Tests/PostgresTableTestEnvironment.cs:182`；`dotnet/tests/Mahjong.LobbyService.Tests/PostgresLobbyTestSupport.cs:30`。
-- **原样复现**：
-  ```powershell
-  powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/verify-v5.ps1 `
-    -Configuration Release -DotnetPath D:\Unity\dotnet\dotnet.exe `
-    -LogDir build/g2-c03-20261101-ds/verify-v5
-  ```
-- **实际**：native 1；OVERALL FAIL；3 行：DurableHost 38/59（21 fail）、Infrastructure 1/42（41 fail）、Lobby 77/89（12 skip）。错误原文明确为缺 `MAHJONG_P54B_TEST_PG_ADMIN` / `MAHJONG_P52_TEST_POSTGRES_ADMIN` / `MAHJONG_LOBBY_TEST_POSTGRES`，并声明“no skipped/missing-PG fake-green path”。
-- **期望**：统一门禁 21 行全绿、exit 0、无 skip；PG 用例必须真实连接独立测试库。
-- **证据**：`verify-v5.log` SHA `8D94561420CAF4AE7EF131C09B6044548CE011215DFFBD65DAB7CE3AF0A4B22B`；`verify-v5/summary.log`；三个工程的 native XML/日志。
-- **修复要求**：提供 PostgreSQL 与上述环境变量（或等价受控测试实例）；不要改测试为 skip、不要用内存假实现替代 PG、不要删除 fail-closed 断言。不是改生产代码的理由。
-- **验收断言**：同一 `verify-v5.ps1` 在具备 PG 的环境重跑 exit 0，`OVERALL: PASS`，0 fail/0 skip，并保留逐工程 XML。
+- **位置**：`tools/ci/verify-v5-table-postgres.ps1`（参数与 provisioner）、`tools/ci/verify-v5-postgres.ps1`、`tools/verify-v5.ps1`；PG 测试位置同前（`DurableTableHostEnvironment.cs:163`、`PostgresTableTestEnvironment.cs:182`、`PostgresLobbyTestSupport.cs:30`）。
+- **原样复现**：先保留未配置 `tools/verify-v5.ps1` 的 native1/2746-62-12（summary SHA `63E4A9A0E80CC6021A85AA6F1058BBEC36F8A73C5B0776B2BF042B962263DDA9`）；再执行 §3.3 的 `verify-v5-table-postgres.ps1 -RunUnifiedVerification`（固定 PG zip SHA `EBB3...`，E 自有 Root/LogDir/UnifiedLogDir/LobbyRoot）。
+- **实际**：wrapper native0/exit0；PG 16.10 loopback 55592；table 42/42、targeted 13/13、crash/restart/restore PASS；unified **2,820/2,820 pass，0 fail/0 skip/0 not-run，21 行全 PASS**；`environmentRestored=true`；cluster ownership cleanup 成功。首次 PG 尝试因 LobbyRoot 在 worktree 内被安全门拒绝、cleanup 因 Root 不在 `artifacts` 下拒绝删除（server 已停），已保留并改用合法路径重跑。
+- **期望**：使用仓库已有隔离 provisioner，而不是以“5432 不可连”结案；不得跳过 PG 测试或用内存替身。
+- **证据**：`r1-pg/wrapper-summary.json` SHA `75AF068289F08F48ADE75F9BEA7A95A74CB0EBC9A4DE73E76455380CCECF8434`；`r1-pg/unified-summary.log` SHA `C9F25CFFAABAAC4F912D5421EC3271579AF85C685EDDF6141DFF8C505CB71570`；`r1-pg/tests.xml` SHA `DE42DE9B4B5CCAD48123BAA77F4ABF0A070A57960F6F8969BC8228B1E596D134`；逐工程 count SHA `5C388D65D0ED69A837FBFB57BA6A748E0762ABC4DAEA1B641969714B527D0183`。
+- **修复要求**：无代码修改；保留未配置 FAIL、首次路径 FAIL 和成功 PG 原件。不得把受控 PG 结果写成自然整场终局/远端 G3。
+- **验收断言**：同一冻结代码上 wrapper exit0、21 行全 PASS、0 fail/skip/notrun、逐工程原生 XML 与 count 一致；已满足。验收人仍需自行复核原件。
 
 ### C03-D-03（MINOR，证据边界，开放披露）
 
@@ -395,7 +448,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-reco
 - **修复要求**：无需改代码；保留该披露与 dirty patch。
 - **验收断言**：复核者能从 source.json + patch + player-files.json 复算同一 prestate 与 205 文件包。
 
-除上述 1 个候选层 MAJOR、1 个环境 BLOCKED、1 个 MINOR 证据边界外，本 14 文件集成范围内**未发现**新的 BLOCKER/MAJOR 代码缺陷；没有已知缺陷被隐藏到下一轮。
+本 14 文件集成范围内 **0 BLOCKER / 0 新 MAJOR 代码缺陷**；R1 两项验证缺口（C03-R1-01/02）均已关闭。全量 PlayMode **132/147 FAIL 作为候选事实保留**（baseline 逐例复现，不归因于 C03、不在本任务修 UI）；C03-D-03 为仍需披露的 MINOR 证据边界。
 
 ---
 
@@ -412,15 +465,15 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-reco
 - Windows Player 构建 native 0；12 局整场 PASS；252 动作/回执；12×136 物理守恒。
 - 8 场景受控恢复 collector + offline verifier 全部 exit 0、chain PASS、gamePositive=true。
 - 旧 Compare BLOCKED17/pass=false/UNTRUSTED_LOCAL（门禁仍在）。
+- **R1 受控 PG unified：2,820/2,820 PASS，21 行全 PASS，0 fail/0 skip/0 notrun；table 42/42、targeted 13/13、crash/restart/restore PASS（R1 关闭）。**
+- **R1 baseline 归因：bae6 baseline 与 candidate 的 15 个 PlayMode 失败逐例一致（R1 关闭；候选 FAIL 事实保留）。**
 
 ### FAIL
 
-- 统一 .NET 门禁：3 个 PG 依赖行 FAIL（环境缺失，见 C03-D-02）。
-- 全量 PlayMode：132/147（15 个既有 UI probe 失败，见 C03-D-01）。
+- 全量 PlayMode：132/147（15 个 `TablePlayModeTests` UI probe；baseline 逐例复现，见 C03-D-01；不宣称 147 全绿）。
 
 ### BLOCKED
 
-- PostgreSQL 相关全量门禁。
 - 真实 Android/adb/设备、iOS、IL2CPP 真机、远端正例、观战/移动端完整矩阵：NOT_RUN/BLOCKED，未冒充通过。
 - 调用方独立接受：`callerAcceptance=PENDING_INDEPENDENT_REVIEW`，不是 PASS。
 
@@ -429,15 +482,15 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-reco
 - b33f0aad 的新远端 CI（未 push/未触发；当前头 CI 限制见 §12）。
 - C04 恢复后 outbox 实际重提/请求对账/零重复副作用矩阵。
 - C05 正式 APK 重建、安装、启动、截图/视频/输入矩阵。
-- 真实 PostgreSQL 自然终局、WSS、B2/G3。
-- 全量 PlayMode 的逐 probe 修复（单独任务）。
+- 真实 PostgreSQL 自然整场终局、WSS、B2/G3（本轮只做受控 PG wrapper/readback/crash/restore）。
+- 全量 PlayMode 的逐 probe 修复（独立 UI/测试任务；C03 不改）。
 
 ---
 
 ## 12. 当前头 CI 限制（不继承历史绿）
 
-- 调用方观测的 PR20 当前头仍为 `bae6b8b0...`；两条 CI `41261636998` / `41261632618` 当时为 `IN_PROGRESS`。旧头 `2813...` 的绿色报告不可推广。
-- 本交付的新代码是 `b33f0aad...`，**没有任何远端 CI run**；本轮未轮询、未重跑、未 dispatch CI。
+- 时间快照（调用方 R1 提供）：当前发布 PR20 已到 `d1c8a2e3`；`bae6` 的冻结 CI 已在另一线程独立接受。这两个事实都不能推广到 `b33f0aad` 的新代码或本轮受控 PG 结果。
+- 本交付的新代码是 `b33f0aad...`，**没有任何远端 CI run**；本轮未轮询、未重跑、未 dispatch CI。R1 统一门禁的 `run-info` 记录 head `82a95f7b`（该 head 的代码仍为 `b33f0aad`，后续仅报告文档提交）。
 - accepted `origin/v5` 仍 `8fd7c6c`；PR20 OPEN/Draft；PR24 OPEN/Draft `81fa51b`。唯一 PR20 的发布/更新与独立审查归调用方；本交付不 push、不创建/修改 PR、不 record MR。
 - 因此本报告只给本地/可复现证据；不能写成“当前头 CI 通过”或“G2 通过”。
 
@@ -463,8 +516,12 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-reco
 - `c02-game/<case>/`：8 个 GAME 案卷、collector/verifier、sealed attempts。
 - `recovery-export-clean/`：旧 Compare/负例 clean-prestate 原件。
 - `tool-tests/`：E2E/FullMatch/C02/C05/Recovery 负例 summary。
-- `verify-v5/`：统一门禁逐工程日志/XML。
+- `verify-v5/`：未配置统一门禁逐工程日志/XML（首次 FAIL 保留）。
+- `r1-baseline/`：bae6 baseline XML/log/identity、15 例对照、fresh baseline shared-build/provenance。
+- `r1-pg/`：受控 PG wrapper summary/log、unified summary、table/targeted XML、crash/readback、逐工程 count；首次路径失败在 `first-attempt/`。
 - `evidence-sha256.csv`：4,182 个证据文件的 SHA-256/字节/相对路径；文件 SHA `49A8F50BB19A5600AF19253195B4FD2B9BA292873CE6CD2EC2458E2222355746`，597,038 B。
+- `r1-evidence-sha256.csv`：R1 的 23,711 个证据文件（含 baseline worktree、PG 成功/首次尝试、候选 R1 目录）；文件 SHA `2074F524A303CA2451236F9578B8D86F4C872437AD186B7311EE8D6493FDE131`，5,179,890 B。
+- 另：受控 PG wrapper 证据同时在 `build/c03-r1-pg-r2/`；baseline 诊断树在 `E:/majiang-review/c03-r1-baseline-bae6-20261101`（detached bae6，fresh Library）。
 
 ### 14.2 关键 SHA 汇总
 
@@ -484,7 +541,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-reco
 | Recovery negative 22/22 | `37D9AE2C7F5F441B7E4FC042031B010694C14562E4C6619F64241D59B15423F4` |
 | C02 GAME 8-case summary | `610910276F7B3F458F925ACAD433F667C4E277560649C571D720A328CBB7A58C` |
 | C02 verify summary | `1C553B9620820BA1E16CA21DE7B7768B076C36DBF2E4F8029570C91708B25AF2` |
-| unified gate log | `8D94561420CAF4AE7EF131C09B6044548CE011215DFFBD65DAB7CE3AF0A4B22B` |
+| 未配置统一门禁（首失败） | summary `63E4A9A0E80CC6021A85AA6F1058BBEC36F8A73C5B0776B2BF042B962263DDA9`；log `8D94561420CAF4AE7EF131C09B6044548CE011215DFFBD65DAB7CE3AF0A4B22B` |
+| R1 受控 PG wrapper | summary `75AF068289F08F48ADE75F9BEA7A95A74CB0EBC9A4DE73E76455380CCECF8434`（exit0，env restored，cluster removed） |
+| R1 PG unified | `2,820/2,820`；summary SHA `C9F25CFFAABAAC4F912D5421EC3271579AF85C685EDDF6141DFF8C505CB71570`；count SHA `5C388D65D0ED69A837FBFB57BA6A748E0762ABC4DAEA1B641969714B527D0183` |
+| R1 baseline PlayMode | XML `B24A0F8D2C969F403B541B724C8BE8A60B2D11BDE5BF0751B96972B3020B3CC6`；147/132/15/native2 |
+| R1 15 例对照 | `08D23E2A8EFB8978F8EF95E7214512AC1827603B601E13BA85AA20579D117669`；15/15 same result + normalized message |
 
 ### 14.3 最终状态
 
