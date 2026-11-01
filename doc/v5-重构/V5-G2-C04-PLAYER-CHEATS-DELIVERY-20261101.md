@@ -195,3 +195,48 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 - 本轮只执行 4 个 .NET 定向用例、2 个 PlayMode 定向用例、1 次 Windows Player authorized probe 和 11 项工具负例；未运行 Android/iOS/PG/随机整场/正式 C04 矩阵。
 - PR20 保持 OPEN/Draft；不 push、不改 PR、不 record MR、不 approve、不合并 v5、不部署、不改 scheduler/complete.flag。
 - 本轮结论仅对本受测候选 `f3ba015b` + 本任务新增文件闭包有效；恢复/动作增量合回后需重新绑定并重跑。
+
+## 9. R1 返修映射与重跑（2026-11-01，追加）
+
+本轮按 caller 授予的 18 路径范围修复并重跑；旧 R1 原件全部保留，不删除、不刷新。
+
+### 9.1 代码修复映射
+
+| 缺陷 | 修复 | 文件 |
+|---|---|---|
+| R1-01 首次落汗无入口 | `MapPlayerSnapshot` 将 owner 真实 `ClosedTiles + DrawnTileId`（最多 14）传入 `MapOwnerCheat`；`MarkGroups.Count == 0` 时仍生成 `TileMarkView(selectable, empty groups)`；`MapTileMark` 不再返回空 selectable。保留 owner/seat/decision/epoch 校验 | `dotnet/src/Mahjong.TableRuntime/TableProjectionContractMapper.cs` |
+| R1-02 残留 WindowId 走 off-turn | `OpenSleeveBloomDialog` 先按 ownTurn=`currentSeat==identity.seat && phase==CheatWindow && DrawnTileId != null` 判定；仅 `!ownTurn` 且 WindowId 非空才走 off-turn。未改 Actor/Domain 窗口状态 | `unity/.../Table/TablePresenter.cs` |
+| R1-03 choice 丢 round | `CreateSubmitSleeveBloomChoice`、`CreateSubmitSleeveBloomOffTurnChoice`、`CreateSubmitBeamSwapChoice` 的 `CreateCommand` round 从 `string.Empty` 改为 `view.Identity.RoundId`；不放宽服务端空 round | `unity/.../Table/TableCommandIntentFactory.cs` |
+| R1-03 测试合同 | `TableCommandIntentFactoryTests` 三个 choice 的 RoundId 期望由 false 改为 true | `dotnet/tests/Mahjong.Unity.TableModel.Tests/TableCommandIntentFactoryTests.cs` |
+| R1-05 probe 正例 | 新增 `RunAuthorizedCaseV2`：真实 Player UI 依次 TileMark（−1/119）、SleeveBloom（−10/109/SECOND）、BeamSwap（−10/99/SWAP），逐 request/ledger/136 断言；不再把缺功能写成 PASS | `unity/.../App/C04PlayerCheatProbe.cs` |
+
+### 9.2 实际重跑
+
+- .NET LocalHost C04：**4/4 PASS，native 0**（6.8s，4 用例）。
+- .NET TableModel（含修改后的 3 个 choice RoundId 合同）：**235/235 PASS，native 0**。
+- .NET TableRuntime 回归：**483/483 PASS，native 0**。
+- Unity 编译：`exit 0`，无 `error CS`。
+- 共享 DLL：build-shared 151 inputs / 19 outputs，provenance 通过后构建。
+- Player build：native **0**，`result=Succeeded`，`errors=3`（BuildReport 非零计数仍保留并单列，不能称 0 error），Player 128,286,812 bytes。
+- Windows Player 真实运行两次（同一 final 闭包）：
+  1. `build/rework-180546/evidence/authorized`（修复 round 后、旧 V1 路径）：BeamSwap 与 SWAP choice 均 **APPLIED**，raw hash 非空；15/16 断言 PASS，唯一失败是旧 V1 的 `G3-01-UI-ENTRY`（该 run 本来不执行 mark）。
+  2. `build/rework-180546/evidence2/authorized`（V2 路径）：TileMark **APPLIED**、119、−1、私有 group；SleeveBloom **APPLIED**、109、choice APPLIED、SECOND 实体交换；13/14 断言 PASS，唯一失败为 SleeveBloom 后的第二次 discard 超过 15s 未推进，未进入 BeamSwap。原始 JSON/log 保留。
+
+### 9.3 新的逐行结论（不升级为正式 C04）
+
+| 行 | 结论 | 证据 |
+|---|---|---|
+| G3-01 | **PASS（Player 首次 mark）** | V2 Player `SubmitTileMark APPLIED`、119、−1、私有 group；136 不变 |
+| G3-02 | **PASS（Player immediate + SECOND）** | V2 Player `SubmitSleeveBloom APPLIED`、109、choice APPLIED、drawn 变 second、物理 hash 变化 |
+| G3-03 | **PASS（Player BeamSwap + SWAP，独立 run）** | V1 修复后 run `SubmitBeamSwap`/`SubmitBeamSwapChoice` 均 APPLIED、110、136；未与 G3-01/02 同 run 连续 |
+| G3-04 | **PARTIAL** | 两 run 分别精确验证 −1/119、−10/109、−10/110；未取得单 run 三笔 119/109/99 连续证据 |
+| G3-05 | **PASS（分 run）** | 两 run 的 authority before/after 均 136/136；未在同一 run 完成两次 swap 后终态 |
+| G3-06 | **.NET PASS / PLAYER NOT_RUN** | .NET 两独立 request Rejected 零增量；Player negative 未运行 |
+
+### 9.4 R1 仍开放项
+
+- **R1-04 MAJOR**：Player 证据 verifier 仍需真正门禁 `pass=true/status=PASS/完整六行/唯一 request/实际观察/费用/136`；本轮未完成该 verifier 强化，旧 `MISSING_RAW_HASH` 假绿面仍存在。
+- **R1-05 MAJOR**：尚未在**同一 Player run** 完成三动作与两次真实 swap；SleeveBloom 后第二次 discard 超时需定位（本轮未改 Actor/Domain/Client，不猜根因）。
+- **R1-06 MAJOR**：Player build 仍 `errors=3`；runner 仍非 fresh-staging/超时/ownership 全闭合。本轮只重跑受测闭包，未声称门禁已修。
+
+结论上限不变：本受测 D04 候选的专项证据，不是正式 C04/G2 通过；PR20 仍 OPEN/Draft。

@@ -158,7 +158,7 @@ namespace Mahjong.Unity.App
             }
             else
             {
-                yield return RunAuthorizedCase();
+                yield return RunAuthorizedCaseV2();
             }
 
             int exitCode = _caseFailed ? 1 : 0;
@@ -423,6 +423,308 @@ namespace Mahjong.Unity.App
             }
         }
 
+        private IEnumerator RunAuthorizedCaseV2()
+        {
+            var evidence = CreateEvidence("authorized", C04PlayerCheatScenario.AuthorizedThreeCheats);
+            _evidence = evidence;
+            try
+            {
+                yield return OpenComposition(C04PlayerCheatScenario.AuthorizedThreeCheats);
+                if (_presenter == null || _coordinator == null || _factory == null)
+                {
+                    Check(evidence, "G3-SETUP", false, "real TablePresenter bound to a real local session", "setup failed");
+                    yield break;
+                }
+
+                yield return WaitInitialView();
+                if (!_waitOk)
+                {
+                    Check(evidence, "G3-SETUP", false, "confirmed private cheat view", "timeout");
+                    yield break;
+                }
+
+                LocalPlayerCheatScenarioFacts facts = _factory.Facts;
+                Check(evidence, "G3-05-INITIAL-136",
+                    facts.EntityIds.Count == 136 &&
+                    facts.EntityIds.Distinct().Count() == 136 &&
+                    facts.EntityIds.SequenceEqual(Enumerable.Range(0, 136).Select(v => (uint)v)),
+                    "unique physical entities 0..135",
+                    "count=" + facts.EntityIds.Count + " distinct=" + facts.EntityIds.Distinct().Count());
+
+                yield return CaptureFacts();
+                if (!_waitOk || _taskFacts == null)
+                {
+                    Check(evidence, "G3-05-BEFORE", false, "authority physical facts", "capture failed");
+                    yield break;
+                }
+
+                evidence.before = C04AuthorityFacts.From(_taskFacts);
+                CheckPhysical(evidence, "G3-05-BEFORE", _taskFacts);
+                Check(evidence, "G3-04-BEFORE", _taskFacts.Ledger.EntryCount == 0 && _taskFacts.Ledger.Balances[0] == 120,
+                    "initial points 120, no entries",
+                    "entries=" + _taskFacts.Ledger.EntryCount + " points=" + _taskFacts.Ledger.Balances[0]);
+
+                uint[] markTiles = facts.ProposedTileMarkTileIds.ToArray();
+                ulong markVersion = _presenter.LatestView!.Identity.StateVersion;
+                _receiptMark = _receipts.Count;
+                ClickButton("TileMarkButton");
+                yield return null;
+                for (int i = 0; i < markTiles.Length; i++)
+                {
+                    ClickHandEntity(markTiles[i]);
+                    yield return null;
+                }
+
+                ClickButton("ConfirmTileMarkButton");
+                yield return WaitReceipt(CommandKind.SubmitTileMark, 15f);
+                C04ReceiptRecord? mark = _lastReceipt;
+                if (mark == null)
+                {
+                    Check(evidence, "G3-01", false, "SubmitTileMark Applied", "no receipt");
+                    yield break;
+                }
+
+                evidence.requests.Add(mark.ToRecord(markVersion, 0));
+                Check(evidence, "G3-01-RECEIPT", mark.Status == "APPLIED", "Applied", mark.Status + "/" + mark.Reason);
+                yield return WaitView(v => v.Own?.Cheat?.CheatPoints == 119 && v.Own.Cheat.Ledger.Count == 1 &&
+                                          v.Own.Cheat.TileMark != null, 15f);
+                if (!_waitOk)
+                {
+                    Check(evidence, "G3-01", false, "119 points, one ledger entry and a private mark group", "timeout");
+                    yield break;
+                }
+
+                PlayerTableViewState marked = _presenter.LatestView!;
+                evidence.requests[evidence.requests.Count - 1].stateVersionAfter = unchecked((long)marked.Identity.StateVersion);
+                bool markGroup = marked.Own!.Cheat.TileMark!.Groups.Any(
+                    group => group.Tiles.Select(t => t.TileId).SequenceEqual(markTiles));
+                Check(evidence, "G3-01-LEDGER",
+                    marked.Own.Cheat.Ledger.Count == 1 &&
+                    marked.Own.Cheat.Ledger[0].Amount == -1 &&
+                    marked.Own.Cheat.Ledger[0].BalanceAfter == 119 &&
+                    string.Equals(marked.Own.Cheat.Ledger[0].ReasonCode, "TILE_MARK", StringComparison.Ordinal),
+                    "one -1 entry, balance 119, TILE_MARK",
+                    DescribeLedger(marked.Own.Cheat));
+                Check(evidence, "G3-01-MARK", markGroup,
+                    "private mark group exactly " + string.Join(",", markTiles),
+                    DescribeMarks(marked.Own.Cheat));
+
+                yield return CaptureFacts();
+                if (!_waitOk || _taskFacts == null)
+                {
+                    Check(evidence, "G3-01-AUTHORITY", false, "authority capture after TileMark", "capture failed");
+                    yield break;
+                }
+
+                LocalTableRecoveryFacts afterMark = _taskFacts;
+                evidence.afterMark = C04AuthorityFacts.From(afterMark);
+                CheckPhysical(evidence, "G3-05-AFTER-MARK", afterMark);
+
+                yield return DiscardEntity(120u);
+                if (!_waitOk)
+                {
+                    Check(evidence, "G3-ADVANCE-1", false, "discard accepted", "discard failed");
+                    yield break;
+                }
+
+                yield return AdvanceToNextDealerTurn();
+                if (!_waitOk)
+                {
+                    Check(evidence, "G3-ADVANCE-1", false, "next dealer window", "timeout");
+                    yield break;
+                }
+
+                PlayerTableViewState beforeBloom = _presenter.LatestView!;
+                uint drawnBefore = beforeBloom.Own!.DrawnTileId!.Value;
+                ulong bloomVersion = beforeBloom.Identity.StateVersion;
+                _receiptMark = _receipts.Count;
+                ClickButton("SleeveBloomButton");
+                yield return WaitReceipt(CommandKind.SubmitSleeveBloom, 15f);
+                C04ReceiptRecord? bloom = _lastReceipt;
+                if (bloom == null)
+                {
+                    Check(evidence, "G3-02", false, "SubmitSleeveBloom Applied", "no receipt");
+                    yield break;
+                }
+
+                evidence.requests.Add(bloom.ToRecord(bloomVersion, 0));
+                Check(evidence, "G3-02-RECEIPT", bloom.Status == "APPLIED", "Applied", bloom.Status + "/" + bloom.Reason);
+                yield return WaitView(v => v.Own?.Cheat?.CheatPoints == 109 &&
+                                          v.Own.Cheat.Ledger.Count == 2 &&
+                                          v.Own.Cheat.ImmediateSleeveBloom != null, 15f);
+                if (!_waitOk)
+                {
+                    Check(evidence, "G3-02", false, "109 points and a SleeveBloom offer", "timeout");
+                    yield break;
+                }
+
+                PlayerTableViewState offered = _presenter.LatestView!;
+                evidence.requests[evidence.requests.Count - 1].stateVersionAfter = unchecked((long)offered.Identity.StateVersion);
+                PlayerSleeveBloomState offer = offered.Own!.Cheat.ImmediateSleeveBloom!;
+                uint second = offer.SecondTileId!.Value;
+                ulong bloomChoiceVersion = offered.Identity.StateVersion;
+                _receiptMark = _receipts.Count;
+                ClickButton("SleeveBloomButton");
+                yield return null;
+                ClickButton("SleeveSwapButton");
+                yield return WaitReceipt(CommandKind.SubmitSleeveBloomChoice, 15f);
+                C04ReceiptRecord? bloomChoice = _lastReceipt;
+                if (bloomChoice == null)
+                {
+                    Check(evidence, "G3-02-CHOICE", false, "SubmitSleeveBloomChoice Applied", "no receipt");
+                    yield break;
+                }
+
+                evidence.requests.Add(bloomChoice.ToRecord(bloomChoiceVersion, 0));
+                Check(evidence, "G3-02-CHOICE-RECEIPT", bloomChoice.Status == "APPLIED",
+                    "Applied", bloomChoice.Status + "/" + bloomChoice.Reason);
+                yield return WaitView(v => v.Own?.Cheat?.ImmediateSleeveBloom == null, 15f);
+                if (!_waitOk)
+                {
+                    Check(evidence, "G3-02-CHOICE", false, "SleeveBloom offer resolved", "timeout");
+                    yield break;
+                }
+
+                PlayerTableViewState bloomed = _presenter.LatestView!;
+                evidence.requests[evidence.requests.Count - 1].stateVersionAfter = unchecked((long)bloomed.Identity.StateVersion);
+                Check(evidence, "G3-02-CHOICE-FEE",
+                    bloomed.Own!.Cheat.CheatPoints == 109 && bloomed.Own.Cheat.Ledger.Count == 2,
+                    "choice does not charge again",
+                    "points=" + bloomed.Own.Cheat.CheatPoints + " entries=" + bloomed.Own.Cheat.Ledger.Count);
+                Check(evidence, "G3-02-SECOND-SWAP",
+                    bloomed.Own.DrawnTileId == second && drawnBefore != second,
+                    "drawn tile becomes " + second,
+                    "drawn=" + bloomed.Own.DrawnTileId);
+
+                yield return CaptureFacts();
+                if (!_waitOk || _taskFacts == null)
+                {
+                    Check(evidence, "G3-02-AUTHORITY", false, "authority capture after SleeveBloom", "capture failed");
+                    yield break;
+                }
+
+                LocalTableRecoveryFacts afterBloom = _taskFacts;
+                evidence.afterBloomChoice = C04AuthorityFacts.From(afterBloom);
+                CheckPhysical(evidence, "G3-05-AFTER-BLOOM", afterBloom);
+                Check(evidence, "G3-02-PHYSICAL-MOVED",
+                    !string.Equals(afterMark.Physical.TilesSha256, afterBloom.Physical.TilesSha256, StringComparison.Ordinal),
+                    "physical hand/wall swap",
+                    afterMark.Physical.TilesSha256 + " vs " + afterBloom.Physical.TilesSha256);
+
+                uint discardTile = bloomed.Own.DrawnTileId ?? bloomed.Own.ClosedTiles[0];
+                yield return DiscardEntity(discardTile);
+                if (!_waitOk)
+                {
+                    Check(evidence, "G3-ADVANCE-2", false, "discard accepted", "discard failed");
+                    yield break;
+                }
+
+                yield return AdvanceToNextDealerTurn();
+                if (!_waitOk)
+                {
+                    Check(evidence, "G3-ADVANCE-2", false, "third dealer window", "timeout");
+                    yield break;
+                }
+
+                PlayerTableViewState beforeBeam = _presenter.LatestView!;
+                ulong beamVersion = beforeBeam.Identity.StateVersion;
+                _receiptMark = _receipts.Count;
+                ClickButton("BeamSwapButton");
+                yield return WaitReceipt(CommandKind.SubmitBeamSwap, 15f);
+                C04ReceiptRecord? beam = _lastReceipt;
+                if (beam == null)
+                {
+                    Check(evidence, "G3-03", false, "SubmitBeamSwap Applied", "no receipt");
+                    yield break;
+                }
+
+                evidence.requests.Add(beam.ToRecord(beamVersion, 0));
+                Check(evidence, "G3-03-RECEIPT", beam.Status == "APPLIED", "Applied", beam.Status + "/" + beam.Reason);
+                yield return WaitView(v => v.Own?.Cheat?.CheatPoints == 99 &&
+                                          v.Own.Cheat.Ledger.Count == 3 &&
+                                          v.Own.Cheat.BeamSwap != null, 15f);
+                if (!_waitOk)
+                {
+                    Check(evidence, "G3-03", false, "99 points and a BeamSwap offer", "timeout");
+                    yield break;
+                }
+
+                PlayerTableViewState beamOffered = _presenter.LatestView!;
+                evidence.requests[evidence.requests.Count - 1].stateVersionAfter = unchecked((long)beamOffered.Identity.StateVersion);
+                PlayerBeamSwapState beamOffer = beamOffered.Own!.Cheat.BeamSwap!;
+                uint handTile = beamOffer.SelectableHandTileIds[0];
+                ulong beamChoiceVersion = beamOffered.Identity.StateVersion;
+                _receiptMark = _receipts.Count;
+                ClickButton("BeamSwapButton");
+                yield return null;
+                ClickButton("BeamSlot_0");
+                yield return null;
+                ClickHandEntity(handTile);
+                yield return null;
+                ClickButton("ConfirmBeamSwapButton");
+                yield return WaitReceipt(CommandKind.SubmitBeamSwapChoice, 15f);
+                C04ReceiptRecord? beamChoice = _lastReceipt;
+                if (beamChoice == null)
+                {
+                    Check(evidence, "G3-03-CHOICE", false, "SubmitBeamSwapChoice Applied", "no receipt");
+                    yield break;
+                }
+
+                evidence.requests.Add(beamChoice.ToRecord(beamChoiceVersion, 0));
+                Check(evidence, "G3-03-CHOICE-RECEIPT", beamChoice.Status == "APPLIED",
+                    "Applied", beamChoice.Status + "/" + beamChoice.Reason);
+                yield return WaitView(v => v.Own?.Cheat?.BeamSwap == null, 15f);
+                if (!_waitOk)
+                {
+                    Check(evidence, "G3-03-CHOICE", false, "BeamSwap offer resolved", "timeout");
+                    yield break;
+                }
+
+                PlayerTableViewState afterBeam = _presenter.LatestView!;
+                evidence.requests[evidence.requests.Count - 1].stateVersionAfter = unchecked((long)afterBeam.Identity.StateVersion);
+                Check(evidence, "G3-03-CHOICE-FEE",
+                    afterBeam.Own!.Cheat.CheatPoints == 99 && afterBeam.Own.Cheat.Ledger.Count == 3,
+                    "choice does not charge again",
+                    "points=" + afterBeam.Own.Cheat.CheatPoints + " entries=" + afterBeam.Own.Cheat.Ledger.Count);
+
+                yield return CaptureFacts();
+                if (!_waitOk || _taskFacts == null)
+                {
+                    Check(evidence, "G3-03-AUTHORITY", false, "authority capture after BeamSwap", "capture failed");
+                    yield break;
+                }
+
+                LocalTableRecoveryFacts final = _taskFacts;
+                evidence.afterFinal = C04AuthorityFacts.From(final);
+                CheckPhysical(evidence, "G3-05-FINAL", final);
+                Check(evidence, "G3-03-PHYSICAL-MOVED",
+                    !string.Equals(afterBloom.Physical.TilesSha256, final.Physical.TilesSha256, StringComparison.Ordinal),
+                    "physical hand/wall swap",
+                    afterBloom.Physical.TilesSha256 + " vs " + final.Physical.TilesSha256);
+                Check(evidence, "G3-04-FINAL-LEDGER",
+                    final.Ledger.EntryCount == 3 &&
+                    final.Ledger.Balances[0] == 99 &&
+                    final.Ledger.Balances[1] == 120 &&
+                    final.Ledger.Balances[2] == 120 &&
+                    final.Ledger.Balances[3] == 120 &&
+                    final.Ledger.Points == 459,
+                    "three entries; seat0=99; total=459",
+                    "entries=" + final.Ledger.EntryCount + " balances=" + string.Join(",", final.Ledger.Balances));
+
+                CheckRequestApplied(evidence, "G3-01-REQUEST", final, mark);
+                CheckRequestApplied(evidence, "G3-02-REQUEST", final, bloom);
+                CheckRequestApplied(evidence, "G3-02-CHOICE-REQUEST", final, bloomChoice);
+                CheckRequestApplied(evidence, "G3-03-REQUEST", final, beam);
+                CheckRequestApplied(evidence, "G3-03-CHOICE-REQUEST", final, beamChoice);
+            }
+            finally
+            {
+                evidence.finishedUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+                evidence.status = _caseFailed ? "FAIL" : "PASS";
+                CloseComposition();
+                WriteEvidence(evidence);
+            }
+        }
         private IEnumerator RunNegativeCase()
         {
             var evidence = CreateEvidence("negative", C04PlayerCheatScenario.InsufficientBalance);

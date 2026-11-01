@@ -73,7 +73,7 @@ namespace Mahjong.Unity.TableModel.Tests
             Assert.Equal(CommandKind.SubmitSleeveBloomChoice, intent.Kind);
             Assert.Equal("offer-1", document.RequireString(CommandPayloadFields.OfferId, "offerId"));
             Assert.Equal((uint)SleeveBloomChoice.Second, document.RequireUInt32(CommandPayloadFields.Choice, "choice"));
-            Assert.False(intent.Command.RoundId.HasValue);
+            Assert.True(intent.Command.RoundId.HasValue);
             Assert.Equal("offer-1", intent.OfferId);
         }
 
@@ -94,7 +94,7 @@ namespace Mahjong.Unity.TableModel.Tests
             Assert.Equal(CommandKind.SubmitSleeveBloomOffTurnChoice, intent.Kind);
             Assert.Equal("offer-off", document.RequireString(CommandPayloadFields.OfferId, "offerId"));
             Assert.Equal((uint)SleeveBloomChoice.First, document.RequireUInt32(CommandPayloadFields.Choice, "choice"));
-            Assert.False(intent.Command.RoundId.HasValue);
+            Assert.True(intent.Command.RoundId.HasValue);
             Assert.Equal("window-1", intent.WindowId);
         }
 
@@ -118,7 +118,7 @@ namespace Mahjong.Unity.TableModel.Tests
             Assert.Equal((uint)BeamSwapChoice.Swap, document.RequireUInt32(CommandPayloadFields.Choice, "choice"));
             Assert.Equal(1U, document.RequireUInt32(CommandPayloadFields.HandTileId, "handTileId"));
             Assert.Equal(4U, document.RequireUInt32(CommandPayloadFields.TargetSlot, "targetSlot"));
-            Assert.False(intent.Command.RoundId.HasValue);
+            Assert.True(intent.Command.RoundId.HasValue);
         }
 
         [Fact]

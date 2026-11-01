@@ -365,7 +365,7 @@ namespace Mahjong.Unity.Table
                 payload,
                 view,
                 owner,
-                string.Empty,
+                view.Identity.RoundId,
                 null,
                 null);
 
@@ -519,7 +519,7 @@ namespace Mahjong.Unity.Table
                 payload,
                 view,
                 owner,
-                string.Empty,
+                view.Identity.RoundId,
                 null,
                 null);
 
