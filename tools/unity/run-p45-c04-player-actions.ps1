@@ -36,7 +36,7 @@ $script:mutex = $null
 $script:mutexHeld = $false
 $script:stageRecords = New-Object System.Collections.Generic.List[object]
 $gitHead = ''
-$trx = Join-Path $RunRoot 'dotnet-results/LocalHost.trx'
+$trx = Join-Path $RunRoot 'dotnet-results/LocalHost.xml'
 $oldTemp = $env:TEMP; $oldTmp = $env:TMP; $oldNuget = $env:NUGET_PACKAGES; $oldCli = $env:DOTNET_CLI_HOME
 $env:TEMP = $tempRoot; $env:TMP = $tempRoot; $env:NUGET_PACKAGES = $nugetRoot; $env:DOTNET_CLI_HOME = $cliRoot
 $env:DOTNET_NOLOGO = '1'; $env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'; $env:DOTNET_SKIP_FIRST_TIME_EXPERIENCE = '1'
@@ -314,19 +314,26 @@ try {
     $dotnetResults = Join-Path $RunRoot 'dotnet-results'
     $dotnetArtifacts = Join-Path $RunRoot 'dotnet-artifacts'
     New-Item -ItemType Directory -Path $dotnetResults,$dotnetArtifacts | Out-Null
-    $trx = Join-Path $dotnetResults 'LocalHost.trx'
-    $dotnetArgs = @('test',(Quote-Arg (Join-Path $source 'dotnet/tests/Mahjong.LocalHost.Tests/Mahjong.LocalHost.Tests.csproj')),
-        '--configuration','Release','--artifacts-path',(Quote-Arg $dotnetArtifacts),
-        '--results-directory',(Quote-Arg $dotnetResults),'--','-automated','-result-trx',(Quote-Arg $trx)) -join ' '
-    $localHostTests = Invoke-OwnedNative -Name 'FreshLocalHostFullTests' -FilePath $DotnetPath -Arguments $dotnetArgs -WorkingDirectory $source -StdoutPath (Join-Path $logs 'localhost.stdout.txt') -StderrPath (Join-Path $logs 'localhost.stderr.txt') -Timeout 1200
-    if ($localHostTests.exitCode -ne 0 -or -not (Test-Path -LiteralPath $trx)) { throw "Fresh LocalHost tests failed; nativeExit=$($localHostTests.exitCode) or TRX missing." }
-    [xml]$trxXml = Get-Content -LiteralPath $trx -Raw
-    $trxCounters = $trxXml.SelectSingleNode('//*[local-name()="Counters"]')
-    $totalTests = [int]$trxCounters.GetAttribute('total'); $passedTests = [int]$trxCounters.GetAttribute('passed')
-    $failedTests = [int]$trxCounters.GetAttribute('failed'); $skippedTests = [int]$trxCounters.GetAttribute('notExecuted')
-    if ($totalTests -le 0 -or $passedTests -ne $totalTests -or $failedTests -ne 0 -or $skippedTests -ne 0) { throw "LocalHost test report must be nonempty, all pass, and zero skipped; total=$totalTests passed=$passedTests failed=$failedTests skipped=$skippedTests." }
+    $dotnetProject = Join-Path $source 'dotnet/tests/Mahjong.LocalHost.Tests/Mahjong.LocalHost.Tests.csproj'
+    $buildArgs = @('build',(Quote-Arg $dotnetProject),'--configuration','Release','--artifacts-path',(Quote-Arg $dotnetArtifacts)) -join ' '
+    $localHostBuild = Invoke-OwnedNative -Name 'FreshLocalHostReleaseBuild' -FilePath $DotnetPath -Arguments $buildArgs -WorkingDirectory $source -StdoutPath (Join-Path $logs 'localhost-build.stdout.txt') -StderrPath (Join-Path $logs 'localhost-build.stderr.txt') -Timeout 1200
+    if ($localHostBuild.exitCode -ne 0) { throw "Fresh LocalHost Release build failed; nativeExit=$($localHostBuild.exitCode)." }
+    $testAssembly = Join-Path $dotnetArtifacts 'bin/Mahjong.LocalHost.Tests/release/Mahjong.LocalHost.Tests.dll'
+    if (-not (Test-Path -LiteralPath $testAssembly)) { throw 'Fresh LocalHost build did not produce its test assembly.' }
+    $dotnetXml = Join-Path $dotnetResults 'LocalHost.xml'
+    $testArgs = @('exec',(Quote-Arg $testAssembly),'-noLogo','-automated','-failSkips','-result-xml',(Quote-Arg $dotnetXml)) -join ' '
+    $localHostTests = Invoke-OwnedNative -Name 'FreshLocalHostFullTests' -FilePath $DotnetPath -Arguments $testArgs -WorkingDirectory $dotnetResults -StdoutPath (Join-Path $logs 'localhost.stdout.txt') -StderrPath (Join-Path $logs 'localhost.stderr.txt') -Timeout 1200
+    if (-not (Test-Path -LiteralPath $dotnetXml)) { throw "Fresh LocalHost tests produced no native xUnit XML; nativeExit=$($localHostTests.exitCode)." }
+    [xml]$trxXml = Get-Content -LiteralPath $dotnetXml -Raw
+    $testAssemblies = @($trxXml.SelectNodes("//*[local-name()='assemblies']/*[local-name()='assembly']"))
+    if ($testAssemblies.Count -ne 1) { throw "LocalHost XML must contain exactly one assembly result; count=$($testAssemblies.Count)." }
+    $testAssemblyNode = $testAssemblies[0]
+    $totalTests = [int]$testAssemblyNode.GetAttribute('total'); $passedTests = [int]$testAssemblyNode.GetAttribute('passed')
+    $failedTests = [int]$testAssemblyNode.GetAttribute('failed'); $skippedTests = [int]$testAssemblyNode.GetAttribute('skipped')
+    if ($totalTests -le 0 -or $passedTests + $failedTests + $skippedTests -ne $totalTests) { throw "LocalHost XML counts are incomplete; total=$totalTests passed=$passedTests failed=$failedTests skipped=$skippedTests." }
+    if ($localHostTests.exitCode -ne 0 -or $passedTests -ne $totalTests -or $failedTests -ne 0 -or $skippedTests -ne 0) { throw "Fresh LocalHost tests did not fully pass; nativeExit=$($localHostTests.exitCode) total=$totalTests passed=$passedTests failed=$failedTests skipped=$skippedTests." }
     $dotnetClosureSha = Get-ClosureManifest $dotnetArtifacts (Join-Path $RunRoot 'dotnet-build-artifacts-closure.json')
-    $localHostTestEvidence = [ordered]@{ command=$DotnetPath + ' ' + $dotnetArgs; nativeExitCode=$localHostTests.exitCode; total=$totalTests; passed=$passedTests; failed=$failedTests; skipped=$skippedTests; trx='dotnet-results/LocalHost.trx'; trxSha256=(Get-Sha256 $trx); buildArtifacts='dotnet-build-artifacts-closure.json'; buildArtifactsSha256=$dotnetClosureSha; stdoutSha256=$localHostTests.stdoutSha256; stderrSha256=$localHostTests.stderrSha256 }
+    $localHostTestEvidence = [ordered]@{ buildCommand=$DotnetPath + ' ' + $buildArgs; buildNativeExitCode=$localHostBuild.exitCode; testCommand=$DotnetPath + ' ' + $testArgs; nativeExitCode=$localHostTests.exitCode; total=$totalTests; passed=$passedTests; failed=$failedTests; skipped=$skippedTests; xml='dotnet-results/LocalHost.xml'; xmlSha256=(Get-Sha256 $dotnetXml); buildArtifacts='dotnet-build-artifacts-closure.json'; buildArtifactsSha256=$dotnetClosureSha; buildStdoutSha256=$localHostBuild.stdoutSha256; buildStderrSha256=$localHostBuild.stderrSha256; stdoutSha256=$localHostTests.stdoutSha256; stderrSha256=$localHostTests.stderrSha256 }
 
     $project = Join-Path $source 'unity/Mahjong.Unity'
     $projectPlugins = Join-Path $project 'Assets/Plugins/Mahjong'
@@ -425,8 +432,8 @@ catch {
                 try {
                     [xml]$testXml = Get-Content -LiteralPath $trx -Raw
                     $needle = switch ($caseId) { 'C04-G2-01' { 'pon' } 'C04-G2-02' { 'chi' } 'C04-G2-03' { 'riichi' } 'C04-G2-04' { 'closed-kan' } }
-                    $nodes = @($testXml.SelectNodes("//*[local-name()='UnitTestResult']") | Where-Object { $_.testName -match ('scenario: "' + [regex]::Escape($needle) + '"') })
-                    if ($nodes.Count -eq 1) { $dotnetStatus = if ($nodes[0].outcome -eq 'Passed') { 'PASS' } else { 'FAIL' } }
+                    $nodes = @($testXml.SelectNodes("//*[local-name()='test']") | Where-Object { $_.name -match ('scenario:.*' + [regex]::Escape($needle) + '.*actionType') })
+                    if ($nodes.Count -eq 1) { $dotnetStatus = if ($nodes[0].result -eq 'Pass') { 'PASS' } else { 'FAIL' } }
                     elseif ($nodes.Count -gt 1) { $dotnetStatus = 'FAIL_DUPLICATE_EVIDENCE' }
                 } catch { $dotnetStatus = 'FAIL_UNPARSEABLE_XML' }
             }
