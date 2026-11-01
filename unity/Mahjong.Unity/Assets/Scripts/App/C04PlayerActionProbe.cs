@@ -560,7 +560,7 @@ namespace Mahjong.Unity.App
         {
             if (string.IsNullOrEmpty(_evidence)) throw new InvalidOperationException("The owned raw evidence destination was not reserved.");
             using var stream = new FileStream(_evidence, FileMode.CreateNew, FileAccess.Write, FileShare.Read);
-            byte[] bytes = Encoding.UTF8.GetBytes(JsonUtility.ToJson(value, true) + "\n");
+            byte[] bytes = Encoding.UTF8.GetBytes(JsonUtility.ToJson(value, false) + "\n");
             stream.Write(bytes, 0, bytes.Length);
             stream.Flush(true);
         }
