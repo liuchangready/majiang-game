@@ -18,13 +18,14 @@ namespace Mahjong.LocalHost.Tests
     public sealed class C04PlayerActionChannelTests
     {
         [Theory]
-        [InlineData(LocalPlayerActionScenario.Pon, ProtocolActionType.DeclarePon)]
-        [InlineData(LocalPlayerActionScenario.Chi, ProtocolActionType.DeclareChi)]
-        [InlineData(LocalPlayerActionScenario.Riichi, ProtocolActionType.DeclareRiichi)]
-        [InlineData(LocalPlayerActionScenario.ClosedKan, ProtocolActionType.DeclareKan)]
+        [InlineData(LocalPlayerActionScenario.Pon, ProtocolActionType.DeclarePon, 13UL)]
+        [InlineData(LocalPlayerActionScenario.Chi, ProtocolActionType.DeclareChi, 14UL)]
+        [InlineData(LocalPlayerActionScenario.Riichi, ProtocolActionType.DeclareRiichi, 0UL)]
+        [InlineData(LocalPlayerActionScenario.ClosedKan, ProtocolActionType.DeclareKan, 0UL)]
         public async Task fixed_player_action_scenario_is_legal_and_applies_over_the_real_local_channel(
             string scenario,
-            ProtocolActionType actionType)
+            ProtocolActionType actionType,
+            ulong expectedInitialStateVersion)
         {
             await using var harness = new P41Harness();
             LocalPlayerActionScenario.ConfigureHostOptions(harness.Options, scenario);
@@ -49,7 +50,7 @@ namespace Mahjong.LocalHost.Tests
                 pump = PumpUntilCancelledAsync(session, timeout.Token);
                 PlayerSnapshot before = await WaitForDecisionAsync(session, timeout.Token);
                 Assert.Equal(0, session.Binding!.SeatId);
-                Assert.Equal(13UL, before.StateVersion);
+                Assert.Equal(expectedInitialStateVersion, before.StateVersion);
                 Assert.NotNull(before.PrivateView.Decision);
                 LegalActionView candidate = Assert.Single(before.PrivateView.Decision!.Actions,
                     value => value.ActionType == (uint)actionType);
@@ -86,7 +87,8 @@ namespace Mahjong.LocalHost.Tests
                     CommandSubmission sent = await session.SubmitAsync(command, timeout.Token);
                     Assert.True(sent.Sent);
                     TableReceiptResolvedEventArgs receipt = await receiptTask.Task.WaitAsync(timeout.Token);
-                    Assert.Equal(ReceiptStatus.Applied, receipt.Resolution.ReceiptStatus);
+                    Assert.True(receipt.Resolution.ReceiptStatus == ReceiptStatus.Applied,
+                        "The fixed player action was rejected: " + receipt.Resolution.ReasonCode);
                     Assert.Equal(requestId, receipt.Command.Key.RequestId.Value);
                     Assert.True(receipt.Resolution.CommandVersion.HasValue);
                     Assert.True(receipt.Resolution.EventSeq.HasValue);

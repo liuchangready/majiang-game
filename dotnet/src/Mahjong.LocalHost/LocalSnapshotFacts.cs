@@ -227,18 +227,35 @@ namespace Mahjong.LocalHost
             var publicFacts = new List<TableSeatPublicFacts>(4);
             var privateFacts = new List<TableSeatPrivateFacts>(4);
             int[] discardCounters = new int[4];
+            var projectionEvents = new List<(RoundEventType Type, int Seat, TileId? Tile)>();
+            if (round.RoundId.StartsWith("c04-", StringComparison.Ordinal))
+            {
+                // C04 is the sole opt-in path with a legally pre-advanced Domain round
+                // before LocalHost has a durable event stream. Preserve its real public
+                // river history without changing ordinary projection-source behavior.
+                for (int i = 0; i < round.Events.Count; i++)
+                {
+                    RoundEvent record = round.Events[i];
+                    projectionEvents.Add((record.Type, record.Seat, record.Tile));
+                }
+            }
+            else
+            {
+                for (int i = 0; i < request.CommittedEvents.Count; i++)
+                {
+                    TableEventRecord record = request.CommittedEvents[i];
+                    projectionEvents.Add((record.Type, record.Seat, record.Tile));
+                }
+            }
+
             for (int seat = 0; seat < 4; seat++)
             {
                 var discards = new List<DiscardView>();
                 TileId? seatDraw = null;
                 bool riichiPending = false;
-                // Public discard history is part of the authoritative RoundStateMachine,
-                // including an explicitly seeded legal initial scenario and claimed river
-                // entries. The durable event cursor remains independent: this projection reads
-                // real Domain events without fabricating TableEventRecord/Protocol events.
-                for (int i = 0; i < round.Events.Count; i++)
+                for (int i = 0; i < projectionEvents.Count; i++)
                 {
-                    RoundEvent record = round.Events[i];
+                    var record = projectionEvents[i];
                     if (record.Seat != seat)
                     {
                         continue;
