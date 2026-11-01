@@ -56,6 +56,21 @@ jobs:
         shell: powershell
         run: ./tools/ci/test-v5-native-exit.ps1
 
+      # The gate self-tests are explicit CI steps: a green table/direct run must
+      # not be reported if its own negative matrix was never executed. Each
+      # script exits non-zero on a mismatch, so the job fails.
+      - name: Verify direct-result XML gate
+        shell: powershell
+        run: ./tools/ci/test-v5-direct-results.ps1
+
+      - name: Verify dotnetTest-result evidence gate
+        shell: powershell
+        run: ./tools/ci/test-v5-dotnettest-results.ps1
+
+      - name: Verify table-result XML evidence gate
+        shell: powershell
+        run: ./tools/ci/test-v5-table-evidence.ps1
+
       - name: Run unified V5 verification
         shell: powershell
         run: ./tools/ci/verify-v5-table-postgres.ps1 -Configuration Release -RunUnifiedVerification -LogDir artifacts/verify-v5/table -UnifiedLogDir artifacts/verify-v5/unified
@@ -71,5 +86,8 @@ jobs:
           path: |
             artifacts/verify-v5/**
             artifacts/native-exit-*/**
+            artifacts/direct-results-selftest-*/**
+            artifacts/dotnettest-results-selftest-*/**
+            artifacts/table-evidence-selftest-*/**
           if-no-files-found: error
           retention-days: 30

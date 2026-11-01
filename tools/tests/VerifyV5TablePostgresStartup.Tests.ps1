@@ -153,10 +153,12 @@ $productionAst = [System.Management.Automation.Language.Parser]::ParseFile($wrap
 
 $productionFunctionNames = @(
     'Write-Step', 'Add-Stage', 'Get-Sha256', 'Get-TextSha256',
+    'ConvertTo-NativeArgumentLine', 'Get-RedactedArgumentList', 'Get-FileEvidence',
+    'Read-FileBytesShared', 'Read-FileTextShared', 'Write-NativeInvocationMetadata',
     'Test-TcpListenerReachable', 'Get-PortProbe', 'Resolve-TablePort',
     'Get-LogTail', 'Restore-ProcessEnvironment', 'Invoke-Native',
-    'Wait-PgReady', 'Get-PgScalar', 'Get-PgDataDirectory', 'Assert-OwnedCluster',
-    'Initialize-Cluster', 'Restart-ClusterImmediate'
+    'Wait-PgReady', 'Get-PgScalar', 'Get-PgDataDirectory', 'Get-ClusterOwnershipState',
+    'Assert-OwnedCluster', 'Initialize-Cluster', 'Restart-ClusterImmediate'
 )
 function Get-ProductionFunctionAst([string]$Name) {
     return $productionAst.FindAll({
@@ -734,8 +736,9 @@ try {
     Assert-Equal '0' "$stopCode" 'S7 clean pg_ctl stop exits 0'
     $script:ClusterStarted = $false
     Start-Sleep -Milliseconds 400
+    $dataDirForward = $script:DataDir.Replace('\', '/')
     $remaining = @(Get-CimInstance Win32_Process -Filter "Name = 'postgres.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -and $_.CommandLine.IndexOf($script:DataDir, [StringComparison]::OrdinalIgnoreCase) -ge 0 })
+        Where-Object { $_.CommandLine -and ($_.CommandLine.IndexOf($script:DataDir, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or $_.CommandLine.IndexOf($dataDirForward, [StringComparison]::OrdinalIgnoreCase) -ge 0) })
     Assert-Equal '0' "$($remaining.Count)" 'S7 no postgres.exe process references this run''s data directory'
 
     # Preserve a stopped data directory for the S8 real startup-failure run.
