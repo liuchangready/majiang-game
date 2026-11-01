@@ -544,9 +544,14 @@ namespace C04RecoveryReconciliationVerifier
             string launchPath = Path.Combine(root, "prepare-launch.json");
             Require(File.Exists(launchPath), "prepare launch observation is missing");
             JsonElement launch = ReadJson(launchPath);
+            Require(launch.TryGetProperty("nativeExitCode", out _) &&
+                    launch.TryGetProperty("timedOut", out _) &&
+                    Text(launch, "probeMode") == "Prepare",
+                "prepare launch has no complete process/native observation");
             if (Bool(input, "force"))
             {
-                Require(Int(launch, "nativeExitCode") != 0 && !Bool(launch, "timedOut"),
+                Require(Text(launch, "caseId") == "prepare-force" &&
+                        Int(launch, "nativeExitCode") != 0 && !Bool(launch, "timedOut"),
                     "Force prepare did not record a non-zero/non-timeout process exit");
                 string log = Path.Combine(root, "prepare-player.log");
                 Require(File.Exists(log) &&
@@ -555,7 +560,8 @@ namespace C04RecoveryReconciliationVerifier
             }
             else
             {
-                Require(Int(launch, "nativeExitCode") == 0 && !Bool(launch, "timedOut"),
+                Require(Text(launch, "caseId") == "prepare" &&
+                        Int(launch, "nativeExitCode") == 0 && !Bool(launch, "timedOut"),
                     "normal prepare did not exit 0");
             }
 
