@@ -10,6 +10,7 @@ using Mahjong.Unity.App;
 using Mahjong.Unity.Table;
 using NUnit.Framework;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 using UnityEngine.TestTools;
 
 namespace Mahjong.Unity.Tests.PlayMode
@@ -32,6 +33,9 @@ namespace Mahjong.Unity.Tests.PlayMode
             AppRoot app = AppRoot.EnsureInitialized(new AppConfig(), null, dataRoot);
             try
             {
+                AsyncOperation bootLoad = SceneManager.LoadSceneAsync("Boot", LoadSceneMode.Single);
+                Assert.IsNotNull(bootLoad, "The frozen enabled Boot scene must be loadable by the real application entry point.");
+                while (!bootLoad!.isDone) yield return null;
                 float deadline = Time.realtimeSinceStartup + 30f;
                 while (app.Router.CurrentScene != SceneId.Menu && Time.realtimeSinceStartup < deadline) yield return null;
                 Assert.AreEqual(SceneId.Menu, app.Router.CurrentScene);
