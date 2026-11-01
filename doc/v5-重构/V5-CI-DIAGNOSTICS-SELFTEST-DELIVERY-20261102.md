@@ -177,3 +177,15 @@ R10 关键证据 SHA-256：
 ## 9. 明确未覆盖
 
 未运行当前头远端 CI、未下载/重跑 `41329645233`/`41329638524`；未运行 14 工程全量、PG、Unity、Player、Android、设备或整场随机；非 Windows 分支未实测；历史 `39970580589` framework 日志缺失仍 BLOCKED。G2–G5 未批准，V4 仍生产。本交付不构成生产验收，也不把预期受控失败累计成产品全绿。
+
+## 10. Caller 独立验收（2026-11-02）
+
+本任务范围通过，DIAG-R1-01 A/B/C 已关闭。受测代码为 `8c19076a3cb32c3ac7d2c5841fac1c0597765535`；本节是受测后仅报告补记，脚本 blob 未改变。
+
+调用方在独立树 `E:/majiang-review/caller-diagnostics-r2-7d2b6c91` 实际执行：Diagnostics **142/142**（完整 S1–S11），dotnetTest **61/61**、captured **51/51**、direct XML **19/19**、native **24/24**，各原生退出码均 **0**。实测命令、原生 metadata、stdout/stderr、逐场景计数和 XML 记录在 `build/caller-review/audit-final.json` 及同目录原件。
+
+原 R1 误收副本重放：有效 PASS/FAIL 均接受；空退出码、两个 Fail 节点却汇总一个、重复 ID、缺属性、错 assembly/framework/schema、带旧标记 raw 全部拒绝。另行验证无旧标记但早两天的 raw/XML、其他目录同名程序集，以及 Assert 包装函数传入 null，也全部拒绝。均为 TOOL_FIXTURE 副本，不声称原生输出损坏。
+
+接收方清单独立重算 **1055/1055、0 长度/哈希不符**，CSV SHA-256 `E1CB390A544504CB7F513A62C22DE355176BDFBE24C094EC9BCEEAC5F410EE97`；224,121 bytes 是 CSV 自身大小。调用方完整复核为 `build/caller-review/REVIEW.txt`，最终清单为同目录 `review-manifest.sha256.json`，均在独立树保留。
+
+环境口径更正：`8.0.426` 是 SDK 版本；调用方实查安装的 `Microsoft.NETCore.App` runtime 为 `8.0.32`。不将本地结果表述为远端 CI 或 G2–G5 通过；14 工程全量、PG、Unity/Player、Android/设备与非 Windows 仍未运行，历史 `39970580589` 缺口保持 BLOCKED。仅同步既有 Draft PR20，不 merge/deploy、不改 scheduler。
