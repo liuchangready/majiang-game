@@ -279,6 +279,14 @@ namespace Mahjong.LocalHost
                         continue;
                     }
 
+                    TilePosition position = round.Tiles.PositionOf(record.Tile.Value);
+                    if (position.Zone != TileZone.Discard || position.Seat != seat)
+                    {
+                        // A call keeps its original river Domain event, but the physical
+                        // entity now belongs to the caller's meld rather than the river.
+                        continue;
+                    }
+
                     discardCounters[seat]++;
                     bool tsumogiri = seatDraw.HasValue && seatDraw.Value == record.Tile.Value;
                     discards.Add(new DiscardView(

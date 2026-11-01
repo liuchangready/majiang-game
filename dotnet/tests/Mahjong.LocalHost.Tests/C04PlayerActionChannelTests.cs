@@ -7,6 +7,7 @@ using Mahjong.Client;
 using Mahjong.Contracts;
 using Mahjong.Domain;
 using Mahjong.LocalHost;
+using Mahjong.TableRuntime;
 using Xunit;
 using PlayerSnapshot = Mahjong.Contracts.Wire.PlayerSnapshot;
 using MeldType = Mahjong.Contracts.Wire.MeldType;
@@ -112,13 +113,26 @@ namespace Mahjong.LocalHost.Tests
                     }
                     catch (OperationCanceledException)
                     {
+                        var localRuntime = Assert.IsType<LocalTableChannel>(channel).RuntimeForMatch!;
+                        RoundStateMachine authorityRound = localRuntime.ActorForTest.GetRoundStateForHost();
+                        TableStreamFrame? lastStreamFrame = localRuntime.LastStreamFrameForTest;
+                        TableStreamTermination? termination = DebugTerminationSink.LastTermination;
                         throw new InvalidOperationException(
                             "Applied C04 action had no visible post-state: baseline=" + before.StateVersion +
                             " receiptVersion=" + receipt.Resolution.CommandVersion.Value.Value +
                             " receiptEventSeq=" + receipt.Resolution.EventSeq.Value.Value +
                             " current=" + (session.PlayerSnapshot?.StateVersion.ToString() ?? "<none>") +
                             " state=" + session.State + " lastError=" + (session.LastError ?? "<none>") +
-                            " visibleBatches=" + visibleEvents.Count);
+                            " visibleBatches=" + visibleEvents.Count +
+                            " authorityVersion=" + (await localRuntime.ActorForTest.GetSnapshotAsync(CancellationToken.None)).StateVersion.Value +
+                            " roundVersion=" + authorityRound.Version + " phase=" + authorityRound.Phase +
+                            " window=" + (authorityRound.Window == null ? "<none>" : authorityRound.Window.FromSeat.ToString()) +
+                            " driver=" + localRuntime.DriverForTest.DescribeDriverForTest() +
+                            " lastFrame=" + (lastStreamFrame == null ? "<none>" :
+                                lastStreamFrame.StateVersion.Value + "/" + lastStreamFrame.EventSeq.Value +
+                                "/" + lastStreamFrame.Cursor.StreamVersion.Value + ":" + lastStreamFrame.Cursor.ProjectionSeq.Value) +
+                            " termination=" + (termination?.ReasonCode ?? "<none>") + ":" +
+                                (termination?.Detail ?? string.Empty));
                     }
                     Assert.Equal(before.RoundId, after.RoundId);
                     Assert.True(before.StateVersion + 1UL == after.StateVersion,

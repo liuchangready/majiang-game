@@ -312,6 +312,8 @@ namespace Mahjong.LocalHost
 
         internal LocalTableStore StoreForTest => _store;
 
+        internal TableStreamFrame? LastStreamFrameForTest => _sink?.LastFrame;
+
         internal bool DriverRunning => _driver.IsRunning;
 
         internal LocalTableDriver DriverForTest => _driver;
