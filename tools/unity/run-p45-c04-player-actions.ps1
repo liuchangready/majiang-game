@@ -235,15 +235,29 @@ function Get-EnabledScenes([string]$projectRoot) {
 
 function Get-UnityInputClosure([string]$projectRoot,[string]$output) {
     $entries = New-Object System.Collections.Generic.List[object]
+    $excludedPathRules = New-Object System.Collections.Generic.List[string]
     foreach ($rootName in @('Assets','Packages','ProjectSettings','Library/PackageCache','Library/ScriptAssemblies')) {
         $root = Join-Path $projectRoot ($rootName.Replace('/','\'))
         if (-not (Test-Path -LiteralPath $root -PathType Container)) { if ($rootName -eq 'Library/ScriptAssemblies') { continue }; throw "Unity build input root is missing: $rootName" }
-        foreach ($file in Get-ChildItem -LiteralPath $root -Recurse -File | Sort-Object FullName) {
-            $relative = $file.FullName.Substring($projectRoot.Length).TrimStart('\','/').Replace('\','/')
-            $entries.Add([ordered]@{ path=$relative; bytes=[long]$file.Length; sha256=(Get-Sha256 $file.FullName) }) | Out-Null
+        $pending = New-Object System.Collections.Generic.Stack[string]
+        $pending.Push($root)
+        while ($pending.Count -gt 0) {
+            $directory = $pending.Pop()
+            foreach ($item in Get-ChildItem -LiteralPath $directory -Force -ErrorAction Stop) {
+                $relative = $item.FullName.Substring($projectRoot.Length).TrimStart('\','/').Replace('\','/')
+                if ($item.PSIsContainer) {
+                    if ($rootName -eq 'Library/PackageCache' -and $item.Name.EndsWith('.bundle',[StringComparison]::OrdinalIgnoreCase)) {
+                        $excludedPathRules.Add($relative + '/** (macOS bundle excluded from StandaloneWindows64 inputs)') | Out-Null
+                        continue
+                    }
+                    $pending.Push($item.FullName)
+                    continue
+                }
+                $entries.Add([ordered]@{ path=$relative; bytes=[long]$item.Length; sha256=(Get-Sha256 $item.FullName) }) | Out-Null
+            }
         }
     }
-    $manifest = [ordered]@{ projectRoot=$projectRoot; roots=@('Assets','Packages','ProjectSettings','Library/PackageCache','Library/ScriptAssemblies'); fileCount=$entries.Count; entries=$entries }
+    $manifest = [ordered]@{ projectRoot=$projectRoot; target='StandaloneWindows64'; roots=@('Assets','Packages','ProjectSettings','Library/PackageCache','Library/ScriptAssemblies'); excludedPathRules=$excludedPathRules; fileCount=$entries.Count; entries=$entries }
     [IO.File]::WriteAllText($output,(($manifest | ConvertTo-Json -Depth 8)+"`n"),(New-Object Text.UTF8Encoding($false)))
     return Get-Sha256 $output
 }
@@ -480,13 +494,13 @@ Start-Sleep -Seconds 25
         if (-not $rejected) { throw "Exact PlayMode XML gate accepted invalid fixture: $($xmlCase.name)" }
     }
     $closureBeforePath = Join-Path $RunRoot 'fixture-input-before.json'; $closureAfterPath = Join-Path $RunRoot 'fixture-input-after.json'; $closureChangesPath = Join-Path $RunRoot 'fixture-input-changes.json'
-    $closureBefore = [ordered]@{ entries=@([ordered]@{path='Assets/Scripts/App.cs';bytes=10;sha256=('a'*64)},[ordered]@{path='Packages/manifest.json';bytes=10;sha256=('b'*64)},[ordered]@{path='ProjectSettings/EditorBuildSettings.asset';bytes=10;sha256=('c'*64)},[ordered]@{path='Library/ScriptAssemblies/App.dll';bytes=10;sha256=('d'*64)}) }
-    $closureAfter = [ordered]@{ entries=@([ordered]@{path='Assets/Scripts/App.cs';bytes=10;sha256=('a'*64)},[ordered]@{path='Packages/manifest.json';bytes=10;sha256=('b'*64)},[ordered]@{path='ProjectSettings/EditorBuildSettings.asset';bytes=10;sha256=('c'*64)},[ordered]@{path='Library/ScriptAssemblies/App.dll';bytes=11;sha256=('e'*64)}) }
+    $closureBefore = [ordered]@{ entries=@([ordered]@{path='Assets/Scripts/App.cs';bytes=10;sha256=('a'*64)},[ordered]@{path='Packages/manifest.json';bytes=10;sha256=('b'*64)},[ordered]@{path='ProjectSettings/EditorBuildSettings.asset';bytes=10;sha256=('c'*64)},[ordered]@{path='Library/PackageCache/com.unity.test/package.dll';bytes=10;sha256=('d'*64)},[ordered]@{path='Library/ScriptAssemblies/App.dll';bytes=10;sha256=('e'*64)}) }
+    $closureAfter = [ordered]@{ entries=@([ordered]@{path='Assets/Scripts/App.cs';bytes=10;sha256=('a'*64)},[ordered]@{path='Packages/manifest.json';bytes=10;sha256=('b'*64)},[ordered]@{path='ProjectSettings/EditorBuildSettings.asset';bytes=10;sha256=('c'*64)},[ordered]@{path='Library/PackageCache/com.unity.test/package.dll';bytes=10;sha256=('d'*64)},[ordered]@{path='Library/ScriptAssemblies/App.dll';bytes=11;sha256=('f'*64)}) }
     [IO.File]::WriteAllText($closureBeforePath,(($closureBefore|ConvertTo-Json -Depth 5)+"`n"),(New-Object Text.UTF8Encoding($false)))
     [IO.File]::WriteAllText($closureAfterPath,(($closureAfter|ConvertTo-Json -Depth 5)+"`n"),(New-Object Text.UTF8Encoding($false)))
     $allowedChanges = Assert-C04PostBuildInputClosure $closureBeforePath $closureAfterPath $closureChangesPath
     if ($allowedChanges.Count -ne 1 -or $allowedChanges[0].classification -ne 'UnityGenerated') { throw 'Postbuild closure fixture did not retain the exact Unity-generated input hash change.' }
-    foreach ($path in @('Assets/Scripts/App.cs','Packages/manifest.json','ProjectSettings/EditorBuildSettings.asset')) {
+    foreach ($path in @('Assets/Scripts/App.cs','Packages/manifest.json','ProjectSettings/EditorBuildSettings.asset','Library/PackageCache/com.unity.test/package.dll')) {
         $badClosure = [ordered]@{ entries=@() }
         foreach ($entry in $closureBefore.entries) {
             if ($entry.path -eq $path) { $badClosure.entries += [ordered]@{path=$entry.path;bytes=$entry.bytes;sha256=('f'*64)} }
@@ -495,6 +509,22 @@ Start-Sleep -Seconds 25
         [IO.File]::WriteAllText($closureAfterPath,(($badClosure|ConvertTo-Json -Depth 5)+"`n"),(New-Object Text.UTF8Encoding($false)))
         $rejected = $false; try { Assert-C04PostBuildInputClosure $closureBeforePath $closureAfterPath $closureChangesPath | Out-Null } catch { $rejected = $true }
         if (-not $rejected) { throw "Postbuild input closure gate accepted a source input mutation: $path" }
+    }
+    $packageFixtureProject = Join-Path $RunRoot 'package-closure-fixture'
+    foreach ($directory in @('Assets','Packages','ProjectSettings','Library/PackageCache/Resolved','Library/PackageCache/MacPlugin.bundle/Contents','Library/ScriptAssemblies')) {
+        New-Item -ItemType Directory -Force -Path (Join-Path $packageFixtureProject $directory) | Out-Null
+    }
+    foreach ($file in @('Assets/input.asset','Packages/manifest.json','ProjectSettings/EditorBuildSettings.asset','Library/PackageCache/Resolved/package.dll','Library/PackageCache/MacPlugin.bundle/Contents/ignored.dylib','Library/ScriptAssemblies/App.dll')) {
+        [IO.File]::WriteAllText((Join-Path $packageFixtureProject $file),$file,(New-Object Text.UTF8Encoding($false)))
+    }
+    $packageClosurePath = Join-Path $RunRoot 'fixture-package-closure.json'
+    Get-UnityInputClosure $packageFixtureProject $packageClosurePath | Out-Null
+    $packageClosure = Get-Content $packageClosurePath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $packageClosurePaths = @($packageClosure.entries | ForEach-Object { [string]$_.path })
+    if ($packageClosure.target -cne 'StandaloneWindows64' -or $packageClosurePaths -notcontains 'Library/PackageCache/Resolved/package.dll' -or
+        @($packageClosurePaths | Where-Object { $_ -like 'Library/PackageCache/MacPlugin.bundle/*' }).Count -ne 0 -or
+        @($packageClosure.excludedPathRules | Where-Object { $_ -like 'Library/PackageCache/MacPlugin.bundle/***StandaloneWindows64*' }).Count -ne 1) {
+        throw 'Windows resolved-package closure did not bind target packages while excluding only the platform-specific macOS bundle.'
     }
     $stream = New-Object IO.MemoryStream
     $writer = New-Object IO.BinaryWriter($stream)
@@ -636,7 +666,7 @@ Start-Sleep -Seconds 25
     }
     $fixtureFiles = Get-ChildItem -LiteralPath $RunRoot -Recurse -File | Sort-Object FullName | ForEach-Object { [ordered]@{ path=$_.FullName.Substring($RunRoot.Length).TrimStart('\','/'); sha256=(Get-Sha256 $_.FullName); bytes=$_.Length } }
     [IO.File]::WriteAllText((Join-Path $RunRoot 'fixture-seal.json'), (($fixtureFiles | ConvertTo-Json -Depth 5) + "`n"), (New-Object Text.UTF8Encoding($false)))
-    Write-Host "C04_TOOL_FIXTURES_PASS positive=1 negative=$($negatives.Count + $evidenceNegatives.Count + $markerNegatives.Count + 11) timeoutTree=PASS outputDrain=PASS outputFiles=$((Get-ChildItem -LiteralPath $RunRoot -Recurse -File).Count)"
+    Write-Host "C04_TOOL_FIXTURES_PASS positive=1 negative=$($negatives.Count + $evidenceNegatives.Count + $markerNegatives.Count + 12) timeoutTree=PASS outputDrain=PASS outputFiles=$((Get-ChildItem -LiteralPath $RunRoot -Recurse -File).Count)"
     exit 0
 }
 
