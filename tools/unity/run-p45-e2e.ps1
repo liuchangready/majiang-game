@@ -35,7 +35,7 @@ param(
     [ValidateSet('GAME', 'TOOL_SELF_TEST')]
     [string]$EvidenceClass = 'GAME',
 
-    [ValidateSet('LocalSmoke', 'Manual', 'ToolSelfTest')]
+    [ValidateSet('LocalSmoke', 'Manual', 'ToolSelfTest', 'RecoveryProbe')]
     [string]$Mode = 'LocalSmoke',
 
     [switch]$Visible,
@@ -49,6 +49,7 @@ param(
     [string]$BuildCommit = 'UNKNOWN',
     [string]$BuildSourceNote = '',
     [string]$BuildLog = '',
+    [string]$BuildCommand = '',
     [string]$ExpectedPlayerSha256 = '',
 
     [ValidateSet('hold', 'autoexit', 'exit0', 'exit7')]
@@ -57,6 +58,13 @@ param(
 
     [ValidateSet('Before', 'After')]
     [string]$Phase,
+    [ValidateSet('Before', 'After')]
+    [string]$RecoveryPhase,
+    [switch]$RecoveryExitAfterExport,
+    [string]$ExportDirectory,
+    [string]$VerifierPath,
+    [string]$DotnetPath,
+    [string]$CollectionPath,
     [string]$ObservationPath,
     [string]$BeforeObservationPath,
     [string]$AfterObservationPath,
@@ -105,7 +113,7 @@ try {
             $created = New-P45Run -RunRoot $Root -RunDir $RunDir -PlayerPath $PlayerPath `
                 -EvidenceClass $EvidenceClass -Mode $Mode -Visible:$Visible `
                 -BuildProvenance $BuildProvenance -BuildCommit $BuildCommit `
-                -BuildSourceNote $BuildSourceNote -BuildLog $BuildLog `
+                -BuildSourceNote $BuildSourceNote -BuildLog $BuildLog -BuildCommand $BuildCommand `
                 -ExpectedPlayerSha256 $ExpectedPlayerSha256
             Write-Host ('PREPARED: ' + $created.Root)
             Write-Host ('RUN_ID: ' + $created.Run.runId)
@@ -132,7 +140,9 @@ try {
             if (-not $PSBoundParameters.ContainsKey('Mode')) { $Mode = [string]$context.Run.launch.mode }
             if (-not $PSBoundParameters.ContainsKey('Visible')) { $Visible = [bool]$context.Run.launch.visible }
             $result = New-P45Attempt -Context $context -Mode $Mode -Visible:$Visible -Wait:$Wait `
-                -TimeoutSeconds $TimeoutSeconds -SelfTestMode $SelfTestMode -SelfTestHoldSeconds $SelfTestHoldSeconds
+                -TimeoutSeconds $TimeoutSeconds -RecoveryPhase $RecoveryPhase `
+                -RecoveryExitAfterExport:$RecoveryExitAfterExport `
+                -SelfTestMode $SelfTestMode -SelfTestHoldSeconds $SelfTestHoldSeconds
             $stateText = $result.Status
             Write-Host ('LAUNCH attempt=' + $result.Attempt + ' pid=' + $result.Launch.pid + ' status=' + $stateText + ' nativeExit=' + $result.NativeExitCode)
             Write-P45Result -CommandName $Command -ExitCode $result.ExitCode -Status $stateText -Data ([pscustomobject]@{
@@ -177,7 +187,9 @@ try {
             if (-not $PSBoundParameters.ContainsKey('Mode')) { $Mode = [string]$context.Run.launch.mode }
             if (-not $PSBoundParameters.ContainsKey('Visible')) { $Visible = [bool]$context.Run.launch.visible }
             $result = New-P45Attempt -Context $context -Mode $Mode -Visible:$Visible -Wait:$Wait `
-                -TimeoutSeconds $TimeoutSeconds -SelfTestMode $SelfTestMode -SelfTestHoldSeconds $SelfTestHoldSeconds
+                -TimeoutSeconds $TimeoutSeconds -RecoveryPhase $RecoveryPhase `
+                -RecoveryExitAfterExport:$RecoveryExitAfterExport `
+                -SelfTestMode $SelfTestMode -SelfTestHoldSeconds $SelfTestHoldSeconds
             Write-Host ('RESTART attempt=' + $result.Attempt + ' pid=' + $result.Launch.pid + ' status=' + $result.Status + ' nativeExit=' + $result.NativeExitCode)
             Write-P45Result -CommandName $Command -ExitCode $result.ExitCode -Status $result.Status -Data ([pscustomobject]@{
                 runId = $context.Run.runId
@@ -240,8 +252,33 @@ try {
 
         'Import' {
             $context = Get-P45RequiredRunContext
+            if (-not [string]::IsNullOrWhiteSpace($ExportDirectory)) {
+                if ([string]::IsNullOrWhiteSpace($Phase)) {
+                    Throw-P45 2 'USAGE' 'Import -ExportDirectory requires -Phase Before|After.'
+                }
+                if ([string]::IsNullOrWhiteSpace($VerifierPath)) {
+                    Throw-P45 2 'USAGE' 'Import -ExportDirectory requires -VerifierPath pointing at the built P45RecoveryVerifier DLL.'
+                }
+                if ([string]::IsNullOrWhiteSpace($DotnetPath)) { $DotnetPath = 'dotnet' }
+                $imported = Import-P45PlayerExport -Context $context -ExportDirectory $ExportDirectory `
+                    -Phase $Phase -VerifierPath $VerifierPath -DotnetPath $DotnetPath
+                Write-Host ('IMPORTED phase=' + $imported.Phase + ' source=' + $imported.Source + ' eligible=' + $imported.Eligible)
+                Write-Host ('DESTINATION: ' + $imported.Destination)
+                Write-P45Result -CommandName $Command -ExitCode 0 -Status 'PLAYER_EXPORT_IMPORTED' -Data ([pscustomobject]@{
+                    runId = $context.Run.runId
+                    phase = $imported.Phase
+                    source = $imported.Source
+                    destination = $imported.Destination
+                    sha256 = $imported.Sha256
+                    rawExportSha256 = $imported.RawExportSha256
+                    authoritySaveSha256 = $imported.AuthoritySaveSha256
+                    eligibleForRealPass = $imported.Eligible
+                    eligibilityReasons = $imported.EligibilityReasons
+                })
+                exit 0
+            }
             if ([string]::IsNullOrWhiteSpace($ObservationPath) -or [string]::IsNullOrWhiteSpace($Phase)) {
-                Throw-P45 2 'USAGE' 'Import requires -ObservationPath and -Phase Before|After.'
+                Throw-P45 2 'USAGE' 'Import requires -ObservationPath and -Phase Before|After, or -ExportDirectory with -VerifierPath.'
             }
             $imported = Import-P45Observation -Context $context -ObservationPath $ObservationPath -Phase $Phase
             Write-Host ('IMPORTED phase=' + $imported.Phase + ' source=' + $imported.Source + ' eligible=' + $imported.Eligible)
@@ -274,7 +311,9 @@ try {
             if ([string]::IsNullOrWhiteSpace($beforePath) -or [string]::IsNullOrWhiteSpace($afterPath)) {
                 Throw-P45 5 'NOT_FOUND' 'Compare needs imported Before and After observations, or explicit -BeforeObservationPath/-AfterObservationPath.'
             }
-            $comparison = Compare-P45Observations -Context $context -BeforePath $beforePath -AfterPath $afterPath
+            if ([string]::IsNullOrWhiteSpace($DotnetPath)) { $DotnetPath = 'dotnet' }
+            $comparison = Compare-P45Observations -Context $context -BeforePath $beforePath -AfterPath $afterPath `
+                -VerifierPath $VerifierPath -DotnetPath $DotnetPath -CollectionPath $CollectionPath
             Write-Host ('COMPARE outcome=' + $comparison.Result.outcome + ' pass=' + $comparison.Result.pass + ' requiredEqual=' + $comparison.Result.requiredFieldsEqual)
             Write-Host ('COMPARE_EVIDENCE: ' + $comparison.ResultPath)
             Write-P45Result -CommandName $Command -ExitCode $comparison.ExitCode -Status $comparison.Result.outcome -Data ([pscustomobject]@{
