@@ -235,32 +235,47 @@ function Get-EnabledScenes([string]$projectRoot) {
 }
 
 function Get-UnityInputClosure([string]$projectRoot,[string]$output) {
-    $entries = New-Object System.Collections.Generic.List[object]
-    $excludedPathRules = New-Object System.Collections.Generic.List[string]
-    foreach ($rootName in @('Assets','Packages','ProjectSettings','UserSettings','Library/PackageCache','Library/ScriptAssemblies')) {
-        $root = Join-Path $projectRoot ($rootName.Replace('/','\'))
-        if (-not (Test-Path -LiteralPath $root -PathType Container)) { if ($rootName -eq 'Library/ScriptAssemblies') { continue }; throw "Unity build input root is missing: $rootName" }
-        $pending = New-Object System.Collections.Generic.Stack[string]
-        $pending.Push($root)
-        while ($pending.Count -gt 0) {
-            $directory = $pending.Pop()
-            foreach ($item in Get-ChildItem -LiteralPath $directory -Force -ErrorAction Stop) {
-                $relative = $item.FullName.Substring($projectRoot.Length).TrimStart('\','/').Replace('\','/')
-                if ($item.PSIsContainer) {
-                    if ($rootName -eq 'Library/PackageCache' -and $item.Name.EndsWith('.bundle',[StringComparison]::OrdinalIgnoreCase)) {
-                        $excludedPathRules.Add($relative + '/** (macOS bundle excluded from StandaloneWindows64 inputs)') | Out-Null
-                        continue
+    $rootNames = @('Assets','Packages','ProjectSettings','UserSettings','Library/PackageCache','Library/ScriptAssemblies')
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        $entries = New-Object System.Collections.Generic.List[object]
+        $excludedPathRules = New-Object System.Collections.Generic.List[string]
+        try {
+            foreach ($rootName in $rootNames) {
+                $root = Join-Path $projectRoot ($rootName.Replace('/','\'))
+                if (-not (Test-Path -LiteralPath $root -PathType Container)) { if ($rootName -eq 'Library/ScriptAssemblies') { continue }; throw "Unity build input root is missing: $rootName" }
+                $pending = New-Object System.Collections.Generic.Stack[string]
+                $pending.Push($root)
+                while ($pending.Count -gt 0) {
+                    $directory = $pending.Pop()
+                    if (-not (Test-Path -LiteralPath $directory -PathType Container)) { throw "Unity input tree changed during closure capture: $directory" }
+                    foreach ($item in Get-ChildItem -LiteralPath $directory -Force -ErrorAction Stop) {
+                        $relative = $item.FullName.Substring($projectRoot.Length).TrimStart('\','/').Replace('\','/')
+                        if ($item.PSIsContainer) {
+                            if ($rootName -eq 'Library/PackageCache' -and $item.Name.EndsWith('.bundle',[StringComparison]::OrdinalIgnoreCase)) {
+                                $excludedPathRules.Add($relative + '/** (macOS bundle excluded from StandaloneWindows64 inputs)') | Out-Null
+                                continue
+                            }
+                            $pending.Push($item.FullName)
+                            continue
+                        }
+                        if (-not (Test-Path -LiteralPath $item.FullName -PathType Leaf)) { throw "Unity input file disappeared during closure capture: $relative" }
+                        $length = [long](Get-Item -LiteralPath $item.FullName -ErrorAction Stop).Length
+                        $digest = Get-Sha256 $item.FullName
+                        if (-not (Test-Path -LiteralPath $item.FullName -PathType Leaf) -or (Get-Item -LiteralPath $item.FullName -ErrorAction Stop).Length -ne $length) { throw "Unity input changed while hashing: $relative" }
+                        $entries.Add([ordered]@{ path=$relative; bytes=$length; sha256=$digest }) | Out-Null
                     }
-                    $pending.Push($item.FullName)
-                    continue
                 }
-                $entries.Add([ordered]@{ path=$relative; bytes=[long]$item.Length; sha256=(Get-Sha256 $item.FullName) }) | Out-Null
             }
+            $manifest = [ordered]@{ projectRoot=$projectRoot; target='StandaloneWindows64'; roots=$rootNames; excludedPathRules=$excludedPathRules; fileCount=$entries.Count; entries=$entries }
+            [IO.File]::WriteAllText($output,(($manifest | ConvertTo-Json -Depth 8)+"`n"),(New-Object Text.UTF8Encoding($false)))
+            return Get-Sha256 $output
+        } catch {
+            if ($attempt -eq 3) { throw }
+            Write-RunLog "UNITY_INPUT_CLOSURE_RESCAN attempt=$attempt reason=$($_.Exception.Message)"
+            Start-Sleep -Seconds $attempt
         }
     }
-    $manifest = [ordered]@{ projectRoot=$projectRoot; target='StandaloneWindows64'; roots=@('Assets','Packages','ProjectSettings','Library/PackageCache','Library/ScriptAssemblies'); excludedPathRules=$excludedPathRules; fileCount=$entries.Count; entries=$entries }
-    [IO.File]::WriteAllText($output,(($manifest | ConvertTo-Json -Depth 8)+"`n"),(New-Object Text.UTF8Encoding($false)))
-    return Get-Sha256 $output
+    throw 'Unity input closure did not stabilize after three bounded scans.'
 }
 
 function Assert-C04PostBuildInputClosure([string]$beforePath,[string]$afterPath,[string]$changesPath) {
@@ -816,6 +831,12 @@ EditorUserSettings:
     $pluginClosureSha = Get-ClosureManifest $projectPlugins (Join-Path $RunRoot 'shared-plugin-postbuild-closure.json')
     $provenanceSha = Get-Sha256 $sharedEvidence
 
+    $warmupLog = Join-Path $logs 'unity-package-import-warmup.unity.log'
+    $warmupArgs = @('-batchmode','-projectPath',(Quote-Arg $project),'-logFile',(Quote-Arg $warmupLog),'-quit') -join ' '
+    $warmup = Invoke-OwnedNative -Name 'UnityResolvedPackageImportWarmup' -FilePath $UnityPath -Arguments $warmupArgs -WorkingDirectory $project -StdoutPath (Join-Path $logs 'unity-package-import-warmup.stdout.txt') -StderrPath (Join-Path $logs 'unity-package-import-warmup.stderr.txt') -Timeout 900
+    if ($warmup.exitCode -ne 0) { throw 'Unity resolved-package import warmup returned a nonzero native exit.' }
+    $resolvedPackageInputsSha = Get-UnityInputClosure $project (Join-Path $RunRoot 'unity-resolved-package-input-closure.json')
+
     $playXml = Join-Path $logs 'playmode.xml'; $playLog = Join-Path $logs 'playmode.unity.log'
     $unityTestArgs = @('-batchmode','-projectPath',(Quote-Arg $project),'-runTests','-testPlatform','PlayMode','-testFilter','Mahjong.Unity.Tests.PlayMode.C04PlayerActionScenarioTests','-testResults',(Quote-Arg $playXml),'-logFile',(Quote-Arg $playLog)) -join ' '
     $play = Invoke-OwnedNative -Name 'UnityPlayModeC04' -FilePath $UnityPath -Arguments $unityTestArgs -WorkingDirectory $project -StdoutPath (Join-Path $logs 'playmode.stdout.txt') -StderrPath (Join-Path $logs 'playmode.stderr.txt') -Timeout 900
@@ -877,7 +898,7 @@ EditorUserSettings:
         $caseResults.Add([ordered]@{ caseId=$case.id; status='PASS'; layer='WINDOWS_PLAYER'; nativeExitCode=$player.exitCode; summary=$summaryPath; summarySha256=(Get-Sha256 $summaryPath); actionEvidence=$actionEvidencePath; actionEvidenceSha256=(Get-Sha256 $actionEvidencePath); executionEvidence=$executionPath; executionEvidenceSha256=(Get-Sha256 $executionPath); playerLog=$nativeLog; playerLogSha256=(Get-Sha256 $nativeLog); payloadSha256=$summary.payloadSha256 }) | Out-Null
     }
 
-    $final = [ordered]@{ schemaVersion=1; task='G2-C04-D03'; status='PASS'; acceptedBase='8fd7c6cb701dfbb41c28938de4186749bdd1d6c7'; frozenCandidate=$gitHead; sourceTreeStatus=$gitStatus; sourceDiffCheck='PASS'; sourceClosureManifest='source-prebuild-closure.json'; sourceClosureManifestSha256=$sourceClosureSha; generatedUnityInputs='unity-generated-inputs.json'; generatedUnityInputsSha256=(Get-Sha256 (Join-Path $RunRoot 'unity-generated-inputs.json')); unityPrebuildInputClosureSha256=$preBuildInputsSha; unityPostbuildInputClosureSha256=$postBuildInputsSha; unityPostbuildInputChanges='unity-postbuild-input-changes.json'; unityPostbuildInputChangesSha256=(Get-Sha256 (Join-Path $RunRoot 'unity-postbuild-input-changes.json')); upmDownloadCacheClosure='upm-cache-closure.json'; upmDownloadCacheClosureSha256=$upmCacheClosureSha; postBuildAssetsClosure='source-postbuild-assets-closure.json'; postBuildAssetsClosureSha256=$postBuildClosureSha; sharedPluginClosureSha256=$pluginClosureSha; sharedPluginProvenance=$sharedEvidence; sharedPluginProvenanceSha256=$provenanceSha; scriptAssembliesClosureSha256=$scriptAssembliesSha; localHostTests=$localHostTestEvidence; commands=$script:stageRecords; playMode=[ordered]@{ testCount=$testNodes.Count; passed=$testNodes.Count; failed=0; skipped=0; exactNames=$actualNames; xml=$playXml; xmlSha256=(Get-Sha256 $playXml) }; buildMarker=$buildMarker; buildMarkerSha256=(Get-Sha256 $buildMarker); playerPackageManifest='player-package.json'; cases=$caseResults; platforms=[ordered]@{ windowsPlayer='actual four fixed cases'; android='NOT_RUN (C05 owner)'; ios='NOT_RUN'; remoteTransport='NOT_IN_SCOPE' } }
+    $final = [ordered]@{ schemaVersion=1; task='G2-C04-D03'; status='PASS'; acceptedBase='8fd7c6cb701dfbb41c28938de4186749bdd1d6c7'; frozenCandidate=$gitHead; sourceTreeStatus=$gitStatus; sourceDiffCheck='PASS'; sourceClosureManifest='source-prebuild-closure.json'; sourceClosureManifestSha256=$sourceClosureSha; generatedUnityInputs='unity-generated-inputs.json'; generatedUnityInputsSha256=(Get-Sha256 (Join-Path $RunRoot 'unity-generated-inputs.json')); unityResolvedPackageInputClosure='unity-resolved-package-input-closure.json'; unityResolvedPackageInputClosureSha256=$resolvedPackageInputsSha; unityPrebuildInputClosureSha256=$preBuildInputsSha; unityPostbuildInputClosureSha256=$postBuildInputsSha; unityPostbuildInputChanges='unity-postbuild-input-changes.json'; unityPostbuildInputChangesSha256=(Get-Sha256 (Join-Path $RunRoot 'unity-postbuild-input-changes.json')); upmDownloadCacheClosure='upm-cache-closure.json'; upmDownloadCacheClosureSha256=$upmCacheClosureSha; postBuildAssetsClosure='source-postbuild-assets-closure.json'; postBuildAssetsClosureSha256=$postBuildClosureSha; sharedPluginClosureSha256=$pluginClosureSha; sharedPluginProvenance=$sharedEvidence; sharedPluginProvenanceSha256=$provenanceSha; scriptAssembliesClosureSha256=$scriptAssembliesSha; localHostTests=$localHostTestEvidence; commands=$script:stageRecords; playMode=[ordered]@{ testCount=$testNodes.Count; passed=$testNodes.Count; failed=0; skipped=0; exactNames=$actualNames; xml=$playXml; xmlSha256=(Get-Sha256 $playXml) }; buildMarker=$buildMarker; buildMarkerSha256=(Get-Sha256 $buildMarker); playerPackageManifest='player-package.json'; cases=$caseResults; platforms=[ordered]@{ windowsPlayer='actual four fixed cases'; android='NOT_RUN (C05 owner)'; ios='NOT_RUN'; remoteTransport='NOT_IN_SCOPE' } }
     $summaryOut = Join-Path $RunRoot 'summary.json'
     [IO.File]::WriteAllText($summaryOut, (($final | ConvertTo-Json -Depth 12) + "`n"), (New-Object Text.UTF8Encoding($false)))
     Write-RunLog 'FINAL_SUMMARY_WRITTEN'
