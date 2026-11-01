@@ -802,9 +802,13 @@ Start-Sleep -Seconds 25
     $fixtureVerifier = Join-Path $fixtureDotnetArtifacts 'bin/C04PlayerActionVerifier/release/Mahjong.C04PlayerActionVerifier.dll'
     $verifierFixture = Invoke-OwnedNative -Name 'FixtureGeneratedPlayerSnapshotParser' -FilePath $DotnetPath -Arguments ('exec ' + (Quote-Arg $fixtureVerifier) + ' selftest') -WorkingDirectory $RunRoot -StdoutPath (Join-Path $logs 'fixture-protobuf-parser.stdout.txt') -StderrPath (Join-Path $logs 'fixture-protobuf-parser.stderr.txt') -Timeout 30
     if ($verifierFixture.exitCode -ne 0 -or (Get-Content -LiteralPath $verifierFixture.stdout -Raw) -notmatch 'C04_PROTOBUF_FIXTURE_PASS valid=1 invalid=2') { throw 'Generated-code verifier did not accept a legal serialized snapshot and reject both malformed byte fixtures.' }
-    $fixtureFiles = Get-ChildItem -LiteralPath $RunRoot -Recurse -File | Sort-Object FullName | ForEach-Object { [ordered]@{ path=$_.FullName.Substring($RunRoot.Length).TrimStart('\','/'); sha256=(Get-Sha256 $_.FullName); bytes=$_.Length } }
+    $fixtureStableFiles = Get-C04StableArtifactFiles $RunRoot
+    $fixtureFiles = @($fixtureStableFiles | ForEach-Object { [ordered]@{ path=$_.FullName.Substring($RunRoot.Length).TrimStart('\','/'); sha256=(Get-Sha256 $_.FullName); bytes=$_.Length } })
+    if ($fixtureFiles.Count -lt 3 -or @($fixtureFiles | Where-Object { $_.path -match '^(temp|nuget|dotnet-home|upm-cache)/' }).Count -ne 0) {
+        throw 'Fixture evidence seal must contain stable owned outputs and exclude volatile process/download roots.'
+    }
     [IO.File]::WriteAllText((Join-Path $RunRoot 'fixture-seal.json'), (($fixtureFiles | ConvertTo-Json -Depth 5) + "`n"), (New-Object Text.UTF8Encoding($false)))
-    Write-Host "C04_TOOL_FIXTURES_PASS positive=1 negative=$($negatives.Count + $evidenceNegatives.Count + $markerNegatives.Count + 15) protobuf=PASS malformed=2 timeoutTree=PASS outputDrain=PASS outputFiles=$((Get-ChildItem -LiteralPath $RunRoot -Recurse -File).Count)"
+    Write-Host "C04_TOOL_FIXTURES_PASS positive=1 negative=$($negatives.Count + $evidenceNegatives.Count + $markerNegatives.Count + 15) protobuf=PASS malformed=2 timeoutTree=PASS outputDrain=PASS outputFiles=$($fixtureFiles.Count)"
     exit 0
 }
 
