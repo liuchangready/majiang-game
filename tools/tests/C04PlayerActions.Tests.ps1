@@ -30,12 +30,25 @@ $positive = Invoke-C04Tool @('-NoProfile','-ExecutionPolicy','Bypass','-File',$r
 if ($positive.exitCode -ne 0 -or $positive.stdout -notmatch 'C04_TOOL_FIXTURES_PASS positive=1 negative=58 protobuf=PASS malformed=2 timeoutTree=PASS outputDrain=PASS outputFiles=\d+') {
     throw "Positive/negative C04 tool fixtures failed. exit=$($positive.exitCode) stdout=$($positive.stdout) stderr=$($positive.stderr)"
 }
-$before = Get-ChildItem -LiteralPath $fixtureRoot -Recurse -File | Get-FileHash -Algorithm SHA256 | Sort-Object Path
-if ($before.Count -lt 3) { throw 'Fixture did not create a nonempty sealed evidence set.' }
+$sealPath = Join-Path $fixtureRoot 'fixture-seal.json'
+$sealedFiles = @(Get-Content -LiteralPath $sealPath -Raw -Encoding UTF8 | ConvertFrom-Json)
+if ($sealedFiles.Count -lt 3 -or @($sealedFiles | Where-Object { $_.path -match '^(temp|nuget|dotnet-home|upm-cache)/' }).Count -ne 0) { throw 'Fixture did not seal a stable nonempty evidence set.' }
+function Get-SealedFixtureSet {
+    $rootPrefix = [IO.Path]::GetFullPath($fixtureRoot).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    @($sealedFiles | ForEach-Object {
+        $candidate = [IO.Path]::GetFullPath((Join-Path $fixtureRoot ([string]$_.path)))
+        if (-not $candidate.StartsWith($rootPrefix,[StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $candidate -PathType Leaf)) { throw 'Fixture seal contains a missing or out-of-root artifact.' }
+        $hash = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash
+        $bytes = (Get-Item -LiteralPath $candidate).Length
+        if ($hash -cne [string]$_.sha256 -or $bytes -ne [long]$_.bytes) { throw 'Fixture sealed artifact differs from its recorded bytes/hash.' }
+        [pscustomobject]@{ Path=$candidate; Hash=$hash; Bytes=$bytes }
+    } | Sort-Object Path)
+}
+$before = @(Get-SealedFixtureSet)
 $foreignBefore = (Get-FileHash -LiteralPath (Join-Path $fixtureRoot 'foreign-sentinel.txt') -Algorithm SHA256).Hash
 $overwrite = Invoke-C04Tool @('-NoProfile','-ExecutionPolicy','Bypass','-File',$runner,'-RunRoot',$fixtureRoot,'-FixtureOnly')
 if ($overwrite.exitCode -eq 0) { throw 'Runner accepted an existing evidence root.' }
-$after = Get-ChildItem -LiteralPath $fixtureRoot -Recurse -File | Get-FileHash -Algorithm SHA256 | Sort-Object Path
+$after = @(Get-SealedFixtureSet)
 if (($before | ConvertTo-Json -Compress) -cne ($after | ConvertTo-Json -Compress)) { throw 'Overwrite rejection modified sealed fixture evidence.' }
 if ((Get-FileHash -LiteralPath (Join-Path $fixtureRoot 'foreign-sentinel.txt') -Algorithm SHA256).Hash -cne $foreignBefore) { throw 'Overwrite rejection changed the foreign-owner sentinel.' }
 $badRoot = Join-Path (Join-Path $repo 'build') 'not-a-guid'
