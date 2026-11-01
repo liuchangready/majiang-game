@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     TOOL_FIXTURE negative/positive matrix for the C04 semantic verifier.
@@ -225,8 +225,18 @@ function Invoke-RunnerVerify {
         '-Mode', 'Verify', '-EvidenceRoot', $Root, '-OutputDir', $out,
         '-ExpectedEvidenceSha256', $EvidencePin, '-HelperPath', $HelperPath, '-DotnetPath', $DotnetPath)
     if (-not $NoSummaryPin) { $args += @('-ExpectedSummarySha256', $SummaryPin) }
-    $text = & powershell.exe @args 2>&1
-    return [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = ($text -join ' ') }
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = 'powershell.exe'
+    $psi.Arguments = ($args | ForEach-Object { '"' + ([string]$_).Replace('"','\"') + '"' }) -join ' '
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    $stdout = $proc.StandardOutput.ReadToEnd()
+    $stderr = $proc.StandardError.ReadToEnd()
+    $proc.WaitForExit()
+    return [pscustomobject]@{ ExitCode = $proc.ExitCode; Output = ($stdout + ' ' + $stderr) }
 }
 
 function Invoke-BindProbe {
@@ -371,3 +381,4 @@ Write-Host ('C04_VERIFIER_TOOL_TESTS total=' + $script:Total + ' passed=' + $scr
     ' failed=' + $script:Failed + ' summary=' + $summaryPath + ' sha=' + (Get-Sha $summaryPath))
 if ($script:Failed -ne 0) { exit 1 }
 exit 0
+
