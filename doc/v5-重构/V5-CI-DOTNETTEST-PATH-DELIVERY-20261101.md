@@ -3,6 +3,14 @@
 状态：本任务范围实现与证据交付；**不是** G2 验收、不是 PR20 合并审查、不是远端 CI 新头认证。
 V4 仍是唯一生产基线；G2–G5 未批准。
 
+> **R1 说明（2026-11-02）**：Caller R1 复核（`REVIEW.txt` SHA256
+> `A1257E8263F74AF884E42B59F5EC170D721EA9C245542489D04E2B21F068F13F`，
+> manifest SHA256 `54F79611FB57C8FF1E0337B7D5E8E3C62FC950570529B5600F83B4BAFB54C595`，
+> 595 项/0 mismatch）给出 0 BLOCKER / 1 MAJOR / 0 本任务 MINOR：原 CI-PATH-01 的
+> “不假设 8.3 存在/显式 NOT INVOKED”已确认有效，但新 resolver 的 probe 成功/目录身份
+> 验证不完整，统一记为 **CI-PATH-R1-01**（原 CI-PATH-01 残余）。第 10 节是 R1 当前结果，
+> 在计数、路径与 SHA 上取代第 1–9 节；原 CI-PATH-01 已接受行为、历史原件与首失败保留。
+
 ## 0. 身份、范围与结论
 
 - 工作树：`E:/majiang-review/ci-dotnettest-path-ds-20261101-2345`
@@ -307,3 +315,132 @@ collectedFiles: []
 - 生成物（`artifacts/`、`build/`、NuGet cache、日志、manifest）全部 ignored，不提交。
 - 提交后逐项核对暂存区、diff-check、tracked clean；工作树中仅有本任务授权的 3 个文件被提交。
 - 未修改 workflow、产品/.NET 业务、Unity、scheduler、`complete.flag`、其他线程/树/锁；未杀他人进程、未清理其他工作树。
+
+## 10. R1 返修：CI-PATH-R1-01 闭环（2026-11-02）
+
+### 10.1 Caller R1 结论与范围
+
+Caller R1 原件：`E:/majiang-review/caller-ci-path-r1-b38d71f6/build/caller-review/REVIEW.txt`
+（SHA256 `A1257E8263F74AF884E42B59F5EC170D721EA9C245542489D04E2B21F068F13F`），
+manifest SHA256 `54F79611FB57C8FF1E0337B7D5E8E3C62FC950570529B5600F83B4BAFB54C595`
+（595 项/0 mismatch）。结论 **0 BLOCKER / 1 MAJOR / 0 本任务 MINOR**：原 CI-PATH-01 的
+“不假设 8.3 存在”和显式 `NOT INVOKED` 分支已有效，残余统一为 **CI-PATH-R1-01**。
+保持同 thread/session/worktree/model、原 3 个 expectedFiles；未新任务/转派/触及其他线程。
+
+承认 caller 独立实测：`a36ca371` 上 dotnetTest 54/54、native 24/24、direct 19/19、
+table 82/82；case32 native0/XML3/console3、case33 真 failing native1/XML1/console1 被拒、
+raw 空格 case46 native1/无XML/gatefalse；receiver 518 项清单独立 rehash 0 bad。以上为
+上一轮已接受行为，本轮不重开，不改变其结论。
+
+### 10.2 缺陷 A/B/C：实际 vs 期望
+
+| ID | 位置 | 实际（caller R1 复现） | 期望 |
+|---|---|---|---|
+| CI-PATH-R1-01-A | `Resolve-DotnetTestResultsPath` 原 cmd 调用/输出判断 | TOOL_FIXTURE 真实 `.exe` 打印一个存在的无空格目录后 **native exit 17**；生产 plan 仍 `Supported=true`/`short-alias` | 非零/未知 native 结果绝不能成为 Supported；不能只覆盖 scriptblock 抛异常 |
+| CI-PATH-R1-01-B | 同上；literal-percent | 合法目录名 `%CI_ALIAS_PART% long name`，真实 `cmd.exe /d /c` 先展开 `%`，返回**另一个**真实目录的 8.3 别名；两目录 identity 不同，plan 仍 Supported=true。真实生产 CLI 因此启动 runner，XML 写到 OTHER 目录并覆盖其哨兵，最终才因声明目录缺 XML 而 FAIL | 要么安全取得同一目录别名并在声明目录写 XML 通过原 gate；要么在 runner 前显式拒绝该不可表达输入，OTHER 哨兵原样 |
+| CI-PATH-R1-01-C | 同上；输出 kind | seam 返回一个现存 `.txt` 文件，`Test-Path` 通过，plan 仍 Supported=true/short-alias | 文件不是结果目录，必须拒绝 |
+
+统一根因：原实现把“存在且无空格的输出”当作有效短名，未核 actual native 成功、
+`PathType Directory` 及与原目录的同一身份；原 `valid-alias TOOL_FIXTURE` 直接返回另一个
+existing 目录，因此其绿色不能证明 identity 合同。
+
+### 10.3 修复映射
+
+| 子项 | 修复 | 验收 |
+|---|---|---|
+| A 命令失败 | resolver 内联真实 probe，保留 `Output` + `ExitCode`；`$null`/非整数为 `unsupported-probe-exit-unknown`，非 0 为 `unsupported-probe-exit`；不把 `$null` cast 0 | selftest 真实 `FakeComSpec.exe` exit 17 -> `unsupported-probe-exit`；独立 probe 4/4 拒绝 |
+| B literal-percent / wrong dir | Windows 下含 `%` 的路径（无论是否含空格）在调用 cmd **之前**返回 `unsupported-percent-expansion`。另以随机 identity marker 写入原目录、再经候选目录读回并逐字节比较；不同目录 -> `unsupported-identity-mismatch`。不做 long/short 字符串比较 | call-site D：`NOT INVOKED`、声明目录无 XML、OTHER 哨兵 SHA 前后相同；真实 `.exe` 输出另一 existing 目录 exit 0 -> `unsupported-identity-mismatch` |
+| C 输出 kind | 要求 rooted、存在且 `-PathType Container`；文件 -> `unsupported-invalid-alias-kind`，不存在 -> `unsupported-invalid-alias` | file fixture 拒绝；独立 probe 拒绝 |
+| 输出形状 | 要求恰好 1 条非空输出行；空 -> `unsupported-probe-empty`，多行 -> `unsupported-probe-output`；无空格 -> `unsupported-no-alias` | 空/多行 fixture 拒绝 |
+| 兼容边界 | `Get-DotnetTestResultsArgument` 保留，unsupported 时仍返回原路径（不是成功信号）；标题函数只读 AST 一次即可提取，不再依赖额外函数 | wrapper 对 wrong-dir 返回原路径；生产 call site 仍用 `Supported` fail-closed |
+
+identity marker 在 `finally` 中删除；删除失败 -> `unsupported-identity-probe-cleanup`，
+仍 fail-closed。未新建 global drive/junction，未改卷/机器 8dot3/SDK/系统环境。
+
+### 10.4 统一负例矩阵（13 条 helper 边界）
+
+| # | Case | 期望 |
+|---:|---|---|
+| 1 | `00 results path direct no whitespace` | direct / supported |
+| 2 | `00 results path wrong existing directory (TOOL_FIXTURE)` | unsupported-identity-mismatch |
+| 3 | `00 results path existing file (TOOL_FIXTURE)` | unsupported-invalid-alias-kind |
+| 4 | `00 results path nonexistent alias (TOOL_FIXTURE)` | unsupported-invalid-alias |
+| 5 | `00 results path empty probe output (TOOL_FIXTURE)` | unsupported-probe-empty |
+| 6 | `00 results path malformed probe output (TOOL_FIXTURE)` | unsupported-probe-output |
+| 7 | `00 results path resolver failure fixture (TOOL_FIXTURE)` | unsupported-resolver-error |
+| 8 | `00 results path unknown native exit (TOOL_FIXTURE)` | unsupported-probe-exit-unknown |
+| 9 | `00 results path alias unavailable fixture (TOOL_FIXTURE)` | unsupported-no-alias |
+| 10 | `00 results path native probe exit 17 (TOOL_FIXTURE)` | unsupported-probe-exit（真实 .exe） |
+| 11 | `00 results path literal percent token (TOOL_FIXTURE)` | unsupported-percent-expansion |
+| 12 | `00 results path space-free literal percent token (TOOL_FIXTURE)` | unsupported-percent-expansion |
+| 13 | `00 results path real OS capability (no 8.3 assumption)` | supported=>真实 same-directory alias；否则 unsupported-no-alias；不假设 8.3 必有 |
+
+第 2/3/4/5/6/7/8/9 条为 seam TOOL_FIXTURE；第 10 条为真实 native `.exe`；第 11/12 条
+为真实合法目录 + 真实 expanded 对照；第 13 条为真实 OS 分支且单独记录能力。没有把
+不同目录伪称 valid same alias；原 `valid-alias` 绿色夹具已改为 wrong-directory 负例，
+不是删除覆盖。
+
+### 10.5 R1 实际执行与计数
+
+| 执行 | native exit | 结果 |
+|---|---:|---|
+| `tools/ci/test-v5-dotnettest-results.ps1` | 0 | **61/61**（13 helper + 2 parser + 31 gate + 12 identity/schema + 3 live） |
+| `tools/ci/test-v5-native-exit.ps1` | 0 | **24/24** |
+| `tools/ci/test-v5-direct-results.ps1` | 0 | **19/19** |
+| `tools/ci/test-v5-table-evidence.ps1` | 0 | **82/82** |
+| call-site 真实 CLI A/B/C/D | 0 | **30/30** 断言 |
+| 独立 resolver probes（native17 / wrong-dir native0 / literal-percent / file） | 0 | **4/4** 拒绝 |
+| caller 原 probe A/B/C（fresh 自有输出） | 0 | nativeFailureAccepted=false；file accepted=false；percent plan unsupported 且 original identity 正确 |
+
+call-site：
+
+- A 无 8.3 模拟：`NOT INVOKED`、无 XML、无 runner log、meta `NOT_RUN`；
+- B 真实 8.3：XML 2/2 Pass、gate PASS；
+- C 普通无空格：direct、XML 2/2、gate PASS；
+- D literal-percent：`unsupported-percent-expansion`、`NOT INVOKED`、声明目录无 XML、
+  OTHER 哨兵 SHA `A6E898E7C9EE3E88663258E7C8B8ABBEEA0EB58C17E99E0294AF22F185454C77`
+  前后一致。runner 未启动，OTHER 未被覆盖。
+
+### 10.6 R1 证据路径与 SHA
+
+证据根（worktree 相对）：`build/ci-path-r1-evidence-20261102-0300/`
+
+| 文件 | 字节 | SHA-256 |
+|---|---:|---|
+| `build/ci-path-r1-evidence-20261102-0300/dotnettest-selftest/results.json` | 45,249 | `A29190169C3B2504434D718E2B95080397625880BBC8476EECADB2A5CC00316A` |
+| `.../runs/dotnettest-r1/stdout.log` | 16,120 | `80B2A9E4D8B9EDAC0ADCFDC665BAB60F8A1002B915A69064C2B53CF7476468AB` |
+| `.../runs/dotnettest-r1/stderr.log` | 0 | `E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855` |
+| `.../runs/dotnettest-r1/native.json` | 544 | `F5E3CB6E9E0DCF49AAB6196F742FEA8684E1E261D6242F6D998D378AF088855E` |
+| `.../cli-rerun/call-site-results.json` | 13,543 | `16006042134FC8A77AA030FEE83AE43192840B9A9918D4DC421F280067E6C3AF` |
+| `.../probes/probe-results.json` | 6,499 | `FEE068F64BCE4A3B1E3D5DBA8E9A25A3FEEB5F4E433E025E7348A28F945D9F3C` |
+| `artifacts/native-exit-7b6199174860456191266625d92f7fb3/results.json` | — | `25391C0EFF2AC04F75FF19B127F9B619E471A0544539B1FA2C0E2E623B7262F6` |
+| `artifacts/direct-results-selftest-97ef3a5a0aac486fbb7f580702f38ee8/results.json` | — | `5B12EF80755DB55028971FBA9B60478DB3D982A64F4BA5243BCD014E6A8B2D4B` |
+| `artifacts/table-evidence-selftest-248cde18e6e34007b3a60ea7c35da909/results.json` | — | `1970C48558DF474BE3E3FE5070C1A82395DFEED9796C706D5596930A724CBFC2` |
+
+caller 原 probe 的 fresh 自有输出（未覆盖 caller 原件）：
+
+| 文件 | SHA-256 |
+|---|---|
+| `build/caller-probe-r1-final2/resolver-native-failure.json` | `098BA7EFB251C0CC283E872AD80949EA89F6594E20A152D6217EC6866AC4473F` |
+| `build/caller-probe-r1-final2/real-alias-identity.json` | `4866C044E9FD2B25A595119579F91B4A435143401EC9B4C12C248ED6F6A86C8F` |
+| `build/caller-probe-r1-final2/invalid-alias-kind.json` | `EC8E47FEEAD03C06B51F2899CBE59BFF0A8F1519A200A78D37829B659BF2256B` |
+
+最终源码 SHA：`tools/verify-v5.ps1` `1215250B0F374A57B2270F682C5D3395522349EBC72832367C8C2255EA3DA817`；
+`tools/ci/test-v5-dotnettest-results.ps1` `9279E49C87FE0D7C637D7960120FBE1A9B87D379E08CEFFDCBFF19210790573C`。
+code commit / 报告 SHA 见交付回复。R1 manifest 在结果声明结束后生成并排除自身。
+
+### 10.7 R1 首失败与残余
+
+- **首失败**：caller R1 A/B/C 的原始 JSON 与日志保留在 caller 只读树；本轮 fresh 自有输出
+  另行生成，未覆盖。A/B/C 的实际值已在 §10.2 如实记录。
+- 首次独立 probe 脚本曾因仍提取已内联掉的旧函数名而失败；这是本任务 build helper 的
+  首失败，已改为只提取 resolver/wrapper 后重跑，未把它写成产品通过。产品首失败仍是
+  caller 的 A/B/C 三项。
+- 既有 `VerifyV5Diagnostics.Tests.ps1` 的旧 MTP 行格式漂移保持独立已知项；冻结基线同样
+  32 PASS / 7 FAIL，不因本组件否决，不扩改该文件。
+- **NOT_RUN**：本提交新远端 CI、完整 14 工程 dotnetTest 全量、自然整场 PG/lobby、
+  Unity/Player/Android/设备、非 Windows 分支。历史 `39970580589` framework 日志缺失仍
+  BLOCKED。未 push/改 PR/approve/recordMR/merge/deploy/scheduler。
+- 同一目录正例只在真实 8.3 可用的本机 OS 分支成立；CI 无 8.3 时该分支记录
+  `unsupported-no-alias`，不冒充远端 positive。literal-percent 选择“runner 前显式拒绝”，
+  不尝试用 cmd 展开后的别名写 XML。

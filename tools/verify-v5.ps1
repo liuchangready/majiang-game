@@ -497,15 +497,23 @@ function Resolve-DotnetTestResultsPath {
     # On Windows a space-free 8.3 alias is the only way to carry such a path.
     # This function returns whether that argument is actually usable:
     #   direct                 - no whitespace, passed unchanged
-    #   short-alias            - whitespace, valid existing space-free alias
-    #   unsupported-*          - whitespace and no usable alias; the caller MUST
-    #                            fail closed without invoking the runner, because
-    #                            the raw long path is known to be split
+    #   short-alias            - whitespace, verified space-free directory that
+    #                            contains the SAME identity marker as the input
+    #   unsupported-*          - the probe failed, returned a malformed/empty/
+    #                            non-directory/other-directory value, or the
+    #                            input cannot be safely probed (literal percent).
+    #                            The caller MUST fail closed without invoking
+    #                            the runner.
     #   non-windows-direct     - unchanged non-Windows behavior (not exercised)
     # `ShortNameResolver` is a test seam for the OS capability ONLY; production
-    # uses the real cmd.exe %~sI probe. The original long path is still what the
-    # evidence gate checks and what the meta/summary records; only the
-    # command-line argument is shortened.
+    # runs the inline real cmd.exe %~sI probe. A string seam result is treated as
+    # a successful (exit 0) stdout value for compatibility; an object seam result
+    # must provide Output and ExitCode.
+    #
+    # Identity is proved by writing one random marker file into the ORIGINAL
+    # directory and reading it back THROUGH the candidate directory. This is an
+    # object-identity check, not a long-vs-short string comparison: another
+    # existing directory or a file cannot see the marker and is refused.
     param(
         [string]$Path,
         [scriptblock]$ShortNameResolver = $null
@@ -523,7 +531,18 @@ function Resolve-DotnetTestResultsPath {
         $plan.Reason = 'results path is null, empty or whitespace'
         return [pscustomobject]$plan
     }
-    if ($Path -notmatch '\s') { return [pscustomobject]$plan }
+    if ($Path -notmatch '\s') {
+        # Even a space-free path is refused on Windows when it contains a
+        # literal percent token: the MTP/MSBuild bridge and cmd.exe both treat
+        # '%' specially, so the value cannot be proven to arrive unchanged.
+        if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT -and $Path -match '%') {
+            $plan.Mode = 'unsupported-percent-expansion'
+            $plan.Supported = $false
+            $plan.Reason = 'results path contains a literal percent token; cmd.exe/MSBuild forwarding cannot preserve it, so no identity-safe alias is possible'
+            return [pscustomobject]$plan
+        }
+        return [pscustomobject]$plan
+    }
     if ([System.Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) {
         $plan.Mode = 'non-windows-direct'
         $plan.Reason = 'non-Windows: value is passed directly; the Windows MTP/MSBuild whitespace split was not exercised on this platform'
@@ -535,18 +554,40 @@ function Resolve-DotnetTestResultsPath {
         $plan.Reason = 'results path contains a double quote; refusing to build a cmd.exe short-name probe'
         return [pscustomobject]$plan
     }
-    $resolver = $ShortNameResolver
-    if ($null -eq $resolver) {
-        $resolver = {
-            param([string]$Value)
-            $command = 'for %I in ("' + $Value + '") do @echo %~sI'
-            $cmd = $(if ($env:ComSpec) { $env:ComSpec } else { 'cmd.exe' })
-            return (& $cmd /d /c $command 2>$null | Out-String).Trim()
-        }
+    if ($Path -match '%') {
+        # cmd.exe expands %VAR% before evaluating %~sI. A legal literal-percent
+        # directory can therefore resolve to a DIFFERENT existing directory.
+        # Refuse this input before the probe; there is no identity-safe alias
+        # for it through cmd.exe.
+        $plan.Mode = 'unsupported-percent-expansion'
+        $plan.Supported = $false
+        $plan.Reason = 'results path contains a literal percent token; cmd.exe would expand it before %~sI, so no identity-safe alias probe is possible'
+        return [pscustomobject]$plan
     }
-    $short = $null
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+        $plan.Mode = 'unsupported-invalid-path'
+        $plan.Supported = $false
+        $plan.Reason = 'results path is not an existing directory; refusing to probe an alias'
+        return [pscustomobject]$plan
+    }
+
+    $probe = $null
     try {
-        $short = (& $resolver $Path | Out-String).Trim()
+        if ($null -eq $ShortNameResolver) {
+            # Real native `cmd.exe %~sI` probe, inline so this production
+            # function remains self-contained for AST extraction. Both the raw
+            # stdout and the real native exit are retained; a null/unknown exit
+            # is never cast to 0.
+            $command = 'for %I in ("' + $Path + '") do @echo %~sI'
+            $cmd = $(if ($env:ComSpec) { $env:ComSpec } else { 'cmd.exe' })
+            $probe = [pscustomobject]@{
+                Output   = (& $cmd /d /c $command 2>$null | Out-String)
+                ExitCode = $LASTEXITCODE
+            }
+        }
+        else {
+            $probe = & $ShortNameResolver $Path
+        }
     }
     catch {
         $plan.Mode = 'unsupported-resolver-error'
@@ -554,16 +595,63 @@ function Resolve-DotnetTestResultsPath {
         $plan.Reason = "space-free short-name probe failed: $($_.Exception.GetType().FullName): $($_.Exception.Message)"
         return [pscustomobject]$plan
     }
-    if ([string]::IsNullOrWhiteSpace($short)) {
-        $plan.Mode = 'unsupported-no-alias'
+
+    $probeOutput = $null
+    $probeExit = $null
+    if ($probe -is [string]) {
+        # Compatibility seam for existing probes: a returned string is a
+        # successful probe's stdout (exit 0).
+        $probeOutput = $probe
+        $probeExit = 0
+    }
+    elseif ($null -ne $probe -and $null -ne $probe.PSObject.Properties['Output'] -and $null -ne $probe.PSObject.Properties['ExitCode']) {
+        $probeOutput = [string]$probe.Output
+        $probeExit = $probe.ExitCode
+    }
+    else {
+        $plan.Mode = 'unsupported-probe-result'
         $plan.Supported = $false
-        $plan.Reason = 'results path contains whitespace and cmd.exe returned no short-name alias'
+        $plan.Reason = 'space-free short-name probe returned no usable Output/ExitCode result'
         return [pscustomobject]$plan
     }
+
+    if ($null -eq $probeExit -or "$probeExit" -notmatch '^-?\d+$') {
+        $plan.Mode = 'unsupported-probe-exit-unknown'
+        $plan.Supported = $false
+        $plan.Reason = 'space-free short-name probe produced no integer native exit code; outcome is unknown and refused'
+        return [pscustomobject]$plan
+    }
+    if ([int]$probeExit -ne 0) {
+        $plan.Mode = 'unsupported-probe-exit'
+        $plan.Supported = $false
+        $plan.Reason = "space-free short-name probe exited $probeExit, not 0; its output is not an accepted alias"
+        return [pscustomobject]$plan
+    }
+
+    $lines = @($probeOutput -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+    if ($lines.Count -eq 0) {
+        $plan.Mode = 'unsupported-probe-empty'
+        $plan.Supported = $false
+        $plan.Reason = 'space-free short-name probe returned empty output'
+        return [pscustomobject]$plan
+    }
+    if ($lines.Count -ne 1) {
+        $plan.Mode = 'unsupported-probe-output'
+        $plan.Supported = $false
+        $plan.Reason = "space-free short-name probe returned $($lines.Count) non-empty output lines; expected exactly one"
+        return [pscustomobject]$plan
+    }
+    $short = $lines[0]
     if ($short -match '\s') {
         $plan.Mode = 'unsupported-no-alias'
         $plan.Supported = $false
         $plan.Reason = 'results path contains whitespace and no space-free 8.3 alias is available (probe returned the long path)'
+        return [pscustomobject]$plan
+    }
+    if (-not [IO.Path]::IsPathRooted($short)) {
+        $plan.Mode = 'unsupported-invalid-alias'
+        $plan.Supported = $false
+        $plan.Reason = "space-free short-name probe returned a non-rooted path: $short"
         return [pscustomobject]$plan
     }
     if (-not (Test-Path -LiteralPath $short)) {
@@ -572,9 +660,56 @@ function Resolve-DotnetTestResultsPath {
         $plan.Reason = "space-free short-name probe returned a path that does not exist: $short"
         return [pscustomobject]$plan
     }
+    if (-not (Test-Path -LiteralPath $short -PathType Container)) {
+        $plan.Mode = 'unsupported-invalid-alias-kind'
+        $plan.Supported = $false
+        $plan.Reason = "space-free short-name probe returned a non-directory path: $short"
+        return [pscustomobject]$plan
+    }
+
+    # Object-identity check. The marker is created ONLY in the original path and
+    # must be readable with identical bytes through the candidate directory.
+    $probeName = '.__v5_dotnettest_path_identity_' + [guid]::NewGuid().ToString('N') + '.tmp'
+    $probeFile = Join-Path $Path $probeName
+    $probeContent = [guid]::NewGuid().ToString('N')
+    $cleanupError = $null
+    $sameDirectory = $false
+    try {
+        [IO.File]::WriteAllText($probeFile, $probeContent, (New-Object System.Text.UTF8Encoding($false)))
+        $candidateFile = Join-Path $short $probeName
+        if (Test-Path -LiteralPath $candidateFile -PathType Leaf) {
+            $seen = [IO.File]::ReadAllText($candidateFile)
+            $sameDirectory = ($seen -ceq $probeContent)
+        }
+    }
+    catch {
+        $plan.Mode = 'unsupported-identity-probe-error'
+        $plan.Supported = $false
+        $plan.Reason = "short-name identity marker probe failed: $($_.Exception.GetType().FullName): $($_.Exception.Message)"
+        return [pscustomobject]$plan
+    }
+    finally {
+        if (Test-Path -LiteralPath $probeFile) {
+            try { Remove-Item -LiteralPath $probeFile -Force -ErrorAction Stop }
+            catch { $cleanupError = $_.Exception.Message }
+        }
+    }
+    if ($cleanupError) {
+        $plan.Mode = 'unsupported-identity-probe-cleanup'
+        $plan.Supported = $false
+        $plan.Reason = "short-name identity marker could not be removed from the results directory: $cleanupError"
+        return [pscustomobject]$plan
+    }
+    if (-not $sameDirectory) {
+        $plan.Mode = 'unsupported-identity-mismatch'
+        $plan.Supported = $false
+        $plan.Reason = "space-free short-name probe returned a directory that is not the declared results directory (identity marker not visible through it): $short"
+        return [pscustomobject]$plan
+    }
+
     $plan.Argument = $short
     $plan.Mode = 'short-alias'
-    $plan.Reason = 'results path contains whitespace; using its space-free 8.3 alias'
+    $plan.Reason = 'results path contains whitespace; probe exit 0 returned a space-free directory with the same identity marker as the declared results directory'
     return [pscustomobject]$plan
 }
 

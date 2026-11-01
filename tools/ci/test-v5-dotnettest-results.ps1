@@ -218,29 +218,33 @@ function Invoke-GateCase {
     return $record
 }
 
-# --- results-directory argument plan (CI-PATH-01) ------------------------------
+# --- results-directory argument plan (CI-PATH-01 / CI-PATH-R1-01) -------------
 # The locked xunit.v3/MTP MSBuild bridge re-joins forwarded dotnet-test options
 # into one space-delimited command line, so a results directory containing
-# whitespace is only usable through a space-free 8.3 alias. When the volume has
-# no 8.3 alias the long path is NOT passable and production must fail closed
-# before invoking the runner. These cases exercise the REAL production resolver:
-#   - no whitespace                         -> direct / supported
-#   - whitespace + valid space-free alias   -> short-alias / supported
-#   - whitespace + alias unavailable        -> unsupported / long path returned
-#   - whitespace + invalid alias            -> unsupported
-#   - short-name probe throws               -> unsupported
-# The first four categories map to the required boundary matrix; the alias
-# inputs are controlled TOOL_FIXTURE seam values and never change the machine's
-# 8.3 setting. The final case uses the real OS probe and records which branch
-# this machine is in WITHOUT assuming that the alias exists (the CI runner was
-# indeed in the unsupported branch).
+# whitespace is only usable through a space-free 8.3 alias. The production
+# resolver now validates the COMPLETE probe contract:
+#   - native exit must be a real integer 0 (null/unknown is not 0)
+#   - exactly one non-empty output line
+#   - output must be an existing DIRECTORY (not a file)
+#   - the candidate must see a random identity marker written into the ORIGINAL
+#     directory (object identity, not a long-vs-short string comparison)
+#   - literal-percent inputs are refused before cmd.exe can expand them
+# These cases exercise the REAL production resolver. Seam fixtures are
+# TOOL_FIXTURE values and never change the machine's 8.3 setting. The real OS
+# branch is recorded separately and does not assume an alias exists.
 $spaceDir = Join-Path $EvidenceDir '00 space path/results'
 New-Item -ItemType Directory -Force -Path $spaceDir | Out-Null
 $directDir = Join-Path $EvidenceDir '00-direct-path/results'
 New-Item -ItemType Directory -Force -Path $directDir | Out-Null
-$aliasDir = Join-Path $EvidenceDir '00-alias-path/results'
-New-Item -ItemType Directory -Force -Path $aliasDir | Out-Null
+$wrongDir = Join-Path $EvidenceDir '00-other-existing-directory/results'
+New-Item -ItemType Directory -Force -Path $wrongDir | Out-Null
 $invalidAliasDir = Join-Path $EvidenceDir '00-invalid-alias-path/results'
+$filePath = Join-Path $EvidenceDir '00-existing-file.txt'
+Write-Utf8 -Path $filePath -Content 'owned synthetic invalid directory target'
+$literalDir = Join-Path $EvidenceDir '00-literal %CI_PATH_TOKEN% dir'
+New-Item -ItemType Directory -Force -Path $literalDir | Out-Null
+$literalExpandedDir = Join-Path $EvidenceDir '00-literal expanded dir'
+New-Item -ItemType Directory -Force -Path $literalExpandedDir | Out-Null
 
 function Add-HelperPlanCase {
     param(
@@ -275,26 +279,103 @@ $directPlan = Resolve-DotnetTestResultsPath -Path $directDir -ShortNameResolver 
 $null = Add-HelperPlanCase -Case '00 results path direct no whitespace' -Plan $directPlan -ExpectSupported $true -ExpectMode 'direct' -ExpectArgument $directDir -ReasonPattern 'no whitespace'
 if ((Get-DotnetTestResultsArgument $directDir) -ne $directDir) { throw 'Get-DotnetTestResultsArgument altered a space-free path' }
 
-$aliasPlan = Resolve-DotnetTestResultsPath -Path $spaceDir -ShortNameResolver { param($p) $aliasDir }
-$null = Add-HelperPlanCase -Case '00 results path valid short alias fixture (TOOL_FIXTURE)' -Plan $aliasPlan -ExpectSupported $true -ExpectMode 'short-alias' -ExpectArgument $aliasDir -ReasonPattern '8\.3 alias'
-if ((Get-DotnetTestResultsArgument $spaceDir -ShortNameResolver { param($p) $aliasDir }) -ne $aliasDir) { throw 'Get-DotnetTestResultsArgument did not return the production plan argument' }
+$wrongPlan = Resolve-DotnetTestResultsPath -Path $spaceDir -ShortNameResolver { param($p) [pscustomobject]@{ Output = $wrongDir; ExitCode = 0 } }
+$null = Add-HelperPlanCase -Case '00 results path wrong existing directory (TOOL_FIXTURE)' -Plan $wrongPlan -ExpectSupported $false -ExpectMode 'unsupported-identity-mismatch' -ExpectArgument $spaceDir -ReasonPattern 'identity marker'
+if ((Get-DotnetTestResultsArgument $spaceDir -ShortNameResolver { param($p) [pscustomobject]@{ Output = $wrongDir; ExitCode = 0 } }) -ne $spaceDir) {
+    throw 'Get-DotnetTestResultsArgument leaked a wrong-directory alias'
+}
 
-$unavailablePlan = Resolve-DotnetTestResultsPath -Path $spaceDir -ShortNameResolver { param($p) $p }
-$null = Add-HelperPlanCase -Case '00 results path alias unavailable fixture (TOOL_FIXTURE)' -Plan $unavailablePlan -ExpectSupported $false -ExpectMode 'unsupported-no-alias' -ExpectArgument $spaceDir -ReasonPattern '8\.3|space-free'
+$filePlan = Resolve-DotnetTestResultsPath -Path $spaceDir -ShortNameResolver { param($p) [pscustomobject]@{ Output = $filePath; ExitCode = 0 } }
+$null = Add-HelperPlanCase -Case '00 results path existing file (TOOL_FIXTURE)' -Plan $filePlan -ExpectSupported $false -ExpectMode 'unsupported-invalid-alias-kind' -ExpectArgument $spaceDir -ReasonPattern 'non-directory'
 
-$invalidPlan = Resolve-DotnetTestResultsPath -Path $spaceDir -ShortNameResolver { param($p) $invalidAliasDir }
-$null = Add-HelperPlanCase -Case '00 results path invalid alias fixture (TOOL_FIXTURE)' -Plan $invalidPlan -ExpectSupported $false -ExpectMode 'unsupported-invalid-alias' -ExpectArgument $spaceDir -ReasonPattern 'does not exist'
+$missingPlan = Resolve-DotnetTestResultsPath -Path $spaceDir -ShortNameResolver { param($p) [pscustomobject]@{ Output = $invalidAliasDir; ExitCode = 0 } }
+$null = Add-HelperPlanCase -Case '00 results path nonexistent alias (TOOL_FIXTURE)' -Plan $missingPlan -ExpectSupported $false -ExpectMode 'unsupported-invalid-alias' -ExpectArgument $spaceDir -ReasonPattern 'does not exist'
+
+$emptyPlan = Resolve-DotnetTestResultsPath -Path $spaceDir -ShortNameResolver { param($p) [pscustomobject]@{ Output = ''; ExitCode = 0 } }
+$null = Add-HelperPlanCase -Case '00 results path empty probe output (TOOL_FIXTURE)' -Plan $emptyPlan -ExpectSupported $false -ExpectMode 'unsupported-probe-empty' -ExpectArgument $spaceDir -ReasonPattern 'empty'
+
+$malformedPlan = Resolve-DotnetTestResultsPath -Path $spaceDir -ShortNameResolver { param($p) [pscustomobject]@{ Output = ($wrongDir + "`n" + $wrongDir); ExitCode = 0 } }
+$null = Add-HelperPlanCase -Case '00 results path malformed probe output (TOOL_FIXTURE)' -Plan $malformedPlan -ExpectSupported $false -ExpectMode 'unsupported-probe-output' -ExpectArgument $spaceDir -ReasonPattern 'exactly one'
 
 $throwingPlan = Resolve-DotnetTestResultsPath -Path $spaceDir -ShortNameResolver { param($p) throw 'synthetic resolver failure' }
 $null = Add-HelperPlanCase -Case '00 results path resolver failure fixture (TOOL_FIXTURE)' -Plan $throwingPlan -ExpectSupported $false -ExpectMode 'unsupported-resolver-error' -ExpectArgument $spaceDir -ReasonPattern 'synthetic resolver failure'
 
+$unknownExitPlan = Resolve-DotnetTestResultsPath -Path $spaceDir -ShortNameResolver { param($p) [pscustomobject]@{ Output = $wrongDir; ExitCode = $null } }
+$null = Add-HelperPlanCase -Case '00 results path unknown native exit (TOOL_FIXTURE)' -Plan $unknownExitPlan -ExpectSupported $false -ExpectMode 'unsupported-probe-exit-unknown' -ExpectArgument $spaceDir -ReasonPattern 'unknown'
+
+$noAliasPlan = Resolve-DotnetTestResultsPath -Path $spaceDir -ShortNameResolver { param($p) [pscustomobject]@{ Output = $spaceDir; ExitCode = 0 } }
+$null = Add-HelperPlanCase -Case '00 results path alias unavailable fixture (TOOL_FIXTURE)' -Plan $noAliasPlan -ExpectSupported $false -ExpectMode 'unsupported-no-alias' -ExpectArgument $spaceDir -ReasonPattern '8\.3|space-free'
+
+# Real native failure: a TOOL_FIXTURE .NET Framework ConsoleApplication is used
+# as the child-only ComSpec. It emits an existing space-free directory and exits
+# 17. The production resolver must reject on the real native exit; this is not
+# the already-covered scriptblock-throws condition.
+$nativeProbeDir = Join-Path $EvidenceDir '00-native-probe'
+New-Item -ItemType Directory -Force -Path $nativeProbeDir | Out-Null
+$fakeExe = Join-Path $nativeProbeDir 'FakeComSpec.exe'
+$fakeMarker = Join-Path $nativeProbeDir 'fake-called.txt'
+$fakeSource = @"
+using System;
+using System.IO;
+public static class FakeComSpecProbe {
+    public static int Main(string[] args) {
+        File.AppendAllText(@"$fakeMarker", "called" + Environment.NewLine);
+        Console.WriteLine(@"$wrongDir");
+        return 17;
+    }
+}
+"@
+Add-Type -TypeDefinition $fakeSource -Language CSharp -OutputAssembly $fakeExe -OutputType ConsoleApplication
+if (-not (Test-Path -LiteralPath $fakeExe)) { throw 'Could not build the TOOL_FIXTURE native probe executable' }
+$savedComSpec = $env:ComSpec
+try {
+    $env:ComSpec = $fakeExe
+    $nativeFailurePlan = Resolve-DotnetTestResultsPath -Path $spaceDir
+}
+finally {
+    if ($null -ne $savedComSpec) { $env:ComSpec = $savedComSpec } else { Remove-Item Env:ComSpec -ErrorAction SilentlyContinue }
+}
+$null = Add-HelperPlanCase -Case '00 results path native probe exit 17 (TOOL_FIXTURE)' -Plan $nativeFailurePlan -ExpectSupported $false -ExpectMode 'unsupported-probe-exit' -ExpectArgument $spaceDir -ReasonPattern 'exited 17'
+if (-not (Test-Path -LiteralPath $fakeMarker)) { throw 'The TOOL_FIXTURE native probe did not run' }
+
+# Literal-percent input: a legal directory name containing a percent token. The
+# production resolver refuses it BEFORE cmd.exe can expand the token to another
+# directory. The expanded counterpart is real and must never be returned.
+$oldToken = $env:CI_PATH_TOKEN
+try {
+    $env:CI_PATH_TOKEN = 'expanded'
+    $literalPlan = Resolve-DotnetTestResultsPath -Path $literalDir
+}
+finally {
+    if ($null -eq $oldToken) { Remove-Item Env:CI_PATH_TOKEN -ErrorAction SilentlyContinue } else { $env:CI_PATH_TOKEN = $oldToken }
+}
+$null = Add-HelperPlanCase -Case '00 results path literal percent token (TOOL_FIXTURE)' -Plan $literalPlan -ExpectSupported $false -ExpectMode 'unsupported-percent-expansion' -ExpectArgument $literalDir -ReasonPattern 'percent'
+if (-not (Test-Path -LiteralPath $literalDir -PathType Container) -or -not (Test-Path -LiteralPath $literalExpandedDir -PathType Container)) {
+    throw 'literal-percent fixture directories are missing'
+}
+
+$percentNoSpaceDir = Join-Path $EvidenceDir '00-literal-%CI_PATH_TOKEN%-dir'
+New-Item -ItemType Directory -Force -Path $percentNoSpaceDir | Out-Null
+$oldToken = $env:CI_PATH_TOKEN
+try {
+    $env:CI_PATH_TOKEN = 'expanded'
+    $percentNoSpacePlan = Resolve-DotnetTestResultsPath -Path $percentNoSpaceDir
+}
+finally {
+    if ($null -eq $oldToken) { Remove-Item Env:CI_PATH_TOKEN -ErrorAction SilentlyContinue } else { $env:CI_PATH_TOKEN = $oldToken }
+}
+$null = Add-HelperPlanCase -Case '00 results path space-free literal percent token (TOOL_FIXTURE)' -Plan $percentNoSpacePlan -ExpectSupported $false -ExpectMode 'unsupported-percent-expansion' -ExpectArgument $percentNoSpaceDir -ReasonPattern 'percent'
+
 # Real OS branch: assert the INVARIANT, never a capability. On a volume with
-# 8.3 enabled this is short-alias/supported; on the failing CI runner it is
-# unsupported-no-alias with the long path returned. Both are correct outcomes;
-# the live raw-path probe below then proves the unsupported value is rejected.
+# 8.3 enabled this is a genuine same-directory alias (the production marker
+# check has already passed); on the failing CI runner it is unsupported-no-alias.
 $realPlan = Resolve-DotnetTestResultsPath -Path $spaceDir
 $realInvariant = $(if ($realPlan.Supported) {
-    ($realPlan.Mode -eq 'short-alias') -and ($realPlan.Argument -notmatch '\s') -and (Test-Path -LiteralPath $realPlan.Argument)
+    # The production marker check is authoritative for identity; the separate
+    # wrong-directory fixture proves a different existing directory is refused.
+    ($realPlan.Mode -eq 'short-alias') -and
+    ($realPlan.Argument -notmatch '\s') -and
+    (Test-Path -LiteralPath $realPlan.Argument -PathType Container)
 } else {
     ($realPlan.Mode -eq 'unsupported-no-alias') -and ($realPlan.Argument -eq $spaceDir)
 })
