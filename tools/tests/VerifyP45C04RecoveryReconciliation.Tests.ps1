@@ -250,7 +250,7 @@ param($Runner,$Repo,$Out,$Player,$Record,$Snapshot,$Package,$SourceHead,$RecordP
 $ErrorActionPreference='Stop'
 $ast=[Management.Automation.Language.Parser]::ParseFile($Runner,[ref]$null,[ref]$null)
 $script:RepoRoot=$Repo;$script:Root=$Out
-foreach($name in 'Get-Sha256','Get-StringSha256','Write-JsonFile','Write-ToolLog','Bind-ExistingPlayer'){
+foreach($name in 'Get-Sha256','Get-StringSha256','Get-GitBlobSha256','Write-JsonFile','Write-ToolLog','Bind-ExistingPlayer'){
  $fn=$ast.Find({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst]-and$n.Name-eq$name},$true)
  . ([scriptblock]::Create($fn.Extent.Text))
 }
