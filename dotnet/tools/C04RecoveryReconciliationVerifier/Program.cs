@@ -42,7 +42,16 @@ namespace C04RecoveryReconciliationVerifier
                 ValidateCasePolicy(caseId, fault, outcome, input);
                 ValidateBuildProcess(result, input);
                 ValidateRequest(result, expected);
-                ValidateBinding(result, expected);
+                if (outcome != "REJECTED")
+                {
+                    ValidateBinding(result, expected);
+                }
+                else
+                {
+                    Require(!result.TryGetProperty("binding", out _),
+                        "REJECTED result must not publish a Ready/session binding");
+                    Check("rejectedNoBinding");
+                }
                 ValidateAuthorityFiles(root, result);
 
                 List<Frame> frames = ReadFrames(result, root);

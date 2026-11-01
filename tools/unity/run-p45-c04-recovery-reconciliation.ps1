@@ -38,6 +38,8 @@ param(
 
     [string]$OutputDir,
 
+    [string]$HelperPath,
+
     [string]$UnityPath = 'D:\Unity\Hub\Editor\6000.3.27f1\Editor\Unity.exe',
 
     [string]$DotnetPath = 'D:\Unity\dotnet\dotnet.exe',
@@ -651,8 +653,15 @@ function Bind-ExistingPlayer {
     $script:BuildRecordPath = [IO.Path]::GetFullPath($BuildRecordPath)
     $script:PackageManifestPath = [IO.Path]::GetFullPath($PackageManifestPath)
     $helperCandidate = Join-Path (Split-Path -Parent $script:BuildRecordPath) 'helper\C04RecoveryReconciliationVerifier.dll'
-    if (Test-Path -LiteralPath $helperCandidate) {
+    if (-not [string]::IsNullOrWhiteSpace($HelperPath) -and (Test-Path -LiteralPath $HelperPath)) {
+        $script:HelperPath = [IO.Path]::GetFullPath($HelperPath)
+    }
+    elseif (Test-Path -LiteralPath $helperCandidate) {
         $script:HelperPath = $helperCandidate
+    }
+    if ([string]::IsNullOrWhiteSpace($script:HelperPath) -or
+        -not (Test-Path -LiteralPath $script:HelperPath)) {
+        throw 'EXISTING_PLAYER_HELPER_REQUIRED'
     }
     Write-ToolLog ('PLAYER_BOUND_REUSE sha=' + $script:PlayerSha + ' files=' + $script:PackageCount)
 }
