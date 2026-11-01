@@ -709,7 +709,7 @@ try {
     New-Item -ItemType Directory -Path $playerDir | Out-Null
     $exe = Join-Path $playerDir 'Mahjong.Unity.exe'
     $buildMarker = Join-Path $logs 'player-build.json'
-    $buildArgs = @('-batchmode','-nographics','-projectPath',(Quote-Arg $project),'-executeMethod','C04PlayerActionBuild.Build','-c04-player-output',(Quote-Arg $exe),'-c04-player-marker',(Quote-Arg $buildMarker),'-logFile',(Quote-Arg (Join-Path $logs 'player-build.unity.log')),'-quit') -join ' '
+    $buildArgs = @('-batchmode','-projectPath',(Quote-Arg $project),'-executeMethod','C04PlayerActionBuild.Build','-c04-player-output',(Quote-Arg $exe),'-c04-player-marker',(Quote-Arg $buildMarker),'-logFile',(Quote-Arg (Join-Path $logs 'player-build.unity.log')),'-quit') -join ' '
     $build = Invoke-OwnedNative -Name 'BuildFreshWindowsPlayer' -FilePath $UnityPath -Arguments $buildArgs -WorkingDirectory $project -StdoutPath (Join-Path $logs 'player-build.stdout.txt') -StderrPath (Join-Path $logs 'player-build.stderr.txt') -Timeout 1200
     if ($build.exitCode -ne 0) { throw 'Fresh Windows Player build returned a nonzero native exit.' }
     $markerValue = Test-C04BuildMarker $buildMarker $exe $frozenEnabledScenes
@@ -736,7 +736,7 @@ try {
         $caseDir = Join-Path $caseRoot $case.id; $caseData = Join-Path $dataRoot $case.id
         New-Item -ItemType Directory -Path $caseDir,$caseData | Out-Null
         $nativeLog = Join-Path $caseDir 'player.log'
-        $playerArgs = @('-batchmode','-nographics','-runInBackground','-smoke-data',(Quote-Arg $caseData),'-logFile',(Quote-Arg $nativeLog),'-c04-player-actions',(Quote-Arg $caseDir),'-c04-player-action-case',$case.id,'-c04-player-action-run-id',$runId)
+        $playerArgs = @('-batchmode','-runInBackground','-smoke-data',(Quote-Arg $caseData),'-logFile',(Quote-Arg $nativeLog),'-c04-player-actions',(Quote-Arg $caseDir),'-c04-player-action-case',$case.id,'-c04-player-action-run-id',$runId)
         $player = Invoke-OwnedNative -Name ('Player-' + $case.id) -FilePath $exe -Arguments ($playerArgs -join ' ') -WorkingDirectory $playerDir -StdoutPath (Join-Path $caseDir 'stdout.txt') -StderrPath (Join-Path $caseDir 'stderr.txt') -Timeout $TimeoutSeconds
         $summaryPath = Join-Path $caseDir 'summary.json'
         if ($player.exitCode -ne 0 -or -not (Test-Path -LiteralPath $summaryPath)) { throw "Player $($case.id) native exit $($player.exitCode), summary missing or nonzero." }
