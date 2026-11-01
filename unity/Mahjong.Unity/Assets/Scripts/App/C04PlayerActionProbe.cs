@@ -411,6 +411,8 @@ namespace Mahjong.Unity.App
                 BaselineDecisionId = candidate.DecisionId, BaselineStateVersion = baselineVersion,
                 BaselineEventSeq = baselineEventSeq, BaselineCursorStream = baselineCursorStream, BaselineCursor = baselineCursor,
                 BaselinePlayerSnapshotBase64 = Convert.ToBase64String(coordinatorBaselineBytes),
+                BaselineAuthoritySaveBase64 = Convert.ToBase64String(baselineAuthorityTask.Result.AuthoritySaveBytes),
+                BaselineAuthorityCheatStateBase64 = Convert.ToBase64String(baselineAuthorityTask.Result.CheatStatePayload),
                 BaselinePhysicalTileCount = baselineAuthority.Physical.TileCount,
                 BaselinePhysicalUniqueCount = baselineAuthority.Physical.UniqueCount,
                 BaselineDeadWallCount = baselineAuthority.Physical.DeadWallCount,
@@ -438,6 +440,8 @@ namespace Mahjong.Unity.App
                 AfterAcceptanceSequence = finalState.AcceptanceSequence,
                 AfterCursorStream = confirmedCursor.Value.StreamVersion.Value, AfterCursor = confirmedCursor.Value.ProjectionSeq.Value,
                 AfterPlayerSnapshotBase64 = Convert.ToBase64String(finalState.PlayerSnapshot.ToByteArray()),
+                AfterAuthoritySaveBase64 = Convert.ToBase64String(afterAuthorityTask.Result.AuthoritySaveBytes),
+                AfterAuthorityCheatStateBase64 = Convert.ToBase64String(afterAuthorityTask.Result.CheatStatePayload),
                 AfterPhysicalTileCount = afterAuthority.Physical.TileCount,
                 AfterPhysicalUniqueCount = afterAuthority.Physical.UniqueCount,
                 AfterDeadWallCount = afterAuthority.Physical.DeadWallCount,
@@ -687,6 +691,7 @@ namespace Mahjong.Unity.App
             public int BaselineSeat = -1;
             public ulong BaselineBindingEpoch, BaselineConnectionEpoch, BaselineOwnerEpoch, BaselineControlEpoch, BaselineStateVersion, BaselineEventSeq, BaselineCursorStream, BaselineCursor;
             public string BaselineDecisionId = string.Empty, BaselinePlayerSnapshotBase64 = string.Empty;
+            public string BaselineAuthoritySaveBase64 = string.Empty, BaselineAuthorityCheatStateBase64 = string.Empty;
             public int BaselinePhysicalTileCount, BaselinePhysicalUniqueCount, BaselineDeadWallCount;
             public string BaselinePhysicalTilesSha256 = string.Empty;
             public string ReceiptDisposition = string.Empty, ReceiptStatus = string.Empty, ReceiptRequestId = string.Empty, ReceiptScopeId = string.Empty, ReceiptDigest = string.Empty;
@@ -704,7 +709,8 @@ namespace Mahjong.Unity.App
             public ulong AfterBindingEpoch, AfterConnectionEpoch, AfterOwnerEpoch, AfterStateVersion, AfterEventSeq, AfterCursorStream, AfterCursor;
             public int AfterPhysicalTileCount, AfterPhysicalUniqueCount, AfterDeadWallCount;
             public string AfterPhysicalTilesSha256 = string.Empty;
-            public string AfterPlayerSnapshotBase64 = string.Empty, HandTileIds = string.Empty, DrawnTileId = string.Empty, MeldKind = string.Empty, MeldTileIds = string.Empty;
+            public string AfterPlayerSnapshotBase64 = string.Empty, AfterAuthoritySaveBase64 = string.Empty, AfterAuthorityCheatStateBase64 = string.Empty;
+            public string HandTileIds = string.Empty, DrawnTileId = string.Empty, MeldKind = string.Empty, MeldTileIds = string.Empty;
             public ulong SeatScoreBefore, SeatScoreAfter;
             public uint RiichiSticksBefore, RiichiSticksAfter;
         }

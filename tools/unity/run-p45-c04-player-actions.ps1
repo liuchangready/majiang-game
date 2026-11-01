@@ -37,6 +37,7 @@ $script:LogPath = Join-Path $logs 'runner.log'
 $script:LogOpen = $true
 $script:mutex = $null
 $script:mutexHeld = $false
+$script:C04VerifierPath = $null
 $script:stageRecords = New-Object System.Collections.Generic.List[object]
 $gitHead = ''
 $trx = Join-Path $RunRoot 'dotnet-results/LocalHost.xml'
@@ -236,7 +237,7 @@ function Get-EnabledScenes([string]$projectRoot) {
 function Get-UnityInputClosure([string]$projectRoot,[string]$output) {
     $entries = New-Object System.Collections.Generic.List[object]
     $excludedPathRules = New-Object System.Collections.Generic.List[string]
-    foreach ($rootName in @('Assets','Packages','ProjectSettings','Library/PackageCache','Library/ScriptAssemblies')) {
+    foreach ($rootName in @('Assets','Packages','ProjectSettings','UserSettings','Library/PackageCache','Library/ScriptAssemblies')) {
         $root = Join-Path $projectRoot ($rootName.Replace('/','\'))
         if (-not (Test-Path -LiteralPath $root -PathType Container)) { if ($rootName -eq 'Library/ScriptAssemblies') { continue }; throw "Unity build input root is missing: $rootName" }
         $pending = New-Object System.Collections.Generic.Stack[string]
@@ -310,8 +311,18 @@ function Test-C04BuildMarker([string]$markerPath,[string]$executablePath,[string
     foreach ($key in @('result','target','errors','bytes','output','outputSha256','buildIdentity','scenes')) {
         if ($null -eq $m.PSObject.Properties[$key]) { throw "Player build marker is missing required field $key." }
     }
-    if ($m.result -cne 'Succeeded' -or $m.target -cne 'StandaloneWindows64' -or $m.errors -isnot [ValueType] -or [int]$m.errors -ne 0 -or
-        $m.bytes -isnot [ValueType] -or [long]$m.bytes -ne (Get-Item -LiteralPath $executablePath).Length -or
+    foreach ($numeric in @(@{name='errors';value=$m.errors},@{name='bytes';value=$m.bytes})) {
+        if ($numeric.value -is [bool] -or $numeric.value -isnot [ValueType] -or
+            $numeric.value -isnot [byte] -and $numeric.value -isnot [sbyte] -and
+            $numeric.value -isnot [int16] -and $numeric.value -isnot [uint16] -and
+            $numeric.value -isnot [int32] -and $numeric.value -isnot [uint32] -and
+            $numeric.value -isnot [int64] -and $numeric.value -isnot [uint64]) {
+            throw "Player build marker field $($numeric.name) must be a JSON integer, not boolean, fractional, string, or null."
+        }
+    }
+    if ([long]$m.errors -lt 0 -or [long]$m.bytes -le 0 -or
+        $m.result -cne 'Succeeded' -or $m.target -cne 'StandaloneWindows64' -or [long]$m.errors -ne 0 -or
+        [long]$m.bytes -ne (Get-Item -LiteralPath $executablePath).Length -or
         $m.output -cne [IO.Path]::GetFileName($executablePath)) { throw 'Player build marker fields do not describe the actual StandaloneWindows64 executable.' }
     if ($m.scenes -isnot [array] -or (($m.scenes -join '|') -cne ($expectedScenes -join '|'))) { throw 'Player build marker scene list differs from the exact frozen enabled scenes.' }
     $exeHash = Get-Sha256 $executablePath
@@ -373,7 +384,7 @@ function Test-C04CaseSummary {
 }
 
 function Test-C04ActionEvidence {
-    param($Summary,$Evidence,[string]$ExpectedCase)
+    param($Summary,$Evidence,[string]$ExpectedCase,[string]$EvidencePathForVerifier)
     if ($null -eq $Evidence) { throw 'Raw Player action evidence is missing.' }
     if ($Evidence.caseId -cne $ExpectedCase -or $Evidence.requestId -cne $Summary.requestId -or $Evidence.scopeId -cne $Summary.scopeId) { throw 'Raw action evidence is not bound to the case/request/scope.' }
     if ($Evidence.payloadBase64 -cne $Summary.canonicalPayloadBase64 -or $Evidence.payloadSha256 -cne $Summary.payloadSha256) { throw 'Raw action evidence payload differs from the submitted summary payload.' }
@@ -415,8 +426,9 @@ function Test-C04ActionEvidence {
         [UInt64]$Evidence.afterStateVersion -ne [UInt64]$Evidence.receiptCommandVersion -or
         [UInt64]$Evidence.afterEventSeq -ne [UInt64]$Evidence.receiptEventSeq -or
         [UInt64]$Evidence.afterAcceptanceSequence -ne [UInt64]$Evidence.acceptanceSequence) { throw 'Captured same-publication snapshot is not bound to the confirmed incremental event.' }
-    foreach ($field in @('baselinePlayerSnapshotBase64','afterPlayerSnapshotBase64')) {
-        if ([string]::IsNullOrWhiteSpace([string]$Evidence.$field) -or [Convert]::FromBase64String([string]$Evidence.$field).Length -eq 0) { throw "Raw typed Player snapshot is absent: $field" }
+    foreach ($field in @('baselinePlayerSnapshotBase64','afterPlayerSnapshotBase64','baselineAuthoritySaveBase64','baselineAuthorityCheatStateBase64','afterAuthoritySaveBase64','afterAuthorityCheatStateBase64')) {
+        if ([string]::IsNullOrWhiteSpace([string]$Evidence.$field)) { throw "Raw typed Player/authority image is absent: $field" }
+        try { if ([Convert]::FromBase64String([string]$Evidence.$field).Length -eq 0) { throw "Raw typed Player/authority image is empty: $field" } } catch { throw "Raw typed Player/authority image is invalid base64: $field" }
     }
     if ([int]$Evidence.baselinePhysicalTileCount -ne 136 -or [int]$Evidence.baselinePhysicalUniqueCount -ne 136 -or
         [int]$Evidence.afterPhysicalTileCount -ne 136 -or [int]$Evidence.afterPhysicalUniqueCount -ne 136 -or
@@ -430,6 +442,15 @@ function Test-C04ActionEvidence {
         'C04-G2-02' { if ($Evidence.eventTileIds -ne '0,4,8' -or $Evidence.meldKind -ne 'Chi' -or $Evidence.handTileIds -match '(^|,)(0|4|8)(,|$)') { throw 'Raw Chi entity transfer is invalid.' } }
         'C04-G2-03' { if ([UInt64]$Evidence.seatScoreBefore -ne 25000 -or [UInt64]$Evidence.seatScoreAfter -ne 24000 -or [UInt32]$Evidence.riichiSticksAfter -ne ([UInt32]$Evidence.riichiSticksBefore + 1)) { throw 'Raw Riichi point/stick transfer is invalid.' } }
         'C04-G2-04' { if ($Evidence.eventTileIds -ne '0,1,2,3' -or $Evidence.meldKind -ne 'ClosedKan' -or $Evidence.handTileIds -match '(^|,)(0|1|2|3)(,|$)' -or $Evidence.drawnTileId -ne '73' -or [int]$Evidence.afterDeadWallCount -ne ([int]$Evidence.baselineDeadWallCount - 1)) { throw 'Raw Closed Kan/dead-wall replacement transfer is invalid.' } }
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$script:C04VerifierPath)) {
+        $verifyLog = Join-Path $logs ('protobuf-authority-verify-' + $ExpectedCase + '.stdout.txt')
+        $verify = Invoke-OwnedNative -Name ('DecodeTypedProtobufAndAuthorityImage-' + $ExpectedCase) -FilePath $DotnetPath `
+            -Arguments ('exec ' + (Quote-Arg $script:C04VerifierPath) + ' verify ' + (Quote-Arg $EvidencePathForVerifier)) `
+            -WorkingDirectory $RunRoot -StdoutPath $verifyLog -StderrPath (Join-Path $logs ('protobuf-authority-verify-' + $ExpectedCase + '.stderr.txt')) -Timeout 30
+        if ($verify.exitCode -ne 0 -or -not (Get-Content -LiteralPath $verify.stdout -Raw).Contains('C04_PROTOBUF_AND_AUTHORITY_IMAGE_PASS')) {
+            throw "Generated protobuf/LocalHost authority image verifier rejected $ExpectedCase evidence; nativeExit=$($verify.exitCode)."
+        }
     }
     return $true
 }
@@ -511,10 +532,10 @@ Start-Sleep -Seconds 25
         if (-not $rejected) { throw "Postbuild input closure gate accepted a source input mutation: $path" }
     }
     $packageFixtureProject = Join-Path $RunRoot 'package-closure-fixture'
-    foreach ($directory in @('Assets','Packages','ProjectSettings','Library/PackageCache/Resolved','Library/PackageCache/MacPlugin.bundle/Contents','Library/ScriptAssemblies')) {
+    foreach ($directory in @('Assets','Packages','ProjectSettings','UserSettings','Library/PackageCache/Resolved','Library/PackageCache/MacPlugin.bundle/Contents','Library/ScriptAssemblies')) {
         New-Item -ItemType Directory -Force -Path (Join-Path $packageFixtureProject $directory) | Out-Null
     }
-    foreach ($file in @('Assets/input.asset','Packages/manifest.json','ProjectSettings/EditorBuildSettings.asset','Library/PackageCache/Resolved/package.dll','Library/PackageCache/MacPlugin.bundle/Contents/ignored.dylib','Library/ScriptAssemblies/App.dll')) {
+    foreach ($file in @('Assets/input.asset','Packages/manifest.json','ProjectSettings/EditorBuildSettings.asset','UserSettings/EditorUserSettings.asset','Library/PackageCache/Resolved/package.dll','Library/PackageCache/MacPlugin.bundle/Contents/ignored.dylib','Library/ScriptAssemblies/App.dll')) {
         [IO.File]::WriteAllText((Join-Path $packageFixtureProject $file),$file,(New-Object Text.UTF8Encoding($false)))
     }
     $packageClosurePath = Join-Path $RunRoot 'fixture-package-closure.json'
@@ -539,6 +560,9 @@ Start-Sleep -Seconds 25
     $tileWriter.Write([UInt32]3); $tileWriter.Write([UInt32]0); $tileWriter.Write([UInt32]1); $tileWriter.Write([UInt32]2); $tileWriter.Flush()
     Write-Field $writer 6 7 $tileBytes.ToArray(); $writer.Flush(); $fixtureBytes=$stream.ToArray()
     $fixtureHash = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($fixtureBytes)).Replace('-','').ToLowerInvariant()
+    $validProtobufBytes = [byte[]](@(10,15) + [Text.Encoding]::UTF8.GetBytes('fixture-session') + @(18,13) + [Text.Encoding]::UTF8.GetBytes('fixture-round') + @(26,4,8,2,16,9,32,13,40,41))
+    $validProtobufBase64 = [Convert]::ToBase64String($validProtobufBytes)
+    $fixtureAuthorityBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('TOOL_FIXTURE_LOCALHOST_AUTHORITY_BYTES'))
     $valid = [pscustomobject]@{
         result='PASS'; status='GAME'; eventConfirmed=$true; nativeExitCode=0; nativeTimedOut=$false
         caseId='C04-G2-01'; seat=0; eventSeat=0; roomId='fixture-room'; sessionId='fixture-session'; roundId='fixture-round'
@@ -557,11 +581,11 @@ Start-Sleep -Seconds 25
         caseId='C04-G2-01'; requestId='fixture-request'; scopeId='fixture-scope'; payloadBase64=$valid.canonicalPayloadBase64; payloadSha256=$fixtureHash
         baselineRoomId='fixture-room'; baselineSessionId='fixture-session'; baselineTableId='fixture-table'; baselineRoundId='fixture-round'; baselineSeat=0
         baselineBindingEpoch=1; baselineConnectionEpoch=1; baselineOwnerEpoch=2; baselineControlEpoch=3; baselineDecisionId='fixture-decision'; baselineStateVersion=11; baselineEventSeq=20
-        baselineCursorStream=1; baselineCursor=10; baselinePlayerSnapshotBase64='AQ=='; baselinePhysicalTileCount=136; baselinePhysicalUniqueCount=136; baselineDeadWallCount=14; baselinePhysicalTilesSha256=('a'*64)
+        baselineCursorStream=1; baselineCursor=10; baselinePlayerSnapshotBase64=$validProtobufBase64; baselineAuthoritySaveBase64=$fixtureAuthorityBase64; baselineAuthorityCheatStateBase64=$fixtureAuthorityBase64; baselinePhysicalTileCount=136; baselinePhysicalUniqueCount=136; baselineDeadWallCount=14; baselinePhysicalTilesSha256=('a'*64)
         receiptDisposition='Applied'; receiptStatus='Applied'; receiptRequestId='fixture-request'; receiptScopeId='fixture-scope'; receiptDigest=$fixtureHash; receiptCommandVersion=12; receiptEventSeq=21
         eventType='PonDeclared'; eventRoundId='fixture-round'; eventScopeId='fixture-scope'; eventSessionId='fixture-session'; eventRoomId='fixture-room'; eventTableId='fixture-table'; eventSeat=0; eventBindingEpoch=1; eventConnectionEpoch=1; eventOwnerEpoch=2; eventRole='Player'; eventBatchKind='Incremental'; eventFullBaseline=$false; eventCommandVersion=12; eventSeq=21; eventTileIds='0,1,2'; acceptanceSequence=2
         afterRoomId='fixture-room'; afterSessionId='fixture-session'; afterTableId='fixture-table'; afterRoundId='fixture-round'; afterSeat=0; afterBindingEpoch=1; afterConnectionEpoch=1; afterOwnerEpoch=2
-        afterStateVersion=12; afterEventSeq=21; afterCursorStream=1; afterCursor=11; afterAcceptanceSequence=2; afterPlayerSnapshotBase64='AQ=='
+        afterStateVersion=12; afterEventSeq=21; afterCursorStream=1; afterCursor=11; afterAcceptanceSequence=2; afterPlayerSnapshotBase64=$validProtobufBase64; afterAuthoritySaveBase64=$fixtureAuthorityBase64; afterAuthorityCheatStateBase64=$fixtureAuthorityBase64
         afterPhysicalTileCount=136; afterPhysicalUniqueCount=136; afterDeadWallCount=14; afterPhysicalTilesSha256=('b'*64)
         handTileIds='20,24'; drawnTileId=''; meldKind='Pon'; meldTileIds='0,1,2'; seatScoreBefore=25000; seatScoreAfter=25000; riichiSticksBefore=0; riichiSticksAfter=0
     }
@@ -638,7 +662,13 @@ Start-Sleep -Seconds 25
         @{ name='WrongTarget'; update=@{ target='Windows_FAKE' } },
         @{ name='WrongScenes'; update=@{ scenes=@('Assets/FakeBoot.unity') } },
         @{ name='WrongOutputHash'; update=@{ outputSha256=('0'*64) } },
-        @{ name='WrongResult'; update=@{ result='Failed' } }
+        @{ name='WrongResult'; update=@{ result='Failed' } },
+        @{ name='BooleanErrors'; update=@{ errors=$false } },
+        @{ name='FractionalErrors'; update=@{ errors=0.1 } },
+        @{ name='FractionalBytes'; update=@{ bytes=([double]$markerObject.bytes + 0.1) } },
+        @{ name='StringErrors'; update=@{ errors='0' } },
+        @{ name='NegativeErrors'; update=@{ errors=-1 } },
+        @{ name='BooleanBytes'; update=@{ bytes=$true } }
     )
     foreach ($negative in $markerNegatives) {
         $badMarker = [ordered]@{}
@@ -664,9 +694,17 @@ Start-Sleep -Seconds 25
     if ($stablePaths -notcontains 'logs/stable-review-log.txt' -or $stablePaths -contains 'source/unity/Mahjong.Unity/Library/PackageCache/cache-entry.tmp' -or $stablePaths -contains 'upm-cache/cache-entry.tmp') {
         throw 'Stable artifact manifest did not retain logs or separate volatile Unity/UPM package caches.'
     }
+    $verifierProject = Join-Path $repo 'dotnet/tools/C04PlayerActionVerifier/C04PlayerActionVerifier.csproj'
+    $fixtureDotnetArtifacts = Join-Path $RunRoot 'verifier-dotnet-artifacts'
+    $verifierBuildArgs = @('build',(Quote-Arg $verifierProject),'--configuration','Release','--artifacts-path',(Quote-Arg $fixtureDotnetArtifacts)) -join ' '
+    $verifierBuild = Invoke-OwnedNative -Name 'FixtureFreshC04VerifierBuild' -FilePath $DotnetPath -Arguments $verifierBuildArgs -WorkingDirectory $repo -StdoutPath (Join-Path $logs 'fixture-verifier-build.stdout.txt') -StderrPath (Join-Path $logs 'fixture-verifier-build.stderr.txt') -Timeout 600
+    if ($verifierBuild.exitCode -ne 0) { throw 'Fresh protobuf verifier fixture build failed.' }
+    $fixtureVerifier = Join-Path $fixtureDotnetArtifacts 'bin/C04PlayerActionVerifier/release/Mahjong.C04PlayerActionVerifier.dll'
+    $verifierFixture = Invoke-OwnedNative -Name 'FixtureGeneratedPlayerSnapshotParser' -FilePath $DotnetPath -Arguments ('exec ' + (Quote-Arg $fixtureVerifier) + ' selftest') -WorkingDirectory $RunRoot -StdoutPath (Join-Path $logs 'fixture-protobuf-parser.stdout.txt') -StderrPath (Join-Path $logs 'fixture-protobuf-parser.stderr.txt') -Timeout 30
+    if ($verifierFixture.exitCode -ne 0 -or (Get-Content -LiteralPath $verifierFixture.stdout -Raw) -notmatch 'C04_PROTOBUF_FIXTURE_PASS valid=1 invalid=2') { throw 'Generated-code verifier did not accept a legal serialized snapshot and reject both malformed byte fixtures.' }
     $fixtureFiles = Get-ChildItem -LiteralPath $RunRoot -Recurse -File | Sort-Object FullName | ForEach-Object { [ordered]@{ path=$_.FullName.Substring($RunRoot.Length).TrimStart('\','/'); sha256=(Get-Sha256 $_.FullName); bytes=$_.Length } }
     [IO.File]::WriteAllText((Join-Path $RunRoot 'fixture-seal.json'), (($fixtureFiles | ConvertTo-Json -Depth 5) + "`n"), (New-Object Text.UTF8Encoding($false)))
-    Write-Host "C04_TOOL_FIXTURES_PASS positive=1 negative=$($negatives.Count + $evidenceNegatives.Count + $markerNegatives.Count + 12) timeoutTree=PASS outputDrain=PASS outputFiles=$((Get-ChildItem -LiteralPath $RunRoot -Recurse -File).Count)"
+    Write-Host "C04_TOOL_FIXTURES_PASS positive=1 negative=$($negatives.Count + $evidenceNegatives.Count + $markerNegatives.Count + 12) protobuf=PASS malformed=2 timeoutTree=PASS outputDrain=PASS outputFiles=$((Get-ChildItem -LiteralPath $RunRoot -Recurse -File).Count)"
     exit 0
 }
 
@@ -699,6 +737,21 @@ try {
     if ($extract.exitCode -ne 0) { throw 'Frozen source archive extraction failed.' }
     Assert-C04ArchiveHasNoGitMetadata $source | Out-Null
     $sourceClosureSha = Get-ClosureManifest $source (Join-Path $RunRoot 'source-prebuild-closure.json')
+    $project = Join-Path $source 'unity/Mahjong.Unity'
+    $userSettings = Join-Path $project 'UserSettings/EditorUserSettings.asset'
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $userSettings) | Out-Null
+    $isolatedImportSettings = @'
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!162 &1
+EditorUserSettings:
+  m_ObjectHideFlags: 0
+  serializedVersion: 5
+  m_CompressAssetsOnImport: 1
+'@
+    [IO.File]::WriteAllText($userSettings, $isolatedImportSettings + "`n", (New-Object Text.UTF8Encoding($false)))
+    $isolatedImportSettingsSha = Get-Sha256 $userSettings
+    [IO.File]::WriteAllText((Join-Path $RunRoot 'unity-generated-inputs.json'), (([ordered]@{ path='source/unity/Mahjong.Unity/UserSettings/EditorUserSettings.asset'; purpose='per-run project-scoped Compress Assets on Import enabled to keep fresh writable/imported package representations consistent; does not change machine preferences'; sha256=$isolatedImportSettingsSha; bytes=(Get-Item -LiteralPath $userSettings).Length } | ConvertTo-Json -Depth 4) + "`n"), (New-Object Text.UTF8Encoding($false)))
 
     $dotnetResults = Join-Path $RunRoot 'dotnet-results'
     $dotnetArtifacts = Join-Path $RunRoot 'dotnet-artifacts'
@@ -737,10 +790,17 @@ try {
         $runtimeTests.exitCode -ne 0 -or $runtimePassed -ne $runtimeTotal -or $runtimeFailed -ne 0 -or $runtimeSkipped -ne 0) {
         throw "Affected TableRuntime tests did not fully pass; nativeExit=$($runtimeTests.exitCode) total=$runtimeTotal passed=$runtimePassed failed=$runtimeFailed skipped=$runtimeSkipped."
     }
+    $verifierProject = Join-Path $source 'dotnet/tools/C04PlayerActionVerifier/C04PlayerActionVerifier.csproj'
+    $verifierBuildArgs = @('build',(Quote-Arg $verifierProject),'--configuration','Release','--artifacts-path',(Quote-Arg $dotnetArtifacts)) -join ' '
+    $verifierBuild = Invoke-OwnedNative -Name 'FreshC04ActionEvidenceVerifierBuild' -FilePath $DotnetPath -Arguments $verifierBuildArgs -WorkingDirectory $source -StdoutPath (Join-Path $logs 'c04-verifier-build.stdout.txt') -StderrPath (Join-Path $logs 'c04-verifier-build.stderr.txt') -Timeout 600
+    if ($verifierBuild.exitCode -ne 0) { throw 'Fresh generated-code verifier build failed.' }
+    $script:C04VerifierPath = Join-Path $dotnetArtifacts 'bin/C04PlayerActionVerifier/release/Mahjong.C04PlayerActionVerifier.dll'
+    if (-not (Test-Path -LiteralPath $script:C04VerifierPath -PathType Leaf)) { throw 'Generated-code verifier DLL is missing from the fresh artifact root.' }
+    $verifierSelfTest = Invoke-OwnedNative -Name 'C04GeneratedProtobufVerifierSelfTest' -FilePath $DotnetPath -Arguments ('exec ' + (Quote-Arg $script:C04VerifierPath) + ' selftest') -WorkingDirectory $dotnetResults -StdoutPath (Join-Path $logs 'c04-verifier-selftest.stdout.txt') -StderrPath (Join-Path $logs 'c04-verifier-selftest.stderr.txt') -Timeout 30
+    if ($verifierSelfTest.exitCode -ne 0 -or (Get-Content -LiteralPath $verifierSelfTest.stdout -Raw) -notmatch 'C04_PROTOBUF_FIXTURE_PASS valid=1 invalid=2') { throw 'Generated PlayerSnapshot.Parser positive/malformed-byte fixture failed.' }
     $dotnetClosureSha = Get-ClosureManifest $dotnetArtifacts (Join-Path $RunRoot 'dotnet-build-artifacts-closure.json')
     $localHostTestEvidence = [ordered]@{ buildCommand=$DotnetPath + ' ' + $buildArgs; buildNativeExitCode=$localHostBuild.exitCode; testCommand=$DotnetPath + ' ' + $testArgs; nativeExitCode=$localHostTests.exitCode; total=$totalTests; passed=$passedTests; failed=$failedTests; skipped=$skippedTests; xml='dotnet-results/LocalHost.xml'; xmlSha256=(Get-Sha256 $dotnetXml); affectedTableRuntime=[ordered]@{ command=$DotnetPath + ' ' + $runtimeArgs; nativeExitCode=$runtimeTests.exitCode; total=$runtimeTotal; passed=$runtimePassed; failed=$runtimeFailed; skipped=$runtimeSkipped; xml='dotnet-results/TableRuntime.xml'; xmlSha256=(Get-Sha256 $runtimeXml); stdoutSha256=$runtimeTests.stdoutSha256; stderrSha256=$runtimeTests.stderrSha256 }; buildArtifacts='dotnet-build-artifacts-closure.json'; buildArtifactsSha256=$dotnetClosureSha; buildStdoutSha256=$localHostBuild.stdoutSha256; buildStderrSha256=$localHostBuild.stderrSha256; stdoutSha256=$localHostTests.stdoutSha256; stderrSha256=$localHostTests.stderrSha256 }
 
-    $project = Join-Path $source 'unity/Mahjong.Unity'
     $projectPlugins = Join-Path $project 'Assets/Plugins/Mahjong'
     $frozenEnabledScenes = Get-EnabledScenes $project
     $sharedLog = Join-Path $logs 'build-shared.log'
@@ -812,12 +872,12 @@ try {
         $executionPath = Join-Path $caseDir 'execution.json'
         [IO.File]::WriteAllText($executionPath, (($summary | ConvertTo-Json -Depth 8) + "`n"), (New-Object Text.UTF8Encoding($false)))
         Test-C04CaseSummary $summary $case.id | Out-Null
-        Test-C04ActionEvidence $summary $actionEvidence $case.id | Out-Null
+        Test-C04ActionEvidence $summary $actionEvidence $case.id $actionEvidencePath | Out-Null
         if ($summary.runId -ne $runId) { throw "Player $($case.id) run identity mismatch." }
         $caseResults.Add([ordered]@{ caseId=$case.id; status='PASS'; layer='WINDOWS_PLAYER'; nativeExitCode=$player.exitCode; summary=$summaryPath; summarySha256=(Get-Sha256 $summaryPath); actionEvidence=$actionEvidencePath; actionEvidenceSha256=(Get-Sha256 $actionEvidencePath); executionEvidence=$executionPath; executionEvidenceSha256=(Get-Sha256 $executionPath); playerLog=$nativeLog; playerLogSha256=(Get-Sha256 $nativeLog); payloadSha256=$summary.payloadSha256 }) | Out-Null
     }
 
-    $final = [ordered]@{ schemaVersion=1; task='G2-C04-D03'; status='PASS'; acceptedBase='8fd7c6cb701dfbb41c28938de4186749bdd1d6c7'; frozenCandidate=$gitHead; sourceTreeStatus=$gitStatus; sourceDiffCheck='PASS'; sourceClosureManifest='source-prebuild-closure.json'; sourceClosureManifestSha256=$sourceClosureSha; unityPrebuildInputClosureSha256=$preBuildInputsSha; unityPostbuildInputClosureSha256=$postBuildInputsSha; unityPostbuildInputChanges='unity-postbuild-input-changes.json'; unityPostbuildInputChangesSha256=(Get-Sha256 (Join-Path $RunRoot 'unity-postbuild-input-changes.json')); upmDownloadCacheClosure='upm-cache-closure.json'; upmDownloadCacheClosureSha256=$upmCacheClosureSha; postBuildAssetsClosure='source-postbuild-assets-closure.json'; postBuildAssetsClosureSha256=$postBuildClosureSha; sharedPluginClosureSha256=$pluginClosureSha; sharedPluginProvenance=$sharedEvidence; sharedPluginProvenanceSha256=$provenanceSha; scriptAssembliesClosureSha256=$scriptAssembliesSha; localHostTests=$localHostTestEvidence; commands=$script:stageRecords; playMode=[ordered]@{ testCount=$testNodes.Count; passed=$testNodes.Count; failed=0; skipped=0; exactNames=$actualNames; xml=$playXml; xmlSha256=(Get-Sha256 $playXml) }; buildMarker=$buildMarker; buildMarkerSha256=(Get-Sha256 $buildMarker); playerPackageManifest='player-package.json'; cases=$caseResults; platforms=[ordered]@{ windowsPlayer='actual four fixed cases'; android='NOT_RUN (C05 owner)'; ios='NOT_RUN'; remoteTransport='NOT_IN_SCOPE' } }
+    $final = [ordered]@{ schemaVersion=1; task='G2-C04-D03'; status='PASS'; acceptedBase='8fd7c6cb701dfbb41c28938de4186749bdd1d6c7'; frozenCandidate=$gitHead; sourceTreeStatus=$gitStatus; sourceDiffCheck='PASS'; sourceClosureManifest='source-prebuild-closure.json'; sourceClosureManifestSha256=$sourceClosureSha; generatedUnityInputs='unity-generated-inputs.json'; generatedUnityInputsSha256=(Get-Sha256 (Join-Path $RunRoot 'unity-generated-inputs.json')); unityPrebuildInputClosureSha256=$preBuildInputsSha; unityPostbuildInputClosureSha256=$postBuildInputsSha; unityPostbuildInputChanges='unity-postbuild-input-changes.json'; unityPostbuildInputChangesSha256=(Get-Sha256 (Join-Path $RunRoot 'unity-postbuild-input-changes.json')); upmDownloadCacheClosure='upm-cache-closure.json'; upmDownloadCacheClosureSha256=$upmCacheClosureSha; postBuildAssetsClosure='source-postbuild-assets-closure.json'; postBuildAssetsClosureSha256=$postBuildClosureSha; sharedPluginClosureSha256=$pluginClosureSha; sharedPluginProvenance=$sharedEvidence; sharedPluginProvenanceSha256=$provenanceSha; scriptAssembliesClosureSha256=$scriptAssembliesSha; localHostTests=$localHostTestEvidence; commands=$script:stageRecords; playMode=[ordered]@{ testCount=$testNodes.Count; passed=$testNodes.Count; failed=0; skipped=0; exactNames=$actualNames; xml=$playXml; xmlSha256=(Get-Sha256 $playXml) }; buildMarker=$buildMarker; buildMarkerSha256=(Get-Sha256 $buildMarker); playerPackageManifest='player-package.json'; cases=$caseResults; platforms=[ordered]@{ windowsPlayer='actual four fixed cases'; android='NOT_RUN (C05 owner)'; ios='NOT_RUN'; remoteTransport='NOT_IN_SCOPE' } }
     $summaryOut = Join-Path $RunRoot 'summary.json'
     [IO.File]::WriteAllText($summaryOut, (($final | ConvertTo-Json -Depth 12) + "`n"), (New-Object Text.UTF8Encoding($false)))
     Write-RunLog 'FINAL_SUMMARY_WRITTEN'
