@@ -211,6 +211,17 @@ Invoke-XmlCase -Case '73 pass-with-failure-nested-in-output' -Xml (New-OneTestXm
 Invoke-XmlCase -Case '74 pass-with-failure-nested-in-traits' -Xml (New-OneTestXml '<traits><failure exception-type="Probe.Error"><message>hidden failure</message></failure></traits>') -ExpectedOk $false
 Invoke-XmlCase -Case '75 pass-with-unknown-nested-in-traits' -Xml (New-OneTestXml '<traits><contradiction>unknown</contradiction></traits>') -ExpectedOk $false
 
+# R2 residual: validate the complete assembly <errors> subtree, not only the
+# narrow errors/error XPath. Empty/whitespace containers remain valid.
+Invoke-XmlCase -Case '76 assembly-empty-errors' -Xml ($green -replace '</assembly>', '<errors /></assembly>') -ExpectedOk $true
+Invoke-XmlCase -Case '77 assembly-errors-failure' -Xml ($green -replace '</assembly>', '<errors><failure exception-type="Probe.Error"><message>actual recorded failure</message></failure></errors></assembly>') -ExpectedOk $false
+Invoke-XmlCase -Case '78 assembly-errors-unknown' -Xml ($green -replace '</assembly>', '<errors><unknown><message>unrecognized error payload</message></unknown></errors></assembly>') -ExpectedOk $false
+Invoke-XmlCase -Case '79 assembly-errors-text' -Xml ($green -replace '</assembly>', '<errors>actual recorded framework error</errors></assembly>') -ExpectedOk $false
+Invoke-XmlCase -Case '80 assembly-errors-standard' -Xml ($green -replace '</assembly>', '<errors><error type="assembly-cleanup"><failure exception-type="Probe.Error"><message>actual recorded failure</message></failure></error></errors></assembly>') -ExpectedOk $false
+Invoke-XmlCase -Case '81 assembly-errors-whitespace-comment' -Xml ($green -replace '</assembly>', '<errors>   <!-- framework cleanup note -->   </errors></assembly>') -ExpectedOk $true
+Invoke-XmlCase -Case '82 assembly-multiple-errors-containers' -Xml ($green -replace '</assembly>', '<errors /><errors /></assembly>') -ExpectedOk $false
+
+
 # ------------------------------------------------------- PG ownership matrix
 $ownershipRoot = Join-Path $evidenceDir 'ownership'
 New-Item -ItemType Directory -Force -Path $ownershipRoot | Out-Null

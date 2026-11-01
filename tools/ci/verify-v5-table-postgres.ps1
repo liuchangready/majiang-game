@@ -517,12 +517,14 @@ function Get-RedactedArgumentList {
                 while ($end -lt $text.Length) {
                     $character = $text[$end]
                     if ($character -eq $quote) {
+                        # Actual Npgsql grammar: a doubled quote is the only
+                        # in-value quote escape. A backslash is a literal
+                        # character, not an escape prefix.
                         if ($end + 1 -lt $text.Length -and $text[$end + 1] -eq $quote) { $end += 2; continue }
                         $closed = $true
                         $end++
                         break
                     }
-                    if ($character -eq [char]'\' -and $end + 1 -lt $text.Length) { $end += 2; continue }
                     $end++
                 }
                 if (-not $closed) { $end = $text.Length }
@@ -1444,6 +1446,36 @@ function Test-TableResultEvidence {
                 throw "result XML contains unexpected <$($child.LocalName)> under <assembly>"
             }
         }
+        $errorsContainers = @($assembly.SelectNodes('./errors'))
+        if ($errorsContainers.Count -gt 1) {
+            throw "result XML contains $($errorsContainers.Count) <errors> containers under <assembly>"
+        }
+        $directErrorNodes = @()
+        if ($errorsContainers.Count -eq 1) {
+            $errorsContainer = $errorsContainers[0]
+            foreach ($errorsChild in @($errorsContainer.ChildNodes)) {
+                if ($errorsChild.NodeType -eq [System.Xml.XmlNodeType]::Element) {
+                    if ($errorsChild.LocalName -ne 'error') {
+                        throw "result XML contains unexpected <$($errorsChild.LocalName)> under assembly <errors>"
+                    }
+                    if ([string]::IsNullOrWhiteSpace($errorsChild.GetAttribute('type')) -and
+                        [string]::IsNullOrWhiteSpace($errorsChild.GetAttribute('name'))) {
+                        throw 'result XML assembly <errors>/<error> has neither @type nor @name'
+                    }
+                    foreach ($errorChild in @($errorsChild.ChildNodes | Where-Object { $_.NodeType -eq [System.Xml.XmlNodeType]::Element })) {
+                        if ($errorChild.LocalName -notin @('failure', 'message', 'stack-trace', 'output')) {
+                            throw "result XML assembly <error> contains unsupported <$($errorChild.LocalName)>"
+                        }
+                    }
+                }
+                elseif ($errorsChild.NodeType -eq [System.Xml.XmlNodeType]::Text -or $errorsChild.NodeType -eq [System.Xml.XmlNodeType]::CDATA) {
+                    if (-not [string]::IsNullOrWhiteSpace($errorsChild.Value)) {
+                        throw 'result XML assembly <errors> contains nonempty text instead of structured error nodes'
+                    }
+                }
+            }
+            $directErrorNodes = @($errorsContainer.SelectNodes('./error'))
+        }
 
         $required = @('total', 'passed', 'failed', 'skipped', 'errors', 'not-run')
         $attrs = @{}
@@ -1563,7 +1595,7 @@ function Test-TableResultEvidence {
         if ($attrs['total'] -ne ($attrs['passed'] + $attrs['failed'] + $attrs['skipped'] + $attrs['not-run'])) {
             throw "result XML assembly total=$($attrs['total']) is not the sum of passed/failed/skipped/not-run"
         }
-        $errorNodes = @($assembly.SelectNodes('.//errors/error'))
+        $errorNodes = $directErrorNodes
         if (($attrs['errors'] -gt 0) -ne ($errorNodes.Count -gt 0)) {
             throw "result XML errors=$($attrs['errors']) but $($errorNodes.Count) framework error node(s) exist"
         }

@@ -9,6 +9,13 @@ V4 仍是唯一生产基线；G2–G5 未批准。
 > 2098 项/0 mismatch）给出 0 BLOCKER / 4 MAJOR 返修。第 12 节是 R2 当前结果，
 > 在计数、哈希与证据路径上取代第 1–11 节的 R1 历史快照；R1 原件与其首失败均保留。
 > 本报告不重开历史 CI 报告或其他组件。
+>
+> **R3 说明（2026-11-01）**：Caller R2 复核
+> （`REVIEW.txt` SHA256 `3CD7A807B8D1BC1A9F9D96F4373620EB0CE68CD4874BF94A37853AFF5B39F4C3`，
+> manifest `836C9DF14E24702F3E1047A6543119D839FD1EA0713E672B4AE4902D835226B4`，
+> 2034 项/0 mismatch）确认 R1-01/R1-04 关闭，仅保留 R1-02/R1-03 两组残余。
+> 第 13 节是 R3 当前结果，在计数、哈希与证据路径上取代第 12 节；R1/R2 原件、
+> 首失败与已关闭结论均保留，不重开 01/04。
 
 ## 0. 身份、范围与结论
 
@@ -222,9 +229,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/ci/verify-v5-table
 | 文件 | SHA256 |
 |---|---|
 | `.github/workflows/v5-verify.yml` | `503779B2EBED98CB56C394AC0F2AF26F96A99C65890012E80292C63D1476E173` |
-| `tools/ci/verify-v5-table-postgres.ps1` | `4EF119D80305EEB049588E07E34167058DC649E4AD2384BFC78A2E78DCDEAAAC` |
-| `tools/ci/test-v5-native-exit.ps1` | `37E8E8D19BD34867C5F934A9794F390E3B1514A4B86F0604270442C37555534C` |
-| `tools/ci/test-v5-table-evidence.ps1` | `DEE8432AB1EC9B4D8CF07B25BA4F796CC6ECAC764A19F8A7946B1A18E356A4B7` |
+| `tools/ci/verify-v5-table-postgres.ps1` | `69E60FD0CF55EB3C570B1414B9D8AFB56F7BF113356E5D961950E4D1CA9680AD` |
+| `tools/ci/test-v5-native-exit.ps1` | `B980710EB077A7762A8C74F969A8252A051266A3FA649891BEAA1B28D98486AE` |
+| `tools/ci/test-v5-table-evidence.ps1` | `B1369A2E9B5D328A1556F53B7C961233956E698CA3C8A87B4F2D0D1554DAA888` |
 | `tools/tests/VerifyV5TablePostgresStartup.Tests.ps1` | `271B0B01072DFCF43140B6D43B17BA9D4F4FCB6DBF56529FED980BC94297FB8B` |
 | 本报告 | 见交付回复（不嵌入自身哈希） |
 
@@ -388,3 +395,104 @@ Self-test evidence：
 - 非 Windows、Unity/Player/Android/设备、lobby/unified leg 未运行。
 - 单条 durable table 状态不是自然整场终局或 G2 结算验收。
 - 本报告与 R2 证据不改变 D-02/D-09 的 INFO 边界，也不改写历史 R1 原件。
+
+## 13. R3 返修：R1-02 / R1-03 两组残余闭环
+
+Caller R2 复核原件：`E:/majiang-review/caller-table-evidence-r2-7c9d12e4/build/caller-review/REVIEW.txt`
+（SHA256 `3CD7A807B8D1BC1A9F9D96F4373620EB0CE68CD4874BF94A37853AFF5B39F4C3`），
+manifest（SHA256 `836C9DF14E24702F3E1047A6543119D839FD1EA0713E672B4AE4902D835226B4`，
+2034 项/0 mismatch）。R1-01/R1-04 保持关闭；本轮只修 R1-02/R1-03 残余，六文件范围不变。
+
+### 13.1 R1-02 残余：literal backslash + doubled quote
+
+- **根因**：quoted 扫描把反斜杠当作转义前缀；实际 Npgsql 语法中反斜杠是字面字符，
+  只有双写引号（`""` / `''`）表示引号转义。`SYNTH_HEAD\""X;SYNTH_TAIL` 因此被提前结束。
+- **修复**：quoted 分支只把 doubled quote 当转义，反斜杠按字面处理；完整值替换为
+  `<redacted>`。真实执行 argv 仍用原始输入，metadata 才脱敏。
+- **exact 输入**（caller `grammar-inputs.txt` 原文）：
+  - `Host=x;Password="SYNTH_HEAD\""X;SYNTH_TAIL";Username=fixture`
+  - `Host=x;Pwd='SYNTH_HEAD\''X;SYNTH_TAIL';Username=fixture`
+- **验收**：
+  - 两例 production 函数输出均为 `...Password=<redacted>;...` / `...Pwd=<redacted>;...`，
+    `headLeaked=false`、`tailLeaked=false`；fresh replay `replay.json` SHA
+    `57179BC27098EBFF1578702299281A5775004310C5C017579BF0595D07ED9A94`。
+  - 实际 `Invoke-Native` metadata：`grammar-metadata-double/single` 的 `.meta.json` 与
+    `.meta.txt` 均无 `SYNTH_HEAD`/`SYNTH_TAIL`；child stdout 长度 60/55，证明 argv 原样。
+  - native 全矩阵 **24/24**，原 21 项全保留，新增该两组 exact grammar 的函数与 metadata case。
+- **边界纠正**：旧 R2 的 `Password="...\";..."`（单个反斜杠+单引号）不是 Npgsql 接受的
+  形状，已被实际 grammar 的 doubled-quote 输入替代；不把 generic builder 的 quoted KEY
+  探索列为缺陷。
+
+### 13.2 R1-03 残余：assembly `<errors>` 子树
+
+- **根因**：assembly 子节点白名单允许 `<errors>`，但末尾只统计
+  `assembly.SelectNodes('.//errors/error')`；`<errors><failure>`、`<errors><unknown>`、
+  `<errors>text</errors>` 在 `errors=0` 时被窄 XPath 视为空。
+- **修复**：完整校验 assembly `<errors>`：
+  - 只允许至多一个 `<errors>`；
+  - 直接 element 只能是 `<error>`；`failure`/`unknown` 等直接拒绝；
+  - 非空 text/CDATA 拒绝；空白与注释允许；
+  - 标准 `<error>` 必须有 `@type` 或 `@name`，其直接子节点只允许
+    `failure/message/stack-trace/output`；
+  - 直接 error 计数与 assembly `errors` 属性必须一致（标准 error 在 `errors=0` 时仍拒绝）。
+- **验收**：table 矩阵 **82/82**（原 60 项 + R2 15 项 + 本轮 7 项 assembly errors）。
+  Caller exact `xml-r2` 复算：`valid.xml`/`assembly-empty-errors.xml` 接受；
+  `original-test-failure.xml`、`assembly-errors-error/failure/unknown/text.xml` 拒绝。
+  Fresh replay `replay.json` 同 SHA `57179B...`，7/7 XML 预期一致。
+- 合法空 `<errors />`、空白/注释、Pass `output`/`traits` 保留；真实 42/13 仍通过。
+
+### 13.3 R3 最终实际运行
+
+| 项 | 结果 |
+|---|---|
+| PS 5.1 parser | 所有脚本 `PARSE-OK` |
+| native（原 21 + 3 新 grammar/metadata） | **24/24**，native exit 0 |
+| table evidence（原 75 + 7 assembly errors） | **82/82**，native exit 0 |
+| direct gate | **19/19** |
+| dotnetTest gate | **48/48**（仍非全量 suite） |
+| startup/PG regression | **149/149**，0 skip/0 not-run |
+| real table-only PG 16.10 | exit 0，`P52-TABLE-POSTGRES-PASS`，42/42 + 13/13 |
+
+最终真实 PG：`build/real-pg-r3-20261101-145758/table/`
+- `wrapper-summary.json` `F28BEFA59DFB566A985121D868AF8B09DFBAB15820DECD30C8714C237B838AEA`
+- `manifest.sha256.json` `2FA7E6F88E9E7951C72F0936FA2D05F6CFC871F73D913B8EFD0EA0482800BD05`，196 行/0 bad/0 self
+- `tests-evidence.json` `ED133369E18F94FF049D1C8229223E49A91AB0F7168C8123402DAC26D97BDCC7`
+- `tests-targeted-evidence.json` `9EEE9C8CA171389020558413DD998E351075FC0D7B160107E45ECDBEB83D4AC3`
+- `backup-restore-evidence.json` `C2D3FCB62C170B34F000829E96C3DF0B437B1C29F0B1C96F8E3EB30E92420692`
+- `cleanup-evidence.json` `AB2714A9C32C5D8C2A40F2727C3FDC730129831479828E5F8B82F4CA21E78A18`
+- `restore-preflight.json` `B75943C5FC297197001F5B10F594D172DAE8D378719C367F9C16AD2822E15B02`
+- `pg-dump-artifact.json` `47EDB700080FAEA79CD2398054F5992540DC623A1BE5E3B9A1B90BFFF50CD2FD`
+- `pg-owner.json` `101A519B6F3142DDFA6A3AF0CCE97AFC7BAC62E133A481FE8F2D33E354B41D11`
+- `crash-writer.log.kill.json` `FD84EA51721E7B9B7078F169F788C2FFC44EAEB21ED6E287628E56757D91D6BE`
+- `tests.xml` `64725561E9FF7A8351269A696083C7A41FB4A5F4622AB38BA8A7C9705DC670F1`
+- `tests-targeted.xml` `6A87D81A16AE0F00BD2AC5F947ACA5A7BF48823136CA306E06038DB9B502E725`
+- `table_store.dump` 44,718 bytes / `4A5A1B54F79989A600A97AEC7921F45A54393F5FD433A11CCE0020B1F172C2E7`
+- `p52-logdir-owner.json` `6945242EA9D8866FC47649F2F1621E49E3F57020E93B10AE00341664952B33CA`
+- cleanup：pre-stop PID `16728`、post-stop 0、rootDeleted=true、rootExistsAfter=false；
+  最终 `postgres.exe` 0、55592 listener 0；`environmentRestored=true`。
+- 真实 `tests.xml`/targeted 42/13、唯一 id；preflight `mahjong_p52_restore|127.0.0.1|55592|0|0|0`；
+  dump→restore→reader closure 全 true（events=2/receipts=1/outbox=1/tables=13）。
+
+Startup 最终：`build/ci-pg-startup-selftest/20261101-145806-d4f1c540/`
+- summary `85D9E2C5D9B9C97AA324539D98D6EE1D2BEA38F8900B2180802137FD8717D0E9`
+- manifest `4EC9CFC564BA05D56A69345FF2943613233BF1E290D3B66DE7B3A0D95348DA0A`，1817 行/0 bad
+
+Self-test evidence：
+- native `artifacts/native-exit-1f4b87058d754120a962b023310eac7b/results.json`
+  `25391C0EFF2AC04F75FF19B127F9B619E471A0544539B1FA2C0E2E623B7262F6`
+- table `artifacts/table-evidence-selftest-64941b2a94fa4676a9bc4315469ab891/results.json`
+  `82BE63399F516B8EC5A1F47F50719FC9948CE9A765D98BC7F05F8558EC30410F`
+- direct `artifacts/direct-results-selftest-14df108c7546449aa70d7f8f5c567081/results.json`
+  `B6CC284ACB1CB8E9651ABD860165509F8AA6B30BD97881A6FD3A8D55F58B41F0`
+- dotnetTest `artifacts/dotnettest-results-selftest-d7a40bb3d02144e29d49567ff4cb0adb/results.json`
+  `564813C994BDF5B6AF24EA24A0D7F9BF510E7714ACE67AF5F3565D512CC680AB`
+
+### 13.4 R3 首失败与残余
+
+- R3 真实 table leg 首次执行 exit 0，无新增产品首失败；R1/R2 首失败原件继续保留。
+- 旧 R2 单反斜杠 fixture 不是实际 Npgsql grammar，已替换为 caller 的 doubled-quote
+  exact 输入；这不是删除测试，而是修正到真实受支持语法，并保留原 native 21 项。
+- dotnetTest 全量 NOT_RUN；git pins NOT_RUN；历史 `39970580589` BLOCKED；远端 CI
+  未触发/未重跑，未 push/改 PR/record MR/approve/merge/deploy；Unity/Player/Android/
+  设备及 lobby/unified leg 未运行。
+- 单条 durable table 状态不是自然整场终局或 G2 结算验收；D-02/D-09 继续 INFO。

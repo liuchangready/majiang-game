@@ -153,7 +153,8 @@ $redactionFixtures = @(
     [ordered]@{ name = 'pwd-single-quoted-semicolon'; text = "Host=127.0.0.1;Pwd='SYNTH_HEAD;SYNTH_TAIL';Username=fixture"; tokens = @('SYNTH_HEAD', 'SYNTH_TAIL') },
     [ordered]@{ name = 'password-spacing-case'; text = 'Host=x; PASSWORD = "SYNTH_HEAD;SYNTH_TAIL" ;Username=fixture'; tokens = @('SYNTH_HEAD', 'SYNTH_TAIL') },
     [ordered]@{ name = 'password-doubled-quote'; text = 'Host=x;Password="SYNTH""HEAD;SYNTH_TAIL";Username=fixture'; tokens = @('SYNTH_HEAD', 'SYNTH_TAIL') },
-    [ordered]@{ name = 'password-backslash-quote'; text = 'Host=x;Password="SYNTH_HEAD\";SYNTH_TAIL";Username=fixture'; tokens = @('SYNTH_HEAD', 'SYNTH_TAIL') },
+    [ordered]@{ name = 'password-literal-backslash-doubled-quote'; text = 'Host=x;Password="SYNTH_HEAD\""X;SYNTH_TAIL";Username=fixture'; tokens = @('SYNTH_HEAD', 'SYNTH_TAIL') },
+    [ordered]@{ name = 'pwd-literal-backslash-doubled-quote'; text = "Host=x;Pwd='SYNTH_HEAD\''X;SYNTH_TAIL';Username=fixture"; tokens = @('SYNTH_HEAD', 'SYNTH_TAIL') },
     [ordered]@{ name = 'password-unquoted'; text = 'Host=x;Password=SYNTH_HEAD;Username=fixture'; tokens = @('SYNTH_HEAD') },
     [ordered]@{ name = 'password-escaped-semicolon'; text = 'Host=x;Password=SYNTH_HEAD\;SYNTH_TAIL;Username=fixture'; tokens = @('SYNTH_HEAD', 'SYNTH_TAIL') }
 )
@@ -197,6 +198,32 @@ $quotedPass = ($quotedActual -eq 0) -and
     [int]$quotedMeta.redaction.credentialFieldsRedacted -ge 1 -and
     $quotedOutput.Contains("unused-length=$($quotedConnection.Length)")
 Add-Result -Case 'redaction-quoted-metadata' -Pass $quotedPass -Expected 'metadata and meta.txt contain no quoted credential tail; native child received full argv' -Actual $quotedMeta.redaction
+
+# R2 residual: actual Npgsql accepts a literal backslash adjacent to a doubled
+# quote. Both exact original inputs must be fully redacted in real metadata.
+$grammarInputs = @(
+    [ordered]@{ name = 'double'; text = 'Host=x;Password="SYNTH_HEAD\""X;SYNTH_TAIL";Username=fixture' },
+    [ordered]@{ name = 'single'; text = "Host=x;Pwd='SYNTH_HEAD\''X;SYNTH_TAIL';Username=fixture" }
+)
+foreach ($grammarCase in $grammarInputs) {
+    $grammarLog = Join-Path $evidenceDir ('grammar-metadata-' + $grammarCase.name + '.log')
+    $grammarActual = Invoke-Native -FilePath $hostExe -Arguments @(
+        '-NoProfile', '-NonInteractive', '-File', $child, '-Code', '0', '-Unused', $grammarCase.text, '-ReportUnusedLength'
+    ) -LogPath $grammarLog
+    $grammarMetaRaw = Get-Content -LiteralPath ($grammarLog + '.meta.json') -Raw -Encoding UTF8
+    $grammarMetaText = Get-Content -LiteralPath ($grammarLog + '.meta.txt') -Raw -Encoding UTF8
+    $grammarMeta = $grammarMetaRaw | ConvertFrom-Json
+    $grammarOutput = Get-Content -LiteralPath $grammarLog -Raw -Encoding UTF8
+    $grammarPass = ($grammarActual -eq 0) -and
+        (-not $grammarMetaRaw.Contains('SYNTH_HEAD')) -and
+        (-not $grammarMetaRaw.Contains('SYNTH_TAIL')) -and
+        (-not $grammarMetaText.Contains('SYNTH_HEAD')) -and
+        (-not $grammarMetaText.Contains('SYNTH_TAIL')) -and
+        [bool]$grammarMeta.redaction.applied -and
+        [int]$grammarMeta.redaction.credentialFieldsRedacted -ge 1 -and
+        $grammarOutput.Contains("unused-length=$($grammarCase.text.Length)")
+    Add-Result -Case ('redaction-grammar-metadata-' + $grammarCase.name) -Pass $grammarPass -Expected 'literal-backslash/doubled-quote metadata contains no head/tail; child argv length preserved' -Actual $grammarMeta.redaction
+}
 
 # R1-01: deterministic non-ASCII metadata must survive a UTF-8 no-BOM write and
 # an explicit UTF-8 read without lossy ANSI decoding.
