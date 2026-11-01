@@ -51,7 +51,7 @@
 | 12 | Post Checkout | success | success |
 | 13 | Complete job | success | success |
 
-API 的 step 编号从 6 跳到 11，7–10 不在返回数组中；workflow 本身只有 6 个 step（Checkout、
+API 的 step 编号从 6 跳到 11，7–10 不在返回数组中；workflow 本身声明 5 个 step（Checkout、
 Setup .NET、native-exit、unified、upload），job 日志也没有缺失的步骤内容。这是 GitHub step
 编号的元数据现象，不是漏执行（见 F6）。
 
@@ -118,7 +118,7 @@ git merge-base --is-ancestor 8fd7c6cb... 1eb029d... -> 0
 collection aggregate、assembly aggregate，并与 `direct-*.log` 的 console summary、
 `direct.meta.txt` 的 total/exit、以及 XML SHA256 交叉核对。两次 run 结果相同：
 
-| 工程 | Total | Passed | Failed | Skipped | NotRun | XML nodes | XML SHA256（前 12） |
+| 工程 | Total | Passed | Failed | Skipped | NotRun | XML nodes | run A XML SHA256（前 12） |
 |---|---:|---:|---:|---:|---:|---:|---|
 | Mahjong.Ai.Tests | 444 | 444 | 0 | 0 | 0 | 444 | `8D7CD4FA8A74` |
 | Mahjong.Architecture.Tests | 132 | 132 | 0 | 0 | 0 | 132 | `1A55EDB03CBF` |
@@ -284,7 +284,7 @@ plugin-copy）全部 `0 Warning(s)` / `0 Error(s)`；按 `warning CSxxxx`/`error
 | 检查 | 状态 | 依据 |
 |---|---|---|
 | PR20/远端头一致，未移动 | PASS | `gh pr view`、`git ls-remote` |
-| run/job/attempt/workflow 结论 | PASS | 两 run `success`，attempt 1，6 个 workflow step 全 success |
+| run/job/attempt/workflow 结论 | PASS | 两 run `success`，attempt 1，5 个声明步骤及 job 的 setup/post/complete 步骤全 success |
 | artifact 下载完整、digest 一致 | PASS | zip SHA256 = API digest；270 文件/run |
 | 14 工程逐例 XML 计数 | PASS | 2813/2813，0 fail/skip/notrun |
 | console/meta/XML/exit 交叉核对 | PASS | 14/14 meta exit 0 + gate PASS，14/14 console 一致 |
@@ -383,7 +383,7 @@ MINOR（防御深度）问题，不是本轮 42/2813 结果的失败。
 
 ### F6（INFO，元数据）job step 编号 7–10 缺失
 
-- 位置：jobs API step 数组；workflow 只有 6 个 step，API 从 6 跳到 11。
+- 位置：jobs API step 数组；workflow 声明 5 个 step，API 从 6 跳到 11。
 - 实际：所有 workflow step 和 Post/Complete 均 success，日志无缺失步骤；这是 GitHub 编号
   现象，不是漏执行。
 - 证据：jobs JSON A `89574425DB477454281261FF02E8E0A84069354AE56D24FEF156CC7C00A4FE35`，
@@ -470,3 +470,15 @@ tar -tf artifact A / B                                    -> 0
 - 历史 `39970580589` 的失败与缺失框架日志保留为历史；当前两次新 run 的绿色不构成其根因已
   解决的证据。
 - 交付后等待调用方独立复核；若需正式 C03/G2 结论，应由调用方按各自门禁另行裁决。
+
+## 14. 调用方独立复核补记（2026-11-01）
+
+原始交付提交为 `a44dd7b86badb3d3a19a8850862aafa04bb04f57`。调用方重新从 GitHub GET 两次
+run/jobs/artifacts、完整 artifact/job-log ZIP 与合成/source commit 元数据，在 E 盘独立工作树
+实际执行解析和门禁负例。两 run 各 2813 个唯一 raw ID、14 个工程、196 个 collection，逐例全通过；
+270 个归档文件逐项长度/哈希、152 项 table 清单、19 项插件输出、28 组 XML/实际命令/console/SHA
+绑定、真实 PG crash/reader/restore 与历史失败缺日志事实均与本报告一致。没有重跑远端 CI 或 PG。
+
+调用方仅校正三处声明步骤计数为 5，并明确上表哈希列展示 run A；job API 的 9 条步骤包括自动
+setup/post/complete。验收报告范围通过，原生证据及历史缺口保留。本报告仍仅覆盖冻结 `1eb029d`，
+后来的 PR20 提交及 C03/C04/C05/G2-G5 状态须分别判断。
