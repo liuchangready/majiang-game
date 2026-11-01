@@ -5,6 +5,8 @@ param(
     [string]$UnityPath = 'D:\Unity\Hub\Editor\6000.3.27f1\Editor\Unity.exe',
     [string]$DotnetPath = 'D:\Unity\dotnet\dotnet.exe',
     [int]$TimeoutSeconds = 1800,
+    [string]$NugetSeedRoot,
+    [string]$NugetSeedAuditPath,
     [switch]$FixtureOnly
 )
 
@@ -56,6 +58,48 @@ function Write-RunLog([string]$message) {
 }
 
 function Get-Sha256([string]$path) { (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() }
+
+function Import-C04NugetSeed([string]$seedRoot,[string]$auditPath,[string]$destinationRoot,[string]$auditOutputPath) {
+    if ([string]::IsNullOrWhiteSpace($seedRoot) -xor [string]::IsNullOrWhiteSpace($auditPath)) { throw 'NuGet seed source and its SHA audit must be supplied together.' }
+    if ([string]::IsNullOrWhiteSpace($seedRoot)) { return $null }
+    $sourceRoot = [IO.Path]::GetFullPath($seedRoot)
+    $auditFull = [IO.Path]::GetFullPath($auditPath)
+    $sourcePrefix = $sourceRoot.TrimEnd([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    if (-not (Test-Path -LiteralPath $sourceRoot -PathType Container) -or -not (Test-Path -LiteralPath $auditFull -PathType Leaf)) { throw 'NuGet seed source/audit is missing.' }
+    $rows = @(Get-Content -LiteralPath $auditFull -Raw -Encoding UTF8 | ConvertFrom-Json)
+    if ($rows.Count -eq 0) { throw 'NuGet seed SHA audit is empty.' }
+    $copied = New-Object System.Collections.Generic.List[object]
+    foreach ($row in $rows) {
+        $relative = [string]$row.path
+        if ([string]::IsNullOrWhiteSpace($relative) -or $relative -match '(^|[\\/])\.\.([\\/]|$)' -or [IO.Path]::IsPathRooted($relative) -or $relative -notmatch '^[^\\/:]+[\\/][^\\/:]+[\\/][^\\/:]+\.nupkg$') { throw "Invalid NuGet seed relative path: $relative" }
+        $normalized = $relative.Replace('/',[IO.Path]::DirectorySeparatorChar).Replace('\',[IO.Path]::DirectorySeparatorChar)
+        $sourcePackage = [IO.Path]::GetFullPath((Join-Path $sourceRoot $normalized))
+        if (-not $sourcePackage.StartsWith($sourcePrefix,[StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $sourcePackage -PathType Leaf)) { throw "NuGet seed package escapes its source root or is absent: $relative" }
+        $expectedSha256 = ([string]$row.sha256).ToLowerInvariant()
+        $expectedSha512 = [string]$row.sha512
+        if ($expectedSha256 -notmatch '^[0-9a-f]{64}$' -or $expectedSha512 -notmatch '^[A-Za-z0-9+/]{86}==$') { throw "NuGet seed digest is malformed: $relative" }
+        $info = Get-Item -LiteralPath $sourcePackage
+        $actualSha256 = Get-Sha256 $sourcePackage
+        $sha = [Security.Cryptography.SHA512]::Create()
+        try { $stream = [IO.File]::OpenRead($sourcePackage); try { $actualSha512 = [Convert]::ToBase64String($sha.ComputeHash($stream)) } finally { $stream.Dispose() } } finally { $sha.Dispose() }
+        if ($info.Length -ne [long]$row.bytes -or $actualSha256 -cne $expectedSha256 -or $actualSha512 -cne $expectedSha512) { throw "NuGet seed source package hash/size mismatch: $relative" }
+        $recordPath = $sourcePackage + '.sha512'
+        if (-not (Test-Path -LiteralPath $recordPath -PathType Leaf) -or (Get-Content -LiteralPath $recordPath -Raw -Encoding ASCII).Trim() -cne $expectedSha512) { throw "NuGet seed source cache hash record mismatch: $relative" }
+        $sourceDirectory = Split-Path -Parent $sourcePackage
+        $destinationPackage = Join-Path $destinationRoot $normalized
+        $destinationDirectory = Split-Path -Parent $destinationPackage
+        if (Test-Path -LiteralPath $destinationDirectory) { throw "NuGet seed destination already contains package data: $relative" }
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destinationDirectory) | Out-Null
+        Copy-Item -LiteralPath $sourceDirectory -Destination $destinationDirectory -Recurse
+        if ((Get-Sha256 $destinationPackage) -cne $expectedSha256 -or
+            (Get-Content -LiteralPath ($destinationPackage + '.sha512') -Raw -Encoding ASCII).Trim() -cne $expectedSha512) { throw "NuGet seed copy differs from its verified source record: $relative" }
+        $copied.Add([ordered]@{ path=$relative; bytes=[long]$row.bytes; sha256=$actualSha256; sha512=$actualSha512; copiedPackage=$true })
+    }
+    $packageRows = $copied.ToArray()
+    $result = [ordered]@{ schemaVersion=1; sourceRoot=$sourceRoot; sourceAuditSha256=(Get-Sha256 $auditFull); destinationRoot=[IO.Path]::GetFullPath($destinationRoot); packageCount=$copied.Count; packages=$packageRows }
+    [IO.File]::WriteAllText($auditOutputPath,($result | ConvertTo-Json -Depth 8) + "`n",(New-Object Text.UTF8Encoding($false)))
+    return $result
+}
 
 function Assert-C04RunCacheIsolation([string]$root) {
     $rootPath = [IO.Path]::GetFullPath($root).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
@@ -151,6 +195,7 @@ function Invoke-OwnedNative {
     $psi.EnvironmentVariables['TEMP'] = $tempRoot; $psi.EnvironmentVariables['TMP'] = $tempRoot
     $psi.EnvironmentVariables['NUGET_PACKAGES'] = $nugetRoot; $psi.EnvironmentVariables['DOTNET_CLI_HOME'] = $cliRoot
     $psi.EnvironmentVariables['DOTNET_NOLOGO'] = '1'; $psi.EnvironmentVariables['DOTNET_CLI_TELEMETRY_OPTOUT'] = '1'
+    if ($Name -eq 'FreshLocalHostFullTests') { $psi.EnvironmentVariables['C04_ACTION_VERIFIER_FIXTURE_DIR'] = (Join-Path $RunRoot 'tool-channel-fixtures') }
     $process = New-Object System.Diagnostics.Process; $process.StartInfo = $psi
     $started = [DateTimeOffset]::UtcNow
     if (-not $process.Start()) { throw "$Name failed to start." }
@@ -805,13 +850,37 @@ Start-Sleep -Seconds 25
     $fixtureVerifier = Join-Path $fixtureDotnetArtifacts 'bin/C04PlayerActionVerifier/release/Mahjong.C04PlayerActionVerifier.dll'
     $verifierFixture = Invoke-OwnedNative -Name 'FixtureGeneratedPlayerSnapshotParser' -FilePath $DotnetPath -Arguments ('exec ' + (Quote-Arg $fixtureVerifier) + ' selftest') -WorkingDirectory $RunRoot -StdoutPath (Join-Path $logs 'fixture-protobuf-parser.stdout.txt') -StderrPath (Join-Path $logs 'fixture-protobuf-parser.stderr.txt') -Timeout 30
     if ($verifierFixture.exitCode -ne 0 -or (Get-Content -LiteralPath $verifierFixture.stdout -Raw) -notmatch 'C04_PROTOBUF_FIXTURE_PASS valid=1 invalid=2') { throw 'Generated-code verifier did not accept a legal serialized snapshot and reject both malformed byte fixtures.' }
+    $seedSource = Join-Path $RunRoot 'nuget-seed-fixture-source'
+    $seedDestination = Join-Path $RunRoot 'nuget-seed-fixture-positive'
+    $seedPackageDirectory = Join-Path $seedSource 'fixture.package/1.2.3'
+    New-Item -ItemType Directory -Force -Path $seedPackageDirectory | Out-Null
+    $seedPackagePath = Join-Path $seedPackageDirectory 'fixture.package.1.2.3.nupkg'
+    [IO.File]::WriteAllBytes($seedPackagePath,[Text.Encoding]::UTF8.GetBytes('c04-owned-nupkg-fixture'))
+    $seedSha256 = Get-Sha256 $seedPackagePath
+    $seedSha = [Security.Cryptography.SHA512]::Create()
+    try { $seedStream = [IO.File]::OpenRead($seedPackagePath); try { $seedSha512 = [Convert]::ToBase64String($seedSha.ComputeHash($seedStream)) } finally { $seedStream.Dispose() } } finally { $seedSha.Dispose() }
+    [IO.File]::WriteAllText(($seedPackagePath + '.sha512'),$seedSha512,(New-Object Text.UTF8Encoding($false)))
+    $seedAudit = Join-Path $RunRoot 'nuget-seed-fixture-audit.json'
+    [IO.File]::WriteAllText($seedAudit,(@([ordered]@{ path='fixture.package/1.2.3/fixture.package.1.2.3.nupkg'; sha256=$seedSha256; sha512=$seedSha512; bytes=(Get-Item $seedPackagePath).Length }) | ConvertTo-Json -Depth 4), (New-Object Text.UTF8Encoding($false)))
+    $seedCopy = Import-C04NugetSeed $seedSource $seedAudit $seedDestination (Join-Path $RunRoot 'nuget-seed-fixture-copy.json')
+    if ($seedCopy.packageCount -ne 1 -or (Get-Sha256 (Join-Path $seedDestination 'fixture.package/1.2.3/fixture.package.1.2.3.nupkg')) -cne $seedSha256) { throw 'Verified NuGet seed package did not copy into the owned fresh cache.' }
+    $seedBadAudit = Join-Path $RunRoot 'nuget-seed-fixture-badhash.json'
+    [IO.File]::WriteAllText($seedBadAudit,(@([ordered]@{ path='fixture.package/1.2.3/fixture.package.1.2.3.nupkg'; sha256=('0'*64); sha512=$seedSha512; bytes=(Get-Item $seedPackagePath).Length }) | ConvertTo-Json -Depth 4), (New-Object Text.UTF8Encoding($false)))
+    $seedBadHashRejected = $false
+    try { Import-C04NugetSeed $seedSource $seedBadAudit (Join-Path $RunRoot 'nuget-seed-fixture-badhash-dest') (Join-Path $RunRoot 'nuget-seed-fixture-badhash-copy.json') | Out-Null } catch { $seedBadHashRejected = $true }
+    if (-not $seedBadHashRejected) { throw 'NuGet seed accepted a package whose SHA-256 disagrees with its audit.' }
+    $seedTraversalAudit = Join-Path $RunRoot 'nuget-seed-fixture-traversal.json'
+    [IO.File]::WriteAllText($seedTraversalAudit,(@([ordered]@{ path='../outside/fixture.nupkg'; sha256=$seedSha256; sha512=$seedSha512; bytes=(Get-Item $seedPackagePath).Length }) | ConvertTo-Json -Depth 4), (New-Object Text.UTF8Encoding($false)))
+    $seedTraversalRejected = $false
+    try { Import-C04NugetSeed $seedSource $seedTraversalAudit (Join-Path $RunRoot 'nuget-seed-fixture-traversal-dest') (Join-Path $RunRoot 'nuget-seed-fixture-traversal-copy.json') | Out-Null } catch { $seedTraversalRejected = $true }
+    if (-not $seedTraversalRejected -or (Test-Path -LiteralPath (Join-Path $RunRoot 'outside'))) { throw 'NuGet seed accepted a traversal path or wrote outside its source root.' }
     $fixtureStableFiles = Get-C04StableArtifactFiles $RunRoot
     $fixtureFiles = @($fixtureStableFiles | ForEach-Object { [ordered]@{ path=$_.FullName.Substring($RunRoot.Length).TrimStart('\','/'); sha256=(Get-Sha256 $_.FullName); bytes=$_.Length } })
     if ($fixtureFiles.Count -lt 3 -or @($fixtureFiles | Where-Object { $_.path -match '^(temp|nuget|dotnet-home|upm-cache|verifier-dotnet-artifacts)/' }).Count -ne 0) {
         throw 'Fixture evidence seal must contain stable owned outputs and exclude volatile process/download roots.'
     }
     [IO.File]::WriteAllText((Join-Path $RunRoot 'fixture-seal.json'), (($fixtureFiles | ConvertTo-Json -Depth 5) + "`n"), (New-Object Text.UTF8Encoding($false)))
-    Write-Host "C04_TOOL_FIXTURES_PASS positive=1 negative=$($negatives.Count + $evidenceNegatives.Count + $markerNegatives.Count + 15) protobuf=PASS malformed=2 timeoutTree=PASS outputDrain=PASS outputFiles=$($fixtureFiles.Count)"
+    Write-Host "C04_TOOL_FIXTURES_PASS positive=2 negative=$($negatives.Count + $evidenceNegatives.Count + $markerNegatives.Count + 17) protobuf=PASS malformed=2 timeoutTree=PASS outputDrain=PASS outputFiles=$($fixtureFiles.Count)"
     exit 0
 }
 
@@ -823,6 +892,7 @@ try {
     try { $script:mutexHeld = $script:mutex.WaitOne([TimeSpan]::FromMinutes(60)) } catch [System.Threading.AbandonedMutexException] { $script:mutexHeld = $true }
     if (-not $script:mutexHeld) { throw 'Timed out waiting for the shared Unity validation mutex; no Unity stage ran.' }
     Write-RunLog ('MUTEX_ACQUIRED waitedSeconds=' + ([DateTimeOffset]::UtcNow - $waitStart).TotalSeconds.ToString('F3'))
+    $nugetSeedRecord = Import-C04NugetSeed $NugetSeedRoot $NugetSeedAuditPath $nugetRoot (Join-Path $RunRoot 'nuget-seed-copy-audit.json')
     Assert-C04RunCacheIsolation $RunRoot | Out-Null
     Write-RunLog "RUN_CACHE_ROOTS upm=$upmRoot npm=$upmNpmRoot packages=$upmPackagesRoot"
 
@@ -880,6 +950,8 @@ EditorUserSettings:
     if ($localHostBuild.exitCode -ne 0) { throw "Fresh LocalHost Release build failed; nativeExit=$($localHostBuild.exitCode)." }
     $testAssembly = Join-Path $dotnetArtifacts 'bin/Mahjong.LocalHost.Tests/release/Mahjong.LocalHost.Tests.dll'
     if (-not (Test-Path -LiteralPath $testAssembly)) { throw 'Fresh LocalHost build did not produce its test assembly.' }
+    $channelFixtureRoot = Join-Path $RunRoot 'tool-channel-fixtures'
+    New-Item -ItemType Directory -Force -Path $channelFixtureRoot | Out-Null
     $dotnetXml = Join-Path $dotnetResults 'LocalHost.xml'
     $testArgs = @('exec',(Quote-Arg $testAssembly),'-noLogo','-automated','-failSkips','-result-xml',(Quote-Arg $dotnetXml)) -join ' '
     $localHostTests = Invoke-OwnedNative -Name 'FreshLocalHostFullTests' -FilePath $DotnetPath -Arguments $testArgs -WorkingDirectory $dotnetResults -StdoutPath (Join-Path $logs 'localhost.stdout.txt') -StderrPath (Join-Path $logs 'localhost.stderr.txt') -Timeout 1200
@@ -916,8 +988,48 @@ EditorUserSettings:
     if (-not (Test-Path -LiteralPath $script:C04VerifierPath -PathType Leaf)) { throw 'Generated-code verifier DLL is missing from the fresh artifact root.' }
     $verifierSelfTest = Invoke-OwnedNative -Name 'C04GeneratedProtobufVerifierSelfTest' -FilePath $DotnetPath -Arguments ('exec ' + (Quote-Arg $script:C04VerifierPath) + ' selftest') -WorkingDirectory $dotnetResults -StdoutPath (Join-Path $logs 'c04-verifier-selftest.stdout.txt') -StderrPath (Join-Path $logs 'c04-verifier-selftest.stderr.txt') -Timeout 30
     if ($verifierSelfTest.exitCode -ne 0 -or (Get-Content -LiteralPath $verifierSelfTest.stdout -Raw) -notmatch 'C04_PROTOBUF_FIXTURE_PASS valid=1 invalid=2') { throw 'Generated PlayerSnapshot.Parser positive/malformed-byte fixture failed.' }
+    $expectedVerifierCases = @('C04-G2-01','C04-G2-02','C04-G2-03','C04-G2-04')
+    $channelFiles = @(Get-ChildItem -LiteralPath $channelFixtureRoot -File -Filter '*.json' | Sort-Object Name)
+    if ($channelFiles.Count -ne 4 -or @($channelFiles | ForEach-Object { [IO.Path]::GetFileNameWithoutExtension($_.Name) } | Where-Object { $_ -notin $expectedVerifierCases }).Count -ne 0) {
+        throw 'Fresh LocalHost evidence did not produce exactly one fixed verifier fixture for each C04 case.'
+    }
+    $verifierMatrix = New-Object System.Collections.Generic.List[object]
+    foreach ($casePath in $channelFiles) {
+        $caseEvidence = Get-Content -LiteralPath $casePath.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($caseEvidence.EvidenceSource -cne 'TOOL_FIXTURE_LOCALHOST_CHANNEL' -or $caseEvidence.CaseId -cne [IO.Path]::GetFileNameWithoutExtension($casePath.Name)) { throw 'Verifier tool fixture source/case identity is invalid.' }
+        $positiveLog = Join-Path $logs ('verifier-positive-' + $caseEvidence.CaseId + '.stdout.txt')
+        $positiveErr = Join-Path $logs ('verifier-positive-' + $caseEvidence.CaseId + '.stderr.txt')
+        $positive = Invoke-OwnedNative -Name ('C04VerifierPositive-' + $caseEvidence.CaseId) -FilePath $DotnetPath -Arguments ('exec ' + (Quote-Arg $script:C04VerifierPath) + ' verify ' + (Quote-Arg $casePath.FullName)) -WorkingDirectory $dotnetResults -StdoutPath $positiveLog -StderrPath $positiveErr -Timeout 60
+        if ($positive.exitCode -ne 0 -or (Get-Content -LiteralPath $positive.stdout -Raw) -notmatch 'C04_PROTOBUF_AND_AUTHORITY_IMAGE_PASS') { throw "Fresh C04 verifier rejected legal raw channel case $($caseEvidence.CaseId)." }
+        $verifierMatrix.Add([ordered]@{ caseId=$caseEvidence.CaseId; kind='TOOL_FIXTURE_LOCALHOST_CHANNEL'; result='PASS'; nativeExitCode=$positive.exitCode; evidenceSha256=(Get-Sha256 $casePath.FullName); stdoutSha256=$positive.stdoutSha256; stderrSha256=$positive.stderrSha256 })
+    }
+    $verifierNegativeRoot = Join-Path $RunRoot 'tool-verifier-negative-cases'
+    New-Item -ItemType Directory -Force -Path $verifierNegativeRoot | Out-Null
+    $positivePonPath = Join-Path $channelFixtureRoot 'C04-G2-01.json'
+    $positivePon = Get-Content -LiteralPath $positivePonPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $verifierNegativeCases = @(
+        @{ name='MalformedBaselineProtobuf'; change={ param($x) $x.BaselinePlayerSnapshotBase64='AQ==' } },
+        @{ name='InvalidAfterProtobuf'; change={ param($x) $x.AfterPlayerSnapshotBase64=[Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes('not protobuf')) } },
+        @{ name='CoherentOwnerEpochFlatRewrite'; change={ param($x) $x.BaselineOwnerEpoch=999; $x.EventOwnerEpoch=999; $x.AfterOwnerEpoch=999 } },
+        @{ name='CoherentBindingEpochFlatRewrite'; change={ param($x) $x.BaselineBindingEpoch=999; $x.EventBindingEpoch=999; $x.AfterBindingEpoch=999 } },
+        @{ name='ForeignRequestScope'; change={ param($x) $x.RequestId='foreign-request'; $x.ReceiptRequestId='foreign-request'; $x.ScopeId='foreign-scope'; $x.ReceiptScopeId='foreign-scope'; $x.BaselineScopeId='foreign-scope'; $x.AfterScopeId='foreign-scope' } },
+        @{ name='ForeignRoom'; change={ param($x) $x.BaselineRoomId='foreign-room'; $x.EventRoomId='foreign-room'; $x.AfterRoomId='foreign-room' } },
+        @{ name='PhysicalImageHashMismatch'; change={ param($x) $x.BaselinePhysicalTilesSha256=('0'*64) } },
+        @{ name='AcceptanceSequenceMismatch'; change={ param($x) $x.AcceptanceSequence=0; $x.AfterAcceptanceSequence=0 } },
+        @{ name='ClaimedTileStillInHand'; change={ param($x) $x.HandTileIds='0,1,2' } }
+    )
+    foreach ($negativeCase in $verifierNegativeCases) {
+        $badEvidence = Get-Content -LiteralPath $positivePonPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        & $negativeCase.change $badEvidence
+        $badPath = Join-Path $verifierNegativeRoot ($negativeCase.name + '.json')
+        [IO.File]::WriteAllText($badPath,($badEvidence | ConvertTo-Json -Depth 100) + "`n",(New-Object Text.UTF8Encoding($false)))
+        $badRun = Invoke-OwnedNative -Name ('C04VerifierNegative-' + $negativeCase.name) -FilePath $DotnetPath -Arguments ('exec ' + (Quote-Arg $script:C04VerifierPath) + ' verify ' + (Quote-Arg $badPath)) -WorkingDirectory $dotnetResults -StdoutPath (Join-Path $logs ($negativeCase.name + '.stdout.txt')) -StderrPath (Join-Path $logs ($negativeCase.name + '.stderr.txt')) -Timeout 60
+        if ($badRun.exitCode -eq 0) { throw "Fresh C04 verifier accepted invalid raw-record fixture: $($negativeCase.name)." }
+        $verifierMatrix.Add([ordered]@{ caseId='C04-G2-01'; kind='TOOL_FIXTURE_NEGATIVE'; mutation=$negativeCase.name; result='REJECTED'; nativeExitCode=$badRun.exitCode; evidenceSha256=(Get-Sha256 $badPath); stdoutSha256=$badRun.stdoutSha256; stderrSha256=$badRun.stderrSha256 })
+    }
+    [IO.File]::WriteAllText((Join-Path $RunRoot 'tool-verifier-matrix.json'),(($verifierMatrix | ConvertTo-Json -Depth 8) + "`n"),(New-Object Text.UTF8Encoding($false)))
     $dotnetClosureSha = Get-ClosureManifest $dotnetArtifacts (Join-Path $RunRoot 'dotnet-build-artifacts-closure.json')
-    $localHostTestEvidence = [ordered]@{ buildCommand=$DotnetPath + ' ' + $buildArgs; buildNativeExitCode=$localHostBuild.exitCode; testCommand=$DotnetPath + ' ' + $testArgs; nativeExitCode=$localHostTests.exitCode; total=$totalTests; passed=$passedTests; failed=$failedTests; skipped=$skippedTests; xml='dotnet-results/LocalHost.xml'; xmlSha256=(Get-Sha256 $dotnetXml); affectedTableRuntime=[ordered]@{ command=$DotnetPath + ' ' + $runtimeArgs; nativeExitCode=$runtimeTests.exitCode; total=$runtimeTotal; passed=$runtimePassed; failed=$runtimeFailed; skipped=$runtimeSkipped; xml='dotnet-results/TableRuntime.xml'; xmlSha256=(Get-Sha256 $runtimeXml); stdoutSha256=$runtimeTests.stdoutSha256; stderrSha256=$runtimeTests.stderrSha256 }; buildArtifacts='dotnet-build-artifacts-closure.json'; buildArtifactsSha256=$dotnetClosureSha; buildStdoutSha256=$localHostBuild.stdoutSha256; buildStderrSha256=$localHostBuild.stderrSha256; stdoutSha256=$localHostTests.stdoutSha256; stderrSha256=$localHostTests.stderrSha256 }
+    $localHostTestEvidence = [ordered]@{ buildCommand=$DotnetPath + ' ' + $buildArgs; buildNativeExitCode=$localHostBuild.exitCode; testCommand=$DotnetPath + ' ' + $testArgs; nativeExitCode=$localHostTests.exitCode; total=$totalTests; passed=$passedTests; failed=$failedTests; skipped=$skippedTests; xml='dotnet-results/LocalHost.xml'; xmlSha256=(Get-Sha256 $dotnetXml); affectedTableRuntime=[ordered]@{ command=$DotnetPath + ' ' + $runtimeArgs; nativeExitCode=$runtimeTests.exitCode; total=$runtimeTotal; passed=$runtimePassed; failed=$runtimeFailed; skipped=$runtimeSkipped; xml='dotnet-results/TableRuntime.xml'; xmlSha256=(Get-Sha256 $runtimeXml); stdoutSha256=$runtimeTests.stdoutSha256; stderrSha256=$runtimeTests.stderrSha256 }; buildArtifacts='dotnet-build-artifacts-closure.json'; buildArtifactsSha256=$dotnetClosureSha; buildStdoutSha256=$localHostBuild.stdoutSha256; buildStderrSha256=$localHostBuild.stderrSha256; stdoutSha256=$localHostTests.stdoutSha256; stderrSha256=$localHostTests.stderrSha256; nugetSeed=$nugetSeedRecord }
 
     $projectPlugins = Join-Path $project 'Assets/Plugins/Mahjong'
     $frozenEnabledScenes = Get-EnabledScenes $project

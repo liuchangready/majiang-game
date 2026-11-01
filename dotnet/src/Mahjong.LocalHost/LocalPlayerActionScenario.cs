@@ -1,7 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
 using Mahjong.Domain;
+using Mahjong.TableRuntime;
 
 namespace Mahjong.LocalHost
 {
@@ -43,6 +47,66 @@ namespace Mahjong.LocalHost
             RoundStateMachine round = CreateInitialRound(scenarioId);
             if (TilePositionMap.Validate(round.Tiles).AssignedCount != TileId.Count)
                 throw new InvalidOperationException("Frozen scenario does not conserve all physical tiles.");
+        }
+
+        /// <summary>
+        /// Read-only C04 audit view derived from the exact persisted LocalHost envelope.
+        /// The returned canonical lines contain each physical entity and its authoritative
+        /// zone/seat/index; callers must compare this with the same envelope's recovery facts.
+        /// </summary>
+        public static string ReadPhysicalAudit(byte[] authoritySaveBytes, byte[] cheatStatePayload)
+        {
+            if (authoritySaveBytes == null) throw new ArgumentNullException(nameof(authoritySaveBytes));
+            if (cheatStatePayload == null) throw new ArgumentNullException(nameof(cheatStatePayload));
+            LocalTableRecoveryFacts facts = LocalTableRecoveryFactsReader.ReadPersistedFacts(authoritySaveBytes, cheatStatePayload);
+            LocalSave save = LocalSaveCodec.DecodeEnvelope(authoritySaveBytes);
+            if (save.BaseCheckpointBlob.Length == 0) throw new InvalidOperationException("C04 authority save has no checkpoint.");
+            TableCheckpoint checkpoint = LocalSaveCodec.DecodeCheckpoint(save.BaseCheckpointBlob);
+            byte[] statePayload = checkpoint.StatePayload;
+            for (int i = 0; i < save.Operations.Count; i++)
+            {
+                LocalDurableOperation operation = save.Operations[i];
+                if (operation.ExpectedStateVersion < checkpoint.StateVersion.Value) continue;
+                if (operation.Kind == LocalOperationKind.SaveCheckpoint ||
+                    (operation.Kind == LocalOperationKind.CommitControl && operation.CheckpointBlob != null))
+                {
+                    checkpoint = LocalSaveCodec.DecodeCheckpoint(operation.CheckpointBlob!);
+                    statePayload = checkpoint.StatePayload;
+                }
+                else if (operation.Kind == LocalOperationKind.Commit && operation.Events.Count > 0)
+                {
+                    if (operation.NextStatePayload == null || operation.NextStatePayload.Length == 0)
+                        throw new InvalidOperationException("C04 authority commit has no state payload.");
+                    statePayload = operation.NextStatePayload;
+                }
+            }
+
+            RoundRecoveryState recovered = RoundRecoveryCodec.Decode(statePayload);
+            RoundStateMachine round = RoundRecovery.Restore(recovered);
+            IReadOnlyList<TilePlacement> placements = round.Tiles.AsPlacements();
+            if (placements.Count != 136 || facts.Physical.TileCount != 136 || facts.Physical.UniqueCount != 136)
+                throw new InvalidOperationException("C04 authority physical audit is not exactly 136 entities.");
+            var lines = new List<string>(placements.Count);
+            var ids = new HashSet<int>();
+            foreach (TilePlacement placement in placements)
+            {
+                if (!placement.Position.IsAssigned || !ids.Add(placement.Tile.Value))
+                    throw new InvalidOperationException("C04 authority physical audit has unassigned or duplicate entities.");
+                lines.Add("tile|" + placement.Tile.Value.ToString("D3", CultureInfo.InvariantCulture) + "|" +
+                    placement.Position.Zone.ToString().ToUpperInvariant() + "|" +
+                    placement.Position.Seat.ToString(CultureInfo.InvariantCulture) + "|" +
+                    placement.Position.Index.ToString(CultureInfo.InvariantCulture));
+            }
+            if (ids.Count != 136) throw new InvalidOperationException("C04 authority physical audit omitted an entity.");
+            lines.Sort(StringComparer.Ordinal);
+            string canonical = string.Join("\n", lines);
+            using (SHA256 sha = SHA256.Create())
+            {
+                string digest = BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(canonical))).Replace("-", string.Empty);
+                if (!string.Equals(digest, facts.Physical.TilesSha256, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("C04 authority physical placements differ from recovery facts.");
+            }
+            return canonical;
         }
 
         private static RoundStateMachine BuildCallWindow(string action)

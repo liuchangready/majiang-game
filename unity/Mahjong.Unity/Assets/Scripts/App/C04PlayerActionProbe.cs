@@ -3,6 +3,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
@@ -445,15 +446,22 @@ namespace Mahjong.Unity.App
             };
             WriteActionEvidence(new C04PlayerActionEvidence
             {
-                CaseId = _caseId, RequestId = requestId, ScopeId = view.Identity.ScopeId,
+                CaseId = _caseId, AccountId = coordinator.Current.Binding?.AccountId ?? string.Empty,
+                BaselineAccountId = coordinator.Current.Binding?.AccountId ?? string.Empty,
+                AfterAccountId = coordinator.Current.Binding?.AccountId ?? string.Empty,
+                RequestId = requestId, ScopeId = view.Identity.ScopeId,
+                BaselineScopeId = view.Identity.ScopeId, AfterScopeId = finalState.VisibleEventBatch.ScopeId,
                 PayloadBase64 = payloadBase64, PayloadSha256 = payloadHash,
                 BaselineRoomId = view.Identity.RoomId, BaselineSessionId = view.Identity.SessionId,
                 BaselineTableId = baselineTableId, BaselineRoundId = baselineRound, BaselineSeat = view.Identity.Seat,
                 BaselineBindingEpoch = view.Identity.BindingEpoch, BaselineConnectionEpoch = view.Identity.ConnectionEpoch,
                 BaselineOwnerEpoch = view.Identity.OwnerEpoch, BaselineControlEpoch = candidate.ControlEpoch ?? 0UL,
+                OptionId = actionPayload.HasField(CommandPayloadFields.OptionId)
+                    ? ReadCanonicalString(actionPayload, CommandPayloadFields.OptionId, "optionId") : string.Empty,
                 BaselineDecisionId = candidate.DecisionId, BaselineStateVersion = baselineVersion,
                 BaselineEventSeq = baselineEventSeq, BaselineCursorStream = baselineCursorStream, BaselineCursor = baselineCursor,
                 BaselinePlayerSnapshotBase64 = Convert.ToBase64String(coordinatorBaselineBytes),
+                BaselineBindingJsonBase64 = EncodeRawBinding(view.Identity, baselineTableId, coordinator.Current.Binding?.AccountId ?? string.Empty),
                 BaselineAuthoritySaveBase64 = Convert.ToBase64String(baselineAuthorityTask.Result.AuthoritySaveBytes),
                 BaselineAuthorityCheatStateBase64 = Convert.ToBase64String(baselineAuthorityTask.Result.CheatStatePayload),
                 BaselinePhysicalTileCount = baselineAuthority.Physical.TileCount,
@@ -467,6 +475,7 @@ namespace Mahjong.Unity.App
                 ReceiptDigest = actualReceipt?.Resolution.CanonicalPayloadSha256 ?? string.Empty,
                 ReceiptCommandVersion = actualReceipt?.Resolution.CommandVersion?.Value ?? 0UL,
                 ReceiptEventSeq = actualReceipt?.Resolution.EventSeq?.Value ?? 0UL,
+                RawReceiptJsonBase64 = EncodeRawReceipt(actualReceipt),
                 EventType = confirmation.Event.Type.ToString(), EventRoundId = confirmedBatch.RoundId,
                 EventScopeId = confirmedBatch.ScopeId, EventSessionId = confirmedBatch.SessionId,
                 EventRoomId = confirmedBatch.RoomId, EventTableId = confirmedBatch.TableId,
@@ -475,15 +484,19 @@ namespace Mahjong.Unity.App
                 EventRole = confirmedBatch.Role.ToString(), EventBatchKind = confirmedBatch.Kind.ToString(),
                 EventFullBaseline = confirmedBatch.FullBaseline, EventCommandVersion = confirmation.CommandVersion,
                 EventSeq = confirmation.Event.EventSeq, EventTileIds = String.Join(",", confirmation.Event.Payload.TileIds),
+                RawEventBatchJsonBase64 = EncodeRawAcceptedBatch(confirmedBatch, confirmedCursor!.Value),
                 AcceptanceSequence = confirmedBatch.AcceptanceSequence,
                 AfterRoomId = finalState.VisibleEventBatch.RoomId, AfterSessionId = finalState.VisibleEventBatch.SessionId,
                 AfterTableId = finalState.VisibleEventBatch.TableId, AfterRoundId = finalState.VisibleEventBatch.RoundId,
                 AfterSeat = finalState.VisibleEventBatch.Seat, AfterBindingEpoch = finalState.VisibleEventBatch.BindingEpoch,
                 AfterConnectionEpoch = finalState.VisibleEventBatch.ConnectionEpoch, AfterOwnerEpoch = finalState.VisibleEventBatch.OwnerEpoch,
+                AfterControlEpoch = Convert.ToUInt64(afterAuthority.ControlEpochs[0]),
                 AfterStateVersion = finalState.PlayerSnapshot.StateVersion, AfterEventSeq = finalState.PlayerSnapshot.EventSeq,
                 AfterAcceptanceSequence = finalState.AcceptanceSequence,
                 AfterCursorStream = confirmedCursor.Value.StreamVersion.Value, AfterCursor = confirmedCursor.Value.ProjectionSeq.Value,
                 AfterPlayerSnapshotBase64 = Convert.ToBase64String(finalState.PlayerSnapshot.ToByteArray()),
+                AfterBindingJsonBase64 = EncodeRawBinding(finalState.VisibleEventBatch, finalState.VisibleEventBatch.TableId,
+                    coordinator.Current.Binding?.AccountId ?? string.Empty),
                 AfterAuthoritySaveBase64 = Convert.ToBase64String(afterAuthorityTask.Result.AuthoritySaveBytes),
                 AfterAuthorityCheatStateBase64 = Convert.ToBase64String(afterAuthorityTask.Result.CheatStatePayload),
                 AfterPhysicalTileCount = afterAuthority.Physical.TileCount,
@@ -608,6 +621,73 @@ namespace Mahjong.Unity.App
             byte[] bytes = Encoding.UTF8.GetBytes(JsonUtility.ToJson(value, false) + "\n");
             stream.Write(bytes, 0, bytes.Length);
             stream.Flush(true);
+        }
+
+        private static string EncodeRawBinding(PlayerTableIdentity identity, string tableId, string accountId)
+        {
+            var raw = new C04RawBinding
+            {
+                SessionId = identity.SessionId, RoomId = identity.RoomId, TableId = tableId,
+                AccountId = accountId, ScopeId = identity.ScopeId, Role = identity.Role.ToString(),
+                SeatId = identity.Seat, BindingEpoch = identity.BindingEpoch,
+                ConnectionEpoch = identity.ConnectionEpoch, OwnerEpoch = identity.OwnerEpoch
+            };
+            return Convert.ToBase64String(Encoding.UTF8.GetBytes(JsonUtility.ToJson(raw, false)));
+        }
+
+        private static string EncodeRawBinding(ObservedVisibleEventBatch batch, string tableId, string accountId)
+        {
+            var raw = new C04RawBinding
+            {
+                SessionId = batch.SessionId, RoomId = batch.RoomId, TableId = tableId,
+                AccountId = accountId, ScopeId = batch.ScopeId, Role = batch.Role.ToString(),
+                SeatId = batch.Seat, BindingEpoch = batch.BindingEpoch,
+                ConnectionEpoch = batch.ConnectionEpoch, OwnerEpoch = batch.OwnerEpoch
+            };
+            return Convert.ToBase64String(Encoding.UTF8.GetBytes(JsonUtility.ToJson(raw, false)));
+        }
+
+        private static string EncodeRawAcceptedBatch(ObservedVisibleEventBatch batch, StreamCursor acceptedCursor)
+        {
+            var rawEvents = new List<C04RawAcceptedEvent>(batch.Events.Count);
+            foreach (ObservedVisibleEvent acceptedEvent in batch.Events)
+            {
+                rawEvents.Add(new C04RawAcceptedEvent
+                {
+                    Type = (uint)acceptedEvent.Type, EventSeq = acceptedEvent.EventSeq,
+                    CommandVersion = acceptedEvent.CommandVersion, Seat = acceptedEvent.Seat,
+                    TileId = acceptedEvent.Payload.DiscardTileId ?? acceptedEvent.Payload.ResultTileId ?? 0U,
+                    TileIds = acceptedEvent.Payload.TileIds.ToArray(),
+                    Payload = new C04RawAcceptedEventPayload { DiscardTileId = acceptedEvent.Payload.DiscardTileId ?? 0U }
+                });
+            }
+            var raw = new C04RawAcceptedBatch
+            {
+                Kind = batch.Kind.ToString(), IsFullBaseline = batch.FullBaseline,
+                SessionId = batch.SessionId, RoomId = batch.RoomId, TableId = batch.TableId,
+                RoundId = batch.RoundId, ScopeId = batch.ScopeId, Role = batch.Role.ToString(), Seat = batch.Seat,
+                BindingEpoch = batch.BindingEpoch, ConnectionEpoch = batch.ConnectionEpoch, OwnerEpoch = batch.OwnerEpoch,
+                StateVersion = batch.StateVersion, EventSeq = batch.EventSeq,
+                ProjectionSeq = acceptedCursor.ProjectionSeq.Value,
+                AcceptanceSequence = batch.AcceptanceSequence, Events = rawEvents.ToArray()
+            };
+            return Convert.ToBase64String(Encoding.UTF8.GetBytes(JsonUtility.ToJson(raw, false)));
+        }
+
+        private static string EncodeRawReceipt(TableReceiptResolvedEventArgs? receipt)
+        {
+            if (receipt == null) return string.Empty;
+            var raw = new C04RawReceipt
+            {
+                Disposition = receipt.Resolution.Disposition.ToString(),
+                Status = receipt.Resolution.ReceiptStatus.ToString(),
+                RequestId = receipt.Command.RequestId,
+                ScopeId = receipt.Command.ScopeId,
+                CanonicalPayloadSha256 = receipt.Resolution.CanonicalPayloadSha256,
+                CommandVersion = receipt.Resolution.CommandVersion?.Value ?? 0UL,
+                EventSeq = receipt.Resolution.EventSeq?.Value ?? 0UL
+            };
+            return Convert.ToBase64String(Encoding.UTF8.GetBytes(JsonUtility.ToJson(raw, false)));
         }
 
         private static string ScenarioForCase(string caseId)
@@ -754,17 +834,21 @@ namespace Mahjong.Unity.App
         [Serializable]
         private sealed class C04PlayerActionEvidence
         {
-            public string CaseId = string.Empty, RequestId = string.Empty, ScopeId = string.Empty;
+            public string CaseId = string.Empty, AccountId = string.Empty, RequestId = string.Empty, ScopeId = string.Empty;
+            public string BaselineAccountId = string.Empty, AfterAccountId = string.Empty, BaselineScopeId = string.Empty, AfterScopeId = string.Empty;
             public string PayloadBase64 = string.Empty, PayloadSha256 = string.Empty;
+            public string OptionId = string.Empty;
             public string BaselineRoomId = string.Empty, BaselineSessionId = string.Empty, BaselineTableId = string.Empty, BaselineRoundId = string.Empty;
             public int BaselineSeat = -1;
             public ulong BaselineBindingEpoch, BaselineConnectionEpoch, BaselineOwnerEpoch, BaselineControlEpoch, BaselineStateVersion, BaselineEventSeq, BaselineCursorStream, BaselineCursor;
             public string BaselineDecisionId = string.Empty, BaselinePlayerSnapshotBase64 = string.Empty;
+            public string BaselineBindingJsonBase64 = string.Empty;
             public string BaselineAuthoritySaveBase64 = string.Empty, BaselineAuthorityCheatStateBase64 = string.Empty;
             public int BaselinePhysicalTileCount, BaselinePhysicalUniqueCount, BaselineDeadWallCount;
             public string BaselinePhysicalTilesSha256 = string.Empty;
             public string ReceiptDisposition = string.Empty, ReceiptStatus = string.Empty, ReceiptRequestId = string.Empty, ReceiptScopeId = string.Empty, ReceiptDigest = string.Empty;
             public ulong ReceiptCommandVersion, ReceiptEventSeq;
+            public string RawReceiptJsonBase64 = string.Empty;
             public string EventType = string.Empty, EventRoundId = string.Empty;
             public string EventScopeId = string.Empty, EventSessionId = string.Empty, EventRoomId = string.Empty, EventTableId = string.Empty;
             public int EventSeat = -1;
@@ -773,15 +857,63 @@ namespace Mahjong.Unity.App
             public bool EventFullBaseline;
             public long AcceptanceSequence, AfterAcceptanceSequence;
             public string EventTileIds = string.Empty;
+            public string RawEventBatchJsonBase64 = string.Empty;
             public string AfterRoomId = string.Empty, AfterSessionId = string.Empty, AfterTableId = string.Empty, AfterRoundId = string.Empty;
             public int AfterSeat = -1;
-            public ulong AfterBindingEpoch, AfterConnectionEpoch, AfterOwnerEpoch, AfterStateVersion, AfterEventSeq, AfterCursorStream, AfterCursor;
+            public ulong AfterBindingEpoch, AfterConnectionEpoch, AfterOwnerEpoch, AfterControlEpoch, AfterStateVersion, AfterEventSeq, AfterCursorStream, AfterCursor;
             public int AfterPhysicalTileCount, AfterPhysicalUniqueCount, AfterDeadWallCount;
             public string AfterPhysicalTilesSha256 = string.Empty;
             public string AfterPlayerSnapshotBase64 = string.Empty, AfterAuthoritySaveBase64 = string.Empty, AfterAuthorityCheatStateBase64 = string.Empty;
+            public string AfterBindingJsonBase64 = string.Empty;
             public string HandTileIds = string.Empty, DrawnTileId = string.Empty, MeldKind = string.Empty, MeldTileIds = string.Empty;
             public ulong SeatScoreBefore, SeatScoreAfter;
             public uint RiichiSticksBefore, RiichiSticksAfter;
+        }
+
+        [Serializable]
+        private sealed class C04RawBinding
+        {
+            public string SessionId = string.Empty, RoomId = string.Empty, TableId = string.Empty;
+            public string AccountId = string.Empty, ScopeId = string.Empty, Role = string.Empty;
+            public int SeatId = -1;
+            public ulong BindingEpoch, ConnectionEpoch, OwnerEpoch;
+        }
+
+        [Serializable]
+        private sealed class C04RawAcceptedEvent
+        {
+            public uint Type;
+            public ulong EventSeq, CommandVersion;
+            public int Seat = -1;
+            public uint TileId;
+            public uint[] TileIds = Array.Empty<uint>();
+            public C04RawAcceptedEventPayload Payload = new C04RawAcceptedEventPayload();
+        }
+
+        [Serializable]
+        private sealed class C04RawAcceptedEventPayload
+        {
+            public uint DiscardTileId;
+        }
+
+        [Serializable]
+        private sealed class C04RawReceipt
+        {
+            public string Disposition = string.Empty, Status = string.Empty, RequestId = string.Empty, ScopeId = string.Empty;
+            public string CanonicalPayloadSha256 = string.Empty;
+            public ulong CommandVersion, EventSeq;
+        }
+
+        [Serializable]
+        private sealed class C04RawAcceptedBatch
+        {
+            public string Kind = string.Empty, SessionId = string.Empty, RoomId = string.Empty, TableId = string.Empty;
+            public string RoundId = string.Empty, ScopeId = string.Empty, Role = string.Empty;
+            public bool IsFullBaseline;
+            public int Seat = -1;
+            public ulong BindingEpoch, ConnectionEpoch, OwnerEpoch, StateVersion, EventSeq, ProjectionSeq;
+            public long AcceptanceSequence;
+            public C04RawAcceptedEvent[] Events = Array.Empty<C04RawAcceptedEvent>();
         }
     }
 }

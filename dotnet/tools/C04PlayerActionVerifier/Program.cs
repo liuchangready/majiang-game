@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -11,6 +12,9 @@ using BusinessPayload = Mahjong.Contracts.BusinessPayload;
 using CanonicalPayloadDigest = Mahjong.Contracts.CanonicalPayloadDigest;
 using CanonicalPayloadWriter = Mahjong.Contracts.CanonicalPayloadWriter;
 using CommandKind = Mahjong.Contracts.CommandKind;
+using CanonicalPayloadParser = Mahjong.Contracts.CanonicalPayloadParser;
+using CommandPayloadFields = Mahjong.Contracts.CommandPayloadFields;
+using ProtocolActionType = Mahjong.Contracts.ProtocolActionType;
 
 internal static class Program
 {
@@ -76,9 +80,13 @@ internal static class Program
     {
         using JsonDocument document = JsonDocument.Parse(File.ReadAllText(path));
         JsonElement evidence = document.RootElement;
+        string evidenceSource = RequiredString(evidence, "EvidenceSource");
+        if (evidenceSource != "GAME" && evidenceSource != "TOOL_FIXTURE_LOCALHOST_CHANNEL")
+            throw new InvalidDataException("Action evidence has an unknown source classification.");
         byte[] canonicalPayload = Convert.FromBase64String(RequiredString(evidence, "PayloadBase64"));
         string payloadDigest = RequiredString(evidence, "PayloadSha256");
         ValidateCanonicalPayload(canonicalPayload, payloadDigest);
+        VerifyTypedActionPayload(evidence, canonicalPayload);
         Equal(payloadDigest, RequiredString(evidence, "ReceiptDigest"), "typed Applied receipt canonical payload digest");
         Equal(RequiredString(evidence, "RequestId"), RequiredString(evidence, "ReceiptRequestId"), "typed Applied receipt request id");
         Equal(RequiredString(evidence, "ScopeId"), RequiredString(evidence, "ReceiptScopeId"), "typed Applied receipt scope id");
@@ -90,8 +98,14 @@ internal static class Program
         string baselineCheat = RequiredString(evidence, "BaselineAuthorityCheatStateBase64");
         string afterSave = RequiredString(evidence, "AfterAuthoritySaveBase64");
         string afterCheat = RequiredString(evidence, "AfterAuthorityCheatStateBase64");
-        LocalTableRecoveryFacts baselineFacts = LocalTableRecoveryFactsReader.ReadPersistedFacts(Convert.FromBase64String(baselineSave), Convert.FromBase64String(baselineCheat));
-        LocalTableRecoveryFacts afterFacts = LocalTableRecoveryFactsReader.ReadPersistedFacts(Convert.FromBase64String(afterSave), Convert.FromBase64String(afterCheat));
+        byte[] baselineSaveBytes = Convert.FromBase64String(baselineSave);
+        byte[] baselineCheatBytes = Convert.FromBase64String(baselineCheat);
+        byte[] afterSaveBytes = Convert.FromBase64String(afterSave);
+        byte[] afterCheatBytes = Convert.FromBase64String(afterCheat);
+        LocalTableRecoveryFacts baselineFacts = LocalTableRecoveryFactsReader.ReadPersistedFacts(baselineSaveBytes, baselineCheatBytes);
+        LocalTableRecoveryFacts afterFacts = LocalTableRecoveryFactsReader.ReadPersistedFacts(afterSaveBytes, afterCheatBytes);
+        Dictionary<int, string> baselinePositions = ReadPhysicalPositions(LocalPlayerActionScenario.ReadPhysicalAudit(baselineSaveBytes, baselineCheatBytes));
+        Dictionary<int, string> afterPositions = ReadPhysicalPositions(LocalPlayerActionScenario.ReadPhysicalAudit(afterSaveBytes, afterCheatBytes));
 
         Equal(RequiredString(evidence, "BaselineSessionId"), baseline.SessionId, "baseline session");
         Equal(RequiredString(evidence, "BaselineRoundId"), baseline.RoundId, "baseline round");
@@ -107,16 +121,32 @@ internal static class Program
         Equal(RequiredString(evidence, "AfterCursor"), after.Cursor.ProjectionSeq.ToString(CultureInfo.InvariantCulture), "after projection cursor");
 
         Equal(RequiredString(evidence, "BaselineRoundId"), baselineFacts.RoundId, "baseline authority round");
-        Equal(RequiredString(evidence, "BaselineStateVersion"), baselineFacts.StateVersion, "baseline authority version");
         Equal(RequiredString(evidence, "BaselineEventSeq"), baselineFacts.EventSeq, "baseline authority event sequence");
         Equal(RequiredString(evidence, "AfterRoundId"), afterFacts.RoundId, "after authority round");
-        Equal(RequiredString(evidence, "AfterStateVersion"), afterFacts.StateVersion, "after authority version");
-        Equal(RequiredString(evidence, "AfterEventSeq"), afterFacts.EventSeq, "after authority event sequence");
+        if (ulong.Parse(afterFacts.EventSeq, CultureInfo.InvariantCulture) < ulong.Parse(RequiredString(evidence, "ReceiptEventSeq"), CultureInfo.InvariantCulture))
+            throw new InvalidDataException("After authority event high-water predates the matched accepted receipt.");
+        Equal(RequiredString(evidence, "BaselineRoomId"), baselineFacts.RoomId, "baseline authority room");
+        Equal(RequiredString(evidence, "AfterRoomId"), afterFacts.RoomId, "after authority room");
+        Equal(RequiredString(evidence, "BaselineRoundId"), baselineFacts.RoundId, "baseline authority round identity");
+        Equal(RequiredString(evidence, "AfterRoundId"), afterFacts.RoundId, "after authority round identity");
+        int seat = RequiredInt(evidence, "BaselineSeat");
+        if (seat < 0 || seat > 3 || RequiredInt(evidence, "AfterSeat") != seat)
+            throw new InvalidDataException("Authority evidence is not bound to one player seat.");
+        Equal(RequiredString(evidence, "BaselineControlEpoch"), baselineFacts.ControlEpochs[seat].ToString(CultureInfo.InvariantCulture), "baseline authority control epoch");
+        Equal(RequiredString(evidence, "AfterControlEpoch"), afterFacts.ControlEpochs[seat].ToString(CultureInfo.InvariantCulture), "after authority control epoch");
+        Equal(RequiredString(evidence, "BaselineAccountId"), RequiredString(evidence, "AccountId"), "captured baseline account");
+        Equal(RequiredString(evidence, "AfterAccountId"), RequiredString(evidence, "AccountId"), "captured accepted account");
+        Equal(RequiredString(evidence, "BaselineScopeId"), RequiredString(evidence, "ScopeId"), "captured baseline scope");
+        Equal(RequiredString(evidence, "AfterScopeId"), RequiredString(evidence, "ScopeId"), "captured accepted scope");
+        Equal(RequiredString(evidence, "BaselineBindingEpoch"), RequiredString(evidence, "AfterBindingEpoch"), "stable binding epoch across action");
+        Equal(RequiredString(evidence, "BaselineConnectionEpoch"), RequiredString(evidence, "AfterConnectionEpoch"), "stable connection epoch across action");
+        VerifyAuthorityReceipt(evidence, baselineFacts, afterFacts, canonicalPayload);
+        VerifyRawBindingAndAcceptedEvent(evidence, baseline, after);
         VerifyPhysical(evidence, "Baseline", baselineFacts.Physical);
         VerifyPhysical(evidence, "After", afterFacts.Physical);
-        VerifyPlayerView(evidence, baseline, "Baseline", true);
-        VerifyPlayerView(evidence, after, "After", false);
-        VerifyActionEffects(evidence, baseline, after, baselineFacts.Physical, afterFacts.Physical);
+        VerifyPlayerView(evidence, baseline, "Baseline", true, baselinePositions);
+        VerifyPlayerView(evidence, after, "After", false, afterPositions);
+        VerifyActionEffects(evidence, baseline, after, baselineFacts.Physical, afterFacts.Physical, baselinePositions, afterPositions);
     }
 
     private static void ValidateCanonicalPayload(byte[] canonicalPayload, string expectedDigest)
@@ -127,18 +157,89 @@ internal static class Program
             throw new InvalidDataException("Canonical payload bytes do not match the existing contract digest.");
     }
 
-    private static void VerifyPlayerView(JsonElement evidence, PlayerSnapshot snapshot, string prefix, bool baseline)
+    private static void VerifyTypedActionPayload(JsonElement evidence, byte[] bytes)
+    {
+        var payload = CanonicalPayloadParser.Parse(bytes);
+        if (payload.CommandKind != (ushort)CommandKind.SubmitAction)
+            throw new InvalidDataException("Raw canonical payload is not a SubmitAction command.");
+        Equal(RequiredString(evidence, "BaselineRoundId"),
+            ReadCanonicalString(payload, CommandPayloadFields.RoundIdField, "roundId"), "canonical request round");
+        Equal(RequiredString(evidence, "BaselineDecisionId"),
+            ReadCanonicalString(payload, CommandPayloadFields.DecisionIdField, "decisionId"), "canonical request decision");
+        Equal(RequiredString(evidence, "BaselineControlEpoch"),
+            payload.RequireUInt64(CommandPayloadFields.ControlEpochField, "controlEpoch").ToString(CultureInfo.InvariantCulture), "canonical request control epoch");
+        uint expectedAction = RequiredString(evidence, "CaseId") switch
+        {
+            "C04-G2-01" => (uint)ProtocolActionType.DeclarePon,
+            "C04-G2-02" => (uint)ProtocolActionType.DeclareChi,
+            "C04-G2-03" => (uint)ProtocolActionType.DeclareRiichi,
+            "C04-G2-04" => (uint)ProtocolActionType.DeclareKan,
+            _ => throw new InvalidDataException("Unknown fixed C04 action case.")
+        };
+        if (payload.RequireUInt32(CommandPayloadFields.ActionType, "actionType") != expectedAction)
+            throw new InvalidDataException("Canonical action kind differs from the fixed C04 case.");
+        uint[] expectedTiles = RequiredString(evidence, "CaseId") switch
+        {
+            "C04-G2-01" => new uint[] { 0, 1, 2 },
+            "C04-G2-02" => new uint[] { 0, 4, 8 },
+            "C04-G2-03" => new uint[] { 124 },
+            "C04-G2-04" => new uint[] { 0, 1, 2, 3 },
+            _ => throw new InvalidDataException("Unknown fixed C04 action case.")
+        };
+        uint[] actualTiles = payload.HasField(CommandPayloadFields.TileIds)
+            ? payload.RequireRepeatedUInt32(CommandPayloadFields.TileIds, "tileIds").ToArray()
+            : Array.Empty<uint>();
+        if (!actualTiles.OrderBy(value => value).SequenceEqual(expectedTiles.OrderBy(value => value)))
+            throw new InvalidDataException("Canonical action physical selection differs from the frozen case. expected=" +
+                string.Join(",", expectedTiles) + " actual=" + string.Join(",", actualTiles) + ".");
+        string optionId = payload.HasField(CommandPayloadFields.OptionId)
+            ? ReadCanonicalString(payload, CommandPayloadFields.OptionId, "optionId") : string.Empty;
+        Equal(RequiredString(evidence, "OptionId", true), optionId, "canonical legal candidate option");
+    }
+
+    private static string ReadCanonicalString(Mahjong.Contracts.CanonicalPayloadDocument payload, ushort fieldNumber, string fieldName)
+    {
+        byte[] encoded = System.Text.Encoding.UTF8.GetBytes(payload.RequireString(fieldNumber, fieldName));
+        if (encoded.Length < 4) throw new InvalidDataException("Canonical string field has no inner length prefix: " + fieldName + ".");
+        uint count = BitConverter.ToUInt32(encoded, 0);
+        if (count != encoded.Length - 4) throw new InvalidDataException("Canonical string field has an invalid inner length: " + fieldName + ".");
+        return new System.Text.UTF8Encoding(false, true).GetString(encoded, 4, encoded.Length - 4);
+    }
+
+    private static void VerifyPlayerView(JsonElement evidence, PlayerSnapshot snapshot, string prefix, bool baseline, Dictionary<int, string> positions)
     {
         PlayerPrivateView own = snapshot.PrivateView ?? throw new InvalidDataException(prefix + " private view is absent.");
         if (own.Seat != 0) throw new InvalidDataException(prefix + " protobuf private seat is not 0.");
+        var publicMeldTiles = new HashSet<uint>();
+        PublicBoardView physicalBoard = snapshot.PublicView?.Board ?? throw new InvalidDataException(prefix + " public board is absent.");
+        foreach (PlayerPublicView player in physicalBoard.Players)
+        {
+            foreach (MeldView publicMeld in player.Melds)
+            foreach (uint tile in publicMeld.TileIds)
+            {
+                if (!publicMeldTiles.Add(tile)) throw new InvalidDataException(prefix + " protobuf repeats a physical entity across public melds.");
+                RequirePosition(positions, checked((int)tile), "MELD/" + player.Seat.ToString(CultureInfo.InvariantCulture) + "/", prefix + " public meld tile");
+            }
+            foreach (DiscardView discard in player.Discards)
+            {
+                string location = positions.TryGetValue(checked((int)discard.TileId), out string? actual) ? actual : string.Empty;
+                if (!location.StartsWith("DISCARD/" + player.Seat.ToString(CultureInfo.InvariantCulture) + "/", StringComparison.Ordinal) &&
+                    !(publicMeldTiles.Contains(discard.TileId) && location.StartsWith("MELD/", StringComparison.Ordinal)))
+                    throw new InvalidDataException(prefix + " protobuf discard is not in its authoritative river or claimed meld history.");
+            }
+        }
+        foreach (uint tile in own.ClosedTiles) RequirePosition(positions, checked((int)tile), "HAND/0/", prefix + " protobuf own closed tile");
+        if (own.HasDrawnTileId) RequirePosition(positions, checked((int)own.DrawnTileId), "HAND/0/", prefix + " protobuf own drawn tile");
+        foreach (MeldView ownerMeld in own.OwnerMelds)
+        foreach (uint tile in ownerMeld.TileIds) RequirePosition(positions, checked((int)tile), "MELD/0/", prefix + " protobuf own meld tile");
         string closed = string.Join(",", own.ClosedTiles.Select(value => value.ToString(CultureInfo.InvariantCulture)));
         string meld = own.OwnerMelds.Count == 0 ? string.Empty : string.Join(",", own.OwnerMelds[0].TileIds.Select(value => value.ToString(CultureInfo.InvariantCulture)));
         string drawn = own.HasDrawnTileId ? own.DrawnTileId.ToString(CultureInfo.InvariantCulture) : string.Empty;
         if (!baseline)
         {
             Equal(RequiredString(evidence, "HandTileIds"), closed, "protobuf closed hand");
-            Equal(RequiredString(evidence, "MeldTileIds"), meld, "protobuf owner meld");
-            Equal(RequiredString(evidence, "DrawnTileId"), drawn, "protobuf drawn tile");
+            Equal(RequiredString(evidence, "MeldTileIds", true), meld, "protobuf owner meld");
+            Equal(RequiredString(evidence, "DrawnTileId", true), drawn, "protobuf drawn tile");
             PublicBoardView board = snapshot.PublicView?.Board ?? throw new InvalidDataException("After protobuf public board is absent.");
             long score = board.Scores.Single(value => value.Seat == 0).Score;
             Equal(RequiredString(evidence, "SeatScoreAfter"), score.ToString(CultureInfo.InvariantCulture), "protobuf seat score");
@@ -147,21 +248,25 @@ internal static class Program
         else
         {
             string expectedCase = RequiredString(evidence, "CaseId");
-            int[] expected = expectedCase switch
+            int[] owned = expectedCase switch
             {
-                "C04-G2-01" => new[] { 0, 1, 2 },
-                "C04-G2-02" => new[] { 0, 4, 8 },
+                "C04-G2-01" => new[] { 0, 1 },
+                "C04-G2-02" => new[] { 0, 8 },
                 "C04-G2-03" => Array.Empty<int>(),
                 "C04-G2-04" => new[] { 0, 1, 2, 3 },
                 _ => throw new InvalidDataException("Unknown fixed C04 case.")
             };
-            foreach (int tile in expected)
+            foreach (int tile in owned)
                 if (!own.ClosedTiles.Contains((uint)tile)) throw new InvalidDataException("Baseline protobuf hand lacks required fixed tile " + tile + ".");
+            if (expectedCase == "C04-G2-01" && own.ClosedTiles.Contains(2U) ||
+                expectedCase == "C04-G2-02" && own.ClosedTiles.Contains(4U))
+                throw new InvalidDataException("Claimed call tile must originate from the opponent's latest discard, not the caller hand.");
         }
     }
 
     private static void VerifyActionEffects(JsonElement evidence, PlayerSnapshot baseline, PlayerSnapshot after,
-        LocalTableRecoveryPhysicalFact beforePhysical, LocalTableRecoveryPhysicalFact afterPhysical)
+        LocalTableRecoveryPhysicalFact beforePhysical, LocalTableRecoveryPhysicalFact afterPhysical,
+        Dictionary<int, string> beforePositions, Dictionary<int, string> afterPositions)
     {
         string caseId = RequiredString(evidence, "CaseId");
         PlayerPrivateView beforeOwn = baseline.PrivateView!;
@@ -176,6 +281,8 @@ internal static class Program
         };
         if (caseId == "C04-G2-03")
         {
+            if (afterOwn.OwnerMelds.Count != beforeOwn.OwnerMelds.Count || afterOwn.HasDrawnTileId)
+                throw new InvalidDataException("Riichi evidence must not invent a meld or replacement draw.");
             PublicBoardView beforeBoard = baseline.PublicView?.Board ?? throw new InvalidDataException("Baseline public board is absent.");
             PublicBoardView afterBoard = after.PublicView?.Board ?? throw new InvalidDataException("After public board is absent.");
             long beforeScore = beforeBoard.Scores.Single(value => value.Seat == 0).Score;
@@ -183,21 +290,208 @@ internal static class Program
             if (beforeScore != 25000 || afterScore != 24000 || afterBoard.RiichiSticks != beforeBoard.RiichiSticks + 1 ||
                 !afterBoard.Players.Single(value => value.Seat == 0).Riichi)
                 throw new InvalidDataException("Parsed PlayerSnapshot does not prove the exact 1,000-point Riichi payment and one added stick.");
+            if (afterOwn.ClosedTiles.Contains(124U) || afterOwn.HasDrawnTileId)
+                throw new InvalidDataException("Parsed PlayerSnapshot does not bind the Riichi discard entity 124 to its real hand-to-river transfer.");
+            RequirePosition(beforePositions, 124, "HAND/0/", "baseline Riichi discarded entity");
+            RequirePosition(afterPositions, 124, "DISCARD/0/", "after Riichi river entity");
             return;
         }
         uint[] ids = expected.Select(value => uint.Parse(value, CultureInfo.InvariantCulture)).ToArray();
-        if (!ids.All(beforeOwn.ClosedTiles.Contains)) throw new InvalidDataException("Parsed baseline hand is missing a fixed selected entity.");
+        uint called = caseId == "C04-G2-01" ? 2U : caseId == "C04-G2-02" ? 4U : uint.MaxValue;
+        uint[] ownTiles = called == uint.MaxValue ? ids : ids.Where(value => value != called).ToArray();
+        if (!ownTiles.All(beforeOwn.ClosedTiles.Contains)) throw new InvalidDataException("Parsed baseline hand is missing a fixed owned entity.");
+        if (called != uint.MaxValue)
+        {
+            if (beforeOwn.ClosedTiles.Contains(called) || baseline.PublicView!.Board.LastDiscard == null || baseline.PublicView.Board.LastDiscard.TileId != called)
+                throw new InvalidDataException("Parsed baseline snapshot does not expose the expected opponent call discard.");
+        }
         MeldView meld = afterOwn.OwnerMelds.SingleOrDefault(value => value.TileIds.OrderBy(tile => tile).SequenceEqual(ids.OrderBy(tile => tile)))
             ?? throw new InvalidDataException("Parsed after owner snapshot lacks the exact fixed meld entities.");
-        if (ids.Any(afterOwn.ClosedTiles.Contains)) throw new InvalidDataException("Parsed after hand still contains a meld entity.");
+        if (ownTiles.Any(afterOwn.ClosedTiles.Contains)) throw new InvalidDataException("Parsed after hand still contains a claimed caller entity.");
         string expectedKind = caseId switch { "C04-G2-01" => "Pon", "C04-G2-02" => "Chi", _ => "ClosedKan" };
         Equal(expectedKind, meld.Type.ToString(), "protobuf owner meld kind");
+        foreach (uint tile in ownTiles)
+        {
+            RequirePosition(beforePositions, (int)tile, "HAND/0/", "baseline owned tile");
+            RequirePosition(afterPositions, (int)tile, "MELD/0/", "after owned meld tile");
+        }
+        if (ids.Any(afterOwn.ClosedTiles.Contains)) throw new InvalidDataException("Parsed after hand still contains an entity transferred to the meld.");
+        if (called != uint.MaxValue)
+        {
+            RequirePosition(beforePositions, (int)called, "DISCARD/3/", "baseline called discard");
+            RequirePosition(afterPositions, (int)called, "MELD/0/", "after claimed discard");
+            if (afterOwn.HasDrawnTileId) throw new InvalidDataException("Pon/Chi snapshot must not invent a replacement draw.");
+        }
         if (caseId == "C04-G2-04")
         {
-            if (!afterOwn.HasDrawnTileId || afterOwn.DrawnTileId != 73 || afterPhysical.DeadWallCount != beforePhysical.DeadWallCount - 1)
+            foreach (uint tile in ids) RequirePosition(beforePositions, (int)tile, "HAND/0/", "baseline closed-kan tile");
+            foreach (uint tile in ids) RequirePosition(afterPositions, (int)tile, "MELD/0/", "after closed-kan tile");
+        }
+        if (caseId == "C04-G2-04")
+        {
+            if (!afterOwn.HasDrawnTileId || afterOwn.DrawnTileId != 73 || afterPhysical.DeadWallCount != beforePhysical.DeadWallCount - 1 ||
+                !"DEADWALL".Equals(PositionZone(beforePositions, 73), StringComparison.Ordinal) ||
+                !"HAND".Equals(PositionZone(afterPositions, 73), StringComparison.Ordinal) ||
+                !afterPositions[73].StartsWith("HAND/0/", StringComparison.Ordinal))
                 throw new InvalidDataException("Parsed PlayerSnapshot and authority image do not prove dead-wall entity 73 as the closed-kan replacement draw.");
         }
     }
+
+    private static void VerifyAuthorityReceipt(JsonElement evidence, LocalTableRecoveryFacts baselineFacts, LocalTableRecoveryFacts afterFacts, byte[] canonicalPayload)
+    {
+        string account = RequiredString(evidence, "AccountId");
+        string scope = RequiredString(evidence, "ScopeId");
+        string request = RequiredString(evidence, "RequestId");
+        string digest = RequiredString(evidence, "PayloadSha256");
+        string rawPayloadSha256 = Convert.ToHexString(SHA256.HashData(canonicalPayload));
+        string commandVersion = RequiredString(evidence, "ReceiptCommandVersion");
+        string eventSeq = RequiredString(evidence, "ReceiptEventSeq");
+        if (baselineFacts.Requests.Any(value => value.AccountId == account && value.ScopeId == scope && value.RequestId == request))
+            throw new InvalidDataException("The submitted request already exists in the baseline authority image.");
+        LocalTableRecoveryRequestFact fact = afterFacts.Requests.SingleOrDefault(value =>
+            value.AccountId == account && value.ScopeId == scope && value.RequestId == request)
+            ?? throw new InvalidDataException("Raw authority save has no receipt for the exact account/scope/request identity.");
+        if (!fact.Confirmed || fact.Status != "APPLIED" || !string.Equals(fact.PayloadSha256, rawPayloadSha256, StringComparison.OrdinalIgnoreCase) ||
+            fact.CommandVersion != commandVersion || fact.EventSeq != eventSeq || fact.EvaluatedStateVersion != baselineFacts.StateVersion ||
+            ulong.Parse(afterFacts.StateVersion, CultureInfo.InvariantCulture) <= ulong.Parse(baselineFacts.StateVersion, CultureInfo.InvariantCulture))
+            throw new InvalidDataException("Raw authority receipt differs from the typed Player receipt/request/event facts. status=" + fact.Status +
+                " confirmed=" + fact.Confirmed + " digest=" + fact.PayloadSha256 + " evaluated=" + fact.EvaluatedStateVersion +
+                " command=" + fact.CommandVersion + " event=" + fact.EventSeq + " baseline=" + baselineFacts.StateVersion + ".");
+        Equal(commandVersion, RequiredString(evidence, "EventCommandVersion"), "authority receipt event command version");
+        Equal(commandVersion, afterFacts.StateVersion, "authority receipt command version");
+        if (ulong.Parse(afterFacts.EventSeq, CultureInfo.InvariantCulture) < ulong.Parse(eventSeq, CultureInfo.InvariantCulture))
+            throw new InvalidDataException("Authority event high-water predates the accepted receipt: receipt=" + eventSeq + " authority=" + afterFacts.EventSeq + ".");
+        if (ulong.Parse(RequiredString(evidence, "AfterStateVersion"), CultureInfo.InvariantCulture) <=
+            ulong.Parse(RequiredString(evidence, "BaselineStateVersion"), CultureInfo.InvariantCulture))
+            throw new InvalidDataException("Player snapshot state version did not advance after the submitted action.");
+    }
+
+    private static void VerifyRawBindingAndAcceptedEvent(JsonElement evidence, PlayerSnapshot baseline, PlayerSnapshot after)
+    {
+        using JsonDocument baselineBinding = ParseEmbeddedJson(evidence, "BaselineBindingJsonBase64");
+        using JsonDocument afterBinding = ParseEmbeddedJson(evidence, "AfterBindingJsonBase64");
+        using JsonDocument rawReceipt = ParseEmbeddedJson(evidence, "RawReceiptJsonBase64");
+        Equal(RequiredString(evidence, "ReceiptDisposition"), JsonString(rawReceipt.RootElement, "Disposition"), "raw typed receipt disposition");
+        Equal(RequiredString(evidence, "ReceiptStatus"), JsonString(rawReceipt.RootElement, "Status"), "raw typed receipt status");
+        Equal(RequiredString(evidence, "ReceiptRequestId"), JsonString(rawReceipt.RootElement, "RequestId"), "raw typed receipt request");
+        Equal(RequiredString(evidence, "ReceiptScopeId"), JsonString(rawReceipt.RootElement, "ScopeId"), "raw typed receipt scope");
+        Equal(RequiredString(evidence, "ReceiptDigest"), JsonString(rawReceipt.RootElement, "CanonicalPayloadSha256"), "raw typed receipt canonical digest");
+        Equal(RequiredString(evidence, "ReceiptCommandVersion"), JsonNumber(rawReceipt.RootElement, "CommandVersion"), "raw typed receipt command version");
+        Equal(RequiredString(evidence, "ReceiptEventSeq"), JsonNumber(rawReceipt.RootElement, "EventSeq"), "raw typed receipt event high-water");
+        string session = RequiredString(evidence, "BaselineSessionId");
+        string room = RequiredString(evidence, "BaselineRoomId");
+        string account = RequiredString(evidence, "AccountId");
+        string scope = RequiredString(evidence, "ScopeId");
+        foreach (JsonElement binding in new[] { baselineBinding.RootElement, afterBinding.RootElement })
+        {
+            Equal(session, JsonString(binding, "SessionId"), "raw binding session");
+            Equal(room, JsonString(binding, "RoomId"), "raw binding room");
+            Equal(room, JsonString(binding, "TableId"), "raw binding table");
+            Equal(account, JsonString(binding, "AccountId"), "raw binding account");
+            Equal(scope, JsonString(binding, "ScopeId"), "raw binding request scope");
+            Equal(RequiredString(evidence, "BaselineSeat"), JsonNumber(binding, "SeatId"), "raw binding seat");
+            Equal(RequiredString(evidence, "BaselineBindingEpoch"), JsonNumber(binding, "BindingEpoch"), "raw binding epoch");
+            Equal(RequiredString(evidence, "BaselineConnectionEpoch"), JsonNumber(binding, "ConnectionEpoch"), "raw connection epoch");
+            Equal(RequiredString(evidence, "BaselineOwnerEpoch"), JsonNumber(binding, "OwnerEpoch"), "raw owner epoch");
+        }
+
+        using JsonDocument acceptedBatch = ParseEmbeddedJson(evidence, "RawEventBatchJsonBase64");
+        JsonElement batch = acceptedBatch.RootElement;
+        Equal(room, JsonString(batch, "RoomId"), "accepted publication room");
+        Equal(RequiredString(evidence, "BaselineTableId"), JsonString(batch, "TableId"), "accepted publication table");
+        Equal(session, JsonString(batch, "SessionId"), "accepted publication session");
+        Equal(RequiredString(evidence, "BaselineRoundId"), JsonString(batch, "RoundId"), "accepted publication round");
+        Equal(scope, JsonString(batch, "ScopeId"), "accepted publication scope");
+        Equal(RequiredString(evidence, "BaselineSeat"), JsonNumber(batch, "Seat"), "accepted publication seat");
+        Equal(RequiredString(evidence, "BaselineBindingEpoch"), JsonNumber(batch, "BindingEpoch"), "accepted publication binding epoch");
+        Equal(RequiredString(evidence, "BaselineConnectionEpoch"), JsonNumber(batch, "ConnectionEpoch"), "accepted publication connection epoch");
+        Equal(RequiredString(evidence, "BaselineOwnerEpoch"), JsonNumber(batch, "OwnerEpoch"), "accepted publication owner epoch");
+        if (JsonBoolean(batch, "IsFullBaseline")) throw new InvalidDataException("Action evidence event batch is a baseline, not an incremental accepted publication.");
+        JsonElement events = JsonRequired(batch, "Events");
+        if (events.ValueKind != JsonValueKind.Array || events.GetArrayLength() == 0)
+            throw new InvalidDataException("Raw accepted publication has no incremental events.");
+        JsonElement[] matching = events.EnumerateArray().Where(value =>
+            JsonNumber(value, "EventSeq") == RequiredString(evidence, "EventSeq") &&
+            JsonNumber(value, "CommandVersion") == RequiredString(evidence, "EventCommandVersion") &&
+            JsonNumber(value, "Seat") == RequiredString(evidence, "EventSeat") &&
+            Enum.GetName(typeof(Mahjong.Contracts.ProtocolEventType), checked((int)JsonUInt64(value, "Type"))) == RequiredString(evidence, "EventType"))
+            .ToArray();
+        if (matching.Length != 1) throw new InvalidDataException("Raw accepted publication does not contain exactly one matched action event.");
+        JsonElement action = matching[0];
+        Equal(RequiredString(evidence, "EventSeq"), JsonNumber(action, "EventSeq"), "raw event sequence");
+        Equal(RequiredString(evidence, "EventCommandVersion"), JsonNumber(action, "CommandVersion"), "raw event command version");
+        Equal(RequiredString(evidence, "EventSeat"), JsonNumber(action, "Seat"), "raw event seat");
+        Equal(RequiredString(evidence, "EventType"), Enum.GetName(typeof(Mahjong.Contracts.ProtocolEventType), checked((int)JsonUInt64(action, "Type"))) ?? string.Empty, "raw typed event kind");
+        string tileIds = string.Join(",", JsonRequired(action, "TileIds").EnumerateArray().Select(value => value.GetUInt32().ToString(CultureInfo.InvariantCulture)));
+        Equal(RequiredString(evidence, "EventTileIds", true), tileIds, "raw event physical entity list");
+        Equal(RequiredString(evidence, "ReceiptCommandVersion"), JsonNumber(action, "CommandVersion"), "raw event receipt command version");
+        Equal(RequiredString(evidence, "ReceiptEventSeq"), JsonNumber(batch, "EventSeq"), "accepted publication receipt event high-water");
+        Equal(RequiredString(evidence, "AcceptanceSequence"), RequiredString(evidence, "AfterAcceptanceSequence"), "accepted publication/after snapshot acceptance sequence");
+        Equal(RequiredString(evidence, "AfterCursor"), JsonNumber(batch, "ProjectionSeq"), "accepted publication projection cursor");
+        Equal(RequiredString(evidence, "AcceptanceSequence"), RequiredString(evidence, "AfterCursor"), "accepted publication cursor sequence");
+        Equal(RequiredString(evidence, "ReceiptCommandVersion"), JsonNumber(batch, "StateVersion"), "accepted publication command version");
+        if (RequiredString(evidence, "CaseId") == "C04-G2-03")
+        {
+            if (JsonUInt64(action, "TileId") != 124U || JsonUInt64(JsonRequired(action, "Payload"), "DiscardTileId") != 124U)
+                throw new InvalidDataException("Raw RiichiDeclared event does not carry the exact discarded physical entity 124.");
+        }
+        if (baseline.SessionId != after.SessionId || baseline.RoundId != after.RoundId)
+            throw new InvalidDataException("Accepted publication changed the captured Player session/round identity.");
+    }
+
+    private static JsonDocument ParseEmbeddedJson(JsonElement evidence, string name)
+    {
+        byte[] bytes = Convert.FromBase64String(RequiredString(evidence, name));
+        if (bytes.Length == 0) throw new InvalidDataException("Raw JSON capture is empty: " + name + ".");
+        return JsonDocument.Parse(bytes);
+    }
+
+    private static JsonElement JsonRequired(JsonElement value, string name)
+    {
+        foreach (JsonProperty property in value.EnumerateObject())
+            if (string.Equals(property.Name, name, StringComparison.OrdinalIgnoreCase)) return property.Value;
+        throw new InvalidDataException("Raw typed record is missing " + name + ".");
+    }
+
+    private static string JsonString(JsonElement value, string name) => JsonRequired(value, name).GetString() ?? string.Empty;
+    private static string JsonNumber(JsonElement value, string name) => JsonRequired(value, name).GetRawText();
+    private static ulong JsonUInt64(JsonElement value, string name) => JsonRequired(value, name).GetUInt64();
+    private static bool JsonBoolean(JsonElement value, string name) => JsonRequired(value, name).GetBoolean();
+
+    private static string NestedString(JsonElement value, params string[] path)
+    {
+        foreach (string segment in path) value = JsonRequired(value, segment);
+        return value.GetString() ?? string.Empty;
+    }
+
+    private static string NestedNumber(JsonElement value, params string[] path)
+    {
+        foreach (string segment in path) value = JsonRequired(value, segment);
+        return value.GetRawText();
+    }
+
+    private static Dictionary<int, string> ReadPhysicalPositions(string canonical)
+    {
+        var result = new Dictionary<int, string>(136);
+        foreach (string line in canonical.Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries))
+        {
+            string[] fields = line.Split('|');
+            if (fields.Length != 5 || fields[0] != "tile" || !int.TryParse(fields[1], NumberStyles.None, CultureInfo.InvariantCulture, out int id) ||
+                id < 0 || id >= 136 || result.ContainsKey(id)) throw new InvalidDataException("LocalHost physical audit contains a malformed/duplicate entity row.");
+            result.Add(id, fields[2] + "/" + fields[3] + "/" + fields[4]);
+        }
+        if (result.Count != 136) throw new InvalidDataException("LocalHost physical audit does not contain all 136 entities.");
+        return result;
+    }
+
+    private static void RequirePosition(Dictionary<int, string> positions, int tile, string prefix, string label)
+    {
+        if (!positions.TryGetValue(tile, out string? value) || !value.StartsWith(prefix, StringComparison.Ordinal))
+            throw new InvalidDataException(label + " is not at the authoritative expected location: tile " + tile.ToString(CultureInfo.InvariantCulture) + ".");
+    }
+
+    private static string PositionZone(Dictionary<int, string> positions, int tile) =>
+        positions.TryGetValue(tile, out string? value) ? value.Split('/')[0] : string.Empty;
 
     private static void VerifyPhysical(JsonElement evidence, string prefix, LocalTableRecoveryPhysicalFact facts)
     {
@@ -216,12 +510,12 @@ internal static class Program
         return PlayerSnapshot.Parser.ParseFrom(bytes);
     }
 
-    private static string RequiredString(JsonElement element, string name)
+    private static string RequiredString(JsonElement element, string name, bool allowEmpty = false)
     {
         if (!TryProperty(element, name, out JsonElement value) || (value.ValueKind != JsonValueKind.String && value.ValueKind != JsonValueKind.Number))
             throw new InvalidDataException("Missing/empty evidence field " + name + ".");
         string result = value.ValueKind == JsonValueKind.String ? value.GetString()! : value.GetRawText();
-        if (string.IsNullOrWhiteSpace(result)) throw new InvalidDataException("Missing/empty evidence field " + name + ".");
+        if (!allowEmpty && string.IsNullOrWhiteSpace(result)) throw new InvalidDataException("Missing/empty evidence field " + name + ".");
         return result;
     }
 

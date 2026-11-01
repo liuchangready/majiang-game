@@ -1,6 +1,10 @@
 using System;
+using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.Json;
+using Google.Protobuf;
 using System.Threading;
 using System.Threading.Tasks;
 using Mahjong.Client;
@@ -38,10 +42,14 @@ namespace Mahjong.LocalHost.Tests
             var session = new TableSession(channel, new InMemoryOutboxStore());
             Task pump = Task.CompletedTask;
             var visibleEvents = new System.Collections.Concurrent.ConcurrentQueue<TableVisibleEventBatch>();
+            var visiblePublications = new System.Collections.Concurrent.ConcurrentQueue<TableSnapshotChangedEventArgs>();
             EventHandler<TableSnapshotChangedEventArgs> snapshotHandler = (_, args) =>
             {
                 if (args.VisibleEventBatch.Kind == TableVisibleEventBatchKind.Incremental)
+                {
                     visibleEvents.Enqueue(args.VisibleEventBatch);
+                    visiblePublications.Enqueue(args);
+                }
             };
             try
             {
@@ -50,8 +58,10 @@ namespace Mahjong.LocalHost.Tests
                 pump = PumpUntilCancelledAsync(session, timeout.Token);
                 PlayerSnapshot before = await WaitForDecisionAsync(session, timeout.Token);
                 Assert.Equal(0, session.Binding!.SeatId);
-                ulong expectedInitialStateVersion = checked((ulong)LocalPlayerActionScenario.CreateInitialRound(scenario).Version);
-                Assert.Equal(expectedInitialStateVersion, before.StateVersion);
+                var localChannel = Assert.IsType<LocalTableChannel>(channel);
+                LocalTableRecoveryCapture baselineCapture = await localChannel.RuntimeForMatch!.CaptureRecoveryAsync(timeout.Token);
+                Assert.Equal(before.StateVersion.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    baselineCapture.Facts.StateVersion);
                 Assert.NotNull(before.PrivateView.Decision);
                 LegalActionView candidate = Assert.Single(before.PrivateView.Decision!.Actions,
                     value => value.ActionType == (uint)actionType);
@@ -95,6 +105,7 @@ namespace Mahjong.LocalHost.Tests
                     Assert.True(receipt.Resolution.EventSeq.HasValue);
                     Assert.True(receipt.Resolution.CommandVersion.Value.Value > before.StateVersion,
                         "Applied command version must advance beyond the subscribed baseline.");
+                    LocalTableRecoveryCapture acceptedCapture = await localChannel.RuntimeForMatch!.CaptureRecoveryAsync(timeout.Token);
 
                     CanonicalPayloadDocument typedPayload = CanonicalPayloadParser.Parse(payload);
                     Assert.Equal((ushort)CommandKind.SubmitAction, typedPayload.CommandKind);
@@ -137,7 +148,6 @@ namespace Mahjong.LocalHost.Tests
                     Assert.Equal(before.RoundId, after.RoundId);
                     Assert.True(before.StateVersion + 1UL == after.StateVersion,
                         "The first real submitted command must advance the pre-seeded checkpoint exactly once.");
-                    var localChannel = Assert.IsType<LocalTableChannel>(channel);
                     RoundStateMachine authoritativeRound = localChannel.RuntimeForMatch!.ActorForTest.GetRoundStateForHost();
                     ConservationReport physicalAudit = TilePositionMap.Validate(authoritativeRound.Tiles);
                     Assert.True(physicalAudit.IsValid, physicalAudit.ToString());
@@ -145,6 +155,12 @@ namespace Mahjong.LocalHost.Tests
                     Assert.Equal(0, physicalAudit.UnassignedCount);
                     TableVisibleEventBatch actionBatch = await WaitForActionEventAsync(
                         visibleEvents, receipt.Resolution.CommandVersion!.Value.Value, before.RoundId, actionType, timeout.Token);
+                    TableSnapshotChangedEventArgs acceptedPublication = visiblePublications.SingleOrDefault(value =>
+                        ReferenceEquals(value.VisibleEventBatch, actionBatch))
+                        ?? throw new InvalidOperationException("The matching incremental event batch has no retained TableSnapshotChangedEventArgs.");
+                    after = acceptedPublication.PlayerSnapshot
+                        ?? throw new InvalidOperationException("The matching incremental publication omitted its PlayerSnapshot.");
+                    Assert.Equal(actionBatch.Cursor.ProjectionSeq.Value, after.Cursor.ProjectionSeq);
                     TableVisibleEvent actionEvent = Assert.Single(actionBatch.Events, value =>
                         value.CommandVersion == receipt.Resolution.CommandVersion.Value.Value &&
                         value.Seat == 0 && value.Type == EventFor(actionType));
@@ -209,6 +225,8 @@ namespace Mahjong.LocalHost.Tests
                         Assert.DoesNotContain(2u, after.PrivateView.ClosedTiles);
                         Assert.DoesNotContain(actionType == ProtocolActionType.DeclarePon ? 0u : 4u, after.PrivateView.ClosedTiles);
                     }
+                    WriteVerifierToolFixture(scenario, payload, session, before, after, baselineCapture, acceptedCapture,
+                        receipt, actionBatch, actionEvent);
                 }
                 finally
                 {
@@ -224,6 +242,157 @@ namespace Mahjong.LocalHost.Tests
                 await channel.CloseAsync(new TableChannelCloseReason("C04_DONE", true), CancellationToken.None);
             }
         }
+
+        private static void WriteVerifierToolFixture(
+            string scenario,
+            BusinessPayload payload,
+            TableSession session,
+            PlayerSnapshot before,
+            PlayerSnapshot after,
+            LocalTableRecoveryCapture baseline,
+            LocalTableRecoveryCapture accepted,
+            TableReceiptResolvedEventArgs receipt,
+            TableVisibleEventBatch batch,
+            TableVisibleEvent actionEvent)
+        {
+            string? outputRoot = Environment.GetEnvironmentVariable("C04_ACTION_VERIFIER_FIXTURE_DIR");
+            if (string.IsNullOrWhiteSpace(outputRoot)) return;
+            string root = Path.GetFullPath(outputRoot);
+            Directory.CreateDirectory(root);
+            LocalTableRecoveryFacts beforeFacts = baseline.Facts;
+            LocalTableRecoveryFacts afterFacts = accepted.Facts;
+            var ownMeld = after.PrivateView.OwnerMelds.FirstOrDefault();
+            var value = new Dictionary<string, object?>
+            {
+                ["EvidenceSource"] = "TOOL_FIXTURE_LOCALHOST_CHANNEL",
+                ["CaseId"] = CaseForScenario(scenario),
+                ["AccountId"] = session.Binding!.Scope.AccountId,
+                ["BaselineAccountId"] = session.Binding.Scope.AccountId,
+                ["AfterAccountId"] = session.Binding.Scope.AccountId,
+                ["RequestId"] = receipt.Command.Key.RequestId.Value,
+                ["ScopeId"] = receipt.Command.Key.ScopeId.Value,
+                ["BaselineScopeId"] = receipt.Command.Key.ScopeId.Value,
+                ["AfterScopeId"] = receipt.Command.Key.ScopeId.Value,
+                ["PayloadBase64"] = Convert.ToBase64String(payload.CopyBytes()),
+                ["PayloadSha256"] = payload.Digest.ToHex(),
+                ["OptionId"] = ReadOptionalCanonicalString(CanonicalPayloadParser.Parse(payload), CommandPayloadFields.OptionId),
+                ["BaselineRoomId"] = beforeFacts.RoomId,
+                ["BaselineSessionId"] = before.SessionId,
+                ["BaselineTableId"] = batch.TableId,
+                ["BaselineRoundId"] = before.RoundId,
+                ["BaselineSeat"] = session.Binding.SeatId,
+                ["BaselineBindingEpoch"] = session.Binding.BindingEpoch.Value,
+                ["BaselineConnectionEpoch"] = session.Binding.ConnectionEpoch.Value,
+                ["BaselineOwnerEpoch"] = session.Binding.OwnerEpoch.Value,
+                ["BaselineControlEpoch"] = before.PrivateView.Decision!.ControlEpoch,
+                ["BaselineDecisionId"] = before.PrivateView.Decision.DecisionId,
+                ["BaselineStateVersion"] = before.StateVersion,
+                ["BaselineEventSeq"] = before.EventSeq,
+                ["BaselineCursorStream"] = before.Cursor.StreamVersion,
+                ["BaselineCursor"] = before.Cursor.ProjectionSeq,
+                ["BaselinePlayerSnapshotBase64"] = Convert.ToBase64String(before.ToByteArray()),
+                ["BaselineBindingJsonBase64"] = Convert.ToBase64String(JsonSerializer.SerializeToUtf8Bytes(new Dictionary<string, object?>
+                {
+                    ["SessionId"] = session.Binding.SessionId.Value, ["RoomId"] = beforeFacts.RoomId,
+                    ["TableId"] = batch.TableId, ["AccountId"] = session.Binding.Scope.AccountId,
+                    ["ScopeId"] = session.Binding.Scope.ScopeId.Value, ["Role"] = session.Binding.Role.ToString(),
+                    ["SeatId"] = session.Binding.SeatId, ["BindingEpoch"] = session.Binding.BindingEpoch.Value,
+                    ["ConnectionEpoch"] = session.Binding.ConnectionEpoch.Value, ["OwnerEpoch"] = session.Binding.OwnerEpoch.Value
+                })),
+                ["BaselineAuthoritySaveBase64"] = Convert.ToBase64String(baseline.AuthoritySaveBytes),
+                ["BaselineAuthorityCheatStateBase64"] = Convert.ToBase64String(baseline.CheatStatePayload),
+                ["BaselinePhysicalTileCount"] = beforeFacts.Physical.TileCount,
+                ["BaselinePhysicalUniqueCount"] = beforeFacts.Physical.UniqueCount,
+                ["BaselineDeadWallCount"] = beforeFacts.Physical.DeadWallCount,
+                ["BaselinePhysicalTilesSha256"] = beforeFacts.Physical.TilesSha256,
+                ["ReceiptDisposition"] = receipt.Resolution.Disposition.ToString(),
+                ["ReceiptStatus"] = receipt.Resolution.ReceiptStatus.ToString(),
+                ["ReceiptRequestId"] = receipt.Command.Key.RequestId.Value,
+                ["ReceiptScopeId"] = receipt.Command.Key.ScopeId.Value,
+                ["ReceiptDigest"] = receipt.Resolution.CanonicalPayloadSha256,
+                ["ReceiptCommandVersion"] = receipt.Resolution.CommandVersion!.Value.Value,
+                ["ReceiptEventSeq"] = receipt.Resolution.EventSeq!.Value.Value,
+                ["RawReceiptJsonBase64"] = Convert.ToBase64String(JsonSerializer.SerializeToUtf8Bytes(new Dictionary<string, object?>
+                {
+                    ["Disposition"] = receipt.Resolution.Disposition.ToString(),
+                    ["Status"] = receipt.Resolution.ReceiptStatus.ToString(),
+                    ["RequestId"] = receipt.Command.Key.RequestId.Value,
+                    ["ScopeId"] = receipt.Command.Key.ScopeId.Value,
+                    ["CanonicalPayloadSha256"] = receipt.Resolution.CanonicalPayloadSha256,
+                    ["CommandVersion"] = receipt.Resolution.CommandVersion!.Value.Value,
+                    ["EventSeq"] = receipt.Resolution.EventSeq!.Value.Value
+                })),
+                ["EventType"] = actionEvent.Type.ToString(),
+                ["EventRoundId"] = batch.RoundId,
+                ["EventScopeId"] = batch.ScopeId,
+                ["EventSessionId"] = batch.SessionId,
+                ["EventRoomId"] = batch.RoomId,
+                ["EventTableId"] = batch.TableId,
+                ["EventSeat"] = actionEvent.Seat,
+                ["EventBindingEpoch"] = batch.BindingEpoch,
+                ["EventConnectionEpoch"] = batch.ConnectionEpoch,
+                ["EventOwnerEpoch"] = batch.OwnerEpoch,
+                ["EventRole"] = batch.Role.ToString(),
+                ["EventBatchKind"] = batch.Kind.ToString(),
+                ["EventFullBaseline"] = batch.IsFullBaseline,
+                ["RawEventBatchJsonBase64"] = Convert.ToBase64String(JsonSerializer.SerializeToUtf8Bytes(batch)),
+                ["EventCommandVersion"] = actionEvent.CommandVersion,
+                ["EventSeq"] = actionEvent.EventSeq,
+                ["EventTileIds"] = string.Join(",", actionEvent.TileIds),
+                ["AcceptanceSequence"] = after.Cursor.ProjectionSeq,
+                ["AfterRoomId"] = afterFacts.RoomId,
+                ["AfterSessionId"] = after.SessionId,
+                ["AfterTableId"] = batch.TableId,
+                ["AfterRoundId"] = after.RoundId,
+                ["AfterSeat"] = session.Binding.SeatId,
+                ["AfterBindingEpoch"] = session.Binding.BindingEpoch.Value,
+                ["AfterConnectionEpoch"] = session.Binding.ConnectionEpoch.Value,
+                ["AfterOwnerEpoch"] = session.Binding.OwnerEpoch.Value,
+                ["AfterControlEpoch"] = afterFacts.ControlEpochs[session.Binding.SeatId],
+                ["AfterStateVersion"] = after.StateVersion,
+                ["AfterEventSeq"] = after.EventSeq,
+                ["AfterAcceptanceSequence"] = after.Cursor.ProjectionSeq,
+                ["AfterCursorStream"] = after.Cursor.StreamVersion,
+                ["AfterCursor"] = after.Cursor.ProjectionSeq,
+                ["AfterPlayerSnapshotBase64"] = Convert.ToBase64String(after.ToByteArray()),
+                ["AfterBindingJsonBase64"] = Convert.ToBase64String(JsonSerializer.SerializeToUtf8Bytes(new Dictionary<string, object?>
+                {
+                    ["SessionId"] = session.Binding.SessionId.Value, ["RoomId"] = afterFacts.RoomId,
+                    ["TableId"] = batch.TableId, ["AccountId"] = session.Binding.Scope.AccountId,
+                    ["ScopeId"] = session.Binding.Scope.ScopeId.Value, ["Role"] = session.Binding.Role.ToString(),
+                    ["SeatId"] = session.Binding.SeatId, ["BindingEpoch"] = session.Binding.BindingEpoch.Value,
+                    ["ConnectionEpoch"] = session.Binding.ConnectionEpoch.Value, ["OwnerEpoch"] = session.Binding.OwnerEpoch.Value
+                })),
+                ["AfterAuthoritySaveBase64"] = Convert.ToBase64String(accepted.AuthoritySaveBytes),
+                ["AfterAuthorityCheatStateBase64"] = Convert.ToBase64String(accepted.CheatStatePayload),
+                ["AfterPhysicalTileCount"] = afterFacts.Physical.TileCount,
+                ["AfterPhysicalUniqueCount"] = afterFacts.Physical.UniqueCount,
+                ["AfterDeadWallCount"] = afterFacts.Physical.DeadWallCount,
+                ["AfterPhysicalTilesSha256"] = afterFacts.Physical.TilesSha256,
+                ["HandTileIds"] = string.Join(",", after.PrivateView.ClosedTiles),
+                ["DrawnTileId"] = after.PrivateView.HasDrawnTileId ? after.PrivateView.DrawnTileId.ToString() : string.Empty,
+                ["MeldKind"] = ownMeld?.Type.ToString() ?? string.Empty,
+                ["MeldTileIds"] = ownMeld == null ? string.Empty : string.Join(",", ownMeld.TileIds),
+                ["SeatScoreBefore"] = before.PublicView.Board.Scores.Single(value => value.Seat == 0).Score,
+                ["SeatScoreAfter"] = after.PublicView.Board.Scores.Single(value => value.Seat == 0).Score,
+                ["RiichiSticksBefore"] = before.PublicView.Board.RiichiSticks,
+                ["RiichiSticksAfter"] = after.PublicView.Board.RiichiSticks
+            };
+            string path = Path.Combine(root, CaseForScenario(scenario) + ".json");
+            using var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.Read);
+            JsonSerializer.Serialize(stream, value);
+            stream.WriteByte((byte)'\n');
+            stream.Flush(true);
+        }
+
+        private static string CaseForScenario(string scenario) => scenario switch
+        {
+            LocalPlayerActionScenario.Pon => "C04-G2-01",
+            LocalPlayerActionScenario.Chi => "C04-G2-02",
+            LocalPlayerActionScenario.Riichi => "C04-G2-03",
+            LocalPlayerActionScenario.ClosedKan => "C04-G2-04",
+            _ => throw new ArgumentOutOfRangeException(nameof(scenario))
+        };
 
         private static async Task PumpUntilCancelledAsync(TableSession session, CancellationToken cancellationToken)
         {
@@ -316,6 +485,13 @@ namespace Mahjong.LocalHost.Tests
             uint byteCount = BitConverter.ToUInt32(encoded, 0);
             Assert.Equal((uint)(encoded.Length - 4), byteCount);
             return new UTF8Encoding(false, true).GetString(encoded, 4, encoded.Length - 4);
+        }
+
+        private static string ReadOptionalCanonicalString(CanonicalPayloadDocument document, ushort fieldNumber)
+        {
+            return document.HasField(fieldNumber)
+                ? ReadCanonicalString(document, fieldNumber, "optionId")
+                : string.Empty;
         }
     }
 }
