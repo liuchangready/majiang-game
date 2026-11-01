@@ -105,7 +105,7 @@ namespace Mahjong.LocalHost.Tests
 
                     PlayerSnapshot after = await WaitForVersionAsync(session, before.StateVersion, timeout.Token);
                     Assert.Equal(before.RoundId, after.RoundId);
-                    Assert.Equal(before.StateVersion + 1UL, after.StateVersion,
+                    Assert.True(before.StateVersion + 1UL == after.StateVersion,
                         "The first real submitted command must advance the pre-seeded checkpoint exactly once.");
                     var localChannel = Assert.IsType<LocalTableChannel>(channel);
                     RoundStateMachine authoritativeRound = localChannel.RuntimeForMatch!.ActorForTest.GetRoundStateForHost();
