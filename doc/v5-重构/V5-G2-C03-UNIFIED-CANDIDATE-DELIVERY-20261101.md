@@ -136,18 +136,18 @@ D:\Unity\dotnet\dotnet.exe build dotnet/tools/P45RecoveryVerifier/P45RecoveryVer
 - Rebuild log：`build/g2-c03-20261101-ds/logs/verifier-rebuild.log`，SHA-256 `12C790E2E245144C6903A0C96A0C9DE2574356796FC024D41BEE0BA6359CD3C5`
 - 默认 verifier 对 accepted fixture 只读解码成功（native 0）：authority 16515 B，round `local-main-r1`，v3/seq6，物理 136/unique136，ledger source `CURRENT_COMMITTED_ACTOR`；输出 `logs/verifier-sample.log`。
 
-### 3.2 明确受影响 .NET 用例（Release + 原生 XML）
+### 3.2 明确受影响 .NET 用例（在冻结 `b33f0aad` clean HEAD 上重跑，Release + 原生 XML）
 
 | Suite | 命令要点 | native | 真实计数 | 原生 XML SHA-256 |
 |---|---|---:|---:|---|
-| `Mahjong.LocalHost.Tests` | `dotnet test ... -c Release -- --report-xunit-xml ...` | 0 | **134/134**，fail0/skip0（含 7 个 exporter 定向） | `82712F9B314D4E03347B29615F3928CD3B94DB0BCE4D65D92E9106281BB8C142` |
-| `Mahjong.TableRuntime.Tests` | 同上 | 0 | **483/483** | `F6EDA2D8C2BB42C97E163B7E1379960D186FC50CC711E91D7D8387520AF1C42F` |
-| `Mahjong.Unity.TableModel.Tests` | 同上 | 0 | **235/235** | `585AB4E4FF10C8B17118289E31D8ADEE822A6A16FB5C7D73ADCEE70232CBAE15` |
-| `Mahjong.TableService.Tests` | 同上 | 0 | **203/203** | `9CAB2FB41DBEEB15F69B3349D942654223B6CFBF0E386A0643DEAD1269C84550` |
+| `Mahjong.LocalHost.Tests` | `dotnet test ... -c Release -- --report-xunit-xml ...` | 0 | **134/134**，fail0/skip0（含 7 个 exporter 定向） | `6CBC52DF835C30EB1DA02AD1DBD82B6DF5D66C08C1595EC92ABCF058007D22F5` |
+| `Mahjong.TableRuntime.Tests` | 同上 | 0 | **483/483** | `6B35AB83FF5B6176F3F2DC2DF928C9DECA304C08CC6D48513A096422CEB4E8CD` |
+| `Mahjong.Unity.TableModel.Tests` | 同上 | 0 | **235/235** | `CE9AEF070C85C91E9A3D5A4F2DC9EF9590EAB5A387D02D5A92807D9EFA72830F` |
+| `Mahjong.TableService.Tests` | 同上 | 0 | **203/203** | `DC4F31F68EF427C5F28AB8142AD205F1CDBA7B518C2C932C643CB441736E64CF` |
 
 合计 **1,055/1,055**，0 fail / 0 skip。7 个 exporter 用例为：`CaptureUsesOnePersistedVersionAndSurvivesColdReopen`、`PreparedCaptureRunsBeforeDriverAndIsTakenOnce`、`TamperedAuthorityEnvelopeIsRejected`、`CurrentCheatAggregateIsRequiredAndCarriesNonEmptyLedger`、`PersistedControlResultsAreExportedWithCanonicalIdentityAndDigest`、`ReleaseControlThroughPublicSessionIsPersistedAndExported`、`TileMarkThroughPublicSessionExportsCurrentNonEmptyLedger`（XML 内均 `Pass`）。
 
-原始 XML 已复制到 `build/g2-c03-20261101-ds/tests/xml/`；测试日志在 `logs/`。
+原始 XML 在 `build/g2-c03-20261101-ds/tests/*-final-xml/`（冻结 HEAD 重跑），提交前首次运行 XML 保留在 `tests/xml/`；测试日志在 `logs/`。
 
 ### 3.3 统一 .NET 门禁：实际执行、实际 FAIL（PG 环境缺失）
 
@@ -464,7 +464,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-reco
 - `recovery-export-clean/`：旧 Compare/负例 clean-prestate 原件。
 - `tool-tests/`：E2E/FullMatch/C02/C05/Recovery 负例 summary。
 - `verify-v5/`：统一门禁逐工程日志/XML。
-- `evidence-sha256.csv`：4,169 个证据文件的 SHA-256/字节/相对路径；文件 SHA `021170F59DB29B79CD0B008D15147BB32192040B27FD92D012EB0BAF856528E9`，595,475 B。
+- `evidence-sha256.csv`：4,182 个证据文件的 SHA-256/字节/相对路径；文件 SHA `49A8F50BB19A5600AF19253195B4FD2B9BA292873CE6CD2EC2458E2222355746`，597,038 B。
 
 ### 14.2 关键 SHA 汇总
 
