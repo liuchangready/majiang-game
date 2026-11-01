@@ -54,6 +54,7 @@ namespace C04RecoveryReconciliationVerifier
                     Check("rejectedNoBinding");
                 }
                 ValidateAuthorityFiles(root, result);
+                ValidateFaultBoundary(root, expected, input);
 
                 List<Frame> frames = ReadFrames(result, root);
                 if (outcome == "RECOVERED" || outcome == "RECOVERED_FROM_BACKUP")
@@ -233,9 +234,11 @@ namespace C04RecoveryReconciliationVerifier
         {
             Require(Text(result, "actualOutcome") == Text(result, "expectedOutcome"),
                 "actual outcome is not the expected recovered outcome");
+            ValidateWireIdentity(root, result, expected, frames);
             JsonElement prepare = ReadJson(Path.Combine(root, "prepare.json"));
             Require(Text(prepare, "api") == "SUBMIT_ACTION", "prepare API is not SUBMIT_ACTION");
             ValidatePreparePost(prepare, expected);
+            ValidateSnapshotFacts(root, prepare, result, expected);
 
             string oldRequest = expected["requestId"];
             string oldScope = expected["scopeId"];
@@ -358,6 +361,7 @@ namespace C04RecoveryReconciliationVerifier
             List<Frame> frames)
         {
             Require(Text(result, "actualOutcome") == "FRESH_START", "actual outcome is not FRESH_START");
+            ValidateWireIdentity(root, result, expected, frames);
             Require(!frames.Any(f => f.RequestId == expected["requestId"] || f.ScopeId == expected["scopeId"]),
                 "old scope/request appeared in FRESH_START traffic");
             Require(!frames.Any(f => f.Type == "Command" || f.Type == "ReceiptQuery"),
@@ -403,15 +407,178 @@ namespace C04RecoveryReconciliationVerifier
             Require(!Bool(Property(result, "state"), "ready"), "REJECTED result claims Ready");
             string primary = Path.Combine(root, "authority/rejected-primary.save");
             string backup = Path.Combine(root, "authority/rejected-backup.save");
+            string beforePrimary = Path.Combine(root, "boundary/primary-after.save");
+            string beforeBackup = Path.Combine(root, "boundary/backup-after.save");
             Require(File.Exists(primary) && File.Exists(backup), "raw rejected save copies are missing");
-            Require(Sha256File(primary) == Text(input, "primaryBeforeFaultSha256"),
-                "rejected primary bytes changed");
-            Require(Sha256File(backup) == Text(input, "backupBeforeFaultSha256"),
-                "rejected backup bytes changed");
+            Require(File.Exists(beforePrimary) && File.Exists(beforeBackup),
+                "post-fault rejection boundary is missing");
+            Require(Sha256File(primary) == Sha256File(beforePrimary),
+                "rejected primary bytes changed after the fault boundary");
+            Require(Sha256File(backup) == Sha256File(beforeBackup),
+                "rejected backup bytes changed after the fault boundary");
             List<OutboxEntry> entries = ReadOutbox(AuthorityPath(root, result, "authority/rejected-outbox.dat"));
             Require(entries.Count == 1 && entries[0].DigestSha256 == expected["canonicalDigest"],
                 "rejected old outbox was not retained");
             Check("rejectedBoundary");
+        }
+
+        private static void ValidateWireIdentity(
+            string root,
+            JsonElement result,
+            Dictionary<string, string> expected,
+            List<Frame> frames)
+        {
+            JsonElement binding = Property(result, "binding");
+            string session = Text(binding, "sessionId");
+            string room = Text(binding, "roomId");
+            int seat = Int(binding, "seat");
+            string role = Text(binding, "role");
+            string bindingScope = Text(binding, "scopeId");
+            Require(!string.IsNullOrWhiteSpace(session), "wire binding session is empty");
+            Require(room == "local-main", "wire binding room is not local-main");
+            Require(seat == 0 && role == "Player", "wire binding role/seat is not player seat 0");
+
+            List<Frame> welcomes = frames.Where(f => f.Direction == "IN" && f.Envelope.Welcome != null).ToList();
+            Require(welcomes.Count == 1, "expected exactly one inbound Welcome");
+            if (welcomes.Count == 1)
+            {
+                var welcome = welcomes[0].Envelope.Welcome;
+                Require(welcome.SessionId == session && welcome.RoomId == room &&
+                        welcome.SeatId == seat && welcome.Role.ToString() == role &&
+                        welcome.BindingEpoch == UInt(binding, "bindingEpoch"),
+                    "Welcome identity differs from the result binding");
+                Require(welcome.Scope != null &&
+                        welcome.Scope.ScopeId == bindingScope &&
+                        welcome.Scope.AccountId == expected["accountId"] &&
+                        welcome.Scope.RoomId == room &&
+                        welcome.Scope.Role.ToString() == role,
+                    "Welcome scope differs from the result binding/account");
+            }
+
+            List<Frame> syncs = frames.Where(f => f.Direction == "IN" &&
+                f.Envelope.SyncResponse != null && f.Envelope.SyncResponse.Player != null).ToList();
+            Require(syncs.Count == 1, "expected exactly one inbound player SyncResponse");
+            foreach (Frame frame in frames)
+            {
+                WireEnvelope envelope = frame.Envelope;
+                if (!string.IsNullOrEmpty(envelope.SessionId))
+                {
+                    Require(envelope.SessionId == session, "frame session does not match the binding");
+                }
+
+                if (!string.IsNullOrEmpty(envelope.RoomId))
+                {
+                    Require(envelope.RoomId == room, "frame room does not match the binding");
+                }
+
+                if (envelope.Scope != null)
+                {
+                    Require(envelope.Scope.AccountId == expected["accountId"] &&
+                            envelope.Scope.RoomId == room &&
+                            envelope.Scope.Role.ToString() == role,
+                        "frame scope account/role/room differs from the binding");
+                    Require(envelope.Scope.ScopeId == bindingScope ||
+                            envelope.Scope.ScopeId == expected["scopeId"],
+                        "frame scope is neither the new binding nor the original scope");
+                }
+            }
+
+            Check("wireIdentity");
+        }
+
+        private static void ValidateFaultBoundary(
+            string root,
+            Dictionary<string, string> expected,
+            JsonElement input)
+        {
+            string beforePrimary = Path.Combine(root, "boundary/primary-before.save");
+            string beforeBackup = Path.Combine(root, "boundary/backup-before.save");
+            string afterPrimary = Path.Combine(root, "boundary/primary-after.save");
+            string afterBackup = Path.Combine(root, "boundary/backup-after.save");
+            string cheat = AuthorityPath(root, ReadJson(Path.Combine(root, "result.json")),
+                "authority/prepare-post-cheat.bin");
+            Require(File.Exists(beforePrimary) && File.Exists(beforeBackup),
+                "pre-fault primary/backup boundary is missing");
+            Require(TryFacts(beforePrimary, cheat) != null && TryFacts(beforeBackup, cheat) != null,
+                "pre-fault primary/backup is not a valid save");
+
+            string fault = Text(input, "fault");
+            bool primaryValid = TryFacts(afterPrimary, cheat) != null;
+            bool backupValid = TryFacts(afterBackup, cheat) != null;
+            bool primaryExists = File.Exists(afterPrimary);
+            bool backupExists = File.Exists(afterBackup);
+            switch (fault)
+            {
+                case "None":
+                    Require(primaryExists && backupExists && primaryValid && backupValid,
+                        "None fault does not have two valid post-fault saves");
+                    Require(Sha256File(afterPrimary) == Sha256File(beforePrimary),
+                        "None fault changed the primary bytes");
+                    break;
+                case "TruncatePrimary":
+                case "BadChecksumPrimary":
+                    Require(primaryExists && !primaryValid && backupExists && backupValid,
+                        fault + " boundary is not invalid primary + valid backup");
+                    break;
+                case "MissingPrimaryWithBackup":
+                    Require(!primaryExists && backupExists && backupValid,
+                        "MissingPrimaryWithBackup boundary is not absent primary + valid backup");
+                    break;
+                case "BothMissing":
+                    Require(!primaryExists && !backupExists,
+                        "BothMissing boundary still has a save");
+                    break;
+                case "BothBad":
+                    Require(primaryExists && backupExists && !primaryValid && !backupValid,
+                        "BothBad boundary is not two invalid saves");
+                    break;
+                case "IncompatiblePrimary":
+                    Require(primaryExists && !primaryValid && backupExists && backupValid,
+                        "IncompatiblePrimary boundary is not invalid primary + valid backup");
+                    break;
+                default:
+                    Require(false, "unknown fault boundary " + fault);
+                    break;
+            }
+
+            string launchPath = Path.Combine(root, "prepare-launch.json");
+            Require(File.Exists(launchPath), "prepare launch observation is missing");
+            JsonElement launch = ReadJson(launchPath);
+            if (Bool(input, "force"))
+            {
+                Require(Int(launch, "nativeExitCode") != 0 && !Bool(launch, "timedOut"),
+                    "Force prepare did not record a non-zero/non-timeout process exit");
+                string log = Path.Combine(root, "prepare-player.log");
+                Require(File.Exists(log) &&
+                        File.ReadAllText(log).Contains("FORCE_KILLED", StringComparison.Ordinal),
+                    "Force prepare log has no FORCE_KILLED evidence");
+            }
+            else
+            {
+                Require(Int(launch, "nativeExitCode") == 0 && !Bool(launch, "timedOut"),
+                    "normal prepare did not exit 0");
+            }
+
+            Check("faultBoundary");
+        }
+
+        private static LocalTableRecoveryFacts? TryFacts(string savePath, string cheatPath)
+        {
+            if (!File.Exists(savePath) || !File.Exists(cheatPath))
+            {
+                return null;
+            }
+
+            try
+            {
+                return LocalTableRecoveryFactsReader.ReadPersistedFacts(
+                    File.ReadAllBytes(savePath),
+                    File.ReadAllBytes(cheatPath));
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         private static void ValidatePreparePost(JsonElement prepare, Dictionary<string, string> expected)
@@ -426,6 +593,97 @@ namespace C04RecoveryReconciliationVerifier
             Require(Bool(post, "tileInRiver"), "prepare original tile is not in the river");
             Require(Int(post, "physicalCount") == 136 && Int(post, "physicalUnique") == 136,
                 "prepare physical map is not 136/136");
+        }
+
+        private static void ValidateSnapshotFacts(
+            string root,
+            JsonElement prepare,
+            JsonElement result,
+            Dictionary<string, string> expected)
+        {
+            List<SnapshotFact> prepareSnaps = ReadSnapshots(Path.Combine(root, "prepare-frames"));
+            Require(prepareSnaps.Count >= 2, "prepare did not retain pre/post player snapshots");
+            SnapshotFact? pre = prepareSnaps.OrderBy(s => s.StateVersion).FirstOrDefault();
+            SnapshotFact? post = prepareSnaps.OrderByDescending(s => s.StateVersion).FirstOrDefault();
+            Require(pre != null && post != null, "prepare snapshot pair is missing");
+            if (pre == null || post == null)
+            {
+                return;
+            }
+
+            uint tile = uint.Parse(expected["tileId"], CultureInfo.InvariantCulture);
+            Require(post.StateVersion.ToString(CultureInfo.InvariantCulture) == expected["commandVersion"] &&
+                    post.HandCount == pre.HandCount - 1 &&
+                    post.RiverCount == pre.RiverCount + 1 &&
+                    post.TileInRiver(tile) && post.DiscardEvents == 1,
+                "raw prepare snapshots do not prove the single Discard effect");
+            JsonElement preClaims = Property(prepare, "pre");
+            JsonElement postClaims = Property(prepare, "post");
+            Require(Int(preClaims, "handCount") == pre.HandCount &&
+                    Int(preClaims, "riverCount") == pre.RiverCount &&
+                    Int(postClaims, "handCount") == post.HandCount &&
+                    Int(postClaims, "riverCount") == post.RiverCount &&
+                    Int(postClaims, "discardEvents") == post.DiscardEvents,
+                "prepare hand/river claims differ from raw snapshots");
+
+            List<SnapshotFact> recoverSnaps = ReadSnapshots(Path.Combine(root, "frames"));
+            SnapshotFact? recovered = recoverSnaps.OrderByDescending(s => s.StateVersion).FirstOrDefault();
+            Require(recovered != null, "recover did not retain a player snapshot");
+            if (recovered == null)
+            {
+                return;
+            }
+
+            JsonElement state = Property(result, "state");
+            Require(recovered.StateVersion.ToString(CultureInfo.InvariantCulture) == expected["commandVersion"] &&
+                    recovered.EventSeq.ToString(CultureInfo.InvariantCulture) == expected["eventSeq"] &&
+                    recovered.HandCount == pre.HandCount - 1 &&
+                    recovered.RiverCount == pre.RiverCount + 1 &&
+                    recovered.TileInRiver(tile) &&
+                    Int(state, "handCount") == recovered.HandCount &&
+                    Int(state, "riverCount") == recovered.RiverCount &&
+                    Bool(state, "tileInRiver"),
+                "recovered hand/river/tile claims differ from the raw player snapshot");
+            Check("rawSnapshots");
+        }
+
+        private static List<SnapshotFact> ReadSnapshots(string directory)
+        {
+            var snapshots = new List<SnapshotFact>();
+            if (!Directory.Exists(directory))
+            {
+                return snapshots;
+            }
+
+            foreach (string path in Directory.GetFiles(directory, "*.bin").OrderBy(p => p, StringComparer.Ordinal))
+            {
+                try
+                {
+                    WireEnvelope envelope = WireEnvelope.Parser.ParseFrom(File.ReadAllBytes(path));
+                    if (envelope.SyncResponse != null && envelope.SyncResponse.Player != null)
+                    {
+                        snapshots.Add(new SnapshotFact(envelope.SyncResponse.Player, 0));
+                    }
+                    else if (envelope.PlayerUpdate != null && envelope.PlayerUpdate.Snapshot != null)
+                    {
+                        snapshots.Add(new SnapshotFact(
+                            envelope.PlayerUpdate.Snapshot,
+                            envelope.PlayerUpdate.VisibleEvents.Count(e =>
+                                e.EventCase == Mahjong.Contracts.Wire.EventEnvelope.EventOneofCase.TileDiscarded &&
+                                e.TileDiscarded.Player == 0)));
+                    }
+                    else if (envelope.PlayerSnapshot != null)
+                    {
+                        snapshots.Add(new SnapshotFact(envelope.PlayerSnapshot, 0));
+                    }
+                }
+                catch
+                {
+                    // Non-snapshot frames are decoded and checked elsewhere.
+                }
+            }
+
+            return snapshots;
         }
 
         private static void RequireSameFacts(LocalTableRecoveryFacts left, LocalTableRecoveryFacts right, string name)
@@ -614,6 +872,29 @@ namespace C04RecoveryReconciliationVerifier
             }
 
             return builder.ToString();
+        }
+
+        private sealed class SnapshotFact
+        {
+            private readonly Mahjong.Contracts.Wire.PlayerSnapshot _snapshot;
+
+            public SnapshotFact(Mahjong.Contracts.Wire.PlayerSnapshot snapshot, int discardEvents)
+            {
+                _snapshot = snapshot;
+                DiscardEvents = discardEvents;
+            }
+
+            public ulong StateVersion => _snapshot.StateVersion;
+            public ulong EventSeq => _snapshot.EventSeq;
+            public int HandCount => _snapshot.PrivateView.ClosedTiles.Count +
+                (_snapshot.PrivateView.HasDrawnTileId ? 1 : 0);
+            public int RiverCount => _snapshot.PublicView.Board.Players[0].Discards.Count;
+            public int DiscardEvents { get; }
+
+            public bool TileInRiver(uint tile)
+            {
+                return _snapshot.PublicView.Board.Players[0].Discards.Any(d => d.TileId == tile);
+            }
         }
 
         private sealed class Frame

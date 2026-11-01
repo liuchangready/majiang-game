@@ -38,6 +38,8 @@ param(
 
     [string]$OutputDir,
 
+    [string]$ExpectedSummarySha256,
+
     [string]$HelperPath,
 
     [string]$UnityPath = 'D:\Unity\Hub\Editor\6000.3.27f1\Editor\Unity.exe',
@@ -353,9 +355,24 @@ function New-CaseInput {
             Copy-Item -LiteralPath $source -Destination (Join-Path $CaseDir $name) -Force
         }
     }
-    Apply-Fault -Directory $CaseDir -Fault $Fault
+    if (Test-Path -LiteralPath (Join-Path $Prepare 'frames') -PathType Container) {
+        Copy-Item -LiteralPath (Join-Path $Prepare 'frames') -Destination (Join-Path $CaseDir 'prepare-frames') -Recurse -Force
+    }
+    foreach ($pair in @(@('launch.json', 'prepare-launch.json'), @('player.log', 'prepare-player.log'))) {
+        $source = Join-Path $Prepare $pair[0]
+        if (Test-Path -LiteralPath $source) {
+            Copy-Item -LiteralPath $source -Destination (Join-Path $CaseDir $pair[1]) -Force
+        }
+    }
     $primary = Join-Path $CaseDir 'local\local-main.save'
     $backup = Join-Path $CaseDir 'local\local-main.save.prev'
+    $boundary = Join-Path $CaseDir 'boundary'
+    New-Item -ItemType Directory -Force -Path $boundary | Out-Null
+    if (Test-Path -LiteralPath $primary) { Copy-Item -LiteralPath $primary -Destination (Join-Path $boundary 'primary-before.save') -Force }
+    if (Test-Path -LiteralPath $backup) { Copy-Item -LiteralPath $backup -Destination (Join-Path $boundary 'backup-before.save') -Force }
+    Apply-Fault -Directory $CaseDir -Fault $Fault
+    if (Test-Path -LiteralPath $primary) { Copy-Item -LiteralPath $primary -Destination (Join-Path $boundary 'primary-after.save') -Force }
+    if (Test-Path -LiteralPath $backup) { Copy-Item -LiteralPath $backup -Destination (Join-Path $boundary 'backup-after.save') -Force }
     $input = [ordered]@{
         schemaVersion = 1
         kind = 'c04-recovery-case-input'
@@ -368,8 +385,8 @@ function New-CaseInput {
         packageFileCount = $script:PackageCount
         sourceHead = $script:SourceHead
         buildCommit = $script:BuildCommit
-        primaryBeforeFaultSha256 = if ([IO.File]::Exists($primary)) { Get-Sha256 $primary } else { '' }
-        backupBeforeFaultSha256 = if ([IO.File]::Exists($backup)) { Get-Sha256 $backup } else { '' }
+        primaryBeforeFaultSha256 = if ([IO.File]::Exists((Join-Path $boundary 'primary-before.save'))) { Get-Sha256 (Join-Path $boundary 'primary-before.save') } else { '' }
+        backupBeforeFaultSha256 = if ([IO.File]::Exists((Join-Path $boundary 'backup-before.save'))) { Get-Sha256 (Join-Path $boundary 'backup-before.save') } else { '' }
         prepare = $Prepare
     }
     Write-JsonFile -Path (Join-Path $CaseDir 'input.json') -Object $input | Out-Null
@@ -499,7 +516,36 @@ function Build-Player {
             else { $guardAdaptation.playProbeRemoved = $true }
         }
     }
-    Write-JsonFile -Path (Join-Path $script:Root 'staging-adaptation.json') -Object $guardAdaptation | Out-Null
+    $adaptationPath = Join-Path $script:Root 'staging-adaptation.json'
+    Write-JsonFile -Path $adaptationPath -Object $guardAdaptation | Out-Null
+    $stagingEntries = New-Object System.Collections.Generic.List[object]
+    foreach ($name in @('Assets', 'Packages', 'ProjectSettings')) {
+        $dir = Join-Path $staging $name
+        if (Test-Path -LiteralPath $dir -PathType Container) {
+            foreach ($file in @(Get-ChildItem -LiteralPath $dir -Recurse -File)) {
+                $stagingEntries.Add([ordered]@{
+                    path = $file.FullName.Substring($staging.Length).TrimStart('\', '/').Replace('\', '/')
+                    bytes = [long]$file.Length
+                    sha256 = Get-Sha256 $file.FullName
+                }) | Out-Null
+            }
+        }
+    }
+    $stagingSlnx = Join-Path $staging 'Mahjong.Unity.slnx'
+    if (Test-Path -LiteralPath $stagingSlnx) {
+        $stagingEntries.Add([ordered]@{
+            path = 'Mahjong.Unity.slnx'
+            bytes = [long](Get-Item -LiteralPath $stagingSlnx).Length
+            sha256 = Get-Sha256 $stagingSlnx
+        }) | Out-Null
+    }
+    Write-JsonFile -Path (Join-Path $script:Root 'staging-source.json') -Object ([ordered]@{
+        schemaVersion = 1
+        kind = 'c04-recovery-staging-source'
+        sourceHead = $script:SourceHead
+        adaptationSha256 = Get-Sha256 $adaptationPath
+        files = [object[]]$stagingEntries.ToArray()
+    }) | Out-Null
 
     $stagingProbe = Join-Path $staging 'Assets\Scripts\App\C04RecoveryReconciliationProbe.cs'
     $stagingEditor = Join-Path $staging 'Assets\Editor\C04RecoveryReconciliationBuild.cs'
@@ -513,7 +559,7 @@ function Build-Player {
     $sharedExit = Invoke-Native -FilePath 'powershell.exe' -Arguments @(
         '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
         (Join-Path $script:RepoRoot 'tools\unity\build-shared.ps1'), '-Configuration', 'Release',
-        '-PluginOutputDir', $pluginDir) -LogPath $sharedLog
+        '-PluginOutputDir', $pluginDir, '-DotnetPath', $DotnetPath) -LogPath $sharedLog
     if ($sharedExit -ne 0) { throw ('BUILD_SHARED_FAILED exit=' + $sharedExit) }
 
     $checkLog = Join-Path $script:Root 'logs\check-shared-plugins.log'
@@ -631,18 +677,60 @@ function Bind-ExistingPlayer {
         [string]::IsNullOrWhiteSpace([string]$marker.buildCommit)) {
         throw 'EXISTING_PLAYER_BUILD_RECORD_SOURCE_MISSING'
     }
+    $snapshotPath = Join-Path (Split-Path -Parent ([IO.Path]::GetFullPath($BuildRecordPath))) 'source-snapshot.json'
+    if (-not (Test-Path -LiteralPath $snapshotPath)) {
+        throw 'EXISTING_PLAYER_SOURCE_SNAPSHOT_REQUIRED'
+    }
+    $snapshot = [IO.File]::ReadAllText($snapshotPath) | ConvertFrom-Json
+    if ([string]$snapshot.sourceHead -ne [string]$marker.sourceHead) {
+        throw 'EXISTING_PLAYER_SOURCE_SNAPSHOT_MISMATCH'
+    }
+    $probeInSource = & git -C $script:RepoRoot cat-file -e ($marker.sourceHead + ':unity/Mahjong.Unity/Assets/Scripts/App/C04RecoveryReconciliationProbe.cs') 2>$null
+    $probeExit = $LASTEXITCODE
+    $buildInSource = & git -C $script:RepoRoot cat-file -e ($marker.sourceHead + ':unity/Mahjong.Unity/Assets/Editor/C04RecoveryReconciliationBuild.cs') 2>$null
+    $buildExit = $LASTEXITCODE
+    if ($probeExit -ne 0 -or $buildExit -ne 0) {
+        throw ('EXISTING_PLAYER_SOURCE_LACKS_C04_INPUTS probe=' + $probeExit + ' build=' + $buildExit)
+    }
+
     $manifest = [IO.File]::ReadAllText($PackageManifestPath) | ConvertFrom-Json
     if ([string]$manifest.kind -ne 'c04-recovery-player-files' -or
         [string]$manifest.root -ne $playerDir -or
         [int]$manifest.fileCount -lt 1) {
         throw 'EXISTING_PLAYER_PACKAGE_MANIFEST_INVALID'
     }
-    foreach ($entry in @($manifest.files)) {
-        $path = Join-Path $playerDir ([string]$entry.path)
+    $entries = @($manifest.files)
+    if ($entries.Count -ne [int]$manifest.fileCount) {
+        throw ('PACKAGE_MANIFEST_COUNT_MISMATCH declared=' + $manifest.fileCount + ' entries=' + $entries.Count)
+    }
+    $declared = @{}
+    $sumBytes = [long]0
+    foreach ($entry in $entries) {
+        $relative = [string]$entry.path
+        if ([string]::IsNullOrWhiteSpace($relative) -or $declared.ContainsKey($relative)) {
+            throw ('PACKAGE_MANIFEST_DUPLICATE_OR_EMPTY ' + $relative)
+        }
+        $declared[$relative] = $true
+        $path = Join-Path $playerDir $relative
         if (-not (Test-Path -LiteralPath $path) -or
             (Get-Sha256 $path) -ne [string]$entry.sha256 -or
             (Get-Item -LiteralPath $path).Length -ne [long]$entry.bytes) {
-            throw ('PACKAGE_MANIFEST_MISMATCH ' + [string]$entry.path)
+            throw ('PACKAGE_MANIFEST_MISMATCH ' + $relative)
+        }
+        $sumBytes += [long]$entry.bytes
+    }
+    if ($sumBytes -ne [long]$manifest.totalBytes) {
+        throw ('PACKAGE_MANIFEST_BYTES_MISMATCH declared=' + $manifest.totalBytes + ' actual=' + $sumBytes)
+    }
+    $actual = @(Get-ChildItem -LiteralPath $playerDir -Recurse -File | ForEach-Object {
+        $_.FullName.Substring($playerDir.Length).TrimStart('\', '/').Replace('\', '/')
+    })
+    if ($actual.Count -ne $entries.Count) {
+        throw ('PACKAGE_MANIFEST_FILESET_COUNT_MISMATCH actual=' + $actual.Count + ' declared=' + $entries.Count)
+    }
+    foreach ($relative in $actual) {
+        if (-not $declared.ContainsKey($relative)) {
+            throw ('PACKAGE_MANIFEST_UNDECLARED_FILE ' + $relative)
         }
     }
     $script:SourceHead = [string]$marker.sourceHead
@@ -728,10 +816,20 @@ function Run-Cases {
 }
 
 function Write-Summary {
-    $status = if (@($script:CaseResults | Where-Object { $_.status -ne 'PASS' }).Count -eq 0) { 'PASS' } else { 'FAIL' }
+    $fixedCases = @('C04-G6-01', 'C04-G6-02', 'C04-G6-03', 'C04-G6-04',
+        'C04-G6-05', 'C04-G6-06', 'C04-G6-07', 'C04-G6-08')
+    $actualCases = @($script:CaseResults | ForEach-Object { [string]$_.caseId } | Sort-Object -Unique)
+    $complete = ($actualCases.Count -eq 8 -and
+        (@($fixedCases | Where-Object { $actualCases -notcontains $_ }).Count -eq 0))
+    $allPass = (@($script:CaseResults | Where-Object { $_.status -ne 'PASS' }).Count -eq 0)
+    $status = if ($complete -and $allPass) { 'PASS' } elseif (-not $complete) { 'PARTIAL' } else { 'FAIL' }
     $summary = [ordered]@{
         schemaVersion = 1
         kind = 'c04-recovery-run'
+        caseSetComplete = $complete
+        expectedCaseCount = 8
+        uniqueCaseCount = $actualCases.Count
+        partial = (-not $complete)
         toolVersion = $script:ToolVersion
         status = $status
         createdAt = [DateTimeOffset]::UtcNow.ToString('o')
@@ -795,6 +893,10 @@ try {
         if ([string]::IsNullOrWhiteSpace($OutputDir)) {
             throw 'VERIFY_OUTPUT_DIR_REQUIRED'
         }
+        if ([string]::IsNullOrWhiteSpace($HelperPath) -or
+            -not (Test-Path -LiteralPath $HelperPath -PathType Leaf)) {
+            throw 'VERIFY_HELPER_REQUIRED'
+        }
         $sourceRoot = [IO.Path]::GetFullPath($EvidenceRoot)
         $script:Root = [IO.Path]::GetFullPath($OutputDir)
         if (Test-Path -LiteralPath $script:Root) {
@@ -803,17 +905,28 @@ try {
         New-Item -ItemType Directory -Force -Path $script:Root, (Join-Path $script:Root 'logs') | Out-Null
         $summaryPath = Join-Path $sourceRoot 'summary.json'
         if (-not (Test-Path -LiteralPath $summaryPath)) { throw 'SUMMARY_NOT_FOUND' }
+        $summarySha = Get-Sha256 $summaryPath
+        if (-not [string]::IsNullOrWhiteSpace($ExpectedSummarySha256) -and
+            -not [string]::Equals($summarySha, $ExpectedSummarySha256, [StringComparison]::OrdinalIgnoreCase)) {
+            throw ('VERIFY_SUMMARY_PIN_MISMATCH expected=' + $ExpectedSummarySha256 + ' actual=' + $summarySha)
+        }
         Copy-Item -LiteralPath $summaryPath -Destination (Join-Path $script:Root 'source-summary.json') -Force
         $summary = [IO.File]::ReadAllText($summaryPath) | ConvertFrom-Json
+        $summaryCases = @($summary.cases)
+        $summaryIds = @($summaryCases | ForEach-Object { [string]$_.caseId } | Sort-Object -Unique)
+        if ([string]$summary.status -ne 'PASS' -or -not [bool]$summary.caseSetComplete -or
+            [int]$summary.expectedCaseCount -ne 8 -or $summaryCases.Count -ne 8 -or $summaryIds.Count -ne 8) {
+            throw ('VERIFY_INCOMPLETE_CASE_SET status=' + $summary.status +
+                ' complete=' + $summary.caseSetComplete + ' cases=' + $summaryCases.Count + ' unique=' + $summaryIds.Count)
+        }
         $script:Player = [string]$summary.playerPath
         $script:PlayerSha = [string]$summary.playerSha256
         $script:PackageSha = [string]$summary.packageManifestSha256
         $script:PackageCount = [int]$summary.packageFileCount
         $script:SourceHead = [string]$summary.sourceHead
         $script:BuildCommit = [string]$summary.buildCommit
-        $script:HelperPath = [string]$summary.helperPath
-        if ([string]::IsNullOrWhiteSpace($script:HelperPath) -or
-            -not (Test-Path -LiteralPath $script:HelperPath)) {
+        $script:HelperPath = [IO.Path]::GetFullPath($HelperPath)
+        if (-not (Test-Path -LiteralPath $script:HelperPath)) {
             throw 'VERIFY_HELPER_MISSING'
         }
         $verifyRows = New-Object System.Collections.Generic.List[object]

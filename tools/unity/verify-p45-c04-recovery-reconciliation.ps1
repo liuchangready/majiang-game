@@ -30,7 +30,10 @@ $errors = New-Object System.Collections.Generic.List[string]
 # Bind the recorded process identity to the launch observation for this exact case.
 $caseRoot = Split-Path -Parent ([IO.Path]::GetFullPath($ResultPath))
 $launchPath = Join-Path $caseRoot 'launch.json'
-if (Test-Path -LiteralPath $launchPath) {
+if (-not (Test-Path -LiteralPath $launchPath)) {
+    $errors.Add('owned launch.json is missing; process/native success is unproven') | Out-Null
+}
+else {
     try {
         $resultForLaunch = [IO.File]::ReadAllText($ResultPath) | ConvertFrom-Json
         $launch = [IO.File]::ReadAllText($launchPath) | ConvertFrom-Json
@@ -41,6 +44,15 @@ if (Test-Path -LiteralPath $launchPath) {
             [string]$process.path -ne [string]$launch.path -or
             -not [string]::Equals([string]$process.sha256, [string]$launch.sha256, [StringComparison]::OrdinalIgnoreCase)) {
             $errors.Add('process identity does not match the owned launch.json observation') | Out-Null
+        }
+        if ([string]$launch.probeMode -ne 'Recover' -or
+            [string]$launch.caseId -ne [string]$resultForLaunch.caseId -or
+            [string]$launch.fault -ne [string]$resultForLaunch.fault -or
+            [string]$launch.expectedOutcome -ne [string]$resultForLaunch.expectedOutcome) {
+            $errors.Add('launch case/mode/fault/outcome does not match the result') | Out-Null
+        }
+        if ([bool]$launch.timedOut -or [int]$launch.nativeExitCode -ne 0) {
+            $errors.Add('owned launch did not exit successfully (native/timeout)') | Out-Null
         }
     }
     catch {
