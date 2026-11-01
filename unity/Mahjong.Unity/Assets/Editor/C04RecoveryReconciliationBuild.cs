@@ -87,7 +87,7 @@ public static class C04RecoveryReconciliationBuild
             pluginHashes.Add("\"" + Escape(plugin) + "\":\"" + Sha256File(path) + "\"");
         }
 
-        string playerSha = Sha256File(outputExe);
+        string playerSha = File.Exists(outputExe) ? Sha256File(outputExe) : string.Empty;
         string json = "{\"schemaVersion\":1,\"kind\":\"c04-recovery-player-build\"," +
             "\"result\":\"" + summary.result + "\",\"errors\":" + summary.totalErrors +
             ",\"warnings\":" + summary.totalWarnings + ",\"target\":\"" + summary.platform + "\"" +

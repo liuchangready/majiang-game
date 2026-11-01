@@ -467,6 +467,16 @@ function Build-Player {
             Copy-Item -LiteralPath $source -Destination (Join-Path $staging $name) -Recurse -Force
         }
     }
+    # Reuse only Unity's immutable package cache/resolution metadata; the staging
+    # project still gets its own Library and a fresh script/asset build.
+    $stagingLibrary = Join-Path $staging 'Library'
+    New-Item -ItemType Directory -Force -Path $stagingLibrary | Out-Null
+    foreach ($libraryName in @('PackageCache', 'PackageManager')) {
+        $sourceLibrary = Join-Path $project ('Library\' + $libraryName)
+        if (Test-Path -LiteralPath $sourceLibrary) {
+            Copy-Item -LiteralPath $sourceLibrary -Destination (Join-Path $stagingLibrary $libraryName) -Recurse -Force
+        }
+    }
     $stagingProbe = Join-Path $staging 'Assets\Scripts\App\C04RecoveryReconciliationProbe.cs'
     $stagingEditor = Join-Path $staging 'Assets\Editor\C04RecoveryReconciliationBuild.cs'
     if ((Get-Sha256 $stagingProbe) -ne $inputHashes['unity/Mahjong.Unity/Assets/Scripts/App/C04RecoveryReconciliationProbe.cs'] -or
