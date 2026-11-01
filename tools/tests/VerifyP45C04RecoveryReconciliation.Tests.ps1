@@ -15,6 +15,18 @@ param(
     [Parameter(Mandatory = $true)][string]$RecoveredCaseRoot,
     [Parameter(Mandatory = $true)][string]$RejectedCaseRoot,
     [Parameter(Mandatory = $true)][string]$HelperPath,
+    [Parameter(Mandatory = $true)][string]$FullCaseRoot,
+    [Parameter(Mandatory = $true)][string]$RunnerPath,
+    [Parameter(Mandatory = $true)][string]$PlayerPath,
+    [Parameter(Mandatory = $true)][string]$BuildRecordPath,
+    [Parameter(Mandatory = $true)][string]$PackageManifestPath,
+    [Parameter(Mandatory = $true)][string]$SourceSnapshotPath,
+    [Parameter(Mandatory = $true)][string]$ExpectedSummarySha256,
+    [Parameter(Mandatory = $true)][string]$ExpectedEvidenceSha256,
+    [Parameter(Mandatory = $true)][string]$ExpectedSourceHead,
+    [Parameter(Mandatory = $true)][string]$ExpectedBuildRecordSha256,
+    [Parameter(Mandatory = $true)][string]$ExpectedPackageManifestSha256,
+    [Parameter(Mandatory = $true)][string]$ExpectedSourceSnapshotSha256,
     [string]$DotnetPath = 'dotnet',
     [string]$OutputDir = ''
 )
@@ -72,7 +84,7 @@ function Invoke-Verifier {
 }
 
 function Invoke-Case {
-    param([string]$Name, [string]$Source, [bool]$ExpectPass, [scriptblock]$Mutate)
+    param([string]$Name, [string]$Source, [bool]$ExpectPass, [scriptblock]$Mutate, [string]$Reason = '')
     $script:Total++
     try {
         $dir = Copy-Case -Source $Source -Name $Name
@@ -87,6 +99,9 @@ function Invoke-Case {
             Assert-True ($run.ExitCode -ne 0) ('expected FAIL, got ' + $run.ExitCode + ': ' + $run.Output)
             $parsed = [IO.File]::ReadAllText($run.Verification) | ConvertFrom-Json
             Assert-True ([string]$parsed.status -eq 'FAIL') ('negative verification status ' + $parsed.status)
+            if (-not [string]::IsNullOrWhiteSpace($Reason)) {
+                Assert-True ($run.Output.Contains($Reason)) ('negative reason missing [' + $Reason + ']: ' + $run.Output)
+            }
         }
         $script:Passed++
         Write-Host ('PASS ' + $Name)
@@ -187,6 +202,155 @@ Invoke-Case -Name 'rejected-ready' -Source $RejectedCaseRoot -ExpectPass $false 
 Invoke-Case -Name 'missing-raw-authority' -Source $RecoveredCaseRoot -ExpectPass $false -Mutate { param($d) Remove-Authority $d }
 Invoke-Case -Name 'wrong-digest' -Source $RecoveredCaseRoot -ExpectPass $false -Mutate { param($d) Mutate-Digest $d }
 Invoke-Case -Name 'wrong-case-policy' -Source $RecoveredCaseRoot -ExpectPass $false -Mutate { param($d) Mutate-Policy $d }
+
+function Assert-Test {
+    param([string]$Name, [scriptblock]$Body)
+    $script:Total++
+    try {
+        & $Body
+        $script:Passed++
+        Write-Host ('PASS ' + $Name)
+    }
+    catch {
+        $script:Failed++
+        Write-Host ('FAIL ' + $Name + ': ' + $_.Exception.Message)
+    }
+}
+
+function Invoke-RunnerVerify {
+    param([string]$Root, [string]$Name, [string]$SummaryPin = $ExpectedSummarySha256,
+        [string]$EvidencePin = $ExpectedEvidenceSha256, [switch]$NoSummaryPin)
+    $out = Join-Path $OutputDir ($Name + '-out')
+    $args = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $RunnerPath,
+        '-Mode', 'Verify', '-EvidenceRoot', $Root, '-OutputDir', $out,
+        '-ExpectedEvidenceSha256', $EvidencePin, '-HelperPath', $HelperPath, '-DotnetPath', $DotnetPath)
+    if (-not $NoSummaryPin) { $args += @('-ExpectedSummarySha256', $SummaryPin) }
+    $text = & powershell.exe @args 2>&1
+    return [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = ($text -join ' ') }
+}
+
+function Invoke-BindProbe {
+    param([string]$Name, [string]$Record, [string]$Snapshot, [string]$Package,
+        [string]$SourceHead = $ExpectedSourceHead, [string]$RecordPin = $ExpectedBuildRecordSha256,
+        [string]$PackagePin = $ExpectedPackageManifestSha256, [string]$SnapshotPin = $ExpectedSourceSnapshotSha256)
+    $probe = Join-Path $OutputDir 'bind-probe.ps1'
+    if (-not (Test-Path $probe)) {
+        $text = @'
+param($Runner,$Repo,$Out,$Player,$Record,$Snapshot,$Package,$SourceHead,$RecordPin,$PackagePin,$SnapshotPin,$Helper)
+$ErrorActionPreference='Stop'
+$ast=[Management.Automation.Language.Parser]::ParseFile($Runner,[ref]$null,[ref]$null)
+$script:RepoRoot=$Repo;$script:Root=$Out
+foreach($name in 'Get-Sha256','Write-JsonFile','Write-ToolLog','Bind-ExistingPlayer'){
+ $fn=$ast.Find({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst]-and$n.Name-eq$name},$true)
+ . ([scriptblock]::Create($fn.Extent.Text))
+}
+$PlayerPath=$Player;$BuildRecordPath=$Record;$PackageManifestPath=$Package;$HelperPath=$Helper
+$ExpectedSourceHead=$SourceHead;$ExpectedBuildRecordSha256=$RecordPin;$ExpectedPackageManifestSha256=$PackagePin;$ExpectedSourceSnapshotSha256=$SnapshotPin
+$result=[ordered]@{accepted=$true;error='';sourceHead=''}
+try{Bind-ExistingPlayer;$result.sourceHead=$script:SourceHead}catch{$result.accepted=$false;$result.error=$_.Exception.Message}
+[IO.File]::WriteAllText((Join-Path $Out 'bind-result.json'),($result|ConvertTo-Json -Depth 5),[Text.UTF8Encoding]::new($false))
+exit 0
+'@
+        [IO.File]::WriteAllText($probe, $text, (New-Object Text.UTF8Encoding($false)))
+    }
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $probe $RunnerPath $repo $OutputDir $PlayerPath $Record $Snapshot $Package $SourceHead $RecordPin $PackagePin $SnapshotPin $HelperPath 2>&1 | Out-Null
+    return ([IO.File]::ReadAllText((Join-Path $OutputDir 'bind-result.json')) | ConvertFrom-Json)
+}
+
+# Full 8 with both external pins and the trusted helper.
+Assert-Test 'full8-summary-evidence-pinned' {
+    $run = Invoke-RunnerVerify -Root $FullCaseRoot -Name 'full8'
+    Assert-True ($run.ExitCode -eq 0) ('full8 exit ' + $run.ExitCode + ': ' + $run.Output)
+    Assert-True ($run.Output.Contains('C04_VERIFY_PASS')) 'full8 did not emit C04_VERIFY_PASS'
+}
+
+# Strict Recover native/timeout types.
+Invoke-Case -Name 'recover-native-false' -Source $RecoveredCaseRoot -ExpectPass $false -Reason 'strict JSON int32 and boolean' -Mutate {
+    param($d) $l=Get-Content -Raw (Join-Path $d 'launch.json')|ConvertFrom-Json;$l.nativeExitCode=$false;Write-Json (Join-Path $d 'launch.json') $l }
+Invoke-Case -Name 'recover-native-fraction' -Source $RecoveredCaseRoot -ExpectPass $false -Reason 'strict JSON int32 and boolean' -Mutate {
+    param($d) $l=Get-Content -Raw (Join-Path $d 'launch.json')|ConvertFrom-Json;$l.nativeExitCode=0.4;Write-Json (Join-Path $d 'launch.json') $l }
+Invoke-Case -Name 'recover-native-overflow' -Source $RecoveredCaseRoot -ExpectPass $false -Reason 'strict JSON int32 and boolean' -Mutate {
+    param($d) $l=Get-Content -Raw (Join-Path $d 'launch.json')|ConvertFrom-Json;$l.nativeExitCode=2147483648;Write-Json (Join-Path $d 'launch.json') $l }
+Invoke-Case -Name 'recover-timeout-null' -Source $RecoveredCaseRoot -ExpectPass $false -Reason 'strict JSON int32 and boolean' -Mutate {
+    param($d) $l=Get-Content -Raw (Join-Path $d 'launch.json')|ConvertFrom-Json;$l.timedOut=$null;Write-Json (Join-Path $d 'launch.json') $l }
+Invoke-Case -Name 'recover-timeout-string' -Source $RecoveredCaseRoot -ExpectPass $false -Reason 'strict JSON int32 and boolean' -Mutate {
+    param($d) $l=Get-Content -Raw (Join-Path $d 'launch.json')|ConvertFrom-Json;$l.timedOut='true';Write-Json (Join-Path $d 'launch.json') $l }
+Invoke-Case -Name 'recover-timeout-number' -Source $RecoveredCaseRoot -ExpectPass $false -Reason 'strict JSON int32 and boolean' -Mutate {
+    param($d) $l=Get-Content -Raw (Join-Path $d 'launch.json')|ConvertFrom-Json;$l.timedOut=1;Write-Json (Join-Path $d 'launch.json') $l }
+Invoke-Case -Name 'prepare-native-fraction' -Source $RecoveredCaseRoot -ExpectPass $false -Reason 'JSON integer in int32 range' -Mutate {
+    param($d) $l=Get-Content -Raw (Join-Path $d 'prepare-launch.json')|ConvertFrom-Json;$l.nativeExitCode=0.4;Write-Json (Join-Path $d 'prepare-launch.json') $l }
+Invoke-Case -Name 'prepare-native-overflow' -Source $RecoveredCaseRoot -ExpectPass $false -Reason 'JSON integer in int32 range' -Mutate {
+    param($d) $l=Get-Content -Raw (Join-Path $d 'prepare-launch.json')|ConvertFrom-Json;$l.nativeExitCode=2147483648;Write-Json (Join-Path $d 'prepare-launch.json') $l }
+Invoke-Case -Name 'prepare-timeout-null' -Source $RecoveredCaseRoot -ExpectPass $false -Reason 'JSON boolean' -Mutate {
+    param($d) $l=Get-Content -Raw (Join-Path $d 'prepare-launch.json')|ConvertFrom-Json;$l.timedOut=$null;Write-Json (Join-Path $d 'prepare-launch.json') $l }
+Invoke-Case -Name 'prepare-timeout-string' -Source $RecoveredCaseRoot -ExpectPass $false -Reason 'JSON boolean' -Mutate {
+    param($d) $l=Get-Content -Raw (Join-Path $d 'prepare-launch.json')|ConvertFrom-Json;$l.timedOut='true';Write-Json (Join-Path $d 'prepare-launch.json') $l }
+Invoke-Case -Name 'prepare-timeout-number' -Source $RecoveredCaseRoot -ExpectPass $false -Reason 'JSON boolean' -Mutate {
+    param($d) $l=Get-Content -Raw (Join-Path $d 'prepare-launch.json')|ConvertFrom-Json;$l.timedOut=1;Write-Json (Join-Path $d 'prepare-launch.json') $l }
+Invoke-Case -Name 'force-prepare-valid' -Source (Join-Path $FullCaseRoot 'cases/C04-G6-02') -ExpectPass $true -Mutate $null
+
+# Actual case identity and fault mechanism mismatches.
+Invoke-Case -Name 'truncate-as-checksum' -Source (Join-Path $FullCaseRoot 'cases/C04-G6-03') -ExpectPass $false -Reason 'BadChecksumPrimary' -Mutate {
+    param($d) foreach($f in @('result.json','input.json','launch.json')){$p=Join-Path $d $f;$o=Get-Content -Raw $p|ConvertFrom-Json;$o.caseId='C04-G6-04';$o.fault='BadChecksumPrimary';if($o.PSObject.Properties['actualOutcome']){$o.actualOutcome='RECOVERED_FROM_BACKUP'};Write-Json $p $o} }
+Invoke-Case -Name 'checksum-as-truncate' -Source (Join-Path $FullCaseRoot 'cases/C04-G6-04') -ExpectPass $false -Reason 'TruncatePrimary' -Mutate {
+    param($d) foreach($f in @('result.json','input.json','launch.json')){$p=Join-Path $d $f;$o=Get-Content -Raw $p|ConvertFrom-Json;$o.caseId='C04-G6-03';$o.fault='TruncatePrimary';if($o.PSObject.Properties['actualOutcome']){$o.actualOutcome='RECOVERED_FROM_BACKUP'};Write-Json $p $o} }
+
+Assert-Test 'actual-case-replacement' {
+    $clone = Join-Path $OutputDir 'actual-case-replacement'
+    Copy-Item -LiteralPath $FullCaseRoot -Destination $clone -Recurse
+    Remove-Item -LiteralPath (Join-Path $clone 'cases/C04-G6-01') -Recurse -Force
+    Copy-Item -LiteralPath (Join-Path $FullCaseRoot 'cases/C04-G6-03') -Destination (Join-Path $clone 'cases/C04-G6-01') -Recurse
+    $run = Invoke-RunnerVerify -Root $clone -Name 'actual-case-replacement'
+    Assert-True ($run.ExitCode -ne 0) 'replacement case unexpectedly PASSed'
+    Assert-True ($run.Output.Contains('VERIFY_')) ('replacement did not hit a verify guard: ' + $run.Output)
+}
+Assert-Test 'missing-summary-pin' {
+    $run = Invoke-RunnerVerify -Root $FullCaseRoot -Name 'missing-summary-pin' -NoSummaryPin
+    Assert-True ($run.ExitCode -ne 0) 'missing summary pin unexpectedly PASSed'
+    Assert-True ($run.Output.Contains('VERIFY_EXTERNAL_PIN_REQUIRED')) 'missing pin reason missing'
+}
+Assert-Test 'wrong-evidence-pin' {
+    $run = Invoke-RunnerVerify -Root $FullCaseRoot -Name 'wrong-evidence-pin' -EvidencePin ('0' * 64)
+    Assert-True ($run.ExitCode -ne 0) 'wrong CSV pin unexpectedly PASSed'
+    Assert-True ($run.Output.Contains('VERIFY_EVIDENCE_PIN_MISMATCH')) 'wrong CSV pin reason missing'
+}
+Assert-Test 'missing-case' {
+    $clone = Join-Path $OutputDir 'missing-case'
+    Copy-Item -LiteralPath $FullCaseRoot -Destination $clone -Recurse
+    Remove-Item -LiteralPath (Join-Path $clone 'cases/C04-G6-08') -Recurse -Force
+    $run = Invoke-RunnerVerify -Root $clone -Name 'missing-case'
+    Assert-True ($run.ExitCode -ne 0) 'missing case unexpectedly PASSed'
+}
+
+# Source/build/package pin matrix (real Bind-ExistingPlayer).
+Assert-Test 'bind-valid-317' {
+    $r = Invoke-BindProbe -Name 'valid' -Record $BuildRecordPath -Snapshot $SourceSnapshotPath -Package $PackageManifestPath
+    Assert-True ([bool]$r.accepted) ('317 binding rejected: ' + $r.error)
+    Assert-True ([string]$r.sourceHead -eq $ExpectedSourceHead) 'bound sourceHead mismatch'
+}
+Assert-Test 'bind-missing-pin' {
+    $r = Invoke-BindProbe -Name 'missing-pin' -Record $BuildRecordPath -Snapshot $SourceSnapshotPath -Package $PackageManifestPath -SourceHead ''
+    Assert-True (-not [bool]$r.accepted) 'binding without external source pin PASSed'
+    Assert-True ((([string]$r.error).Contains('EXTERNAL_PIN_REQUIRED'))) 'missing pin reason missing'
+}
+Assert-Test 'bind-empty-package' {
+    $empty = Get-Content -Raw $PackageManifestPath | ConvertFrom-Json
+    $empty.files = @()
+    $path = Join-Path $OutputDir 'empty-package.json'
+    Write-Json $path $empty
+    $r = Invoke-BindProbe -Name 'empty-package' -Record $BuildRecordPath -Snapshot $SourceSnapshotPath -Package $path -PackagePin (Get-Sha $path)
+    Assert-True (-not [bool]$r.accepted) 'empty package PASSed'
+    Assert-True ((([string]$r.error).Contains('PACKAGE_MANIFEST_COUNT_MISMATCH'))) 'empty package reason missing'
+}
+Assert-Test 'bind-tree-mismatch' {
+    $snap = Get-Content -Raw $SourceSnapshotPath | ConvertFrom-Json
+    $snap.treeSha256 = ('0' * 64)
+    $path = Join-Path $OutputDir 'tree-mismatch.json'
+    Write-Json $path $snap
+    $r = Invoke-BindProbe -Name 'tree-mismatch' -Record $BuildRecordPath -Snapshot $path -Package $PackageManifestPath -SnapshotPin (Get-Sha $path)
+    Assert-True (-not [bool]$r.accepted) 'tree mismatch PASSed'
+    Assert-True ((([string]$r.error).Contains('SOURCE_TREE_MISMATCH'))) 'tree mismatch reason missing'
+}
 
 $summary = [ordered]@{
     schemaVersion = 1
