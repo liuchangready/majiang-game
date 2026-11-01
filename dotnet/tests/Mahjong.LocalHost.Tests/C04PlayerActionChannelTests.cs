@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Mahjong.Client;
@@ -92,9 +93,9 @@ namespace Mahjong.LocalHost.Tests
 
                     CanonicalPayloadDocument typedPayload = CanonicalPayloadParser.Parse(payload);
                     Assert.Equal((ushort)CommandKind.SubmitAction, typedPayload.CommandKind);
-                    Assert.Equal(before.RoundId, typedPayload.RequireString(CommandPayloadFields.RoundIdField, "roundId"));
+                    Assert.Equal(before.RoundId, ReadCanonicalString(typedPayload, CommandPayloadFields.RoundIdField, "roundId"));
                     Assert.Equal(before.PrivateView.Decision.DecisionId,
-                        typedPayload.RequireString(CommandPayloadFields.DecisionIdField, "decisionId"));
+                        ReadCanonicalString(typedPayload, CommandPayloadFields.DecisionIdField, "decisionId"));
                     Assert.Equal((ulong)before.PrivateView.Decision.ControlEpoch,
                         typedPayload.RequireUInt64(CommandPayloadFields.ControlEpochField, "controlEpoch"));
                     Assert.Equal((uint)actionType,
@@ -261,6 +262,15 @@ namespace Mahjong.LocalHost.Tests
                 case ProtocolActionType.DeclareKan: return ProtocolEventType.KanDeclared;
                 default: throw new ArgumentOutOfRangeException(nameof(actionType));
             }
+        }
+
+        private static string ReadCanonicalString(CanonicalPayloadDocument document, ushort fieldNumber, string fieldName)
+        {
+            byte[] encoded = Encoding.UTF8.GetBytes(document.RequireString(fieldNumber, fieldName));
+            Assert.True(encoded.Length >= 4, "Canonical string field is missing its inner length prefix.");
+            uint byteCount = BitConverter.ToUInt32(encoded, 0);
+            Assert.Equal((uint)(encoded.Length - 4), byteCount);
+            return new UTF8Encoding(false, true).GetString(encoded, 4, encoded.Length - 4);
         }
     }
 }

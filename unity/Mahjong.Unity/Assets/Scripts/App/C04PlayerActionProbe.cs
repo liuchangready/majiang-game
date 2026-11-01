@@ -146,8 +146,8 @@ namespace Mahjong.Unity.App
             string payloadBase64 = Convert.ToBase64String(intent.Command.Payload.CopyBytes());
             CanonicalPayloadDocument actionPayload = CanonicalPayloadParser.Parse(intent.Command.Payload);
             if (actionPayload.CommandKind != (ushort)CommandKind.SubmitAction ||
-                actionPayload.RequireString(CommandPayloadFields.RoundIdField, "roundId") != view.Identity.RoundId ||
-                actionPayload.RequireString(CommandPayloadFields.DecisionIdField, "decisionId") != candidate.DecisionId ||
+                ReadCanonicalString(actionPayload, CommandPayloadFields.RoundIdField, "roundId") != view.Identity.RoundId ||
+                ReadCanonicalString(actionPayload, CommandPayloadFields.DecisionIdField, "decisionId") != candidate.DecisionId ||
                 actionPayload.RequireUInt64(CommandPayloadFields.ControlEpochField, "controlEpoch") != (candidate.ControlEpoch ?? 0UL) ||
                 actionPayload.RequireUInt32(CommandPayloadFields.ActionType, "actionType") != (uint)ActionForCase(_caseId))
             {
@@ -328,12 +328,12 @@ namespace Mahjong.Unity.App
                 RiichiSticksAfter = finalState.PlayerSnapshot.PublicView.Board.RiichiSticks,
                 Batch = confirmation.Batch.Describe(),
                 PayloadActionType = actionPayload.RequireUInt32(CommandPayloadFields.ActionType, "actionType"),
-                PayloadRoundId = actionPayload.RequireString(CommandPayloadFields.RoundIdField, "roundId"),
-                PayloadDecisionId = actionPayload.RequireString(CommandPayloadFields.DecisionIdField, "decisionId"),
+                PayloadRoundId = ReadCanonicalString(actionPayload, CommandPayloadFields.RoundIdField, "roundId"),
+                PayloadDecisionId = ReadCanonicalString(actionPayload, CommandPayloadFields.DecisionIdField, "decisionId"),
                 PayloadControlEpoch = actionPayload.RequireUInt64(CommandPayloadFields.ControlEpochField, "controlEpoch"),
                 CandidateOptionId = candidate.OptionId ?? string.Empty,
                 PayloadOptionId = actionPayload.HasField(CommandPayloadFields.OptionId)
-                    ? actionPayload.RequireString(CommandPayloadFields.OptionId, "optionId") : string.Empty,
+                    ? ReadCanonicalString(actionPayload, CommandPayloadFields.OptionId, "optionId") : string.Empty,
                 PayloadMeldType = actionPayload.OptionalUInt32(CommandPayloadFields.MeldType) ?? 0U,
                 PayloadTileIds = actionPayload.HasField(CommandPayloadFields.TileIds)
                     ? String.Join(",", actionPayload.RequireRepeatedUInt32(CommandPayloadFields.TileIds, "tileIds")) : string.Empty,
@@ -462,6 +462,17 @@ namespace Mahjong.Unity.App
             left.Sort(); right.Sort();
             for (int i = 0; i < left.Count; i++) if (left[i] != right[i]) return false;
             return true;
+        }
+
+        private static string ReadCanonicalString(CanonicalPayloadDocument document, ushort fieldNumber, string fieldName)
+        {
+            // Canonical String values carry an inner UInt32 byte length before UTF-8.
+            // The currently accepted field view exposes that encoded prefix as text,
+            // so decode the canonical bytes at this boundary without changing the shared contract.
+            byte[] encoded = Encoding.UTF8.GetBytes(document.RequireString(fieldNumber, fieldName));
+            if (encoded.Length < 4 || BitConverter.ToUInt32(encoded, 0) != encoded.Length - 4)
+                throw new InvalidDataException("Canonical string field " + fieldName + " has an invalid inner length.");
+            return new UTF8Encoding(false, true).GetString(encoded, 4, encoded.Length - 4);
         }
 
         private static long ScoreForSeat(IReadOnlyList<PlayerTableScore> scores, int seat)

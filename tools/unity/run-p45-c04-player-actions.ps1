@@ -107,7 +107,10 @@ function ConvertFrom-C04CanonicalPayload([byte[]]$bytes) {
         $last = $number; $value = $null
         if ($number -in 1,2,5) {
             if ($type -ne 5) { throw "Canonical field $number is not String." }
-            $value = (New-Object Text.UTF8Encoding($false,$true)).GetString($bytes,$offset,[int]$length)
+            if ($length -lt 4) { throw "Canonical field $number is missing its inner UTF-8 byte length." }
+            $innerLength = [BitConverter]::ToUInt32($bytes,$offset)
+            if ($innerLength -ne ($length - 4)) { throw "Canonical field $number inner UTF-8 byte length is inconsistent." }
+            $value = (New-Object Text.UTF8Encoding($false,$true)).GetString($bytes,$offset+4,[int]$innerLength)
         } elseif ($number -eq 3) {
             if ($type -ne 3 -or $length -ne 8) { throw 'Canonical controlEpoch is not UInt64.' }
             $value = [BitConverter]::ToUInt64($bytes,$offset)
@@ -213,8 +216,9 @@ Start-Sleep -Seconds 25
     $writer = New-Object IO.BinaryWriter($stream)
     $writer.Write([Text.Encoding]::ASCII.GetBytes('MJC1')); $writer.Write([UInt16]1); $writer.Write([UInt16]10)
     function Write-Field([IO.BinaryWriter]$Writer,[UInt16]$Number,[byte]$Type,[byte[]]$Value) { $Writer.Write($Number); $Writer.Write($Type); $Writer.Write([UInt32]$Value.Length); $Writer.Write($Value) }
-    Write-Field $writer 1 5 ([Text.Encoding]::UTF8.GetBytes('fixture-round'))
-    Write-Field $writer 2 5 ([Text.Encoding]::UTF8.GetBytes('fixture-decision'))
+    function Encode-CanonicalString([string]$Value) { $textBytes=[Text.Encoding]::UTF8.GetBytes($Value); $buffer=New-Object IO.MemoryStream; $stringWriter=New-Object IO.BinaryWriter($buffer); $stringWriter.Write([UInt32]$textBytes.Length); $stringWriter.Write($textBytes); $stringWriter.Flush(); return ,$buffer.ToArray() }
+    Write-Field $writer 1 5 (Encode-CanonicalString 'fixture-round')
+    Write-Field $writer 2 5 (Encode-CanonicalString 'fixture-decision')
     Write-Field $writer 3 3 ([BitConverter]::GetBytes([UInt64]3))
     Write-Field $writer 4 2 ([BitConverter]::GetBytes([UInt32]6))
     $tileBytes = New-Object IO.MemoryStream; $tileWriter = New-Object IO.BinaryWriter($tileBytes)
