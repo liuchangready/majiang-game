@@ -29,7 +29,10 @@ $dataRoot = Join-Path $RunRoot 'data'
 $tempRoot = Join-Path $RunRoot 'temp'
 $nugetRoot = Join-Path $RunRoot 'nuget'
 $cliRoot = Join-Path $RunRoot 'dotnet-home'
-foreach ($path in @($logs,$caseRoot,$dataRoot,$tempRoot,$nugetRoot,$cliRoot)) { New-Item -ItemType Directory -Force -Path $path | Out-Null }
+$upmRoot = Join-Path $RunRoot 'upm-cache'
+$upmNpmRoot = Join-Path $upmRoot 'npm'
+$upmPackagesRoot = Join-Path $upmRoot 'packages'
+foreach ($path in @($logs,$caseRoot,$dataRoot,$tempRoot,$nugetRoot,$cliRoot,$upmRoot,$upmNpmRoot,$upmPackagesRoot)) { New-Item -ItemType Directory -Force -Path $path | Out-Null }
 $script:LogPath = Join-Path $logs 'runner.log'
 $script:LogOpen = $true
 $script:mutex = $null
@@ -38,7 +41,9 @@ $script:stageRecords = New-Object System.Collections.Generic.List[object]
 $gitHead = ''
 $trx = Join-Path $RunRoot 'dotnet-results/LocalHost.xml'
 $oldTemp = $env:TEMP; $oldTmp = $env:TMP; $oldNuget = $env:NUGET_PACKAGES; $oldCli = $env:DOTNET_CLI_HOME
+$oldUpmRoot = $env:UPM_CACHE_ROOT; $oldUpmNpm = $env:UPM_NPM_CACHE_PATH; $oldUpmPackages = $env:UPM_CACHE_PATH
 $env:TEMP = $tempRoot; $env:TMP = $tempRoot; $env:NUGET_PACKAGES = $nugetRoot; $env:DOTNET_CLI_HOME = $cliRoot
+$env:UPM_CACHE_ROOT = $upmRoot; $env:UPM_NPM_CACHE_PATH = $upmNpmRoot; $env:UPM_CACHE_PATH = $upmPackagesRoot
 $env:DOTNET_NOLOGO = '1'; $env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'; $env:DOTNET_SKIP_FIRST_TIME_EXPERIENCE = '1'
 
 function Write-RunLog([string]$message) {
@@ -49,6 +54,23 @@ function Write-RunLog([string]$message) {
 
 function Get-Sha256([string]$path) { (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() }
 
+function Assert-C04RunCacheIsolation([string]$root) {
+    $rootPath = [IO.Path]::GetFullPath($root).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    $expected = @{
+        UPM_CACHE_ROOT = Join-Path $root 'upm-cache'
+        UPM_NPM_CACHE_PATH = Join-Path (Join-Path $root 'upm-cache') 'npm'
+        UPM_CACHE_PATH = Join-Path (Join-Path $root 'upm-cache') 'packages'
+    }
+    foreach ($name in $expected.Keys) {
+        $actualValue = [Environment]::GetEnvironmentVariable($name)
+        if ([string]::IsNullOrWhiteSpace($actualValue) -or [IO.Path]::GetFullPath($actualValue) -cne [IO.Path]::GetFullPath($expected[$name]) -or
+            -not [IO.Path]::GetFullPath($actualValue).StartsWith($rootPath, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Unity Package Manager cache $name is not isolated beneath the exclusive E-drive run root."
+        }
+    }
+    return $true
+}
+
 function Get-C04StableArtifactFiles([string]$root) {
     $volatileRoots = @(
         (Join-Path $root 'source/unity/Mahjong.Unity/Library'),
@@ -56,7 +78,8 @@ function Get-C04StableArtifactFiles([string]$root) {
         (Join-Path $root 'source/unity/Mahjong.Unity/Logs'),
         (Join-Path $root 'temp'),
         (Join-Path $root 'nuget'),
-        (Join-Path $root 'dotnet-home')
+        (Join-Path $root 'dotnet-home'),
+        (Join-Path $root 'upm-cache')
     ) | ForEach-Object { [IO.Path]::GetFullPath($_).TrimEnd([IO.Path]::DirectorySeparatorChar) }
     $files = New-Object System.Collections.Generic.List[IO.FileInfo]
     $pending = New-Object System.Collections.Generic.Stack[string]
@@ -95,7 +118,8 @@ function Get-C04SeparatedVolatileRoots([string]$root) {
         [ordered]@{ path='source/dotnet/**/bin'; classification='VOLATILE_DOTNET_INTERMEDIATES'; boundBy='fresh dotnet-build-artifacts-closure.json' },
         [ordered]@{ path='temp'; classification='VOLATILE_PROCESS_TEMP'; boundBy='not a build input or review artifact' },
         [ordered]@{ path='nuget'; classification='VOLATILE_PACKAGE_CACHE'; boundBy='resolved source closure and build output hashes' },
-        [ordered]@{ path='dotnet-home'; classification='VOLATILE_TOOL_CACHE'; boundBy='pinned dotnet executable and native command record' }
+        [ordered]@{ path='dotnet-home'; classification='VOLATILE_TOOL_CACHE'; boundBy='pinned dotnet executable and native command record' },
+        [ordered]@{ path='upm-cache'; classification='VOLATILE_UPM_DOWNLOAD_CACHE'; boundBy='per-run UPM_CACHE_ROOT plus resolved Library/PackageCache input closure' }
     )
 }
 
@@ -211,7 +235,7 @@ function Get-EnabledScenes([string]$projectRoot) {
 
 function Get-UnityInputClosure([string]$projectRoot,[string]$output) {
     $entries = New-Object System.Collections.Generic.List[object]
-    foreach ($rootName in @('Assets','Packages','ProjectSettings','Library/ScriptAssemblies')) {
+    foreach ($rootName in @('Assets','Packages','ProjectSettings','Library/PackageCache','Library/ScriptAssemblies')) {
         $root = Join-Path $projectRoot ($rootName.Replace('/','\'))
         if (-not (Test-Path -LiteralPath $root -PathType Container)) { if ($rootName -eq 'Library/ScriptAssemblies') { continue }; throw "Unity build input root is missing: $rootName" }
         foreach ($file in Get-ChildItem -LiteralPath $root -Recurse -File | Sort-Object FullName) {
@@ -219,7 +243,7 @@ function Get-UnityInputClosure([string]$projectRoot,[string]$output) {
             $entries.Add([ordered]@{ path=$relative; bytes=[long]$file.Length; sha256=(Get-Sha256 $file.FullName) }) | Out-Null
         }
     }
-    $manifest = [ordered]@{ projectRoot=$projectRoot; roots=@('Assets','Packages','ProjectSettings','Library/ScriptAssemblies'); fileCount=$entries.Count; entries=$entries }
+    $manifest = [ordered]@{ projectRoot=$projectRoot; roots=@('Assets','Packages','ProjectSettings','Library/PackageCache','Library/ScriptAssemblies'); fileCount=$entries.Count; entries=$entries }
     [IO.File]::WriteAllText($output,(($manifest | ConvertTo-Json -Depth 8)+"`n"),(New-Object Text.UTF8Encoding($false)))
     return Get-Sha256 $output
 }
@@ -239,7 +263,7 @@ function Assert-C04PostBuildInputClosure([string]$beforePath,[string]$afterPath,
     }
     [IO.File]::WriteAllText($changesPath,(($changes | ConvertTo-Json -Depth 6)+"`n"),(New-Object Text.UTF8Encoding($false)))
     $unexpected = @($changes | Where-Object { $_.classification -ne 'UnityGenerated' })
-    if ($unexpected.Count -gt 0) { throw 'Unity build changed Assets, Packages, or ProjectSettings inputs outside the declared Unity-generated ScriptAssemblies closure.' }
+    if ($unexpected.Count -gt 0) { throw 'Unity build changed Assets, Packages, ProjectSettings, or resolved package cache inputs outside the declared Unity-generated ScriptAssemblies closure.' }
     return ,$changes.ToArray()
 }
 
@@ -397,6 +421,7 @@ function Test-C04ActionEvidence {
 }
 
 if ($FixtureOnly) {
+    Assert-C04RunCacheIsolation $RunRoot | Out-Null
     $ownedChildPath = Join-Path $RunRoot 'owned-timeout-child.ps1'
     $nestedPidPath = Join-Path $RunRoot 'owned-descendant.pid'
     $ownedScript = @'
@@ -599,13 +624,15 @@ Start-Sleep -Seconds 25
     [IO.File]::WriteAllText((Join-Path $RunRoot 'foreign-sentinel.txt'), 'foreign-owner-preserved' + "`n", (New-Object Text.UTF8Encoding($false)))
     $stableFixtureFile = Join-Path $RunRoot 'logs/stable-review-log.txt'
     $volatileFixtureFile = Join-Path $RunRoot 'source/unity/Mahjong.Unity/Library/PackageCache/cache-entry.tmp'
-    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $stableFixtureFile),(Split-Path -Parent $volatileFixtureFile) | Out-Null
+    $upmVolatileFixtureFile = Join-Path $RunRoot 'upm-cache/cache-entry.tmp'
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $stableFixtureFile),(Split-Path -Parent $volatileFixtureFile),(Split-Path -Parent $upmVolatileFixtureFile) | Out-Null
     [IO.File]::WriteAllText($stableFixtureFile, 'stable-log-content' + "`n", (New-Object Text.UTF8Encoding($false)))
     [IO.File]::WriteAllText($volatileFixtureFile, 'volatile-cache-content' + "`n", (New-Object Text.UTF8Encoding($false)))
+    [IO.File]::WriteAllText($upmVolatileFixtureFile, 'volatile-upm-cache-content' + "`n", (New-Object Text.UTF8Encoding($false)))
     $stableArtifacts = Get-C04StableArtifactFiles $RunRoot
     $stablePaths = @($stableArtifacts | ForEach-Object { $_.FullName.Substring($RunRoot.Length).TrimStart('\','/').Replace('\','/') })
-    if ($stablePaths -notcontains 'logs/stable-review-log.txt' -or $stablePaths -contains 'source/unity/Mahjong.Unity/Library/PackageCache/cache-entry.tmp') {
-        throw 'Stable artifact manifest did not retain logs or separate volatile Unity Library cache.'
+    if ($stablePaths -notcontains 'logs/stable-review-log.txt' -or $stablePaths -contains 'source/unity/Mahjong.Unity/Library/PackageCache/cache-entry.tmp' -or $stablePaths -contains 'upm-cache/cache-entry.tmp') {
+        throw 'Stable artifact manifest did not retain logs or separate volatile Unity/UPM package caches.'
     }
     $fixtureFiles = Get-ChildItem -LiteralPath $RunRoot -Recurse -File | Sort-Object FullName | ForEach-Object { [ordered]@{ path=$_.FullName.Substring($RunRoot.Length).TrimStart('\','/'); sha256=(Get-Sha256 $_.FullName); bytes=$_.Length } }
     [IO.File]::WriteAllText((Join-Path $RunRoot 'fixture-seal.json'), (($fixtureFiles | ConvertTo-Json -Depth 5) + "`n"), (New-Object Text.UTF8Encoding($false)))
@@ -621,6 +648,8 @@ try {
     try { $script:mutexHeld = $script:mutex.WaitOne([TimeSpan]::FromMinutes(60)) } catch [System.Threading.AbandonedMutexException] { $script:mutexHeld = $true }
     if (-not $script:mutexHeld) { throw 'Timed out waiting for the shared Unity validation mutex; no Unity stage ran.' }
     Write-RunLog ('MUTEX_ACQUIRED waitedSeconds=' + ([DateTimeOffset]::UtcNow - $waitStart).TotalSeconds.ToString('F3'))
+    Assert-C04RunCacheIsolation $RunRoot | Out-Null
+    Write-RunLog "RUN_CACHE_ROOTS upm=$upmRoot npm=$upmNpmRoot packages=$upmPackagesRoot"
 
     $gitHead = (& git -C $repo rev-parse HEAD 2>&1 | Out-String).Trim()
     if ($LASTEXITCODE -ne 0 -or $gitHead -notmatch '^[0-9a-f]{40}$') { throw 'Unable to resolve frozen candidate HEAD.' }
@@ -724,6 +753,7 @@ try {
         $playerFiles.Add([ordered]@{ path=$file.FullName.Substring($playerDir.Length).TrimStart('\','/').Replace('\','/'); bytes=[long]$file.Length; sha256=(Get-Sha256 $file.FullName) }) | Out-Null
     }
     [IO.File]::WriteAllText((Join-Path $RunRoot 'player-package.json'), (($playerFiles | ConvertTo-Json -Depth 5) + "`n"), (New-Object Text.UTF8Encoding($false)))
+    $upmCacheClosureSha = Get-ClosureManifest $upmRoot (Join-Path $RunRoot 'upm-cache-closure.json')
 
     $caseSpecs = @(
         @{ id='C04-G2-01'; action='pon'; event='PonDeclared' },
@@ -757,7 +787,7 @@ try {
         $caseResults.Add([ordered]@{ caseId=$case.id; status='PASS'; layer='WINDOWS_PLAYER'; nativeExitCode=$player.exitCode; summary=$summaryPath; summarySha256=(Get-Sha256 $summaryPath); actionEvidence=$actionEvidencePath; actionEvidenceSha256=(Get-Sha256 $actionEvidencePath); executionEvidence=$executionPath; executionEvidenceSha256=(Get-Sha256 $executionPath); playerLog=$nativeLog; playerLogSha256=(Get-Sha256 $nativeLog); payloadSha256=$summary.payloadSha256 }) | Out-Null
     }
 
-    $final = [ordered]@{ schemaVersion=1; task='G2-C04-D03'; status='PASS'; acceptedBase='8fd7c6cb701dfbb41c28938de4186749bdd1d6c7'; frozenCandidate=$gitHead; sourceTreeStatus=$gitStatus; sourceDiffCheck='PASS'; sourceClosureManifest='source-prebuild-closure.json'; sourceClosureManifestSha256=$sourceClosureSha; unityPrebuildInputClosureSha256=$preBuildInputsSha; unityPostbuildInputClosureSha256=$postBuildInputsSha; unityPostbuildInputChanges='unity-postbuild-input-changes.json'; unityPostbuildInputChangesSha256=(Get-Sha256 (Join-Path $RunRoot 'unity-postbuild-input-changes.json')); postBuildAssetsClosure='source-postbuild-assets-closure.json'; postBuildAssetsClosureSha256=$postBuildClosureSha; sharedPluginClosureSha256=$pluginClosureSha; sharedPluginProvenance=$sharedEvidence; sharedPluginProvenanceSha256=$provenanceSha; scriptAssembliesClosureSha256=$scriptAssembliesSha; localHostTests=$localHostTestEvidence; commands=$script:stageRecords; playMode=[ordered]@{ testCount=$testNodes.Count; passed=$testNodes.Count; failed=0; skipped=0; exactNames=$actualNames; xml=$playXml; xmlSha256=(Get-Sha256 $playXml) }; buildMarker=$buildMarker; buildMarkerSha256=(Get-Sha256 $buildMarker); playerPackageManifest='player-package.json'; cases=$caseResults; platforms=[ordered]@{ windowsPlayer='actual four fixed cases'; android='NOT_RUN (C05 owner)'; ios='NOT_RUN'; remoteTransport='NOT_IN_SCOPE' } }
+    $final = [ordered]@{ schemaVersion=1; task='G2-C04-D03'; status='PASS'; acceptedBase='8fd7c6cb701dfbb41c28938de4186749bdd1d6c7'; frozenCandidate=$gitHead; sourceTreeStatus=$gitStatus; sourceDiffCheck='PASS'; sourceClosureManifest='source-prebuild-closure.json'; sourceClosureManifestSha256=$sourceClosureSha; unityPrebuildInputClosureSha256=$preBuildInputsSha; unityPostbuildInputClosureSha256=$postBuildInputsSha; unityPostbuildInputChanges='unity-postbuild-input-changes.json'; unityPostbuildInputChangesSha256=(Get-Sha256 (Join-Path $RunRoot 'unity-postbuild-input-changes.json')); upmDownloadCacheClosure='upm-cache-closure.json'; upmDownloadCacheClosureSha256=$upmCacheClosureSha; postBuildAssetsClosure='source-postbuild-assets-closure.json'; postBuildAssetsClosureSha256=$postBuildClosureSha; sharedPluginClosureSha256=$pluginClosureSha; sharedPluginProvenance=$sharedEvidence; sharedPluginProvenanceSha256=$provenanceSha; scriptAssembliesClosureSha256=$scriptAssembliesSha; localHostTests=$localHostTestEvidence; commands=$script:stageRecords; playMode=[ordered]@{ testCount=$testNodes.Count; passed=$testNodes.Count; failed=0; skipped=0; exactNames=$actualNames; xml=$playXml; xmlSha256=(Get-Sha256 $playXml) }; buildMarker=$buildMarker; buildMarkerSha256=(Get-Sha256 $buildMarker); playerPackageManifest='player-package.json'; cases=$caseResults; platforms=[ordered]@{ windowsPlayer='actual four fixed cases'; android='NOT_RUN (C05 owner)'; ios='NOT_RUN'; remoteTransport='NOT_IN_SCOPE' } }
     $summaryOut = Join-Path $RunRoot 'summary.json'
     [IO.File]::WriteAllText($summaryOut, (($final | ConvertTo-Json -Depth 12) + "`n"), (New-Object Text.UTF8Encoding($false)))
     Write-RunLog 'FINAL_SUMMARY_WRITTEN'
@@ -814,4 +844,5 @@ finally {
     if ($script:mutexHeld) { try { $script:mutex.ReleaseMutex() } catch {} }
     if ($script:mutex) { $script:mutex.Dispose() }
     $env:TEMP=$oldTemp; $env:TMP=$oldTmp; $env:NUGET_PACKAGES=$oldNuget; $env:DOTNET_CLI_HOME=$oldCli
+    $env:UPM_CACHE_ROOT=$oldUpmRoot; $env:UPM_NPM_CACHE_PATH=$oldUpmNpm; $env:UPM_CACHE_PATH=$oldUpmPackages
 }
