@@ -1089,6 +1089,181 @@ namespace Mahjong.TableService.Tests
         }
 
         [Fact]
+        public async Task WireIngress_RejectsUnbackedMatchSettlement_ThenComputesTsumoFromAuthority()
+        {
+            const string roomId = "room-b2-local-ingress";
+            await using TableServiceTestHost host = await TableServiceTestHost.StartAsync(
+                o => { o.RoomTickIntervalMs = 50; },
+                roundSource: new FixedRoundSource(DealerTsumoRound),
+                clock: FrozenUtcClock.Instance);
+            await using TableTestClient client = await host.ConnectPlayerAsync(
+                roomId, "acct-b2-local-ingress", 0);
+
+            PlayerSnapshot before = await WaitForDecisionAsync(client, roomId + "-r1");
+            RoomHost room = host.GetRoomHost(roomId);
+            RoundStateMachine roundBefore = room.Actor.GetRoundStateForHost();
+            TableSnapshot actorBefore = await room.Actor.GetSnapshotAsync(CancellationToken.None);
+            InMemoryTableStore store = Assert.IsType<InMemoryTableStore>(room.Store);
+            Assert.Equal(roomId, client.Welcome!.RoomId);
+            Assert.Equal(0, client.Welcome.SeatId);
+            Assert.False(string.IsNullOrWhiteSpace(client.Welcome.Scope.ScopeId));
+            long[] scoresBefore = before.PublicView!.Board.Scores.Select(s => s.Score).ToArray();
+            int settlementEventsBefore = CountSettlementEvents(before);
+            string[] physicalTilesBefore = CapturePhysicalTilePositions(roundBefore);
+            string[] ledgerBefore = CaptureLedger(before.PrivateView!.Cheat);
+            ulong versionBefore = before.StateVersion;
+            Contracts.Wire.DecisionView decision = before.PrivateView!.Decision;
+
+            // This is a real, schema-valid client command whose match-layer settlement
+            // prerequisite is absent. It goes through ClientWebSocket -> Kestrel -> framing,
+            // admitted identity -> TableCommandMapper -> TableSessionHandler. The service
+            // must refuse it before Actor.SubmitSettlementAsync.
+            const string matchRequestId = "req-b2-local-ingress-match";
+            byte[] matchPayload = TableWire.SubmitActionPayload(
+                before.RoundId,
+                decision.DecisionId,
+                decision.ControlEpoch,
+                (uint)ProtocolActionType.DeclareAgariYame);
+            await client.SendAsync(TableWire.Command(
+                client.Welcome!,
+                matchRequestId,
+                Contracts.CommandKind.SubmitAction,
+                matchPayload,
+                expectedStateVersion: versionBefore));
+
+            Envelope refused = await client.ReadUntilAsync(
+                e => e.MessageType == MessageType.Error ||
+                     (e.MessageType == MessageType.Receipt && e.RequestId == matchRequestId),
+                TimeSpan.FromSeconds(10));
+            Assert.Equal(MessageType.Error, refused.MessageType);
+            Assert.Equal(ProtocolErrorCode.InternalError, refused.Error!.Code);
+            Assert.Equal("command.type", refused.Error.FieldPath);
+            Assert.Equal("MATCH_AUTHORITY_UNAVAILABLE", refused.Error.DetailCode);
+
+            RoundStateMachine roundAfterRefusal = room.Actor.GetRoundStateForHost();
+            Assert.Equal(versionBefore, (ulong)roundAfterRefusal.Version);
+            Assert.Equal(versionBefore, (ulong)room.CommitPort.CurrentVersion.Value);
+            Assert.Equal(settlementEventsBefore, CountSettlementEvents(before));
+            Assert.Equal(scoresBefore, before.PublicView.Board.Scores.Select(s => s.Score).ToArray());
+            Assert.Equal(0, store.OutboxCount);
+            Assert.Equal(physicalTilesBefore, CapturePhysicalTilePositions(roundAfterRefusal));
+            TableSnapshot actorAfterRefusal = await room.Actor.GetSnapshotAsync(CancellationToken.None);
+            Assert.Equal(actorBefore.LastEventSeq, actorAfterRefusal.LastEventSeq);
+            Assert.Equal(actorBefore.RecentEvents.Count, actorAfterRefusal.RecentEvents.Count);
+            Assert.Equal(actorBefore.Scores, actorAfterRefusal.Scores);
+
+            await client.SendAsync(TableWire.SyncRequest(client.Welcome!, true, 0, 0));
+            Envelope sync = await client.ReadUntilAsync(
+                e => e.PlayerUpdate?.Snapshot != null &&
+                     e.PlayerUpdate.Snapshot.RoundId == before.RoundId &&
+                     e.PlayerUpdate.Snapshot.StateVersion == versionBefore,
+                TimeSpan.FromSeconds(10));
+            Assert.Equal(ledgerBefore, CaptureLedger(sync.PlayerUpdate!.Snapshot.PrivateView!.Cheat));
+
+            // Same authenticated channel and current decision: a legal tsumo carries only
+            // action identity. Production mapper/handler route it to SubmitSettlementAsync;
+            // the authoritative calculator derives the score and the one terminal outbox.
+            const string tsumoRequestId = "req-b2-local-ingress-tsumo";
+            byte[] tsumoPayload = BuildTsumoPayloadWithUnrecognizedLocalAndScoreFields(
+                before.RoundId,
+                decision.DecisionId,
+                decision.ControlEpoch);
+            Envelope tsumoCommand = TableWire.Command(
+                client.Welcome!,
+                tsumoRequestId,
+                Contracts.CommandKind.SubmitAction,
+                tsumoPayload,
+                expectedStateVersion: versionBefore);
+            Assert.Equal(client.Welcome.SessionId, tsumoCommand.SessionId);
+            Assert.Equal(roomId, tsumoCommand.RoomId);
+            Assert.Equal(0, tsumoCommand.SeatId);
+            Assert.Equal(client.Welcome.OwnerEpoch, tsumoCommand.OwnerEpoch);
+            Assert.Equal(client.Welcome.BindingEpoch, tsumoCommand.BindingEpoch);
+            Assert.Equal(versionBefore, tsumoCommand.Command.ExpectedStateVersion);
+            string canonicalDigest = CanonicalPayloadDigest.Compute(tsumoPayload).ToHex();
+            await client.SendAsync(tsumoCommand);
+            Envelope applied = await client.ReadUntilAsync(
+                e => (e.MessageType == MessageType.Receipt && e.RequestId == tsumoRequestId) ||
+                     (e.MessageType == MessageType.Error && e.RequestId == tsumoRequestId),
+                TimeSpan.FromSeconds(20));
+            Assert.Equal(MessageType.Receipt, applied.MessageType);
+            Assert.Equal(Contracts.Wire.ReceiptStatus.Applied, applied.Receipt.Status);
+            Assert.Equal(canonicalDigest, applied.Receipt.CanonicalPayloadSha256);
+
+            PlayerSnapshot terminal = await WaitForPhaseAsync(client, GamePhase.RoundEnd);
+            Assert.Equal(versionBefore + 1UL, terminal.StateVersion);
+            Assert.Equal(GamePhase.RoundEnd, terminal.PublicView!.Board.Phase);
+            PublicEventEnvelope win = Assert.Single(
+                terminal.PublicView.SettlementEvents,
+                e => e.EventType == EventType.TsumoWin);
+            RoundSettlementCalculation authoritative = Assert.IsType<RoundSettlementCalculation>(
+                room.Actor.LastSettlementCalculation);
+            Assert.Equal(0, win.TsumoWin.Player);
+            Assert.Equal(before.RoundId, authoritative.SourceRoundId);
+            Assert.NotNull(authoritative.Breakdown);
+            Assert.Equal((uint)authoritative.Breakdown!.TotalYakuHan, win.TsumoWin.Han);
+            Assert.Equal((uint)authoritative.Breakdown.Fu.FinalFu, win.TsumoWin.Fu);
+            Assert.Equal(authoritative.Breakdown.TotalPoints, win.TsumoWin.Score);
+            Assert.Equal(authoritative.Settlement.FinalScores, terminal.PublicView.Board.Scores.Select(s => s.Score).ToArray());
+            Assert.Equal(100000L, terminal.PublicView.Board.Scores.Sum(s => s.Score));
+            Assert.Equal(1, (await AssertSingleTerminalOutboxAsync(host, roomId, terminal)).OutboxCount);
+
+            TableSnapshot committed = await room.Actor.GetSnapshotAsync(CancellationToken.None);
+            await client.SendAsync(tsumoCommand);
+            Envelope replay = await client.ReadUntilAsync(
+                e => (e.MessageType == MessageType.Receipt && e.RequestId == tsumoRequestId) ||
+                     (e.MessageType == MessageType.Error && e.RequestId == tsumoRequestId),
+                TimeSpan.FromSeconds(10));
+            Assert.Equal(MessageType.Receipt, replay.MessageType);
+            Assert.Equal(Contracts.Wire.ReceiptStatus.Applied, replay.Receipt.Status);
+            Assert.True(replay.Receipt.Replayed);
+            Assert.Equal(versionBefore + 1UL, replay.Receipt.CommandVersion);
+            Assert.Equal((ulong)committed.LastEventSeq.Value, replay.Receipt.EventSeq);
+            TableSnapshot afterReplay = await room.Actor.GetSnapshotAsync(CancellationToken.None);
+            Assert.Equal(committed.StateVersion, afterReplay.StateVersion);
+            Assert.Equal(committed.LastEventSeq, afterReplay.LastEventSeq);
+            Assert.Equal(committed.Scores, afterReplay.Scores);
+            Assert.Equal(1, store.OutboxCount);
+        }
+
+        private static string[] CapturePhysicalTilePositions(RoundStateMachine round)
+        {
+            return TileId.All
+                .Select(tile => tile.Value.ToString(System.Globalization.CultureInfo.InvariantCulture) + ":" +
+                    round.Tiles.PositionOf(tile).ToString())
+                .ToArray();
+        }
+
+        private static string[] CaptureLedger(Contracts.Wire.PrivateCheatView? cheat)
+        {
+            return cheat?.LedgerEntries
+                .Select(entry => entry.EntryId + ":" +
+                    entry.Amount.ToString(System.Globalization.CultureInfo.InvariantCulture) + ":" +
+                    entry.BalanceAfter.ToString(System.Globalization.CultureInfo.InvariantCulture) + ":" +
+                    entry.ReasonCode)
+                .ToArray() ?? Array.Empty<string>();
+        }
+
+        private static byte[] BuildTsumoPayloadWithUnrecognizedLocalAndScoreFields(
+            string roundId,
+            string decisionId,
+            ulong controlEpoch)
+        {
+            // The frozen schema has no source/score tags for SubmitAction. These extra
+            // canonical fields are deliberately unrecognized and must never become trusted
+            // provenance or score input; the ordinary action is still scored by the service.
+            var writer = new CanonicalPayloadWriter((ushort)Contracts.CommandKind.SubmitAction);
+            writer.WriteString(CommandPayloadFields.RoundIdField, roundId);
+            writer.WriteString(CommandPayloadFields.DecisionIdField, decisionId);
+            writer.WriteUInt64(CommandPayloadFields.ControlEpochField, controlEpoch);
+            writer.WriteUInt32(CommandPayloadFields.ActionType, (uint)ProtocolActionType.DeclareTsumo);
+            writer.WriteRepeatedUInt32(CommandPayloadFields.TileIds, new uint[] { 12 });
+            writer.WriteString(8, "LOCAL");
+            writer.WriteInt64(9, 999_999_999L);
+            return writer.Build().CopyBytes();
+        }
+
+        [Fact]
         public async Task SettlementNegativeMatrix_WrongRoundVersionControlDecision_AllRejectedWithZeroSideEffect_ThenSameKeyReplay()
         {
             await using TableServiceTestHost host = await TableServiceTestHost.StartAsync(
