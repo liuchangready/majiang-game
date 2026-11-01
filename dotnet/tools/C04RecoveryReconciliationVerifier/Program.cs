@@ -48,7 +48,8 @@ namespace C04RecoveryReconciliationVerifier
                 }
                 else
                 {
-                    Require(!result.TryGetProperty("binding", out _),
+                    Require(!result.TryGetProperty("binding", out JsonElement refusedBinding) ||
+                            refusedBinding.ValueKind == JsonValueKind.Null,
                         "REJECTED result must not publish a Ready/session binding");
                     Check("rejectedNoBinding");
                 }
