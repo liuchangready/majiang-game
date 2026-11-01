@@ -49,6 +49,48 @@ function Write-RunLog([string]$message) {
 
 function Get-Sha256([string]$path) { (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() }
 
+function Get-C04StableArtifactFiles([string]$root) {
+    $volatileRoots = @(
+        (Join-Path $root 'source/unity/Mahjong.Unity/Library'),
+        (Join-Path $root 'source/unity/Mahjong.Unity/Temp'),
+        (Join-Path $root 'source/unity/Mahjong.Unity/Logs'),
+        (Join-Path $root 'temp'),
+        (Join-Path $root 'nuget'),
+        (Join-Path $root 'dotnet-home')
+    ) | ForEach-Object { [IO.Path]::GetFullPath($_).TrimEnd([IO.Path]::DirectorySeparatorChar) }
+    $files = New-Object System.Collections.Generic.List[IO.FileInfo]
+    $pending = New-Object System.Collections.Generic.Stack[string]
+    $pending.Push([IO.Path]::GetFullPath($root))
+    while ($pending.Count -gt 0) {
+        $directory = $pending.Pop()
+        $excluded = $false
+        foreach ($volatile in $volatileRoots) {
+            if ($directory.Equals($volatile, [StringComparison]::OrdinalIgnoreCase) -or
+                $directory.StartsWith($volatile + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+                $excluded = $true
+                break
+            }
+        }
+        if ($excluded) { continue }
+        foreach ($entry in Get-ChildItem -LiteralPath $directory -Force -ErrorAction Stop) {
+            if ($entry.PSIsContainer) { $pending.Push($entry.FullName) }
+            elseif ($entry.Name -ne 'manifest.json' -and $entry.Name -ne 'manifest.sha256') { $files.Add([IO.FileInfo]$entry) | Out-Null }
+        }
+    }
+    return @($files | Sort-Object FullName)
+}
+
+function Get-C04SeparatedVolatileRoots([string]$root) {
+    return @(
+        [ordered]@{ path='source/unity/Mahjong.Unity/Library'; classification='VOLATILE_UNITY_CACHE'; boundBy='unity prebuild/postbuild input closures and script-assembly hashes' },
+        [ordered]@{ path='source/unity/Mahjong.Unity/Temp'; classification='VOLATILE_UNITY_PROCESS_FILES'; boundBy='native stage process identity/exit and Unity log' },
+        [ordered]@{ path='source/unity/Mahjong.Unity/Logs'; classification='VOLATILE_UNITY_PROCESS_FILES'; boundBy='captured stage stdout/stderr and designated Unity log under logs/' },
+        [ordered]@{ path='temp'; classification='VOLATILE_PROCESS_TEMP'; boundBy='not a build input or review artifact' },
+        [ordered]@{ path='nuget'; classification='VOLATILE_PACKAGE_CACHE'; boundBy='resolved source closure and build output hashes' },
+        [ordered]@{ path='dotnet-home'; classification='VOLATILE_TOOL_CACHE'; boundBy='pinned dotnet executable and native command record' }
+    )
+}
+
 function ConvertFrom-C04PlayerSummary([string]$path) {
     $raw = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
     $normalized = @{}
@@ -547,6 +589,16 @@ Start-Sleep -Seconds 25
     }
     [IO.File]::WriteAllText((Join-Path $RunRoot 'fixture-result.json'), (($valid | ConvertTo-Json -Depth 5) + "`n"), (New-Object Text.UTF8Encoding($false)))
     [IO.File]::WriteAllText((Join-Path $RunRoot 'foreign-sentinel.txt'), 'foreign-owner-preserved' + "`n", (New-Object Text.UTF8Encoding($false)))
+    $stableFixtureFile = Join-Path $RunRoot 'logs/stable-review-log.txt'
+    $volatileFixtureFile = Join-Path $RunRoot 'source/unity/Mahjong.Unity/Library/PackageCache/cache-entry.tmp'
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $stableFixtureFile),(Split-Path -Parent $volatileFixtureFile) | Out-Null
+    [IO.File]::WriteAllText($stableFixtureFile, 'stable-log-content' + "`n", (New-Object Text.UTF8Encoding($false)))
+    [IO.File]::WriteAllText($volatileFixtureFile, 'volatile-cache-content' + "`n", (New-Object Text.UTF8Encoding($false)))
+    $stableArtifacts = Get-C04StableArtifactFiles $RunRoot
+    $stablePaths = @($stableArtifacts | ForEach-Object { $_.FullName.Substring($RunRoot.Length).TrimStart('\','/').Replace('\','/') })
+    if ($stablePaths -notcontains 'logs/stable-review-log.txt' -or $stablePaths -contains 'source/unity/Mahjong.Unity/Library/PackageCache/cache-entry.tmp') {
+        throw 'Stable artifact manifest did not retain logs or separate volatile Unity Library cache.'
+    }
     $fixtureFiles = Get-ChildItem -LiteralPath $RunRoot -Recurse -File | Sort-Object FullName | ForEach-Object { [ordered]@{ path=$_.FullName.Substring($RunRoot.Length).TrimStart('\','/'); sha256=(Get-Sha256 $_.FullName); bytes=$_.Length } }
     [IO.File]::WriteAllText((Join-Path $RunRoot 'fixture-seal.json'), (($fixtureFiles | ConvertTo-Json -Depth 5) + "`n"), (New-Object Text.UTF8Encoding($false)))
     Write-Host "C04_TOOL_FIXTURES_PASS positive=1 negative=$($negatives.Count + $evidenceNegatives.Count + $markerNegatives.Count + 11) timeoutTree=PASS outputDrain=PASS outputFiles=$((Get-ChildItem -LiteralPath $RunRoot -Recurse -File).Count)"
@@ -702,12 +754,12 @@ try {
     [IO.File]::WriteAllText($summaryOut, (($final | ConvertTo-Json -Depth 12) + "`n"), (New-Object Text.UTF8Encoding($false)))
     Write-RunLog 'FINAL_SUMMARY_WRITTEN'
     $script:LogOpen = $false
-    $artifactFiles = Get-ChildItem -LiteralPath $RunRoot -Recurse -File | Where-Object { $_.Name -ne 'manifest.json' -and $_.Name -ne 'manifest.sha256' } | Sort-Object FullName
+    $artifactFiles = Get-C04StableArtifactFiles $RunRoot
     $artifacts = New-Object System.Collections.Generic.List[object]
     foreach ($file in $artifactFiles) {
         $artifacts.Add([ordered]@{ path=$file.FullName.Substring($RunRoot.Length).TrimStart('\','/').Replace('\','/'); bytes=[long]$file.Length; sha256=(Get-Sha256 $file.FullName) }) | Out-Null
     }
-    $manifest = [ordered]@{ schemaVersion=1; task='G2-C04-D03'; root=$RunRoot; entryCount=$artifacts.Count; entries=$artifacts }
+    $manifest = [ordered]@{ schemaVersion=1; task='G2-C04-D03'; root=$RunRoot; entryCount=$artifacts.Count; separatedVolatileRoots=(Get-C04SeparatedVolatileRoots $RunRoot); entries=$artifacts }
     $manifestPath = Join-Path $RunRoot 'manifest.json'
     [IO.File]::WriteAllText($manifestPath, (($manifest | ConvertTo-Json -Depth 10) + "`n"), (New-Object Text.UTF8Encoding($false)))
     [IO.File]::WriteAllText((Join-Path $RunRoot 'manifest.sha256'), ((Get-Sha256 $manifestPath) + "  manifest.json`n"), (New-Object Text.UTF8Encoding($false)))
@@ -739,12 +791,12 @@ catch {
     $script:LogOpen = $false
     $manifestPath = Join-Path $RunRoot 'manifest.json'
     if (-not (Test-Path -LiteralPath $manifestPath)) {
-        $failedArtifacts = Get-ChildItem -LiteralPath $RunRoot -Recurse -File | Where-Object { $_.Name -ne 'manifest.json' -and $_.Name -ne 'manifest.sha256' } | Sort-Object FullName
+        $failedArtifacts = Get-C04StableArtifactFiles $RunRoot
         $entries = New-Object System.Collections.Generic.List[object]
         foreach ($file in $failedArtifacts) {
             $entries.Add([ordered]@{ path=$file.FullName.Substring($RunRoot.Length).TrimStart('\','/').Replace('\','/'); bytes=[long]$file.Length; sha256=(Get-Sha256 $file.FullName) }) | Out-Null
         }
-        $failedManifest = [ordered]@{ schemaVersion=1; task='G2-C04-D03'; status='FAILED_RUN'; root=$RunRoot; entryCount=$entries.Count; entries=$entries }
+        $failedManifest = [ordered]@{ schemaVersion=1; task='G2-C04-D03'; status='FAILED_RUN'; root=$RunRoot; entryCount=$entries.Count; separatedVolatileRoots=(Get-C04SeparatedVolatileRoots $RunRoot); entries=$entries }
         [IO.File]::WriteAllText($manifestPath, (($failedManifest | ConvertTo-Json -Depth 10) + "`n"), (New-Object Text.UTF8Encoding($false)))
         [IO.File]::WriteAllText((Join-Path $RunRoot 'manifest.sha256'), ((Get-Sha256 $manifestPath) + "  manifest.json`n"), (New-Object Text.UTF8Encoding($false)))
     }

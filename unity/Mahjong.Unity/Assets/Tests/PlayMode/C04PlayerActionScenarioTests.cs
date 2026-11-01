@@ -6,7 +6,6 @@ using System.Threading;
 using System.Threading.Tasks;
 using Mahjong.Client;
 using Mahjong.Contracts;
-using Mahjong.LocalHost;
 using Mahjong.Unity.App;
 using Mahjong.Unity.Table;
 using NUnit.Framework;
@@ -18,10 +17,10 @@ namespace Mahjong.Unity.Tests.PlayMode
     /// <summary>Real LocalHost/Client action-path regression; never a scripted channel.</summary>
     public sealed class C04PlayerActionScenarioTests
     {
-        [UnityTest] public IEnumerator Pon_FixedPlayerActionIsAppliedAndVisible() => RunCase("C04-G2-01", LocalPlayerActionScenario.Pon, PlayerActionKind.DeclarePon, ProtocolEventType.PonDeclared);
-        [UnityTest] public IEnumerator Chi_FixedPlayerActionIsAppliedAndVisible() => RunCase("C04-G2-02", LocalPlayerActionScenario.Chi, PlayerActionKind.DeclareChi, ProtocolEventType.ChiDeclared);
-        [UnityTest] public IEnumerator Riichi_FixedPlayerActionIsAppliedAndVisible() => RunCase("C04-G2-03", LocalPlayerActionScenario.Riichi, PlayerActionKind.DeclareRiichi, ProtocolEventType.RiichiDeclared);
-        [UnityTest] public IEnumerator ClosedKan_FixedPlayerActionAndReplacementDrawAreApplied() => RunCase("C04-G2-04", LocalPlayerActionScenario.ClosedKan, PlayerActionKind.DeclareKan, ProtocolEventType.KanDeclared);
+        [UnityTest] public IEnumerator Pon_FixedPlayerActionIsAppliedAndVisible() => RunCase("C04-G2-01", "pon", PlayerActionKind.DeclarePon, ProtocolEventType.PonDeclared);
+        [UnityTest] public IEnumerator Chi_FixedPlayerActionIsAppliedAndVisible() => RunCase("C04-G2-02", "chi", PlayerActionKind.DeclareChi, ProtocolEventType.ChiDeclared);
+        [UnityTest] public IEnumerator Riichi_FixedPlayerActionIsAppliedAndVisible() => RunCase("C04-G2-03", "riichi", PlayerActionKind.DeclareRiichi, ProtocolEventType.RiichiDeclared);
+        [UnityTest] public IEnumerator ClosedKan_FixedPlayerActionAndReplacementDrawAreApplied() => RunCase("C04-G2-04", "closed-kan", PlayerActionKind.DeclareKan, ProtocolEventType.KanDeclared);
 
         private static IEnumerator RunCase(string caseId, string scenario, PlayerActionKind action, ProtocolEventType requiredEvent)
         {
