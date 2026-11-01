@@ -481,18 +481,24 @@ function Build-Player {
     # the staging plugins below, then removes this Editor-only guard from the
     # disposable staging copy (it is not part of a Player build).
     $stagingGuard = Join-Path $staging 'Assets\Editor\SharedPluginProvenanceGuard.cs'
+    $stagingPlayProbe = Join-Path $staging 'Assets\Editor\SharedPluginProvenancePlayProbe.cs'
     $guardAdaptation = [ordered]@{
         schemaVersion = 1
         kind = 'c04-recovery-staging-adaptation'
-        reason = 'source-tree guard resolves the repository default plugin dir, not the isolated staging copy'
+        reason = 'source-tree guard resolves the repository default plugin dir, not the isolated staging copy; the runner runs the same checker against staging first'
         guardRemoved = $false
+        playProbeRemoved = $false
         sourceGuardSha256 = if (Test-Path -LiteralPath $stagingGuard) { Get-Sha256 $stagingGuard } else { '' }
+        sourcePlayProbeSha256 = if (Test-Path -LiteralPath $stagingPlayProbe) { Get-Sha256 $stagingPlayProbe } else { '' }
     }
-    if (Test-Path -LiteralPath $stagingGuard) {
-        Remove-Item -LiteralPath $stagingGuard -Force
-        $stagingGuardMeta = $stagingGuard + '.meta'
-        if (Test-Path -LiteralPath $stagingGuardMeta) { Remove-Item -LiteralPath $stagingGuardMeta -Force }
-        $guardAdaptation.guardRemoved = $true
+    foreach ($stagingEditorFile in @($stagingGuard, $stagingPlayProbe)) {
+        if (Test-Path -LiteralPath $stagingEditorFile) {
+            Remove-Item -LiteralPath $stagingEditorFile -Force
+            $stagingMeta = $stagingEditorFile + '.meta'
+            if (Test-Path -LiteralPath $stagingMeta) { Remove-Item -LiteralPath $stagingMeta -Force }
+            if ($stagingEditorFile -eq $stagingGuard) { $guardAdaptation.guardRemoved = $true }
+            else { $guardAdaptation.playProbeRemoved = $true }
+        }
     }
     Write-JsonFile -Path (Join-Path $script:Root 'staging-adaptation.json') -Object $guardAdaptation | Out-Null
 
