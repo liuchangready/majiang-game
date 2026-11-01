@@ -133,8 +133,20 @@ function Assert-C04EvidenceStrict {
         if ($allowedKinds -notcontains [string]$request.kind) { $errors.Add('BAD_REQUEST_KIND') | Out-Null }
         $seenKinds[[string]$request.kind] = $true
         if ([string]$request.roundId -ne 'c04-g3-r1') { $errors.Add('FOREIGN_ROUND') | Out-Null }
-        if ([long]$request.controlEpoch -ne 0) { $errors.Add('FOREIGN_CONTROL_EPOCH') | Out-Null }
+        if (-not ($request.PSObject.Properties.Name -contains 'controlEpoch')) {
+            $errors.Add('MISSING_CONTROL_EPOCH') | Out-Null
+        }
+        elseif ([double]$request.controlEpoch % 1 -ne 0) {
+            $errors.Add('FRACTIONAL_CONTROL_EPOCH') | Out-Null
+        }
+        elseif ([long]$request.controlEpoch -ne 0) { $errors.Add('FOREIGN_CONTROL_EPOCH') | Out-Null }
         if ([string]$request.seat -ne '0') { $errors.Add('FOREIGN_SEAT') | Out-Null }
+        if ([long]$request.stateVersionAfter -lt [long]$request.stateVersionBefore) {
+            $errors.Add('STATE_VERSION_REGRESSION') | Out-Null
+        }
+        if ([string]$request.rawPayloadSha256 -eq [string]$request.payloadSha256) {
+            $errors.Add('RAW_HASH_EQUALS_CANONICAL') | Out-Null
+        }
     }
 
     if ($ExpectedCase -eq 'authorized') {
@@ -224,8 +236,12 @@ $EvidenceRoot = (Resolve-Path -LiteralPath $EvidenceRoot).Path
 if (-not $EvidenceRoot.StartsWith((Join-Path $root 'build') + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
     throw "EVIDENCE_ROOT_OUTSIDE_BUILD: $EvidenceRoot"
 }
-$playerHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $PlayerPath).Hash
-$playerBytes = (Get-Item -LiteralPath $PlayerPath).Length
+$playerHash = ''
+$playerBytes = 0
+if (Test-Path -LiteralPath $PlayerPath) {
+    $playerHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $PlayerPath).Hash
+    $playerBytes = (Get-Item -LiteralPath $PlayerPath).Length
+}
 
 $mutex = New-Object System.Threading.Mutex($false, $mutexName)
 $acquired = $false

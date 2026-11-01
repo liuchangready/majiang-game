@@ -248,3 +248,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 - R1-05 完整同一 Player run 仍未完成，runA（Beam+SWAP）与 runB（mark+sleeve）保留为不同包/不同路径历史，不合并六行 PASS。
 - R1-06 独立 staging、owned PID/timeout、BuildReport 3 errors 逐 step 归因仍未完成；旧 build errors=3 保留。
 - 报告字节损坏已从 416b14eb 原 UTF-8 blob 恢复；本节显式 UTF-8 追加，旧失败不重写为成功。
+
+## 11. R4 返修记录（追加）
+
+- fresh 路径：删除 mutex/build 前对不存在 PlayerPath 的无条件 Get-FileHash/Get-Item；不存在时 hash/bytes 置空，构建成功后再读取，并保留后续存在性校验。R1-06 的 fresh 提前失败已修。
+- Strict 增加：missing/fractional controlEpoch、stateVersion 倒退、raw 与 canonical 同值、invented/observed 占位观察拒绝。
+- 工具矩阵仍 19/19 native0；未完成原始 canonical bytes/scope digest/accepted publication/recovery 解码交叉绑定，R1-04 仍为部分。
+- R1-05 未改；R1-06 的 pinned staging/owned PID/timeout/BuildReport 3 errors/失败 seal 未完成。
