@@ -1,97 +1,117 @@
-# V5 G2-C04 恢复后原请求对账与零重复副作用 — R1 修复交付
+# V5 G2-C04 恢复后原请求对账 — R2 修复交付
 
-- 复核原件：`E:/majiang-review/caller-c04-d01-r1-review-94e237c1/build/caller-review/REVIEW.txt`，SHA256 `D24D54D0F33279D0DF45C0599634F76D6924045E4D55B1B7CE8C09AD1AB33B8E`；evidence CSV `A2B99814C23F651D56591D515B342D2CF088EA0E5B1C3A8620B873B914AA141D`。
-- 上一轮被复核代码：`993d172a2ee953a74134a95bb219a0560e22a18b`。
-- 本轮冻结 Player 源码 commit：`317f84984db108e7b5c42277eccdaa749482013e`（父链从 `cde5da1649d42151abaefc2edc5f558a287d703f` 起）；最终 code commit `295323b8ba114fe45d59fb50e52ac30c27948ea7` 只增加 verifier 的 launch.json 进程身份比对，Player 字节未变。
-- 本报告提交为报告-only child commit；最终 HEAD 与报告文件 SHA256 见交付消息。
-- 范围：8 个原有路径（含独立 verifier）+ 经授权的 2 个只读 .NET helper 文件 + 本 tracked 报告 = **11 个 tracked 路径**；未改冻结 production/client/runtime/collector/旧 decoder，未 fork 协议。
-- 状态：D01-R1-01..04 四组全部修复并验证；C04-G6 八行在真实 Windows Player 中 **8/8 PASS**。正式 C04/G2–G5 仍未批准；C04-G7-02 仍 BLOCKED；旧 Compare BLOCKED17/UNTRUSTED_LOCAL 与 15 项旧 UI 失败保留。未 push/建改 PR/approve/MR/merge/deploy/scheduler/complete.flag。
+- R2 复核原件：`E:/majiang-review/caller-c04-d01-r2-review-836d29b7/build/caller-review/REVIEW.txt`，SHA256 `2AA0D323E7E3B0151C9FA2403C3E72079D413A11369E6D53399E8508B3525355`。
+- `D01-R1-01`（隔离 staging，危险 source restore/clean 已移除）与 `D01-R1-04`（tracked 报告、测试路径）保持关闭，不重开。
+- 本轮修复 code commit：`5b7a50ac50baf6ed7360ea1ffd1c8e57a5e94899`；Player 源码冻结 commit 仍为 `317f84984db108e7b5c42277eccdaa749482013e`（Player 字节未变，`F083B0E8...`）。本报告为报告-only child commit；最终 HEAD/SHA 见交付消息。
+- 范围仍为 11 tracked 路径：8 原有路径 + 2 个授权 helper + 本报告。未改 production/client/runtime/collector/旧 decoder/协议；未 push/PR/approve/MR/merge/deploy/scheduler。
+- 结论：`D01-R1-02`、`D01-R1-03` 已按原位修复；R2 已放行变体全部非零 FAIL；八原始正例仍 8/8 PASS，原件/CSV 未改写。正式 C04/G2–G5 未批准，C04-G7-02 仍 BLOCKED。
 
-## 1. R1 缺陷逐条映射
+## 1. D01-R1-02 修复（原始 wire/动作/故障/固定分母）
 
-### D01-R1-01 BLOCKER — 宽泛清理破坏非本次所有改动
+### 1.1 Wire 身份与握手
+- helper 逐帧 protobuf 解码后，新增 `ValidateWireIdentity`：
+  - 必须恰有一个 IN `Welcome`、一个 IN player `SyncResponse`。
+  - `Welcome.session_id/room_id/seat_id/role/binding_epoch/scope.scope_id` 与 result binding 完全一致；scope account/role/room 与 expected account/Player/local-main 一致。
+  - 每个 envelope 非空 `session_id/room_id` 必须等于 binding；每个 `scope` 的 account/role/room 必须匹配，scope id 只能是新 binding scope 或原 request scope。
+  - 原始 `ReceiptQuery`/`ReceiptLookup` correlation、request/scope、Found/Applied、receipt digest/version/event 继续逐帧核对。
+- `foreign-wire-session`（7 处 session 替换并重算帧 SHA）现在 FAIL：Welcome/帧 session 与 result binding 不一致。
 
-修复：
+### 1.2 真实 Discard 效果
+- probe 保留 prepare/recover 的 IN 原始帧；runner 将 prepare `frames` 复制为 `prepare-frames`。
+- helper 从原始 `SyncResponse.Player` / `PlayerUpdate.snapshot` 解码：
+  - prepare pre/post 的 hand 数（`ClosedTiles + HasDrawnTileId`）、river 数、具体 river tile、`PlayerUpdate.visible_events` 中 `TileDiscarded` 数量。
+  - recover baseline snapshot 的 hand/river/tile 与 result state 对比。
+- `prepare.json` 的 hand/river 只作交叉核对，不再作为事实来源。
+- `invented-hand-river`（prepare/result 改成 1000/999、1000/1001，raw 不变）现在 FAIL。
 
-- `Build-Player` 不再对 source tree 执行任何 `git restore`/`git clean`。
-- 每次构建把 `Assets/Packages/ProjectSettings/slnx` 复制到本树 ignored `build/<GUID>/staging-project`，并只在 staging 内复用 Unity `Library`、运行 build-shared（`-PluginOutputDir` 指向 staging）与 Player build。
-- 源树只读；构建开始前只做 `git status --untracked-files=no` 的 tracked-clean preflight。预检后到达的 source 文件/并发修改不会被本工具写入或删除。
-- staging 内仅删除两个 Editor-only provenance 文件（源树 guard 会错误校验仓库默认 plugin 目录）：`SharedPluginProvenanceGuard.cs` 与 `SharedPluginProvenancePlayProbe.cs`；删除前记录 SHA 到 `staging-adaptation.json`，同一 `check-shared-plugins.ps1` 已先对 staging plugin 目录实际执行并通过。Player 不包含 Editor 程序集。
-- 无 `Remove-Item` 作用于 source tree；仅 fault fixture 的 case `local/*.save` 与 staging 文件。
+### 1.3 故障实际施加与恢复选择
+- runner 在 `Apply-Fault` 前后复制 primary/backup 到 `boundary/*-before.save`、`*-after.save`，并记录 `prepare-launch.json` / `prepare-player.log`。
+- helper `ValidateFaultBoundary` 用 `LocalTableRecoveryFactsReader` 独立验证：
+  - `None`：before/after primary+backup 均有效且 primary 字节不变。
+  - `TruncatePrimary`/`BadChecksumPrimary`：after primary 无效、backup 有效。
+  - `MissingPrimaryWithBackup`：after primary 不存在、backup 有效。
+  - `BothMissing`：after 两者均不存在。
+  - `BothBad`：after 两者均无效。
+  - `IncompatiblePrimary`：after primary 无效、backup 有效。
+  - Force 行：prepare launch native 非 0、未 timeout、`prepare-player.log` 含 `FORCE_KILLED`；非 Force 行 prepare native 0。
+- `relabel-all-metadata`（G6-01/None 改 G6-03/TruncatePrimary，raw save/frames 不变）现在 FAIL：boundary 仍是两个有效 save，不符合 Truncate 分支。
 
-证据：`build/c04-recovery-request/r1-final-authoritative/staging-adaptation.json`；`source-snapshot.json`（`treeSha256=04AF08800BF60D7EE98AE811B07AF0183FABAEB55149D4DF99E5F99E1B09F663`）；source tree 构建前后 `git status` clean。旧失败构建全部保留在 `r1-final-1..5`、`r1-cases-3..6`。
+### 1.4 固定分母与外部 pin
+- `Write-Summary` 新增：
+  - `caseSetComplete`；`expectedCaseCount=8`；`uniqueCaseCount`；`partial`。
+  - 缺/重复/少于 8 固定 ID 时状态为 `PARTIAL`，永不 PASS。
+- `Mode Verify`：
+  - 必须显式传 `-HelperPath`（可信 helper，不再由 summary 指定）。
+  - 支持 `-ExpectedSummarySha256` 外部 pin；不匹配即失败。
+  - 必须 `summary.status=PASS`、`caseSetComplete=true`、8 个 case、8 个唯一固定 ID；空/重复/subset 全拒绝。
+- `empty-root-verify`（cases=[]）现在非零 FAIL。
+- Unknown 仍为 .NET recording-channel 受控注入；Player 仍只覆盖五 Found + 三安全边界，不宣称自然 Unknown。
 
-### D01-R1-02 MAJOR — verifier 只信 summary/帧 metadata
+## 2. D01-R1-03 修复（launch/process/source/package）
 
-修复：
+### 2.1 launch 强制
+- wrapper 不再 `if (Test-Path launch)`：缺失 `launch.json` 直接 FAIL。
+- launch 必须：
+  - `probeMode=Recover`、case/fault/outcome 与 result 一致。
+  - `timedOut=false`、`nativeExitCode=0`。
+  - PID/start/path/SHA 与 result.process 逐项一致。
+- `missing-launch`、`bad-native`（native=17、timedOut=true）现在 FAIL。
 
-- 新增只读 helper `dotnet/tools/C04RecoveryReconciliationVerifier/Program.cs`，引用现有 `Mahjong.Contracts.Wire`、`Mahjong.LocalHost`、`Mahjong.Client`。
-- 逐帧用 `WireEnvelope.Parser` 解码；核对 direction/body/type/session/room/role/account/scope/request/correlation 与 metadata 完全一致。
-- recovered 行要求一个真实 OUT `ReceiptQuery`（原 request/scope/correlation）和一个匹配 IN `ReceiptLookup` Found/Applied，receipt 的 canonical digest/evaluated/command/event 与原件一致；拒绝原 command resend/自然 receipt 替代。
-- 从 probe 导出的 raw `authority/*.save` + `*.bin` 用 `LocalTableRecoveryFactsReader` 独立重算 state/event/ledger/physical/receipt；比较 prepare-pre/prepare-post/recover-baseline/after/repeat；重复查询零增量；outbox 用 `FileOutboxStore` 重读 1/1/0 与原 request/digest。
-- FRESH_START 要求旧 outbox 保留 1、无旧 scope/request frame、无 Command/Query、stateVersion 0 且无旧 receipt；REJECTED 要求 0 frame、无 binding/Ready、raw primary/backup SHA 与 input 完全不变。
-- 固定 8 行 case/fault/outcome 映射；错误/空/重复/错 case 拒绝。`prepare.api` 改为真实 `SUBMIT_ACTION`。
-- Probe 的 IN/OUT frame 全部落盘；`.NET UnknownOnce` 仅为 .NET recording-channel 的受控传输注入，报告中明确不是 Player/真实服务自然 Unknown；Player 只覆盖五个 Found + 三个安全边界。
-- 工具 fixture 全部改为从真实案卷复制的 TOOL_FIXTURE；10/10：2 正例 + 8 负例（garbage reframed、missing inbound lookup、foreign identity、invented ledger、rejected ready、missing raw authority、wrong digest、wrong case policy）。
+### 2.2 原始 build/source/package pin
+- `Bind-ExistingPlayer` 新增：
+  - build marker 同目录必须有 `source-snapshot.json`，且 `sourceHead` 一致。
+  - `git cat-file -e <sourceHead>:.../C04RecoveryReconciliationProbe.cs` 与 Editor build 文件均必须存在；`cde5da16` 不含 probe，直接拒绝。
+  - package manifest `files.Count` 必须等于 `fileCount`；路径唯一、逐文件 bytes/SHA、总 bytes 匹配；实际 205 文件集合必须与 manifest 双向一致（拒绝空/缺/重复/追加）。
+- caller stale-source relabel（改 marker source 为 cde5）与 empty package（fileCount205/files=[]）现在 FAIL；原始 317f 正确 package 仍 PASS。
+- Build-Player 在 staging 后写 `staging-source.json`：实际 346 个 Assets/Packages/ProjectSettings/slnx 输入及适配文件 SHA；`source-snapshot.json` 绑定 HEAD/tree/8 输入；`build-shared` 已转发 `-DotnetPath`。
 
-证据：`build/c04-recovery-request/r1-final-authoritative/helper/C04RecoveryReconciliationVerifier.dll` SHA256 `CC70263C8F44F7147C7D3A1E6A2EEB7615AECFA12BAD6734B2A9E81B738AB812`；工具 summary `build/c04-recovery-verifier-tests/7bd16ca8f4324882a403f0301fc37afc/summary.json` SHA256 `5F6A9055077E32389B67257FAC495AA6F78161087E63C5BEAF92162851BD9595`，10/10；verifier 另将 case `process` 的 PID/start/path/SHA 与 owned `launch.json` 逐项比对。
+## 3. R2 负例矩阵（实际执行）
 
-### D01-R1-03 MAJOR — build/source/process 绑定、原生 gate、封存清单不完整
+| 变体 | 结果 | 退出/证据 |
+|---|---|---|
+| foreign-wire-session（7 处 session 替换、重算 SHA） | 拒绝 | verifier exit 1 |
+| invented-hand-river（raw 不变，claims 1000/999） | 拒绝 | exit 1 |
+| relabel-all-metadata（G6-01→G6-03，raw 不变） | 拒绝 | exit 1 |
+| missing-launch | 拒绝 | exit 1 |
+| bad-native（native17/timedOut） | 拒绝 | exit 1 |
+| empty-root-verify（cases=[]） | 拒绝 | 非零 |
+| stale source record + forged matching snapshot | 拒绝 | `git cat-file` 证明 cde5 无 probe |
+| empty package files/fileCount205 | 拒绝 | `PACKAGE_MANIFEST_COUNT_MISMATCH` |
 
-修复：
+负例结果：`build/c04-recovery-request/r2-negatives/results.json`、`r2-bind-negatives/results.json`。
+正例：八原件/新采八行全部 PASS；caller 原 205 文件/306 CSV 未改动。
 
-- 先冻结源码 commit（本轮 Player 源码 commit `317f8498`），再构建；`source-snapshot.json` 记录 HEAD、`git ls-tree` tree hash、C04 输入文件 SHA；build marker 强制 `sourceHead/buildCommit` 等于冻结 commit。
-- staging 构建；Unity 由真实 .NET `Process` 启动并等待，记录 PID/start/path/native exit；`nativeExit != 0` 立即失败。
-- Build marker 必须 `result=Succeeded` 且 `errors=0`；marker output/playerSha/plugin hashes 必须与实测 exe/staging plugins 一致。
-- 现有 Player 只能通过 `-BuildRecordPath` + `-PackageManifestPath` 绑定原 build record/package，不再用当前 HEAD 重贴标签。
-- `Write-Summary` 在写 CSV 前完成最后一次 tool.log 写入，并只枚举 `player/helper/logs/prepare*/cases` 与顶层文件，排除 staging；manifest 生成后不再写任何封存文件。实测 `logs/tool.log` CSV SHA 与实际一致；`Mode Verify` 只写新 `-OutputDir`，源 evidence CSV SHA 前后不变（`27E4F221...`）。
-- 旧 runs（`r1-final-1..5`、`r1-cases-1..6`）保留为 invalid/incomplete，不回填、不重标。
+## 4. 最终 Player 执行（复用已核验 317f 包，未重建 Unity）
 
-证据：`source-snapshot.json` SHA256 `4C62B6FEF8C1F747255C752242D0EEE13D4E5119D6BECD62E310592B4880444D`；`build-marker.json` SHA256 `F27A29251FED7713F1118E4E7FB9C7870CC7B9EDDF3B65A41BCE2C16F094F2A3`（Succeeded/errors0/warnings193）；`logs/unity-exit.json` native 0；Player SHA `F083B0E8...`；package 205 files manifest `3D5AE0C1...`；summary `02D73013...`；evidence CSV `27E4F221...`。
+执行根：`build/c04-recovery-request/r2-cases-2/`。
+summary SHA `C1D87E55D71BB8D3E7C5C6761B193EB5173BC99CB38096F84FBEB6F6C3E2BB37`；evidence CSV `9F1245DD5ADE8204587B5BDC79F2034879003C495803EDD0DE1637361EEF7A87`。
+Player SHA `F083B0E879A9298CDCF9933A8F3B4F2B013E13F7D3E51221FC0D756B79E28807`；package 205 / `3D5AE0C1DDCD61A11FA5A9F9262A8BA59B6BC90A11E216BB28E6143BC8934D6F`。helper SHA `5C214CFBDEE5174F5415CD8024AD6D870F6B833F8ED8EB28FA3E85690F01B851`。
 
-### D01-R1-04 MAJOR — tracked 报告缺失、路径不符
-
-修复：
-
-- 工具测试已改名/移动为 `tools/tests/VerifyP45C04RecoveryReconciliation.Tests.ps1`。
-- 本文件 `doc/v5-重构/V5-G2-C04-RECOVERY-REQUEST-DELIVERY-20261101.md` 为 tracked 报告。
-- 保留必要独立 `tools/unity/verify-p45-c04-recovery-reconciliation.ps1` 及授权 helper 两文件。
-- 最终 tracked diff 为 11 路径（8 原有 + 2 helper + 本报告），无其它 scope；报告记录真实命令/计数/native/首失败/大小写/限制。
-
-## 2. 最终 Player 执行（本轮新运行）
-
-构建根：`build/c04-recovery-request/r1-final-authoritative/`（Player source `317f8498`）；最终执行根：`build/c04-recovery-request/r1-cases-8/`。
-Player build：source `317f8498`；Unity native 0；marker Succeeded/errors0；Player `F083B0E879A9298CDCF9933A8F3B4F2B013E13F7D3E51221FC0D756B79E28807`；package 205 files / manifest `3D5AE0C1DDCD61A11FA5A9F9262A8BA59B6BC90A11E216BB28E6143BC8934D6F`。
-
-| 行 | 结果 | stateVersion | eventSeq | hand | river | 原 scope query | 原 request Command | result SHA / verification SHA |
+| 行 | 结果 | stateVersion | eventSeq | hand | river | query | command | result / verification SHA |
 |---|---|---|---:|---:|---:|---:|---:|---|
-| G6-01 | RECOVERED | 1 | 2 | 13 | 1 | 1 | 0 | `59F6D18E88C28B706FCA38C36BA1E319903D490C5ED081DEC8C2ADDC9FBB660B` / `03265552B95346A08FD39BDACF760EC0AF53E53B4F8451EBBFB8E45FB0E18577` |
-| G6-02 | RECOVERED（Force） | 1 | 2 | 13 | 1 | 1 | 0 | `9C18738F1EE91DF6C009ADA3ED105AA87B4812675FC098621F2CF3EC0830CDAA` / `950F00CD9E06705572B96740D0054105ED7E2DCB3D413D254C77CE4AA5B45E31` |
-| G6-03 | RECOVERED_FROM_BACKUP | 1 | 2 | 13 | 1 | 1 | 0 | `DDDC82502D3954ED73B0DC00B761DCCD2818878FCFA3EF873480B1636CCF0D51` / `1AA7240823A03C3941A8752A58DD268B901DDF0AFE6FEC7F9B8C30521097271B` |
-| G6-04 | RECOVERED_FROM_BACKUP | 1 | 2 | 13 | 1 | 1 | 0 | `113705F49ABA7C042C53969675F9176D95A3C4362D24C67BB640D0EB020080D1` / `F73042C1163F4DAA2614782A4DBD387DA175491C86E53EED17ED4A65EAF457DB` |
-| G6-05 | RECOVERED_FROM_BACKUP | 1 | 2 | 13 | 1 | 1 | 0 | `9E8D569C0C8F196356A259A33897CF19CF8779939B78DA882936FCA82974B4CD` / `422B069FBDDC0E3C25EDF18C2EAD3D1687727B41BC617AE0C482997FFBB451D6` |
-| G6-06 | FRESH_START | 0 | 0 | n/a | n/a | 0 | 0 | `AC7D288EC4D82342B6463836A02E037E6D73A4E2081DBC5AF53570A917F54E25` / `208BAEB2AEA499CCCACB72FED24EEEEF558AB950128F08D6A7DEBDBBA5AD02A1` |
-| G6-07 | REJECTED | n/a | n/a | n/a | n/a | 0 | 0 | `6CA01CE99D4F4F4537885B1757760688FD626AA7476A0A949EE7B2822F789044` / `666867FE5C16CF420511ED07C4FD1B51144D3EF3AD0FCDCDDB9ACC30DBC2DAA2` |
-| G6-08 | REJECTED | n/a | n/a | n/a | n/a | 0 | 0 | `F52BB166AE9E702FBA40A01F0C150E37F9393FA34A56B6F2B013EB683A26CB59` / `C5BB46979BC9AABA5AF8C08300003ED799FDB02F6EFE2DB272666E7211CBC731` |
+| G6-01 | RECOVERED | 1 | 2 | 13 | 1 | 1 | 0 | `C3F6BC8EC246D2FEF9E25BF3729BCD2BD0AACF10F5B18014E4BF2F136D0847EB` / `E7F7BCA34B5CC74BF6ED080C5E70E4DF2686418D1EA6EB3A5E6510AE525021D4` |
+| G6-02 | RECOVERED（Force） | 1 | 2 | 13 | 1 | 1 | 0 | `5DBCCE625857A2921BBC639BD1BF57144E611CEAB1283C81F0ADBD88BBFEC248` / `E2EB8F8C6EBD761ADEDC1D290BAD1C727E88B98D9654059FE900991C4AF44CD5` |
+| G6-03 | RECOVERED_FROM_BACKUP | 1 | 2 | 13 | 1 | 1 | 0 | `7F3B08A572AFE319E4184E3F1E65700B163D766DCEFB5A91AA80C82EC81030FC` / `0DDED235FADA09EA14B4F558C2DDD73961418B0FB3832EB3DDBA343CA5AA316C` |
+| G6-04 | RECOVERED_FROM_BACKUP | 1 | 2 | 13 | 1 | 1 | 0 | `3ADFE4E38E4469E1C4660B07FE4E6F2008BB0E754124E92F19EB15CA44AE51BA` / `480D7A49C9D519F1EC43A667AE94D7B9EBE55B2E0B2359C3D7E643E6CC754E42` |
+| G6-05 | RECOVERED_FROM_BACKUP | 1 | 2 | 13 | 1 | 1 | 0 | `56F028481197042C47B34B3500E9A7D4A41ACD922CC67F47D208185B39B9FC68` / `FDBCD1695E5C591018E94703317D8424E42A85DB137F6BAF1CC3A4DDC2833DF0` |
+| G6-06 | FRESH_START | 0 | 0 | n/a | n/a | 0 | 0 | `A4F3C2A5340C27D4C8B3B47FBD1B5BF75189BA660EDCF47921D900E0CD71B2FD` / `5601665C63660C1DF8CD33E9CF11EAFD8EC47832DD02AC4F708FE394630A094C` |
+| G6-07 | REJECTED | n/a | n/a | n/a | n/a | 0 | 0 | `FB2EEECA3CB9B3B150FF0D246E242E569086D30B29720267C586F6BC2117EB29` / `6C618D2DC5941B51B19A03409C17B05A0431E9302913FF199E3ECA6C0859A7F1` |
+| G6-08 | REJECTED | n/a | n/a | n/a | n/a | 0 | 0 | `C2E693FF5A085A68B61E17FFA93312ADA0F5A571F47C878E43FD7D682BCB1C22` / `55484D804ACFDD42D44099855C062FFF9621EA3FC86C43983C3EA33FAF4D10E3` |
 
-所有 Recover native 0；普通 Prepare 0；Force Prepare native −1（自主 `Process.Kill`，`prepare-force/player.log` 有 `FORCE_KILLED`）。每个 case 均有 raw `authority/*.save/*.bin/*.dat`、`frames/*.bin`、`launch.json`、`player.log`、`result.json`、`verification.json`。
+所有 Recover native 0；Force prepare native −1；普通 prepare 0。每例保留 `boundary/*`、`prepare-frames`、`prepare-launch.json`、`prepare-player.log`、raw authority/frames/launch。
 
-## 3. .NET / 工具 / 完整性
+## 5. .NET/工具/完整性
 
-- LocalHost：**143/143 PASS，0 failed/skipped，native 0**（含 9 个 C04 新用例）。
-- 工具负例：**10/10 PASS**，summary SHA `5F6A9055077E32389B67257FAC495AA6F78161087E63C5BEAF92162851BD9595`。
-- 全量 `.NET verify-v5` 未在本轮重跑；上一轮实际 2,830 total / 2,756 pass / 62 fail / 12 skip，62 fail 全为 PG env BLOCKED（`MAHJONG_P54B_TEST_PG_ADMIN` / `MAHJONG_P52_TEST_POSTGRES_ADMIN`），12 为 LobbyService 既有 skip；不把其写成 D01 回归或全绿。
-- 封存：`summary.json` SHA `0ADEE2AB73BD224413EA5804989A22B9FC452F389770162CBE2532085BC5ECCF`；evidence CSV `9E1543A58391992958B650C72A1974892D37B9B92F0EB3838348CE24D94A14D5`（tool.log CSV=actual）；`source-snapshot` `4C62B6FE...`；`Mode Verify` 在 `r1-verify-3` native 0，源 CSV SHA 前后完全一致。
+- LocalHost：**143/143 PASS**，0 failed/skipped，native 0。
+- 工具矩阵：**10/10 PASS**，summary SHA `9E6B65466A1423C40DFBC95538ED890E22CAA9CD2B38AE9EE4C666AD74A13DB8`。
+- `Mode Verify` 以 `-ExpectedSummarySha256 C1D8...` + 外部 helper 运行 native 0；源 evidence CSV SHA 前后不变 `9F1245DD...`。
+- `staging-source.json` SHA `87C468EA8570FF22580B037C2DEF167DADAC6221A3D3C326EBBFB9302C74CF3F`（346 inputs）。
+- 全量 .NET 未在本轮重跑；上轮 2,830 total / 2,756 pass / 62 PG-BLOCKED / 12 skip，仍按环境限制单列，不作为 D01 正例或回归。
 
-## 4. 首失败/旧案卷保留
+## 6. 首失败保留与限制
 
-- R1 首轮构建失败：`r1-final-1`（staging package cache 不完整、native1）、`r1-final-2`（Library 复制路径过长）、`r1-final-3`（source-tree provenance guard 误校验默认 plugin）、`r1-final-4`（移除 guard 后 play probe 编译失败）、`r1-final-5`（case 未复制 prepare/authority，helper 失败）。
-- R1 verifier 首失败：`r1-cases-3/4/5`（rejected 缺 binding/null、helper 旧路径）。全部保留，未删除、未用旧产物替代。
-- 旧 C03/C01/C02/C05 证据、旧 Compare、15 项 UI 失败均未重跑/改写。
-
-## 5. 限制与状态
-
-- PG 依赖全量测试仍为环境 BLOCKED；本轮未获 PG 资源，不要求重跑。
-- 正式 C04 33 行、C05、G2–G5、Android/iOS 设备仍未通过；本报告只关闭 D01-R1 四组修复。
-- Player 8/8 是 C04-D01 Player 场景证据，不等于 G2。
-- 未 push/建改 PR/approve/MR/merge/deploy/scheduler/complete.flag；等待 caller 独立复核与唯一 Draft PR20 处理。
+- R2 首轮构建/门禁失败：`r2-cases-1` 的旧 helper（缺 prepare launch 完整检查）保留；`r2-cases-2` 为修正后正例。
+- R2 变体原件：`r2-negatives/foreign-wire-session`、`invented-hand-river`、`relabel-all`、`missing-launch`、`bad-native`、`empty-root`；`r2-bind-negatives/stale-source-*`、`empty-package-*` 全部保留。
+- 旧 R1 证据 `r1-cases-8`、`r1-final-authoritative`、caller 原件均未改写/回填。
+- PG 62 BLOCKED + 12 skip 为环境限制；正式 C04/G2–G5 未批准，C04-G7-02 仍 BLOCKED；旧 Compare BLOCKED17/UNTRUSTED_LOCAL、15 项旧 UI 失败保留。
+- 未 push/建改 PR/approve/MR/merge/deploy/scheduler/complete.flag；等待 caller 独立复核。
