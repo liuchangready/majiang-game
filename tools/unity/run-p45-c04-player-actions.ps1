@@ -783,8 +783,8 @@ try {
     if ($extract.exitCode -ne 0) { throw 'Frozen source archive extraction failed.' }
     Assert-C04ArchiveHasNoGitMetadata $source | Out-Null
     $sourceClosureSha = Get-ClosureManifest $source (Join-Path $RunRoot 'source-prebuild-closure.json')
-    $projectStageRoot = Join-Path 'E:\c04' $runId
-    if (Test-Path -LiteralPath $projectStageRoot) { throw 'Exclusive short-path staging root already exists; refusing to overwrite.' }
+    $projectStageRoot = Join-Path 'E:\' $runId
+    if (Test-Path -LiteralPath $projectStageRoot) { throw 'Exclusive E-drive GUID staging root already exists; refusing to overwrite.' }
     New-Item -ItemType Directory -Path $projectStageRoot | Out-Null
     $sourceRepo = $projectStageRoot
     $script:stagedRepositoryRoot = $sourceRepo
