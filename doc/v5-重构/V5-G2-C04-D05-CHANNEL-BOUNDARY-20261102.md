@@ -1011,3 +1011,14 @@ N5/N6 必须逐行覆盖 §4.7 状态动作表：connected human、disconnected 
 - 正文哈希（文件开头至本文件唯一一个 HTML 正文结束注释行，含该行）SHA256：`8310A61AAB25DF70C70732CCDFF5B585B9EF7445467107B55036F2D603EBF53D`。
 - 该哈希不覆盖本节，避免自引用；复算时截取到标记行即可。
 - 最终提交后的整文件 SHA256 由提交记录标识；本任务不把未提交的中间 hash 当作验收。
+## 12. Caller 独立验收（2026-11-02）
+
+本节更新前文接收方交付时的 `NOT_ACCEPTED` 状态：**本前置报告已独立接受，D05-PREP-R1-01..04 全部关闭**。受审提交为 `86d50a82b7812416e1067023354bae9168cbd42a`，本次补记仅报告，正文冻结哈希 `8310A61AAB25DF70C70732CCDFF5B585B9EF7445467107B55036F2D603EBF53D` 所覆盖内容保持不变。
+
+调用方在 `E:/majiang-review/caller-d05-boundary-r2-8b45c6f1` 实际运行现有文档审计，**40/40、原生退出 0**；并逐段复核 D01 已接受边界、ticket 唯一消费/重连状态机、当前控制者与已开放 deadline 状态表、按 owner/audience/版本/可见性区分私有信息与合法公开信息。11 条最小现有文件路径均存在；相对冻结生产源只有本报告，无源码或既有测试改动。
+
+原真实通道探针 **66 项长度/哈希全部一致**，manifest SHA256 `BBC5A68853A3CE5DC881187BE992482080AED4796338AB2DD6FB3420F1561B19`。原 R1 调用方 fresh 构建/真实通道 **18/18、native 0** 的记录保持有效；本轮只有文档变化，未重跑该探针，不将其计为本轮新产品测试。
+
+完整独立复核、实际审计及保留证据核验位于上述独立树 `build/caller-review/REVIEW.txt`、`audit.json`、`retained-evidence-audit.json`；最终清单为 `review-manifest.sha256.json`。本节在正文哈希范围外。
+
+本接受范围为现状核定与下一实现合同；正式 D05、C04-G5-01..03 仍 `NOT_RUN`，不启动实施后继。D03 独占交集须待其验收后串行安排，三绝技人工范围不变。未运行 Unity/Player/PG/Android/设备，未审当前 publication 的远端 CI；G2–G5 未批准，V4 仍生产。仅同步既有 Draft PR20，不合并、部署或修改定时任务。
