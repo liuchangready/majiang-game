@@ -502,3 +502,21 @@ Get-Content (Join-Path $out 'summary.json'), (Join-Path $out 'build-report.json'
 **下一 owner**：caller 指定的正式 C05 Android owner，在 post-UI15（734b3775）/post-recovery 候选冻结后重新绑定并构建；使用现有已接受显式 manifest 路径，无需新的 manifest pin/provisioning 批准。本接收方不自行批准、不继续跑构建、不代签 G2。
 
 **报告自身 SHA256**：见交付消息/复核回执（避免文件内自引用；JSON 不含报告 SHA）。
+
+## 10. Caller 独立验收（2026-11-01）
+
+本准备任务通过，C05-PREP-R1-01/02/03 三组 MAJOR 均关闭。Receiver final 为 `3980c6f400080aa513deefb51567e5e1c82eb5c7`；提交时报告 SHA256 为 `C15D2FCA42A347E341237D269B5C4F787A068DC59266F4309C5647DCAA2B83AB`，JSON SHA256 为 `E07C052DF07C9B87FAF751AD1F5AF3D254814EE056DB5C2928B53EFCFEADCF7A`。Caller 将这两个授权文档合入已接受 UI15 publication `734b3775`，受检 merge 为 `0cc22831e3871e9601ddf8f8a534276b40ead4af`；生产源码、UI15 测试和工具均与此前 PR20 完全一致。发布提交仅补本节，不修改 JSON 绑定。
+
+实际执行与证据位于 `E:/majiang-review/caller-c05-prep-r2-closeout-582b16e4/build/caller-review/`：
+
+- 原 `validate-binding-r1.ps1 -NoWrite`：**57/57 PASS，native exit 0**；没有覆盖 receiver 原件。输出 SHA256：`668E1371C80EA59DEC6B3EA4D7676FE7C0FA9A5CA6CCF5A9D16F61D34DB18C0F`。
+- Caller 独立检查：**32/32 PASS**。逐一重算 150 个 shared 输入、16 个关键文件、6 个场景、8 个插件文件、8 份 authority 文档及 22 份带摘要的证据；冻结 candidate tree、精确两文件范围、原始报告/JSON 摘要均一致。`independent-results.json` SHA256：`C9FFB4BA002EAB8C764BA584EA690B8E5016B39A068FAC0E55426A8C55A9E95C`。
+- 实际执行未改动的只读 manifest/helper preflight：原已接受 `E478...` pin 和两个 helper 匹配；未创建真实构建输出、未运行 helper/Unity/APK/设备。
+- 解析实际冻结脚本 AST，确认 failure-summary 的 11 个键与 JSON 完全一致；解析全部命令组，PS5.1 语法通过。
+- 使用 JSON 中的原样 build/device 命令，仅将 `$root` 替换为带空格的独占 TOOL_FIXTURE 根，从另一 cwd 执行，确认构建及六种设备动作都选择 fixture 根下的绝对脚本和输出目录。fixture 只记录参数，没有 Unity、adb、APK 或设备副作用；成功路径 native0。另将 mock build 设为返回 17，原模板以 native1 拒绝继续，这是预期负例通过。
+
+Caller 首次组装检查脚本时，嵌套 here-string 导致 PowerShell 解析失败；没有执行产品或写 receiver 证据。改用独立脚本文件后上述检查全部通过。该调用方包装错误不计作产品测试失败。
+
+本次仅接受 **cde5 历史快照的环境调查、绑定与正式构建交接准备**。JSON 没有被重绑为当前 PR20 最终候选；UI15 和后续恢复增量合回后，正式 C05 owner 必须重新固定最终候选与输入。执行正式构建时由已接受 build 脚本取得并持有 Unity mutex，外层不要先持同名锁再跨进程调用脚本。没有新 pin/provisioning 授权依赖。
+
+APK、Unity/Player、设备、视觉/触控、弱网、离线 restore 和 license 实测仍保留原 NOT_RUN/NOT_VERIFIED/无设备边界；不将 TOOL_FIXTURE 或 preflight 写成游戏结果。C04/C05/G2–G5 未获本次批准。使用唯一现有 PR20，保持 OPEN/Draft；不合并、不部署、不改调度，PR24 保持原状。
