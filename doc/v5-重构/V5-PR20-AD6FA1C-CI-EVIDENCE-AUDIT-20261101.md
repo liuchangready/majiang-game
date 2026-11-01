@@ -800,3 +800,37 @@ dotnetTest/selfcheck/gitpin NOT_RUN 与历史 `39970580589` BLOCKED 均保持不
   未改 scheduler/`complete.flag`/lock；未运行 Unity/Player/Android/adb/设备，未运行本地
   PG/.NET 产品测试，未重跑 CI。
 - 调用方独立复核后可决定报告是否纳入现有 PR20；G2–G5 仍未批准，V4 仍是生产基线。
+
+## 13. Caller 独立验收（2026-11-01）
+
+**本审计任务范围 PASS；源 CI 证据整体仍为 REVIEW_INCOMPLETE。** Caller 关闭报告复核组
+`AUD-AD6-R1-01`：D-02 的允许补丁滚动与 D-09 的 checkout 原字节表示均已在摘要、状态、
+严重度和矩阵中一致改为 INFO；两 run 的实际 SDK/runtime、原始哈希和所有已证实的证据缺口
+保持不变。本结论接受的是审计报告，不是批准其列出的源 CI 门禁、PG 或平台缺口。
+
+接收方最终提交 `4a97d1645317c75064f2e4264cd29fbfae2176db`，原报告 SHA256
+`AD45BF60FE082A11207D78A449F398F26805D6E7D2FD7F802F5CDCF7581DCF42`。
+Caller 从既有 PR20 source `ad6fa1c` 合入该报告，准备提交
+`a2114675de210c3d1b9c1ba480a7410470d8ac05` 相对原 source 只新增本报告；本节是后续 caller
+记录，不改变受测 source、原始 CI 产物或 receiver 封存清单。
+
+Caller 实际运行独立原件复算脚本，native exit 0：
+
+- 597 个封存文件 / 44,665,056 bytes 全部匹配；两 ZIP 各 270 项和 table manifest 各
+  152 项的原字节 SHA256 匹配。
+- 每 run 的 14 工程各 2830/2830 Pass、198 collections、唯一 test ID；两 run 用例
+  multiset 相同、ID 交集 0。table 42/13 为已有子集执行，不加总为新增覆盖。
+- 两 run 共享插件 19 outputs、150 inputs；二进制 `git cat-file --batch` 独立复算
+  raw Git blob 0/150、CRLF checkout 150/150、unexplained 0。
+- 实际目标 table gate 的 assembly-only / duplicate-id 负例仍被接受；PG helper 5-byte
+  原日志、缺 ownership marker 等原件限制复核属实，仍按正文保留 FAIL/BLOCKED。
+
+Caller 证据根为 `E:/majiang-review/caller-ad6fa1c-audit-r2-closeout-d3187b6c/build/caller-review/`；
+`REVIEW.txt` SHA256 `6C9231B7274398EFC522033CE2C691839122C95904621A26AE0CFEF1CB9BF84F`；
+`evidence-manifest.csv` SHA256 `2364792B8E1B983AA44F728D61B419B732E365BD988584FEA92FEB97D41C689C`。
+这是原 CI 证据的独立复算，没有运行本地 PG/.NET 产品测试、Unity/Player/Android/adb/设备，
+没有手动重跑 CI。本报告的新发布提交不受这两次冻结头 CI 认证。
+
+Caller 沿用唯一 PR20、既有远端和源分支统一发布报告；保持 OPEN/Draft，不合并 v5、不部署。
+历史 `39970580589`、dotnetTest/selfcheck/git pins NOT_RUN、自然整场 PG 及正式 C04/C05、
+G2–G5 的边界均不因接受本报告而改变；其他线程与未验收增量不纳入本次发布。
