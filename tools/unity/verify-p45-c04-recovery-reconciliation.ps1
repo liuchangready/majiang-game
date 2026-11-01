@@ -27,6 +27,27 @@ param(
 $ErrorActionPreference = 'Stop'
 $errors = New-Object System.Collections.Generic.List[string]
 
+# Bind the recorded process identity to the launch observation for this exact case.
+$caseRoot = Split-Path -Parent ([IO.Path]::GetFullPath($ResultPath))
+$launchPath = Join-Path $caseRoot 'launch.json'
+if (Test-Path -LiteralPath $launchPath) {
+    try {
+        $resultForLaunch = [IO.File]::ReadAllText($ResultPath) | ConvertFrom-Json
+        $launch = [IO.File]::ReadAllText($launchPath) | ConvertFrom-Json
+        $process = $resultForLaunch.process
+        if ($null -eq $process -or
+            [int]$process.pid -ne [int]$launch.pid -or
+            [string]$process.startUtc -ne [string]$launch.startTimeUtc -or
+            [string]$process.path -ne [string]$launch.path -or
+            -not [string]::Equals([string]$process.sha256, [string]$launch.sha256, [StringComparison]::OrdinalIgnoreCase)) {
+            $errors.Add('process identity does not match the owned launch.json observation') | Out-Null
+        }
+    }
+    catch {
+        $errors.Add('process identity could not be compared with launch.json: ' + $_.Exception.Message) | Out-Null
+    }
+}
+
 if ([string]::IsNullOrWhiteSpace($HelperPath)) {
     $repo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
     $HelperPath = Join-Path $repo 'dotnet\tools\C04RecoveryReconciliationVerifier\bin\Release\net8.0\C04RecoveryReconciliationVerifier.dll'
@@ -63,7 +84,7 @@ else {
         }
     }
     else {
-        $status = 'PASS'
+        $status = if ($errors.Count -eq 0) { 'PASS' } else { 'FAIL' }
     }
 }
 
