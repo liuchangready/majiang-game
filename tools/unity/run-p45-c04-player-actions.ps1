@@ -83,7 +83,8 @@ function Get-C04StableArtifactFiles([string]$root) {
         (Join-Path $root 'temp'),
         (Join-Path $root 'nuget'),
         (Join-Path $root 'dotnet-home'),
-        (Join-Path $root 'upm-cache')
+        (Join-Path $root 'upm-cache'),
+        (Join-Path $root 'verifier-dotnet-artifacts')
     ) | ForEach-Object { [IO.Path]::GetFullPath($_).TrimEnd([IO.Path]::DirectorySeparatorChar) }
     $files = New-Object System.Collections.Generic.List[IO.FileInfo]
     $pending = New-Object System.Collections.Generic.Stack[string]
@@ -126,7 +127,8 @@ function Get-C04SeparatedVolatileRoots([string]$root) {
         [ordered]@{ path='temp'; classification='VOLATILE_PROCESS_TEMP'; boundBy='not a build input or review artifact' },
         [ordered]@{ path='nuget'; classification='VOLATILE_PACKAGE_CACHE'; boundBy='resolved source closure and build output hashes' },
         [ordered]@{ path='dotnet-home'; classification='VOLATILE_TOOL_CACHE'; boundBy='pinned dotnet executable and native command record' },
-        [ordered]@{ path='upm-cache'; classification='VOLATILE_UPM_DOWNLOAD_CACHE'; boundBy='per-run UPM_CACHE_ROOT plus resolved Library/PackageCache input closure' }
+        [ordered]@{ path='upm-cache'; classification='VOLATILE_UPM_DOWNLOAD_CACHE'; boundBy='per-run UPM_CACHE_ROOT plus resolved Library/PackageCache input closure' },
+        [ordered]@{ path='verifier-dotnet-artifacts'; classification='VOLATILE_FIXTURE_DOTNET_BUILD_OUTPUTS'; boundBy='fresh verifier build stdout/stderr and generated-code selftest native result' }
     )
 }
 
@@ -804,7 +806,7 @@ Start-Sleep -Seconds 25
     if ($verifierFixture.exitCode -ne 0 -or (Get-Content -LiteralPath $verifierFixture.stdout -Raw) -notmatch 'C04_PROTOBUF_FIXTURE_PASS valid=1 invalid=2') { throw 'Generated-code verifier did not accept a legal serialized snapshot and reject both malformed byte fixtures.' }
     $fixtureStableFiles = Get-C04StableArtifactFiles $RunRoot
     $fixtureFiles = @($fixtureStableFiles | ForEach-Object { [ordered]@{ path=$_.FullName.Substring($RunRoot.Length).TrimStart('\','/'); sha256=(Get-Sha256 $_.FullName); bytes=$_.Length } })
-    if ($fixtureFiles.Count -lt 3 -or @($fixtureFiles | Where-Object { $_.path -match '^(temp|nuget|dotnet-home|upm-cache)/' }).Count -ne 0) {
+    if ($fixtureFiles.Count -lt 3 -or @($fixtureFiles | Where-Object { $_.path -match '^(temp|nuget|dotnet-home|upm-cache|verifier-dotnet-artifacts)/' }).Count -ne 0) {
         throw 'Fixture evidence seal must contain stable owned outputs and exclude volatile process/download roots.'
     }
     [IO.File]::WriteAllText((Join-Path $RunRoot 'fixture-seal.json'), (($fixtureFiles | ConvertTo-Json -Depth 5) + "`n"), (New-Object Text.UTF8Encoding($false)))

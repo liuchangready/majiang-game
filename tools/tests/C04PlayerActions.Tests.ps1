@@ -32,7 +32,7 @@ if ($positive.exitCode -ne 0 -or $positive.stdout -notmatch 'C04_TOOL_FIXTURES_P
 }
 $sealPath = Join-Path $fixtureRoot 'fixture-seal.json'
 $sealedFiles = Get-Content -LiteralPath $sealPath -Raw -Encoding UTF8 | ConvertFrom-Json
-if ($sealedFiles.Count -lt 3 -or @($sealedFiles | Where-Object { $_.path -match '^(temp|nuget|dotnet-home|upm-cache)/' }).Count -ne 0) { throw 'Fixture did not seal a stable nonempty evidence set.' }
+if ($sealedFiles.Count -lt 3 -or @($sealedFiles | Where-Object { $_.path -match '^(temp|nuget|dotnet-home|upm-cache|verifier-dotnet-artifacts)/' }).Count -ne 0) { throw 'Fixture did not seal a stable nonempty evidence set.' }
 function Get-SealedFixtureSet {
     $rootPrefix = [IO.Path]::GetFullPath($fixtureRoot).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
     @($sealedFiles | ForEach-Object {
@@ -40,7 +40,7 @@ function Get-SealedFixtureSet {
         if (-not $candidate.StartsWith($rootPrefix,[StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $candidate -PathType Leaf)) { throw 'Fixture seal contains a missing or out-of-root artifact.' }
         $hash = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash
         $bytes = (Get-Item -LiteralPath $candidate).Length
-        if ($hash -cne [string]$_.sha256 -or $bytes -ne [long]$_.bytes) { throw 'Fixture sealed artifact differs from its recorded bytes/hash.' }
+        if ($hash -cne [string]$_.sha256 -or $bytes -ne [long]$_.bytes) { throw "Fixture sealed artifact differs from its recorded bytes/hash: $($_.path)." }
         [pscustomobject]@{ Path=$candidate; Hash=$hash; Bytes=$bytes }
     } | Sort-Object Path)
 }
