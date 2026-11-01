@@ -351,7 +351,7 @@ existing 目录，因此其绿色不能证明 identity 合同。
 | A 命令失败 | resolver 内联真实 probe，保留 `Output` + `ExitCode`；`$null`/非整数为 `unsupported-probe-exit-unknown`，非 0 为 `unsupported-probe-exit`；不把 `$null` cast 0 | selftest 真实 `FakeComSpec.exe` exit 17 -> `unsupported-probe-exit`；独立 probe 4/4 拒绝 |
 | B literal-percent / wrong dir | Windows 下含 `%` 的路径（无论是否含空格）在调用 cmd **之前**返回 `unsupported-percent-expansion`。另以随机 identity marker 写入原目录、再经候选目录读回并逐字节比较；不同目录 -> `unsupported-identity-mismatch`。不做 long/short 字符串比较 | call-site D：`NOT INVOKED`、声明目录无 XML、OTHER 哨兵 SHA 前后相同；真实 `.exe` 输出另一 existing 目录 exit 0 -> `unsupported-identity-mismatch` |
 | C 输出 kind | 要求 rooted、存在且 `-PathType Container`；文件 -> `unsupported-invalid-alias-kind`，不存在 -> `unsupported-invalid-alias` | file fixture 拒绝；独立 probe 拒绝 |
-| 输出形状 | 要求恰好 1 条非空输出行；空 -> `unsupported-probe-empty`，多行 -> `unsupported-probe-output`；无空格 -> `unsupported-no-alias` | 空/多行 fixture 拒绝 |
+| 输出形状 | 要求恰好 1 条非空输出行；空 -> `unsupported-probe-empty`，多行 -> `unsupported-probe-output`；仍含空格 -> `unsupported-no-alias` | 空/多行 fixture 拒绝 |
 | 兼容边界 | `Get-DotnetTestResultsArgument` 保留，unsupported 时仍返回原路径（不是成功信号）；标题函数只读 AST 一次即可提取，不再依赖额外函数 | wrapper 对 wrong-dir 返回原路径；生产 call site 仍用 `Supported` fail-closed |
 
 identity marker 在 `finally` 中删除；删除失败 -> `unsupported-identity-probe-cleanup`，
@@ -444,3 +444,97 @@ code commit / 报告 SHA 见交付回复。R1 manifest 在结果声明结束后�
 - 同一目录正例只在真实 8.3 可用的本机 OS 分支成立；CI 无 8.3 时该分支记录
   `unsupported-no-alias`，不冒充远端 positive。literal-percent 选择“runner 前显式拒绝”，
   不尝试用 cmd 展开后的别名写 XML。
+
+## 11. Caller independent acceptance (2026-11-02)
+
+The caller accepts **this path-compatibility component** at tested code commit
+`84420fe389ed16936f2ae1a7c08179edb4b22ad0`. CI-PATH-01 and the complete
+CI-PATH-R1-01 A/B/C residual are closed. The publication adds only this caller
+appendix and corrects the table above to say an alias output **still containing
+whitespace** is unsupported; no code changes follow the tested commit.
+The total delta from the previous accepted PR20 head `28a000349e604a9214c8225c15d102445cdb2cb6`
+remains exactly the three authorized files.
+
+Caller evidence is under
+`E:/majiang-review/caller-ci-path-r2-6e4a83d9/build/caller-review/`.
+The receiver's report before these caller edits has SHA-256
+`49640CF97A9518B68AE2D80D32104C5550F47373896346047B619AA0669472AA`.
+
+### 11.1 Actual caller regression and original counterexamples
+
+Fresh detached source and child-only E-drive cache/TEMP settings were used.
+All four complete PowerShell 5.1 processes actually exit 0:
+
+| Execution | Result |
+|---|---|
+| dotnetTest results/path matrix | 61/61 |
+| Native exit/metadata matrix | 24/24 |
+| Direct-result matrix | 19/19 |
+| Table XML/evidence matrix | 82/82 |
+
+The original live records remain real native executions: positive 3 cases /
+console 3 / native0 / XML exists, including duplicate display names; controlled
+failed test 1 case / console 1 / native1 / failed XML rejected; raw space-path
+probe native1 / no XML / gate false. Those expected failures are not skipped or
+counted as successful product tests. The 13 helper fixtures distinguish mocked
+capability from the actual local OS branch.
+
+The caller replays the original independent A/B/C scripts in a fresh owned tree:
+
+- A: actual native fixture `.exe` exits 17 while emitting an existing directory;
+  production returns `unsupported-probe-exit`, Supported=false.
+- B: the literal-percent input now returns `unsupported-percent-expansion` before
+  cmd executes, and retains the original directory identity. A fresh complete
+  production CLI invocation explicitly records NOT INVOKED/native1, writes no
+  declared XML, and leaves the OTHER directory's owned sentinel unchanged.
+- C: an existing file is rejected as `unsupported-invalid-alias-kind`.
+
+The full matrix also exercises a distinct existing directory with exit0; the
+production identity-marker check rejects it. No global drive/junction or 8dot3
+setting is introduced. Temporary marker files are removed, and unsupported
+plans do not fall back to a fabricated native report.
+
+### 11.2 Additional actual production CLI checks
+
+`run-positive-cli.ps1` invokes the unchanged complete `tools/verify-v5.ps1`
+with the same new one-case xunit.v3 project created for the caller percent-path
+probe, its own manifest/solution, dotnetTest mode, no project discovery and no
+plugin copy. These are scoped CLI fixtures, not the 14-project/full-product run.
+
+| Caller CLI input | Actual process exit | Observed outcome |
+|---|---:|---|
+| Normal path | 0 | OVERALL PASS, original declared XML 1/1 Pass |
+| Real local space-containing path | 0 | Genuine same-directory 8.3 alias, OVERALL PASS, original declared XML 1/1 Pass |
+| Controlled native0/no-alias ComSpec | 1 | NOT INVOKED, unsupported-no-alias, no XML |
+| Original literal-percent counterexample | 1 | NOT INVOKED, unsupported-percent-expansion, no XML, OTHER sentinel unchanged |
+
+The two positive invocations repeat the same fixture; they are not additional
+distinct business coverage. Their original XML, framework output, native exit,
+source and runner metadata remain separate. Both supported paths contain no
+leftover identity markers. The two refusal outcomes are expected negatives,
+with no runner launch. The separate ComSpec process and environment values are
+test-only and restored; no machine setting is changed.
+
+### 11.3 Evidence, publication and retained limits
+
+The caller independently recomputes all **403** receiver manifest rows:
+754,374 bytes, zero length/hash mismatches; manifest SHA-256
+`9D1A9B5F8D8E1DE97415F2734983C632277DB97396DA4B9E901511DA39D607A6`.
+This checks receiver evidence and is distinct from the new caller executions.
+Caller original failed R1 evidence remains untouched; new review/source checks
+and a final independent manifest seal the caller R2 results. Source parses and
+diff checks pass, and the final tracked tree is clean.
+
+Publish only this accepted increment into the same OPEN/Draft PR20 source
+`feat/v5-post-g1-batch`. The prior remote `28a00034` is its ancestor; accepted
+`origin/v5` remains `8fd7c6cb701dfbb41c28938de4186749bdd1d6c7`.
+No unaccepted sibling implementation is included. Historical CI failures for
+`28a00034` remain failures; this local acceptance does not certify a new remote
+CI head. No manual CI dispatch/retry is performed.
+
+The unchanged VerifyV5Diagnostics baseline MTP row-format drift remains a
+separately recorded known issue, not a passing test or a blocker introduced by
+this component. Full 14-project dotnetTest, PG, Unity/Player/Android/device,
+non-Windows execution, formal C04/C05/G2-G5 and historical missing framework
+evidence retain their separately stated statuses. V4 remains production; no
+v5 merge, deployment, scheduler change or phase approval is part of acceptance.
