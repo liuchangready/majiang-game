@@ -63,7 +63,7 @@ $tokens = $null
 $parseErrors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($verifyScript, [ref]$tokens, [ref]$parseErrors)
 if ($parseErrors -and $parseErrors.Count) { throw "Production verifier does not parse: $($parseErrors[0].Message)" }
-foreach ($fnName in @('Invoke-Captured', 'Get-DotnetTestConsoleCounts', 'Get-DotnetTestResultsArgument', 'Read-DirectResultXml', 'Test-DotnetTestInvocationEvidence')) {
+foreach ($fnName in @('Invoke-Captured', 'Get-DotnetTestConsoleCounts', 'Resolve-DotnetTestResultsPath', 'Get-DotnetTestResultsArgument', 'Read-DirectResultXml', 'Test-DotnetTestInvocationEvidence')) {
     $fn = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $fnName }, $true)
     if (-not $fn) { throw "Cannot extract production function $fnName from $verifyScript" }
     . ([scriptblock]::Create($fn.Extent.Text))
@@ -218,18 +218,99 @@ function Invoke-GateCase {
     return $record
 }
 
-# --- results-directory argument helper ----------------------------------------
+# --- results-directory argument plan (CI-PATH-01) ------------------------------
+# The locked xunit.v3/MTP MSBuild bridge re-joins forwarded dotnet-test options
+# into one space-delimited command line, so a results directory containing
+# whitespace is only usable through a space-free 8.3 alias. When the volume has
+# no 8.3 alias the long path is NOT passable and production must fail closed
+# before invoking the runner. These cases exercise the REAL production resolver:
+#   - no whitespace                         -> direct / supported
+#   - whitespace + valid space-free alias   -> short-alias / supported
+#   - whitespace + alias unavailable        -> unsupported / long path returned
+#   - whitespace + invalid alias            -> unsupported
+#   - short-name probe throws               -> unsupported
+# The first four categories map to the required boundary matrix; the alias
+# inputs are controlled TOOL_FIXTURE seam values and never change the machine's
+# 8.3 setting. The final case uses the real OS probe and records which branch
+# this machine is in WITHOUT assuming that the alias exists (the CI runner was
+# indeed in the unsupported branch).
 $spaceDir = Join-Path $EvidenceDir '00 space path/results'
 New-Item -ItemType Directory -Force -Path $spaceDir | Out-Null
-$spaceArg = Get-DotnetTestResultsArgument $spaceDir
-$spaceArgOk = $(if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
-    ($spaceArg -notmatch '\s') -and (Test-Path -LiteralPath $spaceArg)
+$directDir = Join-Path $EvidenceDir '00-direct-path/results'
+New-Item -ItemType Directory -Force -Path $directDir | Out-Null
+$aliasDir = Join-Path $EvidenceDir '00-alias-path/results'
+New-Item -ItemType Directory -Force -Path $aliasDir | Out-Null
+$invalidAliasDir = Join-Path $EvidenceDir '00-invalid-alias-path/results'
+
+function Add-HelperPlanCase {
+    param(
+        [string]$Case,
+        [object]$Plan,
+        [bool]$ExpectSupported,
+        [string]$ExpectMode,
+        [string]$ExpectArgument,
+        [string]$ReasonPattern = ''
+    )
+    $ok = (([bool]$Plan.Supported) -eq $ExpectSupported) -and
+        ($Plan.Mode -eq $ExpectMode) -and
+        ($Plan.Argument -eq $ExpectArgument) -and
+        (-not [string]::IsNullOrWhiteSpace($Plan.Reason))
+    if ($ReasonPattern) { $ok = $ok -and ($Plan.Reason -match $ReasonPattern) }
+    $record = [pscustomobject]@{
+        Case         = $Case
+        ExpectedOk   = $ExpectSupported
+        ActualOk     = [bool]$Plan.Supported
+        Reason       = "$($Plan.Mode): $($Plan.Reason)"
+        NodeCount    = $null
+        ConsoleTotal = $null
+        Pass         = $ok
+        Directory    = $spaceDir
+    }
+    $results.Add($record)
+    if (-not $ok) { throw "Results-directory plan case failed: $Case ($($Plan.Mode): $($Plan.Reason))" }
+    return $record
+}
+
+$directPlan = Resolve-DotnetTestResultsPath -Path $directDir -ShortNameResolver { param($p) throw 'resolver must not run for a space-free path' }
+$null = Add-HelperPlanCase -Case '00 results path direct no whitespace' -Plan $directPlan -ExpectSupported $true -ExpectMode 'direct' -ExpectArgument $directDir -ReasonPattern 'no whitespace'
+if ((Get-DotnetTestResultsArgument $directDir) -ne $directDir) { throw 'Get-DotnetTestResultsArgument altered a space-free path' }
+
+$aliasPlan = Resolve-DotnetTestResultsPath -Path $spaceDir -ShortNameResolver { param($p) $aliasDir }
+$null = Add-HelperPlanCase -Case '00 results path valid short alias fixture (TOOL_FIXTURE)' -Plan $aliasPlan -ExpectSupported $true -ExpectMode 'short-alias' -ExpectArgument $aliasDir -ReasonPattern '8\.3 alias'
+if ((Get-DotnetTestResultsArgument $spaceDir -ShortNameResolver { param($p) $aliasDir }) -ne $aliasDir) { throw 'Get-DotnetTestResultsArgument did not return the production plan argument' }
+
+$unavailablePlan = Resolve-DotnetTestResultsPath -Path $spaceDir -ShortNameResolver { param($p) $p }
+$null = Add-HelperPlanCase -Case '00 results path alias unavailable fixture (TOOL_FIXTURE)' -Plan $unavailablePlan -ExpectSupported $false -ExpectMode 'unsupported-no-alias' -ExpectArgument $spaceDir -ReasonPattern '8\.3|space-free'
+
+$invalidPlan = Resolve-DotnetTestResultsPath -Path $spaceDir -ShortNameResolver { param($p) $invalidAliasDir }
+$null = Add-HelperPlanCase -Case '00 results path invalid alias fixture (TOOL_FIXTURE)' -Plan $invalidPlan -ExpectSupported $false -ExpectMode 'unsupported-invalid-alias' -ExpectArgument $spaceDir -ReasonPattern 'does not exist'
+
+$throwingPlan = Resolve-DotnetTestResultsPath -Path $spaceDir -ShortNameResolver { param($p) throw 'synthetic resolver failure' }
+$null = Add-HelperPlanCase -Case '00 results path resolver failure fixture (TOOL_FIXTURE)' -Plan $throwingPlan -ExpectSupported $false -ExpectMode 'unsupported-resolver-error' -ExpectArgument $spaceDir -ReasonPattern 'synthetic resolver failure'
+
+# Real OS branch: assert the INVARIANT, never a capability. On a volume with
+# 8.3 enabled this is short-alias/supported; on the failing CI runner it is
+# unsupported-no-alias with the long path returned. Both are correct outcomes;
+# the live raw-path probe below then proves the unsupported value is rejected.
+$realPlan = Resolve-DotnetTestResultsPath -Path $spaceDir
+$realInvariant = $(if ($realPlan.Supported) {
+    ($realPlan.Mode -eq 'short-alias') -and ($realPlan.Argument -notmatch '\s') -and (Test-Path -LiteralPath $realPlan.Argument)
 } else {
-    $spaceArg -eq $spaceDir
+    ($realPlan.Mode -eq 'unsupported-no-alias') -and ($realPlan.Argument -eq $spaceDir)
 })
-$spaceRecord = [pscustomobject]@{ Case = '00 results path argument'; ExpectedOk = $true; ActualOk = $spaceArgOk; Reason = "space-free argument='$spaceArg'"; NodeCount = $null; ConsoleTotal = $null; Pass = $spaceArgOk; Directory = $spaceDir }
-$results.Add($spaceRecord)
-if (-not $spaceArgOk) { throw "Results-directory argument helper failed for '$spaceDir' -> '$spaceArg'" }
+$realRecord = [pscustomobject]@{
+    Case                = '00 results path real OS capability (no 8.3 assumption)'
+    ExpectedOk          = $true
+    ActualOk            = [bool]$realInvariant
+    CapabilitySupported = [bool]$realPlan.Supported
+    Reason              = "$($realPlan.Mode): $($realPlan.Reason)"
+    NodeCount           = $null
+    ConsoleTotal        = $null
+    Pass                = $realInvariant -and ((Get-DotnetTestResultsArgument $spaceDir) -eq $realPlan.Argument)
+    Directory           = $spaceDir
+}
+$results.Add($realRecord)
+if (-not $realRecord.Pass) { throw "Real OS results-path invariant failed: $($realPlan.Mode): $($realPlan.Reason)" }
 
 # --- console parser ------------------------------------------------------------
 $parserDir = Join-Path $EvidenceDir '00 console parser'
@@ -353,13 +434,16 @@ function Invoke-LiveCase {
         [string]$Case,
         [object]$Fixture,
         [bool]$ExpectGateOk,
-        [bool]$ExpectZeroExit
+        [bool]$ExpectZeroExit,
+        [string]$ResultsDirName = 'native-results',
+        [switch]$UseRawResultsArgument,
+        [bool]$ExpectReport = $true
     )
-    $resultsDir = Join-Path $Fixture.Dir 'native-results'
+    $resultsDir = Join-Path $Fixture.Dir $ResultsDirName
     if (Test-Path -LiteralPath $resultsDir) { Remove-Item -LiteralPath $resultsDir -Recurse -Force }
     New-Item -ItemType Directory -Force -Path $resultsDir | Out-Null
-    $log = Join-Path $Fixture.Dir 'dotnet-test.log'
-    $resultsArgument = Get-DotnetTestResultsArgument $resultsDir
+    $log = Join-Path $Fixture.Dir ('dotnet-test-' + ($ResultsDirName -replace '[^A-Za-z0-9]+', '-') + '.log')
+    $resultsArgument = $(if ($UseRawResultsArgument) { $resultsDir } else { Get-DotnetTestResultsArgument $resultsDir })
     $testArgs = @(
         'test', $Fixture.Csproj, '-c', 'Release', '--nologo', '--',
         '--report-xunit-xml', '--report-xunit-xml-filename', 'dotnet-test-results.xml',
@@ -387,8 +471,13 @@ function Invoke-LiveCase {
         catch { }
     }
     $exitOk = ([bool]($exit -eq 0) -eq $ExpectZeroExit)
-    $passed = ($exitOk -and ([bool]$evidence.Ok -eq $ExpectGateOk) -and $xmlExists -and (-not [string]::IsNullOrWhiteSpace($evidence.Reason)))
-    if (-not $ExpectGateOk) { $passed = $passed -and ($exit -ne 0) -and ($failedNodes -gt 0) }
+    $passed = ($exitOk -and ([bool]$evidence.Ok -eq $ExpectGateOk) -and (-not [string]::IsNullOrWhiteSpace($evidence.Reason)))
+    if ($ExpectReport) { $passed = $passed -and $xmlExists }
+    else { $passed = $passed -and (-not $xmlExists) }
+    if (-not $ExpectGateOk) {
+        $passed = $passed -and ($exit -ne 0)
+        if ($ExpectReport) { $passed = $passed -and ($failedNodes -gt 0) }
+    }
     if ($ExpectGateOk) { $passed = $passed -and ($duplicateDisplayNames -gt 0) }
     $record = [pscustomobject]@{
         Case         = $Case
@@ -404,6 +493,9 @@ function Invoke-LiveCase {
         FailedNodes  = $failedNodes
         FirstFailure = $firstFailure
         DuplicateDisplayNames = $duplicateDisplayNames
+        ResultsArgument = $resultsArgument
+        ExpectReport = $ExpectReport
+        Log = $log
     }
     $results.Add($record)
     return $record
@@ -451,6 +543,16 @@ $positiveFixture = New-LiveFixtureProject -Root $liveRoot -Name 'Probe.Positive.
 $negativeFixture = New-LiveFixtureProject -Root $liveRoot -Name 'Probe.Negative.Tests' -AssemblyName 'Probe.Negative.Tests' -TestSource $negativeSource
 $livePositive = Invoke-LiveCase -Case '32 live dotnet test positive' -Fixture $positiveFixture -ExpectGateOk $true -ExpectZeroExit $true
 $liveNegative = Invoke-LiveCase -Case '33 live dotnet test controlled failure' -Fixture $negativeFixture -ExpectGateOk $false -ExpectZeroExit $false
+
+# CI-PATH-01 live boundary: hand the locked runner the RAW long path (no alias
+# substitution) for a directory that contains whitespace. This is the exact
+# value production must refuse; the run must exit non-zero without writing the
+# native report, and the production evidence gate must reject it. This case is
+# deterministic for the locked xunit.v3 4.0.2 / MTP 2.5.1 bridge and is proof
+# that the unsupported branch cannot silently turn into a PASS.
+$liveRawSpaceNegative = Invoke-LiveCase -Case '46 live dotnet test rejects raw whitespace results argument' `
+    -Fixture $positiveFixture -ExpectGateOk $false -ExpectZeroExit $false `
+    -ResultsDirName 'native results/results' -UseRawResultsArgument -ExpectReport $false
 
 $failedCases = @($results | Where-Object { -not $_.Pass })
 $summary = [ordered]@{

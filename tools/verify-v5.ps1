@@ -488,27 +488,103 @@ function Resolve-UnderRoot([string]$Base, [string]$Path) {
     return Join-Path $Base $p
 }
 
-function Get-DotnetTestResultsArgument([string]$Path) {
-    # `dotnet test` passes MTP options through the MSBuild bridge as a
-    # space-joined argument string. A results-directory containing whitespace is
-    # split into several arguments and the test app exits before writing a
-    # report. On Windows use the directory's short (8.3) alias ONLY for the
-    # command-line argument; the real (long) path is still what the evidence
-    # gate checks and what the meta/summary records. If no space-free alias is
-    # available the original path is returned and the invocation fails closed
-    # (no report -> no PASS).
-    if ($Path -notmatch '\s') { return $Path }
-    if ([System.Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) { return $Path }
-    try {
-        $command = 'for %I in ("' + $Path + '") do @echo %~sI'
-        $cmd = $(if ($env:ComSpec) { $env:ComSpec } else { 'cmd.exe' })
-        $short = (& $cmd /d /c $command 2>$null | Out-String).Trim()
-        if ($short -and (Test-Path -LiteralPath $short) -and ($short -notmatch '\s')) {
-            return $short
+function Resolve-DotnetTestResultsPath {
+    # Single production decision for the `dotnet test --results-directory`
+    # command-line value. `dotnet test` forwards MTP options through the MSBuild
+    # bridge as a space-joined argument string: a path containing whitespace is
+    # split into several arguments and the runner exits before writing any
+    # report ("Option '--results-directory' ... expects at most 1 arguments").
+    # On Windows a space-free 8.3 alias is the only way to carry such a path.
+    # This function returns whether that argument is actually usable:
+    #   direct                 - no whitespace, passed unchanged
+    #   short-alias            - whitespace, valid existing space-free alias
+    #   unsupported-*          - whitespace and no usable alias; the caller MUST
+    #                            fail closed without invoking the runner, because
+    #                            the raw long path is known to be split
+    #   non-windows-direct     - unchanged non-Windows behavior (not exercised)
+    # `ShortNameResolver` is a test seam for the OS capability ONLY; production
+    # uses the real cmd.exe %~sI probe. The original long path is still what the
+    # evidence gate checks and what the meta/summary records; only the
+    # command-line argument is shortened.
+    param(
+        [string]$Path,
+        [scriptblock]$ShortNameResolver = $null
+    )
+    $plan = [ordered]@{
+        Input     = $Path
+        Argument  = $Path
+        Mode      = 'direct'
+        Supported = $true
+        Reason    = 'results path contains no whitespace'
+    }
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        $plan.Mode = 'invalid'
+        $plan.Supported = $false
+        $plan.Reason = 'results path is null, empty or whitespace'
+        return [pscustomobject]$plan
+    }
+    if ($Path -notmatch '\s') { return [pscustomobject]$plan }
+    if ([System.Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) {
+        $plan.Mode = 'non-windows-direct'
+        $plan.Reason = 'non-Windows: value is passed directly; the Windows MTP/MSBuild whitespace split was not exercised on this platform'
+        return [pscustomobject]$plan
+    }
+    if ($Path -match '"') {
+        $plan.Mode = 'unsupported-invalid-path'
+        $plan.Supported = $false
+        $plan.Reason = 'results path contains a double quote; refusing to build a cmd.exe short-name probe'
+        return [pscustomobject]$plan
+    }
+    $resolver = $ShortNameResolver
+    if ($null -eq $resolver) {
+        $resolver = {
+            param([string]$Value)
+            $command = 'for %I in ("' + $Value + '") do @echo %~sI'
+            $cmd = $(if ($env:ComSpec) { $env:ComSpec } else { 'cmd.exe' })
+            return (& $cmd /d /c $command 2>$null | Out-String).Trim()
         }
     }
-    catch { }
-    return $Path
+    $short = $null
+    try {
+        $short = (& $resolver $Path | Out-String).Trim()
+    }
+    catch {
+        $plan.Mode = 'unsupported-resolver-error'
+        $plan.Supported = $false
+        $plan.Reason = "space-free short-name probe failed: $($_.Exception.GetType().FullName): $($_.Exception.Message)"
+        return [pscustomobject]$plan
+    }
+    if ([string]::IsNullOrWhiteSpace($short)) {
+        $plan.Mode = 'unsupported-no-alias'
+        $plan.Supported = $false
+        $plan.Reason = 'results path contains whitespace and cmd.exe returned no short-name alias'
+        return [pscustomobject]$plan
+    }
+    if ($short -match '\s') {
+        $plan.Mode = 'unsupported-no-alias'
+        $plan.Supported = $false
+        $plan.Reason = 'results path contains whitespace and no space-free 8.3 alias is available (probe returned the long path)'
+        return [pscustomobject]$plan
+    }
+    if (-not (Test-Path -LiteralPath $short)) {
+        $plan.Mode = 'unsupported-invalid-alias'
+        $plan.Supported = $false
+        $plan.Reason = "space-free short-name probe returned a path that does not exist: $short"
+        return [pscustomobject]$plan
+    }
+    $plan.Argument = $short
+    $plan.Mode = 'short-alias'
+    $plan.Reason = 'results path contains whitespace; using its space-free 8.3 alias'
+    return [pscustomobject]$plan
+}
+
+function Get-DotnetTestResultsArgument([string]$Path, [scriptblock]$ShortNameResolver = $null) {
+    # Backward-compatible boundary: returns only the command-line value. Callers
+    # that must know whether the value is actually passable (the production
+    # invocation below) use Resolve-DotnetTestResultsPath directly and fail
+    # closed on Supported=$false. Returning the original long path here is NOT a
+    # success signal: it is exactly the unsupported case.
+    return (Resolve-DotnetTestResultsPath -Path $Path -ShortNameResolver $ShortNameResolver).Argument
 }
 
 function Get-CsprojProperty {
@@ -1495,8 +1571,10 @@ foreach ($project in $ordered) {
         }
 
         Write-Step "dotnet test : $name (native xunit.v3 XML)"
-        $nativeResultsArgument = Get-DotnetTestResultsArgument $project.DotnetTestResultsDir
+        $nativePathPlan = Resolve-DotnetTestResultsPath $project.DotnetTestResultsDir
+        $nativeResultsArgument = $nativePathPlan.Argument
         $project.DotnetTestResultsArgument = $nativeResultsArgument
+        $project.DotnetTestResultsPathMode = $nativePathPlan.Mode
         $nativeArgs = @(
             '--report-xunit-xml',
             '--report-xunit-xml-filename', 'dotnet-test-results.xml',
@@ -1504,6 +1582,26 @@ foreach ($project in $ordered) {
         )
         $dotnetTestCommand = (@(@($DotnetPath, 'test', $csproj, '-c', $Configuration, '--nologo', '--') + $nativeArgs) |
             ForEach-Object { ConvertTo-NativeArgument ([string]$_) }) -join ' '
+        if (-not $nativePathPlan.Supported) {
+            # The raw (long) results path is known to be split by the MTP/MSBuild
+            # bridge before the test app sees it, so this invocation cannot
+            # produce a native report. Detect it here and fail closed instead of
+            # launching a run whose evidence gate could only fail with a less
+            # precise diagnostic. No XML/report is claimed, and no PASS is
+            # possible for this row.
+            Write-RunMetaFile -Name $name -ProjectPath $project.Path -Kind $project.Kind -Mode $RunnerMode `
+                -RunnerTag 'dotnetTest' -Runner 'dotnet test (NOT INVOKED: results argument cannot be forwarded)' `
+                -Command $dotnetTestCommand -Cwd $cwd -ExitCode 'NOT_RUN' -Total '(not run)' -Failed '-' -Skipped '-' `
+                -Collected @() -ExcludedStale @() -PurgeStatuses $dotnetTestPurges -Head $headInfo `
+                -NativeResultXml $project.DotnetTestResultXml -NativeResultXmlSha256 '' `
+                -NativeXmlGate "NOT_RUN: $($nativePathPlan.Mode): $($nativePathPlan.Reason)" -NativeCounts '(unavailable)'
+            $project.Result = 'FAIL'
+            $project.Runner = 'dotnet test (NOT INVOKED)'
+            $project.ExitCode = 'NOT_RUN'
+            $project.Detail = "dotnet test results path cannot be forwarded through the MTP/MSBuild bridge ($($nativePathPlan.Mode)): $($nativePathPlan.Reason); refusing to invoke the runner with a path it would split; no native report can exist, so no PASS is possible"
+            $anyFail = $true
+            continue
+        }
         $dotnetTestStartedUtc = [DateTime]::UtcNow
         $exit = Invoke-Captured -LogPath $project.DotnetTestLog -Command {
             & $DotnetPath test $csproj -c $Configuration --nologo -- `
