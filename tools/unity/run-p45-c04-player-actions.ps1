@@ -219,6 +219,28 @@ function Get-ClosureManifest([string]$path,[string]$output) {
     return Get-Sha256 $output
 }
 
+function Assert-C04UnityProjectCopy([string]$sourceProject,[string]$stagedProject,[string]$evidencePath) {
+    $sourceEntries = Get-ChildItem -LiteralPath $sourceProject -Recurse -File | Sort-Object { $_.FullName.Substring($sourceProject.Length).Replace('\','/').ToLowerInvariant() }
+    $stagedEntries = Get-ChildItem -LiteralPath $stagedProject -Recurse -File | Sort-Object { $_.FullName.Substring($stagedProject.Length).Replace('\','/').ToLowerInvariant() }
+    if ($sourceEntries.Count -eq 0 -or $sourceEntries.Count -ne $stagedEntries.Count) { throw 'Short-path staged Unity project file count differs from the frozen source project.' }
+    $rows = New-Object System.Collections.Generic.List[object]
+    for ($i=0; $i -lt $sourceEntries.Count; $i++) {
+        $sourceRelative = $sourceEntries[$i].FullName.Substring($sourceProject.Length).TrimStart('\','/').Replace('\','/')
+        $stagedRelative = $stagedEntries[$i].FullName.Substring($stagedProject.Length).TrimStart('\','/').Replace('\','/')
+        $sourceHash = Get-Sha256 $sourceEntries[$i].FullName
+        $stagedHash = Get-Sha256 $stagedEntries[$i].FullName
+        if ($sourceRelative -cne $stagedRelative -or $sourceEntries[$i].Length -ne $stagedEntries[$i].Length -or $sourceHash -cne $stagedHash) {
+            throw "Short-path Unity project staging differs from the frozen source file: $sourceRelative"
+        }
+        $rows.Add([ordered]@{ path=$sourceRelative; bytes=[long]$sourceEntries[$i].Length; sha256=$sourceHash }) | Out-Null
+    }
+    $maximumPath = @($stagedEntries | ForEach-Object { [IO.Path]::GetFullPath($_.FullName).Length } | Measure-Object -Maximum).Maximum
+    if ($maximumPath -gt 259) { throw "Short-path staged Unity project still exceeds the supported legacy path boundary: $maximumPath" }
+    $manifest = [ordered]@{ sourceProject='source/unity/Mahjong.Unity'; stagedProject='p'; files=$rows.Count; maximumAbsolutePathLength=[int]$maximumPath; windowsLegacyMaxPath=260; entries=$rows }
+    [IO.File]::WriteAllText($evidencePath,(($manifest | ConvertTo-Json -Depth 8)+"`n"),(New-Object Text.UTF8Encoding($false)))
+    return Get-Sha256 $evidencePath
+}
+
 function Get-EnabledScenes([string]$projectRoot) {
     $settings = Join-Path $projectRoot 'ProjectSettings/EditorBuildSettings.asset'
     if (-not (Test-Path -LiteralPath $settings -PathType Leaf)) { throw 'Frozen EditorBuildSettings.asset is missing.' }
@@ -752,7 +774,10 @@ try {
     if ($extract.exitCode -ne 0) { throw 'Frozen source archive extraction failed.' }
     Assert-C04ArchiveHasNoGitMetadata $source | Out-Null
     $sourceClosureSha = Get-ClosureManifest $source (Join-Path $RunRoot 'source-prebuild-closure.json')
-    $project = Join-Path $source 'unity/Mahjong.Unity'
+    $sourceProject = Join-Path $source 'unity/Mahjong.Unity'
+    $project = Join-Path $RunRoot 'p'
+    Copy-Item -LiteralPath $sourceProject -Destination $project -Recurse
+    $shortPathProjectSha = Assert-C04UnityProjectCopy $sourceProject $project (Join-Path $RunRoot 'unity-short-path-staging.json')
     $userSettings = Join-Path $project 'UserSettings/EditorUserSettings.asset'
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $userSettings) | Out-Null
     $isolatedImportSettings = @'
@@ -766,7 +791,7 @@ EditorUserSettings:
 '@
     [IO.File]::WriteAllText($userSettings, $isolatedImportSettings + "`n", (New-Object Text.UTF8Encoding($false)))
     $isolatedImportSettingsSha = Get-Sha256 $userSettings
-    [IO.File]::WriteAllText((Join-Path $RunRoot 'unity-generated-inputs.json'), (([ordered]@{ path='source/unity/Mahjong.Unity/UserSettings/EditorUserSettings.asset'; purpose='per-run project-scoped Compress Assets on Import enabled to keep fresh writable/imported package representations consistent; does not change machine preferences'; sha256=$isolatedImportSettingsSha; bytes=(Get-Item -LiteralPath $userSettings).Length } | ConvertTo-Json -Depth 4) + "`n"), (New-Object Text.UTF8Encoding($false)))
+    [IO.File]::WriteAllText((Join-Path $RunRoot 'unity-generated-inputs.json'), (([ordered]@{ path='p/UserSettings/EditorUserSettings.asset'; purpose='per-run project-scoped setting in the hash-verified short-path project copy; does not change machine preferences'; sha256=$isolatedImportSettingsSha; bytes=(Get-Item -LiteralPath $userSettings).Length } | ConvertTo-Json -Depth 4) + "`n"), (New-Object Text.UTF8Encoding($false)))
 
     $dotnetResults = Join-Path $RunRoot 'dotnet-results'
     $dotnetArtifacts = Join-Path $RunRoot 'dotnet-artifacts'
@@ -898,7 +923,7 @@ EditorUserSettings:
         $caseResults.Add([ordered]@{ caseId=$case.id; status='PASS'; layer='WINDOWS_PLAYER'; nativeExitCode=$player.exitCode; summary=$summaryPath; summarySha256=(Get-Sha256 $summaryPath); actionEvidence=$actionEvidencePath; actionEvidenceSha256=(Get-Sha256 $actionEvidencePath); executionEvidence=$executionPath; executionEvidenceSha256=(Get-Sha256 $executionPath); playerLog=$nativeLog; playerLogSha256=(Get-Sha256 $nativeLog); payloadSha256=$summary.payloadSha256 }) | Out-Null
     }
 
-    $final = [ordered]@{ schemaVersion=1; task='G2-C04-D03'; status='PASS'; acceptedBase='8fd7c6cb701dfbb41c28938de4186749bdd1d6c7'; frozenCandidate=$gitHead; sourceTreeStatus=$gitStatus; sourceDiffCheck='PASS'; sourceClosureManifest='source-prebuild-closure.json'; sourceClosureManifestSha256=$sourceClosureSha; generatedUnityInputs='unity-generated-inputs.json'; generatedUnityInputsSha256=(Get-Sha256 (Join-Path $RunRoot 'unity-generated-inputs.json')); unityResolvedPackageInputClosure='unity-resolved-package-input-closure.json'; unityResolvedPackageInputClosureSha256=$resolvedPackageInputsSha; unityPrebuildInputClosureSha256=$preBuildInputsSha; unityPostbuildInputClosureSha256=$postBuildInputsSha; unityPostbuildInputChanges='unity-postbuild-input-changes.json'; unityPostbuildInputChangesSha256=(Get-Sha256 (Join-Path $RunRoot 'unity-postbuild-input-changes.json')); upmDownloadCacheClosure='upm-cache-closure.json'; upmDownloadCacheClosureSha256=$upmCacheClosureSha; postBuildAssetsClosure='source-postbuild-assets-closure.json'; postBuildAssetsClosureSha256=$postBuildClosureSha; sharedPluginClosureSha256=$pluginClosureSha; sharedPluginProvenance=$sharedEvidence; sharedPluginProvenanceSha256=$provenanceSha; scriptAssembliesClosureSha256=$scriptAssembliesSha; localHostTests=$localHostTestEvidence; commands=$script:stageRecords; playMode=[ordered]@{ testCount=$testNodes.Count; passed=$testNodes.Count; failed=0; skipped=0; exactNames=$actualNames; xml=$playXml; xmlSha256=(Get-Sha256 $playXml) }; buildMarker=$buildMarker; buildMarkerSha256=(Get-Sha256 $buildMarker); playerPackageManifest='player-package.json'; cases=$caseResults; platforms=[ordered]@{ windowsPlayer='actual four fixed cases'; android='NOT_RUN (C05 owner)'; ios='NOT_RUN'; remoteTransport='NOT_IN_SCOPE' } }
+    $final = [ordered]@{ schemaVersion=1; task='G2-C04-D03'; status='PASS'; acceptedBase='8fd7c6cb701dfbb41c28938de4186749bdd1d6c7'; frozenCandidate=$gitHead; sourceTreeStatus=$gitStatus; sourceDiffCheck='PASS'; sourceClosureManifest='source-prebuild-closure.json'; sourceClosureManifestSha256=$sourceClosureSha; unityShortPathStaging='unity-short-path-staging.json'; unityShortPathStagingSha256=$shortPathProjectSha; generatedUnityInputs='unity-generated-inputs.json'; generatedUnityInputsSha256=(Get-Sha256 (Join-Path $RunRoot 'unity-generated-inputs.json')); unityResolvedPackageInputClosure='unity-resolved-package-input-closure.json'; unityResolvedPackageInputClosureSha256=$resolvedPackageInputsSha; unityPrebuildInputClosureSha256=$preBuildInputsSha; unityPostbuildInputClosureSha256=$postBuildInputsSha; unityPostbuildInputChanges='unity-postbuild-input-changes.json'; unityPostbuildInputChangesSha256=(Get-Sha256 (Join-Path $RunRoot 'unity-postbuild-input-changes.json')); upmDownloadCacheClosure='upm-cache-closure.json'; upmDownloadCacheClosureSha256=$upmCacheClosureSha; postBuildAssetsClosure='source-postbuild-assets-closure.json'; postBuildAssetsClosureSha256=$postBuildClosureSha; sharedPluginClosureSha256=$pluginClosureSha; sharedPluginProvenance=$sharedEvidence; sharedPluginProvenanceSha256=$provenanceSha; scriptAssembliesClosureSha256=$scriptAssembliesSha; localHostTests=$localHostTestEvidence; commands=$script:stageRecords; playMode=[ordered]@{ testCount=$testNodes.Count; passed=$testNodes.Count; failed=0; skipped=0; exactNames=$actualNames; xml=$playXml; xmlSha256=(Get-Sha256 $playXml) }; buildMarker=$buildMarker; buildMarkerSha256=(Get-Sha256 $buildMarker); playerPackageManifest='player-package.json'; cases=$caseResults; platforms=[ordered]@{ windowsPlayer='actual four fixed cases'; android='NOT_RUN (C05 owner)'; ios='NOT_RUN'; remoteTransport='NOT_IN_SCOPE' } }
     $summaryOut = Join-Path $RunRoot 'summary.json'
     [IO.File]::WriteAllText($summaryOut, (($final | ConvertTo-Json -Depth 12) + "`n"), (New-Object Text.UTF8Encoding($false)))
     Write-RunLog 'FINAL_SUMMARY_WRITTEN'
