@@ -38,7 +38,7 @@ function Get-SealedFixtureSet {
     @($sealedFiles | ForEach-Object {
         $candidate = [IO.Path]::GetFullPath((Join-Path $fixtureRoot ([string]$_.path)))
         if (-not $candidate.StartsWith($rootPrefix,[StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $candidate -PathType Leaf)) { throw 'Fixture seal contains a missing or out-of-root artifact.' }
-        $hash = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash
+        $hash = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
         $bytes = (Get-Item -LiteralPath $candidate).Length
         if ($hash -cne [string]$_.sha256 -or $bytes -ne [long]$_.bytes) { throw "Fixture sealed artifact differs from its recorded bytes/hash: $($_.path)." }
         [pscustomobject]@{ Path=$candidate; Hash=$hash; Bytes=$bytes }
