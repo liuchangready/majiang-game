@@ -8,10 +8,10 @@
 
 - 环境本体可用：Unity 6000.3.27f1、AndroidPlayer/IL2CPP、OpenJDK 17.0.20.1、SDK android-36/build-tools 35/36、NDK 27.2.12479018、CMake 3.22.1、锁定 adb 均存在且版本检查 native exit 0。
 - 候选静态绑定完成：`8fd7c6cb`（accepted base）→ `b33f0aad`（C03 code）→ `db9e5d53`（caller tested merge）→ `cde5da16`（accepted publication）。`db9e5d53..HEAD` 的代码差异为 0，发布增量只有 C03 交付文档。
-- **最终 APK 构建当前 BLOCKED**：独占新树没有已接受的私有 Android toolchain manifest，且该 manifest 的冻结 SHA 含绝对路径/生成时间，不能在本树重新生成后仍等于冻结值；不能复制别的 worktree 的私有 manifest 来“过闸”。详见 C05-PREP-D01。
+- **最终 APK 仍 NOT_RUN**（本轮未授权/未尝试构建），但**不是**被私有 toolchain 阻塞：本树默认 `build\android-toolchain\private\toolchain.json` 缺失只是默认路径事实；原已接受 manifest 仍在 `D:\majiang-wt\android-toolchain-ds-20261027\build\android-toolchain\private\toolchain.json`，SHA256 `E478...`，Ninja/CLI helper 均存在且匹配；显式 `-AndroidToolchainManifest` 的只读 preflight native exit 0。详见 §2.4 与 R1-02。
 - **设备矩阵 NOT_RUN_NO_DEVICE**：锁定 adb `devices -l` native exit 0，设备列表为空；没有自动启动模拟器，没有用系统 adb 替代，没有杀共享 adb daemon。
-- 当前 7 个自有 plugin DLL 的 `ProductVersion` 仍嵌入 `8fd7c6cb`，不是本候选输出；最终构建必须强制重建并重新绑定（C05-PREP-D02）。
-- 本 JSON/报告是 **UI15 15 项 PlayMode 失败修复与 C04 恢复对账增量合回之前**的准备候选绑定，不是最终 C05/G2 通过。C03 组件验收不等于 G2 通过；正式 C04/C05/G2–G5 未批准；V4 仍是唯一生产。
+- 当前 7 个自有 plugin DLL 的 `ProductVersion` 仍嵌入 `8fd7c6cb`，只是历史 base 工件，不是本候选输出；最终构建必须强制重建并重新绑定（这是准备观察，不是本轮缺陷）。
+- 本 JSON/报告冻结在 **cde5 快照**，是 **UI15 修复前**的历史准备：UI15 已在 `734b3775` 通过并发布，但不在本快照内；C04 恢复对账仍是独立增量。本文件不是最终 C05/G2 通过。C03 组件验收不等于 G2 通过；正式 C04/C05/G2–G5 未批准；V4 仍是唯一生产。
 
 **提交身份**：
 
@@ -24,13 +24,13 @@
 | receiver final | `2beb3ef9b457e8ecb7704cea9f2e080c8e86f45f` |
 | binding-time HEAD tree | `8c4933aad6615f8230cc038e54c2a721e253aa00` |
 | branch | `wt/g2-c05-android-prep-ds-20261101-1300` |
-| worktree status at probe | tracked clean；交付前仅两个新增 expectedFiles |
+| worktree status at probe | tracked clean；R1 交付为两文件精确重命名，无其他 tracked 改动 |
 | base→HEAD | 724 files changed, +254184/−1683；代码路径 `db9e5d53..HEAD` diff exit 0 |
 
-**交付路径（恰好两个新增 tracked 文件）**：
+**交付路径（R1 后恰好两个新增/重命名 tracked 文件；精确 expectedFiles）**：
 
-- `doc/v5-重构/V5-G2-C05-ANDROID-ENV-BINDING-PREP-20261101.md`（本报告）
-- `doc/v5-重构/V5-G2-C05-ANDROID-ENV-BINDING-PREP-20261101.json`（machine-readable binding）
+- `doc/v5-重构/V5-G2-C05-ANDROID-CANDIDATE-READINESS-20261101.md`（本报告）
+- `doc/v5-重构/V5-G2-C05-ANDROID-CANDIDATE-BINDING-20261101.json`（machine-readable binding）
 
 ---
 
@@ -75,7 +75,7 @@ C03 来源接受事实保留为历史，不在本轮重跑：`receiver 2beb3ef9`
 | IL2CPP | `Editor\Data\il2cpp\build\deploy\il2cpp.exe` 存在，153,512 B，SHA256 `8EF43C2A7357B910ED85FF9345F1F56D83AFB55A8F22B080DC0E2E00CA0535F7` |
 | Android extension | `UnityEditor.Android.Extensions.dll` SHA256 `38CE680A9484981FBAFF4B8096A342D0ED2544AA69024BBBC7680A1E81920353` |
 | Build program | `AndroidPlayerBuildProgram.exe` SHA256 `E8C8253A7373CC4FE00A54B4E63FE0052AAE1B5F3804D5A27A294B2A33852D18` |
-| UnityVersion.txt | **缺失**（脚本预期路径 `Editor\Data\Resources\UnityVersion.txt`）；历史 summary 同样记 `unityVersion=UNKNOWN`，见 C05-PREP-D04 |
+| UnityVersion.txt | **缺失**（脚本预期路径 `Editor\Data\Resources\UnityVersion.txt`）；历史 summary 同样记 `unityVersion=UNKNOWN`，见 OBS-04 |
 
 ### 2.2 JDK / SDK / NDK / CMake
 
@@ -107,7 +107,7 @@ C03 来源接受事实保留为历史，不在本轮重跑：`receiver 2beb3ef9`
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-android-game.ps1 -Action Devices -EvidenceDir build/c05-android-prep-1a33507caee9/device
 ```
 
-`device-list.json` 记录 `status=PASS`、`nativeExit=0`、`stdout=List of devices attached\r\n\r\n`、`stderr=* daemon not running...`、`devices=[]`，SHA256 `A6D72E4A0613407603BE90CBBCE6F545F2646F7DB4C3016B95DEC10B66C5E6DC`。外层 PowerShell 包装在 120 s 内未关闭（adb daemon 继承输出句柄），在 JSON 完整后只停止了本任务的包装进程，**没有杀共享 adb daemon**；这是已记录的 UNSEALED 限制，见 C05-PREP-D05。
+`device-list.json` 记录 `status=PASS`、`nativeExit=0`、`stdout=List of devices attached\r\n\r\n`、`stderr=* daemon not running...`、`devices=[]`，SHA256 `A6D72E4A0613407603BE90CBBCE6F545F2646F7DB4C3016B95DEC10B66C5E6DC`。外层 PowerShell 包装在 120 s 内未关闭（adb daemon 继承输出句柄），在 JSON 完整后只停止了本任务的包装进程，**没有杀共享 adb daemon**；这是已记录的 UNSEALED 限制，见 OBS-05。
 
 ### 2.4 磁盘 / TEMP / 离线依赖 / 许可 / mutex
 
@@ -124,7 +124,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-andr
 | 离线 restore | **NOT_RUN**；静态 cache 存在不等于离线下 restore 已通过 |
 | Unity 许可 | **NOT_VERIFIED**；不启动 Unity 无法验证 batchmode entitlement |
 | Unity mutex | `Local\MahjongV5P45UnityValidation`：**未获取**；探测时不存在。最终重资源阶段必须持锁，等待 30 s 失败即 BLOCKED，不得再启第二个 Unity |
-| 私有 toolchain | `build\android-toolchain\private\toolchain.json`、`ninja\1.13.2\ninja.exe`、`android-cli\android-cli-sdkmanager16.cmd` **全部不存在**；构建脚本会在 Unity 启动前抛 `BLOCKED: accepted private Android toolchain manifest missing` |
+| 私有 toolchain 默认路径 | 本树 `build\android-toolchain\private\toolchain.json`、`ninja\1.13.2\ninja.exe`、`android-cli\android-cli-sdkmanager16.cmd` **不存在**；这是 fresh worktree 的默认路径负例，不是原 toolchain 身份消失 |
+| 原已接受 toolchain 显式路径 | `D:\majiang-wt\android-toolchain-ds-20261027\build\android-toolchain\private\toolchain.json` 存在，3,483 B，SHA256 `E4785B1BE9FD4CE158E6730C1F7E01C58A7C974D45A407EF7E9CC215F3BEE934`；`ninjaExe` 603,648 B / `E52A7AD9538D9618C67A0BD777964E2EEC8A30F68B810A2F6ADCE1F2DAF847B8`；`androidCliBin` 1,452 B / `F66B015EF9F2054D8E4A9877185A6D922109AA68A4AF366F5E96C2629F7BD210`；JDK/SDK/NDK/CMake 身份与 manifest 一致 |
+| 显式 manifest preflight | 用冻结脚本的 manifest/helper 语句、显式 `-AndroidToolchainManifest` 原路径只读执行：native exit **0**，未创建输出目录、未启动 Unity/helper、未改机器；日志 `build/c05-android-prep-r1-d114005f87be/logs/accepted-manifest-preflight.log`，SHA256 `B75BB362BC7BB2E7BB460EABEA52E8000AD9CD95B5584FDDF8FB76CB2B0FE4F4` |
 
 ---
 
@@ -229,7 +231,7 @@ C03 §15 的“7 个自有 DLL 嵌入精确 commit 相符”是 caller 在其 un
 | TMP | Settings + FontAsset 必须存在 |
 | clean cache | `BuildOptions.CleanBuildCache` |
 | 其他 | 横屏限定、全屏、outside-safe-area；APK 必须晚于 build 开始时间 |
-| 私有 toolchain manifest | 脚本要求 SHA256 `E4785B1BE9FD4CE158E6730C1F7E01C58A7C974D45A407EF7E9CC215F3BEE934` |
+| 已接受显式 toolchain manifest | `D:\majiang-wt\android-toolchain-ds-20261027\build\android-toolchain\private\toolchain.json`，SHA256 `E4785B1BE9FD4CE158E6730C1F7E01C58A7C974D45A407EF7E9CC215F3BEE934`；默认本树路径缺失不影响该显式路径 |
 
 **当前候选产物：全部 null + NOT_RUN**：
 
@@ -239,177 +241,160 @@ C03 §15 的“7 个自有 DLL 嵌入精确 commit 相符”是 caller 在其 un
 | bytes | `null` |
 | SHA256 | `null` |
 | BuildReport / Unity log / native exit | `null` / `null` / `null` |
-| package | `com.majiang.game`（配置值，非已构建产物） |
-| ABI | `arm64-v8a`（目标，非已构建产物） |
+| package | `null`（未观察；目标值只在 §4 合同表） |
+| ABI | `null`（未观察；目标值只在 §4 合同表） |
 | Install / Start / Visual / Touch / Weak-network / iOS | `NOT_RUN` / `NOT_RUN` / `NOT_RUN` / `NOT_RUN` / `NOT_RUN` / `NOT_RUN` |
 
 历史 52,142,409 B / `0506AEEA...` 的 APK 只作为历史事实列出，`current=false`，**没有**被当作当前产物或当前构建证据。
 
 ---
 
-## 5. 完整缺陷清单（一次给全）
+## 5. R1 复核发现与修复映射（0 BLOCKER / 3 MAJOR / 0 MINOR）
 
-### C05-PREP-D01 — BLOCKER — 私有 Android toolchain manifest 缺失且冻结摘要在新路径不可复现
+本轮完整清单均为首次复核发现；没有其他已知本任务缺陷留到下一轮。下列三条均已在本轮同一份文档/JSON 内修复。过去的 D01–D05 不再作为缺陷计数：其中“默认 manifest 缺失”是局部事实，“stale DLL / TEMP / UnityVersion / adb 包装”是准备观察或已记录边界，均不是本轮返修缺陷。
 
-- **位置**：`tools/unity/build-p45-android-game.ps1:176-185,789-823`；`build/android-toolchain/private/toolchain.json`。
+### C05-PREP-R1-01 — MAJOR — 未使用明确授权的 expectedFiles（已修复）
+
+- **位置**：上一轮 tracked 路径 `doc/v5-重构/V5-G2-C05-ANDROID-ENV-BINDING-PREP-20261101.md/.json`。
 - **原样复现**：
 
 ```powershell
-Test-Path build\android-toolchain\private\toolchain.json
-Test-Path build\android-toolchain\private\ninja\1.13.2\ninja.exe
-Test-Path build\android-toolchain\private\android-cli\android-cli-sdkmanager16.cmd
-Select-String tools/unity/build-p45-android-game.ps1 -Pattern "accepted private Android toolchain manifest missing|E4785B1BE9FD4CE158E6730C1F7E01C58A7C974D45A407EF7E9CC215F3BEE934|generatedAt|privateRoot|ninjaDir|androidCliBin|jdkHome|sdkRoot"
+git diff --name-only cde5da16 b52c47fe
+git ls-tree -r --name-only b52c47fe -- doc/v5-重构/V5-G2-C05-ANDROID-CANDIDATE-READINESS-20261101.md doc/v5-重构/V5-G2-C05-ANDROID-CANDIDATE-BINDING-20261101.json
 ```
 
-- **实际**：三个默认路径全部不存在；脚本在 line 178 抛 `BLOCKED: accepted private Android toolchain manifest missing`，发生在获取 Unity mutex / 启动 Unity 之前。历史 C05 开发 summary 使用的 manifest SHA 是 `E478...`，其 manifest 生成在 `D:\majiang-wt\g2-c05-android-game-luna6-20261101\build\android-toolchain\private`。该 worktree 的只读 check-only repair summary（2026-11-01T03:18）已记录 `manifest=null`、缺 private ninja、缺 CLI adapter；私有目录是临时产物且已不存在。manifest 写入内容含 `generatedAt` 与绝对 `privateRoot/ninjaDir/ninjaExe/androidCliBin/jdkHome/sdkRoot/cmake`，因此在本 E: 树重新生成**不可能**等于冻结的 D: manifest 摘要；复制别人的 manifest 虽可过 SHA，却会把构建指向别的 worktree。
-- **期望**：本授权树（或 caller 批准的稳定共享私有根）内存在 manifest，SHA 是明确批准的新 pin，ninja/CLI/JDK/SDK 路径均落在授权根；不允许跨 worktree 路径，不允许静默 re-pin。
-- **证据**：`binding-facts.json`；`logs/provenance.log`；外部只读历史 summary `62AD41746D25B3B40E889F35154CA02A7EFBF97B1B55AD0042C9F8577821716B`；外部只读 check-only summary `CF1D19BFF7A6DEC28A23272ABAE064615BD099774CD25088A356F04E5BD018D4`。
-- **修复要求**：caller 必须二选一并记录：(a) 为最终 worktree/candidate 批准新的 manifest pin；或 (b) 批准稳定共享私有根并重新 pin。只允许用已接受的 repair 脚本 + 固定 Ninja/CLI 摘要来 provision；禁止复制别的 worktree manifest、禁止安装/升级共享 SDK、禁止在 manifest 缺失/不符时启动 Unity。
-- **验收断言**：manifest 在绑定的路径存在；SHA256 等于 caller 批准值；`ninjaExe`/`androidCliBin` 存在且匹配 manifest 中的 hash；`jdkHome/sdkRoot/ndk/cmake` 均在授权根内；build preflight 通过该 gate；失败时没有启动任何 Unity 进程。
+- **实际**：两个指定字面路径均不存在；上一轮自行使用了 ENV-BINDING-PREP 命名。
+- **期望**：bridge expectedFiles 精确为 `V5-G2-C05-ANDROID-CANDIDATE-READINESS-20261101.md` 与 `V5-G2-C05-ANDROID-CANDIDATE-BINDING-20261101.json`。
+- **证据**：Caller `REVIEW.txt` SHA256 `14CF762D399E2111DC291ADB68830C58BC59CBFA5A692FB4DE58FED8D68E6E77`；`independent-findings.json` SHA256 `1A42EBB8BCC79F541A1D9E9A938A6972981D883A78176CC2A0144C943DF8D615`。
+- **修复要求**：仅 `git mv` 本任务自己的两个文件到精确路径；更新全部内部引用和 ignored validator；保留旧 ignored 证据，不保留 tracked 旧别名。
+- **验收断言**：相对 `cde5da16` 最终只新增/重命名这两个精确路径；旧别名不存在；无生产/设置/工具改动；tracked clean；交付区间 diff-check exit 0。
 
-### C05-PREP-D02 — MAJOR — tracked 7 个自有 plugin DLL 仍嵌 accepted base commit，不是 C03 候选输出
+### C05-PREP-R1-02 — MAJOR — 把默认本树 manifest 缺失误判为原已接受工具链不可用（已修复）
 
-- **位置**：`unity/Mahjong.Unity/Assets/Plugins/Mahjong/*.dll`。
+- **位置**：上一轮报告 §0/§2/§5 D01/§6/§7/下一 owner；JSON `environment.privateToolchain`、`statuses`、`finalBuildPreconditions`、`commands`。
 - **原样复现**：
 
 ```powershell
-Get-ChildItem unity/Mahjong.Unity/Assets/Plugins/Mahjong -Filter *.dll |
-  ForEach-Object { [Diagnostics.FileVersionInfo]::GetVersionInfo($_.FullName).ProductVersion }
-git log -1 --format="%h %ad %s" -- unity/Mahjong.Unity/Assets/Plugins/Mahjong/Mahjong.Domain.dll
+$m='D:\majiang-wt\android-toolchain-ds-20261027\build\android-toolchain\private\toolchain.json'
+(Get-FileHash $m -Algorithm SHA256).Hash
+$j=Get-Content $m -Raw | ConvertFrom-Json
+(Get-FileHash $j.ninjaExe -Algorithm SHA256).Hash
+(Get-FileHash $j.androidCliBin -Algorithm SHA256).Hash
+Test-Path build\android-toolchain\private\toolchain.json   # 仅默认路径负例：False
 ```
 
-- **实际**：7 个自有 DLL 全部 `1.0.0+8fd7c6cb...`；candidate publication 是 `cde5da16`，code 是 `b33f0aad`。它们是 base 工件，不是 candidate 输出；若直接拿当前 DLL/当前 APK 作证据，会把 stale 输出冒充候选。
-- **期望**：最终 Android 构建从冻结算入强制重建 7 个共享项目与 Google.Protobuf，逐 DLL 绑定 post-build SHA256 与 embedded commit 到最终候选，再让 Unity 打 APK。
-- **证据**：`binding-facts.json`；`Mahjong.Domain.dll` SHA256 `01414649429B7435D2A00EEC812A73F0D3B0A544AE12F484E19972584AD66679`。
-- **修复要求**：不得复用/提交 stale tracked DLL 作为候选证据。运行 `build-shared.ps1`、`check-shared-plugins.ps1`，记录 7 个 DLL 的新 SHA 与 ProductVersion commit；若 commit 不等于最终候选 HEAD（或 caller 批准的等价 code commit）或 provenance 不符，fail closed。C03 §15 的核对对象是 caller unified 构建输出，不是本树 current DLL。
-- **验收断言**：post-build 7 个 DLL 时间戳新鲜；ProductVersion commit 等于最终候选 HEAD（或批准值）；SHA 与 provenance 一致；APK 内同一 DLL 字节一致；交付暂存区不包含这些生成 DLL。
+- **实际**：原已接受 manifest 仍存在，SHA256 `E4785B1BE9FD4CE158E6730C1F7E01C58A7C974D45A407EF7E9CC215F3BEE934`；`ninjaExe` SHA256 `E52A7AD9538D9618C67A0BD777964E2EEC8A30F68B810A2F6ADCE1F2DAF847B8`；`androidCliBin` SHA256 `F66B015EF9F2054D8E4A9877185A6D922109AA68A4AF366F5E96C2629F7BD210`，均存在且匹配。用冻结脚本的 manifest/helper 语句、显式传入该路径只读执行：native exit **0**。仅本树默认路径缺失。
+- **期望**：把“默认路径缺失”与“原已接受显式路径可用”分开；不制造新 pin、额外 caller 裁决、复制/provision/重绑依赖。
+- **证据**：`build/c05-android-prep-r1-d114005f87be/logs/accepted-manifest-preflight.log` SHA256 `B75BB362BC7BB2E7BB460EABEA52E8000AD9CD95B5584FDDF8FB76CB2B0FE4F4`；`manifest-identity.json` SHA256 `07A17B361821F1E8AD7068D6B45705F24FADF263E007A140195F366A5467CE61`；caller 原始 preflight 片段 `original-toolchain-preflight.txt`。
+- **修复要求**：在两份文档中记录原 manifest/两个 helper/JDK/SDK 身份；下一步命令显式使用 `-AndroidToolchainManifest` 指原已接受路径；保留默认缺失负例；不得复制 manifest、provision、重 pin、下载/升级 SDK 或改源码。
+- **验收断言**：原 pin/两个 helper 实际只读校验通过；默认缺失仍如实记录；不再要求新 manifest 授权；所有新增输出在 E 盘；preflight 成功不被写成 APK 通过。
 
-### C05-PREP-D03 — MAJOR — 已接受构建脚本未把子进程 TEMP/TMP/GRADLE_USER_HOME 固定到 E: run root
+### C05-PREP-R1-03 — MAJOR — 最终交接命令/产物 schema 合同不正确（统一修复组，已修复）
 
-- **位置**：`tools/unity/build-p45-android-game.ps1:198-236`；build invocation wrapper。
+- **位置**：上一轮报告 §4/§5 D02/§6.1–§6.4；JSON `commands`、`candidateArtifact`、`expectedEvidenceFields`。
 - **原样复现**：
 
 ```powershell
-Write-Output $env:TEMP; Write-Output $env:TMP
-Select-String tools/unity/build-p45-android-game.ps1 -Pattern "env:TEMP|env:TMP|GRADLE_USER_HOME"
-Get-PSDrive C,D,E | Select-Object Name,@{n="FreeMiB";e={[math]::Round($_.Free/1MB,2)}}
+Select-String tools/unity/build-p45-android-game.ps1 -Pattern 'catch \{' -Context 0,4
+# 读取实际 failure-summary 的 [pscustomobject]@{...} 键
+Get-Content D:\majiang-wt\g2-c05-android-game-luna6-20261101\build\p45-android-game\20261101-r2-clean-2ccc7295\summary.json -Raw | ConvertFrom-Json
 ```
 
-- **实际**：宿主 TEMP/TMP 是 `C:\Users\sncdc\AppData\Local\Temp`；脚本只给 Unity 子进程设置 `ANDROID_CLI_BIN/JAVA_HOME/PATH`，没有设置 TEMP/TMP/GRADLE_USER_HOME。D: 只剩约 102.4 MiB。照文档直接跑会违反“新增 build/temp/cache/log/evidence 全在 E:”的约束，尽管 APK 输出路径在 E:。
-- **期望**：最终构建的每个子进程、临时/cache/log/output 都在独占 E: ignored `build/<GUID>` case root；不改系统环境变量。
-- **证据**：`binding-facts.json` 的 `environment.disks/processTemp`；`logs/provenance.log`。
-- **修复要求**：调用进程先建 E: case root，设置 `$env:TEMP/$env:TMP/$env:GRADLE_USER_HOME`，验证可写，再以 `-OutputRoot` 指向同一 case root 调 `build-p45-android-game.ps1`。不要改机器/用户环境，不要把 cache 放 D:。
-- **验收断言**：启动前子进程 TEMP/TMP/GRADLE_USER_HOME 均在 E: case root；构建后 D:/C: 没有新增 cache/temp/log 文件；所有证据仍在 E: case root。
+- **实际**：
+  - (a) 旧 template 只赋 `$root`，却用相对 `-File tools/unity/...` 且不切 cwd；从另一 cwd 执行会选中另一树脚本，输出/manifest 可能跨树；device 模板也是相对脚本和松散 `<E:\case>` 占位。
+  - (b) `candidateArtifact.status=NOT_RUN`，却把配置值 `packageId=com.majiang.game`、`abis=['arm64-v8a']` 写成 actual 字段。
+  - (c) `failure-summary` 期望字段 `failedGate/firstError/evidence paths` 与冻结脚本实际写出的 `status/sourceHead/dirtyPaths/inputSha256/toolchainManifestSha256/nativeExit/error/buildReportLine/apkExists/evidenceRoot/unityLog` 不符。
+  - (d) D02 旧验收要求“APK 内同一 DLL 字节一致”，而目标是 ARM64 IL2CPP；历史 APK 的证据是 native `libil2cpp.so`，不是 managed project DLL 打包。
+- **期望**：绝对脚本路径/严格 root 约束；未观察 package/ABI 为 null；failure-summary 映射真实冻结键；managed 输入 provenance 与 native APK 证据分层。
+- **证据**：`build/c05-android-prep-r1-d114005f87be/tool-fixture-results.json` SHA256 `E14E36608F7665143D0A929F6A6F3D27A4061DBB36B8F69580CE911B88C6AD93`；`logs/tool-fixture.log` SHA256 `46D77CE9F1F5A7332E183B257E77D977614BBC9A55A36D02687C214BEBFFD470`；冻结脚本 catch 行 `tools/unity/build-p45-android-game.ps1:238-242`；历史 summary `62AD41746D25B3B40E889F35154CA02A7EFBF97B1B55AD0042C9F8577821716B`。
+- **修复要求**：
+  - (a) 用 `Join-Path $root 'tools/unity/...'` 得到绝对 `$buildScript`/`$runner`；`$case=Join-Path $root 'build\c05-final-...'`；`-File $buildScript`/`$runner`；`-OutputRoot`/`-EvidenceDir` 均在 `$root\build`；每条命令后检查 `$LASTEXITCODE`。
+  - (b) `candidateArtifact.packageId=null`、`abis=null`；目标 package/ABI 仅保留在 `androidBuildContract`。
+  - (c) 只列冻结脚本实际字段；`failedGate/firstError/evidencePaths` 明确标为“未来可选扩展，当前不产出”，不改已接受脚本。
+  - (d) 共享 DLL 以 fresh 构建输入/provenance/编译链绑定；APK 以自身 SHA、native ABI/package/BuildReport 校验；没有逐 DLL→APK 直接证据时明确边界；不得要求 APK 含 managed DLL 或把桌面 Player DLL 相等当 Android 证据。
+- **验收断言**：跨 cwd 微型 TOOL_FIXTURE 记录 fixture-root 绝对脚本、root 内 output/evidence、native exit 0；actual package/ABI null；failure-summary 键与冻结源一致；不要求 IL2CPP APK 内 managed DLL；未启动 Unity/设备。
 
-### C05-PREP-D04 — MINOR — UnityVersion.txt 查找路径缺失，summary 会记 `unityVersion=UNKNOWN`
+### 5.1 准备观察与边界（不计入本轮缺陷）
 
-- **位置**：`tools/unity/build-p45-android-game.ps1:171-173`；历史 `summary.json`。
-- **原样复现**：
-
-```powershell
-Get-Content D:\Unity\Hub\Editor\6000.3.27f1\Editor\Data\Resources\UnityVersion.txt
-Get-Content D:\majiang-wt\g2-c05-android-game-luna6-20261101\build\p45-android-game\20261101-r2-clean-2ccc7295\summary.json |
-  ConvertFrom-Json | Select-Object unityVersion
-```
-
-- **实际**：文件不存在，`Get-Content` exit 1；历史 accepted C05 summary 记录 `unityVersion: UNKNOWN`，但 Unity.exe ProductVersion 是 `6000.3.27f1_672d562a42a7`，ProjectVersion.txt 也记录 revision `672d562a42a7`。
-- **期望**：最终 summary 记录真实版本/revision，或明确把 UNKNOWN 标为非权威字段，同时从 ProductVersion/ProjectVersion 绑定版本。
-- **证据**：`logs/first-unityversion.err` SHA256 `84881A9588FCC4BC1E6EE4142FCBAA35D9F3E028F9739533A5036E26C33867A1`；历史 summary。
-- **修复要求**：最终证据从 Unity.exe ProductVersion 与 ProjectSettings/ProjectVersion.txt 取版本；不要为这个展示字段改绿门禁，也不要把 summary `unityVersion` 当权威。
-- **验收断言**：最终 summary/report 显示 `6000.3.27f1` 与 revision `672d562a42a7`，来源可复核；任何 UNKNOWN 字段显式标非权威。
-
-### C05-PREP-D05 — MINOR — 锁定 adb 设备发现 JSON 有效，但外层包装因 adb daemon 继承 stdout 句柄不退出
-
-- **位置**：`tools/unity/run-p45-android-game.ps1:26-39,98-104`；caller 输出管道。
-- **原样复现**：
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-android-game.ps1 `
-  -Action Devices -EvidenceDir build/c05-android-prep-1a33507caee9/device 2>&1 |
-  Tee-Object build/c05-android-prep-1a33507caee9/logs/device-discovery.log
-```
-
-- **实际**：打印设备列表、`DEVICE_STATUS=NOT_RUN_NO_DEVICE`、`DEVICE_EVIDENCE=build-relative`，并写出 `device-list.json`（status PASS / nativeExit 0 / devices=[]）。外层 PowerShell 在 120 s 内未退出；JSON 完整后只停止了本任务包装进程，adb daemon PID 66388 保留。该现象与既有 accepted 记录的 `real-devices.log` UNSEALED 一致。
-- **期望**：有界设备发现返回可观察 exit code 与完整 JSON，不需要调用方杀共享 adb daemon；已知继承句柄限制标 UNSEALED，不当作设备失败。
-- **证据**：`logs/device-discovery.log` SHA256 `2B6128B9583E7D83DA17073AB135CAA93500006AD07779AD3E95C8A36318BA07`；`device-list.json` SHA256 `A6D72E4A0613407603BE90CBBCE6F545F2646F7DB4C3016B95DEC10B66C5E6DC`。
-- **修复要求**：最终设备动作不要通过长生命周期父管道；把包装输出重定向到文件，JSON 完整后关闭包装句柄；绝不杀共享 adb server；仍被继承就记 UNSEALED 并只凭已封存 JSON 继续。
-- **验收断言**：设备动作在有界时间内返回 exit code 和完整 JSON，或明确 UNSEALED 且保留同样原始证据；共享 adb daemon 与其他设备操作保持存活。
-
-### 5.1 非缺陷的明确缺口
-
-| ID | 状态 | 内容 |
+| ID | 事实 | 处理 |
 |---|---|---|
-| G-DEVICE | **NOT_RUN_NO_DEVICE** | 没有 authorized online 设备；serial/API/ABI/model/insets 均无；Install/Start/Stop/Capture/DeviceInfo NOT_RUN。 |
-| G-APK | **NOT_RUN** | 没有本候选 APK、BuildReport、native exit、aapt2 badging、安装/启动/视觉/触控/弱网/iOS 证据。 |
-| G-OFFLINE | **NOT_RUN** | 只验证 NuGet/UPM cache 存在；没有实际 dotnet restore/Unity package resolve。 |
-| G-LICENSE | **NOT_VERIFIED** | 没有启动 Unity，无法验证 batchmode entitlement。 |
+| OBS-01 | 本树默认 `build\android-toolchain\private\toolchain.json` 缺失 | 默认负例保留；显式原已接受路径可用，见 R1-02 |
+| OBS-02 | 7 个 tracked 自有 DLL 仍嵌 `8fd7c6cb` | 历史 base 工件，非 candidate；最终构建强制重建并重绑 |
+| OBS-03 | 冻结脚本不设置子进程 `TEMP/TMP/GRADLE_USER_HOME` | 交接命令在调用进程内固定到 `$root\build\<case>` |
+| OBS-04 | `UnityVersion.txt` 路径缺失，summary 会记 UNKNOWN | 最终证据从 ProductVersion/ProjectVersion 取版本；不改门禁 |
+| OBS-05 | pinned adb daemon 可继承 stdout 句柄，包装可能不退出 | JSON 完整后只停包装；daemon 不杀；可标 UNSEALED |
+| OBS-06 | 无设备 / 无 APK / 未验证 license / 未做离线 restore | 设备 BLOCKED；其余 NOT_RUN，不推断通过 |
 
----
+## 6. 最终候选构建前置门槛与命令
 
-## 6. 最终候选构建前置门槛
-
-1. UI15 15 项 PlayMode 修复与 C04 恢复/原请求对账增量先合回；冻结最终 candidate SHA，重算本 JSON 的 tree/source/plugin 绑定。任何合并后本 JSON 失效。
-2. 解决 C05-PREP-D01：caller 批准本 worktree 的新 manifest pin，或批准稳定共享私有根；不得复制别的 worktree manifest。
-3. 提交本报告/JSON 两个 expectedFiles；build 脚本的 `Get-C05SourceBoundary` 会拒绝其 expectedFiles 之外的 staged/unstaged/untracked 路径。
-4. 设置进程内 `TEMP/TMP/GRADLE_USER_HOME` 到独占 E: case root；不修改系统环境。
+1. UI15 已在 `734b3775` 通过并发布，不在本 cde5 快照内；冻结 post-UI15/post-recovery candidate 后，重新绑定 tree/source/plugin 输入。任何合并后本 JSON 失效。
+2. 显式使用原已接受 manifest：`-AndroidToolchainManifest 'D:\majiang-wt\android-toolchain-ds-20261027\build\android-toolchain\private\toolchain.json'`；先核对 SHA `E478...`、Ninja `E52A...`、CLI `F66B...`。默认本树路径缺失不是全局 blocker；不要复制、provision、重 pin 或下载/升级 SDK。
+3. 提交两份 expectedFiles；build 脚本的 `Get-C05SourceBoundary` 会拒绝其 expectedFiles 之外的 staged/unstaged/untracked 路径。
+4. 进程内设置 `TEMP/TMP/GRADLE_USER_HOME` 到 `$root\build\<case>`；不改系统环境。
 5. 获取并持有 `Local\MahjongV5P45UnityValidation`；等待 30 s 失败即 BLOCKED，不启动第二个 Unity/Player。
-6. 确认 Unity batchmode license/entitlement，且没有其他 Unity/Player 正在运行。
+6. 确认 Unity batchmode license/entitlement，且没有其他 Unity/Player 在运行。
 7. 强制重建 7 个共享项目与 Google.Protobuf；`check-shared-plugins.ps1` PASS；bind post-build DLL SHA/commit；不得复用当前 `8fd7c6cb` DLL。
 8. 用 C05 入口构建 APK；要求 Unity native exit 0、BuildReport Succeeded/errors 0、六场景、TMP、`com.majiang.game`、minSdk25/targetSdk36、ARM64-only、APK mtime 晚于 build start、aapt2 badging 与 report/project 一致。
 9. 只有唯一 authorized online serial 才跑设备动作；无设备则 BLOCKED/NOT_RUN；不自动启模拟器，不用默认 adb。
 10. 跑视觉/触控/返回/后台恢复/宽高比/安全区/弱网；iOS 无硬件则 NOT_RUN。
 11. 保留首失败、native exit、逐例 XML、manifest/hash；禁止 skip/空测试/旧产物/Total0/删测试/弱化断言/刷新摘要获得绿色。
 
-### 6.1 精确构建命令（模板；当前在 D01 处会 BLOCKED）
+### 6.1 构建命令（绝对脚本路径；不依赖 cwd）
 
 ```powershell
 $root = 'E:\majiang-review\<final-candidate-worktree>'
+$buildScript = Join-Path $root 'tools/unity/build-p45-android-game.ps1'
 $case = Join-Path $root ('build\c05-final-' + [guid]::NewGuid().ToString('N'))
-$out  = Join-Path $case 'android-build'   # 必须不存在；脚本拒绝复用
+$out  = Join-Path $case 'android-build'
 $env:TEMP = Join-Path $case 'temp'
 $env:TMP  = $env:TEMP
 $env:GRADLE_USER_HOME = Join-Path $case 'gradle-home'
 New-Item -ItemType Directory -Force -Path $case, $env:TEMP, $env:GRADLE_USER_HOME | Out-Null
 
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/build-p45-android-game.ps1 `
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $buildScript `
   -UnityPath 'D:\Unity\Hub\Editor\6000.3.27f1\Editor\Unity.exe' `
   -OutputRoot $out `
-  -AndroidToolchainManifest (Join-Path $root 'build\android-toolchain\private\toolchain.json') `
-  -MutexWaitSeconds 30 `
-  -UnityTimeoutSeconds 7200
+  -AndroidToolchainManifest 'D:\majiang-wt\android-toolchain-ds-20261027\build\android-toolchain\private\toolchain.json' `
+  -MutexWaitSeconds 30 -UnityTimeoutSeconds 7200
+$native = $LASTEXITCODE
+if ($native -ne 0) { throw "C05 build native exit=$native" }
 ```
 
-当前 bare 复现（不启动 Unity，只证明 gate）：
+### 6.2 设备命令（同一 `$root`/`$case`；有 authorized serial 才执行）
 
 ```powershell
-Test-Path build\android-toolchain\private\toolchain.json   # False
-# build script 在此处抛 BLOCKED，未创建 Unity 子进程
-```
+$runner = Join-Path $root 'tools/unity/run-p45-android-game.ps1'
+$apk = Join-Path $out 'Mahjong.apk'
+$serial = '<authorized-online-serial>'
 
-### 6.2 设备命令（有 serial 才执行）
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runner -Action Devices -EvidenceDir (Join-Path $case 'device')
+if ($LASTEXITCODE -ne 0) { throw "device discovery exit=$LASTEXITCODE" }
 
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-android-game.ps1 `
-  -Action Devices -EvidenceDir <E:\case>\device
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-android-game.ps1 `
-  -Action DeviceInfo -Serial <serial> -EvidenceDir <E:\case>\device-info
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-android-game.ps1 `
-  -Action Install -Serial <serial> -Apk <E:\case>\android-build\Mahjong.apk -EvidenceDir <E:\case>\install
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-android-game.ps1 `
-  -Action Start -Serial <serial> -Apk <E:\case>\android-build\Mahjong.apk -EvidenceDir <E:\case>\start
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-android-game.ps1 `
-  -Action Capture -Serial <serial> -Apk <E:\case>\android-build\Mahjong.apk -EvidenceDir <E:\case>\device
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-android-game.ps1 `
-  -Action Stop -Serial <serial> -Apk <E:\case>\android-build\Mahjong.apk -EvidenceDir <E:\case>\stop
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runner -Action DeviceInfo -Serial $serial -EvidenceDir (Join-Path $case 'device-info')
+if ($LASTEXITCODE -ne 0) { throw "DeviceInfo exit=$LASTEXITCODE" }
+
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runner -Action Install -Serial $serial -Apk $apk -EvidenceDir (Join-Path $case 'install')
+if ($LASTEXITCODE -ne 0) { throw "Install exit=$LASTEXITCODE" }
+
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runner -Action Start -Serial $serial -Apk $apk -EvidenceDir (Join-Path $case 'start')
+if ($LASTEXITCODE -ne 0) { throw "Start exit=$LASTEXITCODE" }
+
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runner -Action Capture -Serial $serial -Apk $apk -EvidenceDir (Join-Path $case 'device')
+if ($LASTEXITCODE -ne 0) { throw "Capture exit=$LASTEXITCODE" }
+
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runner -Action Stop -Serial $serial -Apk $apk -EvidenceDir (Join-Path $case 'stop')
+if ($LASTEXITCODE -ne 0) { throw "Stop exit=$LASTEXITCODE" }
 ```
 
 ### 6.3 APK 校验命令
 
 ```powershell
 $aapt2 = 'D:\Unity\Hub\Editor\6000.3.27f1\Editor\Data\PlaybackEngines\AndroidPlayer\SDK\build-tools\36.0.0\aapt2.exe'
-& $aapt2 dump badging <E:\case>\android-build\Mahjong.apk *> <E:\case>\apk-badging.txt
-Get-FileHash <E:\case>\android-build\Mahjong.apk -Algorithm SHA256
-Get-Content <E:\case>\android-build\summary.json,<E:\case>\android-build\build-report.json -Raw | ConvertFrom-Json
+$badging = Join-Path $case 'apk-badging.txt'
+& $aapt2 dump badging $apk *> $badging
+if ($LASTEXITCODE -ne 0) { throw "aapt2 badging exit=$LASTEXITCODE" }
+Get-FileHash $apk -Algorithm SHA256
+Get-Content (Join-Path $out 'summary.json'), (Join-Path $out 'build-report.json') -Raw | ConvertFrom-Json
 ```
 
 ### 6.4 预期证据字段
@@ -419,12 +404,10 @@ Get-Content <E:\case>\android-build\summary.json,<E:\case>\android-build\build-r
 | `summary.json` | status, sourceHead, dirtyPaths, inputSha256.taskInputs, inputSha256.productionInputs, unityVersion, unityPath, toolchainManifestSha256, androidToolchain, apk, apkBytes, apkSha256, nativeExit, buildReport, metadata, evidenceRoot, adbPresent |
 | `build-report.json` | schema, result, errors, warnings, target, output, bytes, backend, architectures, packageId, minSdkVersion, targetSdkSetting, landscapeOnly, fullscreen, outsideSafeArea, scenes, tmpResources |
 | `apk-metadata.txt` | package, minSdkVersion, targetSdkVersion, native-code |
-| `unity.log` | 原生命令/exit、首错误、BuildReport marker、license/entitlement 失败（如有） |
+| `unity.log` | native exit、首错误、BuildReport marker、license/entitlement 失败（如有） |
 | `shared-build.log` | dotnet path、7 个项目 build、warnings/errors、copied outputs |
 | `plugin-provenance.log` | input count/hash、7 own DLL hashes、19 outputs、provenance PASS |
-| `failure-summary.json` | status、failedGate、nativeExit、firstError、evidence paths |
-
----
+| `failure-summary.json` | **实际冻结键**：status, sourceHead, dirtyPaths, inputSha256, toolchainManifestSha256, nativeExit, error, buildReportLine, apkExists, evidenceRoot, unityLog。`failedGate/firstError/evidencePaths` 当前脚本不产出，不能当作现有 schema；`evidenceRoot` 实际序列化为字面 `build/p45-android-game/<run>`，必须另存调用 run 目录 |
 
 ## 7. PASS / FAIL / BLOCKED / NOT_RUN
 
@@ -439,17 +422,17 @@ Get-Content <E:\case>\android-build\summary.json,<E:\case>\android-build\build-r
 - 只读静态 shared input closure：150 inputs，aggregate `996CACB3...`；未 build。
 - E: 证据/TEMP 写探针 PASS；磁盘实测完成；未改系统环境。
 - 锁定 adb devices native exit 0、0 设备；C05 Devices JSON PASS。
-- JSON 结构/hash 一致性自检 **38/38 PASS**（见 §9；这是报告完整性检查，不是产品/Unity/设备测试）。
+- 原已接受显式 manifest/两个 helper 的只读 preflight native exit 0；默认本树路径缺失负例保留。
+- 跨 cwd TOOL_FIXTURE PASS：fixture-root 绝对 build/device 脚本、root 内 output/evidence、native exit 0；未启动 Unity/设备。
+- JSON 结构与 hash 一致性自检在本轮新证据根重新执行（结果见 §9；不覆盖旧 38/38 原件）。
 
 ### FAIL
 
-- C05-PREP-D04 MINOR：`UnityVersion.txt` 路径缺失，summary 会记 `UNKNOWN`（历史 accepted summary 也是 UNKNOWN）。
+- 无。R1 三条 MAJOR 已修复；默认 manifest 缺失是局部负例，不是失败。
 
 ### BLOCKED
 
-- C05-PREP-D01 BLOCKER：私有 toolchain manifest 缺失且冻结摘要不可在新路径复现；Unity/APK 构建不能开始。
 - Android 设备矩阵：无 authorized online 设备；Install/Start/Stop/Capture/DeviceInfo NOT_RUN。
-- 最终候选 APK：NOT_RUN（pre-increment + D01 + 无设备）。
 
 ### NOT_RUN
 
@@ -458,7 +441,8 @@ Get-Content <E:\case>\android-build\summary.json,<E:\case>\android-build\build-r
 - dotnet restore / 离线 restore 证明。
 - 设备安装、启动、游戏、视觉、触控、返回、后台恢复、宽高比/安全区、弱网。
 - iOS 构建/设备。
-- C04 恢复后原请求对账、UI15 15 项修复——均为独立增量。
+- 正式 post-UI15/post-recovery candidate 绑定与构建。
+- C04 恢复后原请求对账、C04/C05/G2–G5 验收。
 
 ---
 
@@ -467,8 +451,8 @@ Get-Content <E:\case>\android-build\summary.json,<E:\case>\android-build\build-r
 任一条件出现，本 JSON 立即失效，必须重算并重绑：
 
 - candidate/source/Unity Assets/ProjectSettings/Packages/shared dotnet 输入/plugin DLL/build 脚本/场景/TMP 资源有任何提交或 dirty/untracked 变化。
-- Unity editor/module、OpenJDK、SDK platform/build-tools、NDK、CMake、adb、私有 manifest、Ninja、android-cli 有任何变化。
-- UI15/recovery 或其他增量合回 `cde5da16` 之后，或 PR20 publication head 变化。
+- Unity editor/module、OpenJDK、SDK platform/build-tools、NDK、CMake、adb、已接受显式 manifest、Ninja、android-cli 有任何变化。
+- UI15（已在 734b3775 发布）或 C04 recovery/其他增量合回 `cde5da16` 之后，或 PR20 publication head 变化。
 - 设备 serial/OS/ABI/display 变化，或 APK 重建后 summary/build-report/metadata hash 不一致。
 - 已接受的 C05 build/run/verification 脚本或六个生产场景变化。
 
@@ -476,47 +460,45 @@ Get-Content <E:\case>\android-build\summary.json,<E:\case>\android-build\build-r
 
 ## 9. 证据、验证与交付合规
 
-**证据根**：`build/c05-android-prep-1a33507caee9/`（ignored）。
+**历史证据根**：`build/c05-android-prep-1a33507caee9/`（ignored，保持原 38/38 与首失败原件，不覆盖）。
+**R1 证据根**：`build/c05-android-prep-r1-d114005f87be/`（ignored，新 GUID；本轮的 manifest preflight、TOOL_FIXTURE、validator 输出）。
 
 | 证据 | SHA256 |
 |---|---|
-| `binding-facts.json` | `16DBC0937260D3B17D9766457C397D47E2AAC6005DF323715D209414BF6986A7` |
-| `shared-input-closure.json` | `F2910668DC2D63266C0B6327FCEF70366B64ED313BCCE34CB62BCDF63D86C4C4` |
-| `logs/collect-env.log`（首失败） | `25F873AF44BECA6C74128256CD3A4B950544A93FDFB4A0CF0D9B02000858FCF5` |
-| `logs/chunk1.log` | `814599B6272B6FF4703616BA0F4FFE15D0AFC16588343595A9F62EA35A66DEE0` |
-| `logs/chunk2.log` | `2FB6E72D67C35FCD8E25C604AEEF7315BF667AFBADA301F280579075849CBEE1` |
-| `logs/provenance.log` | `A792A1F85EEE561A05A25D89C142E6A741C44CA77469D0DD48BC5B04D46C68AA` |
-| `logs/java.err` | `2C05C59B13A701146C37D79936303EB8080CD353E096756DFAB1CD833A306423` |
-| `logs/adb-version.out` | `8CCEA4420D6846FE79AD8D98FB1447AF4BD1324FDB4DB418B73C97D949AF4692` |
-| `logs/adb-devices.out` | `BBFCC7239A6F1BE3544814EBDC6BCC9B66BF5B1F0B03BAA3340808F19265A630` |
-| `logs/adb-devices.err` | `1AC362B61180A2AFBEEABEC06AED462AE82740149358C7A2EC926BE3E1B1ECFF` |
-| `logs/first-unityversion.err` | `84881A9588FCC4BC1E6EE4142FCBAA35D9F3E028F9739533A5036E26C33867A1` |
-| `logs/device-discovery.log` | `2B6128B9583E7D83DA17073AB135CAA93500006AD07779AD3E95C8A36318BA07` |
-| `device/20261101-125149-8f614c3f/device-list.json` | `A6D72E4A0613407603BE90CBBCE6F545F2646F7DB4C3016B95DEC10B66C5E6DC` |
-| `validation-results.json` | `5F26915833A9B0B21F2A28E9BF49552F4508831BB0C9C6CFE680CDABCAEDFB8F`；38/38 PASS |
-| `logs/base-diff-check.log`（全 base 区间 exit 2，12 个既有文件） | `01EA8CEE25637836721193A00E53D0DAD84DEDE773160E84888AE48D9989101D` |
-| `logs/show-check.log`（`git show --check HEAD`） | `61A66BCCDA45CED731689B6C9DC26DB1ACF1168B16866405BDF45C6E6FE24D89` |
+| R1 `logs/accepted-manifest-preflight.log`（显式原 manifest，native exit 0） | `B75BB362BC7BB2E7BB460EABEA52E8000AD9CD95B5584FDDF8FB76CB2B0FE4F4` |
+| R1 `manifest-identity.json`（manifest/helper/JDK/SDK 身份） | `07A17B361821F1E8AD7068D6B45705F24FADF263E007A140195F366A5467CE61` |
+| R1 `tool-fixture-results.json`（跨 cwd build/device 调用） | `E14E36608F7665143D0A929F6A6F3D27A4061DBB36B8F69580CE911B88C6AD93` |
+| R1 `logs/tool-fixture.log` | `46D77CE9F1F5A7332E183B257E77D977614BBC9A55A36D02687C214BEBFFD470` |
+| R1 `validation-results.json`（57/57 PASS，exit 0） | `751920C2711A5E2D1807FE71531D1276E22D3B6F825FA648CC98476D803859CB` |
+| Caller `REVIEW.txt` | `14CF762D399E2111DC291ADB68830C58BC59CBFA5A692FB4DE58FED8D68E6E77` |
+| Caller `independent-findings.json` | `1A42EBB8BCC79F541A1D9E9A938A6972981D883A78176CC2A0144C943DF8D615` |
+| Caller `evidence-manifest.csv` | `9F9E3BA594341241325CA1DACC6BF58B382AC9E741A6FE95E2FBC13F2E6541E0` |
+| 旧 `binding-facts.json` | `16DBC0937260D3B17D9766457C397D47E2AAC6005DF323715D209414BF6986A7` |
+| 旧 `shared-input-closure.json` | `F2910668DC2D63266C0B6327FCEF70366B64ED313BCCE34CB62BCDF63D86C4C4` |
+| 旧 `device-list.json` | `A6D72E4A0613407603BE90CBBCE6F545F2646F7DB4C3016B95DEC10B66C5E6DC` |
+| 旧 `logs/device-discovery.log` | `2B6128B9583E7D83DA17073AB135CAA93500006AD07779AD3E95C8A36318BA07` |
 
 `temp/adb.log` 1,224 B 由 pinned adb daemon 持有，**UNSEALED**，未 hash、未删除、未杀 daemon。
 
-**首次错误/异常保留**：
+**首次错误/异常保留**（历史根，未覆盖）：
 
-1. `ENV-PROBE-1` exit 1：`GetFullPath called with 1 argument: The path is not of a legal form.`（`logs/collect-env.log`）。这是本任务探针脚本自身缺陷，不是环境失败；已改用有界直接探针。
+1. `ENV-PROBE-1` exit 1：`GetFullPath called with 1 argument: The path is not of a legal form.`（`build/c05-android-prep-1a33507caee9/logs/collect-env.log`）。探针脚本自身缺陷，不是环境失败。
 2. `ENV-PROBE-2` 无输出 >600 s 后只终止本任务探针 PID；无 raw 输出，job `pwsh-437b6ef5d0f74730`。不是环境/产品失败。
-3. `UNITYVERSION-LOOKUP` exit 1：路径不存在（`logs/first-unityversion.err`）；对应 C05-PREP-D04。
-4. `DEVICE-WRAPPER-EXIT`：JSON 完整后包装未退出，只停止包装，adb daemon 保留；对应 C05-PREP-D05。
+3. `UNITYVERSION-LOOKUP` exit 1：路径不存在；对应 OBS-04。原错误 SHA256 `84881A9588FCC4BC1E6EE4142FCBAA35D9F3E028F9739533A5036E26C33867A1`。
+4. `DEVICE-WRAPPER-EXIT`：JSON 完整后包装未退出，只停止包装，adb daemon 保留；对应 OBS-05。
+5. R1 的 manifest 默认缺失负例（`Test-Path` False）与显式路径 PASS 同时保留；caller 初版探针 regex/expected-path 脚本错误为 caller 侧历史，不是 receiver 产品或文档失败。
 
-**JSON 自检**：`validate-binding.ps1` 实际执行 **38/38 PASS**，覆盖 commit/祖先/发布增量、APK null、150 输入逐文件 SHA、10 scopes、6 场景、8 plugin、全部 evidence/authority SHA、repo manifest 重算、结构/状态分离、无 BOM/LF。验证结果写入 `validation-results.json`；JSON SHA256 为 `182288AAAA340BA8DCCBF77773F26AFF352388CE3A63B69CC9814A73897FA65E`。该自检不替代任何产品测试、Unity 构建或设备结果。
+**JSON 自检**：`build/c05-android-prep-r1-d114005f87be/validate-binding-r1.ps1 -NoWrite` 实际执行 **57/57 PASS、native exit 0**，覆盖精确 expectedFiles/旧别名、candidate 冻结身份、actual package/ABI null、原已接受 manifest/helper/preflight、绝对脚本/root 内 evidence、failure-summary 真实字段、3 条 R1 修复、UI15 快照后发布、150 输入、7 个非 candidate DLL、设备 none、scope/BOM/LF。验证结果 `validation-results.json` SHA256 `751920C2711A5E2D1807FE71531D1276E22D3B6F825FA648CC98476D803859CB`；JSON SHA256 为 `E07C052DF07C9B87FAF751AD1F5AF3D254814EE056DB5C2928B53EFCFEADCF7A`。该自检不替代任何产品测试、Unity 构建或设备结果。
 
 **交付合规**：
 
-- tracked 变更恰为两个新增 expectedFiles；没有生产、测试、场景、ProjectSettings、packages、verifier、CI、scheduler 改动。
-- 构建/日志/临时/证据都在 ignored `build/c05-android-prep-1a33507caee9/`，未混入暂存区。
-- `git status --porcelain` 仅两项；`git diff --cached --check` exit 0；`git show --check HEAD` exit 0；交付区间 `cde5da16..HEAD` 与 `HEAD^..HEAD` 的 diff-check 均 exit 0。
-- 全 base 区间 `8fd7c6cb..HEAD` 的 `git diff --check` exit 2：原因是 12 个**既有**历史文件（7 个 `doc/v5-重构/patches/*.patch` + 5 个历史 md）的尾随空白，均有原件、未修改、不属于本交付；本交付两个文件不在该清单。该首失败已保留在 `logs/base-diff-check.log`。
+- R1 最终 tracked delta 恰好是两个精确 expectedFiles（旧名以 `git mv` 移除）：`V5-G2-C05-ANDROID-CANDIDATE-READINESS-20261101.md` 与 `V5-G2-C05-ANDROID-CANDIDATE-BINDING-20261101.json`；无旧别名、无生产/测试/场景/ProjectSettings/packages/verifier/CI/scheduler 改动。
+- R1 构建/日志/临时/证据都在 ignored `build/c05-android-prep-r1-d114005f87be/`；旧证据根保持原样，未混入暂存区。
+- `git diff --cached --check` exit 0；交付区间 `cde5da16..HEAD` 与 `HEAD^..HEAD` 的最终 diff-check/clean 结果在交付回执给出。
+- 全 base 区间 `8fd7c6cb..HEAD` 的 `git diff --check` 仍 exit 2：原因是 12 个**既有**历史文件（7 个 `doc/v5-重构/patches/*.patch` + 5 个历史 md）的尾随空白，均有原件、未修改、不属于本交付；本交付两个文件不在该清单。该首失败保留在历史证据根 `logs/base-diff-check.log`，R1 不修改这些原件。
 - 不 push、不创建/修改 PR、不 record MR、不 approve、不合并 v5、不部署、不改 scheduler/complete.flag。
 - 唯一 PR20 与独立复核发布由本任务 caller 回调处理；交付后结束，等待独立复核。
 
-**下一 owner**：caller 指定的正式 C05 Android owner，在 UI15 与 C04 recovery 增量合回、且 caller 对私有 toolchain manifest pin/provisioning 作出决定之后。本接收方不自行批准、不继续跑构建、不代签 G2。
+**下一 owner**：caller 指定的正式 C05 Android owner，在 post-UI15（734b3775）/post-recovery 候选冻结后重新绑定并构建；使用现有已接受显式 manifest 路径，无需新的 manifest pin/provisioning 批准。本接收方不自行批准、不继续跑构建、不代签 G2。
 
 **报告自身 SHA256**：见交付消息/复核回执（避免文件内自引用；JSON 不含报告 SHA）。

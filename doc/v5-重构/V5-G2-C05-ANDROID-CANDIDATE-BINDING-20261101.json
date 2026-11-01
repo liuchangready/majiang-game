@@ -1,9 +1,9 @@
 {
     "schemaVersion":  1,
-    "kind":  "V5_G2_C05_ANDROID_ENV_BINDING_PREP",
+    "kind":  "V5_G2_C05_ANDROID_CANDIDATE_BINDING",
     "generatedAtUtc":  "2026-11-01T05:07:00.9203100Z",
-    "status":  "PREP_COMPLETE_BUILD_BLOCKED",
-    "phase":  "PRE_CANDIDATE_BUILD_PRE_UI15_AND_RECOVERY_MERGE",
+    "status":  "PREP_COMPLETE_FINAL_C05_NOT_RUN",
+    "phase":  "HISTORICAL_PRE_UI15_SNAPSHOT_PREPARATION",
     "notFinalC05":  true,
     "notG2":  true,
     "candidate":  {
@@ -1328,12 +1328,68 @@
                                       "note":  "Not acquired by this Android prep; final Unity/heavy stage must acquire and hold it for the whole stage."
                                   },
                         "privateToolchain":  {
-                                                 "defaultManifestPath":  "E:\\majiang-review\\g2-c05-android-prep-ds-20261101-1300\\build\\android-toolchain\\private\\toolchain.json",
-                                                 "manifestExists":  false,
-                                                 "acceptedManifestSha256":  "E4785B1BE9FD4CE158E6730C1F7E01C58A7C974D45A407EF7E9CC215F3BEE934",
-                                                 "ninjaExists":  false,
-                                                 "androidCliShimExists":  false,
-                                                 "defaultBuildGate":  "BLOCKED before Unity launch"
+                                                 "localDefault":  {
+                                                                      "path":  "E:\\majiang-review\\g2-c05-android-prep-ds-20261101-1300\\build\\android-toolchain\\private\\toolchain.json",
+                                                                      "manifestExists":  false,
+                                                                      "ninjaExists":  false,
+                                                                      "androidCliShimExists":  false,
+                                                                      "status":  "ABSENT_LOCAL_DEFAULT_ONLY",
+                                                                      "note":  "The build script default path is absent in this fresh worktree. This is a local-default fact, not evidence that the accepted toolchain identity is gone."
+                                                                  },
+                                                 "acceptedExplicit":  {
+                                                                          "manifestPath":  "D:\\majiang-wt\\android-toolchain-ds-20261027\\build\\android-toolchain\\private\\toolchain.json",
+                                                                          "manifestBytes":  3483,
+                                                                          "manifestSha256":  "E4785B1BE9FD4CE158E6730C1F7E01C58A7C974D45A407EF7E9CC215F3BEE934",
+                                                                          "schemaVersion":  1,
+                                                                          "ninjaVersion":  "1.13.2",
+                                                                          "ninjaExe":  "D:\\majiang-wt\\android-toolchain-ds-20261027\\build\\android-toolchain\\private\\ninja\\1.13.2\\ninja.exe",
+                                                                          "ninjaBytes":  603648,
+                                                                          "ninjaSha256":  "E52A7AD9538D9618C67A0BD777964E2EEC8A30F68B810A2F6ADCE1F2DAF847B8",
+                                                                          "androidCliBin":  "D:\\majiang-wt\\android-toolchain-ds-20261027\\build\\android-toolchain\\private\\android-cli\\android-cli-sdkmanager16.cmd",
+                                                                          "androidCliBytes":  1452,
+                                                                          "androidCliSha256":  "F66B015EF9F2054D8E4A9877185A6D922109AA68A4AF366F5E96C2629F7BD210",
+                                                                          "androidCliMode":  "classic-sdkmanager-16-passthrough",
+                                                                          "androidCliDelegate":  "C:\\Users\\sncdc\\AppData\\Local\\Android\\Sdk\\cmdline-tools\\16.0\\bin\\sdkmanager.bat",
+                                                                          "androidCliDelegateSha256":  "14866E8B3EDE1D90B633042748254BD264E0678F68B9390540E839588DBB47F4",
+                                                                          "jdkHome":  "D:\\Unity\\Hub\\Editor\\6000.3.27f1\\Editor\\Data\\PlaybackEngines\\AndroidPlayer\\OpenJDK",
+                                                                          "jdkVersion":  "openjdk version \"17.0.20.1\" 2026-08-18",
+                                                                          "sdkRoot":  "C:\\Users\\sncdc\\AppData\\Local\\Android\\Sdk",
+                                                                          "ndk":  "C:\\Users\\sncdc\\AppData\\Local\\Android\\Sdk\\ndk\\27.2.12479018",
+                                                                          "ndkRevision":  "27.2.12479018",
+                                                                          "cmake":  "C:\\Users\\sncdc\\AppData\\Local\\Android\\Sdk\\cmake\\3.22.1\\bin\\cmake.exe",
+                                                                          "cmakeVersion":  "cmake version 3.22.1",
+                                                                          "sdkPackages":  {
+                                                                                              "platforms":  [
+                                                                                                                "android-36"
+                                                                                                            ],
+                                                                                              "buildTools":  [
+                                                                                                                 "35.0.0",
+                                                                                                                 "36.0.0"
+                                                                                                             ],
+                                                                                              "cmdlineTools":  [
+                                                                                                                   "16.0",
+                                                                                                                   "latest",
+                                                                                                                   "latest-23-newcli-backup"
+                                                                                                               ],
+                                                                                              "ndk":  [
+                                                                                                          "27.2.12479018"
+                                                                                                      ],
+                                                                                              "cmake":  [
+                                                                                                            "3.22.1"
+                                                                                                        ]
+                                                                                          }
+                                                                      },
+                                                 "buildGate":  "EXPLICIT_ACCEPTED_MANIFEST_PREFLIGHT_PASS; LOCAL_DEFAULT_ABSENT_IS_NOT_A_GLOBAL_BLOCKER",
+                                                 "preflight":  {
+                                                                   "status":  "PASS_READ_ONLY",
+                                                                   "nativeExit":  0,
+                                                                   "evidence":  "build/c05-android-prep-r1-d114005f87be/logs/accepted-manifest-preflight.log",
+                                                                   "evidenceSha256":  "B75BB362BC7BB2E7BB460EABEA52E8000AD9CD95B5584FDDF8FB76CB2B0FE4F4",
+                                                                   "identityEvidence":  "build/c05-android-prep-r1-d114005f87be/manifest-identity.json",
+                                                                   "identitySha256":  "07A17B361821F1E8AD7068D6B45705F24FADF263E007A140195F366A5467CE61",
+                                                                   "scope":  "Exact frozen manifest/helper hash preflight only; no output directory, Unity, helper execution, APK, device or machine mutation."
+                                                               },
+                                                 "note":  "The accepted explicit manifest and both helpers were verified read-only. No copy, provision, re-pin, SDK download/upgrade or source change was performed."
                                              }
                     },
     "androidBuildContract":  {
@@ -1366,10 +1422,8 @@
                               "apk":  null,
                               "apkBytes":  null,
                               "apkSha256":  null,
-                              "packageId":  "com.majiang.game",
-                              "abis":  [
-                                           "arm64-v8a"
-                                       ],
+                              "packageId":  null,
+                              "abis":  null,
                               "build":  {
                                             "nativeExit":  null,
                                             "buildReport":  null,
@@ -1384,7 +1438,7 @@
                               "touch":  "NOT_RUN",
                               "weakNetwork":  "NOT_RUN",
                               "ios":  "NOT_RUN",
-                              "note":  "No APK/package/build/native result exists for this candidate. The historical 52,142,409-byte APK is not a current artifact and is not referenced as one."
+                              "note":  "No APK/package/ABI/SHA/build/native result was observed. Target package/ABI values live only in androidBuildContract and are not presented as measured artifact values. The historical 52,142,409-byte APK is not a current artifact."
                           },
     "historicalOnly":  {
                            "apk":  {
@@ -1413,9 +1467,11 @@
                                         "pass":  132,
                                         "fail":  15,
                                         "identical":  "15/15",
-                                        "source":  "V5-G2-C03-UNIFIED-CANDIDATE-DELIVERY-20261101.md section 15",
-                                        "rerun":  false,
-                                        "fixed":  false
+                                        "snapshotStatus":  "FAIL_15_RETAINED_IN_CDE5_SNAPSHOT",
+                                        "postSnapshotPublication":  "734b3775",
+                                        "postSnapshotStatus":  "PASSED_AND_PUBLISHED_OUTSIDE_THIS_SNAPSHOT",
+                                        "rerunByReceiver":  false,
+                                        "source":  "C03 delivery section 15 plus caller R1 review; UI15 publication reported by caller, not rerun here."
                                     },
                            "pluginCounts":  {
                                                 "ownDll":  7,
@@ -1425,48 +1481,75 @@
                                             }
                        },
     "pendingIncrements":  [
-                              "UI15 15 PlayMode failures are not fixed by this prep; the Luna task must merge before the final candidate build, then this binding must be invalidated and regenerated.",
-                              "C04 recovery/original-request reconciliation increment is not merged by this prep; after it merges, rebind source/tree/plugin inputs and rebuild.",
+                              "UI15 passed and was published at 734b3775 after this cde5 snapshot. This snapshot is historical pre-increment preparation; the formal candidate must rebind tree/source/plugin inputs and rebuild.",
+                              "C04 recovery/original-request reconciliation remains a separate increment; after it merges, rebind source/tree/plugin inputs and rebuild.",
                               "C03 component acceptance is not G2 approval; formal C04/C05 and G2-G5 remain unapproved."
                           ],
     "finalBuildPreconditions":  [
-                                    "Freeze the post-merge candidate SHA (UI15 + recovery increments) and verify the code tree of the final HEAD; this JSON is invalid after any such merge.",
-                                    "Resolve C05-PREP-D01: obtain a caller-approved private toolchain manifest pin that is valid for this exact worktree/root, or an approved stable shared private root. Do not copy a foreign manifest or launch Unity on a missing/mismatched manifest.",
+                                    "Freeze the post-UI15/post-recovery candidate SHA and rebuild this binding; UI15 publication 734b3775 is outside this historical cde5 snapshot.",
+                                    "Pass the existing accepted manifest explicitly to -AndroidToolchainManifest: D:\\majiang-wt\\android-toolchain-ds-20261027\\build\\android-toolchain\\private\\toolchain.json. Verify its SHA256 E478... and both helper hashes; the absent local default is not a blocker. Do not copy, provision, re-pin, download/upgrade SDK or change source.",
                                     "Set per-process TEMP, TMP and GRADLE_USER_HOME under an exclusive E: case root; verify writes; do not change system environment variables.",
                                     "Commit the two prep files first; the build script rejects any staged/unstaged/untracked path outside its C05 expected file list.",
                                     "Acquire Local\\MahjongV5P45UnityValidation and hold it for the whole Unity/Player/Android build stage; wait 30 seconds, then BLOCKED without launching a second Unity.",
                                     "Confirm Unity batchmode license/entitlement and that no other Unity/Player is running; this prep did not launch Unity.",
                                     "Force rebuild the 7 shared plugin projects and Google.Protobuf; require check-shared-plugins.ps1 PASS and bind post-build DLL hashes and ProductVersion commits to the final candidate. Do not reuse the tracked 8fd7c6cb DLLs.",
-                                    "Build the APK at the frozen candidate with the accepted C05 entry; require native exit 0, BuildReport Succeeded/errors0, six scenes, TMP, com.majiang.game, minSdk25/targetSdk36, ARM64-only, fresh mtime, and aapt2 metadata agreement.",
+                                    "Build the APK at the frozen candidate with the accepted C05 entry; require native exit 0, BuildReport Succeeded/errors0, six scenes, TMP, com.majiang.game, minSdk25/targetSdk36, ARM64-only, fresh mtime, and aapt2 metadata agreement. Bind the APK by its own SHA/native ABI/package/BuildReport; do not require managed project DLLs as APK entries under IL2CPP.",
                                     "Run device actions only with an authorized online serial and the exact APK evidence; otherwise record BLOCKED/NOT_RUN. Do not auto-start an emulator or substitute a default adb.",
                                     "Run visual/touch/back/background-resume/aspect/safe-area/weak-network checks; iOS remains NOT_RUN absent hardware.",
                                     "Preserve every first failure, native exit, XML, manifest and SHA-256; no skip, empty test, old artifact, Total0, deleted test, weakened assertion or refreshed summary."
                                 ],
     "commands":  {
                      "currentToolchainGate":  [
-                                                  "Test-Path build\\android-toolchain\\private\\toolchain.json",
-                                                  "Test-Path build\\android-toolchain\\private\\ninja\\1.13.2\\ninja.exe",
-                                                  "Test-Path build\\android-toolchain\\private\\android-cli\\android-cli-sdkmanager16.cmd"
+                                                  "Test-Path D:\\majiang-wt\\android-toolchain-ds-20261027\\build\\android-toolchain\\private\\toolchain.json",
+                                                  "(Get-FileHash D:\\majiang-wt\\android-toolchain-ds-20261027\\build\\android-toolchain\\private\\toolchain.json -Algorithm SHA256).Hash  # E478...",
+                                                  "Test-Path D:\\majiang-wt\\android-toolchain-ds-20261027\\build\\android-toolchain\\private\\ninja\\1.13.2\\ninja.exe",
+                                                  "Test-Path D:\\majiang-wt\\android-toolchain-ds-20261027\\build\\android-toolchain\\private\\android-cli\\android-cli-sdkmanager16.cmd",
+                                                  "Test-Path build\\android-toolchain\\private\\toolchain.json  # expected False: local-default negative only"
                                               ],
                      "buildTemplate":  [
                                            "$root = \u0027E:\\majiang-review\\\u003cfinal-candidate-worktree\u003e\u0027",
+                                           "$buildScript = Join-Path $root \u0027tools/unity/build-p45-android-game.ps1\u0027",
                                            "$case = Join-Path $root (\u0027build\\c05-final-\u0027 + [guid]::NewGuid().ToString(\u0027N\u0027))",
                                            "$out = Join-Path $case \u0027android-build\u0027",
                                            "$env:TEMP = Join-Path $case \u0027temp\u0027; $env:TMP = $env:TEMP; $env:GRADLE_USER_HOME = Join-Path $case \u0027gradle-home\u0027",
                                            "New-Item -ItemType Directory -Force -Path $case, $env:TEMP, $env:GRADLE_USER_HOME | Out-Null",
-                                           "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/build-p45-android-game.ps1 -UnityPath \u0027D:\\Unity\\Hub\\Editor\\6000.3.27f1\\Editor\\Unity.exe\u0027 -OutputRoot $out -AndroidToolchainManifest (Join-Path $root \u0027build\\android-toolchain\\private\\toolchain.json\u0027) -MutexWaitSeconds 30 -UnityTimeoutSeconds 7200"
+                                           "\u0026 powershell.exe -NoProfile -ExecutionPolicy Bypass -File $buildScript -UnityPath \u0027D:\\Unity\\Hub\\Editor\\6000.3.27f1\\Editor\\Unity.exe\u0027 -OutputRoot $out -AndroidToolchainManifest \u0027D:\\majiang-wt\\android-toolchain-ds-20261027\\build\\android-toolchain\\private\\toolchain.json\u0027 -MutexWaitSeconds 30 -UnityTimeoutSeconds 7200",
+                                           "$native = $LASTEXITCODE; if ($native -ne 0) { throw \"C05 build native exit=$native\" }"
                                        ],
-                     "deviceDiscovery":  "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-android-game.ps1 -Action Devices -EvidenceDir \u003cE:\\case\u003e\\device",
-                     "deviceInfo":  "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-android-game.ps1 -Action DeviceInfo -Serial \u003cserial\u003e -EvidenceDir \u003cE:\\case\u003e\\device-info",
-                     "install":  "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-android-game.ps1 -Action Install -Serial \u003cserial\u003e -Apk \u003cE:\\case\u003e\\android-build\\Mahjong.apk -EvidenceDir \u003cE:\\case\u003e\\install",
-                     "start":  "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-android-game.ps1 -Action Start -Serial \u003cserial\u003e -Apk \u003cE:\\case\u003e\\android-build\\Mahjong.apk -EvidenceDir \u003cE:\\case\u003e\\start",
-                     "capture":  "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-android-game.ps1 -Action Capture -Serial \u003cserial\u003e -Apk \u003cE:\\case\u003e\\android-build\\Mahjong.apk -EvidenceDir \u003cE:\\case\u003e\\device",
-                     "stop":  "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-android-game.ps1 -Action Stop -Serial \u003cserial\u003e -Apk \u003cE:\\case\u003e\\android-build\\Mahjong.apk -EvidenceDir \u003cE:\\case\u003e\\stop",
+                     "deviceDiscovery":  [
+                                             "$runner = Join-Path $root \u0027tools/unity/run-p45-android-game.ps1\u0027",
+                                             "\u0026 powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runner -Action Devices -EvidenceDir (Join-Path $case \u0027device\u0027)",
+                                             "$native = $LASTEXITCODE; if ($native -ne 0) { throw \"device discovery exit=$native\" }"
+                                         ],
+                     "deviceInfo":  [
+                                        "$serial = \u0027\u003cauthorized-online-serial\u003e\u0027",
+                                        "\u0026 powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runner -Action DeviceInfo -Serial $serial -EvidenceDir (Join-Path $case \u0027device-info\u0027)",
+                                        "$native = $LASTEXITCODE; if ($native -ne 0) { throw \"DeviceInfo exit=$native\" }"
+                                    ],
+                     "install":  [
+                                     "$apk = Join-Path $out \u0027Mahjong.apk\u0027",
+                                     "\u0026 powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runner -Action Install -Serial $serial -Apk $apk -EvidenceDir (Join-Path $case \u0027install\u0027)",
+                                     "$native = $LASTEXITCODE; if ($native -ne 0) { throw \"Install exit=$native\" }"
+                                 ],
+                     "start":  [
+                                   "\u0026 powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runner -Action Start -Serial $serial -Apk $apk -EvidenceDir (Join-Path $case \u0027start\u0027)",
+                                   "$native = $LASTEXITCODE; if ($native -ne 0) { throw \"Start exit=$native\" }"
+                               ],
+                     "capture":  [
+                                     "\u0026 powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runner -Action Capture -Serial $serial -Apk $apk -EvidenceDir (Join-Path $case \u0027device\u0027)",
+                                     "$native = $LASTEXITCODE; if ($native -ne 0) { throw \"Capture exit=$native\" }"
+                                 ],
+                     "stop":  [
+                                  "\u0026 powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runner -Action Stop -Serial $serial -Apk $apk -EvidenceDir (Join-Path $case \u0027stop\u0027)",
+                                  "$native = $LASTEXITCODE; if ($native -ne 0) { throw \"Stop exit=$native\" }"
+                              ],
                      "verifyApk":  [
                                        "$aapt2 = \u0027D:\\Unity\\Hub\\Editor\\6000.3.27f1\\Editor\\Data\\PlaybackEngines\\AndroidPlayer\\SDK\\build-tools\\36.0.0\\aapt2.exe\u0027",
-                                       "\u0026 $aapt2 dump badging \u003cE:\\case\u003e\\android-build\\Mahjong.apk *\u003e \u003cE:\\case\u003e\\apk-badging.txt",
-                                       "Get-FileHash \u003cE:\\case\u003e\\android-build\\Mahjong.apk -Algorithm SHA256",
-                                       "Get-Content \u003cE:\\case\u003e\\android-build\\summary.json, \u003cE:\\case\u003e\\android-build\\build-report.json -Raw | ConvertFrom-Json"
+                                       "$badging = Join-Path $case \u0027apk-badging.txt\u0027",
+                                       "\u0026 $aapt2 dump badging $apk *\u003e $badging",
+                                       "if ($LASTEXITCODE -ne 0) { throw \"aapt2 badging exit=$LASTEXITCODE\" }",
+                                       "Get-FileHash $apk -Algorithm SHA256",
+                                       "Get-Content (Join-Path $out \u0027summary.json\u0027), (Join-Path $out \u0027build-report.json\u0027) -Raw | ConvertFrom-Json"
                                    ]
                  },
     "expectedEvidenceFields":  [
@@ -1555,11 +1638,18 @@
                                        "file":  "failure-summary.json",
                                        "fields":  [
                                                       "status",
-                                                      "failedGate",
+                                                      "sourceHead",
+                                                      "dirtyPaths",
+                                                      "inputSha256",
+                                                      "toolchainManifestSha256",
                                                       "nativeExit",
-                                                      "firstError",
-                                                      "evidence paths"
-                                                  ]
+                                                      "error",
+                                                      "buildReportLine",
+                                                      "apkExists",
+                                                      "evidenceRoot",
+                                                      "unityLog"
+                                                  ],
+                                       "note":  "These are the actual frozen catch-block keys. failedGate/firstError/evidencePaths are not emitted by the current accepted script; evidenceRoot is serialized as the literal build/p45-android-game/\u003crun\u003e, so the invoking run directory must be retained separately. Future desired fields may be added only by a separately authorized tool change."
                                    }
                                ],
     "deviceGap":  {
@@ -1572,7 +1662,7 @@
                       "requiredNext":  "Authorized online Android device with exact serial; capture API/ABI/model/resolution/density/insets; run Install/Start/Capture/Stop and human visual review.",
                       "note":  "No emulator was started; no default adb was used; the shared adb daemon was not killed."
                   },
-    "nextOwner":  "Caller-designated formal C05 Android owner, after UI15 and C04 recovery increments merge and after the caller approves the private toolchain manifest pin/provisioning. This receiver does not proceed, approve, push or merge.",
+    "nextOwner":  "Caller-designated formal C05 Android owner after the post-UI15/post-recovery candidate is frozen. Reuse the existing accepted explicit manifest path with -AndroidToolchainManifest; no new manifest pin or provisioning approval is required for that read-only identity. This receiver does not proceed, approve, push or merge.",
     "invalidation":  [
                          "Any commit or dirty/untracked change to candidate source, Unity Assets, ProjectSettings, Packages, shared dotnet inputs, plugin DLLs, build scripts, scenes or TMP assets.",
                          "Any change to Unity editor/module, OpenJDK, SDK platform/build-tools, NDK, CMake, adb, private manifest, Ninja or android-cli.",
@@ -1582,7 +1672,7 @@
                      ],
     "statuses":  {
                      "PASS":  [
-                                  "HEAD cde5da16, branch wt/g2-c05-android-prep-ds-20261101-1300, tracked worktree clean at probe time.",
+                                  "HEAD cde5da16, branch wt/g2-c05-android-prep-ds-20261101-1300; tracked worktree clean at binding time.",
                                   "Accepted base 8fd7c6cb is an ancestor; code b33f0aad is an ancestor; tested merge db9e5d53 is an ancestor; code diff from db9e5d53 to HEAD is 0.",
                                   "Publication delta db9e5d53..cde5da16 is only the C03 delivery document.",
                                   "Unity 6000.3.27f1 revision 672d562a42a7; AndroidPlayer/IL2CPP/OpenJDK/SDK/NDK present.",
@@ -1591,15 +1681,15 @@
                                   "Six required scenes enabled in order; TMP Settings and NotoSansSC SDF font asset exist.",
                                   "Source tree/scopes/key files, 150 shared inputs and current plugin bytes hashed read-only; no build was run.",
                                   "E: evidence/temp write probes PASS; disk C/D/E measured; no system environment changed.",
-                                  "Pinned adb devices -l native exit 0 with empty list; accepted Devices action wrote PASS JSON with zero devices."
+                                  "Pinned adb devices -l native exit 0 with an empty list; accepted Devices action wrote PASS JSON with zero devices.",
+                                  "Existing accepted explicit toolchain manifest D:\\majiang-wt\\android-toolchain-ds-20261027\\build\\android-toolchain\\private\\toolchain.json has SHA256 E478...; Ninja and CLI adapter exist and match their accepted hashes; exact read-only build-script preflight passed with native exit 0.",
+                                  "Invocation TOOL_FIXTURE from a different cwd selected the fixture root\u0027s absolute build/device scripts and kept output/evidence under that root\u0027s build directory; no Unity/device was launched."
                               ],
                      "FAIL":  [
-                                  "C05-PREP-D04 MINOR: UnityVersion.txt lookup returns missing, so summary unityVersion would be UNKNOWN (historical accepted summary also shows UNKNOWN)."
+
                               ],
                      "BLOCKED":  [
-                                     "C05-PREP-D01 BLOCKER: private Android toolchain manifest absent and frozen digest not reproducible at this path; build cannot start.",
-                                     "Android device matrix: no authorized online device; install/start/stop/capture/DeviceInfo NOT_RUN.",
-                                     "Final candidate APK: NOT_RUN (pre-increment; toolchain manifest blocker and no device)."
+                                     "Android device matrix: no authorized online device; install/start/stop/capture/DeviceInfo NOT_RUN."
                                  ],
                      "NOT_RUN":  [
                                      "Unity batchmode license/entitlement check.",
@@ -1607,7 +1697,8 @@
                                      "dotnet restore or offline restore proof.",
                                      "Device installation, launch, gameplay, visual, touch, back, background-resume, aspect/safe-area, weak network.",
                                      "iOS build/device.",
-                                     "C04 recovery request reconciliation and UI15 fixes; these are separate increments."
+                                     "Formal post-UI15/post-recovery candidate binding and build; UI15 publication 734b3775 is outside this historical snapshot.",
+                                     "C04 recovery request reconciliation and C04/C05/G2-G5 acceptance."
                                  ]
                  },
     "firstFailures":  [
@@ -1822,7 +1913,30 @@
                                                     "kind":  "EXTERNAL_READ_ONLY_HISTORICAL",
                                                     "note":  "Check-only repair summary showing missing private ninja/CLI/manifest at the historical C05 source worktree."
                                                 }
-                                            ]
+                                            ],
+                     "revisionEvidence":  {
+                                              "root":  "build/c05-android-prep-r1-d114005f87be",
+                                              "acceptedManifestPreflight":  {
+                                                                                "path":  "logs/accepted-manifest-preflight.log",
+                                                                                "sha256":  "B75BB362BC7BB2E7BB460EABEA52E8000AD9CD95B5584FDDF8FB76CB2B0FE4F4",
+                                                                                "bytes":  822
+                                                                            },
+                                              "manifestIdentity":  {
+                                                                       "path":  "manifest-identity.json",
+                                                                       "sha256":  "07A17B361821F1E8AD7068D6B45705F24FADF263E007A140195F366A5467CE61",
+                                                                       "bytes":  4423
+                                                                   },
+                                              "toolFixture":  {
+                                                                  "path":  "tool-fixture-results.json",
+                                                                  "sha256":  "E14E36608F7665143D0A929F6A6F3D27A4061DBB36B8F69580CE911B88C6AD93",
+                                                                  "bytes":  2935
+                                                              },
+                                              "toolFixtureLog":  {
+                                                                     "path":  "logs/tool-fixture.log",
+                                                                     "sha256":  "46D77CE9F1F5A7332E183B257E77D977614BBC9A55A36D02687C214BEBFFD470",
+                                                                     "bytes":  1224
+                                                                 }
+                                          }
                  },
     "authoritySources":  [
                              {
@@ -1874,5 +1988,80 @@
                    "mergedOrDeployed":  false,
                    "schedulerOrCompleteFlagChanged":  false
                },
-    "note":  "This JSON is a preparation/binding record only. It is invalid after any UI15/recovery merge or any source/project/plugin/toolchain change. It is not evidence of an APK, Android gameplay, device, visual, touch, weak-network, iOS, C05, C04 or G2 pass."
+    "note":  "Historical preparation/binding record for the cde5 C03 snapshot. R1 fixes use the exact expected paths, the existing accepted explicit toolchain manifest, and corrected handoff/schema contracts. It is not evidence of an APK, Android gameplay, device, visual, touch, weak-network, iOS, C05, C04 or G2 pass.",
+    "revision":  {
+                     "round":  "R1",
+                     "previousDeliveryCommit":  "b52c47fe794b01bc6bb96081135e0b900d98c517",
+                     "baseReference":  "cde5da1649d42151abaefc2edc5f558a287d703f",
+                     "expectedFiles":  [
+                                           "doc/v5-重构/V5-G2-C05-ANDROID-CANDIDATE-READINESS-20261101.md",
+                                           "doc/v5-重构/V5-G2-C05-ANDROID-CANDIDATE-BINDING-20261101.json"
+                                       ],
+                     "callerReview":  {
+                                          "root":  "E:/majiang-review/caller-c05-prep-r1-review-427b0d6e/build/caller-review",
+                                          "reviewSha256":  "14CF762D399E2111DC291ADB68830C58BC59CBFA5A692FB4DE58FED8D68E6E77",
+                                          "findingsSha256":  "1A42EBB8BCC79F541A1D9E9A938A6972981D883A78176CC2A0144C943DF8D615",
+                                          "evidenceManifestSha256":  "9F9E3BA594341241325CA1DACC6BF58B382AC9E741A6FE95E2FBC13F2E6541E0"
+                                      },
+                     "findingsCount":  {
+                                           "blocker":  0,
+                                           "major":  3,
+                                           "minor":  0
+                                       },
+                     "note":  "All three R1 MAJOR findings are fixed in this revision. No open scoped defect is claimed."
+                 },
+    "reviewFindings":  [
+                           {
+                               "id":  "C05-PREP-R1-01",
+                               "severity":  "MAJOR",
+                               "status":  "FIXED",
+                               "title":  "Did not use the explicitly authorized expectedFiles",
+                               "location":  "Previous tracked names V5-G2-C05-ANDROID-ENV-BINDING-PREP-20261101.md/.json",
+                               "reproduction":  [
+                                                    "git diff --name-only cde5da16 b52c47fe",
+                                                    "git ls-tree -r --name-only b52c47fe -- doc/v5-重构/V5-G2-C05-ANDROID-CANDIDATE-READINESS-20261101.md doc/v5-重构/V5-G2-C05-ANDROID-CANDIDATE-BINDING-20261101.json"
+                                                ],
+                               "actual":  "Both exact expected paths were absent; the prior delivery used inferred ENV-BINDING-PREP names.",
+                               "expected":  "The bridge expectedFiles are explicit: ANDROID-CANDIDATE-READINESS-20261101.md and ANDROID-CANDIDATE-BINDING-20261101.json.",
+                               "evidence":  "Caller REVIEW.txt SHA256 14CF762D399E2111DC291ADB68830C58BC59CBFA5A692FB4DE58FED8D68E6E77",
+                               "fix":  "git mv only this task\u0027s two files to the exact paths; update internal references and the ignored validator; preserve prior ignored evidence.",
+                               "acceptance":  "Relative to cde5da16 the final diff contains exactly the two expected paths, no old aliases, no production/settings/tool changes, tracked clean and delivered diff-check 0."
+                           },
+                           {
+                               "id":  "C05-PREP-R1-02",
+                               "severity":  "MAJOR",
+                               "status":  "FIXED",
+                               "title":  "Misclassified the absent local default manifest as a global toolchain blocker",
+                               "location":  "Previous report sections 0/2/5 D01/6/7/next owner; JSON privateToolchain/statuses/preconditions/commands",
+                               "reproduction":  [
+                                                    "Get-FileHash D:\\majiang-wt\\android-toolchain-ds-20261027\\build\\android-toolchain\\private\\toolchain.json -Algorithm SHA256",
+                                                    "Test-Path D:\\majiang-wt\\android-toolchain-ds-20261027\\build\\android-toolchain\\private\\ninja\\1.13.2\\ninja.exe",
+                                                    "Test-Path D:\\majiang-wt\\android-toolchain-ds-20261027\\build\\android-toolchain\\private\\android-cli\\android-cli-sdkmanager16.cmd"
+                                                ],
+                               "actual":  "The accepted explicit manifest exists with SHA256 E478...; Ninja E52A... and CLI F66B... exist and match. The exact frozen read-only preflight passes. Only the fresh worktree default path is absent.",
+                               "expected":  "Keep the default-missing negative separate from the usable accepted explicit path; no new pin, copy, provision, SDK change or extra caller approval dependency.",
+                               "evidence":  "build/c05-android-prep-r1-d114005f87be/logs/accepted-manifest-preflight.log SHA256 B75BB362BC7BB2E7BB460EABEA52E8000AD9CD95B5584FDDF8FB76CB2B0FE4F4; manifest-identity.json SHA256 07A17B361821F1E8AD7068D6B45705F24FADF263E007A140195F366A5467CE61",
+                               "fix":  "Record the explicit accepted path and raw helper/JDK/SDK identities; use -AndroidToolchainManifest with that path; remove the global blocked/new-pin dependency while preserving the local-default negative.",
+                               "acceptance":  "Read-only preflight with the accepted explicit path exits 0; helper hashes match; default-missing remains recorded as a local fact; no new caller manifest decision is required; no APK success is inferred."
+                           },
+                           {
+                               "id":  "C05-PREP-R1-03",
+                               "severity":  "MAJOR",
+                               "status":  "FIXED",
+                               "title":  "Handoff command and artifact/schema contract errors",
+                               "location":  "Previous report sections 4/5 D02/6.1-6.4; JSON commands/candidateArtifact/expectedEvidenceFields",
+                               "reproduction":  [
+                                                    "Inspect prior buildTemplate/device commands and candidateArtifact",
+                                                    "Compare failure-summary keys with tools/unity/build-p45-android-game.ps1:241"
+                                                ],
+                               "actual":  "Relative -File paths depended on cwd; evidence paths were loose; candidateArtifact presented configured package/ABI as observed; failure-summary fields did not match the frozen catch block; D02 acceptance required managed DLL bytes inside an IL2CPP APK.",
+                               "expected":  "Root-absolute scripts and root-contained case/evidence dirs; unobserved package/ABI null; exact existing failure-summary keys; managed provenance and native APK evidence separated.",
+                               "evidence":  "build/c05-android-prep-r1-d114005f87be/tool-fixture-results.json SHA256 E14E36608F7665143D0A929F6A6F3D27A4061DBB36B8F69580CE911B88C6AD93; tool-fixture log SHA256 46D77CE9F1F5A7332E183B257E77D977614BBC9A55A36D02687C214BEBFFD470",
+                               "fix":  "Use Join-Path $root absolute script paths and root build case dirs with exit assertions; null actual package/ABI; map existing failure-summary keys; replace APK-DLL equality with separate managed-provenance and native-APK checks; add cross-cwd TOOL_FIXTURE.",
+                               "acceptance":  "The micro fixture from a different cwd records fixture-root absolute scripts and root-contained output/evidence with exit 0; actual artifact package/ABI are null; failure-summary keys match the frozen script; no managed DLL entry is required inside the IL2CPP APK; no Unity/device was run."
+                           }
+                       ],
+    "defects":  [
+
+                ]
 }
