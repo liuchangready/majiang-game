@@ -475,6 +475,27 @@ function Build-Player {
         & robocopy $sourceLibrary (Join-Path $staging 'Library') /E /XJ /R:1 /W:1 /NFL /NDL /NJH /NJS | Out-Null
         if ($LASTEXITCODE -ge 8) { throw ('STAGING_LIBRARY_COPY_FAILED ' + $LASTEXITCODE) }
     }
+    # The source-tree guard validates the repository's default plugin directory.
+    # In an isolated staging project that would validate the wrong directory, so
+    # the runner performs the same check-shared-plugins gate explicitly against
+    # the staging plugins below, then removes this Editor-only guard from the
+    # disposable staging copy (it is not part of a Player build).
+    $stagingGuard = Join-Path $staging 'Assets\Editor\SharedPluginProvenanceGuard.cs'
+    $guardAdaptation = [ordered]@{
+        schemaVersion = 1
+        kind = 'c04-recovery-staging-adaptation'
+        reason = 'source-tree guard resolves the repository default plugin dir, not the isolated staging copy'
+        guardRemoved = $false
+        sourceGuardSha256 = if (Test-Path -LiteralPath $stagingGuard) { Get-Sha256 $stagingGuard } else { '' }
+    }
+    if (Test-Path -LiteralPath $stagingGuard) {
+        Remove-Item -LiteralPath $stagingGuard -Force
+        $stagingGuardMeta = $stagingGuard + '.meta'
+        if (Test-Path -LiteralPath $stagingGuardMeta) { Remove-Item -LiteralPath $stagingGuardMeta -Force }
+        $guardAdaptation.guardRemoved = $true
+    }
+    Write-JsonFile -Path (Join-Path $script:Root 'staging-adaptation.json') -Object $guardAdaptation | Out-Null
+
     $stagingProbe = Join-Path $staging 'Assets\Scripts\App\C04RecoveryReconciliationProbe.cs'
     $stagingEditor = Join-Path $staging 'Assets\Editor\C04RecoveryReconciliationBuild.cs'
     if ((Get-Sha256 $stagingProbe) -ne $inputHashes['unity/Mahjong.Unity/Assets/Scripts/App/C04RecoveryReconciliationProbe.cs'] -or
