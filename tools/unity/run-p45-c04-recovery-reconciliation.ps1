@@ -344,7 +344,7 @@ function Apply-Fault {
 
 function New-CaseInput {
     param([string]$CaseDir, [string]$CaseId, [string]$Fault, [string]$Outcome, $Prepare, [bool]$Force)
-    $copy = @('local', 'outbox', 'expected.txt')
+    $copy = @('local', 'outbox', 'authority', 'prepare.json', 'expected.txt')
     foreach ($name in $copy) {
         $source = Join-Path $Prepare $name
         if (Test-Path -LiteralPath $source -PathType Container) {
