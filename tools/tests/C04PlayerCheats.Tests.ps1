@@ -98,15 +98,20 @@ Assert-ContainsError (Assert-C04Evidence -Evidence $unknownBlocked -ExpectedCase
 
 # Strict production guard: a PASS evidence object must carry all six-row success
 # assertions, five unique APPLIED requests with raw hashes, and no blocked rows.
-$strictIds = @('G3-01-RECEIPT','G3-02-RECEIPT','G3-02-CHOICE-RECEIPT','G3-03-RECEIPT','G3-03-CHOICE-RECEIPT','G3-04-FINAL-LEDGER')
+$strictIds = @('G3-01-RECEIPT','G3-02-RECEIPT','G3-02-CHOICE-RECEIPT','G3-03-RECEIPT','G3-03-CHOICE-RECEIPT','G3-04-FINAL-LEDGER','G3-05-FINAL')
 $strictBase = New-Fixture
 $strictBase.blockedRows = @()
-$strictBase.assertions = @($strictIds | ForEach-Object { [pscustomobject]@{ id = $_; pass = $true; expected = 'x'; actual = 'y' } })
-$strictBase.requests = @(1..5 | ForEach-Object {
+$strictBase.assertions = @($strictIds | ForEach-Object { [pscustomobject]@{ id = $_; pass = $true; expected = 'observed'; actual = 'observed' } })
+$strictKinds = @('SubmitTileMark','SubmitSleeveBloom','SubmitSleeveBloomChoice','SubmitBeamSwap','SubmitBeamSwapChoice')
+$strictBase.requests = @(0..4 | ForEach-Object {
     $r = $strictBase.requests[0].PSObject.Copy()
-    $r.requestId = ('{0:x32}' -f $_)
+    $r.requestId = ('{0:x32}' -f ($_ + 1))
+    $r.kind = $strictKinds[$_]
     $r.status = 'APPLIED'
+    $r.roundId = 'c04-g3-r1'
+    $r.seat = 0
     $r.decisionId = 'decision-' + $_
+    $r.controlEpoch = 0
     $r
 })
 $strictErrors = Assert-C04EvidenceStrict -Evidence $strictBase -ExpectedCase 'authorized' -NativeExit 0 -ExpectedSourceHead $head

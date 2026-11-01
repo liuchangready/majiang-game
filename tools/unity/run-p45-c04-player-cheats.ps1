@@ -115,6 +115,35 @@ function Assert-C04EvidenceStrict {
     if ([string]$Evidence.scenarioVersion -ne 'c04-g3-player-cheats-v1') { $errors.Add('SCENARIO_VERSION_EXACT') | Out-Null }
     if (@($Evidence.blockedRows).Count -gt 0) { $errors.Add('BLOCKED_ROWS_PRESENT') | Out-Null }
 
+    $assertionIds = @{}
+    foreach ($assertion in @($Evidence.assertions)) {
+        $aid = [string]$assertion.id
+        if ($assertionIds.ContainsKey($aid)) { $errors.Add('DUPLICATE_ASSERTION_' + $aid) | Out-Null }
+        $assertionIds[$aid] = $true
+        if ($assertion.pass -isnot [bool]) { $errors.Add('ASSERTION_NOT_BOOLEAN_' + $aid) | Out-Null }
+        if ([string]$assertion.expected -eq 'x' -or [string]$assertion.actual -eq 'y') {
+            $errors.Add('PLACEHOLDER_OBSERVATION_' + $aid) | Out-Null
+        }
+    }
+
+    $allowedKinds = @('SubmitTileMark','SubmitSleeveBloom','SubmitSleeveBloomChoice','SubmitBeamSwap','SubmitBeamSwapChoice')
+    $seenKinds = @{}
+    foreach ($request in @($Evidence.requests)) {
+        if ([string]$request.requestId -notmatch '^[0-9a-fA-F]{32}$') { $errors.Add('BAD_REQUEST_ID') | Out-Null }
+        if ($allowedKinds -notcontains [string]$request.kind) { $errors.Add('BAD_REQUEST_KIND') | Out-Null }
+        $seenKinds[[string]$request.kind] = $true
+        if ([string]$request.roundId -ne 'c04-g3-r1') { $errors.Add('FOREIGN_ROUND') | Out-Null }
+        if ([long]$request.controlEpoch -ne 0) { $errors.Add('FOREIGN_CONTROL_EPOCH') | Out-Null }
+        if ([string]$request.seat -ne '0') { $errors.Add('FOREIGN_SEAT') | Out-Null }
+    }
+
+    if ($ExpectedCase -eq 'authorized') {
+        foreach ($requiredKind in $allowedKinds) {
+            if (-not $seenKinds.ContainsKey($requiredKind)) { $errors.Add('MISSING_ACTION_' + $requiredKind) | Out-Null }
+        }
+        if (-not ($assertionIds.ContainsKey('G3-05-FINAL'))) { $errors.Add('MISSING_G3_05_FINAL') | Out-Null }
+    }
+
     $assertions = @($Evidence.assertions)
     foreach ($assertion in $assertions) {
         if ($assertion.pass -ne $true) { $errors.Add('ASSERTION_FAILED_' + [string]$assertion.id) | Out-Null }
@@ -186,7 +215,7 @@ if (Test-Path -LiteralPath $EvidenceRoot) {
     throw "REFUSE_OVERWRITE: evidence root already exists: $EvidenceRoot"
 }
 
-if (-not (Test-Path -LiteralPath $PlayerPath)) {
+if ($SkipBuild -and -not (Test-Path -LiteralPath $PlayerPath)) {
     throw "PLAYER_NOT_FOUND: $PlayerPath"
 }
 
