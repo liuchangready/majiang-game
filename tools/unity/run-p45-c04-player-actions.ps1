@@ -35,6 +35,8 @@ $script:LogOpen = $true
 $script:mutex = $null
 $script:mutexHeld = $false
 $script:stageRecords = New-Object System.Collections.Generic.List[object]
+$gitHead = ''
+$trx = Join-Path $RunRoot 'dotnet-results/LocalHost.trx'
 $oldTemp = $env:TEMP; $oldTmp = $env:TMP; $oldNuget = $env:NUGET_PACKAGES; $oldCli = $env:DOTNET_CLI_HOME
 $env:TEMP = $tempRoot; $env:TMP = $tempRoot; $env:NUGET_PACKAGES = $nugetRoot; $env:DOTNET_CLI_HOME = $cliRoot
 $env:DOTNET_NOLOGO = '1'; $env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'; $env:DOTNET_SKIP_FIRST_TIME_EXPERIENCE = '1'
@@ -315,7 +317,7 @@ try {
     $trx = Join-Path $dotnetResults 'LocalHost.trx'
     $dotnetArgs = @('test',(Quote-Arg (Join-Path $source 'dotnet/tests/Mahjong.LocalHost.Tests/Mahjong.LocalHost.Tests.csproj')),
         '--configuration','Release','--artifacts-path',(Quote-Arg $dotnetArtifacts),
-        '--results-directory',(Quote-Arg $dotnetResults),'--logger',(Quote-Arg 'trx;LogFileName=LocalHost.trx')) -join ' '
+        '--results-directory',(Quote-Arg $dotnetResults),'--','-automated','-result-trx',(Quote-Arg $trx)) -join ' '
     $localHostTests = Invoke-OwnedNative -Name 'FreshLocalHostFullTests' -FilePath $DotnetPath -Arguments $dotnetArgs -WorkingDirectory $source -StdoutPath (Join-Path $logs 'localhost.stdout.txt') -StderrPath (Join-Path $logs 'localhost.stderr.txt') -Timeout 1200
     if ($localHostTests.exitCode -ne 0 -or -not (Test-Path -LiteralPath $trx)) { throw "Fresh LocalHost tests failed; nativeExit=$($localHostTests.exitCode) or TRX missing." }
     [xml]$trxXml = Get-Content -LiteralPath $trx -Raw
@@ -415,8 +417,35 @@ catch {
     if ($script:LogOpen) { Write-RunLog ('FAIL ' + $_.Exception.GetType().Name + ': ' + $_.Exception.Message) }
     $failurePath = Join-Path $RunRoot 'failure.json'
     if (-not (Test-Path -LiteralPath $failurePath)) {
-        $failure = [ordered]@{ status='FAIL'; task='G2-C04-D03'; error=$_.Exception.Message; stageRecords=$script:stageRecords }
+        $fixedIds = @('C04-G2-01','C04-G2-02','C04-G2-03','C04-G2-04')
+        $caseMatrix = New-Object System.Collections.Generic.List[object]
+        foreach ($caseId in $fixedIds) {
+            $dotnetStatus = 'NOT_RUN'
+            if ($trx -and (Test-Path -LiteralPath $trx)) {
+                try {
+                    [xml]$testXml = Get-Content -LiteralPath $trx -Raw
+                    $needle = switch ($caseId) { 'C04-G2-01' { 'pon' } 'C04-G2-02' { 'chi' } 'C04-G2-03' { 'riichi' } 'C04-G2-04' { 'closed-kan' } }
+                    $nodes = @($testXml.SelectNodes("//*[local-name()='UnitTestResult']") | Where-Object { $_.testName -match ('scenario: "' + [regex]::Escape($needle) + '"') })
+                    if ($nodes.Count -eq 1) { $dotnetStatus = if ($nodes[0].outcome -eq 'Passed') { 'PASS' } else { 'FAIL' } }
+                    elseif ($nodes.Count -gt 1) { $dotnetStatus = 'FAIL_DUPLICATE_EVIDENCE' }
+                } catch { $dotnetStatus = 'FAIL_UNPARSEABLE_XML' }
+            }
+            $caseMatrix.Add([ordered]@{ caseId=$caseId; dotnet=$dotnetStatus; playMode='NOT_RUN'; windowsPlayer='NOT_RUN' }) | Out-Null
+        }
+        $failure = [ordered]@{ status='FAIL'; task='G2-C04-D03'; acceptedBase='8fd7c6cb701dfbb41c28938de4186749bdd1d6c7'; frozenCandidate=$gitHead; error=$_.Exception.Message; fixedCaseMatrix=$caseMatrix; stageRecords=$script:stageRecords }
         [IO.File]::WriteAllText($failurePath, (($failure | ConvertTo-Json -Depth 8) + "`n"), (New-Object Text.UTF8Encoding($false)))
+    }
+    $script:LogOpen = $false
+    $manifestPath = Join-Path $RunRoot 'manifest.json'
+    if (-not (Test-Path -LiteralPath $manifestPath)) {
+        $failedArtifacts = Get-ChildItem -LiteralPath $RunRoot -Recurse -File | Where-Object { $_.Name -ne 'manifest.json' -and $_.Name -ne 'manifest.sha256' } | Sort-Object FullName
+        $entries = New-Object System.Collections.Generic.List[object]
+        foreach ($file in $failedArtifacts) {
+            $entries.Add([ordered]@{ path=$file.FullName.Substring($RunRoot.Length).TrimStart('\','/').Replace('\','/'); bytes=[long]$file.Length; sha256=(Get-Sha256 $file.FullName) }) | Out-Null
+        }
+        $failedManifest = [ordered]@{ schemaVersion=1; task='G2-C04-D03'; status='FAILED_RUN'; root=$RunRoot; entryCount=$entries.Count; entries=$entries }
+        [IO.File]::WriteAllText($manifestPath, (($failedManifest | ConvertTo-Json -Depth 10) + "`n"), (New-Object Text.UTF8Encoding($false)))
+        [IO.File]::WriteAllText((Join-Path $RunRoot 'manifest.sha256'), ((Get-Sha256 $manifestPath) + "  manifest.json`n"), (New-Object Text.UTF8Encoding($false)))
     }
     throw
 }
