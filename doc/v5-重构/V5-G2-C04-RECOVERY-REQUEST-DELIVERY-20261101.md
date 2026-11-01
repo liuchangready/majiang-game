@@ -72,3 +72,44 @@
 - R3 负例 `r3-negatives/*`、R4 类型 `r4-types/*`、旧 R1/R2 证据与 caller 原件全部保留，未回填。
 - PG 62 BLOCKED + 12 skip 为环境限制；正式 C04/G2–G5 未批准，C04-G7-02 仍 BLOCKED；旧 Compare BLOCKED17/UNTRUSTED_LOCAL、15 项旧 UI 失败保留。
 - 未 push、未建改 PR、未 approve、未 record MR、未合并 v5、未部署、未改 scheduler/complete.flag；等待 caller 独立复核。
+
+## 5. Caller 独立验收与 PR20 收口（2026-11-01）
+
+以上是接收方交付时的状态。本节为调用方独立复核：**D01 自身范围通过，D01-R1-01..04 全部关闭**。此结论不批准正式 C04 或 G2–G5。
+
+- 接收方最终提交：e699e74ddf50d66185866399e5129324d2ed97f9；接收方报告原件 SHA-256：88B8217E91CFE840B392BE8EB4D66CDDA4A4D320F032012E354C22E3169AB2AC。
+- 从现有 PR20 已接受头 f3ba015b7b54061a0b144ddf546cd6f8e37548ca 合入本任务；受测集成提交 f1c8a05495b76eac49278bf3f0b625b38ada2030，仅新增原授权 11 个路径，没有合入 D03/D04 未验收代码。
+- 调用方在同一授权工具测试文件补齐 26 个回归；最终工具受测提交 a8a480fb1a45b814112b4a78cfcf8d6af0c61c72。相对受测集成提交只改变工具测试，verifier、Player probe 和业务源码未变。最后发布仅更新本报告与工具脚本末尾空行，无运行逻辑变化。
+- 调用方证据根：E:/majiang-review/caller-c04-d01-r5-closeout-97d128a7/build/caller-review。run-tests.ps1、run-final-tools-clean.ps1 及对应 .native.json 保留完整实际命令、PID/start、退出码、原始 stdout/stderr。
+
+| 独立验证 | 实际结果 |
+|---|---|
+| LocalHost fresh Release Rebuild / 原生直接执行 | build exit 0；**143/143**，0 failed/errors/skipped/not-run，native 0 |
+| verifier fresh Release Rebuild | exit 0；使用调用方新编译 helper |
+| 接收方原样 tracked 工具矩阵 | **33/33**，native 0 |
+| 补齐后的 tracked 工具矩阵 | **59/59**，0 failed，native 0；33 已包含在 59 中，不能相加 |
+| 固定八案卷离线验证 | 外部 summary/CSV 双 pin + fresh helper，**8/8 PASS**；含合法 Force prepare |
+| 原案卷完整性 | **399/399** 文件 bytes/SHA 匹配，原 summary/CSV 前后不变 |
+| Player 复用绑定 | 原 317f8498 source/build/snapshot pins 与 **205** 文件包匹配；被改写来源和缺失 pin 均拒绝 |
+| PowerShell 5.1 | runner、wrapper、工具矩阵三份脚本解析零错误 |
+
+原八案卷为五个 recovered（其中三个 backup recovery）、两个 rejected、一个 fresh start；恢复请求查询有真实原请求 Applied 回执，零重复提交与零重复副作用。UnknownOnce 仅为 .NET 受控通道注入，不声称 Player 自然触发 Unknown。
+
+调用方独立重放上一轮全部错误类型变体：Recover 的 bool/fraction/null/string/native17，以及 Prepare 的 bool/fraction/null、timeout null/string/number、int32 overflow 全部非零拒绝。入库矩阵进一步覆盖缺字段、真实 timeout/nonzero、Force 错误结果、准确八分母/重复/额外/未知行、manifest 缺失/实际文件哈希错误、故障类型互标、源码 tree/input/record 和包文件错误；负例断言对应门禁原因。人工重新封存的副本仅为 TOOL_FIXTURE，不是新的 GAME 记录。
+
+调用方扩展矩阵首次运行失败日志保留在 tool-suite-final59.*：包含启动时尚未提交的 clean-source 拒绝，以及 PowerShell hashtable 的 Remove 方法被误当键读取导致的夹具错误。随后改为显式键读取并提交；最终完整矩阵在干净提交上重跑，tool-suite-final59-clean.native.json exit 0。这些调用方夹具问题未归为产品缺陷，也没有回填原始失败。
+
+关键原件 SHA-256：
+
+| 文件 | SHA-256 |
+|---|---|
+| localhost.xml | E5C02181D373AAD4D40730A6287781712F8D6FC08A07DA20A4FF1F7455DA1761 |
+| fresh helper DLL | 2FE4E4ABDAB9BBC43D1737B7F0FDBFBC8D446F0D993BD9B456434DFEF17EB6AF |
+| tool-matrix-final59-clean/summary.json | 5E54B7148A7E20D5A6946A839B5E6D3951BE1B9BF626937C99E1BAEA6434F23D |
+| tool-suite-final59-clean.stdout.log | 41E544F994A2A83D95665C2D1E68FB56A139A16EB20CDB316E896D548DED3F58 |
+| current-probes.json | CC010692EC858F5FF5C4D3BC309AECE6121C5929001D311E1AFB21D71A75E228 |
+| original-seal-audit.json | B5C69129F97EE7E3110BA539DEF9832F85081FF8D94D8592F19A02F8B83C3B34 |
+
+本轮调用方没有启动 Unity、Player、PG、Android、设备或 CI；八份 GAME 记录仍绑定原 317f8498 Player，不能称为新合并头的 Player 运行。历史未配置 PG 门禁结果不否决 D01；C03 旧 15 项 UI 失败记录保留，后续 UI15 已独立接受，不能描述为当前仍有这 15 项失败。
+
+唯一发布入口沿用 [PR20](https://github.com/liuchangready/majiang-game/pull/20)，源分支 feat/v5-post-g1-batch、目标 v5，保持 OPEN/Draft；无新增子任务 PR。正式最终候选同版本重绑/Player 复验、C04 其他场景与 LOCAL 来源语义、C05 APK/设备/视觉输入、自然 PG 整场终局及 G2–G5 验收仍独立处理。未合并、部署或修改定时任务。

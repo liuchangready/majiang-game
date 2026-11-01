@@ -510,4 +510,3 @@ Write-Host ('C04_VERIFIER_TOOL_TESTS total=' + $script:Total + ' passed=' + $scr
     ' failed=' + $script:Failed + ' summary=' + $summaryPath + ' sha=' + (Get-Sha $summaryPath))
 if ($script:Failed -ne 0) { exit 1 }
 exit 0
-
