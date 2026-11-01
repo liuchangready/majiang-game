@@ -489,7 +489,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-reco
 ### 14.3 最终状态
 
 ```powershell
-git rev-parse HEAD          # b33f0aad21c962a6f147dbfdb8a63fd98942d4a2
+git rev-parse HEAD          # 报告提交（代码 commit=b33f0aad21c962a6f147dbfdb8a63fd98942d4a2；报告 SHA 见交付消息）
 git status --porcelain=v1   # 空（本报告提交后）
 git diff --check            # exit 0
 ```
