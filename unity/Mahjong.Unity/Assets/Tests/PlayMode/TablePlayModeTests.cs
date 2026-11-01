@@ -174,6 +174,12 @@ namespace Mahjong.Unity.Tests.PlayMode
                 PrivateView = new PlayerPrivateView
                 {
                     Seat = seatId,
+                    Control = new PlayerControlView
+                    {
+                        ControlEpoch = 1,
+                        ControlledByComputer = false,
+                        ControlVersion = 1
+                    },
                     Cheat = new PrivateCheatView
                     {
                         CheatPoints = 100,
@@ -782,6 +788,20 @@ namespace Mahjong.Unity.Tests.PlayMode
 
             CaptureScreen("10_table_21x9_ultrawide.png", 2560, 1080);
             yield return null;
+        }
+
+        [UnityTest]
+        public IEnumerator R6FormalProbe01_MissingOwnerControlMustRejectInputBeforeOutbox()
+        {
+            yield return LoadAndBindTableSceneAsync();
+
+            var missingOwnerControl = CreatePlayerBaselineEnvelope(stateVersion: 2).SyncResponse.Player;
+            missingOwnerControl.PrivateView.Control = null;
+            _presenter!.OnSessionViewChanged(this, FormalProbeView(missingOwnerControl));
+            _presenter.OnHandTileClicked(0);
+            _presenter.OnDiscardButtonClicked();
+            for (int i = 0; i < 10; i++) yield return null;
+            Assert.AreEqual(0, GetUnresolvedOutboxCount(), "a private snapshot without authoritative owner control must remain fail-closed");
         }
 
         [UnityTest]
