@@ -267,3 +267,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 - Strict negative 现在要求至少 2 条 REJECTED、requestId 唯一且 reason 至少两种，单条 MALFORMED_MESSAGE 不再能冒充两个独立负例。
 - 工具 19/19 native0。R1-04 仍未绑定原始 command/receipt/publication/recovery bytes；任意有效 64-hex raw 与无实体/ledger 观察的 nominal 仍未被证明。
 - R1-05 未改；R1-06 仅保留 fresh hash 前移，pinned staging/owned PID/timeout/BuildReport errors/失败 seal 仍未实现。
+
+## 14. R7 返修记录（追加）
+
+- Strict negative 追加：两条 REJECTED 必须 payloadSha256 不同，且每条 stateVersionAfter == stateVersionBefore；同一 payload/非零版本的伪双拒绝被拒绝。
+- 工具 19/19 native0。R1-04 仍未绑定原始 command/receipt/publication/recovery bytes；无实体/ledger 观察的 nominal 与任意有效 raw hash 仍未被证明。
+- R1-05、R1-06 主体未改；本轮无 Unity/Player/.NET 重跑。

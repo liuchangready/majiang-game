@@ -210,6 +210,14 @@ function Assert-C04EvidenceStrict {
         if (@($rejected | Select-Object -ExpandProperty reason -Unique).Count -lt 2) {
             $errors.Add('REJECTED_REASONS_NOT_DISTINCT') | Out-Null
         }
+        if (@($rejected | Select-Object -ExpandProperty payloadSha256 -Unique).Count -lt 2) {
+            $errors.Add('REJECTED_PAYLOADS_NOT_DISTINCT') | Out-Null
+        }
+        foreach ($request in $rejected) {
+            if ([long]$request.stateVersionAfter -ne [long]$request.stateVersionBefore) {
+                $errors.Add('REJECTED_VERSION_CHANGED') | Out-Null
+            }
+        }
     }
 
     return $errors
