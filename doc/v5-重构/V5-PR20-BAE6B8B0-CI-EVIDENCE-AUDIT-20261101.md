@@ -2,8 +2,9 @@
 
 日期：2026-11-01（Asia/Shanghai）。
 审计工作树：`E:/majiang-review/pr20-bae6-ci-audit-ds-20261101-1013`，分支
-`wt/v5-pr20-bae6-ci-audit-ds-20261101-1013`，起始/结束 HEAD 均为 accepted
-`origin/v5=8fd7c6cb701dfbb41c28938de4186749bdd1d6c7`。
+`wt/v5-pr20-bae6-ci-audit-ds-20261101-1013`，审计代码基线及唯一报告提交的父提交为 accepted
+`origin/v5=8fd7c6cb701dfbb41c28938de4186749bdd1d6c7`；接收方报告提交为
+`19cd9bbb886ec4f9ff63d04e813cd155d4dbf262`。
 冻结审计目标：`bae6b8b0c98c9ed80256373060a9e754d6fc4296`（PR20 head，只读）。
 
 **结论边界：本报告只审计该冻结头的两次既有 CI 的 .NET/PostgreSQL 原生证据。不是 C03 统一候选
@@ -494,7 +495,7 @@ provenance 独立复核：
 ### D-09（INFO，元数据）step 编号 7–10 缺失
 
 - 位置：jobs API step 数组。
-- 实际：workflow 业务 step 1–6、post 11–13 全部 success；编号跳号是 GitHub 现象。
+- 实际：setup step 1、workflow 声明的五个 step 2–6、post/complete 11–13 全部 success；编号跳号是 GitHub 现象。
 - 期望：以 step 名称/conclusion 和日志判断，不以编号连续性推断漏执行。
 - 证据：`jobs-41261636998.json`/`jobs-41261632618.json`。
 - 验收断言：不得把编号缺口写成“步骤缺失”。
@@ -579,9 +580,19 @@ provenance 独立复核：
 
 - 审计报告是本任务唯一允许新增的 tracked 文件：
   `doc/v5-重构/V5-PR20-BAE6B8B0-CI-EVIDENCE-AUDIT-20261101.md`。
-- 本地工作树 HEAD 保持 accepted `origin/v5=8fd7c6cb701dfbb41c28938de4186749bdd1d6c7`；
-  仅新增本报告，`build/` 全部 ignored；最终提交/clean/diff-check 见本轮最终回复。
+- 本地审计代码基线保持 accepted `origin/v5=8fd7c6cb701dfbb41c28938de4186749bdd1d6c7`；
+  其上仅新增本报告，接收方 HEAD 为 `19cd9bbb886ec4f9ff63d04e813cd155d4dbf262`，`build/` 全部 ignored；工作树 clean、diff-check 0。
 - 本报告不是 G2 验收、不是 C03/C04/C05 批准、不是 PR20 合并审查、不是历史 39970580589 修复
   证明；不把 direct 2813/2813 写成 dotnetTest 通过，不把单条 durable state 写成自然整场终局
   通过。
 - 调用方独立复核后可决定报告集成；本任务不创建组件 PR、不 push、不合并、不部署。
+
+## 13. 调用方独立复核与报告接受
+
+调用方在 `E:/majiang-review/caller-bae6-audit-closeout-6c18b39a` 将接收方唯一报告集成到既有 PR20 头 `4b5012f0abedde309a14b8a7d8201eca53d4fc31`，另行 GET 两个 run/job/artifact 元数据、原始 artifact/log ZIP 和合成 merge/source commit API。两份 artifact 均匹配服务器长度与 SHA；每份 270 项内容均与接收方 manifest 对应，table manifest 152/152、插件 outputs 19/19 长度/摘要一致。未重新运行或调度 CI。
+
+实际本地校验 `verify-evidence.ps1`、`check-boundaries.ps1`、`verify-bindings-provenance.ps1`、`repro-table-gate.ps1` 全部 native exit 0：逐节点重算每 run 14 工程、196 collections、2813/2813 Pass、0 failed/errors/skipped/not-run，table 42/13 保持重复/子集口径；跨 run name/result multiset 一致，原始 ID 交集为 0。28 组 XML/命令/DLL 路径/SHA/console 绑定、两次各 149 输入（144 raw、5 CRLF）、7 自有 DLL 精确 checkout SHA、15 构建日志、6 native-exit 探针、13 table PG wrapper 阶段及 lobby 14 事件/cleanup/env-restore 均核验。原始 job 日志的长度与本报告摘要也匹配。冻结函数两个恶意 XML 均复现 table gate green、strict gate 拒绝；该已知门禁缺口没有被修复或隐藏。
+
+调用方原始证据均在该树 `build/caller-review/`：`independent-results.json` SHA256 `5BE3BDD6448867BACB4868ECA7DDE45F7C047AFA3B83EC825B365368F83092FA`；`bindings-provenance-results.json` SHA256 `CE24E6EF46ED5ED99279F2EBB185C0386EE4A5543BBE32224CCC628B9764E1B6`；`boundary-results.json` SHA256 `F05F2E9FE2528ED124C6F2AAD2E94109DCBB804DCD29B2B9C44686103F224972`；`raw-job-bindings.json` SHA256 `AE794C52B95A79ABB394C8467F2CB6B53FF92B9406822EB2956D78C3D484B47D`。接收方报告和原始证据保持只读；调用方只修正本集成副本的基线/报告提交措辞与步骤编号，并追加此复核记录。
+
+本审计报告范围通过；沿原线程接受并归档，纳入唯一现有 Draft PR20。接受的是冻结 `bae6` 的原生证据审计，不是当前发布头 CI 通过。PR 合成 merge 与 literal push、CRLF 与 LF 输入、direct 与 dotnetTest 的区别继续有效；历史 Client 根因仍 BLOCKED，dotnetTest/selfcheck/git pins/自然整场 PG 终局等限制不变。本次未运行 Unity、Player、adb 或设备，不批准 C03、正式 C04/C05、G2–G5，也不授权合并或部署。
