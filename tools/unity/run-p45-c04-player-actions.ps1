@@ -623,6 +623,13 @@ Start-Sleep -Seconds 25
     [IO.File]::WriteAllText($closureAfterPath,(($settingsAfter|ConvertTo-Json -Depth 5)+"`n"),(New-Object Text.UTF8Encoding($false)))
     $rejectedSettingsTamper = $false; try { Assert-C04PostBuildInputClosure $closureBeforePath $closureAfterPath $closureChangesPath $canonicalSettings | Out-Null } catch { $rejectedSettingsTamper = $true }
     if (-not $rejectedSettingsTamper) { throw 'Postbuild closure accepted a ProjectSettings semantic mutation disguised as Unity normalization.' }
+    $wrongCanonical = Join-Path $settingsFixture 'canonical/wrong-ProjectSettings.asset'
+    [IO.File]::WriteAllText($wrongCanonical,"PlayerSettings:`n  aotOptions:`n  companyName: WrongFrozenSource`n",(New-Object Text.UTF8Encoding($false)))
+    [IO.File]::WriteAllText((Join-Path $afterProject 'ProjectSettings/ProjectSettings.asset'),$normalizedSettingsText,(New-Object Text.UTF8Encoding($false)))
+    $settingsAfter.entries[0].bytes = (Get-Item -LiteralPath (Join-Path $afterProject 'ProjectSettings/ProjectSettings.asset')).Length; $settingsAfter.entries[0].sha256 = Get-Sha256 (Join-Path $afterProject 'ProjectSettings/ProjectSettings.asset')
+    [IO.File]::WriteAllText($closureAfterPath,(($settingsAfter|ConvertTo-Json -Depth 5)+"`n"),(New-Object Text.UTF8Encoding($false)))
+    $rejectedWrongCanonical = $false; try { Assert-C04PostBuildInputClosure $closureBeforePath $closureAfterPath $closureChangesPath $wrongCanonical | Out-Null } catch { $rejectedWrongCanonical = $true }
+    if (-not $rejectedWrongCanonical) { throw 'Postbuild closure accepted Unity normalization against a canonical file that did not match the frozen prebuild hash.' }
     [IO.File]::WriteAllText((Join-Path $afterProject 'ProjectSettings/ProjectSettings.asset'),$normalizedSettingsText,(New-Object Text.UTF8Encoding($false)))
     [IO.File]::WriteAllText((Join-Path $afterProject 'Assets/foreign.asset'),'foreign-change',(New-Object Text.UTF8Encoding($false)))
     $settingsAfter.entries += [ordered]@{path='Assets/foreign.asset';bytes=(Get-Item -LiteralPath (Join-Path $afterProject 'Assets/foreign.asset')).Length;sha256=(Get-Sha256 (Join-Path $afterProject 'Assets/foreign.asset'))}
@@ -802,7 +809,7 @@ Start-Sleep -Seconds 25
     if ($verifierFixture.exitCode -ne 0 -or (Get-Content -LiteralPath $verifierFixture.stdout -Raw) -notmatch 'C04_PROTOBUF_FIXTURE_PASS valid=1 invalid=2') { throw 'Generated-code verifier did not accept a legal serialized snapshot and reject both malformed byte fixtures.' }
     $fixtureFiles = Get-ChildItem -LiteralPath $RunRoot -Recurse -File | Sort-Object FullName | ForEach-Object { [ordered]@{ path=$_.FullName.Substring($RunRoot.Length).TrimStart('\','/'); sha256=(Get-Sha256 $_.FullName); bytes=$_.Length } }
     [IO.File]::WriteAllText((Join-Path $RunRoot 'fixture-seal.json'), (($fixtureFiles | ConvertTo-Json -Depth 5) + "`n"), (New-Object Text.UTF8Encoding($false)))
-    Write-Host "C04_TOOL_FIXTURES_PASS positive=1 negative=$($negatives.Count + $evidenceNegatives.Count + $markerNegatives.Count + 14) protobuf=PASS malformed=2 timeoutTree=PASS outputDrain=PASS outputFiles=$((Get-ChildItem -LiteralPath $RunRoot -Recurse -File).Count)"
+    Write-Host "C04_TOOL_FIXTURES_PASS positive=1 negative=$($negatives.Count + $evidenceNegatives.Count + $markerNegatives.Count + 15) protobuf=PASS malformed=2 timeoutTree=PASS outputDrain=PASS outputFiles=$((Get-ChildItem -LiteralPath $RunRoot -Recurse -File).Count)"
     exit 0
 }
 
@@ -950,7 +957,7 @@ EditorUserSettings:
     $postBuildInputsSha = Get-UnityInputClosure $project (Join-Path $RunRoot 'unity-postbuild-input-closure.json')
     $inputChanges = Assert-C04PostBuildInputClosure (Join-Path $RunRoot 'unity-prebuild-input-closure.json') `
         (Join-Path $RunRoot 'unity-postbuild-input-closure.json') (Join-Path $RunRoot 'unity-postbuild-input-changes.json') `
-        (Join-Path $sourceRepo 'unity/Mahjong.Unity/ProjectSettings/ProjectSettings.asset')
+        (Join-Path $source 'unity/Mahjong.Unity/ProjectSettings/ProjectSettings.asset')
     $postBuildClosureSha = Get-ClosureManifest (Join-Path $project 'Assets') (Join-Path $RunRoot 'source-postbuild-assets-closure.json')
     $scriptAssembliesSha = Get-ClosureManifest (Join-Path $project 'Library/ScriptAssemblies') (Join-Path $RunRoot 'unity-script-assemblies-closure.json')
 
