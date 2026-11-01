@@ -698,7 +698,7 @@ try {
     $provenanceSha = Get-Sha256 $sharedEvidence
 
     $playXml = Join-Path $logs 'playmode.xml'; $playLog = Join-Path $logs 'playmode.unity.log'
-    $unityTestArgs = @('-batchmode','-nographics','-projectPath',(Quote-Arg $project),'-runTests','-testPlatform','PlayMode','-testFilter','Mahjong.Unity.Tests.PlayMode.C04PlayerActionScenarioTests','-testResults',(Quote-Arg $playXml),'-logFile',(Quote-Arg $playLog)) -join ' '
+    $unityTestArgs = @('-batchmode','-projectPath',(Quote-Arg $project),'-runTests','-testPlatform','PlayMode','-testFilter','Mahjong.Unity.Tests.PlayMode.C04PlayerActionScenarioTests','-testResults',(Quote-Arg $playXml),'-logFile',(Quote-Arg $playLog)) -join ' '
     $play = Invoke-OwnedNative -Name 'UnityPlayModeC04' -FilePath $UnityPath -Arguments $unityTestArgs -WorkingDirectory $project -StdoutPath (Join-Path $logs 'playmode.stdout.txt') -StderrPath (Join-Path $logs 'playmode.stderr.txt') -Timeout 900
     if ($play.exitCode -ne 0 -or -not (Test-Path -LiteralPath $playXml)) { throw 'Targeted Unity PlayMode run failed or produced no XML.' }
     [xml]$playResults = Get-Content -LiteralPath $playXml -Raw
