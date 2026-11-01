@@ -70,6 +70,17 @@ namespace Mahjong.LocalHost
             round = Accepted(round, RoundCommand.Discard(round.RoundId, 3, new TileId(target), new[] { 0, 1, 2 }));
             if (round.Window == null || round.Window.FromSeat != 3 || !round.Window.EligibleSeats.Contains(0))
                 throw new InvalidOperationException("Frozen call fixture did not create the seat-0 response window.");
+
+            // Freeze the other responders as accepted domain prelude actions. This
+            // leaves only seat 0 pending when LocalHost composes, so no background AI
+            // command can race the subscribed request baseline or outrank the target.
+            int[] otherResponders = round.Window.EligibleSeats.Where(seat => seat != 0).ToArray();
+            for (int i = 0; i < otherResponders.Length; i++)
+            {
+                int seat = otherResponders[i];
+                if (round.Window?.HasResponded(seat) == false)
+                    round = Accepted(round, RoundCommand.Pass(round.RoundId, seat));
+            }
             return round;
         }
 

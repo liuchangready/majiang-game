@@ -104,13 +104,14 @@ namespace Mahjong.LocalHost
 
         public TableCheckpoint CreateInitialCheckpoint(LocalTableHostOptions options, RoundStateMachine round)
         {
-            // A fixed, explicitly injected local scenario may already have advanced
-            // through accepted domain commands before LocalHost composition.  The
-            // initial durable snapshot is still the stream baseline (event cursor 0),
-            // but its context must name the same authoritative round version.
-            // Ordinary factory-created rounds remain at version 0.
+            // Only the frozen C04 fixtures are composed from legally pre-advanced
+            // Domain history before LocalHost owns a durable event stream. Keep all
+            // ordinary LocalHost and existing test-fixture composition at version 0.
             if (round == null) throw new ArgumentNullException(nameof(round));
-            var initialStateVersion = new StateVersion(checked((ulong)round.Version));
+            ulong initialVersion = round.RoundId.StartsWith("c04-", StringComparison.Ordinal)
+                ? checked((ulong)round.Version)
+                : 0UL;
+            var initialStateVersion = new StateVersion(initialVersion);
             var initialEventSeq = new EventSeq(0);
             var controllers = new Dictionary<int, SeatControllerKind>
             {

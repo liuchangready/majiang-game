@@ -18,14 +18,13 @@ namespace Mahjong.LocalHost.Tests
     public sealed class C04PlayerActionChannelTests
     {
         [Theory]
-        [InlineData(LocalPlayerActionScenario.Pon, ProtocolActionType.DeclarePon, 13UL)]
-        [InlineData(LocalPlayerActionScenario.Chi, ProtocolActionType.DeclareChi, 14UL)]
-        [InlineData(LocalPlayerActionScenario.Riichi, ProtocolActionType.DeclareRiichi, 0UL)]
-        [InlineData(LocalPlayerActionScenario.ClosedKan, ProtocolActionType.DeclareKan, 0UL)]
+        [InlineData(LocalPlayerActionScenario.Pon, ProtocolActionType.DeclarePon)]
+        [InlineData(LocalPlayerActionScenario.Chi, ProtocolActionType.DeclareChi)]
+        [InlineData(LocalPlayerActionScenario.Riichi, ProtocolActionType.DeclareRiichi)]
+        [InlineData(LocalPlayerActionScenario.ClosedKan, ProtocolActionType.DeclareKan)]
         public async Task fixed_player_action_scenario_is_legal_and_applies_over_the_real_local_channel(
             string scenario,
-            ProtocolActionType actionType,
-            ulong expectedInitialStateVersion)
+            ProtocolActionType actionType)
         {
             await using var harness = new P41Harness();
             LocalPlayerActionScenario.ConfigureHostOptions(harness.Options, scenario);
@@ -50,6 +49,7 @@ namespace Mahjong.LocalHost.Tests
                 pump = PumpUntilCancelledAsync(session, timeout.Token);
                 PlayerSnapshot before = await WaitForDecisionAsync(session, timeout.Token);
                 Assert.Equal(0, session.Binding!.SeatId);
+                ulong expectedInitialStateVersion = checked((ulong)LocalPlayerActionScenario.CreateInitialRound(scenario).Version);
                 Assert.Equal(expectedInitialStateVersion, before.StateVersion);
                 Assert.NotNull(before.PrivateView.Decision);
                 LegalActionView candidate = Assert.Single(before.PrivateView.Decision!.Actions,
@@ -105,7 +105,21 @@ namespace Mahjong.LocalHost.Tests
                     Assert.Equal((uint)actionType,
                         typedPayload.RequireUInt32(CommandPayloadFields.ActionType, "actionType"));
 
-                    PlayerSnapshot after = await WaitForVersionAsync(session, before.StateVersion, timeout.Token);
+                    PlayerSnapshot after;
+                    try
+                    {
+                        after = await WaitForVersionAsync(session, before.StateVersion, timeout.Token);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw new InvalidOperationException(
+                            "Applied C04 action had no visible post-state: baseline=" + before.StateVersion +
+                            " receiptVersion=" + receipt.Resolution.CommandVersion.Value.Value +
+                            " receiptEventSeq=" + receipt.Resolution.EventSeq.Value.Value +
+                            " current=" + (session.PlayerSnapshot?.StateVersion.ToString() ?? "<none>") +
+                            " state=" + session.State + " lastError=" + (session.LastError ?? "<none>") +
+                            " visibleBatches=" + visibleEvents.Count);
+                    }
                     Assert.Equal(before.RoundId, after.RoundId);
                     Assert.True(before.StateVersion + 1UL == after.StateVersion,
                         "The first real submitted command must advance the pre-seeded checkpoint exactly once.");
