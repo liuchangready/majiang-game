@@ -200,8 +200,15 @@ function Assert-C04EvidenceStrict {
                 $errors.Add('MISSING_NEGATIVE_ASSERTION_' + $required) | Out-Null
             }
         }
-        if (-not ($requests | Where-Object { $_.status -eq 'REJECTED' })) {
-            $errors.Add('NO_REJECTED_REQUEST') | Out-Null
+        $rejected = @($requests | Where-Object { $_.status -eq 'REJECTED' })
+        if ($rejected.Count -lt 2) {
+            $errors.Add('REJECTED_REQUEST_LT_2') | Out-Null
+        }
+        if (@($rejected | Select-Object -ExpandProperty requestId -Unique).Count -lt 2) {
+            $errors.Add('REJECTED_IDS_NOT_DISTINCT') | Out-Null
+        }
+        if (@($rejected | Select-Object -ExpandProperty reason -Unique).Count -lt 2) {
+            $errors.Add('REJECTED_REASONS_NOT_DISTINCT') | Out-Null
         }
     }
 

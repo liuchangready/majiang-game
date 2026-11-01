@@ -261,3 +261,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 - 修正 §11 与代码不一致：Strict 现在实际拒绝 exact `x/y/invented/observed` 占位 observation；新增 controlEpoch null/bool/string、missing/fractional、missing stateVersion 与 stateVersion 倒退拒绝。
 - 仍为部分：raw 任意 64hex 仅校验格式与“不等于 canonical”，未由原始 command bytes 重算；accepted publication/recovery/ledger/实体原件仍未绑定。不得把本轮静态字段加强称为 R1-04 关闭。
 - R1-05 未改；R1-06 仅 fresh hash 前移已修，pinned staging/owned PID/timeout/BuildReport errors/失败 seal 仍未实现。
+
+## 13. R6 返修记录（追加）
+
+- Strict negative 现在要求至少 2 条 REJECTED、requestId 唯一且 reason 至少两种，单条 MALFORMED_MESSAGE 不再能冒充两个独立负例。
+- 工具 19/19 native0。R1-04 仍未绑定原始 command/receipt/publication/recovery bytes；任意有效 64-hex raw 与无实体/ledger 观察的 nominal 仍未被证明。
+- R1-05 未改；R1-06 仅保留 fresh hash 前移，pinned staging/owned PID/timeout/BuildReport errors/失败 seal 仍未实现。
