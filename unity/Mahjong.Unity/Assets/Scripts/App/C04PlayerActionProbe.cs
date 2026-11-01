@@ -1,13 +1,16 @@
 #nullable enable
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
+using System.Threading.Tasks;
 using Mahjong.Client;
 using Mahjong.Contracts;
 using Mahjong.Unity.Platform;
 using Mahjong.Unity.Table;
+using Mahjong.Unity.UI.Session;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -141,10 +144,23 @@ namespace Mahjong.Unity.App
             observer.BeginAction(coordinator.Current, requestId, view.Identity.ScopeId, candidate.Action);
             string payloadHash = Sha256(intent.Command.Payload.CopyBytes());
             string payloadBase64 = Convert.ToBase64String(intent.Command.Payload.CopyBytes());
+            CanonicalPayloadDocument actionPayload = CanonicalPayloadParser.Parse(intent.Command.Payload);
+            if (actionPayload.CommandKind != (ushort)CommandKind.SubmitAction ||
+                actionPayload.RequireString(CommandPayloadFields.RoundIdField, "roundId") != view.Identity.RoundId ||
+                actionPayload.RequireString(CommandPayloadFields.DecisionIdField, "decisionId") != candidate.DecisionId ||
+                actionPayload.RequireUInt64(CommandPayloadFields.ControlEpochField, "controlEpoch") != (candidate.ControlEpoch ?? 0UL) ||
+                actionPayload.RequireUInt32(CommandPayloadFields.ActionType, "actionType") != (uint)ActionForCase(_caseId))
+            {
+                coordinator.ReceiptResolved -= receiptHandler;
+                Fail("CANONICAL_ACTION_MISMATCH", "The encoded production command does not match the fixed candidate and case.");
+                yield break;
+            }
             string baselineRound = view.Identity.RoundId;
+            string baselineTableId = coordinator.Current.Binding?.TableId ?? string.Empty;
             ulong baselineVersion = view.Identity.StateVersion;
             ulong baselineEventSeq = coordinator.Current.PlayerSnapshot!.EventSeq;
-            ulong baselineCursor = coordinator.Current.Cursor?.Value ?? 0UL;
+            ulong baselineCursor = coordinator.Current.Cursor?.ProjectionSeq.Value ?? 0UL;
+            ulong baselineCursorStream = coordinator.Current.Cursor?.StreamVersion.Value ?? 0UL;
             Task<CommandSubmission> submit;
             try { submit = coordinator.SubmitAsync(intent.Command, CancellationToken.None); }
             catch (Exception exception)
@@ -183,6 +199,75 @@ namespace Mahjong.Unity.App
             }
 
             SessionViewState finalState = coordinator.Current;
+            ObservedVisibleEventBatch confirmedBatch = confirmation.Batch;
+            if (!observer.HasAppliedReceipt || confirmedBatch.Kind != TableVisibleEventBatchKind.Incremental ||
+                confirmedBatch.StateVersion <= baselineVersion ||
+                confirmedBatch.EventSeq < confirmation.Event.EventSeq ||
+                confirmation.ReceiptEventSeq < confirmation.Event.EventSeq ||
+                confirmation.Event.CommandVersion != confirmation.CommandVersion ||
+                confirmation.CommandVersion <= baselineVersion ||
+                confirmedBatch.Seat != 0 || confirmedBatch.Role != ProtocolRole.Player ||
+                confirmedBatch.BindingEpoch != view.Identity.BindingEpoch ||
+                confirmedBatch.OwnerEpoch != view.Identity.OwnerEpoch ||
+                confirmedBatch.ScopeId != view.Identity.ScopeId ||
+                confirmedBatch.SessionId != view.Identity.SessionId ||
+                confirmedBatch.RoomId != view.Identity.RoomId ||
+                confirmedBatch.RoundId != baselineRound ||
+                confirmedBatch.EventSeq <= baselineEventSeq ||
+                (confirmedBatch.Cursor.StreamVersion.Value == baselineCursorStream &&
+                 confirmedBatch.Cursor.ProjectionSeq.Value <= baselineCursor) ||
+                finalState.PlayerSnapshot == null ||
+                finalState.PlayerSnapshot.StateVersion != confirmedBatch.StateVersion ||
+                finalState.PlayerSnapshot.EventSeq != confirmedBatch.EventSeq)
+            {
+                Fail("ACTION_FACTS_DIVERGED", "Receipt, incremental event batch, baseline identity, and same-publication snapshot did not agree.");
+                yield break;
+            }
+
+            uint[] expectedTiles = _caseId == "C04-G2-01" ? new uint[] { 0, 1, 2 } :
+                _caseId == "C04-G2-02" ? new uint[] { 0, 4, 8 } :
+                _caseId == "C04-G2-04" ? new uint[] { 0, 1, 2, 3 } : Array.Empty<uint>();
+            if (expectedTiles.Length != 0 && !SameTiles(expectedTiles, confirmation.Event.Payload.TileIds))
+            {
+                Fail("ACTION_TILE_EFFECT_MISMATCH", "The typed action event does not carry the frozen physical tile set.");
+                yield break;
+            }
+
+            PlayerTableViewState afterView = mapper.Project(finalState);
+            ulong scoreBefore = unchecked((ulong)Math.Max(0L, ScoreForSeat(view.Board.Scores, 0)));
+            ulong scoreAfter = unchecked((ulong)Math.Max(0L, ScoreForSeat(afterView.Board.Scores, 0)));
+            if (_caseId == "C04-G2-01" || _caseId == "C04-G2-02")
+            {
+                PlayerMeldKind kind = _caseId == "C04-G2-01" ? PlayerMeldKind.Pon : PlayerMeldKind.Chi;
+                PlayerMeldState? meld = null;
+                for (int i = 0; i < (afterView.Own?.Melds.Count ?? 0); i++)
+                    if (afterView.Own!.Melds[i].Kind == kind) { meld = afterView.Own.Melds[i]; break; }
+                if (meld == null || !SameTiles(expectedTiles, meld.TileIds))
+                {
+                    Fail("MELD_ENTITY_EFFECT_MISMATCH", "The same-publication owner view does not place the exact fixed physical entities in the claimed meld.");
+                    yield break;
+                }
+            }
+            else if (_caseId == "C04-G2-03")
+            {
+                if (!finalState.PlayerSnapshot.PublicView.Board.Players[0].Riichi ||
+                    finalState.PlayerSnapshot.PublicView.Board.RiichiSticks == 0 ||
+                    ScoreForSeat(afterView.Board.Scores, 0) != 24_000L || scoreBefore != 25_000UL)
+                {
+                    Fail("RIICHI_EFFECT_MISMATCH", "The accepted snapshot does not show the 1,000-point deduction and riichi stick.");
+                    yield break;
+                }
+            }
+            else if (_caseId == "C04-G2-04")
+            {
+                if (afterView.Own?.DrawnTileId != 73u || afterView.Own.Melds.Count == 0 ||
+                    afterView.Own.Melds[0].Kind != PlayerMeldKind.ClosedKan ||
+                    !SameTiles(expectedTiles, afterView.Own.Melds[0].TileIds))
+                {
+                    Fail("KAN_ENTITY_EFFECT_MISMATCH", "Closed Kan did not move tiles 0..3 into the meld and entity 73 into the replacement draw.");
+                    yield break;
+                }
+            }
             _outcome = "PASS";
             _exitCode = 0;
             _summary = new C04PlayerActionSummary
@@ -196,34 +281,66 @@ namespace Mahjong.Unity.App
                 CanonicalPayloadBase64 = payloadBase64,
                 RoomId = view.Identity.RoomId,
                 SessionId = view.Identity.SessionId,
+                TableId = baselineTableId,
                 Seat = view.Identity.Seat,
                 RoundId = baselineRound,
                 DecisionId = candidate.DecisionId,
-                ControlEpoch = candidate.ControlEpoch,
+                ControlEpoch = candidate.ControlEpoch ?? 0UL,
                 BindingEpoch = view.Identity.BindingEpoch,
+                ConnectionEpoch = view.Identity.ConnectionEpoch,
                 OwnerEpoch = view.Identity.OwnerEpoch,
                 StateVersionBefore = baselineVersion,
-                StateVersionAfter = finalState.PlayerSnapshot?.StateVersion ?? 0UL,
+                StateVersionAfter = confirmedBatch.StateVersion,
                 EventSeqBefore = baselineEventSeq,
-                EventSeqAfter = finalState.PlayerSnapshot?.EventSeq ?? 0UL,
+                EventSeqAfter = confirmedBatch.EventSeq,
                 CursorBefore = baselineCursor,
-                CursorAfter = finalState.Cursor?.Value ?? 0UL,
+                CursorAfter = confirmedBatch.Cursor.ProjectionSeq.Value,
+                CursorStreamBefore = baselineCursorStream,
+                CursorStreamAfter = confirmedBatch.Cursor.StreamVersion.Value,
                 Receipt = observer.ReceiptSummary,
                 ReceiptStatus = observer.HasAppliedReceipt ? "Applied" : "Missing",
                 ReceiptRequestId = requestId,
                 ReceiptScopeId = view.Identity.ScopeId,
                 ReceiptCommandVersion = observer.AppliedCommandVersion ?? 0UL,
+                ReceiptEventSeq = confirmation.ReceiptEventSeq,
                 EventType = confirmation.Event.Type.ToString(),
                 EventSeat = confirmation.Event.Seat,
                 EventRoundId = confirmation.Batch.RoundId,
-                EventCommandVersion = confirmation.Event.CommandVersion,
+                EventScopeId = confirmation.Batch.ScopeId,
+                EventSessionId = confirmation.Batch.SessionId,
+                EventRoomId = confirmation.Batch.RoomId,
+                EventTableId = confirmation.Batch.TableId,
+                EventBindingEpoch = confirmation.Batch.BindingEpoch,
+                EventConnectionEpoch = confirmation.Batch.ConnectionEpoch,
+                EventOwnerEpoch = confirmation.Batch.OwnerEpoch,
+                EventRole = confirmation.Batch.Role.ToString(),
+                EventCommandVersion = confirmation.CommandVersion,
                 EventSeq = confirmation.Event.EventSeq,
                 EventConfirmed = true,
-                EventTiles = String.Join(",", confirmation.Event.TileIds),
+                EventTiles = String.Join(",", confirmation.Event.Payload.TileIds),
+                MeldTileIds = afterView.Own == null || afterView.Own.Melds.Count == 0
+                    ? string.Empty : String.Join(",", afterView.Own.Melds[0].TileIds),
+                HandTileIdsAfter = afterView.Own == null ? string.Empty : String.Join(",", afterView.Own.ClosedTiles),
+                ReplacementDrawTileId = afterView.Own?.DrawnTileId?.ToString() ?? string.Empty,
+                SeatScoreBefore = scoreBefore,
+                SeatScoreAfter = scoreAfter,
+                RiichiSticksBefore = view.Board.RiichiSticks,
+                RiichiSticksAfter = finalState.PlayerSnapshot.PublicView.Board.RiichiSticks,
                 Batch = confirmation.Batch.Describe(),
+                PayloadActionType = actionPayload.RequireUInt32(CommandPayloadFields.ActionType, "actionType"),
+                PayloadRoundId = actionPayload.RequireString(CommandPayloadFields.RoundIdField, "roundId"),
+                PayloadDecisionId = actionPayload.RequireString(CommandPayloadFields.DecisionIdField, "decisionId"),
+                PayloadControlEpoch = actionPayload.RequireUInt64(CommandPayloadFields.ControlEpochField, "controlEpoch"),
+                CandidateOptionId = candidate.OptionId ?? string.Empty,
+                PayloadOptionId = actionPayload.HasField(CommandPayloadFields.OptionId)
+                    ? actionPayload.RequireString(CommandPayloadFields.OptionId, "optionId") : string.Empty,
+                PayloadMeldType = actionPayload.OptionalUInt32(CommandPayloadFields.MeldType) ?? 0U,
+                PayloadTileIds = actionPayload.HasField(CommandPayloadFields.TileIds)
+                    ? String.Join(",", actionPayload.RequireRepeatedUInt32(CommandPayloadFields.TileIds, "tileIds")) : string.Empty,
                 Status = "GAME"
             };
-            yield return Finish();
+            Finish();
+            yield break;
         }
 
         private bool Click(string objectName)
@@ -337,6 +454,22 @@ namespace Mahjong.Unity.App
             return BitConverter.ToString(sha.ComputeHash(value)).Replace("-", string.Empty).ToLowerInvariant();
         }
 
+        private static bool SameTiles(IReadOnlyList<uint> expected, IReadOnlyList<uint> actual)
+        {
+            if (expected.Count != actual.Count) return false;
+            var left = new System.Collections.Generic.List<uint>(expected);
+            var right = new System.Collections.Generic.List<uint>(actual);
+            left.Sort(); right.Sort();
+            for (int i = 0; i < left.Count; i++) if (left[i] != right[i]) return false;
+            return true;
+        }
+
+        private static long ScoreForSeat(IReadOnlyList<PlayerTableScore> scores, int seat)
+        {
+            for (int i = 0; i < scores.Count; i++) if (scores[i].Seat == seat) return scores[i].Score;
+            throw new InvalidOperationException("The accepted player snapshot omitted seat " + seat + " score.");
+        }
+
         [Serializable]
         private sealed class C04PlayerActionSummary
         {
@@ -349,11 +482,13 @@ namespace Mahjong.Unity.App
             public string CanonicalPayloadBase64 = string.Empty;
             public string RoomId = string.Empty;
             public string SessionId = string.Empty;
+            public string TableId = string.Empty;
             public int Seat = -1;
             public string RoundId = string.Empty;
             public string DecisionId = string.Empty;
             public ulong ControlEpoch;
             public ulong BindingEpoch;
+            public ulong ConnectionEpoch;
             public ulong OwnerEpoch;
             public ulong StateVersionBefore;
             public ulong StateVersionAfter;
@@ -361,18 +496,44 @@ namespace Mahjong.Unity.App
             public ulong EventSeqAfter;
             public ulong CursorBefore;
             public ulong CursorAfter;
+            public ulong CursorStreamBefore;
+            public ulong CursorStreamAfter;
+            public uint PayloadActionType;
+            public string PayloadRoundId = string.Empty;
+            public string PayloadDecisionId = string.Empty;
+            public ulong PayloadControlEpoch;
+            public string CandidateOptionId = string.Empty;
+            public string PayloadOptionId = string.Empty;
+            public uint PayloadMeldType;
+            public string PayloadTileIds = string.Empty;
             public string Receipt = string.Empty;
             public string ReceiptStatus = string.Empty;
             public string ReceiptRequestId = string.Empty;
             public string ReceiptScopeId = string.Empty;
             public ulong ReceiptCommandVersion;
+            public ulong ReceiptEventSeq;
             public string EventType = string.Empty;
             public int EventSeat = -1;
             public string EventRoundId = string.Empty;
+            public string EventScopeId = string.Empty;
+            public string EventSessionId = string.Empty;
+            public string EventRoomId = string.Empty;
+            public string EventTableId = string.Empty;
+            public ulong EventBindingEpoch;
+            public ulong EventConnectionEpoch;
+            public ulong EventOwnerEpoch;
+            public string EventRole = string.Empty;
             public ulong EventCommandVersion;
             public ulong EventSeq;
             public bool EventConfirmed;
             public string EventTiles = string.Empty;
+            public string MeldTileIds = string.Empty;
+            public string HandTileIdsAfter = string.Empty;
+            public string ReplacementDrawTileId = string.Empty;
+            public ulong SeatScoreBefore;
+            public ulong SeatScoreAfter;
+            public uint RiichiSticksBefore;
+            public uint RiichiSticksAfter;
             public string Batch = string.Empty;
             public string Status = string.Empty;
             public string Failure = string.Empty;

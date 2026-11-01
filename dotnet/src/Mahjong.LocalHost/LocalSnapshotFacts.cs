@@ -104,6 +104,14 @@ namespace Mahjong.LocalHost
 
         public TableCheckpoint CreateInitialCheckpoint(LocalTableHostOptions options, RoundStateMachine round)
         {
+            // A fixed, explicitly injected local scenario may already have advanced
+            // through accepted domain commands before LocalHost composition.  The
+            // initial durable snapshot is still the stream baseline (event cursor 0),
+            // but its context must name the same authoritative round version.
+            // Ordinary factory-created rounds remain at version 0.
+            if (round == null) throw new ArgumentNullException(nameof(round));
+            var initialStateVersion = new StateVersion(checked((ulong)round.Version));
+            var initialEventSeq = new EventSeq(0);
             var controllers = new Dictionary<int, SeatControllerKind>
             {
                 { 0, SeatControllerKind.LocalHuman },
@@ -136,8 +144,8 @@ namespace Mahjong.LocalHost
             TableProjectionContextData facts = Capture(new TableProjectionContextRequest(
                 options.RoomId,
                 round,
-                new StateVersion(0),
-                new EventSeq(0),
+                initialStateVersion,
+                initialEventSeq,
                 new OwnerEpoch(1),
                 0L,
                 0L,
@@ -149,8 +157,8 @@ namespace Mahjong.LocalHost
             return TableCheckpointFactory.Create(
                 options.RoomId,
                 round,
-                new StateVersion(0),
-                new EventSeq(0),
+                initialStateVersion,
+                initialEventSeq,
                 new TableControlCheckpoint(registry.Capture(), 0L),
                 timing,
                 options.RulesetVersion,

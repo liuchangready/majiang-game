@@ -34,6 +34,17 @@ namespace Mahjong.LocalHost
             throw new ArgumentOutOfRangeException(nameof(scenarioId), scenarioId, "Unknown fixed C04 Player action scenario.");
         }
 
+        /// <summary>
+        /// Validate the closed scenario set and all physical-deal invariants without
+        /// exposing the Domain RoundStateMachine through the Unity composition API.
+        /// </summary>
+        public static void ValidateScenario(string scenarioId)
+        {
+            RoundStateMachine round = CreateInitialRound(scenarioId);
+            if (TilePositionMap.Validate(round.Tiles).AssignedCount != TileId.Count)
+                throw new InvalidOperationException("Frozen scenario does not conserve all physical tiles.");
+        }
+
         private static RoundStateMachine BuildCallWindow(string action)
         {
             bool pon = string.Equals(action, Pon, StringComparison.Ordinal);

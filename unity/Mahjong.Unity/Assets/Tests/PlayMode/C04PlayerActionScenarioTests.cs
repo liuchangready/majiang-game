@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Mahjong.Client;
 using Mahjong.Contracts;
+using Mahjong.LocalHost;
 using Mahjong.Unity.App;
 using Mahjong.Unity.Table;
 using NUnit.Framework;
@@ -70,6 +71,7 @@ namespace Mahjong.Unity.Tests.PlayMode
                 }
                 Assert.IsNotNull(candidate, "The fixed legal candidate must come from the accepted Player snapshot.");
                 Assert.AreEqual(0, view.Identity.Seat);
+                var baselineSnapshot = coordinator.Current.PlayerSnapshot!;
 
                 string requestId = "c04-playmode-" + caseId + "-1";
                 var owner = new TableCommandOwnerContext(new RequestId(requestId), new RequestScopeId(view.Identity.ScopeId),
@@ -108,17 +110,23 @@ namespace Mahjong.Unity.Tests.PlayMode
                         after = mapper.Project(coordinator.Current);
                     }
                     Assert.IsNotNull(after.Own?.DrawnTileId, "Closed Kan must be followed by the authority's replacement draw.");
+                    Assert.AreEqual(73u, after.Own!.DrawnTileId);
                     Assert.AreEqual(PlayerMeldKind.ClosedKan, after.Own!.Melds[0].Kind);
+                    CollectionAssert.AreEquivalent(new uint[] { 0, 1, 2, 3 }, after.Own.Melds[0].TileIds);
                 }
                 else if (action == PlayerActionKind.DeclareRiichi)
                 {
                     Assert.IsTrue(coordinator.Current.PlayerSnapshot!.PublicView.Board.Players[0].Riichi);
                     Assert.AreEqual(1u, coordinator.Current.PlayerSnapshot.PublicView.Board.RiichiSticks);
+                    Assert.AreEqual(25_000L, baselineSnapshot.PublicView.Board.Scores[0].Score);
+                    Assert.AreEqual(24_000L, coordinator.Current.PlayerSnapshot.PublicView.Board.Scores[0].Score);
                 }
                 else
                 {
                     Assert.AreEqual(action == PlayerActionKind.DeclarePon ? PlayerMeldKind.Pon : PlayerMeldKind.Chi,
                         mapper.Project(coordinator.Current).Own!.Melds[0].Kind);
+                    uint[] expectedTiles = action == PlayerActionKind.DeclarePon ? new uint[] { 0, 1, 2 } : new uint[] { 0, 4, 8 };
+                    CollectionAssert.AreEquivalent(expectedTiles, mapper.Project(coordinator.Current).Own!.Melds[0].TileIds);
                 }
             }
             finally

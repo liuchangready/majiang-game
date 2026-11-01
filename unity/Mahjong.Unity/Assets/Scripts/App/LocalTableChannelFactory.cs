@@ -135,7 +135,7 @@ namespace Mahjong.Unity.App
         {
             // Validate the closed scenario set and fixture construction before
             // AppComposition can acquire any channel resources.
-            LocalPlayerActionScenario.CreateInitialRound(scenarioId);
+            LocalPlayerActionScenario.ValidateScenario(scenarioId);
             if (MatchModeEnabled)
                 throw new InvalidOperationException("A C04 action fixture cannot be combined with full-match mode.");
             Interlocked.Exchange(ref _playerActionScenario, scenarioId);

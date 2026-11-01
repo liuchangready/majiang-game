@@ -87,6 +87,18 @@ namespace Mahjong.LocalHost.Tests
                     Assert.Equal(requestId, receipt.Command.Key.RequestId.Value);
                     Assert.True(receipt.Resolution.CommandVersion.HasValue);
                     Assert.True(receipt.Resolution.EventSeq.HasValue);
+                    Assert.True(receipt.Resolution.CommandVersion.Value.Value > before.StateVersion,
+                        "Applied command version must advance beyond the subscribed baseline.");
+
+                    CanonicalPayloadDocument typedPayload = CanonicalPayloadParser.Parse(payload);
+                    Assert.Equal((ushort)CommandKind.SubmitAction, typedPayload.CommandKind);
+                    Assert.Equal(before.RoundId, typedPayload.RequireString(CommandPayloadFields.RoundIdField, "roundId"));
+                    Assert.Equal(before.PrivateView.Decision.DecisionId,
+                        typedPayload.RequireString(CommandPayloadFields.DecisionIdField, "decisionId"));
+                    Assert.Equal((ulong)before.PrivateView.Decision.ControlEpoch,
+                        typedPayload.RequireUInt64(CommandPayloadFields.ControlEpochField, "controlEpoch"));
+                    Assert.Equal((uint)actionType,
+                        typedPayload.RequireUInt32(CommandPayloadFields.ActionType, "actionType"));
 
                     PlayerSnapshot after = await WaitForVersionAsync(session, before.StateVersion, timeout.Token);
                     Assert.Equal(before.RoundId, after.RoundId);
@@ -99,10 +111,24 @@ namespace Mahjong.LocalHost.Tests
                     Assert.True(actionEvent.EventSeq <= receipt.Resolution.EventSeq!.Value.Value,
                         "The matching action event must be at or before the Applied receipt's event high-water mark.");
 
+                    uint[] expectedActionTiles = actionType == ProtocolActionType.DeclarePon
+                        ? new uint[] { 0, 1, 2 }
+                        : actionType == ProtocolActionType.DeclareChi
+                            ? new uint[] { 0, 4, 8 }
+                            : actionType == ProtocolActionType.DeclareKan
+                                ? new uint[] { 0, 1, 2, 3 }
+                                : Array.Empty<uint>();
+                    if (expectedActionTiles.Length != 0)
+                    {
+                        Assert.Equal(expectedActionTiles.OrderBy(value => value), actionEvent.TileIds.OrderBy(value => value));
+                    }
+
                     if (actionType == ProtocolActionType.DeclareRiichi)
                     {
                         Assert.True(after.PublicView.Board.Players[0].Riichi);
                         Assert.Equal(1u, after.PublicView.Board.RiichiSticks);
+                        Assert.Equal(25_000L, before.PublicView.Board.Scores.Single(score => score.Seat == 0).Score);
+                        Assert.Equal(24_000L, after.PublicView.Board.Scores.Single(score => score.Seat == 0).Score);
                     }
                     else if (actionType == ProtocolActionType.DeclareKan)
                     {
@@ -123,7 +149,19 @@ namespace Mahjong.LocalHost.Tests
                             : await WaitForReplacementDrawAsync(session, after.StateVersion, timeout.Token);
                         Assert.Equal(before.RoundId, replacement.RoundId);
                         Assert.True(replacement.PrivateView.HasDrawnTileId);
+                        Assert.Equal(73u, replacement.PrivateView.DrawnTileId);
                         Assert.Single(replacement.PrivateView.OwnerMelds);
+                        Assert.Equal(new uint[] { 0, 1, 2, 3 },
+                            replacement.PrivateView.OwnerMelds[0].TileIds.OrderBy(value => value));
+                    }
+                    else if (actionType == ProtocolActionType.DeclarePon || actionType == ProtocolActionType.DeclareChi)
+                    {
+                        MeldType expectedMeld = actionType == ProtocolActionType.DeclarePon ? MeldType.Pon : MeldType.Chi;
+                        var meld = Assert.Single(after.PublicView.Board.Players[0].Melds, value => value.Type == expectedMeld);
+                        Assert.Equal(expectedActionTiles.OrderBy(value => value), meld.TileIds.OrderBy(value => value));
+                        Assert.Equal(expectedActionTiles.Length, meld.TileIds.Distinct().Count());
+                        Assert.DoesNotContain(2u, after.PrivateView.ClosedTiles);
+                        Assert.DoesNotContain(actionType == ProtocolActionType.DeclarePon ? 0u : 4u, after.PrivateView.ClosedTiles);
                     }
                 }
                 finally

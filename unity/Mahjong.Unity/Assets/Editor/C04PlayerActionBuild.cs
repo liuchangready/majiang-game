@@ -34,7 +34,7 @@ public static class C04PlayerActionBuild
         if (report.summary.result != BuildResult.Succeeded || report.summary.totalErrors != 0 || !File.Exists(output))
             throw new InvalidOperationException("C04 Windows Player build failed: result=" + report.summary.result + " errors=" + report.summary.totalErrors);
         string record = "{\"result\":\"" + report.summary.result + "\",\"target\":\"" + report.summary.platform +
-            "\",\"bytes\":" + report.summary.totalSize + ",\"scenes\":[\"" + String.Join("\",\"", scenes) + "\"]}";
+            "\",\"errors\":" + report.summary.totalErrors + ",\"bytes\":" + report.summary.totalSize + ",\"scenes\":[\"" + String.Join("\",\"", scenes) + "\"]}";
         using (var stream = new FileStream(marker, FileMode.CreateNew, FileAccess.Write, FileShare.Read))
         {
             byte[] bytes = new UTF8Encoding(false).GetBytes(record + "\n");
