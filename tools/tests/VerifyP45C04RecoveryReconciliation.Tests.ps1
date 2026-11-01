@@ -388,8 +388,10 @@ foreach ($nativeCase in $nativeCases) {
         param($d)
         $path = Join-Path $d $nativeCase.File
         $launch = [IO.File]::ReadAllText($path) | ConvertFrom-Json
-        if ($nativeCase.Remove) { $launch.PSObject.Properties.Remove($nativeCase.Field) }
-        else { $launch.($nativeCase.Field) = $nativeCase.Value }
+        if ($nativeCase.ContainsKey('Remove') -and $nativeCase['Remove']) {
+            $launch.PSObject.Properties.Remove($nativeCase['Field'])
+        }
+        else { $launch.($nativeCase['Field']) = $nativeCase['Value'] }
         Write-Json $path $launch
     }
 }
