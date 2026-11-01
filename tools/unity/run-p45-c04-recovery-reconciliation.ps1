@@ -63,7 +63,6 @@ $script:Player = $null
 $script:PlayerSha = $null
 $script:PackageSha = $null
 $script:PackageCount = 0
-$script:HelperPath = $null
 $script:SourceHead = $null
 $script:BuildCommit = $null
 $script:OldTemp = $null
