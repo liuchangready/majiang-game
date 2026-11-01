@@ -265,6 +265,7 @@ function Get-UnityInputClosure([string]$projectRoot,[string]$output) {
     for ($attempt = 1; $attempt -le 3; $attempt++) {
         $entries = New-Object System.Collections.Generic.List[object]
         $excludedPathRules = New-Object System.Collections.Generic.List[string]
+        $maximumAbsolutePathLength = 0
         try {
             foreach ($rootName in $rootNames) {
                 $root = Join-Path $projectRoot ($rootName.Replace('/','\'))
@@ -276,6 +277,8 @@ function Get-UnityInputClosure([string]$projectRoot,[string]$output) {
                     if (-not (Test-Path -LiteralPath $directory -PathType Container)) { throw "Unity input tree changed during closure capture: $directory" }
                     foreach ($item in Get-ChildItem -LiteralPath $directory -Force -ErrorAction Stop) {
                         $relative = $item.FullName.Substring($projectRoot.Length).TrimStart('\','/').Replace('\','/')
+                        $maximumAbsolutePathLength = [Math]::Max($maximumAbsolutePathLength, $item.FullName.Length)
+                        if ($item.FullName.Length -gt 259) { throw "Unity input path exceeds the supported Windows path boundary ($($item.FullName.Length)): $relative" }
                         if ($item.PSIsContainer) {
                             if ($rootName -eq 'Library/PackageCache' -and $item.Name.EndsWith('.bundle',[StringComparison]::OrdinalIgnoreCase)) {
                                 $excludedPathRules.Add($relative + '/** (macOS bundle excluded from StandaloneWindows64 inputs)') | Out-Null
@@ -292,7 +295,7 @@ function Get-UnityInputClosure([string]$projectRoot,[string]$output) {
                     }
                 }
             }
-            $manifest = [ordered]@{ projectRoot=$projectRoot; target='StandaloneWindows64'; roots=$rootNames; excludedPathRules=$excludedPathRules; fileCount=$entries.Count; entries=$entries }
+            $manifest = [ordered]@{ projectRoot=$projectRoot; target='StandaloneWindows64'; roots=$rootNames; maximumAbsolutePathLength=$maximumAbsolutePathLength; windowsLegacyMaxPath=260; excludedPathRules=$excludedPathRules; fileCount=$entries.Count; entries=$entries }
             [IO.File]::WriteAllText($output,(($manifest | ConvertTo-Json -Depth 8)+"`n"),(New-Object Text.UTF8Encoding($false)))
             return Get-Sha256 $output
         } catch {
@@ -779,7 +782,7 @@ try {
     Assert-C04ArchiveHasNoGitMetadata $source | Out-Null
     $sourceClosureSha = Get-ClosureManifest $source (Join-Path $RunRoot 'source-prebuild-closure.json')
     $sourceProject = Join-Path $source 'unity/Mahjong.Unity'
-    $projectStageRoot = Join-Path 'E:\majiang-review\c04-player-actions-projects' $runId
+    $projectStageRoot = Join-Path 'E:\c04' $runId
     if (Test-Path -LiteralPath $projectStageRoot) { throw 'Exclusive short-path Unity project staging root already exists; refusing to overwrite.' }
     New-Item -ItemType Directory -Path $projectStageRoot | Out-Null
     $project = Join-Path $projectStageRoot 'p'

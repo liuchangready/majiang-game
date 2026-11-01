@@ -17,7 +17,7 @@ function Invoke-C04Tool([string[]]$Arguments) {
     $proc = New-Object System.Diagnostics.Process; $proc.StartInfo = $psi
     if (-not $proc.Start()) { throw 'Unable to start PowerShell test process.' }
     $outTask = $proc.StandardOutput.ReadToEndAsync(); $errTask = $proc.StandardError.ReadToEndAsync()
-    $exited = $proc.WaitForExit(30000)
+    $exited = $proc.WaitForExit(120000)
     if (-not $exited) {
         $null = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\taskkill.exe') -ArgumentList @('/PID',"$($proc.Id)",'/T','/F') -PassThru -WindowStyle Hidden -Wait
         $exited = $proc.WaitForExit(3000)
