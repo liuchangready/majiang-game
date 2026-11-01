@@ -121,7 +121,8 @@ function Assert-C04EvidenceStrict {
         if ($assertionIds.ContainsKey($aid)) { $errors.Add('DUPLICATE_ASSERTION_' + $aid) | Out-Null }
         $assertionIds[$aid] = $true
         if ($assertion.pass -isnot [bool]) { $errors.Add('ASSERTION_NOT_BOOLEAN_' + $aid) | Out-Null }
-        if ([string]$assertion.expected -eq 'x' -or [string]$assertion.actual -eq 'y') {
+        if ([string]$assertion.expected -in @('x','invented','observed') -or
+            [string]$assertion.actual -in @('y','invented','observed')) {
             $errors.Add('PLACEHOLDER_OBSERVATION_' + $aid) | Out-Null
         }
     }
@@ -136,12 +137,19 @@ function Assert-C04EvidenceStrict {
         if (-not ($request.PSObject.Properties.Name -contains 'controlEpoch')) {
             $errors.Add('MISSING_CONTROL_EPOCH') | Out-Null
         }
+        elseif ($request.controlEpoch -is [bool] -or $request.controlEpoch -is [string] -or $null -eq $request.controlEpoch) {
+            $errors.Add('CONTROL_EPOCH_NOT_NUMERIC') | Out-Null
+        }
         elseif ([double]$request.controlEpoch % 1 -ne 0) {
             $errors.Add('FRACTIONAL_CONTROL_EPOCH') | Out-Null
         }
         elseif ([long]$request.controlEpoch -ne 0) { $errors.Add('FOREIGN_CONTROL_EPOCH') | Out-Null }
         if ([string]$request.seat -ne '0') { $errors.Add('FOREIGN_SEAT') | Out-Null }
-        if ([long]$request.stateVersionAfter -lt [long]$request.stateVersionBefore) {
+        if (-not ($request.PSObject.Properties.Name -contains 'stateVersionBefore') -or
+            -not ($request.PSObject.Properties.Name -contains 'stateVersionAfter')) {
+            $errors.Add('MISSING_STATE_VERSION') | Out-Null
+        }
+        elseif ([long]$request.stateVersionAfter -lt [long]$request.stateVersionBefore) {
             $errors.Add('STATE_VERSION_REGRESSION') | Out-Null
         }
         if ([string]$request.rawPayloadSha256 -eq [string]$request.payloadSha256) {

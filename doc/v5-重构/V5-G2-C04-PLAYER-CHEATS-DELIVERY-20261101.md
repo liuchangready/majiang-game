@@ -255,3 +255,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 - Strict 增加：missing/fractional controlEpoch、stateVersion 倒退、raw 与 canonical 同值、invented/observed 占位观察拒绝。
 - 工具矩阵仍 19/19 native0；未完成原始 canonical bytes/scope digest/accepted publication/recovery 解码交叉绑定，R1-04 仍为部分。
 - R1-05 未改；R1-06 的 pinned staging/owned PID/timeout/BuildReport 3 errors/失败 seal 未完成。
+
+## 12. R5 返修记录（追加）
+
+- 修正 §11 与代码不一致：Strict 现在实际拒绝 exact `x/y/invented/observed` 占位 observation；新增 controlEpoch null/bool/string、missing/fractional、missing stateVersion 与 stateVersion 倒退拒绝。
+- 仍为部分：raw 任意 64hex 仅校验格式与“不等于 canonical”，未由原始 command bytes 重算；accepted publication/recovery/ledger/实体原件仍未绑定。不得把本轮静态字段加强称为 R1-04 关闭。
+- R1-05 未改；R1-06 仅 fresh hash 前移已修，pinned staging/owned PID/timeout/BuildReport errors/失败 seal 仍未实现。

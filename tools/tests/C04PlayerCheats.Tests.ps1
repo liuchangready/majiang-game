@@ -101,7 +101,7 @@ Assert-ContainsError (Assert-C04Evidence -Evidence $unknownBlocked -ExpectedCase
 $strictIds = @('G3-01-RECEIPT','G3-02-RECEIPT','G3-02-CHOICE-RECEIPT','G3-03-RECEIPT','G3-03-CHOICE-RECEIPT','G3-04-FINAL-LEDGER','G3-05-FINAL')
 $strictBase = New-Fixture
 $strictBase.blockedRows = @()
-$strictBase.assertions = @($strictIds | ForEach-Object { [pscustomobject]@{ id = $_; pass = $true; expected = 'observed'; actual = 'observed' } })
+$strictBase.assertions = @($strictIds | ForEach-Object { [pscustomobject]@{ id = $_; pass = $true; expected = 'expected-observation'; actual = 'actual-observation' } })
 $strictKinds = @('SubmitTileMark','SubmitSleeveBloom','SubmitSleeveBloomChoice','SubmitBeamSwap','SubmitBeamSwapChoice')
 $strictBase.requests = @(0..4 | ForEach-Object {
     $r = $strictBase.requests[0].PSObject.Copy()
