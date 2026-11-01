@@ -752,15 +752,25 @@ function Write-Summary {
     $summarySha = Write-JsonFile -Path $summaryPath -Object $summary
     Write-ToolLog ('SUMMARY ' + $status + ' sha=' + $summarySha + ' cases=' + $script:CaseResults.Count)
     $entries = New-Object System.Collections.Generic.List[object]
-    Get-ChildItem -LiteralPath $script:Root -Recurse -File | Sort-Object FullName | ForEach-Object {
-        $relative = $_.FullName.Substring($script:Root.Length).TrimStart('\', '/').Replace('\', '/')
-        if ($relative -ne 'evidence-sha256.csv' -and
-            -not $relative.StartsWith('temp/', [StringComparison]::OrdinalIgnoreCase) -and
-            -not $relative.StartsWith('staging-project/', [StringComparison]::OrdinalIgnoreCase)) {
+    $scanFiles = New-Object System.Collections.Generic.List[object]
+    foreach ($top in @(Get-ChildItem -LiteralPath $script:Root -File -ErrorAction SilentlyContinue)) {
+        $scanFiles.Add($top)
+    }
+    foreach ($name in @('player', 'helper', 'logs', 'prepare', 'prepare-force', 'cases')) {
+        $dir = Join-Path $script:Root $name
+        if (Test-Path -LiteralPath $dir -PathType Container) {
+            foreach ($file in @(Get-ChildItem -LiteralPath $dir -Recurse -File -ErrorAction SilentlyContinue)) {
+                $scanFiles.Add($file)
+            }
+        }
+    }
+    foreach ($file in @($scanFiles | Sort-Object FullName)) {
+        $relative = $file.FullName.Substring($script:Root.Length).TrimStart('\', '/').Replace('\', '/')
+        if ($relative -ne 'evidence-sha256.csv') {
             $entries.Add([pscustomobject]@{
                 path = $relative
-                bytes = [long]$_.Length
-                sha256 = Get-Sha256 $_.FullName
+                bytes = [long]$file.Length
+                sha256 = Get-Sha256 $file.FullName
             }) | Out-Null
         }
     }
