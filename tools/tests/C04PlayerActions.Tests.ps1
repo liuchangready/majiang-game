@@ -41,4 +41,4 @@ if ((Get-FileHash -LiteralPath (Join-Path $fixtureRoot 'foreign-sentinel.txt') -
 $badRoot = Join-Path (Join-Path $repo 'build') 'not-a-guid'
 $path = Invoke-C04Tool @('-NoProfile','-ExecutionPolicy','Bypass','-File',$runner,'-RunRoot',$badRoot,'-FixtureOnly')
 if ($path.exitCode -eq 0 -or (Test-Path -LiteralPath $badRoot)) { throw 'Runner accepted or created a non-GUID output root.' }
-Write-Host 'C04_TOOL_TESTS_PASS positive=1 negative=48 outputRoot=' $fixtureRoot
+Write-Host 'C04_TOOL_TESTS_PASS positive=1 negative=49 outputRoot=' $fixtureRoot
