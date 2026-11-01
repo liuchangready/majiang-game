@@ -6,7 +6,7 @@
 
 结论口径（先读）：
 
-- 本交付是**已接受组件的集成候选复验**，不是 G2/C03 通过，不是最终 G2 裁决，不是 C01/C02 重启，也不批准 P4.5/G2–G5。V4 仍是唯一生产架构。
+- 本交付是**已接受组件的集成候选复验**，接收方不自行批准；C03 范围的最终调用方结论见 §15。它不是最终 G2 裁决，不是 C01/C02 重启，也不批准 P4.5/G2–G5。V4 仍是唯一生产架构。
 - 14 文件 accepted exporter 增量已按源提交精确应用；`bae6..b33f0aad` 只改这 14 文件，`diff-check=0`，没有回退 C01/C02/C05，没有合并 PR24 整分支或旧 driver。
 - 冻结代码 `b33f0aad21c962a6f147dbfdb8a63fd98942d4a2` 的定向 .NET/工具/12 局 Player/8 场景受控恢复均有本轮原件。**统一全量 .NET 门禁在仓库自有隔离 PostgreSQL wrapper 下 PASS（2,820/2,820，21 行全 PASS，0 fail/skip/notrun）；未配置首次 FAIL 保留。全量 PlayMode 仍 132/147 FAIL，但已在 bae6 baseline 逐例复现同一 15 个失败（R1 归因关闭；C03 不修 UI、不宣称 147 全绿）。**
 - 旧 RecoveryExport Compare 在候选上保持 **BLOCKED / exit 17 / pass=false / factsEqual=true / UNTRUSTED_LOCAL**；负例矩阵 22/22。旧 Compare 的历史 `NO_NON_FORGEABLE_COLLECTOR_ATTESTATION` 门禁没有被删除或放宽。
@@ -557,4 +557,22 @@ git diff --check            # exit 0
 
 交付只有 14 个集成文件 + 本报告；构建生成文件不混提交，最终 tracked 树 clean。所有生成 dirty 的字节、provenance、dirty patch 与 Player 包已封存在 ignored evidence，未被冒称 clean 构建。
 
-**本交付等待调用方独立复核；不 publish、不声称 G2/C03 完成。**
+**接收方交付时等待调用方独立复核，不自行 publish/批准；调用方复核记录见下。**
+
+## 15. 调用方独立复核与 C03 范围接受
+
+接收方 final `2beb3ef9b457e8ecb7704cea9f2e080c8e86f45f` 已在调用方独立树 `E:/majiang-review/caller-c03-r2-closeout-c17e48a2` 与已发布 PR20 `f6a920882d1111d968263494ded3d2f224eac9fc` 合并，受测 merge 为 `db9e5d536f618a9a6991e67498b73ce34d056f4d`。14 个 exporter blob 逐一等于原 accepted `6750b436`；新增运行时代码、工具和 Unity scripts 与冻结 `b33f0aad` 相同。保留已经接受的 C04-D02 测试及其它组件，没有整体合并旧 PR24。发布前再提交的调用方记录只修改本报告。
+
+调用方实际执行 `verify-r2.ps1` 和 `verify-plugin-inputs.ps1`，native 0：baseline/candidate 的全部 147 个 case/result 集合一致，15 条失败消息在路径归一化后逐条相同。baseline 149 输入、unified 150 输入均与各自固定 Git 源字节直接匹配，各 19 个 output 摘要及 7 个自有 DLL 嵌入的精确 commit 均相符。baseline 为 `bae6`，unified 为 `82a95f7b`（其运行时代码等于 `b33f0aad`）。因此关闭 C03-R1-01 的归因缺口，**保留 132/147 FAIL，未修复或排除这 15 项**。
+
+调用方从原生 direct XML 重算 receiver 统一门禁：14 测试工程、197 collections、2,820 个唯一 ID 全 Pass，0 failed/errors/skipped/not-run；metadata 的实际命令/DLL 路径/XML SHA、console 和逐例计数一致，21 行整体 PASS。独立核验 PG 16.10 原始日志、13 个 wrapper 阶段、149 项 table manifest、42/13 原生 XML、crash-reader 与 restore-reader 的 receipt/outbox/恢复代次、lobby cleanup/env-restore、成功集群移除。42/13 是额外执行及子集，不加入唯一 2,820 分母。C03-R1-02 已关闭；这是已记录的受控 PG 运行复核，不是调用方重新启动 PG，也不是自然整场 PG 终局证明。
+
+调用方在合并树 fresh Rebuild 树内 decoder，build native 0 / 0 warnings / 0 errors，并实际运行 LocalHost **134/134**（含 7 个 exporter）、TableService **204/204**（含已接受的 C04-D02 入口用例），均 native 0 / 0 failed/errors/skipped/not-run。C02 原脚本未传 `-VerifierPath`，使用本树默认 fresh decoder 完成工具夹具 **27/27**、native 0、0 failed/skipped；它不是 27 个 GAME 正例。receiver 的 2,820 适用于固定代码及其报告提交；调用方没有将合并树的 204 与旧全量相加，或声称发布头已完整跑过一组新的统一门禁/远端 CI。
+
+R1 已独立核验的 205 文件 Player 包和 8 个 GAME 案卷保持不变。调用方另实际执行 `verify-match.ps1`，以 fresh decoder 只读解码 12 份原始 `.save`：每份 136 个唯一实体，save SHA 与解码结果匹配，stateVersion/eventSeq 与逐局 RoundEnded 观察相同，各有唯一 terminal/commit；252 个原 request 与 Applied receipt/action confirmation 配对，最终一次 WestCompletion，原记录 Player/tool native 0。没有新跑 Player、Unity 或设备，也未将 8 个案卷内 `callerAcceptance` 字段改为自行接受。
+
+caller ignored `build/caller-review/` 主要结果 SHA256：`r2-evidence-results.json` `0FC73CA5BFE4E49B1141BE2663696FB91A3A561C4A72B7F4A39C0E565CFAB0C9`；`plugin-input-results.json` `BF9A8A73E4D75EACD59A61B05F9E911F345B4B61599C908BC8EA7F5E7EBFEFF0`；`integration-results.json` `E9EE9CBB238EE257C0A86D20E73E6C032F8000CE47BA84404FFE230BBC65B70E`；`match-results.json` `7981BFC7D68B6EF4C39DCE97D6EB0C511C8E9317F312F661C2647B6A53B36E91`；默认 decoder 27 项 summary `99229B9D70E6692C9F632A5E4C1B7BC5C7E3DEE21F828C1C035C5F9308B37674`。R1 caller 的 8 案卷独立结果仍为 `3F11D8928428CAB084EDE51808354149EA2F6F0B18DCBD474E0B42EE6909A916`。
+
+调用方首次 TableService 包装器因 PS5.1 将正常 stderr 解释为终止异常中断，退出码未知、日志保留且不计成功；最终使用独立 stdout/stderr 和实际 `Process.ExitCode`，204/204 native 0。新增存档核验器首次误把 driver 的 `Draw` 与 final facts 的 `ExhaustiveDraw` 当作同一字段，修正为分别断言两者后通过，初始失败保留。以上是调用方校验器问题，未改产品或原始证据。
+
+**C03 原任务范围独立接受并归档，纳入唯一现有 Draft PR20。** 该接受使固定代码 `b33f0aad` 及已绑定的历史 Player 包成为后续正式 C04/C05 可引用的已复核候选；不代表 UI 全绿、clean HEAD Player、当前发布头远端 CI、C04 恢复后原 request 对账、Android/设备/iOS 或 G2–G5 通过。C04-G7-02 仍 BLOCKED；旧 Compare 仍 BLOCKED17 / UNTRUSTED_LOCAL；build-time dirty 的全部限制保留。PR20 保持 OPEN/Draft，不合并、不部署。
