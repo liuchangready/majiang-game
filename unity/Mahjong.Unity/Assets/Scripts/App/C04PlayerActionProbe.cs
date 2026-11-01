@@ -647,6 +647,18 @@ namespace Mahjong.Unity.App
             return Convert.ToBase64String(Encoding.UTF8.GetBytes(JsonUtility.ToJson(raw, false)));
         }
 
+        private static string EncodeRawBinding(TableVisibleEventBatch batch, string tableId, string accountId)
+        {
+            var raw = new C04RawBinding
+            {
+                SessionId = batch.SessionId, RoomId = batch.RoomId, TableId = tableId,
+                AccountId = accountId, ScopeId = batch.ScopeId, Role = batch.Role.ToString(),
+                SeatId = batch.Seat, BindingEpoch = batch.BindingEpoch,
+                ConnectionEpoch = batch.ConnectionEpoch, OwnerEpoch = batch.OwnerEpoch
+            };
+            return Convert.ToBase64String(Encoding.UTF8.GetBytes(JsonUtility.ToJson(raw, false)));
+        }
+
         private static string EncodeRawAcceptedBatch(ObservedVisibleEventBatch batch, StreamCursor acceptedCursor)
         {
             var rawEvents = new List<C04RawAcceptedEvent>(batch.Events.Count);
