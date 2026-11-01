@@ -507,22 +507,41 @@ namespace C04RecoveryReconciliationVerifier
             bool backupValid = TryFacts(afterBackup, cheat) != null;
             bool primaryExists = File.Exists(afterPrimary);
             bool backupExists = File.Exists(afterBackup);
+            byte[] beforePrimaryBytes = File.ReadAllBytes(beforePrimary);
+            byte[] beforeBackupBytes = File.ReadAllBytes(beforeBackup);
             switch (fault)
             {
                 case "None":
                     Require(primaryExists && backupExists && primaryValid && backupValid,
                         "None fault does not have two valid post-fault saves");
-                    Require(Sha256File(afterPrimary) == Sha256File(beforePrimary),
-                        "None fault changed the primary bytes");
+                    Require(File.ReadAllBytes(afterPrimary).AsSpan().SequenceEqual(beforePrimaryBytes) &&
+                            File.ReadAllBytes(afterBackup).AsSpan().SequenceEqual(beforeBackupBytes),
+                        "None fault changed a save byte");
                     break;
                 case "TruncatePrimary":
+                    Require(primaryExists && !primaryValid && backupExists && backupValid,
+                        "TruncatePrimary boundary is not invalid primary + valid backup");
+                    Require(IsPrefix(beforePrimaryBytes, File.ReadAllBytes(afterPrimary), 2),
+                        "TruncatePrimary did not retain exactly the half-length prefix");
+                    Require(File.ReadAllBytes(afterBackup).AsSpan().SequenceEqual(beforeBackupBytes),
+                        "TruncatePrimary changed the backup bytes");
+                    break;
                 case "BadChecksumPrimary":
                     Require(primaryExists && !primaryValid && backupExists && backupValid,
-                        fault + " boundary is not invalid primary + valid backup");
+                        "BadChecksumPrimary boundary is not invalid primary + valid backup");
+                    byte[] checksumBytes = File.ReadAllBytes(afterPrimary);
+                    Require(checksumBytes.Length == beforePrimaryBytes.Length &&
+                            DiffersOnlyAt(beforePrimaryBytes, checksumBytes, 44) &&
+                            checksumBytes[44] == (byte)(beforePrimaryBytes[44] ^ 0x5A),
+                        "BadChecksumPrimary did not preserve length/header and XOR byte 44");
+                    Require(File.ReadAllBytes(afterBackup).AsSpan().SequenceEqual(beforeBackupBytes),
+                        "BadChecksumPrimary changed the backup bytes");
                     break;
                 case "MissingPrimaryWithBackup":
                     Require(!primaryExists && backupExists && backupValid,
                         "MissingPrimaryWithBackup boundary is not absent primary + valid backup");
+                    Require(File.ReadAllBytes(afterBackup).AsSpan().SequenceEqual(beforeBackupBytes),
+                        "MissingPrimaryWithBackup changed the backup bytes");
                     break;
                 case "BothMissing":
                     Require(!primaryExists && !backupExists,
@@ -531,10 +550,25 @@ namespace C04RecoveryReconciliationVerifier
                 case "BothBad":
                     Require(primaryExists && backupExists && !primaryValid && !backupValid,
                         "BothBad boundary is not two invalid saves");
+                    Require(IsPrefix(beforePrimaryBytes, File.ReadAllBytes(afterPrimary), 3),
+                        "BothBad primary is not the one-third prefix");
+                    byte[] badBackup = File.ReadAllBytes(afterBackup);
+                    Require(badBackup.Length == beforeBackupBytes.Length &&
+                            DiffersOnlyAt(beforeBackupBytes, badBackup, 44) &&
+                            badBackup[44] == (byte)(beforeBackupBytes[44] ^ 0xA5),
+                        "BothBad backup did not preserve length and XOR byte 44");
                     break;
                 case "IncompatiblePrimary":
                     Require(primaryExists && !primaryValid && backupExists && backupValid,
                         "IncompatiblePrimary boundary is not invalid primary + valid backup");
+                    byte[] incompatible = File.ReadAllBytes(afterPrimary);
+                    Require(incompatible.Length == beforePrimaryBytes.Length &&
+                            DiffersOnlyAt(beforePrimaryBytes, incompatible, 4, 5, 6, 7) &&
+                            incompatible[4] == 2 && incompatible[5] == 0 &&
+                            incompatible[6] == 0 && incompatible[7] == 0,
+                        "IncompatiblePrimary did not change only version bytes 4..7 to 2/0/0/0");
+                    Require(File.ReadAllBytes(afterBackup).AsSpan().SequenceEqual(beforeBackupBytes),
+                        "IncompatiblePrimary changed the backup bytes");
                     break;
                 default:
                     Require(false, "unknown fault boundary " + fault);
@@ -566,6 +600,36 @@ namespace C04RecoveryReconciliationVerifier
             }
 
             Check("faultBoundary");
+        }
+
+        private static bool IsPrefix(byte[] source, byte[] candidate, int divisor)
+        {
+            int expected = Math.Max(1, source.Length / divisor);
+            if (candidate.Length != expected)
+            {
+                return false;
+            }
+
+            return candidate.AsSpan().SequenceEqual(source.AsSpan(0, expected));
+        }
+
+        private static bool DiffersOnlyAt(byte[] source, byte[] candidate, params int[] indexes)
+        {
+            if (source.Length != candidate.Length)
+            {
+                return false;
+            }
+
+            var allowed = new HashSet<int>(indexes);
+            for (int i = 0; i < source.Length; i++)
+            {
+                if (source[i] != candidate[i] && !allowed.Contains(i))
+                {
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         private static LocalTableRecoveryFacts? TryFacts(string savePath, string cheatPath)

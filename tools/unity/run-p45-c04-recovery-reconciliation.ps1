@@ -40,6 +40,16 @@ param(
 
     [string]$ExpectedSummarySha256,
 
+    [string]$ExpectedEvidenceSha256,
+
+    [string]$ExpectedSourceHead,
+
+    [string]$ExpectedBuildRecordSha256,
+
+    [string]$ExpectedPackageManifestSha256,
+
+    [string]$ExpectedSourceSnapshotSha256,
+
     [string]$HelperPath,
 
     [string]$UnityPath = 'D:\Unity\Hub\Editor\6000.3.27f1\Editor\Unity.exe',
@@ -98,6 +108,28 @@ function Get-StringSha256 {
     finally {
         $sha.Dispose()
     }
+}
+
+function Get-GitBlobSha256 {
+    param([string]$RepoRoot, [string]$Object)
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = 'git'
+    $psi.Arguments = '-C "' + $RepoRoot + '" cat-file blob "' + $Object + '"'
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $process = [System.Diagnostics.Process]::Start($psi)
+    $memory = New-Object System.IO.MemoryStream
+    try { $process.StandardOutput.BaseStream.CopyTo($memory) } finally { }
+    $stderr = $process.StandardError.ReadToEnd()
+    $process.WaitForExit()
+    if ($process.ExitCode -ne 0) {
+        throw ('GIT_BLOB_READ_FAILED ' + $Object + ': ' + $stderr)
+    }
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($sha.ComputeHash($memory.ToArray()))).Replace('-', '').ToUpperInvariant() }
+    finally { $sha.Dispose(); $memory.Dispose(); $process.Dispose() }
 }
 
 function Write-JsonFile {
@@ -685,9 +717,31 @@ function Bind-ExistingPlayer {
     if ([string]$snapshot.sourceHead -ne [string]$marker.sourceHead) {
         throw 'EXISTING_PLAYER_SOURCE_SNAPSHOT_MISMATCH'
     }
-    $probeInSource = & git -C $script:RepoRoot cat-file -e ($marker.sourceHead + ':unity/Mahjong.Unity/Assets/Scripts/App/C04RecoveryReconciliationProbe.cs') 2>$null
+    if ([string]::IsNullOrWhiteSpace($ExpectedSourceHead) -or
+        [string]::IsNullOrWhiteSpace($ExpectedBuildRecordSha256) -or
+        [string]::IsNullOrWhiteSpace($ExpectedPackageManifestSha256) -or
+        [string]::IsNullOrWhiteSpace($ExpectedSourceSnapshotSha256)) {
+        throw 'EXISTING_PLAYER_EXTERNAL_PIN_REQUIRED'
+    }
+    if (-not [string]::Equals((Get-Sha256 $BuildRecordPath), $ExpectedBuildRecordSha256, [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals((Get-Sha256 $PackageManifestPath), $ExpectedPackageManifestSha256, [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals((Get-Sha256 $snapshotPath), $ExpectedSourceSnapshotSha256, [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([string]$marker.sourceHead, $ExpectedSourceHead, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'EXISTING_PLAYER_EXTERNAL_PIN_MISMATCH'
+    }
+    $treeText = (& git -C $script:RepoRoot ls-tree -r --full-tree $ExpectedSourceHead) -join "`n"
+    if (-not [string]::Equals((Get-StringSha256 $treeText), [string]$snapshot.treeSha256, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'EXISTING_PLAYER_SOURCE_TREE_MISMATCH'
+    }
+    foreach ($property in $snapshot.inputs.PSObject.Properties) {
+        $blobSha = Get-GitBlobSha256 -RepoRoot $script:RepoRoot -Object ($ExpectedSourceHead + ':' + $property.Name)
+        if (-not [string]::Equals($blobSha, [string]$property.Value, [StringComparison]::OrdinalIgnoreCase)) {
+            throw ('EXISTING_PLAYER_SOURCE_INPUT_MISMATCH ' + $property.Name)
+        }
+    }
+    $probeInSource = & git -C $script:RepoRoot cat-file -e ($ExpectedSourceHead + ':unity/Mahjong.Unity/Assets/Scripts/App/C04RecoveryReconciliationProbe.cs') 2>$null
     $probeExit = $LASTEXITCODE
-    $buildInSource = & git -C $script:RepoRoot cat-file -e ($marker.sourceHead + ':unity/Mahjong.Unity/Assets/Editor/C04RecoveryReconciliationBuild.cs') 2>$null
+    $buildInSource = & git -C $script:RepoRoot cat-file -e ($ExpectedSourceHead + ':unity/Mahjong.Unity/Assets/Editor/C04RecoveryReconciliationBuild.cs') 2>$null
     $buildExit = $LASTEXITCODE
     if ($probeExit -ne 0 -or $buildExit -ne 0) {
         throw ('EXISTING_PLAYER_SOURCE_LACKS_C04_INPUTS probe=' + $probeExit + ' build=' + $buildExit)
@@ -819,8 +873,9 @@ function Write-Summary {
     $fixedCases = @('C04-G6-01', 'C04-G6-02', 'C04-G6-03', 'C04-G6-04',
         'C04-G6-05', 'C04-G6-06', 'C04-G6-07', 'C04-G6-08')
     $actualCases = @($script:CaseResults | ForEach-Object { [string]$_.caseId } | Sort-Object -Unique)
-    $complete = ($actualCases.Count -eq 8 -and
-        (@($fixedCases | Where-Object { $actualCases -notcontains $_ }).Count -eq 0))
+    $complete = ($script:CaseResults.Count -eq 8 -and $actualCases.Count -eq 8 -and
+        (@($fixedCases | Where-Object { $actualCases -notcontains $_ }).Count -eq 0) -and
+        (@($actualCases | Where-Object { $fixedCases -notcontains $_ }).Count -eq 0))
     $allPass = (@($script:CaseResults | Where-Object { $_.status -ne 'PASS' }).Count -eq 0)
     $status = if ($complete -and $allPass) { 'PASS' } elseif (-not $complete) { 'PARTIAL' } else { 'FAIL' }
     $summary = [ordered]@{
@@ -828,6 +883,7 @@ function Write-Summary {
         kind = 'c04-recovery-run'
         caseSetComplete = $complete
         expectedCaseCount = 8
+        rowCount = $script:CaseResults.Count
         uniqueCaseCount = $actualCases.Count
         partial = (-not $complete)
         toolVersion = $script:ToolVersion
@@ -897,6 +953,10 @@ try {
             -not (Test-Path -LiteralPath $HelperPath -PathType Leaf)) {
             throw 'VERIFY_HELPER_REQUIRED'
         }
+        if ([string]::IsNullOrWhiteSpace($ExpectedSummarySha256) -or
+            [string]::IsNullOrWhiteSpace($ExpectedEvidenceSha256)) {
+            throw 'VERIFY_EXTERNAL_PIN_REQUIRED'
+        }
         $sourceRoot = [IO.Path]::GetFullPath($EvidenceRoot)
         $script:Root = [IO.Path]::GetFullPath($OutputDir)
         if (Test-Path -LiteralPath $script:Root) {
@@ -906,16 +966,50 @@ try {
         $summaryPath = Join-Path $sourceRoot 'summary.json'
         if (-not (Test-Path -LiteralPath $summaryPath)) { throw 'SUMMARY_NOT_FOUND' }
         $summarySha = Get-Sha256 $summaryPath
-        if (-not [string]::IsNullOrWhiteSpace($ExpectedSummarySha256) -and
-            -not [string]::Equals($summarySha, $ExpectedSummarySha256, [StringComparison]::OrdinalIgnoreCase)) {
+        if (-not [string]::Equals($summarySha, $ExpectedSummarySha256, [StringComparison]::OrdinalIgnoreCase)) {
             throw ('VERIFY_SUMMARY_PIN_MISMATCH expected=' + $ExpectedSummarySha256 + ' actual=' + $summarySha)
+        }
+        $evidencePath = Join-Path $sourceRoot 'evidence-sha256.csv'
+        if (-not (Test-Path -LiteralPath $evidencePath)) { throw 'EVIDENCE_CSV_MISSING' }
+        $evidenceSha = Get-Sha256 $evidencePath
+        if (-not [string]::Equals($evidenceSha, $ExpectedEvidenceSha256, [StringComparison]::OrdinalIgnoreCase)) {
+            throw ('VERIFY_EVIDENCE_PIN_MISMATCH expected=' + $ExpectedEvidenceSha256 + ' actual=' + $evidenceSha)
+        }
+        $evidenceRows = @(Import-Csv -LiteralPath $evidencePath -Header sha, bytes, path)
+        $declaredEvidence = @{}
+        foreach ($row in $evidenceRows) {
+            $relative = [string]$row.path
+            if ([string]::IsNullOrWhiteSpace($relative) -or $declaredEvidence.ContainsKey($relative)) {
+                throw ('VERIFY_EVIDENCE_DUPLICATE_OR_EMPTY ' + $relative)
+            }
+            $declaredEvidence[$relative] = $true
+            $file = Join-Path $sourceRoot $relative
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf) -or
+                (Get-Sha256 $file) -ne [string]$row.sha -or
+                (Get-Item -LiteralPath $file).Length -ne [long]$row.bytes) {
+                throw ('VERIFY_EVIDENCE_MISMATCH ' + $relative)
+            }
+        }
+        $actualEvidence = @(Get-ChildItem -LiteralPath $sourceRoot -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
+            $_.FullName.Substring($sourceRoot.Length).TrimStart('\', '/').Replace('\', '/')
+        } | Where-Object { $_ -ne 'evidence-sha256.csv' -and
+            -not $_.StartsWith('temp/', [StringComparison]::OrdinalIgnoreCase) -and
+            -not $_.StartsWith('staging-project/', [StringComparison]::OrdinalIgnoreCase) })
+        if ($actualEvidence.Count -ne $evidenceRows.Count) {
+            throw ('VERIFY_EVIDENCE_FILESET_COUNT expected=' + $evidenceRows.Count + ' actual=' + $actualEvidence.Count)
+        }
+        foreach ($relative in $actualEvidence) {
+            if (-not $declaredEvidence.ContainsKey($relative)) {
+                throw ('VERIFY_EVIDENCE_UNDECLARED ' + $relative)
+            }
         }
         Copy-Item -LiteralPath $summaryPath -Destination (Join-Path $script:Root 'source-summary.json') -Force
         $summary = [IO.File]::ReadAllText($summaryPath) | ConvertFrom-Json
         $summaryCases = @($summary.cases)
         $summaryIds = @($summaryCases | ForEach-Object { [string]$_.caseId } | Sort-Object -Unique)
         if ([string]$summary.status -ne 'PASS' -or -not [bool]$summary.caseSetComplete -or
-            [int]$summary.expectedCaseCount -ne 8 -or $summaryCases.Count -ne 8 -or $summaryIds.Count -ne 8) {
+            [int]$summary.expectedCaseCount -ne 8 -or [int]$summary.rowCount -ne 8 -or
+            $summaryCases.Count -ne 8 -or $summaryIds.Count -ne 8) {
             throw ('VERIFY_INCOMPLETE_CASE_SET status=' + $summary.status +
                 ' complete=' + $summary.caseSetComplete + ' cases=' + $summaryCases.Count + ' unique=' + $summaryIds.Count)
         }
@@ -929,12 +1023,38 @@ try {
         if (-not (Test-Path -LiteralPath $script:HelperPath)) {
             throw 'VERIFY_HELPER_MISSING'
         }
+        $fixedIds = @('C04-G6-01', 'C04-G6-02', 'C04-G6-03', 'C04-G6-04',
+            'C04-G6-05', 'C04-G6-06', 'C04-G6-07', 'C04-G6-08')
+        foreach ($requiredId in $fixedIds) {
+            if ($summaryIds -notcontains $requiredId) {
+                throw ('VERIFY_FIXED_CASE_MISSING ' + $requiredId)
+            }
+        }
+        if (@($summaryIds | Where-Object { $fixedIds -notcontains $_ }).Count -ne 0) {
+            throw 'VERIFY_UNKNOWN_CASE_ID'
+        }
         $verifyRows = New-Object System.Collections.Generic.List[object]
         foreach ($caseResult in @($summary.cases)) {
             $caseId = [string]$caseResult.caseId
             $caseDir = Join-Path $sourceRoot ('cases\' + $caseId)
             $resultPath = Join-Path $caseDir 'result.json'
             if (-not (Test-Path -LiteralPath $resultPath)) { throw ('RESULT_MISSING ' + $resultPath) }
+            $resultObject = [IO.File]::ReadAllText($resultPath) | ConvertFrom-Json
+            if ([string]$resultObject.caseId -ne $caseId -or
+                [string]$resultObject.fault -ne [string]$caseResult.fault -or
+                [string]$resultObject.expectedOutcome -ne [string]$caseResult.expectedOutcome -or
+                [string]$resultObject.actualOutcome -ne [string]$caseResult.expectedOutcome -or
+                [string]$caseResult.status -ne 'PASS') {
+                throw ('VERIFY_ACTUAL_CASE_MISMATCH ' + $caseId)
+            }
+            if (-not [string]::Equals((Get-Sha256 $resultPath), [string]$caseResult.resultSha256, [StringComparison]::OrdinalIgnoreCase)) {
+                throw ('VERIFY_RESULT_SHA_MISMATCH ' + $caseId)
+            }
+            $sourceVerification = Join-Path $caseDir 'verification.json'
+            if (-not (Test-Path -LiteralPath $sourceVerification) -or
+                -not [string]::Equals((Get-Sha256 $sourceVerification), [string]$caseResult.verificationSha256, [StringComparison]::OrdinalIgnoreCase)) {
+                throw ('VERIFY_VERIFICATION_SHA_MISMATCH ' + $caseId)
+            }
             $caseOut = Join-Path $script:Root ('cases\' + $caseId)
             New-Item -ItemType Directory -Force -Path $caseOut | Out-Null
             $verifyExit = Invoke-Native -FilePath 'powershell.exe' -Arguments @(

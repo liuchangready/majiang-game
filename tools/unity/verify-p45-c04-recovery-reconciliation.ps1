@@ -51,7 +51,15 @@ else {
             [string]$launch.expectedOutcome -ne [string]$resultForLaunch.expectedOutcome) {
             $errors.Add('launch case/mode/fault/outcome does not match the result') | Out-Null
         }
-        if ([bool]$launch.timedOut -or [int]$launch.nativeExitCode -ne 0) {
+        $nativeProperty = $launch.PSObject.Properties['nativeExitCode']
+        $timeoutProperty = $launch.PSObject.Properties['timedOut']
+        if ($null -eq $nativeProperty -or $null -eq $nativeProperty.Value -or
+            $nativeProperty.Value -isnot [ValueType] -or
+            $null -eq $timeoutProperty -or $null -eq $timeoutProperty.Value -or
+            $timeoutProperty.Value -isnot [bool]) {
+            $errors.Add('owned launch nativeExitCode/timedOut observation is missing, null, or wrong type') | Out-Null
+        }
+        elseif ([bool]$timeoutProperty.Value -or [int]$nativeProperty.Value -ne 0) {
             $errors.Add('owned launch did not exit successfully (native/timeout)') | Out-Null
         }
     }
