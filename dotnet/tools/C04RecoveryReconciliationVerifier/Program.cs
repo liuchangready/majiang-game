@@ -868,25 +868,45 @@ namespace C04RecoveryReconciliationVerifier
         private static int Int(JsonElement element, string name)
         {
             JsonElement value = Property(element, name);
-            return value.TryGetInt32(out int number) ? number : 0;
+            if (value.ValueKind != JsonValueKind.Number || !value.TryGetInt32(out int number))
+            {
+                throw new InvalidDataException(name + " must be a JSON integer in int32 range");
+            }
+
+            return number;
         }
 
         private static long Long(JsonElement element, string name)
         {
             JsonElement value = Property(element, name);
-            return value.TryGetInt64(out long number) ? number : 0;
+            if (value.ValueKind != JsonValueKind.Number || !value.TryGetInt64(out long number))
+            {
+                throw new InvalidDataException(name + " must be a JSON integer in int64 range");
+            }
+
+            return number;
         }
 
         private static ulong UInt(JsonElement element, string name)
         {
             JsonElement value = Property(element, name);
-            return value.TryGetUInt64(out ulong number) ? number : 0;
+            if (value.ValueKind != JsonValueKind.Number || !value.TryGetUInt64(out ulong number))
+            {
+                throw new InvalidDataException(name + " must be a JSON unsigned integer in uint64 range");
+            }
+
+            return number;
         }
 
         private static bool Bool(JsonElement element, string name)
         {
             JsonElement value = Property(element, name);
-            return value.ValueKind == JsonValueKind.True;
+            if (value.ValueKind != JsonValueKind.True && value.ValueKind != JsonValueKind.False)
+            {
+                throw new InvalidDataException(name + " must be a JSON boolean");
+            }
+
+            return value.GetBoolean();
         }
 
         private static string RequestIdOf(WireEnvelope envelope)

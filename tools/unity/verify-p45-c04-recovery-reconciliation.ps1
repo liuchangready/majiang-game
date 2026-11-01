@@ -53,13 +53,19 @@ else {
         }
         $nativeProperty = $launch.PSObject.Properties['nativeExitCode']
         $timeoutProperty = $launch.PSObject.Properties['timedOut']
-        if ($null -eq $nativeProperty -or $null -eq $nativeProperty.Value -or
-            $nativeProperty.Value -isnot [ValueType] -or
-            $null -eq $timeoutProperty -or $null -eq $timeoutProperty.Value -or
-            $timeoutProperty.Value -isnot [bool]) {
-            $errors.Add('owned launch nativeExitCode/timedOut observation is missing, null, or wrong type') | Out-Null
+        $nativeValue = if ($null -eq $nativeProperty) { $null } else { $nativeProperty.Value }
+        $timeoutValue = if ($null -eq $timeoutProperty) { $null } else { $timeoutProperty.Value }
+        $nativeInvalid = ($null -eq $nativeValue) -or
+            ($nativeValue -is [bool]) -or ($nativeValue -is [string]) -or
+            ($nativeValue -isnot [ValueType]) -or
+            ([double]$nativeValue -ne [math]::Truncate([double]$nativeValue)) -or
+            ([double]$nativeValue -lt [int]::MinValue) -or
+            ([double]$nativeValue -gt [int]::MaxValue)
+        if ($nativeInvalid -or $null -eq $timeoutValue -or
+            ($timeoutValue -isnot [bool])) {
+            $errors.Add('owned launch nativeExitCode/timedOut must be a strict JSON int32 and boolean') | Out-Null
         }
-        elseif ([bool]$timeoutProperty.Value -or [int]$nativeProperty.Value -ne 0) {
+        elseif ([bool]$timeoutValue -or [int]$nativeValue -ne 0) {
             $errors.Add('owned launch did not exit successfully (native/timeout)') | Out-Null
         }
     }
