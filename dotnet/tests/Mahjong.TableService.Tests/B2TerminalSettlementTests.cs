@@ -1111,6 +1111,7 @@ namespace Mahjong.TableService.Tests
             int settlementEventsBefore = CountSettlementEvents(before);
             string[] physicalTilesBefore = CapturePhysicalTilePositions(roundBefore);
             string[] ledgerBefore = CaptureLedger(before.PrivateView!.Cheat);
+            long cheatPointsBefore = before.PrivateView.Cheat.CheatPoints;
             ulong versionBefore = before.StateVersion;
             Contracts.Wire.DecisionView decision = before.PrivateView!.Decision;
 
@@ -1143,8 +1144,6 @@ namespace Mahjong.TableService.Tests
             RoundStateMachine roundAfterRefusal = room.Actor.GetRoundStateForHost();
             Assert.Equal(versionBefore, (ulong)roundAfterRefusal.Version);
             Assert.Equal(versionBefore, (ulong)room.CommitPort.CurrentVersion.Value);
-            Assert.Equal(settlementEventsBefore, CountSettlementEvents(before));
-            Assert.Equal(scoresBefore, before.PublicView.Board.Scores.Select(s => s.Score).ToArray());
             Assert.Equal(0, store.OutboxCount);
             Assert.Equal(physicalTilesBefore, CapturePhysicalTilePositions(roundAfterRefusal));
             TableSnapshot actorAfterRefusal = await room.Actor.GetSnapshotAsync(CancellationToken.None);
@@ -1152,13 +1151,20 @@ namespace Mahjong.TableService.Tests
             Assert.Equal(actorBefore.RecentEvents.Count, actorAfterRefusal.RecentEvents.Count);
             Assert.Equal(actorBefore.Scores, actorAfterRefusal.Scores);
 
-            await client.SendAsync(TableWire.SyncRequest(client.Welcome!, true, 0, 0));
+            Envelope syncRequest = TableWire.SyncRequest(client.Welcome!, true, 0, 0);
+            syncRequest.CorrelationId = "sync-b2-local-ingress-after-refusal";
+            await client.SendAsync(syncRequest);
             Envelope sync = await client.ReadUntilAsync(
-                e => e.PlayerUpdate?.Snapshot != null &&
-                     e.PlayerUpdate.Snapshot.RoundId == before.RoundId &&
-                     e.PlayerUpdate.Snapshot.StateVersion == versionBefore,
+                e => e.MessageType == MessageType.SyncResponse &&
+                     e.CorrelationId == syncRequest.CorrelationId,
                 TimeSpan.FromSeconds(10));
-            Assert.Equal(ledgerBefore, CaptureLedger(sync.PlayerUpdate!.Snapshot.PrivateView!.Cheat));
+            PlayerSnapshot afterRefusal = Assert.IsType<PlayerSnapshot>(sync.SyncResponse.Player);
+            Assert.Equal(before.RoundId, afterRefusal.RoundId);
+            Assert.Equal(versionBefore, afterRefusal.StateVersion);
+            Assert.Equal(settlementEventsBefore, CountSettlementEvents(afterRefusal));
+            Assert.Equal(scoresBefore, afterRefusal.PublicView.Board.Scores.Select(s => s.Score).ToArray());
+            Assert.Equal(ledgerBefore, CaptureLedger(afterRefusal.PrivateView.Cheat));
+            Assert.Equal(cheatPointsBefore, afterRefusal.PrivateView.Cheat.CheatPoints);
 
             // Same authenticated channel and current decision: a legal tsumo carries only
             // action identity. Production mapper/handler route it to SubmitSettlementAsync;

@@ -75,3 +75,15 @@
 - **BLOCKED：** census 的 C04-G7-02 / C04-D02 真实 LOCAL 来源和 LOCAL 资产拒绝语义；原因是当前 wire/schema 没有该可信类型或入口。
 - **NOT_RUN：** 正式 C04 33 行、最终 C03 候选绑定、Player/Unity/设备、真实 PostgreSQL 阶段、远端 B2 整场、G3/G4/G5。没有运行 Unity、Player、adb、Android/iOS/设备、C03 测试矩阵或 `Local\\MahjongV5P45UnityValidation`。
 - 不增加或重新解释 census 分母，不把此交付宣称为 G2/G3/G4/G5 或正式 C04 PASS。
+
+## 调用方独立复核与有限组件接受
+
+接收方提交 `cb79058a312308b7567d61b816fb8b0fff49bf43` 已在调用方隔离树 `E:/majiang-review/caller-c04-d02-closeout-4e7a19bc` 集成到现有 PR20 基线 `d1c8a2e36357da64df5ca779df7db91c88c68122`。调用方只加强本测试文件：拒绝后的事件/分数断言读取新同步响应，使用唯一 CorrelationId 等待真实 `SyncResponse`，并复核私有 `CheatPoints` 与 ledger，替代对原始 before 对象的重复比较。生产代码、协议和 census 均未修改。最终测试源 SHA256 `293997E671E1E118FC894215DE3F7BC0314DA073D62A02825C6A561A6F70D33F`。
+
+实际命令为 `D:/Unity/dotnet/dotnet.exe build dotnet/tests/Mahjong.TableService.Tests/Mahjong.TableService.Tests.csproj -c Release -t:Rebuild -nr:false`，随后对 fresh DLL 使用 xUnit direct runner 执行上述 `-method` 和完整套件。build native 0、0 warnings / 0 errors；定向 1/1、完整 204/204 均 native 0，failed/errors/skipped/not-run 全 0。独立逐节点检查确认完整运行包含 B2 类全部 24 项和新增入口用例；24 和 1 均已包含在 204 中，不额外累计覆盖分母。XML case ID 唯一、assembly/collection 汇总与逐例一致。
+
+原始证据在该树 ignored `build/caller-review/`：`targeted.xml` SHA256 `4FBE65EF2858D78886D4F9785BB593DD0C9208249D641A1FB57D877B5CF1174B`，`full.xml` SHA256 `E7EB42178A6EA81AE1889808F0FFEF983E1C39DBE0B217B1440086E13DC4E6CD`，独立核验结果 `independent-results.json` SHA256 `79A20248908DE9EE724C0FE3C4924147CE849953DBDD0D49704BCC3B890A6B1D`。构建、两个原生 runner 和核验器的实际退出码与 console 均保留。
+
+调用方确认新增负例经过真实连接与生产 mapper/handler；如果错误路由应用该动作或返回其他拒绝，ERROR 类型/Code/FieldPath/DetailCode 断言会失败。同认证连接的合法 Tsumo、服务端 calculation、一次 outbox 与相同 envelope 重放是实际正向对照。未知 LOCAL/score 标签仍不构成可信来源，不能据此声称 LOCAL 资产拒绝语义已实现。
+
+本次接受并归档的是原任务授权的有限 wire 回归与信任边界调查，统一纳入唯一现有 Draft PR20；不批准正式 C04-G7-02，`C04-D02-LOCAL-01` 继续 MAJOR / BLOCKED。C03 候选、正式 C04、真实 PG、Player/Unity/设备与 G2–G5 均不因本组件通过而获批。
