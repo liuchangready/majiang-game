@@ -37,10 +37,12 @@ workflow、PR、调度或账本；不运行 Unity/Player/Android/adb/设备，�
   dump 后 restore reader 返回 `eventCount=2`、`recoveryOwnerEpoch=3`、`recovered=true`。
   这是**一条 durable table 状态**的故障恢复证据，不是自然整场/结算终局。
 - **产品测试失败：本审计实际执行范围内 `FAIL = 0`。**
-  **但整体结论为 `REVIEW_INCOMPLETE`**：D-02（两 run 实际 SDK/runtime 不一致）、D-03
-  （table/PG helper 的 command/native/空库前置/ownership 原件不完整）、D-08（历史
-  `39970580589` 仍缺 framework 原日志）是 MAJOR；D-01/D-04/D-05/D-06/D-07/D-09 是 MINOR。
-  不能仅凭 GitHub 绿色或本报告把该头写成“完整证据通过”。
+  **但源 CI 证据整体为 `REVIEW_INCOMPLETE`**：D-03（table/PG helper 的 command/native/
+  空库前置/ownership 原件不完整）、D-08（历史 `39970580589` 仍缺 framework 原日志）是
+  MAJOR；D-01/D-04/D-05/D-06/D-07 是 MINOR。D-02（两 run 实际 SDK/runtime 不同，但
+  `global.json:latestPatch` 明确允许）和 D-09（checkout 字节 / Git blob 的跨表示比较）
+  是 **INFO 环境/可移植性限制，不是已证实的配置违例**。不能仅凭 GitHub 绿色或本报告把该头
+  写成“完整证据通过”；本次报告返修本身不改变这些源 CI 证据状态。
 - **NOT_RUN：** dotnetTest 模式、19 例 direct 门禁自检、dotnetTest 门禁自检、`git pins`
   历史冻结 blob、Unity/Player/Android/adb/设备、自然整场终局。历史
   `39970580589` 仍为 **BLOCKED/UNRESOLVED**。
@@ -226,9 +228,14 @@ DLL 不是测试用例，不能计入 2830/42/13。
 - 每 run 检查 15 份日志（11 个按工程 build、`sln-build.log`、`plugin-copy.log`、table
   `build-tests.log`、`build-worker.log`）：**15/15 `Build succeeded`，0 Warning(s)，
   0 Error(s)**。
-- PR 实际 SDK 8.0.426；push 实际 SDK **8.0.427**。这不是本报告的排版差异，而是
+- PR 实际 SDK 8.0.426；push 实际 SDK **8.0.427**。这是
   `sdk-diagnostic.log`、`summary.log`、table `wrapper-summary.json` 和 XML
-  `assembly@environment` 共同显示的事实。见 D-02。
+  `assembly@environment` 共同显示的事实，说明两 run **不是字节级同环境复现**。
+  但目标 `global.json` 明确为 `version=8.0.426` + `rollForward=latestPatch`，
+  该策略允许同 major/minor/feature band 内不低于指定版本的已安装 patch；workflow 的
+  `setup-dotnet` 安装请求不是 resolver/runtime 的 exact pin。没有引用到另一份已接受的
+  “两 run SDK/runtime 必须字面相等”契约，所以这是 **INFO 环境可复现性限制**，
+  不是已证实的配置违例。更严格的 pin 是未来可选策略，不是本轮必修。见 D-02。
 - `plugin-copy.log`：`native exit code: 0`、`copied 19 files`、`inputs: 150 files`、
   `outputs: 19 files`、`Unity plugins ready`。PR 构建时间 10:42:05–10:42:33，push
   10:42:20–10:42:49（UTC，按 provenance）。
@@ -242,8 +249,12 @@ DLL 不是测试用例，不能计入 2830/42/13。
 - provenance `build.inputCount` = **150**，`inputs` 数组也是 150；`outputs` 19，
   `packages` 5，`requiredOwnAssemblies` 7；不是旧报告的 149；
 - 150/150 输入路径均可在目标 tree 解析；长度 150/150 匹配；150/150 的 expected SHA
-  与 Git blob raw **不匹配**，把 blob 的 LF 归一为 CRLF 后 **150/150 匹配**，unexplained
-  0；`build-shared.ps1` 和 `shared-plugin-provenance-lib.ps1` 也是 CRLF 后匹配；
+  与 Git object 的 LF blob **不匹配**，把 blob 的 LF 表示为 CRLF 后 **150/150 匹配**，
+  unexplained 0；`build-shared.ps1` 和 `shared-plugin-provenance-lib.ps1` 也是 CRLF 后
+  匹配。这是 **Git object LF 与 Windows checkout CRLF 的跨表示比较**；provenance 的
+  实际生成函数 `Get-SharedPluginFileSha256` 直接对文件系统输入调用
+  `Get-FileHash -LiteralPath`，没有做行尾归一。0/150 与 150/150 不表示源码漂移，也不
+  证明生成器违反 `raw-bytes-no-normalisation`。见 D-09（INFO）。
 - 19/19 output 的长度+SHA256 匹配；无缺、无多；5/5 package 输出哈希匹配；7/7 required
   own assemblies 存在；7/7 自有 DLL 有对应 PDB；
 - 7/7 自有 DLL 的 `ProductVersion` 内嵌各自 run 的 head：PR 为
@@ -358,10 +369,10 @@ restart 在 `10:23:12.167Z` ready，reader 读到 `terminal=true`。这不是“
 | 跨 run multiset 一致、test id 独立 | **PASS** | §4.2；id 交集 0 |
 | table 42/42 与 targeted 13/13（子集执行） | **PASS（结果）** | §4.3；不加入 2830 |
 | 构建 15/15 0 warning/0 error | **PASS** | §5.1 |
-| 19 输出/12 DLL/7 PDB/150 inputs/7 own DLL | **PASS（实际范围）** | §5.2；CRLF 口径见 D-09 |
+| 19 输出/12 DLL/7 PDB/150 inputs/7 own DLL | **PASS（实际范围）** | §5.2；行尾表示边界见 D-09（INFO） |
 | PG 16.10、55592/55593、loopback、启动/重启 | **PASS** | §6 |
 | crash/restart/reader 与 restore durable 状态 | **PASS（单条状态）** | §6.2/6.3 |
-| 两 run 精确 SDK/runtime 一致 | **FAIL** | D-02；PR 8.0.426/8.0.32，push 8.0.427/8.0.33 |
+| 两 run SDK/runtime 字面一致 | **INFO（环境限制，非契约）** | D-02；PR 8.0.426/8.0.32，push 8.0.427/8.0.33；`latestPatch` 允许 |
 | table XML gate 结构深度 | **FAIL（门禁）** | D-01；assembly-only/duplicate-id 均 green |
 | table/PG helper 原生命令、native exit、空库前置、ownership | **BLOCKED** | D-03；空日志/无 marker/无 pre-count |
 | native-exit timeout 合并日志 | **BLOCKED（MINOR）** | D-04；timeout.log 缺失 |
@@ -374,14 +385,17 @@ restart 在 `10:23:12.167Z` ready，reader 读到 `terminal=true`。这不是“
 | 自然整场终局/结算终局 | **NOT_RUN** | 只有单条 durable table 状态 |
 | 当前 PR 新头（若移动） | **NOT_RUN** | 本报告只审冻结 ad6fa1c |
 
-**总体：`REVIEW_INCOMPLETE`。** 产品测试实际执行为 0 FAIL；但 D-02/D-03/D-08 的 MAJOR
-证据问题未关闭，不能把两次 GitHub 绿色写成“该头完整证据通过”。
+**总体：`REVIEW_INCOMPLETE`（源 CI 证据）。** 产品测试实际执行为 0 FAIL；D-03/D-08 的
+MAJOR 证据问题未关闭，D-01/D-04/D-05/D-06/D-07 仍有 MINOR 限制，不能把两次 GitHub 绿色
+写成“该头完整证据通过”。**D-02/D-09 是 INFO 环境/表示限制，不再作为 FAIL 或必修违例；
+本次报告范围（AUD-AD6-R1-01）已按此纠正，不等于把源 CI 整体改判 PASS。**
 
-## 9. 已知缺陷完整清单
+## 9. 已知缺陷与限制完整清单
 
-本轮在 `ad6fa1c` 原件上重新复现/核对，不把 BAE6 报告的结论复制为新头结论。缺陷总数
-**13**：BLOCKER **0**；MAJOR **3**（D-02、D-03、D-08，其中 D-08 为历史 BLOCKED）；
-MINOR **6**（D-01、D-04、D-05、D-06、D-07、D-09）；INFO **4**（D-10–D-13）。
+本轮在 `ad6fa1c` 原件上重新复现/核对，不把 BAE6 报告的结论复制为新头结论。清单共
+**13 项（含 INFO 观察）**：BLOCKER **0**；MAJOR **2**（D-03、D-08，其中 D-08 为历史
+BLOCKED）；MINOR **5**（D-01、D-04、D-05、D-06、D-07）；INFO **6**（D-02、D-09、
+D-10–D-13，其中 D-02/D-09 是环境/表示限制，不是已证实的配置违例）。
 
 ### D-01（MINOR，门禁深度）table XML gate 只看 assembly 汇总
 
@@ -405,11 +419,12 @@ MINOR **6**（D-01、D-04、D-05、D-06、D-07、D-09）；INFO **4**（D-10–D
 - **验收断言：** 两个恶意 fixture 实际 false；实际 42/13 true；CI 日志出现新增负例且
   全部按预期拒绝。
 
-### D-02（MAJOR，工具链绑定）PR/push 实际 SDK 与 runtime 不一致
+### D-02（INFO，环境可复现性）PR/push 实际 SDK 与 runtime 不同，但 `latestPatch` 允许
 
 - **位置：** `.github/workflows/v5-verify.yml:45-47`（`setup-dotnet` 声明 8.0.426）；
   `global.json:3-4`（`8.0.426` + `rollForward: latestPatch`）；两 run 的 runner image。
 - **复现：**
+  `git show ad6fa1c:global.json`；
   `Get-Content build/8ad5aaf679e247e4abbd31635233250d/evidence/extracted/pr/verify-v5/unified/sdk-diagnostic.log`；
   对 push 同路径读取；再读两 run `summary.log` 与 XML `assembly@environment`。
 - **实际：** PR `dotnet --version = 8.0.426`、XML `64-bit (x64) .NET 8.0.32`；
@@ -418,19 +433,27 @@ MINOR **6**（D-01、D-04、D-05、D-06、D-07、D-09）；INFO **4**（D-10–D
   `latestPatch` 在 push runner image（`win25-vs2026/20261030.294`，预装 8.0.427）上
   选择了 8.0.427；PR image 是 `20261021.278`，选择 8.0.426。push 的
   `table/wrapper-summary.json` 和 `fresh-build` 也写 8.0.427。
-- **期望：** 两次 run 使用完全相同的 SDK/runtime；若不能，必须在报告中把该 run 标为
-  `BLOCKED`/不一致，而不是写成同一工具链的两次复现。
+- **契约核对（关键）：** `global.json` 明确是 `version=8.0.426` +
+  `rollForward=latestPatch`；按 Microsoft 的
+  [rollForward 定义](https://learn.microsoft.com/en-us/dotnet/core/tools/global-json#rollforward)，
+  `latestPatch` 允许使用同一 major/minor/feature band 内不低于指定版本的已安装 patch，
+  8.0.427 是该策略允许的选择。`setup-dotnet` 的安装请求不等于 SDK resolver 或 runtime
+  的 exact pin；`global.json` 本身不把运行时固定为 8.0.32。当前没有引用到另一份已接受的
+  “两 run SDK/runtime 必须字面相等”契约，因此这是**实测环境差异/可复现性限制**，
+  不是已证实的配置违例。
+- **期望：** 报告保留两 run 实际版本不同、不是字节级同环境复现这一事实，并标为 INFO；
+  更严格的 SDK/runtime pin 是未来可选强化策略，不是本轮必修；若确有既存 exact 契约，
+  必须给出该契约的精确文档/代码与违反证据后再改判。
 - **证据：** PR `sdk-diagnostic.log` SHA256
   `08D603D6F5F6CB87D2EE901C7E6B09B2C16C23566CECAB724E539BC543323A29`；push
   `9501F34B6D47D529002ECFB9B38334761BB25C5C00427872A9DFADA911226A2F`；summary SHA
   `5CD8C30C34D1E7845A95B9752A2EC7216A60A8CFADD7E04A55B71A75A03E944B` /
   `C54EB788B0354EB9D02C01E25BFEC5E8618978B204D8847EB4FA0ED34BA14346`。
-- **修复要求：** 把 `global.json` 改为 `rollForward: disable`（或移除可漂移的
-  latestPatch），在 workflow 中显式断言 `dotnet --version` 与 runtime；
-  对 net8.0 测试设置 `DOTNET_ROLL_FORWARD=Disable` 并安装精确 8.0.32 runtime；或固定
-  runner image。不要用“setup-dotnet 成功”代替实际版本校验。
-- **验收断言：** 两次新 run 的 `dotnet --version` 和 `assembly@environment` 完全一致；
-  若不一致，报告必须显示实际差异并判 NOT_RUN/BLOCKED，不能判 PASS。
+- **修复要求：** 仅修正报告口径，不要求改 `workflow`/`global.json`/runtime/重跑 CI；
+  如未来选择更强 pin，可另行作为政策变更评估，不能写成当前已违反的验收条件。
+- **验收断言：** 报告保留 `8.0.426/8.0.32` 与 `8.0.427/8.0.33` 的实际值并标 INFO；
+  不再以“workflow 安装了 8.0.426”推导 exact 约束，也不把允许的 patch 选择判为 FAIL；
+  若未来引用 exact 契约，必须同时给出契约来源与违反证据。
 
 ### D-03（MAJOR，原生证据）table/PG helper 的 command、native exit、空库前置和 ownership 原件不完整
 
@@ -556,26 +579,36 @@ MINOR **6**（D-01、D-04、D-05、D-06、D-07、D-09）；INFO **4**（D-10–D
   宣布修复。
 - **验收断言：** 历史项在报告中始终为 BLOCKED，直到有缺失日志或明确根因复现。
 
-### D-09（MINOR，provenance 口径）150 个 input 的哈希是 CRLF checkout 字节
+### D-09（INFO，表示/可移植性）provenance 哈希是 checkout 文件字节，不是 Git blob 的 canonical LF
 
 - **位置：** `shared-plugin-provenance.json` 的 `inputs` 与
-  `inputBoundary.lineEndings = raw-bytes-no-normalisation`。
+  `inputBoundary.lineEndings = raw-bytes-no-normalisation`；实际生成函数
+  `Get-SharedPluginFileSha256`（`tools/unity/shared-plugin-provenance-lib.ps1:150-153`）。
 - **复现：**
-  `powershell.exe -NoProfile -ExecutionPolicy Bypass -File build/8ad5aaf679e247e4abbd31635233250d/audit-scripts/audit-provenance.ps1`
-- **实际：** 150 个 input 与 Git blob raw 的匹配数为 **0**；把 blob 的 LF 归一为 CRLF 后
-  150/150 匹配；长度 150/150；unexplained 0。工具脚本 `build-shared.ps1`/
-  `shared-plugin-provenance-lib.ps1` 也是 CRLF 后匹配。源码内容没有漂移，但独立复核者
-  必须知道哈希基于 CI checkout 行尾。
-- **期望：** provenance 明确记录 checkout 行尾策略，或对 canonical LF 字节取哈希；不应
-  让 raw-bytes 字样与实际 hash 口径冲突。
+  `git show ad6fa1c:tools/unity/shared-plugin-provenance-lib.ps1`；
+  `powershell.exe -NoProfile -ExecutionPolicy Bypass -File build/8ad5aaf679e247e4abbd31635233250d/audit-scripts/audit-provenance.ps1`；
+  再用二进制 `git cat-file` 读目标 blob，分别复算 Git object LF 和 CI checkout CRLF。
+- **实际：** 150 个 input 与 Git object LF blob 的 raw 匹配数为 **0**；把 blob 表示为
+  CRLF 后 150/150 匹配；长度 150/150；unexplained 0。`Get-SharedPluginFileSha256` 直接
+  调用 `Get-FileHash -LiteralPath` 对实际文件系统输入取哈希，函数内没有行尾归一。
+  因此 0/150 与 150/150 是 **Git object LF 与 Windows checkout CRLF 的跨表示比较**：
+  Git checkout 的转换、审计为比较不同表示而做的 CRLF 转换，都不证明 provenance 生成器
+  在生成时归一过字节，也不证明它承诺对 Git blob 取哈希。
+- **契约核对（关键）：** `raw-bytes-no-normalisation` 描述的是实际 checkout/input 文件
+  的原字节哈希，不是 Git object 的 canonical LF 字节；它与“对实际文件 `Get-FileHash`”
+  的实现一致，不构成已证实的语义冲突。
+- **期望：** 报告保留 0/150 + 150/150 的精确数字，并说明 CI checkout/Windows 行尾边界和
+  跨表示比较方法，作为 INFO/可移植性说明；不要求 canonical LF、不要求修改 schema，
+  也不把该表示差异写成 MINOR 或 FAIL。
 - **证据：** `audit-output/provenance-audit.json` SHA256
   `302BFDE2229D46B0296E44CA0B2357E5A056CC10B9925C9CAE2386A07CF21877`；
   PR provenance SHA `8DBDD92C5D10BC6521622E37BD6962E0C6BC1962DE43728994DA78A40BE785AD`，
   push `4C4C6829E449A9F934C837D9D02BD639E07D1192282EB53FC61F3F07163EECBE`。
-- **修复要求：** 文档/字段明确“CI checkout bytes, CRLF on Windows”，或生成 LF canonical
-  hash；不要改源码内容来迎合 hash。
-- **验收断言：** 独立复核同时报告 raw 0/150 + CRLF 150/150；或新 manifest 对 LF 也可
-  150/150 复算；不能把 raw 差异误判为源码漂移。
+- **修复要求：** 仅修正报告口径；可选的未来文档强化是明确“CI checkout bytes, CRLF on
+  Windows”的说明，不是必修项；不要改源码/封存 manifest，也不要要求生成器改成 LF hash。
+- **验收断言：** 报告同时保留 raw 0/150 与 CRLF 150/150、unexplained 0，并标 INFO；
+  不以该跨表示差异判 MINOR/FAIL，不要求 canonical LF 或 schema 变更；若未来证明生成器
+  实际做了归一或明确承诺 hash Git blob，再另行评估。
 
 ### D-10（INFO，命名）1 对 exact-case 重复 display name，test id 仍唯一
 
@@ -659,6 +692,14 @@ MINOR **6**（D-01、D-04、D-05、D-06、D-07、D-09）；INFO **4**（D-10–D
 | test native exit 非 0 但 XML 全 Pass | 拒绝 | 代码检查 exit，但 `tests.log` 无 exit 行 |
 | download SHA 不匹配 | FAIL | `download.log` 为空，无下载/SHA 原件 |
 
+**环境/表示观察（D-02/D-09，不构成负例违例）**
+
+| 观察 | 保留事实 | 结论 |
+|---|---|---|
+| SDK/runtime 差异 | PR 8.0.426/8.0.32；push 8.0.427/8.0.33 | `latestPatch` 允许；INFO 环境可复现性限制，不是 FAIL |
+| provenance 输入表示 | Git LF raw 0/150；checkout CRLF 150/150；unexplained 0 | 生成器 hash 实际文件字节；INFO 跨表示说明，不是 MINOR |
+| 未来更强 pin/LF hash | 未作为当前契约引用 | 可选政策/文档强化，不是本轮必修 |
+
 **覆盖/模式（D-05/D-06/D-07）**
 
 | 模式 | 本 run 实际 | 需要 |
@@ -670,6 +711,23 @@ MINOR **6**（D-01、D-04、D-05、D-06、D-07、D-09）；INFO **4**（D-10–D
 | dotnetTest 门禁自检 | NOT_RUN（CI 无调用） | 若声明则必须执行 |
 | git pins 历史 blob | NOT_RUN（summary 自报） | 若声明则必须 fetch/比对 |
 | Unity/Player/Android/设备 | NOT_RUN | 明确不在范围 |
+
+### 9.2 AUD-AD6-R1-01 返修映射
+
+| 复核子项 | 原报告 | 本轮修正 |
+|---|---|---|
+| A. SDK/runtime 差异 | D-02 标 MAJOR/FAIL，并把 `rollForward: disable`、固定 runtime、新 run 写成必修 | D-02 改为 **INFO 环境可复现性限制**；保留 8.0.426/8.0.32 与 8.0.427/8.0.33；说明 `global.json:latestPatch` 明确允许 8.0.427；更严格 pin 改为未来可选政策，不是本轮必修 |
+| B. provenance 行尾 | D-09 标 MINOR，要求 canonical LF 或 schema 修改 | D-09 改为 **INFO 表示/可移植性说明**；保留 raw 0/150 + CRLF 150/150 + unexplained 0；引用 `Get-SharedPluginFileSha256` 直接对实际文件 `Get-FileHash`，说明跨表示比较不证明生成器归一；不要求 canonical LF/schema |
+| 汇总/状态/矩阵 | MAJOR 3、MINOR 6、INFO 4；两 run SDK 行 FAIL | 改为 MAJOR 2（D-03/D-08）、MINOR 5（D-01/D-04/D-05/D-06/D-07）、INFO 6（D-02/D-09/D-10–D-13）；SDK 行改为 INFO；§9.1 增加观察/表示说明，二者不再作为负例违例 |
+
+**报告范围复核缺陷计数：** 0 BLOCKER / 1 MAJOR 组（`AUD-AD6-R1-01`）/ 0 MINOR 组。
+§9 的 D-01–D-13 是源 CI 审计发现，不是报告返修缺陷计数。
+
+本轮只改了唯一授权报告；没有修改 verifier/workflow/global.json/产品，没有补跑原 CI，
+也没有把源 CI 整体改判 PASS。D-03/D-08 等有原件支持的源 CI 缺口、timeout、
+dotnetTest/selfcheck/gitpin NOT_RUN 与历史 `39970580589` BLOCKED 均保持不变。
+本轮没有新增源 CI 缺陷；D-02/D-09 的实测事实和原件均保留，只纠正“观察→既有契约违例”
+的推论及严重度。
 
 ## 10. 实际命令、退出与首失败
 
@@ -730,8 +788,9 @@ MINOR **6**（D-01、D-04、D-05、D-06、D-07、D-09）；INFO **4**（D-10–D
 
 - 本任务唯一允许新增的 tracked 文件：
   `doc/v5-重构/V5-PR20-AD6FA1C-CI-EVIDENCE-AUDIT-20261101.md`。
-- 审计代码基线保持 accepted `8fd7c6c`；报告提交是本地的单一 docs commit，提交后工作树
-  clean、`git diff --check` 0；报告 commit SHA 见交付回复，**该 SHA 不是受测生产代码**。
+- 审计代码基线保持 accepted `8fd7c6c`；上一轮报告提交 `d53a7607` 与本轮返修提交都只含
+  本报告这一个 tracked 文件。提交后工作树 clean、`git diff --check` 0；本轮报告 commit
+  SHA 见交付回复，**该 SHA 不是受测生产代码**。
 - accepted base、frozen target、source merge、report commit 四者分开：accepted
   `8fd7c6c`、target `ad6fa1c`、PR merge `e6ade`、report commit 由本地 `HEAD` 给出。
 - 本报告不是 G2 验收、不是 C04/C05 批准、不是 PR20 合并审查、不是历史
