@@ -435,7 +435,7 @@ function Test-C04CaseSummary {
     if ([UInt64]$Summary.eventCommandVersion -ne [UInt64]$Summary.receiptCommandVersion -or [UInt64]$Summary.eventCommandVersion -le [UInt64]$Summary.stateVersionBefore) { throw 'C04 event command version does not match the post-baseline Applied command.' }
     if ([UInt64]$Summary.stateVersionAfter -le [UInt64]$Summary.stateVersionBefore -or [UInt64]$Summary.stateVersionAfter -ne [UInt64]$Summary.receiptCommandVersion) { throw 'C04 authoritative state version does not equal the Applied command version above baseline.' }
     if ([UInt64]$Summary.eventSeqAfter -lt [UInt64]$Summary.eventSeq -or [UInt64]$Summary.eventSeq -le [UInt64]$Summary.eventSeqBefore -or [UInt64]$Summary.receiptEventSeq -ne [UInt64]$Summary.eventSeqAfter) { throw 'C04 event cursor/high-water is invalid or differs from the receipt.' }
-    if ([UInt64]$Summary.bindingEpoch -eq 0 -or [UInt64]$Summary.ownerEpoch -eq 0 -or [UInt64]$Summary.controlEpoch -eq 0 -or [UInt64]$Summary.eventBindingEpoch -ne [UInt64]$Summary.bindingEpoch -or [UInt64]$Summary.eventConnectionEpoch -ne [UInt64]$Summary.connectionEpoch -or [UInt64]$Summary.eventOwnerEpoch -ne [UInt64]$Summary.ownerEpoch) { throw 'C04 epoch identity is incomplete or differs from the accepted batch.' }
+    if ([UInt64]$Summary.bindingEpoch -eq 0 -or [UInt64]$Summary.ownerEpoch -eq 0 -or [UInt64]$Summary.eventBindingEpoch -ne [UInt64]$Summary.bindingEpoch -or [UInt64]$Summary.eventConnectionEpoch -ne [UInt64]$Summary.connectionEpoch -or [UInt64]$Summary.eventOwnerEpoch -ne [UInt64]$Summary.ownerEpoch) { throw 'C04 epoch identity is incomplete or differs from the accepted batch.' }
     if ($Summary.eventScopeId -cne $Summary.scopeId -or $Summary.eventSessionId -cne $Summary.sessionId -or $Summary.eventRoomId -cne $Summary.roomId -or $Summary.eventTableId -cne $Summary.tableId -or $Summary.eventRole -cne 'Player') { throw 'C04 event batch identity does not match the request context.' }
     $cursorAdvanced = ([UInt64]$Summary.cursorStreamAfter -gt [UInt64]$Summary.cursorStreamBefore) -or (([UInt64]$Summary.cursorStreamAfter -eq [UInt64]$Summary.cursorStreamBefore) -and ([UInt64]$Summary.cursorAfter -gt [UInt64]$Summary.cursorBefore))
     if (-not $cursorAdvanced) { throw 'C04 structured stream cursor did not advance.' }
@@ -654,7 +654,7 @@ Start-Sleep -Seconds 25
     function Encode-CanonicalString([string]$Value) { $textBytes=[Text.Encoding]::UTF8.GetBytes($Value); $buffer=New-Object IO.MemoryStream; $stringWriter=New-Object IO.BinaryWriter($buffer); $stringWriter.Write([UInt32]$textBytes.Length); $stringWriter.Write($textBytes); $stringWriter.Flush(); return ,$buffer.ToArray() }
     Write-Field $writer 1 5 (Encode-CanonicalString 'fixture-round')
     Write-Field $writer 2 5 (Encode-CanonicalString 'fixture-decision')
-    Write-Field $writer 3 3 ([BitConverter]::GetBytes([UInt64]3))
+    Write-Field $writer 3 3 ([BitConverter]::GetBytes([UInt64]0))
     Write-Field $writer 4 2 ([BitConverter]::GetBytes([UInt32]6))
     $tileBytes = New-Object IO.MemoryStream; $tileWriter = New-Object IO.BinaryWriter($tileBytes)
     $tileWriter.Write([UInt32]3); $tileWriter.Write([UInt32]0); $tileWriter.Write([UInt32]1); $tileWriter.Write([UInt32]2); $tileWriter.Flush()
@@ -669,10 +669,10 @@ Start-Sleep -Seconds 25
         eventRoundId='fixture-round'; requestId='fixture-request'; scopeId='fixture-scope'; receiptRequestId='fixture-request'; receiptScopeId='fixture-scope'; payloadSha256=$fixtureHash
         canonicalPayloadBase64=[Convert]::ToBase64String($fixtureBytes); receiptStatus='Applied'
         eventCommandVersion=12; receiptCommandVersion=12; receiptEventSeq=21; stateVersionBefore=11; stateVersionAfter=12; eventSeqBefore=20; eventSeqAfter=21; eventSeq=21
-        bindingEpoch=1; eventBindingEpoch=1; connectionEpoch=1; eventConnectionEpoch=1; ownerEpoch=2; eventOwnerEpoch=2; controlEpoch=3; eventType='PonDeclared'
+        bindingEpoch=1; eventBindingEpoch=1; connectionEpoch=1; eventConnectionEpoch=1; ownerEpoch=2; eventOwnerEpoch=2; controlEpoch=0; eventType='PonDeclared'
         decisionId='fixture-decision'; tableId='fixture-table'; eventScopeId='fixture-scope'; eventSessionId='fixture-session'; eventRoomId='fixture-room'; eventTableId='fixture-table'; eventRole='Player'
         cursorBefore=10; cursorAfter=11; cursorStreamBefore=1; cursorStreamAfter=1
-        payloadActionType=6; payloadRoundId='fixture-round'; payloadDecisionId='fixture-decision'; payloadControlEpoch=3; candidateOptionId=''; payloadOptionId=''; payloadMeldType=0; payloadTileIds='0,1,2'
+        payloadActionType=6; payloadRoundId='fixture-round'; payloadDecisionId='fixture-decision'; payloadControlEpoch=0; candidateOptionId=''; payloadOptionId=''; payloadMeldType=0; payloadTileIds='0,1,2'
         eventTiles='0,1,2'; meldTileIds='0,1,2'; handTileIdsAfter='20,24'; seatScoreBefore=25000; seatScoreAfter=25000; riichiSticksBefore=0; riichiSticksAfter=0; replacementDrawTileId=''
     }
     Test-C04CaseSummary $valid 'C04-G2-01' | Out-Null
@@ -680,7 +680,7 @@ Start-Sleep -Seconds 25
     $validEvidence = [pscustomobject]@{
         caseId='C04-G2-01'; requestId='fixture-request'; scopeId='fixture-scope'; payloadBase64=$valid.canonicalPayloadBase64; payloadSha256=$fixtureHash
         baselineRoomId='fixture-room'; baselineSessionId='fixture-session'; baselineTableId='fixture-table'; baselineRoundId='fixture-round'; baselineSeat=0
-        baselineBindingEpoch=1; baselineConnectionEpoch=1; baselineOwnerEpoch=2; baselineControlEpoch=3; baselineDecisionId='fixture-decision'; baselineStateVersion=11; baselineEventSeq=20
+        baselineBindingEpoch=1; baselineConnectionEpoch=1; baselineOwnerEpoch=2; baselineControlEpoch=0; baselineDecisionId='fixture-decision'; baselineStateVersion=11; baselineEventSeq=20
         baselineCursorStream=1; baselineCursor=10; baselinePlayerSnapshotBase64=$validProtobufBase64; baselineAuthoritySaveBase64=$fixtureAuthorityBase64; baselineAuthorityCheatStateBase64=$fixtureAuthorityBase64; baselinePhysicalTileCount=136; baselinePhysicalUniqueCount=136; baselineDeadWallCount=14; baselinePhysicalTilesSha256=('a'*64)
         receiptDisposition='Applied'; receiptStatus='Applied'; receiptRequestId='fixture-request'; receiptScopeId='fixture-scope'; receiptDigest=$fixtureHash; receiptCommandVersion=12; receiptEventSeq=21
         eventType='PonDeclared'; eventRoundId='fixture-round'; eventScopeId='fixture-scope'; eventSessionId='fixture-session'; eventRoomId='fixture-room'; eventTableId='fixture-table'; eventSeat=0; eventBindingEpoch=1; eventConnectionEpoch=1; eventOwnerEpoch=2; eventRole='Player'; eventBatchKind='Incremental'; eventFullBaseline=$false; eventCommandVersion=12; eventSeq=21; eventTileIds='0,1,2'; acceptanceSequence=2
