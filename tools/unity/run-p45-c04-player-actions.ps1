@@ -309,7 +309,23 @@ function Get-UnityInputClosure([string]$projectRoot,[string]$output) {
     throw 'Unity input closure did not stabilize after three bounded scans.'
 }
 
-function Assert-C04PostBuildInputClosure([string]$beforePath,[string]$afterPath,[string]$changesPath) {
+function Test-C04UnityProjectSettingsNormalization([string]$canonicalPath,[string]$actualPath) {
+    if (-not (Test-Path -LiteralPath $canonicalPath -PathType Leaf) -or -not (Test-Path -LiteralPath $actualPath -PathType Leaf)) { return $false }
+    $canonicalBytes = [IO.File]::ReadAllBytes($canonicalPath)
+    $actualBytes = [IO.File]::ReadAllBytes($actualPath)
+    $utf8 = New-Object Text.UTF8Encoding($false,$true)
+    try { $canonicalText = $utf8.GetString($canonicalBytes); $actualText = $utf8.GetString($actualBytes) } catch { return $false }
+    $canonicalLines = $canonicalText.Split("`n"); $actualLines = $actualText.Split("`n")
+    if ($canonicalLines.Length -ne $actualLines.Length) { return $false }
+    for ($i = 0; $i -lt $canonicalLines.Length; $i++) {
+        if ($canonicalLines[$i] -ceq $actualLines[$i]) { continue }
+        $line = $canonicalLines[$i].TrimEnd("`r")
+        if ($line -notmatch '^[ \t]*[^#\s][^:]*:$' -or $actualLines[$i] -cne ($line + ' ')) { return $false }
+    }
+    return $true
+}
+
+function Assert-C04PostBuildInputClosure([string]$beforePath,[string]$afterPath,[string]$changesPath,[string]$canonicalProjectSettingsPath) {
     $beforeManifest = Get-Content -LiteralPath $beforePath -Raw -Encoding UTF8 | ConvertFrom-Json
     $afterManifest = Get-Content -LiteralPath $afterPath -Raw -Encoding UTF8 | ConvertFrom-Json
     $beforeByPath = @{}; foreach ($entry in $beforeManifest.entries) { $beforeByPath[[string]$entry.path] = $entry }
@@ -319,11 +335,20 @@ function Assert-C04PostBuildInputClosure([string]$beforePath,[string]$afterPath,
         $old = $beforeByPath[$path]; $new = $afterByPath[$path]
         if ($null -eq $old -or $null -eq $new -or $old.sha256 -cne $new.sha256) {
             $classification = if ($path -like 'Library/ScriptAssemblies/*') { 'UnityGenerated' } else { 'BuildInputChanged' }
+            if ($path -ceq 'ProjectSettings/ProjectSettings.asset' -and $null -ne $old -and $null -ne $new -and
+                (Get-Sha256 $canonicalProjectSettingsPath) -ceq $old.sha256 -and
+                (Get-Sha256 (Join-Path $beforeManifest.projectRoot $path)) -ceq $old.sha256 -and
+                (Get-Sha256 (Join-Path $afterManifest.projectRoot $path)) -ceq $new.sha256 -and
+                (Test-C04UnityProjectSettingsNormalization $canonicalProjectSettingsPath (Join-Path $afterManifest.projectRoot $path))) {
+                $classification = 'UnityGeneratedProjectSettingsNormalization'
+            }
             $changes.Add([ordered]@{ path=$path; classification=$classification; beforeSha256=if($old){$old.sha256}else{$null}; afterSha256=if($new){$new.sha256}else{$null}; afterBytes=if($new){$new.bytes}else{$null} }) | Out-Null
         }
     }
     [IO.File]::WriteAllText($changesPath,(($changes | ConvertTo-Json -Depth 6)+"`n"),(New-Object Text.UTF8Encoding($false)))
-    $unexpected = @($changes | Where-Object { $_.classification -ne 'UnityGenerated' })
+    $unexpected = @($changes | Where-Object { $_.classification -notin @('UnityGenerated','UnityGeneratedProjectSettingsNormalization') })
+    $settingsNormalizations = @($changes | Where-Object { $_.classification -eq 'UnityGeneratedProjectSettingsNormalization' })
+    if ($settingsNormalizations.Count -gt 1) { throw 'Unity build produced duplicate ProjectSettings normalization records.' }
     if ($unexpected.Count -gt 0) { throw 'Unity build changed Assets, Packages, ProjectSettings, or resolved package cache inputs outside the declared Unity-generated ScriptAssemblies closure.' }
     return ,$changes.ToArray()
 }
@@ -577,6 +602,33 @@ Start-Sleep -Seconds 25
         $rejected = $false; try { Assert-C04PostBuildInputClosure $closureBeforePath $closureAfterPath $closureChangesPath | Out-Null } catch { $rejected = $true }
         if (-not $rejected) { throw "Postbuild input closure gate accepted a source input mutation: $path" }
     }
+    $settingsFixture = Join-Path $RunRoot 'project-settings-normalization-fixture'
+    $canonicalSettings = Join-Path $settingsFixture 'canonical/ProjectSettings.asset'
+    $beforeProject = Join-Path $settingsFixture 'before-project'; $afterProject = Join-Path $settingsFixture 'after-project'
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $canonicalSettings),(Join-Path $beforeProject 'ProjectSettings'),(Join-Path $afterProject 'ProjectSettings'),(Join-Path $afterProject 'Assets') | Out-Null
+    $canonicalSettingsText = "PlayerSettings:`n  aotOptions:`n  companyName: FixedFixture`n"
+    $normalizedSettingsText = "PlayerSettings:`n  aotOptions: `n  companyName: FixedFixture`n"
+    [IO.File]::WriteAllText($canonicalSettings,$canonicalSettingsText,(New-Object Text.UTF8Encoding($false)))
+    [IO.File]::WriteAllText((Join-Path $beforeProject 'ProjectSettings/ProjectSettings.asset'),$canonicalSettingsText,(New-Object Text.UTF8Encoding($false)))
+    [IO.File]::WriteAllText((Join-Path $afterProject 'ProjectSettings/ProjectSettings.asset'),$normalizedSettingsText,(New-Object Text.UTF8Encoding($false)))
+    $settingsBeforeHash = Get-Sha256 (Join-Path $beforeProject 'ProjectSettings/ProjectSettings.asset'); $settingsAfterHash = Get-Sha256 (Join-Path $afterProject 'ProjectSettings/ProjectSettings.asset')
+    $settingsBefore = [ordered]@{ projectRoot=$beforeProject; entries=@([ordered]@{path='ProjectSettings/ProjectSettings.asset';bytes=(Get-Item -LiteralPath (Join-Path $beforeProject 'ProjectSettings/ProjectSettings.asset')).Length;sha256=$settingsBeforeHash}) }
+    $settingsAfter = [ordered]@{ projectRoot=$afterProject; entries=@([ordered]@{path='ProjectSettings/ProjectSettings.asset';bytes=(Get-Item -LiteralPath (Join-Path $afterProject 'ProjectSettings/ProjectSettings.asset')).Length;sha256=$settingsAfterHash}) }
+    [IO.File]::WriteAllText($closureBeforePath,(($settingsBefore|ConvertTo-Json -Depth 5)+"`n"),(New-Object Text.UTF8Encoding($false)))
+    [IO.File]::WriteAllText($closureAfterPath,(($settingsAfter|ConvertTo-Json -Depth 5)+"`n"),(New-Object Text.UTF8Encoding($false)))
+    $settingsChange = Assert-C04PostBuildInputClosure $closureBeforePath $closureAfterPath $closureChangesPath $canonicalSettings
+    if ($settingsChange.Count -ne 1 -or $settingsChange[0].classification -cne 'UnityGeneratedProjectSettingsNormalization' -or $settingsChange[0].beforeSha256 -cne $settingsBeforeHash -or $settingsChange[0].afterSha256 -cne $settingsAfterHash) { throw 'Unity ProjectSettings normalization was not explicitly bound to the exact before/after hashes.' }
+    [IO.File]::WriteAllText((Join-Path $afterProject 'ProjectSettings/ProjectSettings.asset'),"PlayerSettings:`n  aotOptions: `n  companyName: Tampered`n",(New-Object Text.UTF8Encoding($false)))
+    $settingsAfter.entries[0].bytes = (Get-Item -LiteralPath (Join-Path $afterProject 'ProjectSettings/ProjectSettings.asset')).Length; $settingsAfter.entries[0].sha256 = Get-Sha256 (Join-Path $afterProject 'ProjectSettings/ProjectSettings.asset')
+    [IO.File]::WriteAllText($closureAfterPath,(($settingsAfter|ConvertTo-Json -Depth 5)+"`n"),(New-Object Text.UTF8Encoding($false)))
+    $rejectedSettingsTamper = $false; try { Assert-C04PostBuildInputClosure $closureBeforePath $closureAfterPath $closureChangesPath $canonicalSettings | Out-Null } catch { $rejectedSettingsTamper = $true }
+    if (-not $rejectedSettingsTamper) { throw 'Postbuild closure accepted a ProjectSettings semantic mutation disguised as Unity normalization.' }
+    [IO.File]::WriteAllText((Join-Path $afterProject 'ProjectSettings/ProjectSettings.asset'),$normalizedSettingsText,(New-Object Text.UTF8Encoding($false)))
+    [IO.File]::WriteAllText((Join-Path $afterProject 'Assets/foreign.asset'),'foreign-change',(New-Object Text.UTF8Encoding($false)))
+    $settingsAfter.entries += [ordered]@{path='Assets/foreign.asset';bytes=(Get-Item -LiteralPath (Join-Path $afterProject 'Assets/foreign.asset')).Length;sha256=(Get-Sha256 (Join-Path $afterProject 'Assets/foreign.asset'))}
+    [IO.File]::WriteAllText($closureAfterPath,(($settingsAfter|ConvertTo-Json -Depth 5)+"`n"),(New-Object Text.UTF8Encoding($false)))
+    $rejectedCombinedChange = $false; try { Assert-C04PostBuildInputClosure $closureBeforePath $closureAfterPath $closureChangesPath $canonicalSettings | Out-Null } catch { $rejectedCombinedChange = $true }
+    if (-not $rejectedCombinedChange) { throw 'Postbuild closure accepted an undeclared Assets mutation alongside an allowed ProjectSettings normalization.' }
     $packageFixtureProject = Join-Path $RunRoot 'package-closure-fixture'
     foreach ($directory in @('Assets','Packages','ProjectSettings','UserSettings','Library/PackageCache/Resolved','Library/PackageCache/MacPlugin.bundle/Contents','Library/ScriptAssemblies')) {
         New-Item -ItemType Directory -Force -Path (Join-Path $packageFixtureProject $directory) | Out-Null
@@ -750,7 +802,7 @@ Start-Sleep -Seconds 25
     if ($verifierFixture.exitCode -ne 0 -or (Get-Content -LiteralPath $verifierFixture.stdout -Raw) -notmatch 'C04_PROTOBUF_FIXTURE_PASS valid=1 invalid=2') { throw 'Generated-code verifier did not accept a legal serialized snapshot and reject both malformed byte fixtures.' }
     $fixtureFiles = Get-ChildItem -LiteralPath $RunRoot -Recurse -File | Sort-Object FullName | ForEach-Object { [ordered]@{ path=$_.FullName.Substring($RunRoot.Length).TrimStart('\','/'); sha256=(Get-Sha256 $_.FullName); bytes=$_.Length } }
     [IO.File]::WriteAllText((Join-Path $RunRoot 'fixture-seal.json'), (($fixtureFiles | ConvertTo-Json -Depth 5) + "`n"), (New-Object Text.UTF8Encoding($false)))
-    Write-Host "C04_TOOL_FIXTURES_PASS positive=1 negative=$($negatives.Count + $evidenceNegatives.Count + $markerNegatives.Count + 12) protobuf=PASS malformed=2 timeoutTree=PASS outputDrain=PASS outputFiles=$((Get-ChildItem -LiteralPath $RunRoot -Recurse -File).Count)"
+    Write-Host "C04_TOOL_FIXTURES_PASS positive=1 negative=$($negatives.Count + $evidenceNegatives.Count + $markerNegatives.Count + 14) protobuf=PASS malformed=2 timeoutTree=PASS outputDrain=PASS outputFiles=$((Get-ChildItem -LiteralPath $RunRoot -Recurse -File).Count)"
     exit 0
 }
 
@@ -897,7 +949,8 @@ EditorUserSettings:
     $markerValue = Test-C04BuildMarker $buildMarker $exe $frozenEnabledScenes
     $postBuildInputsSha = Get-UnityInputClosure $project (Join-Path $RunRoot 'unity-postbuild-input-closure.json')
     $inputChanges = Assert-C04PostBuildInputClosure (Join-Path $RunRoot 'unity-prebuild-input-closure.json') `
-        (Join-Path $RunRoot 'unity-postbuild-input-closure.json') (Join-Path $RunRoot 'unity-postbuild-input-changes.json')
+        (Join-Path $RunRoot 'unity-postbuild-input-closure.json') (Join-Path $RunRoot 'unity-postbuild-input-changes.json') `
+        (Join-Path $sourceRepo 'unity/Mahjong.Unity/ProjectSettings/ProjectSettings.asset')
     $postBuildClosureSha = Get-ClosureManifest (Join-Path $project 'Assets') (Join-Path $RunRoot 'source-postbuild-assets-closure.json')
     $scriptAssembliesSha = Get-ClosureManifest (Join-Path $project 'Library/ScriptAssemblies') (Join-Path $RunRoot 'unity-script-assemblies-closure.json')
 
@@ -940,7 +993,7 @@ EditorUserSettings:
         $caseResults.Add([ordered]@{ caseId=$case.id; status='PASS'; layer='WINDOWS_PLAYER'; nativeExitCode=$player.exitCode; summary=$summaryPath; summarySha256=(Get-Sha256 $summaryPath); actionEvidence=$actionEvidencePath; actionEvidenceSha256=(Get-Sha256 $actionEvidencePath); executionEvidence=$executionPath; executionEvidenceSha256=(Get-Sha256 $executionPath); playerLog=$nativeLog; playerLogSha256=(Get-Sha256 $nativeLog); payloadSha256=$summary.payloadSha256 }) | Out-Null
     }
 
-    $final = [ordered]@{ schemaVersion=1; task='G2-C04-D03'; status='PASS'; acceptedBase='8fd7c6cb701dfbb41c28938de4186749bdd1d6c7'; frozenCandidate=$gitHead; sourceTreeStatus=$gitStatus; sourceDiffCheck='PASS'; sourceClosureManifest='source-prebuild-closure.json'; sourceClosureManifestSha256=$sourceClosureSha; stagedRepositoryRoot=$sourceRepo; unityProjectRoot=$project; unityShortPathStaging='unity-short-path-staging.json'; unityShortPathStagingSha256=$shortPathProjectSha; generatedUnityInputs='unity-generated-inputs.json'; generatedUnityInputsSha256=(Get-Sha256 (Join-Path $RunRoot 'unity-generated-inputs.json')); unityResolvedPackageInputClosure='unity-resolved-package-input-closure.json'; unityResolvedPackageInputClosureSha256=$resolvedPackageInputsSha; unityPrebuildInputClosureSha256=$preBuildInputsSha; unityPostbuildInputClosureSha256=$postBuildInputsSha; unityPostbuildInputChanges='unity-postbuild-input-changes.json'; unityPostbuildInputChangesSha256=(Get-Sha256 (Join-Path $RunRoot 'unity-postbuild-input-changes.json')); upmDownloadCacheClosure='upm-cache-closure.json'; upmDownloadCacheClosureSha256=$upmCacheClosureSha; postBuildAssetsClosure='source-postbuild-assets-closure.json'; postBuildAssetsClosureSha256=$postBuildClosureSha; sharedPluginClosureSha256=$pluginClosureSha; sharedPluginProvenance=(Join-Path $project 'Library/SharedPluginProvenance/provenance.json'); sharedPluginProvenanceSha256=$provenanceSha; scriptAssembliesClosureSha256=$scriptAssembliesSha; localHostTests=$localHostTestEvidence; commands=$script:stageRecords; playMode=[ordered]@{ testCount=$testNodes.Count; passed=$testNodes.Count; failed=0; skipped=0; exactNames=$actualNames; xml=$playXml; xmlSha256=(Get-Sha256 $playXml) }; buildMarker=$buildMarker; buildMarkerSha256=(Get-Sha256 $buildMarker); playerPackageManifest='player-package.json'; cases=$caseResults; platforms=[ordered]@{ windowsPlayer='actual four fixed cases'; android='NOT_RUN (C05 owner)'; ios='NOT_RUN'; remoteTransport='NOT_IN_SCOPE' } }
+    $final = [ordered]@{ schemaVersion=1; task='G2-C04-D03'; status='PASS'; acceptedBase='8fd7c6cb701dfbb41c28938de4186749bdd1d6c7'; frozenCandidate=$gitHead; sourceTreeStatus=$gitStatus; sourceDiffCheck='PASS'; sourceClosureManifest='source-prebuild-closure.json'; sourceClosureManifestSha256=$sourceClosureSha; stagedRepositoryRoot=$sourceRepo; unityProjectRoot=$project; unityShortPathStaging='unity-short-path-staging.json'; unityShortPathStagingSha256=$shortPathProjectSha; generatedUnityInputs='unity-generated-inputs.json'; generatedUnityInputsSha256=(Get-Sha256 (Join-Path $RunRoot 'unity-generated-inputs.json')); unityResolvedPackageInputClosure='unity-resolved-package-input-closure.json'; unityResolvedPackageInputClosureSha256=$resolvedPackageInputsSha; unityPrebuildInputClosureSha256=$preBuildInputsSha; unityPostbuildInputClosureSha256=$postBuildInputsSha; unityPostbuildInputChanges='unity-postbuild-input-changes.json'; unityPostbuildInputChangesSha256=(Get-Sha256 (Join-Path $RunRoot 'unity-postbuild-input-changes.json')); unityGeneratedDirtyInputs=$inputChanges; upmDownloadCacheClosure='upm-cache-closure.json'; upmDownloadCacheClosureSha256=$upmCacheClosureSha; postBuildAssetsClosure='source-postbuild-assets-closure.json'; postBuildAssetsClosureSha256=$postBuildClosureSha; sharedPluginClosureSha256=$pluginClosureSha; sharedPluginProvenance=(Join-Path $project 'Library/SharedPluginProvenance/provenance.json'); sharedPluginProvenanceSha256=$provenanceSha; scriptAssembliesClosureSha256=$scriptAssembliesSha; localHostTests=$localHostTestEvidence; commands=$script:stageRecords; playMode=[ordered]@{ testCount=$testNodes.Count; passed=$testNodes.Count; failed=0; skipped=0; exactNames=$actualNames; xml=$playXml; xmlSha256=(Get-Sha256 $playXml) }; buildMarker=$buildMarker; buildMarkerSha256=(Get-Sha256 $buildMarker); playerPackageManifest='player-package.json'; cases=$caseResults; platforms=[ordered]@{ windowsPlayer='actual four fixed cases'; android='NOT_RUN (C05 owner)'; ios='NOT_RUN'; remoteTransport='NOT_IN_SCOPE' } }
     $summaryOut = Join-Path $RunRoot 'summary.json'
     [IO.File]::WriteAllText($summaryOut, (($final | ConvertTo-Json -Depth 12) + "`n"), (New-Object Text.UTF8Encoding($false)))
     Write-RunLog 'FINAL_SUMMARY_WRITTEN'
