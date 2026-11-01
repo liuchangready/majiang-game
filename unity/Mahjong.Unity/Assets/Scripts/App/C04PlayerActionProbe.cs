@@ -197,10 +197,29 @@ namespace Mahjong.Unity.App
                 yield break;
             }
             byte[] coordinatorBaselineBytes = coordinator.Current.PlayerSnapshot!.ToByteArray();
+            long baselineAcceptanceSequence = coordinator.Current.AcceptanceSequence;
+            var acceptedPublications = new Dictionary<long, SessionViewState>();
+            object acceptedPublicationGate = new object();
+            EventHandler<SessionViewState> acceptedPublicationHandler = (_, state) =>
+            {
+                if (state.AcceptanceSequence <= baselineAcceptanceSequence) return;
+                lock (acceptedPublicationGate)
+                {
+                    acceptedPublications[state.AcceptanceSequence] = state;
+                    if (acceptedPublications.Count > 16)
+                    {
+                        long oldest = long.MaxValue;
+                        foreach (long sequence in acceptedPublications.Keys) if (sequence < oldest) oldest = sequence;
+                        if (oldest != long.MaxValue) acceptedPublications.Remove(oldest);
+                    }
+                }
+            };
+            coordinator.Changed += acceptedPublicationHandler;
             Task<CommandSubmission> submit;
             try { submit = coordinator.SubmitAsync(intent.Command, CancellationToken.None); }
             catch (Exception exception)
             {
+                coordinator.Changed -= acceptedPublicationHandler;
                 coordinator.ReceiptResolved -= receiptHandler;
                 Fail("SUBMIT_THROW", exception.GetType().Name + ": " + exception.Message);
                 yield break;
@@ -210,6 +229,7 @@ namespace Mahjong.Unity.App
             while (!submit.IsCompleted && Time.realtimeSinceStartup < actionDeadline) yield return null;
             if (!submit.IsCompleted || submit.IsFaulted || submit.IsCanceled || !submit.Result.Sent)
             {
+                coordinator.Changed -= acceptedPublicationHandler;
                 coordinator.ReceiptResolved -= receiptHandler;
                 Fail("SUBMIT_NOT_SENT", submit.IsCompleted ? "The production sink did not hand the request to the channel." : "The original submit timed out.");
                 yield break;
@@ -222,6 +242,7 @@ namespace Mahjong.Unity.App
                 if (observer.HasAppliedReceipt && confirmation != null) break;
                 yield return null;
             }
+            coordinator.Changed -= acceptedPublicationHandler;
             coordinator.ReceiptResolved -= receiptHandler;
             if (observer.HasAppliedReceipt && confirmation == null)
             {
@@ -234,8 +255,32 @@ namespace Mahjong.Unity.App
                 yield break;
             }
 
-            SessionViewState finalState = coordinator.Current;
             ObservedVisibleEventBatch confirmedBatch = confirmation.Batch;
+            SessionViewState? finalState = null;
+            lock (acceptedPublicationGate)
+            {
+                if (acceptedPublications.TryGetValue(confirmedBatch.AcceptanceSequence, out SessionViewState? acceptedState))
+                    finalState = acceptedState;
+            }
+            if (finalState == null || finalState.AcceptanceSequence != confirmedBatch.AcceptanceSequence ||
+                finalState.VisibleEventBatch.Kind != TableVisibleEventBatchKind.Incremental ||
+                finalState.VisibleEventBatch.StateVersion != confirmedBatch.StateVersion ||
+                finalState.VisibleEventBatch.EventSeq != confirmedBatch.EventSeq ||
+                finalState.VisibleEventBatch.SessionId != confirmedBatch.SessionId ||
+                finalState.VisibleEventBatch.RoomId != confirmedBatch.RoomId ||
+                finalState.VisibleEventBatch.TableId != confirmedBatch.TableId ||
+                finalState.VisibleEventBatch.ScopeId != confirmedBatch.ScopeId ||
+                finalState.VisibleEventBatch.RoundId != confirmedBatch.RoundId ||
+                finalState.VisibleEventBatch.Role != confirmedBatch.Role ||
+                finalState.VisibleEventBatch.Seat != confirmedBatch.Seat ||
+                finalState.VisibleEventBatch.BindingEpoch != confirmedBatch.BindingEpoch ||
+                finalState.VisibleEventBatch.ConnectionEpoch != confirmedBatch.ConnectionEpoch ||
+                finalState.VisibleEventBatch.IsFullBaseline != confirmedBatch.FullBaseline ||
+                finalState.VisibleEventBatch.OwnerEpoch != confirmedBatch.OwnerEpoch)
+            {
+                Fail("ACTION_PUBLICATION_STATE_MISSING", "The confirmed action batch has no captured SessionViewState from the same acceptance sequence.");
+                yield break;
+            }
             StreamCursor? confirmedCursor = finalState.Cursor;
             if (!observer.HasAppliedReceipt || confirmedBatch.Kind != TableVisibleEventBatchKind.Incremental ||
                 confirmedBatch.StateVersion <= baselineVersion ||

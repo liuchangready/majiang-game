@@ -741,6 +741,7 @@ Start-Sleep -Seconds 25
         @{ name='WrongPhysicalCount'; update=@{ afterPhysicalTileCount=135 } },
         @{ name='WrongSamePublication'; update=@{ afterStateVersion=13 } },
         @{ name='WrongRawActionEffect'; update=@{ handTileIds='2,20,24' } }
+        ,@{ name='WrongSamePublicationAcceptanceSequence'; update=@{ afterAcceptanceSequence=3 } }
     )
     foreach ($negative in $evidenceNegatives) {
         $candidateEvidence = $validEvidence | Select-Object *
