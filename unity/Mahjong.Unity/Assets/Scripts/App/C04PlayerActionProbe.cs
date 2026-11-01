@@ -149,7 +149,15 @@ namespace Mahjong.Unity.App
 
             using var observer = new ConfirmedVisibleEventObserver(coordinator);
             TableReceiptResolvedEventArgs? actualReceipt = null;
-            EventHandler<TableReceiptResolvedEventArgs> receiptHandler = (_, args) => { actualReceipt = args; observer.RecordReceipt(args); };
+            EventHandler<TableReceiptResolvedEventArgs> receiptHandler = (_, args) =>
+            {
+                observer.RecordReceipt(args);
+                if (string.Equals(args.Command.RequestId, requestId, StringComparison.Ordinal) &&
+                    string.Equals(args.Command.ScopeId, view.Identity.ScopeId, StringComparison.Ordinal))
+                {
+                    actualReceipt = args;
+                }
+            };
             coordinator.ReceiptResolved += receiptHandler;
             observer.BeginAction(coordinator.Current, requestId, view.Identity.ScopeId, candidate.Action);
             string payloadHash = Sha256(intent.Command.Payload.CopyBytes());
@@ -320,16 +328,6 @@ namespace Mahjong.Unity.App
             }
             _outcome = "PASS";
             _exitCode = 0;
-            if (actualReceipt == null || actualReceipt.Resolution.Disposition != OutboxDisposition.Applied ||
-                actualReceipt.Command.RequestId != requestId || actualReceipt.Command.ScopeId != view.Identity.ScopeId ||
-                actualReceipt.Resolution.CommandVersion?.Value != confirmation.CommandVersion ||
-                actualReceipt.Resolution.EventSeq?.Value != confirmation.ReceiptEventSeq ||
-                actualReceipt.Resolution.CanonicalPayloadSha256 != payloadHash)
-            {
-                Fail("RAW_RECEIPT_MISMATCH", "The captured typed receipt does not bind the exact request, scope, payload and observed command publication.");
-                yield break;
-            }
-
             _summary = new C04PlayerActionSummary
             {
                 Result = _outcome,
@@ -417,12 +415,13 @@ namespace Mahjong.Unity.App
                 BaselinePhysicalUniqueCount = baselineAuthority.Physical.UniqueCount,
                 BaselineDeadWallCount = baselineAuthority.Physical.DeadWallCount,
                 BaselinePhysicalTilesSha256 = baselineAuthority.Physical.TilesSha256,
-                ReceiptDisposition = actualReceipt.Resolution.Disposition.ToString(),
-                ReceiptStatus = actualReceipt.Resolution.ReceiptStatus.ToString(),
-                ReceiptRequestId = actualReceipt.Command.RequestId, ReceiptScopeId = actualReceipt.Command.ScopeId,
-                ReceiptDigest = actualReceipt.Resolution.CanonicalPayloadSha256,
-                ReceiptCommandVersion = actualReceipt.Resolution.CommandVersion?.Value ?? 0UL,
-                ReceiptEventSeq = actualReceipt.Resolution.EventSeq?.Value ?? 0UL,
+                ReceiptDisposition = actualReceipt?.Resolution.Disposition.ToString() ?? string.Empty,
+                ReceiptStatus = actualReceipt?.Resolution.ReceiptStatus.ToString() ?? string.Empty,
+                ReceiptRequestId = actualReceipt?.Command.RequestId ?? string.Empty,
+                ReceiptScopeId = actualReceipt?.Command.ScopeId ?? string.Empty,
+                ReceiptDigest = actualReceipt?.Resolution.CanonicalPayloadSha256 ?? string.Empty,
+                ReceiptCommandVersion = actualReceipt?.Resolution.CommandVersion?.Value ?? 0UL,
+                ReceiptEventSeq = actualReceipt?.Resolution.EventSeq?.Value ?? 0UL,
                 EventType = confirmation.Event.Type.ToString(), EventRoundId = confirmedBatch.RoundId,
                 EventScopeId = confirmedBatch.ScopeId, EventSessionId = confirmedBatch.SessionId,
                 EventRoomId = confirmedBatch.RoomId, EventTableId = confirmedBatch.TableId,
@@ -453,6 +452,26 @@ namespace Mahjong.Unity.App
                 SeatScoreBefore = scoreBefore, SeatScoreAfter = scoreAfter,
                 RiichiSticksBefore = view.Board.RiichiSticks, RiichiSticksAfter = finalState.PlayerSnapshot.PublicView.Board.RiichiSticks
             });
+            if (actualReceipt == null || actualReceipt.Resolution.Disposition != OutboxDisposition.Applied ||
+                actualReceipt.Command.RequestId != requestId || actualReceipt.Command.ScopeId != view.Identity.ScopeId ||
+                actualReceipt.Resolution.CommandVersion?.Value != confirmation.CommandVersion ||
+                actualReceipt.Resolution.EventSeq?.Value != confirmation.ReceiptEventSeq ||
+                !string.Equals(actualReceipt.Resolution.CanonicalPayloadSha256, payloadHash, StringComparison.OrdinalIgnoreCase))
+            {
+                string diagnostic = actualReceipt == null
+                    ? "No typed receipt for the submitted request and scope was observed."
+                    : "receiptDisposition=" + actualReceipt.Resolution.Disposition +
+                      " status=" + actualReceipt.Resolution.ReceiptStatus +
+                      " requestMatch=" + string.Equals(actualReceipt.Command.RequestId, requestId, StringComparison.Ordinal) +
+                      " scopeMatch=" + string.Equals(actualReceipt.Command.ScopeId, view.Identity.ScopeId, StringComparison.Ordinal) +
+                      " commandVersion=" + (actualReceipt.Resolution.CommandVersion?.Value.ToString() ?? "missing") +
+                      " expectedCommandVersion=" + confirmation.CommandVersion +
+                      " eventSeq=" + (actualReceipt.Resolution.EventSeq?.Value.ToString() ?? "missing") +
+                      " expectedEventSeq=" + confirmation.ReceiptEventSeq +
+                      " digestMatch=" + string.Equals(actualReceipt.Resolution.CanonicalPayloadSha256, payloadHash, StringComparison.OrdinalIgnoreCase);
+                Fail("RAW_RECEIPT_MISMATCH", "The captured typed receipt does not bind the exact request, scope, payload and observed command publication. " + diagnostic);
+                yield break;
+            }
             Finish();
             yield break;
         }
@@ -485,6 +504,11 @@ namespace Mahjong.Unity.App
             _outcome = "FAIL";
             _failure = code + ": " + detail;
             _exitCode = 67;
+            if (_summary != null)
+            {
+                _summary.Result = _outcome;
+                _summary.Failure = _failure;
+            }
             Debug.LogError("C04_PLAYER_ACTION_FAIL " + _failure);
             Finish();
         }
