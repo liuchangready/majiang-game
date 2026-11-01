@@ -73,7 +73,7 @@ function Assert-Metadata([string]$Case, [string]$LogPath, [int]$ExpectedExit, [b
     $metaPath = $LogPath + '.meta.json'
     if (-not (Test-Path -LiteralPath $metaPath)) { throw "$Case missing $metaPath" }
     if (-not (Test-Path -LiteralPath ($LogPath + '.meta.txt'))) { throw "$Case missing .meta.txt" }
-    $meta = Get-Content -LiteralPath $metaPath -Raw | ConvertFrom-Json
+    $meta = Get-Content -LiteralPath $metaPath -Raw -Encoding UTF8 | ConvertFrom-Json
     if (-not [bool]$meta.started) { throw "$Case metadata started=false" }
     if ($null -eq $meta.nativeExit -or [int]$meta.nativeExit -ne $ExpectedExit) { throw "$Case metadata nativeExit=$($meta.nativeExit), expected $ExpectedExit" }
     if ([bool]$meta.timedOut -ne $ExpectTimeout) { throw "$Case metadata timedOut=$($meta.timedOut), expected $ExpectTimeout" }
@@ -89,7 +89,7 @@ function Assert-Metadata([string]$Case, [string]$LogPath, [int]$ExpectedExit, [b
         if ($actualSha -ne $item.sha256) { throw "$Case metadata $stream SHA mismatch" }
         if ([long](Get-Item -LiteralPath $item.path).Length -ne [long]$item.bytes) { throw "$Case metadata $stream bytes mismatch" }
     }
-    $metaText = Get-Content -LiteralPath ($LogPath + '.meta.txt') -Raw
+    $metaText = Get-Content -LiteralPath ($LogPath + '.meta.txt') -Raw -Encoding UTF8
     if ($metaText -notmatch ('nativeExit=' + [regex]::Escape([string]$ExpectedExit))) { throw "$Case meta.txt has no nativeExit=$ExpectedExit" }
     return $meta
 }
@@ -97,7 +97,7 @@ function Assert-Metadata([string]$Case, [string]$LogPath, [int]$ExpectedExit, [b
 foreach ($code in @(0, 1, 2, 17)) {
     $log = Join-Path $evidenceDir "exit-$code.log"
     $actual = Invoke-Native -FilePath $hostExe -Arguments @('-NoProfile', '-NonInteractive', '-File', $child, '-Code', "$code") -LogPath $log
-    $output = Get-Content -LiteralPath $log -Raw
+    $output = Get-Content -LiteralPath $log -Raw -Encoding UTF8
     $meta = Assert-Metadata -Case "exit-$code" -LogPath $log -ExpectedExit $code
     $pass = ($actual -eq $code) -and
         $output.Contains("stdout code=$code") -and
@@ -115,8 +115,8 @@ $quoteLog = Join-Path $evidenceDir 'quoted-arguments.log'
 $quoteActual = Invoke-Native -FilePath $hostExe -Arguments @(
     '-NoProfile', '-NonInteractive', '-File', $child, '-Code', '0', '-Token', $quoteToken
 ) -LogPath $quoteLog
-$quoteOutput = Get-Content -LiteralPath $quoteLog -Raw
-$quoteMeta = Get-Content -LiteralPath ($quoteLog + '.meta.json') -Raw | ConvertFrom-Json
+$quoteOutput = Get-Content -LiteralPath $quoteLog -Raw -Encoding UTF8
+$quoteMeta = Get-Content -LiteralPath ($quoteLog + '.meta.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 $quoteArgv = @($quoteMeta.argv)
 $quotePass = ($quoteActual -eq 0) -and
     $quoteOutput.Contains("stdout token=$quoteToken") -and
@@ -132,9 +132,9 @@ $rawUnused = $secret + ';' + $connection
 $secretActual = Invoke-Native -FilePath $hostExe -Arguments @(
     '-NoProfile', '-NonInteractive', '-File', $child, '-Code', '0', '-Unused', $rawUnused, '-ReportUnusedLength'
 ) -LogPath $secretLog -SensitiveValues @($secret)
-$secretMetaRaw = Get-Content -LiteralPath ($secretLog + '.meta.json') -Raw
+$secretMetaRaw = Get-Content -LiteralPath ($secretLog + '.meta.json') -Raw -Encoding UTF8
 $secretMeta = $secretMetaRaw | ConvertFrom-Json
-$secretOutput = Get-Content -LiteralPath $secretLog -Raw
+$secretOutput = Get-Content -LiteralPath $secretLog -Raw -Encoding UTF8
 $secretPass = ($secretActual -eq 0) -and
     (-not $secretMetaRaw.Contains($secret)) -and
     (-not $secretMetaRaw.Contains('p@ssw0rd')) -and
@@ -144,6 +144,98 @@ $secretPass = ($secretActual -eq 0) -and
     ([string]$secretMeta.commandLine).Contains('Password=<redacted>') -and
     $secretOutput.Contains("unused-length=$($rawUnused.Length)")
 Add-Result -Case 'redaction' -Pass $secretPass -Expected 'secret and Password value absent from metadata; native child still received the real argv' -Actual $secretMeta.redaction
+
+# R1-02: quoted connection-string values may contain semicolons, doubled
+# quotes, escaped quotes and whitespace. Redact the whole value in metadata
+# while keeping the executed argv unchanged.
+$redactionFixtures = @(
+    [ordered]@{ name = 'password-double-quoted-semicolon'; text = 'Host=127.0.0.1;Password="SYNTH_HEAD;SYNTH_TAIL";Username=fixture'; tokens = @('SYNTH_HEAD', 'SYNTH_TAIL') },
+    [ordered]@{ name = 'pwd-single-quoted-semicolon'; text = "Host=127.0.0.1;Pwd='SYNTH_HEAD;SYNTH_TAIL';Username=fixture"; tokens = @('SYNTH_HEAD', 'SYNTH_TAIL') },
+    [ordered]@{ name = 'password-spacing-case'; text = 'Host=x; PASSWORD = "SYNTH_HEAD;SYNTH_TAIL" ;Username=fixture'; tokens = @('SYNTH_HEAD', 'SYNTH_TAIL') },
+    [ordered]@{ name = 'password-doubled-quote'; text = 'Host=x;Password="SYNTH""HEAD;SYNTH_TAIL";Username=fixture'; tokens = @('SYNTH_HEAD', 'SYNTH_TAIL') },
+    [ordered]@{ name = 'password-backslash-quote'; text = 'Host=x;Password="SYNTH_HEAD\";SYNTH_TAIL";Username=fixture'; tokens = @('SYNTH_HEAD', 'SYNTH_TAIL') },
+    [ordered]@{ name = 'password-unquoted'; text = 'Host=x;Password=SYNTH_HEAD;Username=fixture'; tokens = @('SYNTH_HEAD') },
+    [ordered]@{ name = 'password-escaped-semicolon'; text = 'Host=x;Password=SYNTH_HEAD\;SYNTH_TAIL;Username=fixture'; tokens = @('SYNTH_HEAD', 'SYNTH_TAIL') }
+)
+foreach ($fixture in $redactionFixtures) {
+    $redactionResult = Get-RedactedArgumentList -Arguments @($fixture.text)
+    $sanitizedText = [string]$redactionResult.arguments[0]
+    $leaked = @($fixture.tokens | Where-Object { $sanitizedText.Contains($_) }).Count -gt 0
+    $fixturePass = [bool]$redactionResult.applied -and
+        [int]$redactionResult.credentialFieldsRedacted -ge 1 -and
+        (-not $leaked)
+    Add-Result -Case ('redaction-' + $fixture.name) -Pass $fixturePass -Expected 'entire quoted/unquoted credential value redacted' -Actual ("applied={0} fields={1} leaked={2}" -f $redactionResult.applied, $redactionResult.credentialFieldsRedacted, $leaked)
+}
+$sensitiveResult = Get-RedactedArgumentList -Arguments @('--token', 'SYNTH_SENSITIVE') -SensitiveValues @('SYNTH_SENSITIVE')
+$sensitivePass = [bool]$sensitiveResult.applied -and
+    ((-not ([string]$sensitiveResult.arguments[0]).Contains('SYNTH_SENSITIVE')) -and
+    (-not ([string]$sensitiveResult.arguments[1]).Contains('SYNTH_SENSITIVE')))
+Add-Result -Case 'redaction-sensitive-values' -Pass $sensitivePass -Expected 'named SensitiveValues absent' -Actual $sensitiveResult.applied
+$benignResult = Get-RedactedArgumentList -Arguments @('--host', '127.0.0.1', '--name', 'a b')
+$benignPass = (-not [bool]$benignResult.applied) -and
+    ([string]$benignResult.arguments[0] -ceq '--host') -and
+    ([string]$benignResult.arguments[1] -ceq '127.0.0.1') -and
+    ([string]$benignResult.arguments[2] -ceq '--name') -and
+    ([string]$benignResult.arguments[3] -ceq 'a b')
+Add-Result -Case 'redaction-benign-argv' -Pass $benignPass -Expected 'benign argv boundaries unchanged' -Actual $benignResult.applied
+
+$quotedConnection = 'Host=127.0.0.1;Port=55592;Username=fixture;Password="SYNTH_HEAD;SYNTH_TAIL"'
+$quotedLog = Join-Path $evidenceDir 'quoted-password.log'
+$quotedActual = Invoke-Native -FilePath $hostExe -Arguments @(
+    '-NoProfile', '-NonInteractive', '-File', $child, '-Code', '0', '-Unused', $quotedConnection, '-ReportUnusedLength'
+) -LogPath $quotedLog
+$quotedMetaRaw = Get-Content -LiteralPath ($quotedLog + '.meta.json') -Raw -Encoding UTF8
+$quotedMetaText = Get-Content -LiteralPath ($quotedLog + '.meta.txt') -Raw -Encoding UTF8
+$quotedMeta = $quotedMetaRaw | ConvertFrom-Json
+$quotedOutput = Get-Content -LiteralPath $quotedLog -Raw -Encoding UTF8
+$quotedPass = ($quotedActual -eq 0) -and
+    (-not $quotedMetaRaw.Contains('SYNTH_HEAD')) -and
+    (-not $quotedMetaRaw.Contains('SYNTH_TAIL')) -and
+    (-not $quotedMetaText.Contains('SYNTH_HEAD')) -and
+    (-not $quotedMetaText.Contains('SYNTH_TAIL')) -and
+    [bool]$quotedMeta.redaction.applied -and
+    [int]$quotedMeta.redaction.credentialFieldsRedacted -ge 1 -and
+    $quotedOutput.Contains("unused-length=$($quotedConnection.Length)")
+Add-Result -Case 'redaction-quoted-metadata' -Pass $quotedPass -Expected 'metadata and meta.txt contain no quoted credential tail; native child received full argv' -Actual $quotedMeta.redaction
+
+# R1-01: deterministic non-ASCII metadata must survive a UTF-8 no-BOM write and
+# an explicit UTF-8 read without lossy ANSI decoding.
+$unicodeLog = Join-Path $evidenceDir 'non-ascii-metadata.log'
+$unicodeError = -join @(
+    [char]0x672C, [char]0x5730, [char]0x5316, [char]0x9519, [char]0x8BEF,
+    [char]0xFF1A, [char]0x627E, [char]0x4E0D, [char]0x5230, [char]0x6307,
+    [char]0x5B9A, [char]0x7684, [char]0x6587, [char]0x4EF6, [char]0x3002
+)
+$unicodeRecord = [ordered]@{
+    schema = 'p52-native-invocation.v1'
+    exe = 'fixture.exe'
+    exeSha256 = ''
+    cwd = (Get-Location).Path
+    argv = @('--probe')
+    commandLine = '--probe'
+    startedUtc = [DateTime]::UtcNow.ToString('o')
+    endedUtc = [DateTime]::UtcNow.ToString('o')
+    durationMs = 0
+    pid = $null
+    started = $false
+    nativeExit = $null
+    exitUnavailableReason = ''
+    timedOut = $false
+    killed = $false
+    timeoutSeconds = 1
+    logs = [ordered]@{
+        stdout = Get-FileEvidence -Path (Join-Path $evidenceDir 'unicode.stdout')
+        stderr = Get-FileEvidence -Path (Join-Path $evidenceDir 'unicode.stderr')
+        merged = Get-FileEvidence -Path $unicodeLog
+    }
+    redaction = [ordered]@{ applied = $false; redactedArgumentCount = 0; credentialFieldsRedacted = 0; secretValuesRecorded = $false; note = 'none' }
+    error = $unicodeError
+}
+Write-NativeInvocationMetadata -LogPath $unicodeLog -Record $unicodeRecord
+$unicodeMeta = Get-Content -LiteralPath ($unicodeLog + '.meta.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+$unicodeText = Get-Content -LiteralPath ($unicodeLog + '.meta.txt') -Raw -Encoding UTF8
+$unicodePass = ($unicodeMeta.error -ceq $unicodeError) -and $unicodeText.Contains($unicodeError)
+Add-Result -Case 'non-ascii-metadata' -Pass $unicodePass -Expected 'UTF-8 no-BOM metadata preserves exact localized error text' -Actual $unicodeMeta.error
 
 # Timeout: the merged log must exist before the throw, with both real streams.
 $timeoutLog = Join-Path $evidenceDir 'timeout.log'
@@ -160,8 +252,8 @@ catch {
 $timeoutMeta = $null
 $timeoutPass = $false
 if ($timedOut -and (Test-Path -LiteralPath $timeoutLog)) {
-    $timeoutText = Get-Content -LiteralPath $timeoutLog -Raw
-    $timeoutMeta = Get-Content -LiteralPath ($timeoutLog + '.meta.json') -Raw | ConvertFrom-Json
+    $timeoutText = Get-Content -LiteralPath $timeoutLog -Raw -Encoding UTF8
+    $timeoutMeta = Get-Content -LiteralPath ($timeoutLog + '.meta.json') -Raw -Encoding UTF8 | ConvertFrom-Json
     $timeoutPass = $timeoutText.Contains('stdout code=0') -and
         $timeoutText.Contains('stderr code=0') -and
         [bool]$timeoutMeta.timedOut -and
@@ -182,7 +274,7 @@ catch { $missingThrew = $true }
 $missingMeta = $null
 $missingPass = $false
 if ($missingThrew -and (Test-Path -LiteralPath ($missingLog + '.meta.json'))) {
-    $missingMeta = Get-Content -LiteralPath ($missingLog + '.meta.json') -Raw | ConvertFrom-Json
+    $missingMeta = Get-Content -LiteralPath ($missingLog + '.meta.json') -Raw -Encoding UTF8 | ConvertFrom-Json
     $missingPass = (-not [bool]$missingMeta.started) -and
         ($null -eq $missingMeta.nativeExit) -and
         (-not [string]::IsNullOrWhiteSpace([string]$missingMeta.error)) -and
@@ -193,7 +285,7 @@ Add-Result -Case 'startup-failure' -Pass $missingPass -Expected 'started=false n
 # Quiet success: zero-byte merged output is legitimate.
 $quietLog = Join-Path $evidenceDir 'quiet.log'
 $quietActual = Invoke-Native -FilePath $hostExe -Arguments @('-NoProfile', '-NonInteractive', '-Command', 'exit 0') -LogPath $quietLog
-$quietMeta = Get-Content -LiteralPath ($quietLog + '.meta.json') -Raw | ConvertFrom-Json
+$quietMeta = Get-Content -LiteralPath ($quietLog + '.meta.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 $quietPass = ($quietActual -eq 0) -and
     (Test-Path -LiteralPath $quietLog) -and
     ([long]$quietMeta.logs.merged.bytes -eq 0) -and
@@ -209,8 +301,8 @@ Set-Content -LiteralPath $writer -Encoding UTF8 -Value $writerScript
 $DotnetPath = $hostExe
 $writerLog = Join-Path $evidenceDir 'writer.log'
 $killResult = Invoke-WriterAndKill -WorkerDll $writer -MarkerPath $marker -LogPath $writerLog -TimeoutSeconds 10
-$killRecord = Get-Content -LiteralPath ($writerLog + '.kill.json') -Raw | ConvertFrom-Json
-$writerMeta = Get-Content -LiteralPath ($writerLog + '.meta.json') -Raw | ConvertFrom-Json
+$killRecord = Get-Content -LiteralPath ($writerLog + '.kill.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+$writerMeta = Get-Content -LiteralPath ($writerLog + '.meta.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 $writerPass = $killResult.killed -and
     ($killResult.exitCode -ne 0) -and
     ($killRecord.exitCode -eq $killResult.exitCode) -and

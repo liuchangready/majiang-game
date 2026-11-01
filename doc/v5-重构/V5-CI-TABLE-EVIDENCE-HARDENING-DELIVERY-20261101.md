@@ -3,6 +3,13 @@
 状态：本任务范围实现与证据交付；**不是** G2 验收、不是 PR20 合并审查、不是远端 CI 新头认证。
 V4 仍是唯一生产基线；G2–G5 未批准。
 
+> **R2 说明（2026-11-01）**：Caller R1 复核（`REVIEW.txt` SHA256
+> `568B8B6A6EDF7AFE5D7C91A92D83F5B473808BF82E4A7AB1A6A43A4B85119858`，
+> manifest `90A1AC91632447A1006C9FDCC881C83DE738AC99FF34B6A9ED750A23ADE85106`，
+> 2098 项/0 mismatch）给出 0 BLOCKER / 4 MAJOR 返修。第 12 节是 R2 当前结果，
+> 在计数、哈希与证据路径上取代第 1–11 节的 R1 历史快照；R1 原件与其首失败均保留。
+> 本报告不重开历史 CI 报告或其他组件。
+
 ## 0. 身份、范围与结论
 
 - 工作树：`E:/majiang-review/ci-table-evidence-ds-20261101-2048`
@@ -215,10 +222,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/ci/verify-v5-table
 | 文件 | SHA256 |
 |---|---|
 | `.github/workflows/v5-verify.yml` | `503779B2EBED98CB56C394AC0F2AF26F96A99C65890012E80292C63D1476E173` |
-| `tools/ci/verify-v5-table-postgres.ps1` | `DDE3235010D32E6227FB4CF34D4DE69EE7034AF54447876865F12CD9BEF2DAEA` |
-| `tools/ci/test-v5-native-exit.ps1` | `0311DCD7E41306E2C70EAF5D71F18DFFBA66B4234BBF4CC02A6989967BFB2DA1` |
-| `tools/ci/test-v5-table-evidence.ps1` | `6ABC7CC8AD477182929ABBAC4B9BA1E95E0640FDEF0DA063F7731891B0AB4268` |
-| `tools/tests/VerifyV5TablePostgresStartup.Tests.ps1` | `D6E0244B880D241CF7ADB6A05A147815A7BC1C2B52D150A533FB11A1BB4A27FA` |
+| `tools/ci/verify-v5-table-postgres.ps1` | `4EF119D80305EEB049588E07E34167058DC649E4AD2384BFC78A2E78DCDEAAAC` |
+| `tools/ci/test-v5-native-exit.ps1` | `37E8E8D19BD34867C5F934A9794F390E3B1514A4B86F0604270442C37555534C` |
+| `tools/ci/test-v5-table-evidence.ps1` | `DEE8432AB1EC9B4D8CF07B25BA4F796CC6ECAC764A19F8A7946B1A18E356A4B7` |
+| `tools/tests/VerifyV5TablePostgresStartup.Tests.ps1` | `271B0B01072DFCF43140B6D43B17BA9D4F4FCB6DBF56529FED980BC94297FB8B` |
 | 本报告 | 见交付回复（不嵌入自身哈希） |
 
 ## 10. 残余与明确未覆盖
@@ -237,3 +244,147 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/ci/verify-v5-table
 - 提交仅包含第 0 节 6 个授权文件；生成物（`artifacts/`、`build/`、NuGet cache、PG zip 副本、dump、日志）全部 ignored，不提交。
 - 提交前逐文件检查暂存区、`git diff --cached --check`、`git diff --check`；提交后 tracked clean。
 - 未修改任何业务/协议/Domain/Runtime/LocalHost/Unity 文件；未触及其他线程、scheduler、`complete.flag` 或锁。
+
+## 12. R2 返修：caller R1 四组 MAJOR 闭环
+
+Caller 复核原件：`E:/majiang-review/caller-table-evidence-r1-2f61b4c7/build/caller-review/REVIEW.txt`
+（SHA256 `568B8B6A6EDF7AFE5D7C91A92D83F5B473808BF82E4A7AB1A6A43A4B85119858`），
+manifest `review-manifest.sha256.json`
+（SHA256 `90A1AC91632447A1006C9FDCC881C83DE738AC99FF34B6A9ED750A23ADE85106`，
+2098 项/0 mismatch）。本轮在**同一 thread/session/工作树/pinned model**、同样 6 个
+expectedFiles 内完成；未新建任务、未转派、未接管历史人工裁决。
+
+### 12.1 逐项修复映射
+
+| Caller ID | 严重度 | 根因 | R2 修复 | 验收 |
+|---|---|---|---|---|
+| CI-EVID-R1-01 | MAJOR | metadata 显式写 UTF-8 no-BOM，Windows PowerShell 5.1 `Get-Content -Raw` 默认 ANSI；startup S1 只认英语 detail | 所有 metadata/JSON 读取显式 `-Encoding UTF8`；保留原始 console 日志默认编码；S1 改为 locale-neutral 非空真实 OS detail + typed `AccessDenied`/`10013`；新增确定性非 ASCII metadata 用例 | native 21/21；startup 149/149；非 ASCII error 逐字符保留 |
+| CI-EVID-R1-02 | MAJOR | `Password/Pwd` 正则停在引号内第一个 `;`，tail 泄漏 | `Get-RedactedArgumentList` 改为引号/转义/分号感知扫描；整段 quoted/unquoted 值替换为 `<redacted>`；记录 `credentialFieldsRedacted`；执行 argv 仍用原始值，仅 metadata 脱敏 | 21/21；caller exact `Password="SYNTH_HEAD;SYNTH_TAIL"` 与 `Pwd='...'` 无 head/tail；metadata 与 meta.txt 无泄漏；实际 child argv 长度不变 |
+| CI-EVID-R1-03 | MAJOR | `result="Pass"` 下真实 `<failure>` 子节点仍被接受 | 按 result 校验 test 子节点：Pass 仅 `output`/`traits`；Fail 允许 `failure`；Skip/NotRun 允许 `reason`；矛盾/未知/嵌套 failure 拒绝 | 75/75；caller exact `pass-with-failure-child.xml` 拒绝、`valid.xml` 接受；真实 42/13 仍接受 |
+| CI-EVID-R1-04 | MAJOR | LogDir 被 `Force` 创建并覆盖既有封存；finalizer 只 warning；manifest 可含旧 manifest | 任何写入/finally 前 `Initialize-OutputDirectory` 取得所有权；非空 LogDir 直接 BLOCKED 且不写；写入 owner marker；summary/log/manifest 写读失败一律非零；temp→atomic move；manifest 排除自身并逐行回读校验 | sealed 目录逐字节不变、exit2、无新 root；finalizer seal 失败 exit1 且不会 PASS；fresh manifest 0 bad/无 self |
+
+### 12.2 R1-01 编码/locale
+
+- `test-v5-native-exit.ps1` 的所有 `.meta.json`、`.meta.txt`、`.kill.json` 读取改为
+  `Get-Content -Raw -Encoding UTF8`；`startup-failure` 的真实本地化 error 不再触发
+  ANSI `ConvertFrom-Json` 失败。
+- `verify-v5-table-postgres.ps1` 的 marker/reader/restore-reader JSON 和 finalizer
+  readback 全部显式 UTF8；`Get-PgScalar` 已使用 shared UTF8 reader。
+- Startup S1 保留 `state=AccessDenied` 与 `errorCode=10013` 两个强断言；detail 断言改为
+  非空且长度 >= 8 的真实 OS message（本机中文
+  `以一种访问权限不允许的方式做了一个访问套接字的尝试。` 通过），不再要求英语。
+- 新增 `non-ascii-metadata`：用生产 `Write-NativeInvocationMetadata` 写 UTF-8 no-BOM
+  的 `本地化错误：找不到指定的文件。`，再用显式 UTF8 读取 JSON 与 meta.txt，逐字符
+  `-ceq` 比较。
+
+### 12.3 R1-02 quoted credential
+
+- 新扫描器识别 `Password`/`Pwd`（大小写/空白），支持单/双引号、内嵌分号、
+  doubled quote、backslash-escaped quote、无引号值和 `SensitiveValues`。
+- metadata 新增 `redaction.credentialFieldsRedacted` 与
+  `credentialFieldsRedacted=` 行；不再用 `secretValuesRecorded=false` 代替实际边界。
+- 实测矩阵（21/21 全过）：double/single quoted semicolon、spacing/case、doubled quote、
+  backslash quote、unquoted、escaped semicolon、SensitiveValues、benign argv、
+  quoted metadata path。quoted metadata case 同时断言 child 收到完整原始 argv
+  （`unused-length` 等于原始长度）。
+- Caller exact fixtures 在 fresh `build/r2-caller-originals-*` 中复算：
+  `replay.json` SHA256 `3EBE6B1927BEE321B01DD6D308D30C4CB4EA8B11AA5D4FD504BACCF5C1ABCDC7`；
+  两例 `tailLeaked=false/headLeaked=false`，sanitized argv 为
+  `...Password=<redacted>;Username=fixture` / `...Pwd=<redacted>;Username=fixture`。
+
+### 12.4 R1-03 XML 子节点一致性
+
+- Pass 下显式 `failure`/`reason`/`error`/未知 child 一律拒绝；Fail 下 `reason`、Skip 下
+  `failure` 也拒绝；合法 `output`/`traits` 保留。
+- 原 7 个 selfcheck 与既有 60 例全部保留；新增 12 例 XML 矛盾/合法 child 矩阵（含 3 例嵌套矛盾），另加 3 例 seal，总 **75/75**。
+- Caller exact `pass-with-failure-child.xml` 在 fresh 目录复算：
+  `accepted=false`，reason
+  `result XML test 'Probe.Test' result=Pass contains contradictory <failure> child`；
+  `valid.xml` 仍 `accepted=true`（1/1）。
+- 真实 PostgreSQL 运行 `tests.xml` 42/42、`tests-targeted.xml` 13/13 通过同一函数。
+
+### 12.5 R1-04 输出所有权与 seal
+
+- 主流程在 port preflight/任何写文件之前调用 `Initialize-OutputDirectory`：
+  - 已存在非空目录 → `BLOCKED: LogDir is not empty; refusing to overwrite existing evidence`，
+    `exit 2`，不写 summary/log/manifest，不创建 Root；
+  - 空目录/新目录 → 写 `p52-logdir-owner.json` 后取得所有权。
+- Finalizer 使用临时 manifest + atomic move；明确排除 `manifest.sha256.json` 与
+  `.tmp`；写后逐行重算 SHA/bytes；summary exit 与 wrapper.log 均回读；任一步失败
+  `script:Exit=1`、`SealOk=false`，最终不打印 PASS。
+- 复算：
+  - Caller `previous-sealed-evidence-port0` 的 fresh copy：exit 2、4→4 文件、
+    `changed=[]`、`rootCreated=false`；`refusal.json` SHA256
+    `18F45AF46F1595C1FF22E90202D6A1CBD3421232CF1A0A0EE2DA8AB0DC574395`。
+  - Finalizer ownership 缺失/ manifest 为目录两例：exit 1、SealOk false；
+    `seal-failure.json` SHA256
+    `836E35B9079F3CDD462E56EC5298D4D357DC8E35489AAB64838463E5B5B12AA6`。
+  - 真实 fresh run manifest 196 行、0 bad、0 self row。
+
+### 12.6 R2 最终实际运行
+
+| 项 | 结果 |
+|---|---|
+| PS 5.1 parser | 所有脚本 `PARSE-OK` |
+| native（原 10 项 + 11 新增） | **21/21**，native exit 0 |
+| table evidence（原 60 项 + 15 新增） | **75/75**，native exit 0 |
+| direct gate | **19/19**，native exit 0 |
+| dotnetTest gate | **48/48**，native exit 0；仍非全量 suite |
+| startup/port/PG regression | **149/149**，0 skip/0 not-run，native exit 0 |
+| real table-only PG 16.10 | exit 0，`P52-TABLE-POSTGRES-PASS`，42/42 + 13/13 |
+
+最终真实 PG：`E:/majiang-review/ci-table-evidence-ds-20261101-2048/build/real-pg-r2c-20261101-143009/table/`
+（cluster root 在 `artifacts/p52-pg-cluster-r2c-20261101-143009`，已删除）。
+- `wrapper-summary.json` SHA `7D8C5162C1287E6A156A4101058823DA040F4C5671C5F8FC2A13D63B3D7CED82`
+- `manifest.sha256.json` SHA `6F8A1B78D01E4AF18C4BD1B397BF1C23CE77F4908CA5DD6BE205376ED4A36910`，196 行/0 bad/0 self
+- `tests-evidence.json` `3D7303E402FCD6978A970F1B5F8CD10D5C7FEE4AA34F36862E27B518E3F7902A`
+- `tests-targeted-evidence.json` `3807179E3BDBDB69408B8D2E5EEBC0ED999284A933DD5D9AF65548D15AD0AD79`
+- `backup-restore-evidence.json` `2E917BA0B08A289DA5D1029A0F6A020CD21F435C7F6671B94A8B6A4FD159D370`
+- `cleanup-evidence.json` `D6CEAD8730375FBD7C63A47F23E3C6E2FD794171B23C808B32978EBE5C12AF05`
+- `restore-preflight.json` `DDE1848A2C5718001D32063358A2A5DC1CB8CD85A95D81AAEAF6DB9320CAC034`
+- `pg-dump-artifact.json` `45A419A8BEB3587E41FD54063649B84930AB38E7F5A8167D580404C7AE530B63`
+- `pg-owner.json` `446E9F748E0AC8AD6DF67C5E8C760D3BFCA02106D6DE787B8803F7C5CCC60CDD`
+- `crash-writer.log.kill.json` `AE76C226B9CE754A6FD10A69BD02A44EC03492FC0B70BC1596F71FF72998E97C`
+- `tests.xml` `E33A6929A7D261B84B027E4CFB49565078923BB401EE5993B05EE5300A76600D`
+- `tests-targeted.xml` `179EC548143B0F843ED1504B48C532A88B7B2FE688E7C019757A183F887AB3A0`
+- `table_store.dump` 44,726 bytes / `0F8C78994496D5C199B12E59598A83CA28316F94CDA0031FD04BA713CBFE1E39`
+- `p52-logdir-owner.json` `5AFD5A8D575F0799FC9DF21928C01CC6CF4B6FFB892B3DA70833AC736D9C9F5F`
+- preflight raw：`mahjong_p52_restore|127.0.0.1|55592|0|0|0`；dump→restore closure 5/5 true；
+  events=2/receipts=1/outbox=1/tables=13；reader eventCount=2/ownerEpoch=3/terminal=true。
+- cleanup：stop native 0，pre-stop PID 8124，post-stop 0，rootDeleted=true，
+  rootExistsAfter=false；最终无 `postgres.exe`、无 55592 listener。
+- `environmentRestored=true`；`payloadKeyRecorded=false`；captured 变量全部 restored。
+
+Startup 最终证据：`build/ci-pg-startup-selftest/20261101-143020-e5512e44/`
+- `selftest-summary.json` SHA `A7521497794EDB34B72F9519E69B219132DBA326F5DD4AF253C759CC4C0BB189`
+- `manifest.sha256.json` SHA `E8FD0052B6F9A3218E5964E36B5A7E2B96E319AADAD5B1FDC6408F72B016D018`，1817 行/0 bad
+
+Self-test evidence：
+- native `artifacts/native-exit-680d1e189db147bcbb7eb8d34b19a09b/results.json`
+  SHA `79B11CE9DD20C85147F8868A52A42D0FCEE8F50F05605CAD5E2C9558E24824B0`
+- table `artifacts/table-evidence-selftest-14fc2d7c782348acab43fdce334e81b4/results.json`
+  SHA `29C4A4319431C700B3C3D190F1EF5911F10459393542EFDB7C3424D27B7FC951`
+- direct `artifacts/direct-results-selftest-3cb0af4133ba44b0af91576a995df8df/results.json`
+  SHA `6E23CD7000C6536AC42F5238F182334AA6E0029EDC34872BF566E5DF890E6192`
+- dotnetTest `artifacts/dotnettest-results-selftest-5b2ee585806f45f9b5fcce67eaeec5e0/results.json`
+  SHA `595EDFD1DE44F83C7CF22E6B30187DC6759A236CF445ADD69E2B1CA16B998AC8`
+
+### 12.7 R2 首失败（保留）
+
+1. R2 首轮 real run `build/real-pg-r2-20261101-141551/table` 在 restore preflight
+   报 `must return 6 fields (got 1)`：机械编码替换误把生产调用
+   `-RawOutput` 变成 `-Raw -Encoding UTF8Output`，并非 SQL 或 PG 缺陷。修复为
+   `-RawOutput` 后，最终 real run 通过；失败原件保留，不刷新旧摘要。
+2. table evidence 首轮 70 例因空 `wrapper.log` 未创建/JSON 数组被 PowerShell 管道折叠
+   而失败；修复为显式写空日志 + 先赋值再 `@()` 计数后 72/72。
+3. startup 首轮 S1 英语 detail 断言失败；已按 locale-neutral 修复，最终 149/149。
+4. native 首轮 UTF-8 no-BOM 读取失败；已显式 UTF8 读取，最终 21/21。
+
+### 12.8 残余（不因 R2 改变）
+
+- dotnetTest **全量** NOT_RUN；48/48 是门禁自检 + 2 个 live 小 probe。
+- `git pins` 历史 blob NOT_RUN；历史 `39970580589` 仍 BLOCKED。
+- 远端 CI 未触发/未重跑；未 push/改 PR/record MR/approve/merge/deploy；不能宣称远端新头或 G2。
+- 非 Windows、Unity/Player/Android/设备、lobby/unified leg 未运行。
+- 单条 durable table 状态不是自然整场终局或 G2 结算验收。
+- 本报告与 R2 证据不改变 D-02/D-09 的 INFO 边界，也不改写历史 R1 原件。

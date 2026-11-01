@@ -38,7 +38,7 @@ $tokens = $null
 $parseErrors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($wrapperScript, [ref]$tokens, [ref]$parseErrors)
 if ($parseErrors.Count) { throw "Production wrapper does not parse: $($parseErrors[0].Message)" }
-foreach ($name in @('Test-TableResultEvidence', 'Get-ClusterOwnershipState', 'Test-RestorePreflightEmpty', 'Test-CleanupRootContained')) {
+foreach ($name in @('Get-Sha256', 'Write-Step', 'Test-TableResultEvidence', 'Get-ClusterOwnershipState', 'Test-RestorePreflightEmpty', 'Test-CleanupRootContained')) {
     $fn = $ast.Find({
             param($node)
             $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name
@@ -190,6 +190,27 @@ Invoke-XmlCase -Case '34 native exit null with green xml' -Xml $green -NativeExi
 Invoke-XmlCase -Case '35 stale xml' -Xml $green -AgeDays 1 -ExpectedOk $false
 Invoke-XmlCase -Case '36 xml outside logdir' -Xml $green -OutsideLogDir -ExpectedOk $false
 
+# R1-03: a result='Pass' node with an explicit failure/reason/error/unknown
+# child is contradictory and must not be green. Legitimate xUnit Pass payloads
+# (output, traits) remain accepted.
+function New-OneTestXml([string]$Child, [string]$Result = 'Pass') {
+    $xml = New-ResultXml -Results @($Result)
+    $node = ('<test id="00000000-0000-0000-0000-000000000001" name="Mahjong.Infrastructure.Tests.Probe.Case1" result="{0}" />' -f $Result)
+    return $xml.Replace($node, $node.Replace(' />', ('>' + $Child + '</test>')))
+}
+Invoke-XmlCase -Case '61 pass-with-failure-child' -Xml (New-OneTestXml '<failure exception-type="Probe.Error"><message>actual recorded failure</message></failure>') -ExpectedOk $false
+Invoke-XmlCase -Case '62 pass-with-reason-child' -Xml (New-OneTestXml '<reason><message>skip reason under pass</message></reason>') -ExpectedOk $false
+Invoke-XmlCase -Case '63 pass-with-error-child' -Xml (New-OneTestXml '<error type="Probe.Error"><message>error under pass</message></error>') -ExpectedOk $false
+Invoke-XmlCase -Case '64 pass-with-unknown-child' -Xml (New-OneTestXml '<contradiction>unknown</contradiction>') -ExpectedOk $false
+Invoke-XmlCase -Case '65 skip-with-failure-child' -Xml (New-OneTestXml '<failure exception-type="Probe.Error"><message>failure under skip</message></failure>' 'Skip') -ExpectedOk $false
+Invoke-XmlCase -Case '66 fail-with-reason-child' -Xml (New-OneTestXml '<reason><message>reason under fail</message></reason>' 'Fail') -ExpectedOk $false
+Invoke-XmlCase -Case '67 pass-with-output-child' -Xml (New-OneTestXml '<output>legitimate test output</output>') -ExpectedOk $true
+Invoke-XmlCase -Case '68 pass-with-traits-child' -Xml (New-OneTestXml '<traits><trait name="category" value="unit" /></traits>') -ExpectedOk $true
+Invoke-XmlCase -Case '69 pass-with-failure-and-output' -Xml (New-OneTestXml '<output>partial output</output><failure exception-type="Probe.Error"><message>failure</message></failure>') -ExpectedOk $false
+Invoke-XmlCase -Case '73 pass-with-failure-nested-in-output' -Xml (New-OneTestXml '<output><failure exception-type="Probe.Error"><message>hidden failure</message></failure></output>') -ExpectedOk $false
+Invoke-XmlCase -Case '74 pass-with-failure-nested-in-traits' -Xml (New-OneTestXml '<traits><failure exception-type="Probe.Error"><message>hidden failure</message></failure></traits>') -ExpectedOk $false
+Invoke-XmlCase -Case '75 pass-with-unknown-nested-in-traits' -Xml (New-OneTestXml '<traits><contradiction>unknown</contradiction></traits>') -ExpectedOk $false
+
 # ------------------------------------------------------- PG ownership matrix
 $ownershipRoot = Join-Path $evidenceDir 'ownership'
 New-Item -ItemType Directory -Force -Path $ownershipRoot | Out-Null
@@ -235,7 +256,7 @@ New-Item -ItemType Directory -Force -Path $foreignRoot | Out-Null
 $sentinelPath = Join-Path $foreignRoot 'sentinel.txt'
 Write-Utf8 -Path $sentinelPath -Content 'must-survive'
 $foreignState = Get-ClusterOwnershipState -MarkerPath (Join-Path $foreignRoot 'pg-owner.json') -Root $foreignRoot -Port 55592 -Database 'mahjong_p52_test'
-Add-Result -Case '44 foreign root sentinel preserved' -Pass ((-not [bool]$foreignState.Ok) -and (Test-Path -LiteralPath $sentinelPath) -and ((Get-Content -LiteralPath $sentinelPath -Raw).Trim() -eq 'must-survive')) -Reason $foreignState.Reason
+Add-Result -Case '44 foreign root sentinel preserved' -Pass ((-not [bool]$foreignState.Ok) -and (Test-Path -LiteralPath $sentinelPath) -and ((Get-Content -LiteralPath $sentinelPath -Raw -Encoding UTF8).Trim() -eq 'must-survive')) -Reason $foreignState.Reason
 
 # --------------------------------------------------- restore preflight matrix
 function Add-PreflightCase([string]$Case, [string]$Raw, [bool]$ExpectedOk) {
@@ -269,6 +290,111 @@ foreach ($guardCase in $guardCases) {
     $actual = Test-CleanupRootContained -Root $guardCase.Root -ArtifactsRoot $artifactsGuard
     Add-Result -Case $guardCase.Case -Pass ($actual -eq $guardCase.Expected) -Reason ("contained={0} expected={1} root={2}" -f $actual, $guardCase.Expected, $guardCase.Root)
 }
+
+# R1-04: execute the real production finalization TryStatementAst. It must
+# exclude the manifest itself and fail nonzero when a mandatory seal write fails.
+$sealAst = $ast.Find({
+        param($node)
+        $node -is [System.Management.Automation.Language.TryStatementAst] -and
+        $node.Body.Extent.Text.Contains('$portMode =') -and
+        $node.Body.Extent.Text.Contains('$manifest = @()')
+    }, $true)
+if ($null -eq $sealAst) { throw 'Cannot extract production finalization block' }
+
+function Invoke-SealFixture([string]$Dir, [bool]$ManifestAsDirectory) {
+    if (Test-Path -LiteralPath $Dir) { Remove-Item -LiteralPath $Dir -Recurse -Force }
+    New-Item -ItemType Directory -Force -Path $Dir | Out-Null
+    Write-Utf8 -Path (Join-Path $Dir 'a.txt') -Content 'alpha'
+    Write-Utf8 -Path (Join-Path $Dir 'sub\b.txt') -Content 'beta'
+    if ($ManifestAsDirectory) {
+        New-Item -ItemType Directory -Path (Join-Path $Dir 'manifest.sha256.json') | Out-Null
+    }
+    $script:LogDir = $Dir
+    $script:LogDirOwned = $true
+    $script:SealOk = $false
+    $script:Exit = 0
+    $script:Stages = New-Object System.Collections.Generic.List[object]
+    $script:Lines = New-Object System.Collections.Generic.List[string]
+    $script:EnvRestoreRecords = @()
+    $script:PortSelection = $null
+    $script:Database = 'fixture'
+    $script:RestoreDatabase = 'fixture_restore'
+    $LogDir = $Dir
+    $Port = 55592
+    $sdkVersion = 'TOOL_FIXTURE'
+    Invoke-Expression $sealAst.Extent.Text
+}
+
+$sealSuccessDir = Join-Path $evidenceDir '70-seal-success'
+Invoke-SealFixture -Dir $sealSuccessDir -ManifestAsDirectory $false
+$sealManifestPath = Join-Path $sealSuccessDir 'manifest.sha256.json'
+$sealRows = @()
+$sealBad = 0
+$sealSelfRows = 0
+if (Test-Path -LiteralPath $sealManifestPath) {
+    $sealManifest = Get-Content -LiteralPath $sealManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $sealRows = @($sealManifest)
+    $sealSelfRows = @($sealRows | Where-Object { $_.path -eq 'manifest.sha256.json' -or $_.path -eq 'manifest.sha256.json.tmp' }).Count
+    foreach ($row in $sealRows) {
+        $rowPath = Join-Path $sealSuccessDir $row.path
+        if (-not (Test-Path -LiteralPath $rowPath)) { $sealBad++; continue }
+        if ((Get-FileHash -LiteralPath $rowPath -Algorithm SHA256).Hash -ne $row.sha256) { $sealBad++ }
+    }
+}
+$sealSuccessPass = ($script:Exit -eq 0) -and $script:SealOk -and
+    ($sealRows.Count -ge 2) -and ($sealSelfRows -eq 0) -and ($sealBad -eq 0)
+Add-Result -Case '70 seal success manifest excludes self and rehashes clean' -Pass $sealSuccessPass -Reason ("exit={0} sealOk={1} rows={2} self={3} bad={4}" -f $script:Exit, $script:SealOk, $sealRows.Count, $sealSelfRows, $sealBad)
+
+$sealFailureDir = Join-Path $evidenceDir '71-seal-failure'
+Invoke-SealFixture -Dir $sealFailureDir -ManifestAsDirectory $true
+$sealFailurePass = ($script:Exit -ne 0) -and (-not $script:SealOk) -and
+    (Test-Path -LiteralPath (Join-Path $sealFailureDir 'manifest.sha256.json') -PathType Container)
+Add-Result -Case '71 seal failure exits nonzero and does not report pass' -Pass $sealFailurePass -Reason ("exit={0} sealOk={1}" -f $script:Exit, $script:SealOk)
+
+# R1-04 end-to-end: an existing sealed LogDir must be byte-identical after a
+# refusal, and the fresh Root must not be created.
+$sealedDir = Join-Path $evidenceDir '72-sealed-existing'
+New-Item -ItemType Directory -Force -Path $sealedDir | Out-Null
+Write-Utf8 -Path (Join-Path $sealedDir 'sentinel.txt') -Content 'sealed sentinel'
+Write-Utf8 -Path (Join-Path $sealedDir 'wrapper-summary.json') -Content '{"previous":"sealed"}'
+Write-Utf8 -Path (Join-Path $sealedDir 'wrapper.log') -Content 'sealed log'
+Write-Utf8 -Path (Join-Path $sealedDir 'manifest.sha256.json') -Content '{"previous":"manifest"}'
+$sealedBefore = @{}
+Get-ChildItem -LiteralPath $sealedDir -File | ForEach-Object { $sealedBefore[$_.Name] = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash }
+$freshRoot = Join-Path $repoRoot ('artifacts\seal-refusal-probe-' + [guid]::NewGuid().ToString('N'))
+$refusalStdout = Join-Path $evidenceDir 'refusal.stdout.log'
+$refusalStderr = Join-Path $evidenceDir 'refusal.stderr.log'
+$psi = New-Object System.Diagnostics.ProcessStartInfo
+$psi.FileName = 'powershell.exe'
+$psi.Arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $wrapperScript + '" -Port 0 -Root "' + $freshRoot + '" -LogDir "' + $sealedDir + '"'
+$psi.UseShellExecute = $false
+$psi.CreateNoWindow = $true
+$psi.RedirectStandardOutput = $true
+$psi.RedirectStandardError = $true
+$childProcess = [System.Diagnostics.Process]::Start($psi)
+$refusalStdoutText = $childProcess.StandardOutput.ReadToEnd()
+$refusalStderrText = $childProcess.StandardError.ReadToEnd()
+if (-not $childProcess.WaitForExit(30000)) {
+    try { $childProcess.Kill() } catch { }
+    throw 'sealed LogDir refusal probe did not exit within 30 seconds'
+}
+$refusalExit = $childProcess.ExitCode
+Write-Utf8 -Path $refusalStdout -Content $refusalStdoutText
+Write-Utf8 -Path $refusalStderr -Content $refusalStderrText
+$sealedChanged = @()
+foreach ($name in $sealedBefore.Keys) {
+    $path = Join-Path $sealedDir $name
+    if (-not (Test-Path -LiteralPath $path) -or (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne $sealedBefore[$name]) {
+        $sealedChanged += $name
+    }
+}
+$sealedCountAfter = @(Get-ChildItem -LiteralPath $sealedDir -Force).Count
+$refusalPass = ($refusalExit -eq 2) -and
+    ($sealedChanged.Count -eq 0) -and
+    ($sealedCountAfter -eq $sealedBefore.Count) -and
+    (-not (Test-Path -LiteralPath $freshRoot)) -and
+    $refusalStdoutText.Contains('refusing to overwrite existing evidence')
+Add-Result -Case '72 sealed LogDir refusal preserves bytes and creates no root' -Pass $refusalPass -Reason ("exit={0} changed={1} count={2} rootCreated={3} stdout={4}" -f $refusalExit, ($sealedChanged -join ','), $sealedCountAfter, (Test-Path -LiteralPath $freshRoot), (($refusalStdoutText -replace '\s+', ' ').Trim()))
 
 $failedCases = @($results | Where-Object { -not $_.Pass })
 $summary = [ordered]@{

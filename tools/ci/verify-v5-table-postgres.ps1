@@ -84,11 +84,13 @@ if ([string]::IsNullOrWhiteSpace($Root)) {
     $Root = Join-Path $script:RepoRoot ("artifacts\p52-pg-cluster-" + $script:Stamp)
 }
 if ([string]::IsNullOrWhiteSpace($LogDir)) {
-    $LogDir = Join-Path $script:RepoRoot ("artifacts\p52-table-postgres-" + $script:Stamp)
+    $LogDir = Join-Path $script:RepoRoot ("artifacts\p52-table-postgres-" + $script:Stamp + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 }
 $Root = [System.IO.Path]::GetFullPath($Root)
 $LogDir = [System.IO.Path]::GetFullPath($LogDir)
 $script:LogDir = $LogDir
+$script:LogDirOwned = $false
+$script:SealOk = $false
 $script:Stages = New-Object System.Collections.Generic.List[object]
 $script:Lines = New-Object System.Collections.Generic.List[string]
 $script:Exit = 0
@@ -141,6 +143,47 @@ function Write-Step([string]$Message) {
     $line = '[p52-pg] ' + $Message
     Write-Host $line
     $script:Lines.Add($line)
+}
+
+function Initialize-OutputDirectory([string]$Path) {
+    # Acquire the evidence directory BEFORE any write, including failure/finally
+    # paths. An existing non-empty directory is treated as sealed evidence and
+    # is never overwritten. An empty directory is claimed with an owner marker.
+    $full = [System.IO.Path]::GetFullPath($Path).TrimEnd('\')
+    if (Test-Path -LiteralPath $full) {
+        if (-not (Test-Path -LiteralPath $full -PathType Container)) {
+            throw "BLOCKED: LogDir exists and is not a directory: $full"
+        }
+        $items = @(Get-ChildItem -LiteralPath $full -Force -ErrorAction Stop)
+        if ($items.Count -gt 0) {
+            throw "BLOCKED: LogDir is not empty; refusing to overwrite existing evidence: $full"
+        }
+    }
+    else {
+        try { New-Item -ItemType Directory -Path $full -Force -ErrorAction Stop | Out-Null }
+        catch { throw "BLOCKED: cannot create LogDir '$full': $($_.Exception.Message)" }
+    }
+    $ownerPath = Join-Path $full 'p52-logdir-owner.json'
+    $owner = [ordered]@{
+        schema = 'p52-logdir-owner.v1'
+        owner = 'mahjong-p52-logdir'
+        root = $full
+        pid = $PID
+        createdUtc = (Get-Date).ToUniversalTime().ToString('o')
+    }
+    try {
+        $utf8 = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText($ownerPath, ($owner | ConvertTo-Json -Depth 4), $utf8)
+    }
+    catch {
+        Remove-Item -LiteralPath $ownerPath -Force -ErrorAction SilentlyContinue
+        if (@(Get-ChildItem -LiteralPath $full -Force -ErrorAction SilentlyContinue).Count -eq 0) {
+            Remove-Item -LiteralPath $full -Force -ErrorAction SilentlyContinue
+        }
+        throw "BLOCKED: LogDir ownership marker could not be written: $($_.Exception.Message)"
+    }
+    $script:LogDirOwned = $true
+    return $full
 }
 
 function Add-Stage([string]$Name, [string]$Status, [object]$ExitCode, [string]$Detail, [object]$Killed = $null) {
@@ -441,6 +484,8 @@ function Get-RedactedArgumentList {
     $redacted = New-Object System.Collections.Generic.List[string]
     $applied = $false
     $redactedCount = 0
+    $credentialFields = 0
+    $credentialPattern = [regex]'(?i)(?<![A-Za-z0-9_])(password|pwd)\s*=\s*'
     foreach ($value in @($Arguments)) {
         $text = [string]$value
         foreach ($secret in @($SensitiveValues)) {
@@ -450,13 +495,58 @@ function Get-RedactedArgumentList {
                 $redactedCount++
             }
         }
-        $afterPassword = [regex]::Replace($text, '(?i)(password\s*=\s*)[^;]*', '${1}<redacted>')
-        if ($afterPassword -ne $text) { $applied = $true; $redactedCount++; $text = $afterPassword }
-        $afterPwd = [regex]::Replace($text, '(?i)(pwd\s*=\s*)[^;]*', '${1}<redacted>')
-        if ($afterPwd -ne $text) { $applied = $true; $redactedCount++; $text = $afterPwd }
+
+        # Connection-string aware scan. A quoted Password/Pwd value may contain
+        # ';', doubled quotes or backslash-escaped quotes; redact the complete
+        # value, not just the part before the first semicolon.
+        $builder = New-Object System.Text.StringBuilder
+        $cursor = 0
+        while ($cursor -lt $text.Length) {
+            $match = $credentialPattern.Match($text, $cursor)
+            if (-not $match.Success) {
+                [void]$builder.Append($text.Substring($cursor))
+                break
+            }
+            $valueStart = $match.Index + $match.Length
+            [void]$builder.Append($text.Substring($cursor, $valueStart - $cursor))
+            $end = $valueStart
+            if ($valueStart -lt $text.Length -and ($text[$valueStart] -eq [char]'"' -or $text[$valueStart] -eq [char]39)) {
+                $quote = $text[$valueStart]
+                $end = $valueStart + 1
+                $closed = $false
+                while ($end -lt $text.Length) {
+                    $character = $text[$end]
+                    if ($character -eq $quote) {
+                        if ($end + 1 -lt $text.Length -and $text[$end + 1] -eq $quote) { $end += 2; continue }
+                        $closed = $true
+                        $end++
+                        break
+                    }
+                    if ($character -eq [char]'\' -and $end + 1 -lt $text.Length) { $end += 2; continue }
+                    $end++
+                }
+                if (-not $closed) { $end = $text.Length }
+            }
+            else {
+                while ($end -lt $text.Length -and $text[$end] -ne [char]';') {
+                    if ($text[$end] -eq [char]'\' -and $end + 1 -lt $text.Length) { $end += 2 }
+                    else { $end++ }
+                }
+            }
+            [void]$builder.Append('<redacted>')
+            $credentialFields++
+            $applied = $true
+            $cursor = $end
+        }
+        $text = $builder.ToString()
         $redacted.Add($text)
     }
-    return [ordered]@{ arguments = @($redacted); applied = $applied; redactedCount = $redactedCount }
+    return [ordered]@{
+        arguments = @($redacted)
+        applied = $applied
+        redactedCount = $redactedCount
+        credentialFieldsRedacted = $credentialFields
+    }
 }
 
 function Read-FileBytesShared([string]$Path) {
@@ -533,6 +623,7 @@ function Write-NativeInvocationMetadata {
         ('mergedSha256=' + [string]$logs.merged.sha256),
         ('redactionApplied=' + [string]$Record.redaction.applied),
         ('redactionCount=' + [string]$Record.redaction.redactedArgumentCount),
+        ('credentialFieldsRedacted=' + [string]$Record.redaction.credentialFieldsRedacted),
         ('secretValuesRecorded=' + [string]$Record.redaction.secretValuesRecorded),
         ('error=' + [string]$Record.error)
     )
@@ -644,6 +735,7 @@ function Invoke-Native {
         redaction = [ordered]@{
             applied = [bool]$redaction.applied
             redactedArgumentCount = [int]$redaction.redactedCount
+            credentialFieldsRedacted = [int]$redaction.credentialFieldsRedacted
             secretValuesRecorded = $false
             note = 'argv/commandLine redacted; raw stdout/stderr untouched; process environment is never recorded'
         }
@@ -810,6 +902,7 @@ function Invoke-WriterAndKill {
         redaction = [ordered]@{
             applied = [bool]$redaction.applied
             redactedArgumentCount = [int]$redaction.redactedCount
+            credentialFieldsRedacted = [int]$redaction.credentialFieldsRedacted
             secretValuesRecorded = $false
             note = 'argv/commandLine redacted; raw stdout/stderr untouched; process environment is never recorded'
         }
@@ -864,7 +957,7 @@ function Get-ClusterOwnershipState {
             return [pscustomobject]$state
         }
         $state.MarkerSha256 = (Get-FileHash -LiteralPath $MarkerPath -Algorithm SHA256).Hash
-        $marker = Get-Content -LiteralPath $MarkerPath -Raw -ErrorAction Stop | ConvertFrom-Json
+        $marker = Get-Content -LiteralPath $MarkerPath -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json
         if ($null -eq $marker) {
             $state.Reason = 'ownership marker is empty'
             return [pscustomobject]$state
@@ -1133,6 +1226,7 @@ function Stop-And-RemoveCluster {
     $rootDeleted = $false
     $cleanupError = ''
     $logCopyError = ''
+    $evidenceError = ''
     $preProcesses = @()
     $postProcesses = @()
     $artifactsRoot = Join-Path $script:RepoRoot 'artifacts'
@@ -1210,7 +1304,11 @@ function Stop-And-RemoveCluster {
                     Copy-Item -Path (Join-Path $Root 'logs\*') -Destination $pgCopyDir -Force -ErrorAction SilentlyContinue
                 }
             }
-            catch { $logCopyError = $_.Exception.Message }
+            catch {
+                $logCopyError = $_.Exception.Message
+                Write-Step ("cleanup log copy FAIL: " + $logCopyError)
+                if ($script:Exit -eq 0) { $script:Exit = 1 }
+            }
 
             try {
                 $evidence = [ordered]@{
@@ -1241,10 +1339,14 @@ function Stop-And-RemoveCluster {
                 $utf8 = New-Object System.Text.UTF8Encoding($false)
                 [System.IO.File]::WriteAllText((Join-Path $script:LogDir 'cleanup-evidence.json'), ($evidence | ConvertTo-Json -Depth 8), $utf8)
             }
-            catch { }
+            catch {
+                $evidenceError = $_.Exception.Message
+                Write-Step ("cleanup evidence FAIL: " + $evidenceError)
+                if ($script:Exit -eq 0) { $script:Exit = 1 }
+            }
         }
 
-        if ($rootDeleted -and [string]::IsNullOrWhiteSpace($cleanupError)) {
+        if ($rootDeleted -and [string]::IsNullOrWhiteSpace($cleanupError) -and [string]::IsNullOrWhiteSpace($logCopyError) -and [string]::IsNullOrWhiteSpace($evidenceError)) {
             $stageExit = if ($null -eq $stopCode) { 0 } else { $stopCode }
             $stopText = if ($null -eq $stopCode) { 'not-needed' } else { [string]$stopCode }
             Add-Stage 'cleanup' 'PASS' $stageExit "marker verified; stop=$stopText; rootDeleted=true; root=$Root"
@@ -1393,6 +1495,35 @@ function Test-TableResultEvidence {
                     'Skip' { $cs++ }
                     'NotRun' { $cn++ }
                     default { throw "result XML test '$name' has unsupported result '$testResult'" }
+                }
+                $allowedChildren = @('output', 'traits')
+                if ($testResult -eq 'Fail') { $allowedChildren += 'failure' }
+                elseif ($testResult -eq 'Skip' -or $testResult -eq 'NotRun') { $allowedChildren += 'reason' }
+                foreach ($testChild in @($test.ChildNodes | Where-Object { $_.NodeType -eq [System.Xml.XmlNodeType]::Element })) {
+                    if ($testChild.LocalName -notin $allowedChildren) {
+                        throw "result XML test '$name' result=$testResult contains contradictory <$($testChild.LocalName)> child"
+                    }
+                }
+                $forbiddenDescendants = @('error', 'errors', 'skip', 'skipped')
+                if ($testResult -eq 'Pass') { $forbiddenDescendants += @('failure', 'reason') }
+                elseif ($testResult -eq 'Fail') { $forbiddenDescendants += @('reason') }
+                else { $forbiddenDescendants += @('failure') }
+                foreach ($descendant in @($test.SelectNodes('.//*'))) {
+                    if ($descendant.LocalName -in $forbiddenDescendants) {
+                        throw "result XML test '$name' result=$testResult contains contradictory nested <$($descendant.LocalName)> element"
+                    }
+                }
+                foreach ($traitsNode in @($test.SelectNodes('./traits'))) {
+                    foreach ($traitChild in @($traitsNode.ChildNodes | Where-Object { $_.NodeType -eq [System.Xml.XmlNodeType]::Element })) {
+                        if ($traitChild.LocalName -ne 'trait') {
+                            throw "result XML test '$name' contains unsupported <$($traitChild.LocalName)> under <traits>"
+                        }
+                    }
+                }
+                foreach ($outputNode in @($test.SelectNodes('./output'))) {
+                    if (@($outputNode.ChildNodes | Where-Object { $_.NodeType -eq [System.Xml.XmlNodeType]::Element }).Count -gt 0) {
+                        throw "result XML test '$name' contains unexpected element content under <output>"
+                    }
                 }
             }
             $ct = [int]$collection.GetAttribute('total')
@@ -1605,7 +1736,15 @@ function Assert-XmlGatingSelfTest {
 }
 
 try {
-    New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
+    $LogDir = Initialize-OutputDirectory -Path $LogDir
+    $script:LogDir = $LogDir
+}
+catch {
+    Write-Host ("P52-TABLE-POSTGRES-BLOCKED: " + $_.Exception.Message)
+    exit 2
+}
+
+try {
     New-Item -ItemType Directory -Path (Join-Path $LogDir 'tmp') -Force | Out-Null
 
     # Resolve the port BEFORE any cluster directory, download or build. A
@@ -1782,7 +1921,7 @@ try {
     if (-not $writerResult.killed) {
         throw "Crash writer was not forcibly killed after its durable commit."
     }
-    $markerJson = Get-Content -LiteralPath $markerPath -Raw | ConvertFrom-Json
+    $markerJson = Get-Content -LiteralPath $markerPath -Raw -Encoding UTF8 | ConvertFrom-Json
     Add-Stage 'crash-writer' 'PASS' $writerResult.exitCode "pid=$($writerResult.pid), committed state=$($markerJson.stateVersion) seq=$($markerJson.lastEventSeq), killed before publication" -Killed $true
 
     $restart = Restart-ClusterImmediate
@@ -1794,7 +1933,7 @@ try {
     if ($readerCode -ne 0 -or -not (Test-Path -LiteralPath $resultPath)) {
         throw "Crash reader failed with exit $readerCode (see $readerLog)."
     }
-    $readerJson = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
+    $readerJson = Get-Content -LiteralPath $resultPath -Raw -Encoding UTF8 | ConvertFrom-Json
     if ([int]$readerJson.stateVersion -ne [int]$markerJson.stateVersion -or
         [int]$readerJson.lastEventSeq -ne [int]$markerJson.lastEventSeq -or
         [int]$readerJson.eventCount -ne [int]$markerJson.eventCount -or
@@ -1917,7 +2056,7 @@ try {
     if ($restoreReaderCode -ne 0 -or -not (Test-Path -LiteralPath $restoreResultPath)) {
         throw "Restored-database reader failed with exit $restoreReaderCode."
     }
-    $restoreReader = Get-Content -LiteralPath $restoreResultPath -Raw | ConvertFrom-Json
+    $restoreReader = Get-Content -LiteralPath $restoreResultPath -Raw -Encoding UTF8 | ConvertFrom-Json
     if (-not [bool]$restoreReader.recovered -or [int]$restoreReader.eventCount -le 0) {
         throw "Restored database did not recover the committed event/receipt/outbox state."
     }
@@ -2006,21 +2145,6 @@ catch {
     $script:Exit = if ($blocked) { 2 } else { 1 }
 }
 finally {
-    try {
-        if (Test-Path -LiteralPath $script:Marker) {
-            if (-not (Test-Path -LiteralPath (Join-Path $script:LogDir 'pg'))) {
-                New-Item -ItemType Directory -Path (Join-Path $script:LogDir 'pg') -Force | Out-Null
-            }
-            if (Test-Path -LiteralPath $script:PgLog) {
-                Copy-Item -LiteralPath $script:PgLog -Destination (Join-Path $script:LogDir 'pg\postgres.log') -Force
-            }
-            if (Test-Path -LiteralPath (Join-Path $Root 'logs')) {
-                Copy-Item -Path (Join-Path $Root 'logs\*') -Destination (Join-Path $script:LogDir 'pg') -Force -ErrorAction SilentlyContinue
-            }
-        }
-    }
-    catch { Write-Step ("cleanup log copy warning: " + $_.Exception.Message) }
-
     try { Stop-And-RemoveCluster }
     catch {
         Write-Step ("cleanup FAIL: " + $_.Exception.Message)
@@ -2045,6 +2169,7 @@ finally {
     }
 
     try {
+        if (-not $script:LogDirOwned) { throw 'LogDir ownership was not acquired; refusing to seal evidence' }
         $portMode = ''
         $portCandidates = @()
         if ($null -ne $script:PortSelection) {
@@ -2066,22 +2191,63 @@ finally {
             lines = $script:Lines
             exit = $script:Exit
         }
-        $summary | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $LogDir 'wrapper-summary.json') -Encoding utf8
-        $script:Lines | Set-Content -LiteralPath (Join-Path $LogDir 'wrapper.log') -Encoding utf8
+        $summaryPath = Join-Path $LogDir 'wrapper-summary.json'
+        $wrapperLogPath = Join-Path $LogDir 'wrapper.log'
+        $summary | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $summaryPath -Encoding utf8 -ErrorAction Stop
+        $logLines = @($script:Lines)
+        $utf8Log = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText($wrapperLogPath, ($logLines -join [Environment]::NewLine), $utf8Log)
+        $summaryReadback = Get-Content -LiteralPath $summaryPath -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json
+        if ($null -eq $summaryReadback -or [int]$summaryReadback.exit -ne [int]$script:Exit) {
+            throw 'wrapper-summary.json write/readback mismatch'
+        }
+        if (-not (Test-Path -LiteralPath $wrapperLogPath -PathType Leaf)) {
+            throw 'wrapper.log write/readback failed'
+        }
+        $null = Get-Content -LiteralPath $wrapperLogPath -Raw -Encoding UTF8 -ErrorAction Stop
+
+        $manifestPath = Join-Path $LogDir 'manifest.sha256.json'
+        $manifestTempPath = $manifestPath + '.tmp'
+        if (Test-Path -LiteralPath $manifestPath -PathType Container) {
+            throw "manifest path is a directory: $manifestPath"
+        }
         $manifest = @()
-        Get-ChildItem -LiteralPath $LogDir -File -Recurse | Sort-Object FullName | ForEach-Object {
+        Get-ChildItem -LiteralPath $LogDir -File -Recurse -ErrorAction Stop | Sort-Object FullName | Where-Object {
+            $full = [IO.Path]::GetFullPath($_.FullName)
+            $full -ne [IO.Path]::GetFullPath($manifestPath) -and $full -ne [IO.Path]::GetFullPath($manifestTempPath)
+        } | ForEach-Object {
             $manifest += [ordered]@{
                 path = $_.FullName.Substring($LogDir.Length).TrimStart('\')
                 sha256 = Get-Sha256 $_.FullName
                 bytes = $_.Length
             }
         }
-        $manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $LogDir 'manifest.sha256.json') -Encoding utf8
+        if ($manifest.Count -eq 0) { throw 'manifest has no rows' }
+        $manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $manifestTempPath -Encoding utf8 -ErrorAction Stop
+        $manifestReadback = Get-Content -LiteralPath $manifestTempPath -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json
+        if (@($manifestReadback).Count -ne $manifest.Count) { throw 'manifest write/readback row-count mismatch' }
+        Move-Item -LiteralPath $manifestTempPath -Destination $manifestPath -Force -ErrorAction Stop
+        $sealedManifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json
+        if (@($sealedManifest).Count -ne $manifest.Count) { throw 'sealed manifest row-count mismatch' }
+        if (@(@($sealedManifest) | Where-Object { $_.path -eq 'manifest.sha256.json' -or $_.path -eq 'manifest.sha256.json.tmp' }).Count -gt 0) {
+            throw 'sealed manifest includes itself'
+        }
+        foreach ($row in @($sealedManifest)) {
+            $rowPath = Join-Path $LogDir ([string]$row.path)
+            $rowItem = Get-Item -LiteralPath $rowPath -ErrorAction Stop
+            if ([long]$rowItem.Length -ne [long]$row.bytes) { throw "sealed row bytes mismatch: $($row.path)" }
+            if ((Get-Sha256 $rowPath) -ne [string]$row.sha256) { throw "sealed row hash mismatch: $($row.path)" }
+        }
+        $script:SealOk = $true
     }
-    catch { Write-Step ("evidence manifest warning: " + $_.Exception.Message) }
+    catch {
+        $script:SealOk = $false
+        Write-Step ("evidence seal FAIL: " + $_.Exception.Message)
+        if ($script:Exit -eq 0) { $script:Exit = 1 }
+    }
 }
 
-if ($script:Exit -eq 0) { Write-Host 'P52-TABLE-POSTGRES-PASS' }
+if ($script:Exit -eq 0 -and $script:SealOk) { Write-Host 'P52-TABLE-POSTGRES-PASS' }
 elseif ($script:Exit -eq 2) { Write-Host 'P52-TABLE-POSTGRES-BLOCKED' }
 else { Write-Host 'P52-TABLE-POSTGRES-FAIL' }
 exit $script:Exit

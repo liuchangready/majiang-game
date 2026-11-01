@@ -285,7 +285,7 @@ function Read-Summary([string]$EvidenceDir) {
             (Join-Path $EvidenceDir 'wrapper-summary.json'),
             (Join-Path $EvidenceDir 'log\wrapper-summary.json'))) {
         if (Test-Path -LiteralPath $candidate) {
-            return (Get-Content -LiteralPath $candidate -Raw | ConvertFrom-Json)
+            return (Get-Content -LiteralPath $candidate -Raw -Encoding UTF8 | ConvertFrom-Json)
         }
     }
     return $null
@@ -362,7 +362,12 @@ try {
     $probe = Get-PortProbe -Value $exclusivePort
     Assert-Equal 'AccessDenied' $probe.state 'S1 exclusive holder makes the bind probe AccessDenied'
     Assert-Equal '10013' "$($probe.errorCode)" 'S1 AccessDenied carries socket error 10013 (WSAEACCES)'
-    Assert-Match $probe.detail 'forbidden|access|permission' 'S1 AccessDenied detail is the real OS permission message'
+    # Locale-neutral: the typed state/10013 assertions above prove the WSAEACCES
+    # class. Only require the real, nonempty OS detail text; do not require an
+    # English word (the same exception is localized on this host).
+    $detailOk = (-not [string]::IsNullOrWhiteSpace([string]$probe.detail)) -and
+        ([string]$probe.detail).Trim().Length -ge 8
+    Assert-True $detailOk 'S1 AccessDenied detail is the real nonempty OS permission message'
 
     $holder.Dispose()
     $holder = $null
@@ -707,7 +712,7 @@ try {
     Assert-Equal "$($script:Port)" $serverPort.Trim() 'S7 real PostgreSQL listens on the selected port'
     Assert-Equal ([System.IO.Path]::GetFullPath($script:DataDir)) ([System.IO.Path]::GetFullPath($dataDirectory)) 'S7 server data_directory is this run''s owned root'
     Assert-True (Test-Path -LiteralPath $script:Marker) 'S7 ownership marker exists'
-    $marker = Get-Content -LiteralPath $script:Marker -Raw | ConvertFrom-Json
+    $marker = Get-Content -LiteralPath $script:Marker -Raw -Encoding UTF8 | ConvertFrom-Json
     Assert-Equal 'mahjong-p52-pg' $marker.owner 'S7 marker owner is the P5.2 wrapper'
     Assert-Equal ([System.IO.Path]::GetFullPath($realRoot)) ([System.IO.Path]::GetFullPath($marker.root)) 'S7 marker root matches this run'
     Assert-Equal "$($script:Port)" "$($marker.port)" 'S7 marker port matches this run'
