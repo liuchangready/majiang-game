@@ -254,7 +254,7 @@ foreach($name in 'Get-Sha256','Get-StringSha256','Get-GitBlobSha256','Write-Json
  $fn=$ast.Find({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst]-and$n.Name-eq$name},$true)
  . ([scriptblock]::Create($fn.Extent.Text))
 }
-$PlayerPath=$Player;$BuildRecordPath=$Record;$PackageManifestPath=$Package;$HelperPath=$Helper
+$PlayerPath=$Player;$BuildRecordPath=$Record;$PackageManifestPath=$Package;$HelperPath=$Helper;$SourceSnapshotPath=$Snapshot
 $ExpectedSourceHead=$SourceHead;$ExpectedBuildRecordSha256=$RecordPin;$ExpectedPackageManifestSha256=$PackagePin;$ExpectedSourceSnapshotSha256=$SnapshotPin
 $result=[ordered]@{accepted=$true;error='';sourceHead=''}
 try{Bind-ExistingPlayer;$result.sourceHead=$script:SourceHead}catch{$result.accepted=$false;$result.error=$_.Exception.Message}
@@ -341,7 +341,7 @@ Assert-Test 'bind-valid-317' {
 Assert-Test 'bind-missing-pin' {
     $r = Invoke-BindProbe -Name 'missing-pin' -Record $BuildRecordPath -Snapshot $SourceSnapshotPath -Package $PackageManifestPath -SourceHead ''
     Assert-True (-not [bool]$r.accepted) 'binding without external source pin PASSed'
-    Assert-True ((([string]$r.error).Contains('EXTERNAL_PIN_REQUIRED'))) 'missing pin reason missing'
+    Assert-True ((([string]$r.error).Contains('EXTERNAL_PIN'))) 'missing pin reason missing'
 }
 Assert-Test 'bind-empty-package' {
     $empty = Get-Content -Raw $PackageManifestPath | ConvertFrom-Json

@@ -50,6 +50,8 @@ param(
 
     [string]$ExpectedSourceSnapshotSha256,
 
+    [string]$SourceSnapshotPath,
+
     [string]$HelperPath,
 
     [string]$UnityPath = 'D:\Unity\Hub\Editor\6000.3.27f1\Editor\Unity.exe',
@@ -709,7 +711,10 @@ function Bind-ExistingPlayer {
         [string]::IsNullOrWhiteSpace([string]$marker.buildCommit)) {
         throw 'EXISTING_PLAYER_BUILD_RECORD_SOURCE_MISSING'
     }
-    $snapshotPath = Join-Path (Split-Path -Parent ([IO.Path]::GetFullPath($BuildRecordPath))) 'source-snapshot.json'
+    $snapshotPath = if ([string]::IsNullOrWhiteSpace($SourceSnapshotPath)) {
+        Join-Path (Split-Path -Parent ([IO.Path]::GetFullPath($BuildRecordPath))) 'source-snapshot.json'
+    }
+    else { [IO.Path]::GetFullPath($SourceSnapshotPath) }
     if (-not (Test-Path -LiteralPath $snapshotPath)) {
         throw 'EXISTING_PLAYER_SOURCE_SNAPSHOT_REQUIRED'
     }
