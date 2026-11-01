@@ -1,0 +1,1878 @@
+{
+    "schemaVersion":  1,
+    "kind":  "V5_G2_C05_ANDROID_ENV_BINDING_PREP",
+    "generatedAtUtc":  "2026-11-01T05:07:00.9203100Z",
+    "status":  "PREP_COMPLETE_BUILD_BLOCKED",
+    "phase":  "PRE_CANDIDATE_BUILD_PRE_UI15_AND_RECOVERY_MERGE",
+    "notFinalC05":  true,
+    "notG2":  true,
+    "candidate":  {
+                      "acceptedBase":  "8fd7c6cb701dfbb41c28938de4186749bdd1d6c7",
+                      "candidateCommit":  "cde5da1649d42151abaefc2edc5f558a287d703f",
+                      "candidateTree":  "8c4933aad6615f8230cc038e54c2a721e253aa00",
+                      "codeCommit":  "b33f0aad21c962a6f147dbfdb8a63fd98942d4a2",
+                      "testedMergeCommit":  "db9e5d536f618a9a6991e67498b73ce34d056f4d",
+                      "receiverCommit":  "2beb3ef9b457e8ecb7704cea9f2e080c8e86f45f",
+                      "publicationOnlyDocDelta":  true,
+                      "publicationDeltaNameStatus":  "M\t\"doc/v5-\\351\\207\\215\\346\\236\\204/V5-G2-C03-UNIFIED-CANDIDATE-DELIVERY-20261101.md\"",
+                      "codeDiffFromTestedMergeExit":  0,
+                      "baseToCandidateChangedFiles":  724,
+                      "baseToCandidateShortstat":  "724 files changed, 254184 insertions(+), 1683 deletions(-)",
+                      "ancestry":  {
+                                       "acceptedBaseIsAncestor":  true,
+                                       "codeCommitIsAncestor":  true,
+                                       "testedMergeIsAncestor":  true
+                                   },
+                      "commits":  [
+                                      {
+                                          "sha":  "cde5da1649d42151abaefc2edc5f558a287d703f",
+                                          "parents":  "db9e5d536f618a9a6991e67498b73ce34d056f4d",
+                                          "author":  "sncdc",
+                                          "authoredAt":  "2026-11-01T12:22:08+08:00",
+                                          "subject":  "docs(v5): independently accept C03 selective unification"
+                                      },
+                                      {
+                                          "sha":  "db9e5d536f618a9a6991e67498b73ce34d056f4d",
+                                          "parents":  "f6a920882d1111d968263494ded3d2f224eac9fc 2beb3ef9b457e8ecb7704cea9f2e080c8e86f45f",
+                                          "author":  "sncdc",
+                                          "authoredAt":  "2026-11-01T12:10:17+08:00",
+                                          "subject":  "merge(v5): integrate reviewed C03 unified candidate"
+                                      },
+                                      {
+                                          "sha":  "b33f0aad21c962a6f147dbfdb8a63fd98942d4a2",
+                                          "parents":  "bae6b8b0c98c9ed80256373060a9e754d6fc4296",
+                                          "author":  "sncdc",
+                                          "authoredAt":  "2026-11-01T10:02:54+08:00",
+                                          "subject":  "feat(v5): integrate accepted P4.5 recovery export into G2-C03 candidate"
+                                      },
+                                      {
+                                          "sha":  "2beb3ef9b457e8ecb7704cea9f2e080c8e86f45f",
+                                          "parents":  "82a95f7bd446813073245ffea7099f0383f089d3",
+                                          "author":  "sncdc",
+                                          "authoredAt":  "2026-11-01T12:08:03+08:00",
+                                          "subject":  "docs(v5): close C03 R1 PlayMode attribution and PG verification"
+                                      },
+                                      {
+                                          "sha":  "8fd7c6cb701dfbb41c28938de4186749bdd1d6c7",
+                                          "parents":  "457274c9b74643a9e7dc73cabfb64cc8a2eed223 786e85bc6e9fdcd417400c1759916b2d4a8e1ed0",
+                                          "author":  "liuchangready",
+                                          "authoredAt":  "2026-10-26T16:14:30+08:00",
+                                          "subject":  "Merge V5 G1 accepted implementation as the development baseline"
+                                      }
+                                  ]
+                  },
+    "sourceIdentity":  {
+                           "head":  "cde5da1649d42151abaefc2edc5f558a287d703f",
+                           "branch":  "wt/g2-c05-android-prep-ds-20261101-1300",
+                           "headTree":  "8c4933aad6615f8230cc038e54c2a721e253aa00",
+                           "statusPorcelain":  "",
+                           "repositoryManifest":  {
+                                                      "files":  2445,
+                                                      "sha256":  "5DC2BE90E54E5068952D73D36A81BC7398EF440F87F760C7FC6ACD349AB835D1",
+                                                      "method":  "SHA-256 of the LF-normalized sorted git ls-tree -r HEAD output"
+                                                  },
+                           "scopes":  [
+                                          {
+                                              "path":  "unity/Mahjong.Unity/Assets",
+                                              "files":  314,
+                                              "treeSha":  "6e7b6caad625e25a3e438d0ca196ef217a03fff4",
+                                              "lsTreeSha256":  "CA8BEF8C10975D7F0A587ABCF2B827B9D0969C73C00CE78AD20EE81E2BB98AED"
+                                          },
+                                          {
+                                              "path":  "unity/Mahjong.Unity/Assets/Scripts",
+                                              "files":  130,
+                                              "treeSha":  "eead90ecba23144e63a30835284c24a1707888d2",
+                                              "lsTreeSha256":  "8106C836DA9716832D40F879EFB45D62AA64FB6776782D872A98D2B7ADBFF49E"
+                                          },
+                                          {
+                                              "path":  "unity/Mahjong.Unity/Assets/Scenes",
+                                              "files":  14,
+                                              "treeSha":  "b6c7982d4bb4bf9b17a6640d60b8f6bd996f97fd",
+                                              "lsTreeSha256":  "9F18B2CB53E86F290D7A1C607C88A64382F773906A383CE1A8C4CEBD2096CEBB"
+                                          },
+                                          {
+                                              "path":  "unity/Mahjong.Unity/Assets/Plugins",
+                                              "files":  32,
+                                              "treeSha":  "344ac09e885a1d85ea0e9965efbcd51a401dfdf1",
+                                              "lsTreeSha256":  "187AE23D05D5FFFB15DD24827E7C0C94E54C4213948896560033A0F1CAD488D6"
+                                          },
+                                          {
+                                              "path":  "unity/Mahjong.Unity/Assets/Editor",
+                                              "files":  6,
+                                              "treeSha":  "4335d13602111e5740d85c116b88071466b63a3e",
+                                              "lsTreeSha256":  "9B91A732F74183C9C21751963B42ACCBE876C5736614E6AA225BF61B5AC6F780"
+                                          },
+                                          {
+                                              "path":  "unity/Mahjong.Unity/ProjectSettings",
+                                              "files":  24,
+                                              "treeSha":  "bf4a66fbf741aa2cf35f1c02c58925fbc1a708a3",
+                                              "lsTreeSha256":  "BFF017621A979E7ADC71297D48704CE42D7AED68F3CB4178C3AD3B465272FA4C"
+                                          },
+                                          {
+                                              "path":  "unity/Mahjong.Unity/Packages",
+                                              "files":  2,
+                                              "treeSha":  "3652c32b9e24657bcb350ef8d641455cbffd99bb",
+                                              "lsTreeSha256":  "4A2F32C9617764AF4C9B51E4DBF05B6E6C5E3D59A947336C71EC18C75E7869C0"
+                                          },
+                                          {
+                                              "path":  "dotnet/src",
+                                              "files":  193,
+                                              "treeSha":  "c1a6dfb8ff3b2d9992f1fdaf0d3356813778dd70",
+                                              "lsTreeSha256":  "0E1143CC4E8046B5C5A8CE7CB1BC9310CAD9841A9294ADF06FBB776D0A66E2C5"
+                                          },
+                                          {
+                                              "path":  "tools/unity",
+                                              "files":  28,
+                                              "treeSha":  "3b8cb75dbb231bf094ac190f49f6a90c645b8f55",
+                                              "lsTreeSha256":  "A862201B71512A5AA159BCF481E07391E4A5957727D3C39E8D9A1AE644235C62"
+                                          },
+                                          {
+                                              "path":  "assets",
+                                              "files":  60,
+                                              "treeSha":  "6b39c2bfa74929916679ca81d87c4b01c97efbfd",
+                                              "lsTreeSha256":  "ABA9213D6D468000C9A0C6B14D9B1A0BE318BF07B34616AFB19489B33B6ED378"
+                                          }
+                                      ],
+                           "keyFiles":  [
+                                            {
+                                                "path":  "unity/Mahjong.Unity/Assets/Editor/C05FullGameAndroidBuild.cs",
+                                                "bytes":  6988,
+                                                "sha256":  "695C6A561F95D469B678C9B3D3F554BB11449F28D2EBEC77708FC105F3FCA19A",
+                                                "gitBlob":  "56b3430e0f82431b51c8d607a01498b9cf01be30"
+                                            },
+                                            {
+                                                "path":  "unity/Mahjong.Unity/Assets/Editor/C05FullGameAndroidBuild.cs.meta",
+                                                "bytes":  60,
+                                                "sha256":  "8CD627EC26F85F0681931B0EAB03B20E5D57677B08C44BA9165FC08DB38CBA5D",
+                                                "gitBlob":  "ac8d44fda3534982b957d15d7427bc9d23fe1630"
+                                            },
+                                            {
+                                                "path":  "unity/Mahjong.Unity/ProjectSettings/ProjectSettings.asset",
+                                                "bytes":  22356,
+                                                "sha256":  "828AEA94FE602596FF287C28586DB34F18ABD1B37F75075594D2AC3CBD8EEE34",
+                                                "gitBlob":  "b07c0884835808401b38efac337f36fb1bdf2671"
+                                            },
+                                            {
+                                                "path":  "unity/Mahjong.Unity/ProjectSettings/EditorBuildSettings.asset",
+                                                "bytes":  872,
+                                                "sha256":  "309F769F677F6E82B17578A96217A85D54AC97DE05E444DB74E7F20A770761E6",
+                                                "gitBlob":  "271bcb645c06a9da65acea017f3bf353d6923e76"
+                                            },
+                                            {
+                                                "path":  "unity/Mahjong.Unity/ProjectSettings/ProjectVersion.txt",
+                                                "bytes":  85,
+                                                "sha256":  "56AEAD51018C992AF406752E47C49E8D9458C70F00B983F4BB603B1B3AFC223E",
+                                                "gitBlob":  "12a7ef0fe27ea8cef7c172526552fb87b8ce6740"
+                                            },
+                                            {
+                                                "path":  "unity/Mahjong.Unity/Packages/manifest.json",
+                                                "bytes":  707,
+                                                "sha256":  "7816B51C8B2ECE6C1515B947D3F0790E095F0910A9E6768FDBBE6F588BF697A7",
+                                                "gitBlob":  "346b3f68c13b725ff76b483f0b719db829f7260d"
+                                            },
+                                            {
+                                                "path":  "unity/Mahjong.Unity/Packages/packages-lock.json",
+                                                "bytes":  10113,
+                                                "sha256":  "5EA8C9829228AA440ABDD301B3B836D8BE3891D3AC4D9D2FC950C545792C2DB2",
+                                                "gitBlob":  "12da1c5fe441ea11a991879fc11c1db44410a7c2"
+                                            },
+                                            {
+                                                "path":  "unity/Mahjong.Unity/Assets/TextMesh Pro/Resources/TMP Settings.asset",
+                                                "bytes":  1558,
+                                                "sha256":  "3D789ABE0C8946EFC2BF8C131E1A28EDBB75F82A96421E195E64C2DEDC8EA2E2",
+                                                "gitBlob":  "9dbc4f402582872a1863fdc4896b8d3a5cd2ac16"
+                                            },
+                                            {
+                                                "path":  "tools/unity/build-p45-android-game.ps1",
+                                                "bytes":  32253,
+                                                "sha256":  "33FCFE1BF536E71376CF27AF6F245B5880218570C02F20B17EA3F768D3C5A640",
+                                                "gitBlob":  "abaf820da48275f31182338f9d381b47f7d9cb34"
+                                            },
+                                            {
+                                                "path":  "tools/unity/run-p45-android-game.ps1",
+                                                "bytes":  20221,
+                                                "sha256":  "A87CC5B5EAFEDD38013E0157E79EEC6CD5CC652388395229D8AB31603269B9DF",
+                                                "gitBlob":  "f03232e889ec9676556a0f89817ff05fc6a41f44"
+                                            },
+                                            {
+                                                "path":  "tools/unity/repair-android-toolchain.ps1",
+                                                "bytes":  41523,
+                                                "sha256":  "60E531C1079BFDF3BC357CD4903EF9910F218BC6DD65F85CF9FB286774A2DE32",
+                                                "gitBlob":  "1f2856209c57b234c7dd0313af8a43b2d189a0e2"
+                                            },
+                                            {
+                                                "path":  "tools/unity/build-shared.ps1",
+                                                "bytes":  19985,
+                                                "sha256":  "05BF3661E5F01614EEFEEDDA946C7B9960B36DD157708D1EEABD6A1F569588AD",
+                                                "gitBlob":  "299cc562954b49f8a7ffdf742d98269a1b64c924"
+                                            },
+                                            {
+                                                "path":  "tools/unity/check-shared-plugins.ps1",
+                                                "bytes":  32634,
+                                                "sha256":  "5D4D3C21F3B39E89B6C26757818EDC3DE5C610F679CD14BF2B6B9F671B71F7D9",
+                                                "gitBlob":  "056b74277a94745282a8d16a58f03e2f89531e17"
+                                            },
+                                            {
+                                                "path":  "tools/unity/shared-plugin-provenance-lib.ps1",
+                                                "bytes":  33087,
+                                                "sha256":  "16ACC8D791CE9AA3A6A3625892CFB07E5ECE52520AF01103462CDA978C48E852",
+                                                "gitBlob":  "4d528185ba6e6afe9460d34e4bc6af2e825767e5"
+                                            },
+                                            {
+                                                "path":  "tools/tests/VerifyP45AndroidGame.Tests.ps1",
+                                                "bytes":  30466,
+                                                "sha256":  "240D85355E21888C0EF7E076DC4FD00956A61A32B3A4F2341B4FD347CDBE73F1",
+                                                "gitBlob":  "f68f04594aa89eabc76177d6967099f3572c06b3"
+                                            },
+                                            {
+                                                "path":  "unity/Mahjong.Unity/Assets/Art/UI/Fonts/NotoSansSC-Regular SDF.asset",
+                                                "bytes":  6470,
+                                                "sha256":  "2751EB9F4EFC598FCDD575D9C05380A57B72FAB12B01FBE57B688D779BF77C0C",
+                                                "gitBlob":  null
+                                            }
+                                        ],
+                           "scenes":  [
+                                          {
+                                              "path":  "unity/Mahjong.Unity/Assets/Scenes/Boot.unity",
+                                              "bytes":  9544,
+                                              "sha256":  "4179572E4BCA429F6F7FF5A2E135E09455F977EF8A5130C04C56C9940E809D4A",
+                                              "gitBlob":  "42d82863bb9c72cad38b7893f6432ae19470c2d7"
+                                          },
+                                          {
+                                              "path":  "unity/Mahjong.Unity/Assets/Scenes/Menu.unity",
+                                              "bytes":  64793,
+                                              "sha256":  "43EF15582C03A2FB3BD9CA6B035D0D06EB6DE5E8252A5870449B487D4E052F76",
+                                              "gitBlob":  "3516bff0c610c32deb8c9aaa410b89f90e30d4a2"
+                                          },
+                                          {
+                                              "path":  "unity/Mahjong.Unity/Assets/Scenes/Lobby.unity",
+                                              "bytes":  49649,
+                                              "sha256":  "5745BED2EE9E20FF9CEFF6A2852709E53DF5D819EBD983580946348207FE9AB2",
+                                              "gitBlob":  "a4ba0fead262bae60d07820f10c1306c97d74621"
+                                          },
+                                          {
+                                              "path":  "unity/Mahjong.Unity/Assets/Scenes/Table.unity",
+                                              "bytes":  807991,
+                                              "sha256":  "70BEAC72D6ED0A691F516C1049C9AEC10BE3B68BF63E4EAA7D8D16F8E22822EB",
+                                              "gitBlob":  "52ed2d1c9c7713b0af5b642fad144a771aab2e7c"
+                                          },
+                                          {
+                                              "path":  "unity/Mahjong.Unity/Assets/Scenes/Spectator.unity",
+                                              "bytes":  195915,
+                                              "sha256":  "26A359BF59DD4A7A6749972D50A88A6A777733914684BD934FE61B8BD3E368BD",
+                                              "gitBlob":  "6bb337d1063e0c37a3fffa187fd3984de595db29"
+                                          },
+                                          {
+                                              "path":  "unity/Mahjong.Unity/Assets/Scenes/Settlement.unity",
+                                              "bytes":  92801,
+                                              "sha256":  "917902D47EC31210AB11AF360FBAF3E65142DE2117A9975E326EAB32ECBCD2FC",
+                                              "gitBlob":  "86515ea498583b6593a55fd77a934f1c32fbefed"
+                                          }
+                                      ]
+                       },
+    "sharedPluginInputs":  {
+                               "method":  "Read-only static Get-SharedPluginInputClosure from tools/unity/shared-plugin-provenance-lib.ps1; no dotnet build, no file write outside evidence.",
+                               "projectCount":  7,
+                               "inputCount":  150,
+                               "aggregateSha256":  "996CACB3CB0633B81609AF0FD7A51F40C9AB1BC199BED261DF50055F1ED06A20",
+                               "inputs":  [
+                                              {
+                                                  "path":  "dotnet/Directory.Build.props",
+                                                  "bytes":  780,
+                                                  "sha256":  "5FB7EC5DAD0D2DFDF9636C8BD1E00419D04379F93BC67A91E692E0BF22AE7D3D"
+                                              },
+                                              {
+                                                  "path":  "dotnet/Mahjong.sln",
+                                                  "bytes":  12405,
+                                                  "sha256":  "44EB740CB1C30F00459AA2FE9A431BC0457B7833DA75988F36D74558A38659EF"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Ai/AiCandidateModels.cs",
+                                                  "bytes":  58970,
+                                                  "sha256":  "87874E11EFE15EFC28F010CFAE5FC4E3C0CF239BACB33F4CACE54F73CE4103C2"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Ai/AiCheatHeuristics.cs",
+                                                  "bytes":  8254,
+                                                  "sha256":  "BAA958FCBD03A2D8151DE445F8F5D095509B1892A43D21DC2CA383CFB84D0183"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Ai/AiCheatPolicy.cs",
+                                                  "bytes":  23617,
+                                                  "sha256":  "5455D47C18127A573947A4C09F57BBE0EFE80C14A5AAD131812EAA6871E368EF"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Ai/AiCheatView.cs",
+                                                  "bytes":  53846,
+                                                  "sha256":  "0F34A4ABA30DDB66DB37044D2692A57B23DC675D319DAB9AC6C4599FA411ECEF"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Ai/AiDecision.cs",
+                                                  "bytes":  9200,
+                                                  "sha256":  "608C0CFCA90C23142B3197DF90549A6869EB4CE1528703F8E6E147BAC4DF5B89"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Ai/AiDecisionContext.cs",
+                                                  "bytes":  7558,
+                                                  "sha256":  "86292BD622833D285B2A92CD8065A19E92D0CCBBB91460816AA4005D933A783A"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Ai/AiDecisionService.cs",
+                                                  "bytes":  10927,
+                                                  "sha256":  "D2A399D30BF3E5EE4AA9AADAE74B339FCEB503FFEE200D45B24FF15979E05FF7"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Ai/AiObservation.cs",
+                                                  "bytes":  18233,
+                                                  "sha256":  "E5285F0A6214056B7187773430A82E21246CABB5F6EAAD228F9E800AF11BD35F"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Ai/AiSeatSnapshot.cs",
+                                                  "bytes":  38932,
+                                                  "sha256":  "B7EF7661D69BB3407473DC50AC9380883D39D3DDFB7A3D419AC05233F373A9DC"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Ai/BasicAiContext.cs",
+                                                  "bytes":  14075,
+                                                  "sha256":  "75EAF8D803C51A8E6E210AF65EE297BC8D7F7A099C0616A6C9266190164A8BA1"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Ai/BasicAiStrategy.cs",
+                                                  "bytes":  20642,
+                                                  "sha256":  "63D19CD9BF227F9794C0DA2F62D61B38302C1E4C12560C2A904A9EA2B68AF049"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Ai/CommandIntent.cs",
+                                                  "bytes":  7224,
+                                                  "sha256":  "FDDD53E243508006723F23D1788BEEEE76DA2985F8C7998D0C45D52E19F7A4C7"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Ai/Mahjong.Ai.csproj",
+                                                  "bytes":  743,
+                                                  "sha256":  "665B1AB39584990C3CCD4033422CB2019E01F6B71B6F4E058130A72AA118D80B"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Ai/TargetAwareAiContext.cs",
+                                                  "bytes":  30628,
+                                                  "sha256":  "3B5BBEEB8986401A1F01AC037E7D680314D775E5F6FBC3A114CC6139BB194EAD"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Ai/TargetAwareAiStrategies.cs",
+                                                  "bytes":  43792,
+                                                  "sha256":  "6F5BB606A628973A232EB67CDFC6F00465EBBDC7FA1C54A7FEA29CD72A8CECB5"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Ai/TrivialAiStrategy.cs",
+                                                  "bytes":  9730,
+                                                  "sha256":  "12A71866FC397B05DF1898AFE4C816486EEBAF1F167EEF130592109D32672054"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Ai/TsumogiriAiStrategy.cs",
+                                                  "bytes":  8919,
+                                                  "sha256":  "F3237F201B10095E4569CF2746A31C6A2A0AD53CCF21F121431896323E492635"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Client/AssemblyInfo.cs",
+                                                  "bytes":  102,
+                                                  "sha256":  "6F130D917C6882CDA51C1714823F5B63DFE004EB737A7D7A9B5670C3192F4239"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Client/ClientWireMapper.cs",
+                                                  "bytes":  6982,
+                                                  "sha256":  "13D56B1B1C81B3845085A57C894DCD0387B73D4FD6A8E78441E65B30E74B0A3C"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Client/EarlyPushBuffer.cs",
+                                                  "bytes":  2669,
+                                                  "sha256":  "331410B8C4EE2BDCBFE388AD73C30AD8ADFA1F36B6735CBFC4DB95B372CDE7FA"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Client/FileOutboxFormat.cs",
+                                                  "bytes":  40357,
+                                                  "sha256":  "A94989C39D56B28EF29448EAEFCCE9B7E0A6DA3BCA9923A20E1A37244050E51B"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Client/FileOutboxStore.cs",
+                                                  "bytes":  24439,
+                                                  "sha256":  "9B0C77B3DCE37C4266BFE6C71556D1EC58A444930FCAF7DDC706AFD69D62ED80"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Client/HeartbeatTableChannel.cs",
+                                                  "bytes":  29822,
+                                                  "sha256":  "7CDB93ECE7A7F13767FB6D41209398CA1F46F95B5AB373045888FB6B460D7C8E"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Client/IGameSession.cs",
+                                                  "bytes":  12204,
+                                                  "sha256":  "6B2D2FC9B4B835E822B4F7B424F8C62D7272DF63FB515E7D5679536BF3CCB2CB"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Client/ITableChannel.cs",
+                                                  "bytes":  3597,
+                                                  "sha256":  "3F4A04F914C8FC377033892847A970AA905382F4AB4E3DE20824138E41F5FE16"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Client/ITableClientClock.cs",
+                                                  "bytes":  957,
+                                                  "sha256":  "D1EA3B5D957CE10C6A3F7BFB6D0898C8DFA8A773E71B3B1180511AF08BF32B0D"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Client/Mahjong.Client.csproj",
+                                                  "bytes":  503,
+                                                  "sha256":  "5316B19DB23D3B6DC36DDEEA6C369C3C5B65558CB308E53AC1A897BA9544445A"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Client/Outbox.cs",
+                                                  "bytes":  16429,
+                                                  "sha256":  "2347EFB16F2A79CF57021D8B9D89FA5070F4CE2BB494CDA07377BC6844B8B5D2"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Client/TableConnectionStateMachine.cs",
+                                                  "bytes":  5525,
+                                                  "sha256":  "A2BDAE345C09C07FCA7284768B29AF3326100BFB62A23B148A706EED982B7B6A"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Client/TableSession.cs",
+                                                  "bytes":  88751,
+                                                  "sha256":  "07C23EEE1541E3EA2D879D904FAB1212A54A90B7118175A9328773588CFC1B02"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Client/TableSessionOperationQueue.cs",
+                                                  "bytes":  54680,
+                                                  "sha256":  "B099645725AB0848C723CA104DD4F3CD24CF99D9A6E373A0EACDE444CF1DE672"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Client/TableSessionOptions.cs",
+                                                  "bytes":  1108,
+                                                  "sha256":  "0AEDBDB5B2C87996560A2A338498D46A2BE03F0D8E57C5A9FC947F7274053D28"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Client/TableSessionRunner.cs",
+                                                  "bytes":  23643,
+                                                  "sha256":  "40088710B92F067C59AA3B012BED9630D200380DE09B74FEC744112CFE95AF08"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Client/TableTicketProvider.cs",
+                                                  "bytes":  2681,
+                                                  "sha256":  "DC0336B141546F8EEF9E21CCD4D5F693073E681827E79803EB1E48C279B48487"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Client/TableVisibleEventBatch.cs",
+                                                  "bytes":  46178,
+                                                  "sha256":  "36CDD6734541668D9C8E4CED340D5B92F64BC5223EA1FAB6949FCAA2A8FC7E2C"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Client/WebSocketTableChannel.cs",
+                                                  "bytes":  30115,
+                                                  "sha256":  "B6837934748863CF367AEAA904BFC66C40DA9F292D5C4086363CEA68AD454D41"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Client/WebSocketTableChannelOptions.cs",
+                                                  "bytes":  5796,
+                                                  "sha256":  "AB329BC5B5F42C5F3C2A80E15DC66F62D4801E27426702F772C98ABB088AB28C"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Client/WebSocketTransport.cs",
+                                                  "bytes":  2740,
+                                                  "sha256":  "DE5DAB19ECE0F531AC65D572BD25769E835DBDE5B8D2CC4377FD50903A5EBB1B"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Contracts.Wire/Mahjong.Contracts.Wire.csproj",
+                                                  "bytes":  1283,
+                                                  "sha256":  "B64B2963E643129A15FC398155667C6F2474E38058692A4FC55824397BA93F3B"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Contracts.Wire/mahjong.proto",
+                                                  "bytes":  31240,
+                                                  "sha256":  "A846FC1FCDE0DAFCBFB0993367E91D40915630A2876B0272D800860CC2B13F81"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Contracts.Wire/ProjectionWireMapper.cs",
+                                                  "bytes":  63045,
+                                                  "sha256":  "7794AF2BE61B10AF821FCEF7CA326093EF678AE2B4545FEA910BB91CD4939554"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Contracts.Wire/WireCodec.cs",
+                                                  "bytes":  110152,
+                                                  "sha256":  "A23C2F720EC33374E7A44E66C4FB402D577B608194245D3252EBA9A6E7DA9A2C"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Contracts/AccessCapabilities.cs",
+                                                  "bytes":  7717,
+                                                  "sha256":  "42005450982D05365C291A6DEDD731D4587D1710C6B7DD31A7116ABE417B7D03"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Contracts/CanonicalPayloadDigest.cs",
+                                                  "bytes":  27229,
+                                                  "sha256":  "2CE9E027F7C06849B1BBA09AAC42DF1CBD6582CAE6A829D59AC2B8346983B73C"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Contracts/Mahjong.Contracts.csproj",
+                                                  "bytes":  303,
+                                                  "sha256":  "CAE8FC9CA015BBB12F7313B7B3C5B17E7EA74DD0CE37270F499D70C0CC5C89E6"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Contracts/ProtocolCommand.cs",
+                                                  "bytes":  31027,
+                                                  "sha256":  "EB3C7599631BF3AFEA88069F2EEA4722D49A0690574D8C26B96D18DEA009FDA5"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Contracts/ProtocolErrorCode.cs",
+                                                  "bytes":  12927,
+                                                  "sha256":  "2404A8741D875CA0D9614D436C8BE12F6C921EFDE64FCDF5EAE7219F90033354"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Contracts/ProtocolIdentity.cs",
+                                                  "bytes":  25047,
+                                                  "sha256":  "149CA36554117FE0F243EDC6596352A6C3DE528C29AFB0623988AB6E4A5817A8"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Contracts/ProtocolProjectionPayload.cs",
+                                                  "bytes":  45609,
+                                                  "sha256":  "EC2B010F556D49F75BD1D4E73073E10A61283270BF0BE9516D7F8C962887A714"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Contracts/ProtocolReceipt.cs",
+                                                  "bytes":  11667,
+                                                  "sha256":  "7E05DC5FF0D26341A75B554CF303BC7686BCA8450A2B31855558219433394BFB"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Contracts/ProtocolSnapshot.cs",
+                                                  "bytes":  48007,
+                                                  "sha256":  "C0471E570CCDEA98C606A6834223DF320CE8E8290DB80B6B13C80810FA511B21"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Contracts/ProtocolVersion.cs",
+                                                  "bytes":  10580,
+                                                  "sha256":  "D7CCFDFD25735F3B979BE351F5EBD2BDB9F985408FA746189755C71433BF398F"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Contracts/PublicRoundRecord.cs",
+                                                  "bytes":  5753,
+                                                  "sha256":  "1991FFC6536F012126CA41A7359B7BDD9C2A161AFBD81FD2D3FC8DE99209AE6C"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Contracts/PublicSessionHistory.cs",
+                                                  "bytes":  10575,
+                                                  "sha256":  "083220DB44F7FD379C5D53A65A2E6D2AD57CF650C9B5B11E12B999C31C3C01C4"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/Cheat/BeamSwap.cs",
+                                                  "bytes":  10616,
+                                                  "sha256":  "7603CE246284A2E38E2C7CC29ED8F25E1C376E3BFE6DF4E3CF36F5B6119A06C6"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/Cheat/CheatEconomy.cs",
+                                                  "bytes":  2383,
+                                                  "sha256":  "AFF77A8929B2F3657E09DFAD9A782DA28B4F696F0F803EEEC48D86813F70B1FD"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/Cheat/CheatLedger.cs",
+                                                  "bytes":  12344,
+                                                  "sha256":  "A5B7E4B61566160507F6ABB8AF00974001F28E91B864508F6473DC75FBAFFF19"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/Cheat/CheatProjection.cs",
+                                                  "bytes":  2391,
+                                                  "sha256":  "52F158F86671BC5D04F53AB7EB37AA72988D2AEEAC8AB1429158C99E29B7EC14"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/Cheat/CheatState.cs",
+                                                  "bytes":  24790,
+                                                  "sha256":  "D7276B9F3E903C1441CBB3932C0E63B77FECE6B5AA20F3CD2AB28B2CA948D7C7"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/Cheat/CheatSubmission.cs",
+                                                  "bytes":  71607,
+                                                  "sha256":  "CD3E18980981FC04ADE1661BE5A14ADA1CC1AF767E868BA7C361AD9BC50DBD12"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/Cheat/SleeveBloom.cs",
+                                                  "bytes":  27089,
+                                                  "sha256":  "7BD95E087F0FE534FADF874D3BBA0637B5CF6748A92C625DF94EB3B1ADAFB736"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/Cheat/SleeveBloomActivationInput.cs",
+                                                  "bytes":  5827,
+                                                  "sha256":  "74E3A07D8444E69B405BC0285F182E7983D0574FECCE36D9397E244CCE8B2E9E"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/Cheat/TileMark.cs",
+                                                  "bytes":  24568,
+                                                  "sha256":  "A08AD59F62332EEDA51E40E8C7B7E44FB8A9F6B2799F27AB574D269712AE9D3D"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/ControlRegistry.cs",
+                                                  "bytes":  26116,
+                                                  "sha256":  "60676CB324972C7F6A96FAA8217C74A6B7037FCDFF84639796332002B7731128"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/DeadlinePolicy.cs",
+                                                  "bytes":  19924,
+                                                  "sha256":  "4A924F3C9A9C52FBF54D4638ED9D9F541AFC3659AA84A416C81372A6468DF958"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/DecisionClock.cs",
+                                                  "bytes":  29600,
+                                                  "sha256":  "75F4314A580155F1B27A28A5DB63601A7D78A1B9D8A4FC729B3570FE1E2DFAEC"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/Mahjong.Domain.csproj",
+                                                  "bytes":  478,
+                                                  "sha256":  "47651F296FB866F107C2C9FE83F29E8D3987ABBAA3D54389510E0C253E1CE5C4"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/MatchProgression.cs",
+                                                  "bytes":  13735,
+                                                  "sha256":  "37F22A62BF42A05F92928EAF8A484E652D6EAB6CE4BDE9CE15642939EAAE0B57"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/MatchSession.cs",
+                                                  "bytes":  35596,
+                                                  "sha256":  "11C5CF7B009B3B4A0F502D366CA2E0C22D34E35DDB1D3BE9BC76C3C6945686F8"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/MatchTypes.cs",
+                                                  "bytes":  20942,
+                                                  "sha256":  "7ECBB8BC345E4A16F0BC9F49C8189333BCC90872F854515DCD6630D04B9227AC"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/RecordedRandomDraw.cs",
+                                                  "bytes":  5641,
+                                                  "sha256":  "8930B67C908CFCA24A0EBFF553C36082FA53546C265A7E2F1777A82484FCB605"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/RoundCheatTransition.cs",
+                                                  "bytes":  56982,
+                                                  "sha256":  "E4F815B3143F13DA3E1C901570582F380BC027ACDF780430CB33D6D796FF27E7"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/RoundRecovery.cs",
+                                                  "bytes":  66980,
+                                                  "sha256":  "55EAE65FD9531213591D70B81CF0C858FE7C16292EC416B83D67315E206A5031"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/RoundStateMachine.cs",
+                                                  "bytes":  104683,
+                                                  "sha256":  "FF3C867129A63FD8AEF8EFFDE96A769A8CC19DEFA1B5CB0A4C80F7DCE3DC27A0"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/RoundTransition.cs",
+                                                  "bytes":  8113,
+                                                  "sha256":  "8961CA8FA5559725D8DC87A53B04A58ADDA7CFDE33EA022DEF4686EED3A7FEAF"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/RoundTypes.cs",
+                                                  "bytes":  22071,
+                                                  "sha256":  "133C5CAEDF1582379C36468C05D223422015C0B1EB62B6E57D6D50BDA343DCDD"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/Rules/FuCalculator.cs",
+                                                  "bytes":  13705,
+                                                  "sha256":  "BA9069BAEFCADD198645D07CCFFBFFF1443E47B699F3CA2123F8AA8B5A3DDC79"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/Rules/HandDecomposer.cs",
+                                                  "bytes":  15989,
+                                                  "sha256":  "1373954AA43AEDACFCBFC4122F4DCA7E51CE7991D1A423A6DF1E188C93948E26"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/Rules/RoundSettlementCalculation.cs",
+                                                  "bytes":  15800,
+                                                  "sha256":  "C8166F56FABB023030CA9E1BDEC7B7CF96ACF445C29A0B20059102B2442D9F6B"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/Rules/RoundSettlementCalculator.cs",
+                                                  "bytes":  58849,
+                                                  "sha256":  "9A1C58747CAB04168E0B98F033298433F892611AF68AFA32C532A552FC54041C"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/Rules/ScoreCalculator.cs",
+                                                  "bytes":  12007,
+                                                  "sha256":  "E10B92FAD1E39DEC3163DFCD69502368F889EB4A001907811B193ED46E0E15A6"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/Rules/ScoringModels.cs",
+                                                  "bytes":  9532,
+                                                  "sha256":  "D7691261D440DDA9F66AFB0B8E59EAC3118D71E77440629CDC8A7DA9B5755C03"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/Rules/SettlementService.cs",
+                                                  "bytes":  9570,
+                                                  "sha256":  "30D36305805F5D20595B435A7C42852E9035BF11516980146F07A91D129EBE7B"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/Rules/WinningScoreEvaluator.cs",
+                                                  "bytes":  15604,
+                                                  "sha256":  "407D5488D0FF9C88BF86C50D79D28B9FE9973831CAFDEF1176A9C55DD307457A"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/Rules/Yaku.cs",
+                                                  "bytes":  7744,
+                                                  "sha256":  "2A41FA4FAC8AB0C1B631FAE437330DE39EE7DFEA07A4E7F5E46BD145CC8EC0C9"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/Rules/YakuEvaluator.cs",
+                                                  "bytes":  23894,
+                                                  "sha256":  "54665D77745D7DB337CEF23A2CD7926453B0203317EC0F743D9311EC9CEA7DAF"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/Stacking/ShuffleConfig.cs",
+                                                  "bytes":  23511,
+                                                  "sha256":  "A729B20CE86CD27C5D5454B25AD2BD535BE702F4C9BBC7A4888822C44ECE19B5"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/Stacking/ShuffleRandomTrace.cs",
+                                                  "bytes":  7105,
+                                                  "sha256":  "FDBBABD7308C18F37A248E674344FAECE0C96C8329876E0FCF584C59435F8FD8"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/Stacking/ShuffleSeeThroughResolver.cs",
+                                                  "bytes":  5045,
+                                                  "sha256":  "3CB5E3E6C58E9303684E513729C2247447E63763137A2C03711F857FF9F0C247"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/Stacking/ShuffleSelection.cs",
+                                                  "bytes":  3963,
+                                                  "sha256":  "7AEAF284BE15F99C1689362CEF9F9137320961A2E6F4C6503023EE5E40A66E9D"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/Stacking/ShuffleSlots.cs",
+                                                  "bytes":  4052,
+                                                  "sha256":  "067CC68AC2D0E596A75EC6DE1EEFCB692CB9DA14E0AA912619FBF2F5A4FC4771"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/Stacking/ShuffleTarget.cs",
+                                                  "bytes":  1688,
+                                                  "sha256":  "34C66D9D17B2B2094446AD5A64B0A4C218908C24DCB192D1D7BFDC1B53CEF571"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/Stacking/ShuffleTargets.cs",
+                                                  "bytes":  6949,
+                                                  "sha256":  "3C017B527EE7CDD2E906D11EF45ED987ABC6FFE332E2D04DD4C11CD726FAEED0"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/Stacking/ShuffleTypedRandomTrace.cs",
+                                                  "bytes":  15929,
+                                                  "sha256":  "8D428ACB32C498B2BDFDE7C223F84167423454B66DDF729D80D228E9DE9AD682"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/Stacking/ShuffleWallSynthesizer.cs",
+                                                  "bytes":  55617,
+                                                  "sha256":  "7863B155AA0B8235860E39CBDEEADC4FD189E758858E9B25D9B8720A746D8170"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/TileId.cs",
+                                                  "bytes":  6242,
+                                                  "sha256":  "CB8E3762AF6A619DB414D7F20D1BB768F73E7EB688B0A6091F9E2371CE5450AB"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/TileLocation.cs",
+                                                  "bytes":  14194,
+                                                  "sha256":  "2D7EEA5B33540808134E601AF8C3164B9571F80975EA790C677FDA07C69104B0"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/TilePositionMap.cs",
+                                                  "bytes":  83567,
+                                                  "sha256":  "350D9CD8A2878F90001CCB3AA909FA4BB1223C5DC2502B6F223756EF87201DBB"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.Domain/TileStateHash.cs",
+                                                  "bytes":  5282,
+                                                  "sha256":  "24AD7EEA8AB66E0A446E6A95BC49431F25059E9CF50DBD7814068DF966C60E55"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.LocalHost/AssemblyInfo.cs",
+                                                  "bytes":  192,
+                                                  "sha256":  "81BBDAA9DADC6C347341519F6DCE922FB51ED87EFD439F7BA263FB0CD028BD3D"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.LocalHost/LocalCandidateProvider.cs",
+                                                  "bytes":  23840,
+                                                  "sha256":  "93C9783A9EC6826ACB7EC3697FCD44A167872DD1ED7ED4A65947336786779F42"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.LocalHost/LocalCommandPayload.cs",
+                                                  "bytes":  6616,
+                                                  "sha256":  "B45FB328C19859522A9FF25C9065A601EBA69F401E298FF753324C49FF41775B"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.LocalHost/LocalFileSystem.cs",
+                                                  "bytes":  3744,
+                                                  "sha256":  "302F396B68B3E97D91FD6C93036D7D5722A7C713D7C69C686D4893F6D79E1942"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.LocalHost/LocalMatchCoordinator.cs",
+                                                  "bytes":  44931,
+                                                  "sha256":  "69A5466A37419EBFE622C854AF6D0BD5D913381651F31EC0D910864AC1F74C33"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.LocalHost/LocalSave.cs",
+                                                  "bytes":  11471,
+                                                  "sha256":  "DB66589DB64A21C76BDE2D7B676DAEBE262B44A484F37BB88546CEA47A46287E"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.LocalHost/LocalSaveCodec.cs",
+                                                  "bytes":  52528,
+                                                  "sha256":  "B0E95B246EFD47B8AAC64C0BF84B7C2CE70739FAB9380965508A236736270890"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.LocalHost/LocalSettlementFactsPort.cs",
+                                                  "bytes":  5730,
+                                                  "sha256":  "D0F7C62FA01973EB8C3FE10B76C6974F8A26A933BA2BC2425B913573AA11EFF7"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.LocalHost/LocalSnapshotFacts.cs",
+                                                  "bytes":  27201,
+                                                  "sha256":  "C4A237EF510F6F05B5D8ABF2F0539444DE95AD201DDB3BE3A7E56D77442E6382"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.LocalHost/LocalTableChannel.cs",
+                                                  "bytes":  21378,
+                                                  "sha256":  "EBB90FAADD070DE9DAA309BA20FD0E2AC1DA68CD0676780BFDF6D8060FE25976"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.LocalHost/LocalTableDriver.cs",
+                                                  "bytes":  26880,
+                                                  "sha256":  "2795E366861D271222E2378400392DDC4A85AB9D40864B2E0FEC7EEF8F4FAE48"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.LocalHost/LocalTableHost.cs",
+                                                  "bytes":  18579,
+                                                  "sha256":  "C0CD17AE1146A989703A4126DBF4333CF5BA9B6FC75EB5AC468F640B9DBA6F67"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.LocalHost/LocalTableRecoveryExport.cs",
+                                                  "bytes":  27369,
+                                                  "sha256":  "703773466B2FE4FDB5D64D86AEF2926FFF89BBC888F95998C740B0D37AE6BD87"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.LocalHost/LocalTableRuntime.cs",
+                                                  "bytes":  124173,
+                                                  "sha256":  "74E4FCB6EBCDD0BC30E5790834BB6786778CA801A932B4B8A9109D0C122F0C11"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.LocalHost/LocalTableStore.cs",
+                                                  "bytes":  87318,
+                                                  "sha256":  "5BE26BC2E6DAF4BFDFBB12C32AFC22C45D7B26D42EF005C51A34AC2D5E0C73B3"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.LocalHost/Mahjong.LocalHost.csproj",
+                                                  "bytes":  669,
+                                                  "sha256":  "F4281A8C671849C5BAABE96C4910120FA5CDEC2489B18694A9BC17DD848B1BC5"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.TableRuntime/AssemblyInfo.cs",
+                                                  "bytes":  299,
+                                                  "sha256":  "7987B9D45380C4654030A439633C065EAB37A77AB1D8B6444DEC637BA1FFB36E"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.TableRuntime/InMemoryTableStore.cs",
+                                                  "bytes":  78947,
+                                                  "sha256":  "986804EECB1AE2CB1AAA8BF0F941C7CDB5912FB231EE2F4F6270C14CD36044F6"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.TableRuntime/Mahjong.TableRuntime.csproj",
+                                                  "bytes":  573,
+                                                  "sha256":  "8C62697B7F9AF6919701C2A3F5D274BCBCA332419601C78A716840D5EF0EA9A4"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.TableRuntime/TableActor.cs",
+                                                  "bytes":  410443,
+                                                  "sha256":  "5B70325C065D938B808D2E1717B60DB6473E1A7BB031FA611BD0BA2B30792943"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.TableRuntime/TableActorMessages.cs",
+                                                  "bytes":  6957,
+                                                  "sha256":  "7BE6F895C84A5D0F1FB40690858AEAAD08499379E54DC69081019A1939890BAF"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.TableRuntime/TableCheckpointCodecs.cs",
+                                                  "bytes":  57443,
+                                                  "sha256":  "44EDDD76031C503B29C182B6E4C8FA934BBF379F24E96417A27AC5209976F232"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.TableRuntime/TableCheckpointValidator.cs",
+                                                  "bytes":  16205,
+                                                  "sha256":  "7B37603227BC2C077820F5CFD9A70C0F4C3F3680558D11409E3DF5AAB5505966"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.TableRuntime/TableCommandBindingsCodec.cs",
+                                                  "bytes":  7389,
+                                                  "sha256":  "0B01AD87D355DC9CB28F0E40656E9620284A11BC1F56DC6FF62C75923A95F046"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.TableRuntime/TableCommittedCallFacts.cs",
+                                                  "bytes":  9164,
+                                                  "sha256":  "4F5CE2D61916A150034EE464F288F1277228B405967A48333D173739095356DF"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.TableRuntime/TableControlContracts.cs",
+                                                  "bytes":  34224,
+                                                  "sha256":  "DC89595468C0802545A270C58133D121C11F5EB5FB72F375339739C2596EC498"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.TableRuntime/TableControlMessages.cs",
+                                                  "bytes":  5496,
+                                                  "sha256":  "9ABE65CDF60D7306422961CAFB38331E71FD1B5B0BAE5776CABDA1831B9A2455"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.TableRuntime/TableDurableContracts.cs",
+                                                  "bytes":  66050,
+                                                  "sha256":  "AF0CB6C57326E74C42C01535688E19C6BCD95FAAFD81EE854E1FFC6A09CEFC84"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.TableRuntime/TableEventProjection.cs",
+                                                  "bytes":  41005,
+                                                  "sha256":  "B4FD2D75579920F519283BDA90E46B4046AEAB76396D304E6D6A17A8B1D26DDB"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.TableRuntime/TableFuritenSnapshot.cs",
+                                                  "bytes":  4189,
+                                                  "sha256":  "3F610D135E3AA9954A7FD264D4BD67342F2F37ADE41C8CC107AC689DA439F541"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.TableRuntime/TableKanWallEvidence.cs",
+                                                  "bytes":  16999,
+                                                  "sha256":  "C68B083B46A13F00FD8D4427958B83B3651B0F5765D1E4BCBD02C4B44A695267"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.TableRuntime/TableMailbox.cs",
+                                                  "bytes":  5192,
+                                                  "sha256":  "2C12D1CD9F1E5312D29CE0F39FEE37AF652B52C889C3AE2224A580EBDFBD2B1C"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.TableRuntime/TableProjectionContractMapper.cs",
+                                                  "bytes":  45387,
+                                                  "sha256":  "D72ED9579336EB23353DA00E895AE227B270A57E45D119D9552B60E43617DC10"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.TableRuntime/TableProjectionFactsCodec.cs",
+                                                  "bytes":  30604,
+                                                  "sha256":  "CBADABEED6840963B94B6E1513EC363E8B96F1EE36BD68B8D1B9C6EC810C490A"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.TableRuntime/TableRecoveryPayloads.cs",
+                                                  "bytes":  24798,
+                                                  "sha256":  "10484664E5095B9B667091DCAA429D412DCBE228020BAB88EDBB6D728A995381"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.TableRuntime/TableRecoveryService.cs",
+                                                  "bytes":  89746,
+                                                  "sha256":  "69FB0CC008F852B3A30A5780926A809EE1EB0666B0528CE7BF923CDEC8D5B78F"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.TableRuntime/TableResponseDecisionReconciliation.cs",
+                                                  "bytes":  11883,
+                                                  "sha256":  "82C706BAE6F6717CAB627F31AF86F1834E3594DE533298A84C53FBDEB2045C22"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.TableRuntime/TableRuntimeContracts.cs",
+                                                  "bytes":  52764,
+                                                  "sha256":  "D54D3241096F0AB0A2133CD7645B559D234DD9BB228941BF90A2D25AB03C4E60"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.TableRuntime/TableRuntimePorts.cs",
+                                                  "bytes":  14031,
+                                                  "sha256":  "64ED26F299F6EB1EE4695818734E7F3D165C1C02652AB094B9F0EA2BC51F4BA6"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.TableRuntime/TableRuntimeReasonCode.cs",
+                                                  "bytes":  15263,
+                                                  "sha256":  "9070EF1235A6ECE340025D76E7129892069E9502F261A879901D7D7772BEB663"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.TableRuntime/TableSettlementCommands.cs",
+                                                  "bytes":  33348,
+                                                  "sha256":  "CFB211B608381C258294C227C5979DAAF63C13E9E9082460AD89C8E3CC5012BC"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.TableRuntime/TableStreamContracts.cs",
+                                                  "bytes":  38846,
+                                                  "sha256":  "12FD850F131E15D324AE09BD2E288B60AF7BDE1FB7B914ABD03EF20B8DC7E242"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.TableRuntime/TableStreamEncodingContracts.cs",
+                                                  "bytes":  9897,
+                                                  "sha256":  "6E1676D6DAD66642371CCB506456DAD4618681D9B1290318CC7E6C5FD0B86D27"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.TableRuntime/TableStreamRegistry.cs",
+                                                  "bytes":  17842,
+                                                  "sha256":  "E2CF43E7853439703D97DF8FF66F559770715C4F638CCB5E5702F9C0E9707C5C"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.TableRuntime/TableVisibilityContexts.cs",
+                                                  "bytes":  18933,
+                                                  "sha256":  "E9466246617045696A9E6A1023F2B1297C85E1F620F31ECC4523F2C0157CC7A7"
+                                              },
+                                              {
+                                                  "path":  "dotnet/src/Mahjong.TableRuntime/TableVisibilityProjection.cs",
+                                                  "bytes":  64156,
+                                                  "sha256":  "47680D3E95080DF99F584105AC648858E95FD6C2EA586EA5B2ADFBF10443DA90"
+                                              },
+                                              {
+                                                  "path":  "global.json",
+                                                  "bytes":  78,
+                                                  "sha256":  "3C0964294517702D4C43F94CC3AF7D4D260FA682F5E66B808C5A31A621A92D04"
+                                              },
+                                              {
+                                                  "path":  "tools/unity/build-shared.ps1",
+                                                  "bytes":  19985,
+                                                  "sha256":  "05BF3661E5F01614EEFEEDDA946C7B9960B36DD157708D1EEABD6A1F569588AD"
+                                              },
+                                              {
+                                                  "path":  "tools/unity/shared-plugin-provenance-lib.ps1",
+                                                  "bytes":  33087,
+                                                  "sha256":  "16ACC8D791CE9AA3A6A3625892CFB07E5ECE52520AF01103462CDA978C48E852"
+                                              }
+                                          ],
+                               "toolIdentity":  [
+                                                    {
+                                                        "Path":  "tools/unity/build-shared.ps1",
+                                                        "Length":  19985,
+                                                        "Sha256":  "05BF3661E5F01614EEFEEDDA946C7B9960B36DD157708D1EEABD6A1F569588AD"
+                                                    },
+                                                    {
+                                                        "Path":  "tools/unity/shared-plugin-provenance-lib.ps1",
+                                                        "Length":  33087,
+                                                        "Sha256":  "16ACC8D791CE9AA3A6A3625892CFB07E5ECE52520AF01103462CDA978C48E852"
+                                                    }
+                                                ],
+                               "historicalComparison":  "C03 section 15 reports 150 unified inputs; this read-only enumeration also returns 150, but no byte-level comparison to the C03 manifest was performed in this prep."
+                           },
+    "pluginOutputs":  {
+                          "status":  "STALE_BASE_ARTIFACTS_NOT_CANDIDATE_OUTPUTS",
+                          "ownDllCount":  7,
+                          "ownDlls":  [
+                                          {
+                                              "path":  "unity/Mahjong.Unity/Assets/Plugins/Mahjong/Mahjong.Domain.dll",
+                                              "bytes":  377856,
+                                              "sha256":  "01414649429B7435D2A00EEC812A73F0D3B0A544AE12F484E19972584AD66679",
+                                              "gitBlob":  "f2c71e965a7573afec5067716fe0114cce34b9fb",
+                                              "productVersion":  "1.0.0+8fd7c6cb701dfbb41c28938de4186749bdd1d6c7",
+                                              "embeddedCommit":  "8fd7c6cb701dfbb41c28938de4186749bdd1d6c7",
+                                              "candidateOutput":  false,
+                                              "status":  "STALE_BASE_ARTIFACT_NOT_BOUND_TO_CANDIDATE"
+                                          },
+                                          {
+                                              "path":  "unity/Mahjong.Unity/Assets/Plugins/Mahjong/Mahjong.Contracts.dll",
+                                              "bytes":  119296,
+                                              "sha256":  "3F51D1ACA7831251D251543365AAD7643E45200B93D9AEACFE14E1133D6106F3",
+                                              "gitBlob":  "dc1975c797ed12f66623f869368a56115e54bd52",
+                                              "productVersion":  "1.0.0+8fd7c6cb701dfbb41c28938de4186749bdd1d6c7",
+                                              "embeddedCommit":  "8fd7c6cb701dfbb41c28938de4186749bdd1d6c7",
+                                              "candidateOutput":  false,
+                                              "status":  "STALE_BASE_ARTIFACT_NOT_BOUND_TO_CANDIDATE"
+                                          },
+                                          {
+                                              "path":  "unity/Mahjong.Unity/Assets/Plugins/Mahjong/Mahjong.Contracts.Wire.dll",
+                                              "bytes":  386560,
+                                              "sha256":  "AA6357D05EE4B9E08914F8C6AC98D6A8AC8699C497C37D8DA928202A2967975F",
+                                              "gitBlob":  "52d4e246aab5dcda1c9a82d6de28b7417b66cc8a",
+                                              "productVersion":  "1.0.0+8fd7c6cb701dfbb41c28938de4186749bdd1d6c7",
+                                              "embeddedCommit":  "8fd7c6cb701dfbb41c28938de4186749bdd1d6c7",
+                                              "candidateOutput":  false,
+                                              "status":  "STALE_BASE_ARTIFACT_NOT_BOUND_TO_CANDIDATE"
+                                          },
+                                          {
+                                              "path":  "unity/Mahjong.Unity/Assets/Plugins/Mahjong/Mahjong.TableRuntime.dll",
+                                              "bytes":  482816,
+                                              "sha256":  "C39D1EFAC086B867ED275607C6AF64F706CF3ED776A6694E42B935673C471D73",
+                                              "gitBlob":  "79aecc99abacf5c321568a784a2dab741d74c054",
+                                              "productVersion":  "1.0.0+8fd7c6cb701dfbb41c28938de4186749bdd1d6c7",
+                                              "embeddedCommit":  "8fd7c6cb701dfbb41c28938de4186749bdd1d6c7",
+                                              "candidateOutput":  false,
+                                              "status":  "STALE_BASE_ARTIFACT_NOT_BOUND_TO_CANDIDATE"
+                                          },
+                                          {
+                                              "path":  "unity/Mahjong.Unity/Assets/Plugins/Mahjong/Mahjong.Client.dll",
+                                              "bytes":  183808,
+                                              "sha256":  "8215C55B9FD9A08A571B68CA889DEC414788FFFDAF0F902792ADC072D51FC046",
+                                              "gitBlob":  "d18df753ad64a632a60545b9fff96920324c69cc",
+                                              "productVersion":  "1.0.0+8fd7c6cb701dfbb41c28938de4186749bdd1d6c7",
+                                              "embeddedCommit":  "8fd7c6cb701dfbb41c28938de4186749bdd1d6c7",
+                                              "candidateOutput":  false,
+                                              "status":  "STALE_BASE_ARTIFACT_NOT_BOUND_TO_CANDIDATE"
+                                          },
+                                          {
+                                              "path":  "unity/Mahjong.Unity/Assets/Plugins/Mahjong/Mahjong.LocalHost.dll",
+                                              "bytes":  3584,
+                                              "sha256":  "03EA16885BA8E5396EA2B516485E38D84A0336F68EDB7B1AE699CFC220E1E10D",
+                                              "gitBlob":  "a1b05307773124b239ca02e2e2a9104939146cea",
+                                              "productVersion":  "1.0.0+8fd7c6cb701dfbb41c28938de4186749bdd1d6c7",
+                                              "embeddedCommit":  "8fd7c6cb701dfbb41c28938de4186749bdd1d6c7",
+                                              "candidateOutput":  false,
+                                              "status":  "STALE_BASE_ARTIFACT_NOT_BOUND_TO_CANDIDATE"
+                                          },
+                                          {
+                                              "path":  "unity/Mahjong.Unity/Assets/Plugins/Mahjong/Mahjong.Ai.dll",
+                                              "bytes":  128512,
+                                              "sha256":  "BC8F18D0134DA2CDF520A2468E51EA1FA34CB9EA42ED7A61BAA8D454A19417AD",
+                                              "gitBlob":  "150303a2949f5731dfe7b4006c225a7ff57663be",
+                                              "productVersion":  "1.0.0+8fd7c6cb701dfbb41c28938de4186749bdd1d6c7",
+                                              "embeddedCommit":  "8fd7c6cb701dfbb41c28938de4186749bdd1d6c7",
+                                              "candidateOutput":  false,
+                                              "status":  "STALE_BASE_ARTIFACT_NOT_BOUND_TO_CANDIDATE"
+                                          }
+                                      ],
+                          "googleProtobuf":  {
+                                                 "path":  "unity/Mahjong.Unity/Assets/Plugins/Mahjong/Google.Protobuf.dll",
+                                                 "bytes":  483936,
+                                                 "sha256":  "16921420D56EE464D4B4C43BA70C7300172E2CF3852F80CB91B71932569D3A5F",
+                                                 "gitBlob":  "d6605d36cc006403f8ce31ee73c7334f2fb21da6",
+                                                 "productVersion":  "3.28.3+5fda5abda3dee5f7a102c85860594bff8d8610bd",
+                                                 "embeddedCommit":  "5fda5abda3dee5f7a102c85860594bff8d8610bd",
+                                                 "candidateOutput":  false,
+                                                 "status":  "STALE_BASE_ARTIFACT_NOT_BOUND_TO_CANDIDATE"
+                                             },
+                          "trackedDllsEmbeddedCommit":  "8fd7c6cb701dfbb41c28938de4186749bdd1d6c7",
+                          "candidateOutput":  false,
+                          "historicalCounts":  {
+                                                   "ownDll":  7,
+                                                   "outputs":  19,
+                                                   "unifiedInputs":  150,
+                                                   "source":  "doc/v5-重构/V5-G2-C03-UNIFIED-CANDIDATE-DELIVERY-20261101.md section 15"
+                                               },
+                          "finalBuildRequirement":  "Force rebuild all 7 shared projects and Google.Protobuf, then bind post-build hashes and ProductVersion commit to the final candidate; do not cite the tracked 8fd7c6cb DLLs as candidate outputs."
+                      },
+    "environment":  {
+                        "unity":  {
+                                      "exePath":  "D:\\Unity\\Hub\\Editor\\6000.3.27f1\\Editor\\Unity.exe",
+                                      "exeBytes":  282544,
+                                      "fileVersion":  "6000.3.27.6761814",
+                                      "productVersion":  "6000.3.27f1_672d562a42a7",
+                                      "sha256":  "CFAF4794DF5B7AD0AE3AFE43EDCB6CCB1E08B422A2D6A768E52CE485E0BBA673",
+                                      "expectedVersion":  "6000.3.27f1",
+                                      "versionFileAtScriptPathExists":  false,
+                                      "versionSource":  "Unity.exe ProductVersion and ProjectSettings/ProjectVersion.txt",
+                                      "androidPlayerPath":  "D:\\Unity\\Hub\\Editor\\6000.3.27f1\\Editor\\Data\\PlaybackEngines\\AndroidPlayer",
+                                      "androidPlayerExists":  true
+                                  },
+                        "androidBuildSupport":  {
+                                                    "androidPlayerExists":  true,
+                                                    "androidPlayerPath":  "D:\\Unity\\Hub\\Editor\\6000.3.27f1\\Editor\\Data\\PlaybackEngines\\AndroidPlayer",
+                                                    "il2cppCompilerExists":  true,
+                                                    "il2cppCompilerPath":  "D:\\Unity\\Hub\\Editor\\6000.3.27f1\\Editor\\Data\\il2cpp\\build\\deploy\\il2cpp.exe",
+                                                    "il2cppCompilerSha256":  "8EF43C2A7357B910ED85FF9345F1F56D83AFB55A8F22B080DC0E2E00CA0535F7",
+                                                    "androidExtensionsDllSha256":  "38CE680A9484981FBAFF4B8096A342D0ED2544AA69024BBBC7680A1E81920353",
+                                                    "androidBuildProgramSha256":  "E8C8253A7373CC4FE00A54B4E63FE0052AAE1B5F3804D5A27A294B2A33852D18",
+                                                    "openJdkJunction":  "D:\\Android\\jdk17\\jdk-17.0.20.1+1",
+                                                    "sdkJunction":  "C:\\Users\\sncdc\\AppData\\Local\\Android\\Sdk",
+                                                    "ndkJunction":  "D:\\Android\\Sdk\\ndk\\27.2.12479018"
+                                                },
+                        "java":  {
+                                     "path":  "D:\\Unity\\Hub\\Editor\\6000.3.27f1\\Editor\\Data\\PlaybackEngines\\AndroidPlayer\\OpenJDK",
+                                     "resolvedTarget":  "D:\\Android\\jdk17\\jdk-17.0.20.1+1",
+                                     "javaExeSha256":  "1977F302375ADBB920D41DAC65C7E22EB9C2ED8E1E8D6258964154FF16F14406",
+                                     "version":  "openjdk version \"17.0.20.1\" 2026-08-18 / Temurin-17.0.20.1+1",
+                                     "nativeExit":  0
+                                 },
+                        "sdk":  {
+                                    "path":  "D:\\Unity\\Hub\\Editor\\6000.3.27f1\\Editor\\Data\\PlaybackEngines\\AndroidPlayer\\SDK",
+                                    "resolvedTarget":  "C:\\Users\\sncdc\\AppData\\Local\\Android\\Sdk",
+                                    "platforms":  [
+                                                      "android-36"
+                                                  ],
+                                    "buildTools":  [
+                                                       "35.0.0",
+                                                       "36.0.0"
+                                                   ],
+                                    "cmdlineTools":  [
+                                                         "16.0",
+                                                         "latest",
+                                                         "latest-23-newcli-backup"
+                                                     ],
+                                    "cmake":  [
+                                                  "3.22.1"
+                                              ],
+                                    "androidJarBytes":  27768026,
+                                    "androidJarSha256":  "D9EB9DA824D9E247A352F570F01E1169E725B2954BCA9E283A71786C59B59F9A",
+                                    "aapt2Path":  "D:\\Unity\\Hub\\Editor\\6000.3.27f1\\Editor\\Data\\PlaybackEngines\\AndroidPlayer\\SDK\\build-tools\\36.0.0\\aapt2.exe",
+                                    "aapt2Sha256":  "BABF3122E515DDB954C5AC4669E085CE990536C035E3072DE30127BDDD6E3608",
+                                    "aapt2Version":  "Android Asset Packaging Tool (aapt) 2.20-13193326",
+                                    "cmakeVersion":  "cmake version 3.22.1",
+                                    "cmakeExit":  0
+                                },
+                        "ndk":  {
+                                    "path":  "D:\\Unity\\Hub\\Editor\\6000.3.27f1\\Editor\\Data\\PlaybackEngines\\AndroidPlayer\\NDK",
+                                    "resolvedTarget":  "D:\\Android\\Sdk\\ndk\\27.2.12479018",
+                                    "revision":  "27.2.12479018",
+                                    "releaseName":  "r27c",
+                                    "sourcePropertiesSha256":  "70F1C5165E6D997B18782A49CFF71DA7A3CAACD0C4CD811DA24C43359FB83CF6",
+                                    "clangVersion":  "Android (12470979, based on r522817c) clang version 18.0.3",
+                                    "arm64ClangWrappers":  [
+                                                               "aarch64-linux-android21-clang.cmd",
+                                                               "aarch64-linux-android22-clang.cmd",
+                                                               "aarch64-linux-android23-clang.cmd",
+                                                               "aarch64-linux-android24-clang.cmd",
+                                                               "aarch64-linux-android25-clang.cmd",
+                                                               "aarch64-linux-android26-clang.cmd"
+                                                           ],
+                                    "arm64SysrootExists":  true
+                                },
+                        "il2cpp":  {
+                                       "androidVariationExists":  true,
+                                       "deployExeExists":  true,
+                                       "deployExePath":  "D:\\Unity\\Hub\\Editor\\6000.3.27f1\\Editor\\Data\\il2cpp\\build\\deploy\\il2cpp.exe",
+                                       "variations":  [
+                                                          "Common",
+                                                          "Development",
+                                                          "Managed",
+                                                          "Release",
+                                                          "Release_ThinLTO"
+                                                      ]
+                                   },
+                        "adb":  {
+                                    "path":  "D:\\Unity\\Hub\\Editor\\6000.3.27f1\\Editor\\Data\\PlaybackEngines\\AndroidPlayer\\SDK\\platform-tools\\adb.exe",
+                                    "bytes":  8273560,
+                                    "sha256":  "B4A6B455702684652CCCF7B46258B29E653538904359A58FD4931CF3EF286B3F",
+                                    "version":  "Android Debug Bridge version 1.0.41 / Version 37.0.1-15733141",
+                                    "versionExit":  0,
+                                    "devicesExit":  0,
+                                    "devicesStdoutBytes":  28,
+                                    "devicesStderrBytes":  79,
+                                    "devicesStdout":  "List of devices attached\r\n\r\n",
+                                    "devicesStderr":  "* daemon not running; starting now at tcp:5037\r\n* daemon started successfully\r\n",
+                                    "authorizedSerials":  [
+
+                                                          ],
+                                    "offlineSerials":  [
+
+                                                       ],
+                                    "unauthorizedSerials":  [
+
+                                                            ],
+                                    "state":  "NO_DEVICE"
+                                },
+                        "device":  {
+                                       "state":  "NOT_RUN_NO_DEVICE",
+                                       "method":  "Pinned Unity Android SDK adb.exe only; no default/PATH adb substitution.",
+                                       "devicesExit":  0,
+                                       "stdout":  "List of devices attached\r\n\r\n",
+                                       "stderr":  "* daemon not running; starting now at tcp:5037\r\n* daemon started successfully\r\n",
+                                       "stdoutBytes":  28,
+                                       "stderrBytes":  79,
+                                       "authorizedSerials":  [
+
+                                                             ],
+                                       "offlineSerials":  [
+
+                                                          ],
+                                       "unauthorizedSerials":  [
+
+                                                               ],
+                                       "serial":  null,
+                                       "installStartStopCaptureDeviceInfo":  "NOT_RUN",
+                                       "emulatorAutoStart":  false,
+                                       "evidence":  "build/c05-android-prep-1a33507caee9/device/20261101-125149-8f614c3f/device-list.json"
+                                   },
+                        "dotnet":  {
+                                       "unityDotnetPath":  "D:\\Unity\\dotnet\\dotnet.exe",
+                                       "unityDotnetExists":  true,
+                                       "nugetCachePath":  "C:\\Users\\sncdc\\.nuget\\packages",
+                                       "nugetCacheExists":  true,
+                                       "cachedPackagesSeen":  [
+                                                                  "google.protobuf",
+                                                                  "system.memory",
+                                                                  "system.buffers",
+                                                                  "system.numerics.vectors",
+                                                                  "xunit.v3"
+                                                              ]
+                                   },
+                        "disk":  {
+                                     "C":  {
+                                               "freeBytes":  16718323712,
+                                               "freeMiB":  15943.84
+                                           },
+                                     "D":  {
+                                               "freeBytes":  107405312,
+                                               "freeMiB":  102.43
+                                           },
+                                     "E":  {
+                                               "freeBytes":  407340257280,
+                                               "freeMiB":  388469.94
+                                           },
+                                     "note":  "D: has about 102 MiB free; all new build/temp/log/evidence must stay on E:."
+                                 },
+                        "temp":  {
+                                     "systemTemp":  "C:\\Users\\sncdc\\AppData\\Local\\Temp",
+                                     "evidenceOverride":  "E:\\majiang-review\\g2-c05-android-prep-ds-20261101-1300\\build\\c05-android-prep-1a33507caee9\\temp",
+                                     "evidenceWrite":  "PASS",
+                                     "tempWrite":  "PASS",
+                                     "childBuildTempPinnedByScript":  false
+                                 },
+                        "offlineDependencies":  {
+                                                    "nugetCachePath":  "C:\\Users\\sncdc\\.nuget\\packages",
+                                                    "nugetCacheExists":  true,
+                                                    "dotnetSdk":  "8.0.426",
+                                                    "googleProtobuf":  "3.28.3",
+                                                    "grpcTools":  "2.68.1",
+                                                    "systemMemory":  "4.5.3",
+                                                    "systemBuffers":  "4.4.0",
+                                                    "systemNumericsVectors":  "4.4.0",
+                                                    "systemRuntimeCompilerServicesUnsafe":  "4.5.2",
+                                                    "unityPackageCacheExists":  true,
+                                                    "actualRestore":  "NOT_RUN",
+                                                    "note":  "Static cache presence only. No dotnet restore or Unity package resolve was executed; offline behavior must be proven by the final build log."
+                                                },
+                        "unityLicense":  {
+                                             "status":  "NOT_VERIFIED",
+                                             "reason":  "Batchmode license/entitlement cannot be verified without launching Unity; no Unity launch is authorized in this prep.",
+                                             "localLicensesDir":  "C:\\Users\\sncdc\\AppData\\Local\\Unity\\licenses"
+                                         },
+                        "mutex":  {
+                                      "name":  "Local\\MahjongV5P45UnityValidation",
+                                      "acquired":  false,
+                                      "existenceProbe":  "DOES_NOT_EXIST",
+                                      "note":  "Not acquired by this Android prep; final Unity/heavy stage must acquire and hold it for the whole stage."
+                                  },
+                        "privateToolchain":  {
+                                                 "defaultManifestPath":  "E:\\majiang-review\\g2-c05-android-prep-ds-20261101-1300\\build\\android-toolchain\\private\\toolchain.json",
+                                                 "manifestExists":  false,
+                                                 "acceptedManifestSha256":  "E4785B1BE9FD4CE158E6730C1F7E01C58A7C974D45A407EF7E9CC215F3BEE934",
+                                                 "ninjaExists":  false,
+                                                 "androidCliShimExists":  false,
+                                                 "defaultBuildGate":  "BLOCKED before Unity launch"
+                                             }
+                    },
+    "androidBuildContract":  {
+                                 "entryMethod":  "C05FullGameAndroidBuild.Build",
+                                 "editorScript":  "unity/Mahjong.Unity/Assets/Editor/C05FullGameAndroidBuild.cs",
+                                 "packageId":  "com.majiang.game",
+                                 "minSdk":  25,
+                                 "targetSdkSetting":  0,
+                                 "resolvedTargetSdk":  36,
+                                 "targetArchitecturesSetting":  2,
+                                 "targetAbi":  [
+                                                   "arm64-v8a"
+                                               ],
+                                 "requiredScenes":  [
+                                                        "Assets/Scenes/Boot.unity",
+                                                        "Assets/Scenes/Menu.unity",
+                                                        "Assets/Scenes/Lobby.unity",
+                                                        "Assets/Scenes/Table.unity",
+                                                        "Assets/Scenes/Spectator.unity",
+                                                        "Assets/Scenes/Settlement.unity"
+                                                    ],
+                                 "scriptingBackend":  "IL2CPP",
+                                 "cleanBuildCache":  true,
+                                 "tmpRequired":  true,
+                                 "toolchainManifestRequiredSha256":  "E4785B1BE9FD4CE158E6730C1F7E01C58A7C974D45A407EF7E9CC215F3BEE934",
+                                 "expectedOutput":  "Mahjong.apk with fresh mtime after build start, BuildReport Succeeded/errors0, six enabled production scenes, TMP, package com.majiang.game, minSdk25/targetSdk36, ARM64-only."
+                             },
+    "candidateArtifact":  {
+                              "status":  "NOT_RUN",
+                              "apk":  null,
+                              "apkBytes":  null,
+                              "apkSha256":  null,
+                              "packageId":  "com.majiang.game",
+                              "abis":  [
+                                           "arm64-v8a"
+                                       ],
+                              "build":  {
+                                            "nativeExit":  null,
+                                            "buildReport":  null,
+                                            "unityLog":  null,
+                                            "status":  "NOT_RUN",
+                                            "evidence":  null
+                                        },
+                              "nativeResults":  null,
+                              "installation":  "NOT_RUN",
+                              "launch":  "NOT_RUN",
+                              "visual":  "NOT_RUN",
+                              "touch":  "NOT_RUN",
+                              "weakNetwork":  "NOT_RUN",
+                              "ios":  "NOT_RUN",
+                              "note":  "No APK/package/build/native result exists for this candidate. The historical 52,142,409-byte APK is not a current artifact and is not referenced as one."
+                          },
+    "historicalOnly":  {
+                           "apk":  {
+                                       "bytes":  52142409,
+                                       "sha256":  "0506AEEA2593B7E70C7B2796CE353D3B401A12ADCBF1FFFCC24A0464481C8D6B",
+                                       "source":  "CODEX-V5-G2-C05-ACCEPTANCE-20261101.md",
+                                       "current":  false,
+                                       "notUsedAsCurrent":  true
+                                   },
+                           "toolSuites":  {
+                                              "c05":  "29/29 native0",
+                                              "gates":  "28/28 native0",
+                                              "source":  "CODEX-V5-G2-C05-ACCEPTANCE-20261101.md",
+                                              "rerun":  false
+                                          },
+                           "dotnet":  {
+                                          "unified":  "2,820/2,820",
+                                          "localHost":  "134/134",
+                                          "tableService":  "204/204",
+                                          "c02":  "27/27",
+                                          "source":  "V5-G2-C03-UNIFIED-CANDIDATE-DELIVERY-20261101.md section 15",
+                                          "rerun":  false
+                                      },
+                           "ui15":  {
+                                        "total":  147,
+                                        "pass":  132,
+                                        "fail":  15,
+                                        "identical":  "15/15",
+                                        "source":  "V5-G2-C03-UNIFIED-CANDIDATE-DELIVERY-20261101.md section 15",
+                                        "rerun":  false,
+                                        "fixed":  false
+                                    },
+                           "pluginCounts":  {
+                                                "ownDll":  7,
+                                                "outputs":  19,
+                                                "unifiedInputs":  150,
+                                                "note":  "Historical values only; this prep enumerated 150 current inputs statically but did not build."
+                                            }
+                       },
+    "pendingIncrements":  [
+                              "UI15 15 PlayMode failures are not fixed by this prep; the Luna task must merge before the final candidate build, then this binding must be invalidated and regenerated.",
+                              "C04 recovery/original-request reconciliation increment is not merged by this prep; after it merges, rebind source/tree/plugin inputs and rebuild.",
+                              "C03 component acceptance is not G2 approval; formal C04/C05 and G2-G5 remain unapproved."
+                          ],
+    "finalBuildPreconditions":  [
+                                    "Freeze the post-merge candidate SHA (UI15 + recovery increments) and verify the code tree of the final HEAD; this JSON is invalid after any such merge.",
+                                    "Resolve C05-PREP-D01: obtain a caller-approved private toolchain manifest pin that is valid for this exact worktree/root, or an approved stable shared private root. Do not copy a foreign manifest or launch Unity on a missing/mismatched manifest.",
+                                    "Set per-process TEMP, TMP and GRADLE_USER_HOME under an exclusive E: case root; verify writes; do not change system environment variables.",
+                                    "Commit the two prep files first; the build script rejects any staged/unstaged/untracked path outside its C05 expected file list.",
+                                    "Acquire Local\\MahjongV5P45UnityValidation and hold it for the whole Unity/Player/Android build stage; wait 30 seconds, then BLOCKED without launching a second Unity.",
+                                    "Confirm Unity batchmode license/entitlement and that no other Unity/Player is running; this prep did not launch Unity.",
+                                    "Force rebuild the 7 shared plugin projects and Google.Protobuf; require check-shared-plugins.ps1 PASS and bind post-build DLL hashes and ProductVersion commits to the final candidate. Do not reuse the tracked 8fd7c6cb DLLs.",
+                                    "Build the APK at the frozen candidate with the accepted C05 entry; require native exit 0, BuildReport Succeeded/errors0, six scenes, TMP, com.majiang.game, minSdk25/targetSdk36, ARM64-only, fresh mtime, and aapt2 metadata agreement.",
+                                    "Run device actions only with an authorized online serial and the exact APK evidence; otherwise record BLOCKED/NOT_RUN. Do not auto-start an emulator or substitute a default adb.",
+                                    "Run visual/touch/back/background-resume/aspect/safe-area/weak-network checks; iOS remains NOT_RUN absent hardware.",
+                                    "Preserve every first failure, native exit, XML, manifest and SHA-256; no skip, empty test, old artifact, Total0, deleted test, weakened assertion or refreshed summary."
+                                ],
+    "commands":  {
+                     "currentToolchainGate":  [
+                                                  "Test-Path build\\android-toolchain\\private\\toolchain.json",
+                                                  "Test-Path build\\android-toolchain\\private\\ninja\\1.13.2\\ninja.exe",
+                                                  "Test-Path build\\android-toolchain\\private\\android-cli\\android-cli-sdkmanager16.cmd"
+                                              ],
+                     "buildTemplate":  [
+                                           "$root = \u0027E:\\majiang-review\\\u003cfinal-candidate-worktree\u003e\u0027",
+                                           "$case = Join-Path $root (\u0027build\\c05-final-\u0027 + [guid]::NewGuid().ToString(\u0027N\u0027))",
+                                           "$out = Join-Path $case \u0027android-build\u0027",
+                                           "$env:TEMP = Join-Path $case \u0027temp\u0027; $env:TMP = $env:TEMP; $env:GRADLE_USER_HOME = Join-Path $case \u0027gradle-home\u0027",
+                                           "New-Item -ItemType Directory -Force -Path $case, $env:TEMP, $env:GRADLE_USER_HOME | Out-Null",
+                                           "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/build-p45-android-game.ps1 -UnityPath \u0027D:\\Unity\\Hub\\Editor\\6000.3.27f1\\Editor\\Unity.exe\u0027 -OutputRoot $out -AndroidToolchainManifest (Join-Path $root \u0027build\\android-toolchain\\private\\toolchain.json\u0027) -MutexWaitSeconds 30 -UnityTimeoutSeconds 7200"
+                                       ],
+                     "deviceDiscovery":  "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-android-game.ps1 -Action Devices -EvidenceDir \u003cE:\\case\u003e\\device",
+                     "deviceInfo":  "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-android-game.ps1 -Action DeviceInfo -Serial \u003cserial\u003e -EvidenceDir \u003cE:\\case\u003e\\device-info",
+                     "install":  "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-android-game.ps1 -Action Install -Serial \u003cserial\u003e -Apk \u003cE:\\case\u003e\\android-build\\Mahjong.apk -EvidenceDir \u003cE:\\case\u003e\\install",
+                     "start":  "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-android-game.ps1 -Action Start -Serial \u003cserial\u003e -Apk \u003cE:\\case\u003e\\android-build\\Mahjong.apk -EvidenceDir \u003cE:\\case\u003e\\start",
+                     "capture":  "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-android-game.ps1 -Action Capture -Serial \u003cserial\u003e -Apk \u003cE:\\case\u003e\\android-build\\Mahjong.apk -EvidenceDir \u003cE:\\case\u003e\\device",
+                     "stop":  "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-android-game.ps1 -Action Stop -Serial \u003cserial\u003e -Apk \u003cE:\\case\u003e\\android-build\\Mahjong.apk -EvidenceDir \u003cE:\\case\u003e\\stop",
+                     "verifyApk":  [
+                                       "$aapt2 = \u0027D:\\Unity\\Hub\\Editor\\6000.3.27f1\\Editor\\Data\\PlaybackEngines\\AndroidPlayer\\SDK\\build-tools\\36.0.0\\aapt2.exe\u0027",
+                                       "\u0026 $aapt2 dump badging \u003cE:\\case\u003e\\android-build\\Mahjong.apk *\u003e \u003cE:\\case\u003e\\apk-badging.txt",
+                                       "Get-FileHash \u003cE:\\case\u003e\\android-build\\Mahjong.apk -Algorithm SHA256",
+                                       "Get-Content \u003cE:\\case\u003e\\android-build\\summary.json, \u003cE:\\case\u003e\\android-build\\build-report.json -Raw | ConvertFrom-Json"
+                                   ]
+                 },
+    "expectedEvidenceFields":  [
+                                   {
+                                       "file":  "summary.json",
+                                       "fields":  [
+                                                      "status",
+                                                      "sourceHead",
+                                                      "dirtyPaths",
+                                                      "inputSha256.taskInputs",
+                                                      "inputSha256.productionInputs",
+                                                      "unityVersion",
+                                                      "unityPath",
+                                                      "toolchainManifestSha256",
+                                                      "androidToolchain",
+                                                      "apk",
+                                                      "apkBytes",
+                                                      "apkSha256",
+                                                      "nativeExit",
+                                                      "buildReport",
+                                                      "metadata",
+                                                      "evidenceRoot",
+                                                      "adbPresent"
+                                                  ]
+                                   },
+                                   {
+                                       "file":  "build-report.json",
+                                       "fields":  [
+                                                      "schema",
+                                                      "result",
+                                                      "errors",
+                                                      "warnings",
+                                                      "target",
+                                                      "output",
+                                                      "bytes",
+                                                      "backend",
+                                                      "architectures",
+                                                      "packageId",
+                                                      "minSdkVersion",
+                                                      "targetSdkSetting",
+                                                      "landscapeOnly",
+                                                      "fullscreen",
+                                                      "outsideSafeArea",
+                                                      "scenes",
+                                                      "tmpResources"
+                                                  ]
+                                   },
+                                   {
+                                       "file":  "apk-metadata.txt",
+                                       "fields":  [
+                                                      "package",
+                                                      "minSdkVersion",
+                                                      "targetSdkVersion",
+                                                      "native-code"
+                                                  ]
+                                   },
+                                   {
+                                       "file":  "unity.log",
+                                       "fields":  [
+                                                      "native exit",
+                                                      "first error",
+                                                      "BuildReport marker",
+                                                      "build duration",
+                                                      "license/entitlement failures if any"
+                                                  ]
+                                   },
+                                   {
+                                       "file":  "shared-build.log",
+                                       "fields":  [
+                                                      "dotnet path",
+                                                      "seven project builds",
+                                                      "warnings/errors",
+                                                      "copied outputs"
+                                                  ]
+                                   },
+                                   {
+                                       "file":  "plugin-provenance.log",
+                                       "fields":  [
+                                                      "input count/hash",
+                                                      "7 own DLL hashes",
+                                                      "19 outputs",
+                                                      "provenance PASS"
+                                                  ]
+                                   },
+                                   {
+                                       "file":  "failure-summary.json",
+                                       "fields":  [
+                                                      "status",
+                                                      "failedGate",
+                                                      "nativeExit",
+                                                      "firstError",
+                                                      "evidence paths"
+                                                  ]
+                                   }
+                               ],
+    "deviceGap":  {
+                      "status":  "NOT_RUN_NO_DEVICE",
+                      "serial":  null,
+                      "authorizedCount":  0,
+                      "offlineCount":  0,
+                      "unauthorizedCount":  0,
+                      "installLaunchVisualTouchWeakNetworkIOS":  "NOT_RUN",
+                      "requiredNext":  "Authorized online Android device with exact serial; capture API/ABI/model/resolution/density/insets; run Install/Start/Capture/Stop and human visual review.",
+                      "note":  "No emulator was started; no default adb was used; the shared adb daemon was not killed."
+                  },
+    "nextOwner":  "Caller-designated formal C05 Android owner, after UI15 and C04 recovery increments merge and after the caller approves the private toolchain manifest pin/provisioning. This receiver does not proceed, approve, push or merge.",
+    "invalidation":  [
+                         "Any commit or dirty/untracked change to candidate source, Unity Assets, ProjectSettings, Packages, shared dotnet inputs, plugin DLLs, build scripts, scenes or TMP assets.",
+                         "Any change to Unity editor/module, OpenJDK, SDK platform/build-tools, NDK, CMake, adb, private manifest, Ninja or android-cli.",
+                         "Any UI15/recovery/other increment merged after cde5da16, or any new PR20 publication head.",
+                         "Any device serial/OS/ABI/display change, or any APK rebuilt without matching summary/build-report/metadata hashes.",
+                         "Any change to the accepted C05 build/run/verification scripts or to the six production scenes."
+                     ],
+    "statuses":  {
+                     "PASS":  [
+                                  "HEAD cde5da16, branch wt/g2-c05-android-prep-ds-20261101-1300, tracked worktree clean at probe time.",
+                                  "Accepted base 8fd7c6cb is an ancestor; code b33f0aad is an ancestor; tested merge db9e5d53 is an ancestor; code diff from db9e5d53 to HEAD is 0.",
+                                  "Publication delta db9e5d53..cde5da16 is only the C03 delivery document.",
+                                  "Unity 6000.3.27f1 revision 672d562a42a7; AndroidPlayer/IL2CPP/OpenJDK/SDK/NDK present.",
+                                  "OpenJDK 17.0.20.1, SDK android-36/build-tools 35/36, NDK 27.2.12479018/r27c, CMake 3.22.1, aapt2 and adb version checks all native exit 0.",
+                                  "ProjectSettings: com.majiang.game, minSdk 25, targetSdk setting 0 (resolved 36), ARM64 setting 2, IL2CPP setting 1, landscape-only/fullscreen/outside-safe-area set.",
+                                  "Six required scenes enabled in order; TMP Settings and NotoSansSC SDF font asset exist.",
+                                  "Source tree/scopes/key files, 150 shared inputs and current plugin bytes hashed read-only; no build was run.",
+                                  "E: evidence/temp write probes PASS; disk C/D/E measured; no system environment changed.",
+                                  "Pinned adb devices -l native exit 0 with empty list; accepted Devices action wrote PASS JSON with zero devices."
+                              ],
+                     "FAIL":  [
+                                  "C05-PREP-D04 MINOR: UnityVersion.txt lookup returns missing, so summary unityVersion would be UNKNOWN (historical accepted summary also shows UNKNOWN)."
+                              ],
+                     "BLOCKED":  [
+                                     "C05-PREP-D01 BLOCKER: private Android toolchain manifest absent and frozen digest not reproducible at this path; build cannot start.",
+                                     "Android device matrix: no authorized online device; install/start/stop/capture/DeviceInfo NOT_RUN.",
+                                     "Final candidate APK: NOT_RUN (pre-increment; toolchain manifest blocker and no device)."
+                                 ],
+                     "NOT_RUN":  [
+                                     "Unity batchmode license/entitlement check.",
+                                     "Unity Editor launch, Android APK build, Windows Player, Android build cache/Gradle build.",
+                                     "dotnet restore or offline restore proof.",
+                                     "Device installation, launch, gameplay, visual, touch, back, background-resume, aspect/safe-area, weak network.",
+                                     "iOS build/device.",
+                                     "C04 recovery request reconciliation and UI15 fixes; these are separate increments."
+                                 ]
+                 },
+    "firstFailures":  [
+                          {
+                              "id":  "ENV-PROBE-1",
+                              "exit":  1,
+                              "command":  "powershell.exe -NoProfile -ExecutionPolicy Bypass -File build/c05-android-prep-1a33507caee9/collect-env.ps1",
+                              "actual":  "GetFullPath called with 1 argument: The path is not of a legal form.",
+                              "evidence":  "build/c05-android-prep-1a33507caee9/logs/collect-env.log SHA256 25F873AF44BECA6C74128256CD3A4B950544A93FDFB4A0CF0D9B02000858FCF5",
+                              "disposition":  "Harness script defect; abandoned and replaced by bounded direct probes. Not an environment failure."
+                          },
+                          {
+                              "id":  "ENV-PROBE-2",
+                              "exit":  null,
+                              "command":  "Same script re-run with stack trace",
+                              "actual":  "No output for more than 600 seconds; process consumed CPU without child process; terminated only the owned probe PIDs.",
+                              "evidence":  "No raw output file; in-session job pwsh-437b6ef5d0f74730.",
+                              "disposition":  "Harness hang; not an environment/product failure; replaced by chunked probes."
+                          },
+                          {
+                              "id":  "UNITYVERSION-LOOKUP",
+                              "exit":  1,
+                              "command":  "Get-Content D:\\Unity\\Hub\\Editor\\6000.3.27f1\\Editor\\Data\\Resources\\UnityVersion.txt",
+                              "actual":  "Cannot find path ... because it does not exist.",
+                              "evidence":  "build/c05-android-prep-1a33507caee9/logs/first-unityversion.err SHA256 84881A9588FCC4BC1E6EE4142FCBAA35D9F3E028F9739533A5036E26C33867A1",
+                              "disposition":  "Environment/tool minor defect C05-PREP-D04; actual version bound from ProductVersion/ProjectVersion."
+                          },
+                          {
+                              "id":  "DEVICE-WRAPPER-EXIT",
+                              "exit":  null,
+                              "command":  "run-p45-android-game.ps1 -Action Devices ... | Tee-Object",
+                              "actual":  "JSON complete and adb native exit 0, but the outer wrapper did not close within 120 seconds because the adb daemon inherited the output handle; wrapper stopped after evidence, daemon left alive.",
+                              "evidence":  "build/c05-android-prep-1a33507caee9/logs/device-discovery.log SHA256 2B6128B9583E7D83DA17073AB135CAA93500006AD07779AD3E95C8A36318BA07",
+                              "disposition":  "Known minor UNSEALED limitation C05-PREP-D05; not a device result."
+                          }
+                      ],
+    "evidence":  {
+                     "root":  "build/c05-android-prep-1a33507caee9",
+                     "files":  [
+                                   {
+                                       "path":  "build/c05-android-prep-1a33507caee9/binding-facts.json",
+                                       "exists":  true,
+                                       "bytes":  33652,
+                                       "sha256":  "16DBC0937260D3B17D9766457C397D47E2AAC6005DF323715D209414BF6986A7",
+                                       "note":  ""
+                                   },
+                                   {
+                                       "path":  "build/c05-android-prep-1a33507caee9/shared-input-closure.json",
+                                       "exists":  true,
+                                       "bytes":  41992,
+                                       "sha256":  "F2910668DC2D63266C0B6327FCEF70366B64ED313BCCE34CB62BCDF63D86C4C4",
+                                       "note":  ""
+                                   },
+                                   {
+                                       "path":  "build/c05-android-prep-1a33507caee9/logs/collect-env.log",
+                                       "exists":  true,
+                                       "bytes":  1440,
+                                       "sha256":  "25F873AF44BECA6C74128256CD3A4B950544A93FDFB4A0CF0D9B02000858FCF5",
+                                       "note":  ""
+                                   },
+                                   {
+                                       "path":  "build/c05-android-prep-1a33507caee9/logs/chunk1.log",
+                                       "exists":  true,
+                                       "bytes":  1959,
+                                       "sha256":  "814599B6272B6FF4703616BA0F4FFE15D0AFC16588343595A9F62EA35A66DEE0",
+                                       "note":  ""
+                                   },
+                                   {
+                                       "path":  "build/c05-android-prep-1a33507caee9/logs/chunk2.log",
+                                       "exists":  true,
+                                       "bytes":  2898,
+                                       "sha256":  "2FB6E72D67C35FCD8E25C604AEEF7315BF667AFBADA301F280579075849CBEE1",
+                                       "note":  ""
+                                   },
+                                   {
+                                       "path":  "build/c05-android-prep-1a33507caee9/logs/provenance.log",
+                                       "exists":  true,
+                                       "bytes":  2957,
+                                       "sha256":  "A792A1F85EEE561A05A25D89C142E6A741C44CA77469D0DD48BC5B04D46C68AA",
+                                       "note":  ""
+                                   },
+                                   {
+                                       "path":  "build/c05-android-prep-1a33507caee9/logs/java.out",
+                                       "exists":  true,
+                                       "bytes":  0,
+                                       "sha256":  "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855",
+                                       "note":  ""
+                                   },
+                                   {
+                                       "path":  "build/c05-android-prep-1a33507caee9/logs/java.err",
+                                       "exists":  true,
+                                       "bytes":  196,
+                                       "sha256":  "2C05C59B13A701146C37D79936303EB8080CD353E096756DFAB1CD833A306423",
+                                       "note":  ""
+                                   },
+                                   {
+                                       "path":  "build/c05-android-prep-1a33507caee9/logs/adb-version.out",
+                                       "exists":  true,
+                                       "bytes":  208,
+                                       "sha256":  "8CCEA4420D6846FE79AD8D98FB1447AF4BD1324FDB4DB418B73C97D949AF4692",
+                                       "note":  ""
+                                   },
+                                   {
+                                       "path":  "build/c05-android-prep-1a33507caee9/logs/adb-version.err",
+                                       "exists":  true,
+                                       "bytes":  0,
+                                       "sha256":  "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855",
+                                       "note":  ""
+                                   },
+                                   {
+                                       "path":  "build/c05-android-prep-1a33507caee9/logs/adb-devices.out",
+                                       "exists":  true,
+                                       "bytes":  28,
+                                       "sha256":  "BBFCC7239A6F1BE3544814EBDC6BCC9B66BF5B1F0B03BAA3340808F19265A630",
+                                       "note":  ""
+                                   },
+                                   {
+                                       "path":  "build/c05-android-prep-1a33507caee9/logs/adb-devices.err",
+                                       "exists":  true,
+                                       "bytes":  79,
+                                       "sha256":  "1AC362B61180A2AFBEEABEC06AED462AE82740149358C7A2EC926BE3E1B1ECFF",
+                                       "note":  ""
+                                   },
+                                   {
+                                       "path":  "build/c05-android-prep-1a33507caee9/logs/cmake.out",
+                                       "exists":  true,
+                                       "bytes":  91,
+                                       "sha256":  "6C08F840B67782DA73A6FE113B64712615441722B15CD2723062DD4CC00A10D8",
+                                       "note":  ""
+                                   },
+                                   {
+                                       "path":  "build/c05-android-prep-1a33507caee9/logs/cmake.err",
+                                       "exists":  true,
+                                       "bytes":  0,
+                                       "sha256":  "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855",
+                                       "note":  ""
+                                   },
+                                   {
+                                       "path":  "build/c05-android-prep-1a33507caee9/logs/clang.out",
+                                       "exists":  true,
+                                       "bytes":  345,
+                                       "sha256":  "0A656A41D86BE31B1F7DEC2DD9E1691E8DE81274C728673E2AE7BBE7A4445650",
+                                       "note":  ""
+                                   },
+                                   {
+                                       "path":  "build/c05-android-prep-1a33507caee9/logs/clang.err",
+                                       "exists":  true,
+                                       "bytes":  0,
+                                       "sha256":  "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855",
+                                       "note":  ""
+                                   },
+                                   {
+                                       "path":  "build/c05-android-prep-1a33507caee9/logs/aapt2.out",
+                                       "exists":  true,
+                                       "bytes":  0,
+                                       "sha256":  "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855",
+                                       "note":  ""
+                                   },
+                                   {
+                                       "path":  "build/c05-android-prep-1a33507caee9/logs/aapt2.err",
+                                       "exists":  true,
+                                       "bytes":  51,
+                                       "sha256":  "FADDEA5C079B4D28D4C1D25473D6F7D0CEB98E889F3788A79E20CC513B930107",
+                                       "note":  ""
+                                   },
+                                   {
+                                       "path":  "build/c05-android-prep-1a33507caee9/logs/first-unityversion.out",
+                                       "exists":  true,
+                                       "bytes":  0,
+                                       "sha256":  "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855",
+                                       "note":  ""
+                                   },
+                                   {
+                                       "path":  "build/c05-android-prep-1a33507caee9/logs/first-unityversion.err",
+                                       "exists":  true,
+                                       "bytes":  530,
+                                       "sha256":  "84881A9588FCC4BC1E6EE4142FCBAA35D9F3E028F9739533A5036E26C33867A1",
+                                       "note":  ""
+                                   },
+                                   {
+                                       "path":  "build/c05-android-prep-1a33507caee9/logs/device-discovery.log",
+                                       "exists":  true,
+                                       "bytes":  192,
+                                       "sha256":  "2B6128B9583E7D83DA17073AB135CAA93500006AD07779AD3E95C8A36318BA07",
+                                       "note":  ""
+                                   },
+                                   {
+                                       "path":  "build/c05-android-prep-1a33507caee9/device/20261101-125149-8f614c3f/device-list.json",
+                                       "exists":  true,
+                                       "bytes":  249,
+                                       "sha256":  "A6D72E4A0613407603BE90CBBCE6F545F2646F7DB4C3016B95DEC10B66C5E6DC",
+                                       "note":  "Accepted C05 Devices action: adb native exit 0, zero devices, status PASS in JSON."
+                                   },
+                                   {
+                                       "path":  "build/c05-android-prep-1a33507caee9/temp/adb.log",
+                                       "exists":  true,
+                                       "bytes":  1743,
+                                       "sha256":  null,
+                                       "note":  "UNSEALED: held open by the pinned adb daemon; not hashed, not deleted, daemon not killed."
+                                   }
+                               ],
+                     "externalHistorical":  [
+                                                {
+                                                    "path":  "D:\\majiang-wt\\g2-c05-android-game-luna6-20261101\\build\\p45-android-game\\20261101-r2-clean-2ccc7295\\summary.json",
+                                                    "sha256":  "62AD41746D25B3B40E889F35154CA02A7EFBF97B1B55AD0042C9F8577821716B",
+                                                    "kind":  "EXTERNAL_READ_ONLY_HISTORICAL",
+                                                    "note":  "Accepted C05 development APK summary; not a current artifact."
+                                                },
+                                                {
+                                                    "path":  "D:\\majiang-wt\\g2-c05-android-game-luna6-20261101\\build\\android-toolchain-repair\\20261101-031808-0f53a367c374\\summary.json",
+                                                    "sha256":  "CF1D19BFF7A6DEC28A23272ABAE064615BD099774CD25088A356F04E5BD018D4",
+                                                    "kind":  "EXTERNAL_READ_ONLY_HISTORICAL",
+                                                    "note":  "Check-only repair summary showing missing private ninja/CLI/manifest at the historical C05 source worktree."
+                                                }
+                                            ]
+                 },
+    "authoritySources":  [
+                             {
+                                 "path":  "doc/v5-重构/V5-0-1-IMPLEMENTATION-TASKS.md",
+                                 "sha256":  "3D104EB58C94CC487B2509DF562DBB9D37C76E770036B2D02505105D1F35FC25"
+                             },
+                             {
+                                 "path":  "doc/v5-重构/V5-REVIEW-REWORK-PROTOCOL.md",
+                                 "sha256":  "DE3F71FEACB0F3A992AE2F435E96BB754D6C88A06317018B399B1B36E8EF824C"
+                             },
+                             {
+                                 "path":  "doc/v5-重构/CODEX-V5-G2-C01-ACCEPTANCE-20261101.md",
+                                 "sha256":  "24F867B86CCBBE08200817CE792A336C059EE3F5C70068F8EF9AC26BB7E9C6E9"
+                             },
+                             {
+                                 "path":  "doc/v5-重构/CODEX-V5-G2-C02-ACCEPTANCE-20261101.md",
+                                 "sha256":  "5DD33322084B5F40935C7A92C3E8EABA3E8015700CFC5AFFFA5E2BBD6AA055E9"
+                             },
+                             {
+                                 "path":  "doc/v5-重构/CODEX-V5-G2-C05-ACCEPTANCE-20261101.md",
+                                 "sha256":  "483E43BA96C9B795EC9FF3A1F6CF7381BA7A77A9C939B9032696320B2E3AB44F"
+                             },
+                             {
+                                 "path":  "doc/v5-重构/V5-G2-C03-UNIFIED-CANDIDATE-DELIVERY-20261101.md",
+                                 "sha256":  "F8794C325F885C1860E27426B6B8AF6AD6BF127313B7BAE3C9A1D00AB121C1E0"
+                             },
+                             {
+                                 "path":  "doc/v5-重构/V5-G2-C04-PLAYER-SCENARIO-READINESS-20261101.md",
+                                 "sha256":  "3C487762F488C686185FF2698D21BF05FAA7E61FE816664FB9B8523385B2980A"
+                             },
+                             {
+                                 "path":  "doc/v5-重构/V5-G2-C04-PLAYER-SCENARIO-CENSUS-20261101.json",
+                                 "sha256":  "720EB795AD5680F0859AB9BD5215C39D1EE19DD18D0B33F05049C0309B75A16E"
+                             }
+                         ],
+    "claims":  {
+                   "isFinalC05":  false,
+                   "isG2Pass":  false,
+                   "ui15Fixed":  false,
+                   "androidApkBuilt":  false,
+                   "androidGameplayRun":  false,
+                   "deviceTested":  false,
+                   "visualOrTouchPassed":  false,
+                   "weakNetworkTested":  false,
+                   "iosTested":  false,
+                   "historicalValuesReusedAsCurrent":  false,
+                   "currentPluginDllsAreCandidateOutputs":  false,
+                   "pushedOrPrOpened":  false,
+                   "mergedOrDeployed":  false,
+                   "schedulerOrCompleteFlagChanged":  false
+               },
+    "note":  "This JSON is a preparation/binding record only. It is invalid after any UI15/recovery merge or any source/project/plugin/toolchain change. It is not evidence of an APK, Android gameplay, device, visual, touch, weak-network, iOS, C05, C04 or G2 pass."
+}
