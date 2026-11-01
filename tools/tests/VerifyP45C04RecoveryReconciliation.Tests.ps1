@@ -362,6 +362,133 @@ Assert-Test 'bind-tree-mismatch' {
     Assert-True ((([string]$r.error).Contains('SOURCE_TREE_MISMATCH'))) 'tree mismatch reason missing'
 }
 
+# Caller closeout regression coverage: all mutations below operate on owned copies.
+# These are TOOL_FIXTURE trust anchors, never replacements for the recorded GAME pins.
+$nativeCases = @(
+    @{ Name='recover-native-missing'; File='launch.json'; Field='nativeExitCode'; Remove=$true; Reason='strict JSON int32 and boolean' },
+    @{ Name='recover-native-null'; File='launch.json'; Field='nativeExitCode'; Value=$null; Reason='strict JSON int32 and boolean' },
+    @{ Name='recover-native-string'; File='launch.json'; Field='nativeExitCode'; Value='0'; Reason='strict JSON int32 and boolean' },
+    @{ Name='recover-native-true'; File='launch.json'; Field='nativeExitCode'; Value=$true; Reason='strict JSON int32 and boolean' },
+    @{ Name='recover-timeout-missing'; File='launch.json'; Field='timedOut'; Remove=$true; Reason='strict JSON int32 and boolean' },
+    @{ Name='recover-timeout-true'; File='launch.json'; Field='timedOut'; Value=$true; Reason='did not exit successfully' },
+    @{ Name='recover-native-nonzero'; File='launch.json'; Field='nativeExitCode'; Value=17; Reason='did not exit successfully' },
+    @{ Name='prepare-native-missing'; File='prepare-launch.json'; Field='nativeExitCode'; Remove=$true; Reason='nativeExitCode' },
+    @{ Name='prepare-native-null'; File='prepare-launch.json'; Field='nativeExitCode'; Value=$null; Reason='JSON integer in int32 range' },
+    @{ Name='prepare-native-false'; File='prepare-launch.json'; Field='nativeExitCode'; Value=$false; Reason='JSON integer in int32 range' },
+    @{ Name='prepare-native-string'; File='prepare-launch.json'; Field='nativeExitCode'; Value='0'; Reason='JSON integer in int32 range' },
+    @{ Name='prepare-timeout-missing'; File='prepare-launch.json'; Field='timedOut'; Remove=$true; Reason='timedOut' },
+    @{ Name='prepare-timeout-true'; File='prepare-launch.json'; Field='timedOut'; Value=$true; Reason='normal prepare did not exit 0' },
+    @{ Name='prepare-native-nonzero'; File='prepare-launch.json'; Field='nativeExitCode'; Value=17; Reason='normal prepare did not exit 0' },
+    @{ Name='force-native-zero'; File='prepare-launch.json'; Field='nativeExitCode'; Value=0; Force=$true; Reason='Force prepare did not record' },
+    @{ Name='force-timeout-true'; File='prepare-launch.json'; Field='timedOut'; Value=$true; Force=$true; Reason='Force prepare did not record' }
+)
+foreach ($nativeCase in $nativeCases) {
+    $fixtureSource = if ($nativeCase.Force) { Join-Path $FullCaseRoot 'cases/C04-G6-02' } else { $RecoveredCaseRoot }
+    Invoke-Case -Name $nativeCase.Name -Source $fixtureSource -ExpectPass $false -Reason $nativeCase.Reason -Mutate {
+        param($d)
+        $path = Join-Path $d $nativeCase.File
+        $launch = [IO.File]::ReadAllText($path) | ConvertFrom-Json
+        if ($nativeCase.Remove) { $launch.PSObject.Properties.Remove($nativeCase.Field) }
+        else { $launch.($nativeCase.Field) = $nativeCase.Value }
+        Write-Json $path $launch
+    }
+}
+
+function Invoke-PinnedRootFixture {
+    param([string]$Name, [scriptblock]$Mutate, [string]$Reason, [switch]$RemoveCsv, [switch]$CorruptCsv)
+    $clone = Join-Path $OutputDir $Name
+    Copy-Item -LiteralPath $FullCaseRoot -Destination $clone -Recurse
+    $summaryPath = Join-Path $clone 'summary.json'
+    $value = [IO.File]::ReadAllText($summaryPath) | ConvertFrom-Json
+    if ($null -ne $Mutate) { & $Mutate $value; Write-Json $summaryPath $value }
+    $csvPath = Join-Path $clone 'evidence-sha256.csv'
+    $csv = foreach ($file in Get-ChildItem -LiteralPath $clone -Recurse -File | Sort-Object FullName) {
+        $relative = $file.FullName.Substring($clone.Length).TrimStart('\','/').Replace('\','/')
+        if ($relative -eq 'evidence-sha256.csv' -or $relative.StartsWith('temp/') -or $relative.StartsWith('staging-project/')) { continue }
+        '"{0}","{1}","{2}"' -f (Get-Sha $file.FullName), $file.Length, $relative.Replace('"','""')
+    }
+    [IO.File]::WriteAllLines($csvPath, [string[]]$csv, (New-Object Text.UTF8Encoding($false)))
+    if ($CorruptCsv) {
+        $csv[0] = [regex]::Replace($csv[0], '^"[0-9A-Fa-f]{64}"', ('"' + ('0' * 64) + '"'))
+        [IO.File]::WriteAllLines($csvPath, [string[]]$csv, (New-Object Text.UTF8Encoding($false)))
+    }
+    $summaryPin = Get-Sha $summaryPath
+    $csvPin = Get-Sha $csvPath
+    if ($RemoveCsv) { Remove-Item -LiteralPath $csvPath }
+    $run = Invoke-RunnerVerify -Root $clone -Name $Name -SummaryPin $summaryPin -EvidencePin $csvPin
+    Assert-True ($run.ExitCode -ne 0) ($Name + ' unexpectedly PASSed')
+    Assert-True ($run.Output.Contains($Reason)) ($Name + ' wrong rejection: ' + $run.Output)
+}
+Assert-Test 'missing-evidence-manifest' {
+    Invoke-PinnedRootFixture -Name 'missing-evidence-manifest' -Reason 'EVIDENCE_CSV_MISSING' -RemoveCsv
+}
+Assert-Test 'manifest-entry-hash-mismatch' {
+    Invoke-PinnedRootFixture -Name 'manifest-entry-hash-mismatch' -Reason 'VERIFY_EVIDENCE_MISMATCH' -CorruptCsv
+}
+Assert-Test 'extra-summary-row' {
+    Invoke-PinnedRootFixture -Name 'extra-summary-row' -Reason 'VERIFY_INCOMPLETE_CASE_SET' -Mutate {
+        param($s) $s.cases = @($s.cases) + @($s.cases[0]); $s.rowCount = 9
+    }
+}
+Assert-Test 'duplicate-summary-identity' {
+    Invoke-PinnedRootFixture -Name 'duplicate-summary-identity' -Reason 'VERIFY_INCOMPLETE_CASE_SET' -Mutate {
+        param($s) $s.cases[7] = $s.cases[0]
+    }
+}
+Assert-Test 'unknown-summary-identity' {
+    Invoke-PinnedRootFixture -Name 'unknown-summary-identity' -Reason 'VERIFY_FIXED_CASE_MISSING' -Mutate {
+        param($s) $s.cases[7].caseId = 'C04-G6-09'
+    }
+}
+Assert-Test 'bind-input-mismatch' {
+    $snap = [IO.File]::ReadAllText($SourceSnapshotPath) | ConvertFrom-Json
+    $first = @($snap.inputs.PSObject.Properties)[0].Name
+    $snap.inputs.$first = '0' * 64
+    $path = Join-Path $OutputDir 'input-mismatch.json'
+    Write-Json $path $snap
+    $r = Invoke-BindProbe -Name 'input-mismatch' -Record $BuildRecordPath -Snapshot $path -Package $PackageManifestPath -SnapshotPin (Get-Sha $path)
+    Assert-True (-not [bool]$r.accepted) 'source input mismatch PASSed'
+    Assert-True (([string]$r.error).Contains('SOURCE_INPUT_MISMATCH')) ('input guard not reached: ' + $r.error)
+}
+Assert-Test 'bind-stale-source-records' {
+    $record = [IO.File]::ReadAllText($BuildRecordPath) | ConvertFrom-Json
+    $snap = [IO.File]::ReadAllText($SourceSnapshotPath) | ConvertFrom-Json
+    $record.sourceHead = '993d172a2ee953a74134a95bb219a0560e22a18b'
+    $record.buildCommit = $record.sourceHead
+    $snap.sourceHead = $record.sourceHead
+    $recordPath = Join-Path $OutputDir 'stale-build-marker.json'
+    $snapshotPath = Join-Path $OutputDir 'stale-source-snapshot.json'
+    Write-Json $recordPath $record
+    Write-Json $snapshotPath $snap
+    $r = Invoke-BindProbe -Name 'stale-source' -Record $recordPath -Snapshot $snapshotPath -Package $PackageManifestPath
+    Assert-True (-not [bool]$r.accepted) 'stale source records PASSed'
+    Assert-True (([string]$r.error).Contains('EXTERNAL_PIN_MISMATCH')) 'stale record pin was not checked'
+}
+Assert-Test 'bind-modified-record' {
+    $record = [IO.File]::ReadAllText($BuildRecordPath) | ConvertFrom-Json
+    $record | Add-Member -NotePropertyName callerFixture -NotePropertyValue 'modified build record'
+    $path = Join-Path $OutputDir 'modified-record.json'
+    Write-Json $path $record
+    $r = Invoke-BindProbe -Name 'modified-record' -Record $path -Snapshot $SourceSnapshotPath -Package $PackageManifestPath
+    Assert-True (-not [bool]$r.accepted) 'modified build record PASSed'
+    Assert-True (([string]$r.error).Contains('EXTERNAL_PIN_MISMATCH')) 'record pin was not checked'
+}
+Assert-Test 'bind-package-entry-mismatch' {
+    $package = [IO.File]::ReadAllText($PackageManifestPath) | ConvertFrom-Json
+    $package.files[0].sha256 = '0' * 64
+    $path = Join-Path $OutputDir 'package-entry-mismatch.json'
+    Write-Json $path $package
+    $r = Invoke-BindProbe -Name 'package-entry-mismatch' -Record $BuildRecordPath -Snapshot $SourceSnapshotPath -Package $path -PackagePin (Get-Sha $path)
+    Assert-True (-not [bool]$r.accepted) 'wrong package entry PASSed'
+    Assert-True (([string]$r.error).Contains('PACKAGE_MANIFEST_MISMATCH')) ('package bytes were not checked: ' + $r.error)
+}
+Invoke-Case -Name 'checksum-bytes-labelled-incompatible' -Source (Join-Path $FullCaseRoot 'cases/C04-G6-08') -ExpectPass $false -Reason 'IncompatiblePrimary did not change only version bytes' -Mutate {
+    param($d)
+    $bytes = [IO.File]::ReadAllBytes((Join-Path $d 'boundary/primary-before.save'))
+    $bytes[44] = $bytes[44] -bxor 0x5A
+    [IO.File]::WriteAllBytes((Join-Path $d 'boundary/primary-after.save'), $bytes)
+}
+
 $summary = [ordered]@{
     schemaVersion = 1
     kind = 'c04-recovery-verifier-tool-tests'
