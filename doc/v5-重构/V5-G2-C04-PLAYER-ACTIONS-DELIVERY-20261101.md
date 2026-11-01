@@ -1,5 +1,49 @@
 # V5 G2-C04-D03 Player 动作确认返修交付（2026-11-01）
 
+> **本轮（R3）裁决数据优先。** 下方既有 R1/R2 记录保留为历史原始结果；与其冲突时，以本节和“R3 执行结果”中的最终 fresh 运行及冻结候选为准。完整清单仍为 4 组（2 BLOCKER / 2 MAJOR），均是调用方首次独立审查发现；本轮未新增缺陷 ID。R3 首次 fresh 运行暴露的投影根因归入 D03-R1-01：此前 Actor 版本拒绝先终止订阅，修复后才可发现初态 domain history 与投影不一致。
+
+## R3 完整缺陷与修复映射
+
+### D03-R1-01 — BLOCKER：初始权威版本和初态投影不能与预置合法 round 一致
+
+- **位置：** `LocalSnapshotFacts.CreateInitialCheckpoint/Capture`、`LocalPlayerActionScenario.BuildCallWindow`、`TableActorOptions`、`TableActor`、`LocalTableRuntime.CreateActor`。
+- **复现：** 调用方 R2 `build/caller-review/run-tests.ps1`，新建固定 Pon/Chi 场景并通过真实 `TableSession` 订阅、提交；R2 复现 `STALE_STATE_VERSION: The expected state version is not current`。本树 R3 首次复跑同命令后，版本层修复使其继续执行，又复现 `TableProjectionException: Seat 0 discard facts do not match the committed river`。
+- **实际 vs 期望：** checkpoint/context 为 round version 13、真实初始 EventSeq 0，但 Actor fresh state version 为 0；修复该错位后，初态 projection 又只读空的 runtime `TableEventRecord` 日志，遗漏 round 中已经真实接受的固定前置 discards。期望四个固定 case 以同一 checkpoint/context/Actor baseline 真实订阅；projection 直接读 round 的真实 Domain event history，不合成 wire event 或 receipt；普通默认启动仍为 0，恢复继续安装经验证 baseline，event high-water 从真实提交记录连续推进。
+- **返修前证据：** R2 caller `localhost.xml` SHA-256 `278964D691EF5BF64D90292300FAAA8953E82BFE93429F0A49A3CC6594DA8445`；R3 首次实际 XML 与摘要见 `build/<R3-first-run-GUID>/dotnet-results/LocalHost.xml`、`failure.json`，R3 执行结果中记录各自 SHA-256。
+- **修复要求/映射：** 在 `TableActorOptions.InitialStateVersion` 显式配置，默认 `StateVersion(0)`；fresh LocalHost Actor 从同一个真实 `checkpoint.StateVersion` 初始化；恢复流程仍由恢复 baseline 覆盖/核验，不放宽 stale guard。`LocalSnapshotFacts` 的 discard/private history 从 `RoundStateMachine.Events` 投影，包含被鸣牌占用的历史河记录；不把 Domain events 转成伪造 `TableEventRecord`/协议事件。
+- **统一验收断言：** Pon/Chi/Riichi/Closed Kan 真实 channel 订阅 baseline=13，首个 Player command 使 stateVersion 恰好 +1；EventSeq 初始仍为 0，后续真实事件连续；Actor 普通 0 启动、cold recovery、过期 expected version 拒绝及 LocalHost/TableRuntime 全集无回归；四个固定 case 目标动作和后态断言通过。
+
+### D03-R1-02 — BLOCKER：Unity App/PlayMode 源码不符合冻结合同，不能编译
+
+- **位置：** `C04PlayerActionProbe.cs`、`LocalTableChannelFactory.cs`、`C04PlayerActionScenarioTests.cs`。
+- **复现：** 调用方 `compile-app.ps1`，使用 accepted Unity App RSP/reference closure 与 fresh 本树 LocalHost/Contracts/Client 输出执行独立 Roslyn 诊断。
+- **实际 vs 期望：** R2 原始诊断 17 项：缺 `System.Threading`；`ObservedVisibleEventBatch` 不含 `Cursor`；`PlayerOwnState` 不含 `Melds`；`LocalPlayerActionScenario` 缺 `Mahjong.LocalHost` import。真实 API 游标在 `SessionViewState.Cursor`、meld 在 `PlayerTableViewState.OwnMelds`。期望当前 Unity App 合同零错误，不加 Domain asmdef/reference。
+- **返修前证据：** `app-csc.stdout.log` SHA-256 `117F5E04D402A72313652B0B811F0AF7243395CD04C71FDA18949587D49ACACF`；调用方完整 REVIEW SHA-256 `4DB7656FB0E1697B208AA229E0930FECED8D078821DFCDB621EADF9A5ECC6A8B`。
+- **修复要求/映射：** 补线程与 LocalHost namespace；结构 cursor 从同一 `SessionViewState` 捕获；meld 从 `OwnMelds` 捕获；PlayMode 同步修正；保留 R2 已修的 void facade、Task/UI.Session、nullable epoch、Payload.TileIds 和 coroutine 返回路径。
+- **统一验收断言：** fresh shared DLL closure 后，实际 Unity PlayMode 编译成功；精确 Pon/Chi/Riichi/Closed Kan 四个唯一用例全 Passed、0 skip；随后 fresh Windows Player 四 case。
+
+### D03-R1-03 — MAJOR：Player 摘要未由不可缺失的原始事实及动作效果支持
+
+- **位置：** `C04PlayerActionProbe` 成功分支、`Test-C04CaseSummary` 与工具负例。
+- **复现：** 调用方 `probe-current.ps1`；R2 `current-probes.json` SHA-256 `8FA97FA145DDE7CAF19312CEEE17A86BDBCC9D7C5BDFC01D1BDB4659561CAC0D`。
+- **实际 vs 期望：** 既有 gate 接受 Pon/Chi/Kan meld tile 仍留手、缺 hand after-state、Riichi 供托 +2、binding/eventBinding 同步改 999、owner/eventOwner 同步改 999；`player-action.jsonl` 只有路径无记录，摘要自产 hash 无独立语义基线。期望保存实际 canonical submit、原始 Applied resolution、observer 捕获的精确增量 batch/event、同 acceptance publication PlayerSnapshot 与 LocalHost durable physical facts；summary 必须逐值与原始记录一致。
+- **修复要求/映射：** Probe 写入独占 JSONL，一次、CreateNew、typed fields 取自真实 Session/receipt/event/checkpoint；复用现有 canonical parser 与 `ConfirmedVisibleEventObserver`，检查候选 ControlEpoch 与已确认 Player control baseline、room/session/table/scope/round/seat/role/binding/connection/owner、receipt request/digest/commandVersion/high-water、incremental event 与相同 acceptance publication 后态。Pon `[0,1,2]`、Chi `[0,4,8]` 全部退出手牌并在对应 meld；Riichi 25000→24000 且供托恰加 1；Closed Kan `[0,1,2,3]` 退出手牌、死山补牌实体73、死山计数减1；LocalHost before/after physical audit 必须 136 assigned/136 unique。无 after hand/snapshot/receipt/event/physical facts 即失败。
+- **统一负例矩阵：** Applied 缺 event；错误 round/seat/request/scope/身份；单边与成对篡改 binding/connection/owner/control；命令版本不超 baseline、command/event/receipt high-water 不同；游标回退；缺/错 case、snapshot、hand、meld、canonical/hash；Pon/Chi/Kan meld tile 仍在手；Riichi 点棒差额或供托不是 +1；Kan replacement/deadwall/136 inventory 不符；native nonzero/timeout。机制负例为 `TOOL_FIXTURE`，不记 GAME。
+- **返修前证据：** `current-probes.json` 与 caller `REVIEW.txt` SHA-256 `232EC30F03792F35B8CEE758D98675875AD723D5E5D075AF616091D3E8E33893`。
+- **验收断言：** 每个真实 Player positive 必须有单条原始 JSONL 且 canonical payload、Typed Applied receipt、observer batch/event、same-version snapshot、durable physical audit、动作效果全部相互绑定；runner 严格拒绝上述负例，TOOL_FIXTURE 不冒称 GAME。
+
+### D03-R1-04 — MAJOR：source/build/closure/XML 门禁未按实际产物 fail-closed
+
+- **位置：** `run-p45-c04-player-actions.ps1` 的 clean/source archive、marker、pre/postbuild closure、PlayMode XML、seal；`C04PlayerActions.Tests.ps1`。
+- **复现：** 调用方 `probe-current.ps1` 对原 marker gate 注入缺 `errors` 和伪 marker `{result:Succeeded,errors:0,target:Windows_FAKE,scenes:[Assets/FakeBoot.unity]}`；此前自有 timeout/drain 与 `.git` 指针复制问题已有 R2 复现。
+- **实际 vs 期望：** 旧 marker 只核 result/errors/宽泛 Windows/含 Boot，未绑定 exe bytes/hash、精确目标和完整 enabled scene list；postbuild 只 hash ScriptAssemblies；工具 suite 无真实 clean/dirty archive、closure 差异、缺失/重复/skip XML 夹具。期望 runner 对完整来源、实际包、所有实际 Unity inputs 及精确 XML 做可执行校验，任何不符/缺失均失败。
+- **修复要求/映射：** 空/dirty git 输出及 git native exit 安全处理；`git archive`/`tar` 固定 commit staging，并拒绝任意 `.git` 指针；build marker 必含类型正确字段、StandaloneWindows64、冻结 scene 顺序、exe bytes/SHA/buildIdentity；pre/post closure 覆盖 Assets/Packages/ProjectSettings/ScriptAssemblies，记录每项变化 hash，仅允许明确的 UnityGenerated ScriptAssemblies；精确四个唯一 PlayMode Passed/0 skip；manifest 在最终 summary 后只封存停止写入的稳定文件。保持 fresh shared plugin provenance guard、owned process tree timeout/bounded drain、拒绝覆盖/foreign sentinel。
+- **统一负例矩阵：** clean/dirty/native git error、foreign `.git` pointer、缺 marker 字段/错误类型/result/target/scene/output/hash/build identity、Assets/Packages/ProjectSettings 输入变化、XML 缺失/重复/skip/错名、native nonzero/timeout/drain、重复 GUID root/已有证据/foreign sentinel 变化。全部通过 production gate 函数在 TOOL_FIXTURE 验证。
+- **返修前证据：** R2 `current-probes.json` SHA-256 `8FA97FA145DDE7CAF19312CEEE17A86BDBCC9D7C5BDFC01D1BDB4659561CAC0D`；caller `evidence-manifest.csv` SHA-256 `FFA151A217397437D3AB84C8CDF40A65213CE96B2BBD56441E74597292CC5B97`。
+- **验收断言：** 工具 fixture 真实写入非空输入和 foreign sentinel，clean positive、所有上述负例拒绝且失败后证据字节/hash 不变；实际顺序 fresh .NET → PlayMode → fresh Windows Player 四 case；manifest 可独立复算并绑定代码/报告/actual commands/XML/log/package/provenance hashes。
+
+> R3 验证中的所有路径、native exit、XML 计数和 SHA 将在代码冻结候选的 fresh runner 结束后填入下方“R3 执行结果”。既有 R2 failure/XML/manifest 保持只读历史；R3 不会刷新或覆盖它们。
+
 ## 候选身份与边界
 
 - acceptedBase：`8fd7c6cb701dfbb41c28938de4186749bdd1d6c7`

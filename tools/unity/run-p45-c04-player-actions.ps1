@@ -144,6 +144,96 @@ function Get-ClosureManifest([string]$path,[string]$output) {
     return Get-Sha256 $output
 }
 
+function Get-EnabledScenes([string]$projectRoot) {
+    $settings = Join-Path $projectRoot 'ProjectSettings/EditorBuildSettings.asset'
+    if (-not (Test-Path -LiteralPath $settings -PathType Leaf)) { throw 'Frozen EditorBuildSettings.asset is missing.' }
+    $lines = Get-Content -LiteralPath $settings -Encoding UTF8
+    $scenes = New-Object System.Collections.Generic.List[string]
+    for ($i=0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -match '^\s*-\s+enabled:\s*1\s*$') {
+            if ($i + 1 -ge $lines.Count -or $lines[$i+1] -notmatch '^\s+path:\s*(.+?)\s*$') { throw 'Enabled scene entry is missing its path.' }
+            $scenes.Add($Matches[1].Trim()) | Out-Null
+        }
+    }
+    if ($scenes.Count -eq 0 -or @($scenes | Select-Object -Unique).Count -ne $scenes.Count) { throw 'Frozen enabled-scene list is empty or contains duplicates.' }
+    return ,$scenes.ToArray()
+}
+
+function Get-UnityInputClosure([string]$projectRoot,[string]$output) {
+    $entries = New-Object System.Collections.Generic.List[object]
+    foreach ($rootName in @('Assets','Packages','ProjectSettings','Library/ScriptAssemblies')) {
+        $root = Join-Path $projectRoot ($rootName.Replace('/','\'))
+        if (-not (Test-Path -LiteralPath $root -PathType Container)) { if ($rootName -eq 'Library/ScriptAssemblies') { continue }; throw "Unity build input root is missing: $rootName" }
+        foreach ($file in Get-ChildItem -LiteralPath $root -Recurse -File | Sort-Object FullName) {
+            $relative = $file.FullName.Substring($projectRoot.Length).TrimStart('\','/').Replace('\','/')
+            $entries.Add([ordered]@{ path=$relative; bytes=[long]$file.Length; sha256=(Get-Sha256 $file.FullName) }) | Out-Null
+        }
+    }
+    $manifest = [ordered]@{ projectRoot=$projectRoot; roots=@('Assets','Packages','ProjectSettings','Library/ScriptAssemblies'); fileCount=$entries.Count; entries=$entries }
+    [IO.File]::WriteAllText($output,(($manifest | ConvertTo-Json -Depth 8)+"`n"),(New-Object Text.UTF8Encoding($false)))
+    return Get-Sha256 $output
+}
+
+function Assert-C04PostBuildInputClosure([string]$beforePath,[string]$afterPath,[string]$changesPath) {
+    $beforeManifest = Get-Content -LiteralPath $beforePath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $afterManifest = Get-Content -LiteralPath $afterPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $beforeByPath = @{}; foreach ($entry in $beforeManifest.entries) { $beforeByPath[[string]$entry.path] = $entry }
+    $afterByPath = @{}; foreach ($entry in $afterManifest.entries) { $afterByPath[[string]$entry.path] = $entry }
+    $changes = New-Object System.Collections.Generic.List[object]
+    foreach ($path in @(@($beforeByPath.Keys) + @($afterByPath.Keys) | Sort-Object -Unique)) {
+        $old = $beforeByPath[$path]; $new = $afterByPath[$path]
+        if ($null -eq $old -or $null -eq $new -or $old.sha256 -cne $new.sha256) {
+            $classification = if ($path -like 'Library/ScriptAssemblies/*') { 'UnityGenerated' } else { 'BuildInputChanged' }
+            $changes.Add([ordered]@{ path=$path; classification=$classification; beforeSha256=if($old){$old.sha256}else{$null}; afterSha256=if($new){$new.sha256}else{$null}; afterBytes=if($new){$new.bytes}else{$null} }) | Out-Null
+        }
+    }
+    [IO.File]::WriteAllText($changesPath,(($changes | ConvertTo-Json -Depth 6)+"`n"),(New-Object Text.UTF8Encoding($false)))
+    $unexpected = @($changes | Where-Object { $_.classification -ne 'UnityGenerated' })
+    if ($unexpected.Count -gt 0) { throw 'Unity build changed Assets, Packages, or ProjectSettings inputs outside the declared Unity-generated ScriptAssemblies closure.' }
+    return ,$changes.ToArray()
+}
+
+function Assert-C04FrozenSourceClean([int]$gitExit,[string]$statusText) {
+    if ($gitExit -ne 0) { throw "git status failed with native exit $gitExit before source archive." }
+    if (-not [string]::IsNullOrWhiteSpace($statusText)) { throw "Frozen source is dirty and cannot be archived as a candidate: $statusText" }
+    return $true
+}
+
+function Assert-C04ArchiveHasNoGitMetadata([string]$sourceRoot) {
+    if (Test-Path -LiteralPath (Join-Path $sourceRoot '.git')) { throw 'Frozen source archive/extract unexpectedly contains .git metadata.' }
+    return $true
+}
+
+function Test-C04ExactPlayModeXml([xml]$xmlDocument) {
+    if ($null -eq $xmlDocument) { throw 'PlayMode XML is missing.' }
+    $expected = @('Pon_FixedPlayerActionIsAppliedAndVisible','Chi_FixedPlayerActionIsAppliedAndVisible','Riichi_FixedPlayerActionIsAppliedAndVisible','ClosedKan_FixedPlayerActionAndReplacementDrawAreApplied')
+    $nodes = @($xmlDocument.SelectNodes('//test-case'))
+    $names = @($nodes | ForEach-Object { $_.GetAttribute('name').Split('.')[-1] })
+    if ($nodes.Count -ne 4 -or @($nodes | Where-Object { $_.GetAttribute('result') -cne 'Passed' }).Count -ne 0 -or
+        (($names | Sort-Object) -join '|') -cne (($expected | Sort-Object) -join '|') -or @($names | Select-Object -Unique).Count -ne 4) {
+        throw "PlayMode XML must contain the exact four unique C04 tests all Passed; count=$($nodes.Count) names=$($names -join ',')."
+    }
+    return ,$names
+}
+
+function Test-C04BuildMarker([string]$markerPath,[string]$executablePath,[string[]]$expectedScenes) {
+    if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf) -or -not (Test-Path -LiteralPath $executablePath -PathType Leaf)) { throw 'Player build marker or executable is missing.' }
+    $m = Get-Content -LiteralPath $markerPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    foreach ($key in @('result','target','errors','bytes','output','outputSha256','buildIdentity','scenes')) {
+        if ($null -eq $m.PSObject.Properties[$key]) { throw "Player build marker is missing required field $key." }
+    }
+    if ($m.result -cne 'Succeeded' -or $m.target -cne 'StandaloneWindows64' -or $m.errors -isnot [ValueType] -or [int]$m.errors -ne 0 -or
+        $m.bytes -isnot [ValueType] -or [long]$m.bytes -ne (Get-Item -LiteralPath $executablePath).Length -or
+        $m.output -cne [IO.Path]::GetFileName($executablePath)) { throw 'Player build marker fields do not describe the actual StandaloneWindows64 executable.' }
+    if ($m.scenes -isnot [array] -or (($m.scenes -join '|') -cne ($expectedScenes -join '|'))) { throw 'Player build marker scene list differs from the exact frozen enabled scenes.' }
+    $exeHash = Get-Sha256 $executablePath
+    if ($m.outputSha256 -cne $exeHash -or $m.outputSha256 -notmatch '^[0-9a-f]{64}$') { throw 'Player marker executable hash does not match the built package.' }
+    $identityInput = $m.target + "`n" + $exeHash + "`n" + ($expectedScenes -join "`n")
+    $identityHash = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($identityInput))).Replace('-','').ToLowerInvariant()
+    if ($m.buildIdentity -cne $identityHash) { throw 'Player build identity is not bound to target, executable hash, and frozen scenes.' }
+    return $m
+}
+
 function Test-C04CaseSummary {
     param($Summary,[string]$ExpectedCase)
     if ($null -eq $Summary) { throw 'C04 summary is missing.' }
@@ -186,10 +276,72 @@ function Test-C04CaseSummary {
     if (-not $eventByCase.ContainsKey($ExpectedCase) -or $Summary.eventType -ne $eventByCase[$ExpectedCase]) { throw 'C04 action event type does not match its fixed case.' }
     if (($Summary.eventTiles -split ',' | Where-Object { $_ } | Sort-Object) -join ',' -ne $expectedEventTiles) { throw 'Visible action event did not carry the fixed physical entities.' }
     switch ($ExpectedCase) {
-        'C04-G2-01' { if (($Summary.meldTileIds -split ',' | Sort-Object) -join ',' -ne '0,1,2' -or $Summary.handTileIdsAfter -match '(^|,)(0|1)(,|$)') { throw 'Pon entity transfer to meld/hand is invalid.' } }
-        'C04-G2-02' { if (($Summary.meldTileIds -split ',' | Sort-Object) -join ',' -ne '0,4,8' -or $Summary.handTileIdsAfter -match '(^|,)(0|8)(,|$)') { throw 'Chi entity transfer to meld/hand is invalid.' } }
-        'C04-G2-03' { if ([UInt64]$Summary.seatScoreBefore -ne 25000 -or [UInt64]$Summary.seatScoreAfter -ne 24000 -or [UInt32]$Summary.riichiSticksAfter -le [UInt32]$Summary.riichiSticksBefore) { throw 'Riichi score/stick transfer is invalid.' } }
-        'C04-G2-04' { if (($Summary.meldTileIds -split ',' | Sort-Object) -join ',' -ne '0,1,2,3' -or [string]$Summary.replacementDrawTileId -ne '73') { throw 'Closed Kan/dead-wall replacement entity transfer is invalid.' } }
+        'C04-G2-01' { if (($Summary.meldTileIds -split ',' | Sort-Object) -join ',' -ne '0,1,2' -or $Summary.handTileIdsAfter -match '(^|,)(0|1|2)(,|$)') { throw 'Pon entity transfer to meld/hand is invalid.' } }
+        'C04-G2-02' { if (($Summary.meldTileIds -split ',' | Sort-Object) -join ',' -ne '0,4,8' -or $Summary.handTileIdsAfter -match '(^|,)(0|4|8)(,|$)') { throw 'Chi entity transfer to meld/hand is invalid.' } }
+        'C04-G2-03' { if ([UInt64]$Summary.seatScoreBefore -ne 25000 -or [UInt64]$Summary.seatScoreAfter -ne 24000 -or [UInt32]$Summary.riichiSticksAfter -ne ([UInt32]$Summary.riichiSticksBefore + 1)) { throw 'Riichi score/stick transfer is invalid.' } }
+        'C04-G2-04' { if (($Summary.meldTileIds -split ',' | Sort-Object) -join ',' -ne '0,1,2,3' -or $Summary.handTileIdsAfter -match '(^|,)(0|1|2|3)(,|$)' -or [string]$Summary.replacementDrawTileId -ne '73') { throw 'Closed Kan/dead-wall replacement entity transfer is invalid.' } }
+    }
+    return $true
+}
+
+function Test-C04ActionEvidence {
+    param($Summary,$Evidence,[string]$ExpectedCase)
+    if ($null -eq $Evidence) { throw 'Raw Player action evidence is missing.' }
+    if ($Evidence.caseId -cne $ExpectedCase -or $Evidence.requestId -cne $Summary.requestId -or $Evidence.scopeId -cne $Summary.scopeId) { throw 'Raw action evidence is not bound to the case/request/scope.' }
+    if ($Evidence.payloadBase64 -cne $Summary.canonicalPayloadBase64 -or $Evidence.payloadSha256 -cne $Summary.payloadSha256) { throw 'Raw action evidence payload differs from the submitted summary payload.' }
+    $rawPayload = [Convert]::FromBase64String($Evidence.payloadBase64)
+    $rawHash = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($rawPayload)).Replace('-','').ToLowerInvariant()
+    if ($rawHash -cne $Evidence.payloadSha256) { throw 'Raw Player action payload hash is invalid.' }
+    $parsed = ConvertFrom-C04CanonicalPayload $rawPayload
+    if ([string]$parsed[1] -cne $Evidence.baselineRoundId -or [string]$parsed[2] -cne $Evidence.baselineDecisionId -or
+        [UInt64]$parsed[3] -ne [UInt64]$Evidence.baselineControlEpoch) { throw 'Raw canonical action is not bound to its captured Player baseline.' }
+    $actionByCase = @{ 'C04-G2-01'=6; 'C04-G2-02'=5; 'C04-G2-03'=8; 'C04-G2-04'=7 }
+    $tilesByCase = @{ 'C04-G2-01'='0,1,2'; 'C04-G2-02'='0,4,8'; 'C04-G2-03'=''; 'C04-G2-04'='0,1,2,3' }
+    $rawTiles = if ($parsed.ContainsKey(6)) { (@($parsed[6]) | Sort-Object) -join ',' } else { '' }
+    if (-not $actionByCase.ContainsKey($ExpectedCase) -or [UInt32]$parsed[4] -ne $actionByCase[$ExpectedCase] -or $rawTiles -ne $tilesByCase[$ExpectedCase]) { throw 'Raw canonical action kind or physical selection differs from the frozen C04 case.' }
+    $rawMeldType = if ($parsed.ContainsKey(7)) { [UInt32]$parsed[7] } else { 0 }
+    if ($rawMeldType -ne $(if ($ExpectedCase -eq 'C04-G2-04') { 4 } else { 0 })) { throw 'Raw canonical meld type differs from the frozen action case.' }
+    if ($Evidence.baselineRoomId -cne $Summary.roomId -or $Evidence.baselineSessionId -cne $Summary.sessionId -or
+        $Evidence.baselineTableId -cne $Summary.tableId -or $Evidence.baselineRoundId -cne $Summary.roundId -or
+        [int]$Evidence.baselineSeat -ne [int]$Summary.seat -or [UInt64]$Evidence.baselineBindingEpoch -ne [UInt64]$Summary.bindingEpoch -or
+        [UInt64]$Evidence.baselineOwnerEpoch -ne [UInt64]$Summary.ownerEpoch -or [UInt64]$Evidence.baselineStateVersion -ne [UInt64]$Summary.stateVersionBefore -or
+        [UInt64]$Evidence.baselineEventSeq -ne [UInt64]$Summary.eventSeqBefore) { throw 'Summary identity/epoch does not match the captured baseline publication.' }
+    if ($Evidence.receiptDisposition -ne 'Applied' -or $Evidence.receiptStatus -ne 'Applied' -or
+        $Evidence.receiptRequestId -cne $Evidence.requestId -or $Evidence.receiptScopeId -cne $Evidence.scopeId -or
+        $Evidence.receiptDigest -cne $Evidence.payloadSha256 -or [UInt64]$Evidence.receiptCommandVersion -ne [UInt64]$Summary.receiptCommandVersion -or
+        [UInt64]$Evidence.receiptEventSeq -ne [UInt64]$Summary.receiptEventSeq) { throw 'Typed Applied receipt does not match original request/scope/payload/version/event facts.' }
+    if ($Evidence.eventType -cne $Summary.eventType -or $Evidence.eventRoundId -cne $Evidence.baselineRoundId -or
+        $Evidence.eventBatchKind -cne 'Incremental' -or $Evidence.eventFullBaseline -ne $false -or $Evidence.eventRole -cne 'Player' -or
+        [int]$Evidence.eventSeat -ne 0 -or [UInt64]$Evidence.eventBindingEpoch -ne [UInt64]$Evidence.baselineBindingEpoch -or
+        [UInt64]$Evidence.eventConnectionEpoch -ne [UInt64]$Evidence.baselineConnectionEpoch -or
+        [UInt64]$Evidence.eventOwnerEpoch -ne [UInt64]$Evidence.baselineOwnerEpoch -or
+        $Evidence.eventScopeId -cne $Evidence.scopeId -or $Evidence.eventSessionId -cne $Evidence.baselineSessionId -or
+        $Evidence.eventRoomId -cne $Evidence.baselineRoomId -or $Evidence.eventTableId -cne $Evidence.baselineTableId -or
+        [UInt64]$Evidence.eventCommandVersion -ne [UInt64]$Evidence.receiptCommandVersion -or
+        [UInt64]$Evidence.eventSeq -ne [UInt64]$Evidence.receiptEventSeq) { throw 'Captured incremental event does not match the typed receipt and baseline identity.' }
+    if ($Evidence.afterRoomId -cne $Evidence.baselineRoomId -or $Evidence.afterSessionId -cne $Evidence.baselineSessionId -or
+        $Evidence.afterTableId -cne $Evidence.baselineTableId -or $Evidence.afterRoundId -cne $Evidence.baselineRoundId -or
+        [int]$Evidence.afterSeat -ne 0 -or [UInt64]$Evidence.afterBindingEpoch -ne [UInt64]$Evidence.baselineBindingEpoch -or
+        [UInt64]$Evidence.afterConnectionEpoch -ne [UInt64]$Evidence.baselineConnectionEpoch -or
+        [UInt64]$Evidence.afterOwnerEpoch -ne [UInt64]$Evidence.baselineOwnerEpoch -or
+        [UInt64]$Evidence.afterStateVersion -ne [UInt64]$Evidence.receiptCommandVersion -or
+        [UInt64]$Evidence.afterEventSeq -ne [UInt64]$Evidence.receiptEventSeq -or
+        [UInt64]$Evidence.afterAcceptanceSequence -ne [UInt64]$Evidence.acceptanceSequence) { throw 'Captured same-publication snapshot is not bound to the confirmed incremental event.' }
+    foreach ($field in @('baselinePlayerSnapshotBase64','afterPlayerSnapshotBase64')) {
+        if ([string]::IsNullOrWhiteSpace([string]$Evidence.$field) -or [Convert]::FromBase64String([string]$Evidence.$field).Length -eq 0) { throw "Raw typed Player snapshot is absent: $field" }
+    }
+    if ([int]$Evidence.baselinePhysicalTileCount -ne 136 -or [int]$Evidence.baselinePhysicalUniqueCount -ne 136 -or
+        [int]$Evidence.afterPhysicalTileCount -ne 136 -or [int]$Evidence.afterPhysicalUniqueCount -ne 136 -or
+        $Evidence.baselinePhysicalTilesSha256 -notmatch '^[0-9a-f]{64}$' -or $Evidence.afterPhysicalTilesSha256 -notmatch '^[0-9a-f]{64}$') { throw 'Durable LocalHost physical audit is not 136 unique entities.' }
+    if ([string]$Evidence.handTileIds -cne [string]$Summary.handTileIdsAfter -or [string]$Evidence.meldTileIds -cne [string]$Summary.meldTileIds -or
+        [string]$Evidence.drawnTileId -cne [string]$Summary.replacementDrawTileId -or [UInt64]$Evidence.seatScoreBefore -ne [UInt64]$Summary.seatScoreBefore -or
+        [UInt64]$Evidence.seatScoreAfter -ne [UInt64]$Summary.seatScoreAfter -or [UInt32]$Evidence.riichiSticksBefore -ne [UInt32]$Summary.riichiSticksBefore -or
+        [UInt32]$Evidence.riichiSticksAfter -ne [UInt32]$Summary.riichiSticksAfter) { throw 'Action effect summary differs from the actual accepted Player/publication state evidence.' }
+    switch ($ExpectedCase) {
+        'C04-G2-01' { if ($Evidence.eventTileIds -ne '0,1,2' -or $Evidence.meldKind -ne 'Pon' -or $Evidence.handTileIds -match '(^|,)(0|1|2)(,|$)') { throw 'Raw Pon entity transfer is invalid.' } }
+        'C04-G2-02' { if ($Evidence.eventTileIds -ne '0,4,8' -or $Evidence.meldKind -ne 'Chi' -or $Evidence.handTileIds -match '(^|,)(0|4|8)(,|$)') { throw 'Raw Chi entity transfer is invalid.' } }
+        'C04-G2-03' { if ([UInt64]$Evidence.seatScoreBefore -ne 25000 -or [UInt64]$Evidence.seatScoreAfter -ne 24000 -or [UInt32]$Evidence.riichiSticksAfter -ne ([UInt32]$Evidence.riichiSticksBefore + 1)) { throw 'Raw Riichi point/stick transfer is invalid.' } }
+        'C04-G2-04' { if ($Evidence.eventTileIds -ne '0,1,2,3' -or $Evidence.meldKind -ne 'ClosedKan' -or $Evidence.handTileIds -match '(^|,)(0|1|2|3)(,|$)' -or $Evidence.drawnTileId -ne '73' -or [int]$Evidence.afterDeadWallCount -ne ([int]$Evidence.baselineDeadWallCount - 1)) { throw 'Raw Closed Kan/dead-wall replacement transfer is invalid.' } }
     }
     return $true
 }
@@ -214,6 +366,61 @@ Start-Sleep -Seconds 25
     $descendantAlive = $false
     try { $descendant = Get-Process -Id $descendantPid -ErrorAction Stop; $descendantAlive = $descendant.StartTime.ToUniversalTime() -gt [DateTime]::UtcNow.AddMinutes(-2) } catch { }
     if ($descendantAlive) { throw 'Owned timeout fixture descendant survived the scoped process-tree kill.' }
+    Assert-C04FrozenSourceClean 0 '' | Out-Null
+    foreach ($dirty in @(@{exit=0;status=' M tracked.cs'},@{exit=0;status='?? untracked.cs'},@{exit=1;status=''})) {
+        $rejected = $false; try { Assert-C04FrozenSourceClean $dirty.exit $dirty.status | Out-Null } catch { $rejected = $true }
+        if (-not $rejected) { throw 'Frozen source clean gate accepted a dirty tree or failed git status.' }
+    }
+    $archiveRepo = Join-Path $RunRoot 'archive-repo'
+    $archiveFixture = Join-Path $RunRoot 'archive-fixture'
+    New-Item -ItemType Directory -Path $archiveRepo,$archiveFixture | Out-Null
+    $archiveInit = Invoke-OwnedNative -Name 'FixtureGitInit' -FilePath 'git.exe' -Arguments ('-C ' + (Quote-Arg $archiveRepo) + ' init') -WorkingDirectory $RunRoot -StdoutPath (Join-Path $logs 'fixture-git-init.stdout.txt') -StderrPath (Join-Path $logs 'fixture-git-init.stderr.txt') -Timeout 60
+    if ($archiveInit.exitCode -ne 0) { throw 'Minimal source fixture git init failed.' }
+    Invoke-OwnedNative -Name 'FixtureGitConfigName' -FilePath 'git.exe' -Arguments ('-C ' + (Quote-Arg $archiveRepo) + ' config user.name C04Fixture') -WorkingDirectory $RunRoot -StdoutPath (Join-Path $logs 'fixture-git-name.stdout.txt') -StderrPath (Join-Path $logs 'fixture-git-name.stderr.txt') -Timeout 60 | Out-Null
+    Invoke-OwnedNative -Name 'FixtureGitConfigEmail' -FilePath 'git.exe' -Arguments ('-C ' + (Quote-Arg $archiveRepo) + ' config user.email c04-fixture@example.invalid') -WorkingDirectory $RunRoot -StdoutPath (Join-Path $logs 'fixture-git-email.stdout.txt') -StderrPath (Join-Path $logs 'fixture-git-email.stderr.txt') -Timeout 60 | Out-Null
+    [IO.File]::WriteAllText((Join-Path $archiveRepo 'tracked.txt'),'frozen-source-fixture' + "`n",(New-Object Text.UTF8Encoding($false)))
+    Invoke-OwnedNative -Name 'FixtureGitAdd' -FilePath 'git.exe' -Arguments ('-C ' + (Quote-Arg $archiveRepo) + ' add tracked.txt') -WorkingDirectory $RunRoot -StdoutPath (Join-Path $logs 'fixture-git-add.stdout.txt') -StderrPath (Join-Path $logs 'fixture-git-add.stderr.txt') -Timeout 60 | Out-Null
+    Invoke-OwnedNative -Name 'FixtureGitCommit' -FilePath 'git.exe' -Arguments ('-C ' + (Quote-Arg $archiveRepo) + ' commit -m fixture') -WorkingDirectory $RunRoot -StdoutPath (Join-Path $logs 'fixture-git-commit.stdout.txt') -StderrPath (Join-Path $logs 'fixture-git-commit.stderr.txt') -Timeout 60 | Out-Null
+    $archiveHead = (& git -C $archiveRepo rev-parse HEAD 2>&1 | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $archiveHead -notmatch '^[0-9a-f]{40}$') { throw 'Archive fixture could not resolve its minimal committed source.' }
+    $archivePath = Join-Path $RunRoot 'archive-fixture.tar'
+    $fixtureArchiveRecord = Invoke-OwnedNative -Name 'FixtureGitArchive' -FilePath 'git.exe' -Arguments ((@('-C',(Quote-Arg $archiveRepo),'archive','--format=tar','--output',(Quote-Arg $archivePath),$archiveHead)) -join ' ') -WorkingDirectory $RunRoot -StdoutPath (Join-Path $logs 'fixture-archive.stdout.txt') -StderrPath (Join-Path $logs 'fixture-archive.stderr.txt') -Timeout 120
+    if ($fixtureArchiveRecord.exitCode -ne 0) { throw 'Fixture git archive failed.' }
+    $fixtureExtract = Invoke-OwnedNative -Name 'FixtureArchiveExtract' -FilePath 'tar.exe' -Arguments ((@('-xf',(Quote-Arg $archivePath),'-C',(Quote-Arg $archiveFixture))) -join ' ') -WorkingDirectory $RunRoot -StdoutPath (Join-Path $logs 'fixture-extract.stdout.txt') -StderrPath (Join-Path $logs 'fixture-extract.stderr.txt') -Timeout 120
+    if ($fixtureExtract.exitCode -ne 0) { throw 'Fixture archive extraction failed.' }
+    Assert-C04ArchiveHasNoGitMetadata $archiveFixture | Out-Null
+    $gitPointerFixture = Join-Path $RunRoot 'git-pointer-fixture'
+    New-Item -ItemType Directory -Path $gitPointerFixture | Out-Null
+    [IO.File]::WriteAllText((Join-Path $gitPointerFixture '.git'),'gitdir: E:/foreign/repository/.git' + "`n",(New-Object Text.UTF8Encoding($false)))
+    $pointerRejected = $false; try { Assert-C04ArchiveHasNoGitMetadata $gitPointerFixture | Out-Null } catch { $pointerRejected = $true }
+    if (-not $pointerRejected) { throw 'Archive gate accepted a .git pointer to a foreign worktree.' }
+    $goodPlayXml = [xml]'<test-run><test-case name="A.Pon_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="A.Chi_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="A.Riichi_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="A.ClosedKan_FixedPlayerActionAndReplacementDrawAreApplied" result="Passed"/></test-run>'
+    Test-C04ExactPlayModeXml $goodPlayXml | Out-Null
+    foreach ($xmlCase in @(
+        @{name='MissingPlayMode';xml=[xml]'<test-run><test-case name="A.Pon_FixedPlayerActionIsAppliedAndVisible" result="Passed"/></test-run>'},
+        @{name='DuplicatePlayMode';xml=[xml]'<test-run><test-case name="A.Pon_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="B.Pon_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="A.Chi_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="A.Riichi_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="A.ClosedKan_FixedPlayerActionAndReplacementDrawAreApplied" result="Passed"/></test-run>'},
+        @{name='SkippedPlayMode';xml=[xml]'<test-run><test-case name="A.Pon_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="A.Chi_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="A.Riichi_FixedPlayerActionIsAppliedAndVisible" result="Skipped"/><test-case name="A.ClosedKan_FixedPlayerActionAndReplacementDrawAreApplied" result="Passed"/></test-run>'}
+    )) {
+        $rejected = $false; try { Test-C04ExactPlayModeXml $xmlCase.xml | Out-Null } catch { $rejected = $true }
+        if (-not $rejected) { throw "Exact PlayMode XML gate accepted invalid fixture: $($xmlCase.name)" }
+    }
+    $closureBeforePath = Join-Path $RunRoot 'fixture-input-before.json'; $closureAfterPath = Join-Path $RunRoot 'fixture-input-after.json'; $closureChangesPath = Join-Path $RunRoot 'fixture-input-changes.json'
+    $closureBefore = [ordered]@{ entries=@([ordered]@{path='Assets/Scripts/App.cs';bytes=10;sha256=('a'*64)},[ordered]@{path='Packages/manifest.json';bytes=10;sha256=('b'*64)},[ordered]@{path='ProjectSettings/EditorBuildSettings.asset';bytes=10;sha256=('c'*64)},[ordered]@{path='Library/ScriptAssemblies/App.dll';bytes=10;sha256=('d'*64)}) }
+    $closureAfter = [ordered]@{ entries=@([ordered]@{path='Assets/Scripts/App.cs';bytes=10;sha256=('a'*64)},[ordered]@{path='Packages/manifest.json';bytes=10;sha256=('b'*64)},[ordered]@{path='ProjectSettings/EditorBuildSettings.asset';bytes=10;sha256=('c'*64)},[ordered]@{path='Library/ScriptAssemblies/App.dll';bytes=11;sha256=('e'*64)}) }
+    [IO.File]::WriteAllText($closureBeforePath,(($closureBefore|ConvertTo-Json -Depth 5)+"`n"),(New-Object Text.UTF8Encoding($false)))
+    [IO.File]::WriteAllText($closureAfterPath,(($closureAfter|ConvertTo-Json -Depth 5)+"`n"),(New-Object Text.UTF8Encoding($false)))
+    $allowedChanges = Assert-C04PostBuildInputClosure $closureBeforePath $closureAfterPath $closureChangesPath
+    if ($allowedChanges.Count -ne 1 -or $allowedChanges[0].classification -ne 'UnityGenerated') { throw 'Postbuild closure fixture did not retain the exact Unity-generated input hash change.' }
+    foreach ($path in @('Assets/Scripts/App.cs','Packages/manifest.json','ProjectSettings/EditorBuildSettings.asset')) {
+        $badClosure = [ordered]@{ entries=@() }
+        foreach ($entry in $closureBefore.entries) {
+            if ($entry.path -eq $path) { $badClosure.entries += [ordered]@{path=$entry.path;bytes=$entry.bytes;sha256=('f'*64)} }
+            else { $badClosure.entries += $entry }
+        }
+        [IO.File]::WriteAllText($closureAfterPath,(($badClosure|ConvertTo-Json -Depth 5)+"`n"),(New-Object Text.UTF8Encoding($false)))
+        $rejected = $false; try { Assert-C04PostBuildInputClosure $closureBeforePath $closureAfterPath $closureChangesPath | Out-Null } catch { $rejected = $true }
+        if (-not $rejected) { throw "Postbuild input closure gate accepted a source input mutation: $path" }
+    }
     $stream = New-Object IO.MemoryStream
     $writer = New-Object IO.BinaryWriter($stream)
     $writer.Write([Text.Encoding]::ASCII.GetBytes('MJC1')); $writer.Write([UInt16]1); $writer.Write([UInt16]10)
@@ -240,6 +447,20 @@ Start-Sleep -Seconds 25
         eventTiles='0,1,2'; meldTileIds='0,1,2'; handTileIdsAfter='20,24'; seatScoreBefore=25000; seatScoreAfter=25000; riichiSticksBefore=0; riichiSticksAfter=0; replacementDrawTileId=''
     }
     Test-C04CaseSummary $valid 'C04-G2-01' | Out-Null
+    $valid | Add-Member -NotePropertyName acceptanceSequence -NotePropertyValue 2 -Force
+    $validEvidence = [pscustomobject]@{
+        caseId='C04-G2-01'; requestId='fixture-request'; scopeId='fixture-scope'; payloadBase64=$valid.canonicalPayloadBase64; payloadSha256=$fixtureHash
+        baselineRoomId='fixture-room'; baselineSessionId='fixture-session'; baselineTableId='fixture-table'; baselineRoundId='fixture-round'; baselineSeat=0
+        baselineBindingEpoch=1; baselineConnectionEpoch=1; baselineOwnerEpoch=2; baselineControlEpoch=3; baselineDecisionId='fixture-decision'; baselineStateVersion=11; baselineEventSeq=20
+        baselineCursorStream=1; baselineCursor=10; baselinePlayerSnapshotBase64='AQ=='; baselinePhysicalTileCount=136; baselinePhysicalUniqueCount=136; baselineDeadWallCount=14; baselinePhysicalTilesSha256=('a'*64)
+        receiptDisposition='Applied'; receiptStatus='Applied'; receiptRequestId='fixture-request'; receiptScopeId='fixture-scope'; receiptDigest=$fixtureHash; receiptCommandVersion=12; receiptEventSeq=21
+        eventType='PonDeclared'; eventRoundId='fixture-round'; eventScopeId='fixture-scope'; eventSessionId='fixture-session'; eventRoomId='fixture-room'; eventTableId='fixture-table'; eventSeat=0; eventBindingEpoch=1; eventConnectionEpoch=1; eventOwnerEpoch=2; eventRole='Player'; eventBatchKind='Incremental'; eventFullBaseline=$false; eventCommandVersion=12; eventSeq=21; eventTileIds='0,1,2'; acceptanceSequence=2
+        afterRoomId='fixture-room'; afterSessionId='fixture-session'; afterTableId='fixture-table'; afterRoundId='fixture-round'; afterSeat=0; afterBindingEpoch=1; afterConnectionEpoch=1; afterOwnerEpoch=2
+        afterStateVersion=12; afterEventSeq=21; afterCursorStream=1; afterCursor=11; afterAcceptanceSequence=2; afterPlayerSnapshotBase64='AQ=='
+        afterPhysicalTileCount=136; afterPhysicalUniqueCount=136; afterDeadWallCount=14; afterPhysicalTilesSha256=('b'*64)
+        handTileIds='20,24'; drawnTileId=''; meldKind='Pon'; meldTileIds='0,1,2'; seatScoreBefore=25000; seatScoreAfter=25000; riichiSticksBefore=0; riichiSticksAfter=0
+    }
+    Test-C04ActionEvidence $valid $validEvidence 'C04-G2-01' | Out-Null
     $negatives = @(
         @{ name='AppliedWithoutEvent'; update=@{ eventConfirmed=$false; eventType='' } },
         @{ name='WrongRound'; update=@{ eventRoundId='other-round' } },
@@ -261,12 +482,17 @@ Start-Sleep -Seconds 25
         @{ name='WrongOwnerEpoch'; update=@{ ownerEpoch=999 } },
         @{ name='WrongEventCommandVersion'; update=@{ eventCommandVersion=11 } },
         @{ name='WrongMeldTransfer'; update=@{ meldTileIds='0,1,3' } }
+        ,@{ name='PonClaimedTileStillInHand'; update=@{ handTileIdsAfter='2,20,24' } }
+        ,@{ name='MissingPostHand'; update=@{ handTileIdsAfter='' } }
+        ,@{ name='RiichiTwoSticks'; update=@{ riichiSticksAfter=2 } }
+        ,@{ name='CoherentBindingEpochRewrite'; update=@{ bindingEpoch=999; eventBindingEpoch=999 } }
+        ,@{ name='CoherentOwnerEpochRewrite'; update=@{ ownerEpoch=999; eventOwnerEpoch=999 } }
     )
     foreach ($negative in $negatives) {
         $candidate = $valid | Select-Object *
         foreach ($key in $negative.update.Keys) { $candidate.$key = $negative.update[$key] }
         $rejected = $false
-        try { Test-C04CaseSummary $candidate 'C04-G2-01' | Out-Null } catch { $rejected = $true }
+        try { Test-C04CaseSummary $candidate 'C04-G2-01' | Out-Null; Test-C04ActionEvidence $candidate $validEvidence 'C04-G2-01' | Out-Null } catch { $rejected = $true }
         if (-not $rejected) { throw "Fixture guard accepted invalid case: $($negative.name)" }
     }
     $arbitrary = $valid | Select-Object *
@@ -276,11 +502,54 @@ Start-Sleep -Seconds 25
     $arbitraryRejected = $false
     try { Test-C04CaseSummary $arbitrary 'C04-G2-01' | Out-Null } catch { $arbitraryRejected = $true }
     if (-not $arbitraryRejected) { throw 'Fixture guard accepted arbitrary ASCII after recomputing its hash.' }
+    $evidenceNegatives = @(
+        @{ name='MissingRawReceipt'; update=@{ receiptCommandVersion=0 } },
+        @{ name='MissingBaselineSnapshot'; update=@{ baselinePlayerSnapshotBase64='' } },
+        @{ name='WrongRawBindingEpoch'; update=@{ eventBindingEpoch=999 } },
+        @{ name='WrongPhysicalUniqueCount'; update=@{ afterPhysicalUniqueCount=135 } },
+        @{ name='WrongPhysicalCount'; update=@{ afterPhysicalTileCount=135 } },
+        @{ name='WrongSamePublication'; update=@{ afterStateVersion=13 } },
+        @{ name='WrongRawActionEffect'; update=@{ handTileIds='2,20,24' } }
+    )
+    foreach ($negative in $evidenceNegatives) {
+        $candidateEvidence = $validEvidence | Select-Object *
+        foreach ($key in $negative.update.Keys) { $candidateEvidence.$key = $negative.update[$key] }
+        $rejected = $false
+        try { Test-C04ActionEvidence $valid $candidateEvidence 'C04-G2-01' | Out-Null } catch { $rejected = $true }
+        if (-not $rejected) { throw "Fixture evidence guard accepted invalid action evidence: $($negative.name)" }
+    }
+    $fixtureExe = Join-Path $RunRoot 'fixture-player.exe'
+    [IO.File]::WriteAllText($fixtureExe,'fixture-player-bytes',(New-Object Text.UTF8Encoding($false)))
+    $fixtureScenes = @('Assets/Scenes/Boot.unity','Assets/Scenes/Menu.unity')
+    $fixtureExeHash = Get-Sha256 $fixtureExe
+    $fixtureIdentityInput = 'StandaloneWindows64' + "`n" + $fixtureExeHash + "`n" + ($fixtureScenes -join "`n")
+    $fixtureIdentity = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($fixtureIdentityInput))).Replace('-','').ToLowerInvariant()
+    $fixtureMarker = Join-Path $RunRoot 'fixture-player-marker.json'
+    $markerObject = [ordered]@{ result='Succeeded'; target='StandaloneWindows64'; errors=0; bytes=(Get-Item $fixtureExe).Length; output='fixture-player.exe'; outputSha256=$fixtureExeHash; buildIdentity=$fixtureIdentity; scenes=$fixtureScenes }
+    [IO.File]::WriteAllText($fixtureMarker,(($markerObject | ConvertTo-Json -Depth 5)+"`n"),(New-Object Text.UTF8Encoding($false)))
+    Test-C04BuildMarker $fixtureMarker $fixtureExe $fixtureScenes | Out-Null
+    $markerNegatives = @(
+        @{ name='MissingErrors'; update=@{ errors=$null } },
+        @{ name='WrongTarget'; update=@{ target='Windows_FAKE' } },
+        @{ name='WrongScenes'; update=@{ scenes=@('Assets/FakeBoot.unity') } },
+        @{ name='WrongOutputHash'; update=@{ outputSha256=('0'*64) } },
+        @{ name='WrongResult'; update=@{ result='Failed' } }
+    )
+    foreach ($negative in $markerNegatives) {
+        $badMarker = [ordered]@{}
+        foreach ($key in $markerObject.Keys) { $badMarker[$key] = $markerObject[$key] }
+        foreach ($key in $negative.update.Keys) { $badMarker[$key] = $negative.update[$key] }
+        $badPath = Join-Path $RunRoot ('marker-' + $negative.name + '.json')
+        [IO.File]::WriteAllText($badPath,(($badMarker | ConvertTo-Json -Depth 5)+"`n"),(New-Object Text.UTF8Encoding($false)))
+        $rejected = $false
+        try { Test-C04BuildMarker $badPath $fixtureExe $fixtureScenes | Out-Null } catch { $rejected = $true }
+        if (-not $rejected) { throw "Fixture marker gate accepted contradictory marker: $($negative.name)" }
+    }
     [IO.File]::WriteAllText((Join-Path $RunRoot 'fixture-result.json'), (($valid | ConvertTo-Json -Depth 5) + "`n"), (New-Object Text.UTF8Encoding($false)))
     [IO.File]::WriteAllText((Join-Path $RunRoot 'foreign-sentinel.txt'), 'foreign-owner-preserved' + "`n", (New-Object Text.UTF8Encoding($false)))
     $fixtureFiles = Get-ChildItem -LiteralPath $RunRoot -Recurse -File | Sort-Object FullName | ForEach-Object { [ordered]@{ path=$_.FullName.Substring($RunRoot.Length).TrimStart('\','/'); sha256=(Get-Sha256 $_.FullName); bytes=$_.Length } }
     [IO.File]::WriteAllText((Join-Path $RunRoot 'fixture-seal.json'), (($fixtureFiles | ConvertTo-Json -Depth 5) + "`n"), (New-Object Text.UTF8Encoding($false)))
-    Write-Host "C04_TOOL_FIXTURES_PASS positive=1 negative=$($negatives.Count + 1) timeoutTree=PASS outputDrain=PASS outputFiles=$((Get-ChildItem -LiteralPath $RunRoot -Recurse -File).Count)"
+    Write-Host "C04_TOOL_FIXTURES_PASS positive=1 negative=$($negatives.Count + $evidenceNegatives.Count + $markerNegatives.Count + 11) timeoutTree=PASS outputDrain=PASS outputFiles=$((Get-ChildItem -LiteralPath $RunRoot -Recurse -File).Count)"
     exit 0
 }
 
@@ -298,7 +567,7 @@ try {
     $gitStatusLines = @(& git -C $repo status --short 2>&1)
     if ($LASTEXITCODE -ne 0) { throw 'git status failed before source staging.' }
     $gitStatus = ($gitStatusLines -join "`n").Trim()
-    if (-not [string]::IsNullOrWhiteSpace($gitStatus)) { throw "Frozen candidate source must be clean before build: $gitStatus" }
+    Assert-C04FrozenSourceClean $LASTEXITCODE $gitStatus | Out-Null
     $gitDiffCheck = & git -C $repo diff --check 2>&1
     if ($LASTEXITCODE -ne 0) { throw 'Source diff --check failed before build.' }
     New-Item -ItemType Directory -Path $source | Out-Null
@@ -308,7 +577,8 @@ try {
     if ($archiveRecord.exitCode -ne 0 -or -not (Test-Path -LiteralPath $archive)) { throw 'Frozen commit archive failed.' }
     $extractArgs = @('-xf',(Quote-Arg $archive),'-C',(Quote-Arg $source)) -join ' '
     $extract = Invoke-OwnedNative -Name 'ExtractFrozenCommit' -FilePath 'tar.exe' -Arguments $extractArgs -WorkingDirectory $RunRoot -StdoutPath (Join-Path $logs 'extract.stdout.txt') -StderrPath (Join-Path $logs 'extract.stderr.txt') -Timeout 300
-    if ($extract.exitCode -ne 0 -or (Test-Path -LiteralPath (Join-Path $source '.git'))) { throw 'Frozen source archive extraction failed or included git metadata.' }
+    if ($extract.exitCode -ne 0) { throw 'Frozen source archive extraction failed.' }
+    Assert-C04ArchiveHasNoGitMetadata $source | Out-Null
     $sourceClosureSha = Get-ClosureManifest $source (Join-Path $RunRoot 'source-prebuild-closure.json')
 
     $dotnetResults = Join-Path $RunRoot 'dotnet-results'
@@ -332,11 +602,28 @@ try {
     $failedTests = [int]$testAssemblyNode.GetAttribute('failed'); $skippedTests = [int]$testAssemblyNode.GetAttribute('skipped')
     if ($totalTests -le 0 -or $passedTests + $failedTests + $skippedTests -ne $totalTests) { throw "LocalHost XML counts are incomplete; total=$totalTests passed=$passedTests failed=$failedTests skipped=$skippedTests." }
     if ($localHostTests.exitCode -ne 0 -or $passedTests -ne $totalTests -or $failedTests -ne 0 -or $skippedTests -ne 0) { throw "Fresh LocalHost tests did not fully pass; nativeExit=$($localHostTests.exitCode) total=$totalTests passed=$passedTests failed=$failedTests skipped=$skippedTests." }
+    $runtimeAssembly = Join-Path $dotnetArtifacts 'bin/Mahjong.TableRuntime.Tests/release/Mahjong.TableRuntime.Tests.dll'
+    if (-not (Test-Path -LiteralPath $runtimeAssembly -PathType Leaf)) { throw 'Fresh LocalHost build did not produce the affected TableRuntime test assembly.' }
+    $runtimeXml = Join-Path $dotnetResults 'TableRuntime.xml'
+    $runtimeArgs = @('exec',(Quote-Arg $runtimeAssembly),'-noLogo','-automated','-failSkips','-result-xml',(Quote-Arg $runtimeXml)) -join ' '
+    $runtimeTests = Invoke-OwnedNative -Name 'FreshAffectedTableRuntimeTests' -FilePath $DotnetPath -Arguments $runtimeArgs -WorkingDirectory $dotnetResults -StdoutPath (Join-Path $logs 'table-runtime.stdout.txt') -StderrPath (Join-Path $logs 'table-runtime.stderr.txt') -Timeout 1200
+    if (-not (Test-Path -LiteralPath $runtimeXml -PathType Leaf)) { throw "Fresh TableRuntime tests produced no native xUnit XML; nativeExit=$($runtimeTests.exitCode)." }
+    [xml]$runtimeResultsXml = Get-Content -LiteralPath $runtimeXml -Raw -Encoding UTF8
+    $runtimeAssemblies = @($runtimeResultsXml.SelectNodes("//*[local-name()='assemblies']/*[local-name()='assembly']"))
+    if ($runtimeAssemblies.Count -ne 1) { throw "TableRuntime XML must contain exactly one assembly result; count=$($runtimeAssemblies.Count)." }
+    $runtimeNode = $runtimeAssemblies[0]
+    $runtimeTotal = [int]$runtimeNode.GetAttribute('total'); $runtimePassed = [int]$runtimeNode.GetAttribute('passed')
+    $runtimeFailed = [int]$runtimeNode.GetAttribute('failed'); $runtimeSkipped = [int]$runtimeNode.GetAttribute('skipped')
+    if ($runtimeTotal -le 0 -or $runtimePassed + $runtimeFailed + $runtimeSkipped -ne $runtimeTotal -or
+        $runtimeTests.exitCode -ne 0 -or $runtimePassed -ne $runtimeTotal -or $runtimeFailed -ne 0 -or $runtimeSkipped -ne 0) {
+        throw "Affected TableRuntime tests did not fully pass; nativeExit=$($runtimeTests.exitCode) total=$runtimeTotal passed=$runtimePassed failed=$runtimeFailed skipped=$runtimeSkipped."
+    }
     $dotnetClosureSha = Get-ClosureManifest $dotnetArtifacts (Join-Path $RunRoot 'dotnet-build-artifacts-closure.json')
-    $localHostTestEvidence = [ordered]@{ buildCommand=$DotnetPath + ' ' + $buildArgs; buildNativeExitCode=$localHostBuild.exitCode; testCommand=$DotnetPath + ' ' + $testArgs; nativeExitCode=$localHostTests.exitCode; total=$totalTests; passed=$passedTests; failed=$failedTests; skipped=$skippedTests; xml='dotnet-results/LocalHost.xml'; xmlSha256=(Get-Sha256 $dotnetXml); buildArtifacts='dotnet-build-artifacts-closure.json'; buildArtifactsSha256=$dotnetClosureSha; buildStdoutSha256=$localHostBuild.stdoutSha256; buildStderrSha256=$localHostBuild.stderrSha256; stdoutSha256=$localHostTests.stdoutSha256; stderrSha256=$localHostTests.stderrSha256 }
+    $localHostTestEvidence = [ordered]@{ buildCommand=$DotnetPath + ' ' + $buildArgs; buildNativeExitCode=$localHostBuild.exitCode; testCommand=$DotnetPath + ' ' + $testArgs; nativeExitCode=$localHostTests.exitCode; total=$totalTests; passed=$passedTests; failed=$failedTests; skipped=$skippedTests; xml='dotnet-results/LocalHost.xml'; xmlSha256=(Get-Sha256 $dotnetXml); affectedTableRuntime=[ordered]@{ command=$DotnetPath + ' ' + $runtimeArgs; nativeExitCode=$runtimeTests.exitCode; total=$runtimeTotal; passed=$runtimePassed; failed=$runtimeFailed; skipped=$runtimeSkipped; xml='dotnet-results/TableRuntime.xml'; xmlSha256=(Get-Sha256 $runtimeXml); stdoutSha256=$runtimeTests.stdoutSha256; stderrSha256=$runtimeTests.stderrSha256 }; buildArtifacts='dotnet-build-artifacts-closure.json'; buildArtifactsSha256=$dotnetClosureSha; buildStdoutSha256=$localHostBuild.stdoutSha256; buildStderrSha256=$localHostBuild.stderrSha256; stdoutSha256=$localHostTests.stdoutSha256; stderrSha256=$localHostTests.stderrSha256 }
 
     $project = Join-Path $source 'unity/Mahjong.Unity'
     $projectPlugins = Join-Path $project 'Assets/Plugins/Mahjong'
+    $frozenEnabledScenes = Get-EnabledScenes $project
     $sharedLog = Join-Path $logs 'build-shared.log'
     $sharedArgs = @('-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',(Quote-Arg (Join-Path $source 'tools/unity/build-shared.ps1')),'-Configuration','Release','-DotnetPath',(Quote-Arg $DotnetPath),'-PluginOutputDir',(Quote-Arg $projectPlugins)) -join ' '
     $shared = Invoke-OwnedNative -Name 'BuildSharedClosure' -FilePath 'powershell.exe' -Arguments $sharedArgs -WorkingDirectory $source -StdoutPath $sharedLog -StderrPath (Join-Path $logs 'build-shared.stderr.txt') -Timeout 900
@@ -356,19 +643,19 @@ try {
     if ($play.exitCode -ne 0 -or -not (Test-Path -LiteralPath $playXml)) { throw 'Targeted Unity PlayMode run failed or produced no XML.' }
     [xml]$playResults = Get-Content -LiteralPath $playXml -Raw
     $testNodes = @($playResults.SelectNodes('//test-case'))
-    $failedNodes = @($testNodes | Where-Object { $_.GetAttribute('result') -ne 'Passed' })
-    $caseNames = @('Pon_FixedPlayerActionIsAppliedAndVisible','Chi_FixedPlayerActionIsAppliedAndVisible','Riichi_FixedPlayerActionIsAppliedAndVisible','ClosedKan_FixedPlayerActionAndReplacementDrawAreApplied')
-    $actualNames = @($testNodes | ForEach-Object { $_.GetAttribute('name').Split('.')[-1] })
-    if ($testNodes.Count -ne 4 -or $failedNodes.Count -ne 0 -or (($actualNames | Sort-Object) -join '|') -cne (($caseNames | Sort-Object) -join '|') -or @($actualNames | Select-Object -Unique).Count -ne 4) { throw "PlayMode must report the exact four unique real C04 cases all Passed; actual=$($testNodes.Count) failed=$($failedNodes.Count) names=$($actualNames -join ',')." }
+    $actualNames = Test-C04ExactPlayModeXml $playResults
 
+    $preBuildInputsSha = Get-UnityInputClosure $project (Join-Path $RunRoot 'unity-prebuild-input-closure.json')
     New-Item -ItemType Directory -Path $playerDir | Out-Null
     $exe = Join-Path $playerDir 'Mahjong.Unity.exe'
     $buildMarker = Join-Path $logs 'player-build.json'
     $buildArgs = @('-batchmode','-nographics','-projectPath',(Quote-Arg $project),'-executeMethod','C04PlayerActionBuild.Build','-c04-player-output',(Quote-Arg $exe),'-c04-player-marker',(Quote-Arg $buildMarker),'-logFile',(Quote-Arg (Join-Path $logs 'player-build.unity.log')),'-quit') -join ' '
     $build = Invoke-OwnedNative -Name 'BuildFreshWindowsPlayer' -FilePath $UnityPath -Arguments $buildArgs -WorkingDirectory $project -StdoutPath (Join-Path $logs 'player-build.stdout.txt') -StderrPath (Join-Path $logs 'player-build.stderr.txt') -Timeout 1200
-    if ($build.exitCode -ne 0 -or -not (Test-Path -LiteralPath $exe) -or -not (Test-Path -LiteralPath $buildMarker)) { throw 'Fresh Windows Player build failed or marker missing.' }
-    $markerValue = Get-Content -LiteralPath $buildMarker -Raw | ConvertFrom-Json
-    if ($markerValue.result -ne 'Succeeded' -or [int]$markerValue.errors -ne 0 -or $markerValue.target -notmatch 'Windows' -or @($markerValue.scenes | Where-Object { $_ -like '*Boot.unity' }).Count -ne 1) { throw 'Fresh Player build marker does not describe a successful Windows production Boot build.' }
+    if ($build.exitCode -ne 0) { throw 'Fresh Windows Player build returned a nonzero native exit.' }
+    $markerValue = Test-C04BuildMarker $buildMarker $exe $frozenEnabledScenes
+    $postBuildInputsSha = Get-UnityInputClosure $project (Join-Path $RunRoot 'unity-postbuild-input-closure.json')
+    $inputChanges = Assert-C04PostBuildInputClosure (Join-Path $RunRoot 'unity-prebuild-input-closure.json') `
+        (Join-Path $RunRoot 'unity-postbuild-input-closure.json') (Join-Path $RunRoot 'unity-postbuild-input-changes.json')
     $postBuildClosureSha = Get-ClosureManifest (Join-Path $project 'Assets') (Join-Path $RunRoot 'source-postbuild-assets-closure.json')
     $scriptAssembliesSha = Get-ClosureManifest (Join-Path $project 'Library/ScriptAssemblies') (Join-Path $RunRoot 'unity-script-assemblies-closure.json')
 
@@ -395,16 +682,22 @@ try {
         if ($player.exitCode -ne 0 -or -not (Test-Path -LiteralPath $summaryPath)) { throw "Player $($case.id) native exit $($player.exitCode), summary missing or nonzero." }
         $summary = ConvertFrom-C04PlayerSummary $summaryPath
         if ($summary.eventType -ne $case.event) { throw "Player $($case.id) visible event mismatch: $($summary.eventType)." }
+        $actionEvidencePath = Join-Path $caseDir 'player-action.jsonl'
+        if (-not (Test-Path -LiteralPath $actionEvidencePath -PathType Leaf)) { throw "Player $($case.id) raw typed action evidence is missing." }
+        $actionLines = @(Get-Content -LiteralPath $actionEvidencePath -Encoding UTF8)
+        if ($actionLines.Count -ne 1 -or [string]::IsNullOrWhiteSpace($actionLines[0])) { throw "Player $($case.id) evidence must contain exactly one stable action record." }
+        $actionEvidence = $actionLines[0] | ConvertFrom-Json
         $summary | Add-Member -NotePropertyName nativeExitCode -NotePropertyValue $player.exitCode -Force
         $summary | Add-Member -NotePropertyName nativeTimedOut -NotePropertyValue $player.timedOut -Force
         $executionPath = Join-Path $caseDir 'execution.json'
         [IO.File]::WriteAllText($executionPath, (($summary | ConvertTo-Json -Depth 8) + "`n"), (New-Object Text.UTF8Encoding($false)))
         Test-C04CaseSummary $summary $case.id | Out-Null
+        Test-C04ActionEvidence $summary $actionEvidence $case.id | Out-Null
         if ($summary.runId -ne $runId) { throw "Player $($case.id) run identity mismatch." }
-        $caseResults.Add([ordered]@{ caseId=$case.id; status='PASS'; layer='WINDOWS_PLAYER'; nativeExitCode=$player.exitCode; summary=$summaryPath; summarySha256=(Get-Sha256 $summaryPath); executionEvidence=$executionPath; executionEvidenceSha256=(Get-Sha256 $executionPath); playerLog=$nativeLog; playerLogSha256=(Get-Sha256 $nativeLog); payloadSha256=$summary.payloadSha256 }) | Out-Null
+        $caseResults.Add([ordered]@{ caseId=$case.id; status='PASS'; layer='WINDOWS_PLAYER'; nativeExitCode=$player.exitCode; summary=$summaryPath; summarySha256=(Get-Sha256 $summaryPath); actionEvidence=$actionEvidencePath; actionEvidenceSha256=(Get-Sha256 $actionEvidencePath); executionEvidence=$executionPath; executionEvidenceSha256=(Get-Sha256 $executionPath); playerLog=$nativeLog; playerLogSha256=(Get-Sha256 $nativeLog); payloadSha256=$summary.payloadSha256 }) | Out-Null
     }
 
-    $final = [ordered]@{ schemaVersion=1; task='G2-C04-D03'; status='PASS'; acceptedBase='8fd7c6cb701dfbb41c28938de4186749bdd1d6c7'; frozenCandidate=$gitHead; sourceTreeStatus=$gitStatus; sourceDiffCheck='PASS'; sourceClosureManifest='source-prebuild-closure.json'; sourceClosureManifestSha256=$sourceClosureSha; postBuildAssetsClosure='source-postbuild-assets-closure.json'; postBuildAssetsClosureSha256=$postBuildClosureSha; sharedPluginClosureSha256=$pluginClosureSha; sharedPluginProvenance=$sharedEvidence; sharedPluginProvenanceSha256=$provenanceSha; scriptAssembliesClosureSha256=$scriptAssembliesSha; localHostTests=$localHostTestEvidence; commands=$script:stageRecords; playMode=[ordered]@{ testCount=$testNodes.Count; passed=$testNodes.Count; failed=0; skipped=0; exactNames=$actualNames; xml=$playXml; xmlSha256=(Get-Sha256 $playXml) }; buildMarker=$buildMarker; buildMarkerSha256=(Get-Sha256 $buildMarker); playerPackageManifest='player-package.json'; cases=$caseResults; platforms=[ordered]@{ windowsPlayer='actual four fixed cases'; android='NOT_RUN (C05 owner)'; ios='NOT_RUN'; remoteTransport='NOT_IN_SCOPE' } }
+    $final = [ordered]@{ schemaVersion=1; task='G2-C04-D03'; status='PASS'; acceptedBase='8fd7c6cb701dfbb41c28938de4186749bdd1d6c7'; frozenCandidate=$gitHead; sourceTreeStatus=$gitStatus; sourceDiffCheck='PASS'; sourceClosureManifest='source-prebuild-closure.json'; sourceClosureManifestSha256=$sourceClosureSha; unityPrebuildInputClosureSha256=$preBuildInputsSha; unityPostbuildInputClosureSha256=$postBuildInputsSha; unityPostbuildInputChanges='unity-postbuild-input-changes.json'; unityPostbuildInputChangesSha256=(Get-Sha256 (Join-Path $RunRoot 'unity-postbuild-input-changes.json')); postBuildAssetsClosure='source-postbuild-assets-closure.json'; postBuildAssetsClosureSha256=$postBuildClosureSha; sharedPluginClosureSha256=$pluginClosureSha; sharedPluginProvenance=$sharedEvidence; sharedPluginProvenanceSha256=$provenanceSha; scriptAssembliesClosureSha256=$scriptAssembliesSha; localHostTests=$localHostTestEvidence; commands=$script:stageRecords; playMode=[ordered]@{ testCount=$testNodes.Count; passed=$testNodes.Count; failed=0; skipped=0; exactNames=$actualNames; xml=$playXml; xmlSha256=(Get-Sha256 $playXml) }; buildMarker=$buildMarker; buildMarkerSha256=(Get-Sha256 $buildMarker); playerPackageManifest='player-package.json'; cases=$caseResults; platforms=[ordered]@{ windowsPlayer='actual four fixed cases'; android='NOT_RUN (C05 owner)'; ios='NOT_RUN'; remoteTransport='NOT_IN_SCOPE' } }
     $summaryOut = Join-Path $RunRoot 'summary.json'
     [IO.File]::WriteAllText($summaryOut, (($final | ConvertTo-Json -Depth 12) + "`n"), (New-Object Text.UTF8Encoding($false)))
     Write-RunLog 'FINAL_SUMMARY_WRITTEN'

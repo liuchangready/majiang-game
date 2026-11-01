@@ -49,6 +49,7 @@ namespace Mahjong.LocalHost.Tests
                 pump = PumpUntilCancelledAsync(session, timeout.Token);
                 PlayerSnapshot before = await WaitForDecisionAsync(session, timeout.Token);
                 Assert.Equal(0, session.Binding!.SeatId);
+                Assert.Equal(13UL, before.StateVersion);
                 Assert.NotNull(before.PrivateView.Decision);
                 LegalActionView candidate = Assert.Single(before.PrivateView.Decision!.Actions,
                     value => value.ActionType == (uint)actionType);
@@ -104,7 +105,8 @@ namespace Mahjong.LocalHost.Tests
 
                     PlayerSnapshot after = await WaitForVersionAsync(session, before.StateVersion, timeout.Token);
                     Assert.Equal(before.RoundId, after.RoundId);
-                    Assert.True(after.StateVersion > before.StateVersion);
+                    Assert.Equal(before.StateVersion + 1UL, after.StateVersion,
+                        "The first real submitted command must advance the pre-seeded checkpoint exactly once.");
                     var localChannel = Assert.IsType<LocalTableChannel>(channel);
                     RoundStateMachine authoritativeRound = localChannel.RuntimeForMatch!.ActorForTest.GetRoundStateForHost();
                     ConservationReport physicalAudit = TilePositionMap.Validate(authoritativeRound.Tiles);

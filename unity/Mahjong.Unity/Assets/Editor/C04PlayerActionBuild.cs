@@ -2,6 +2,7 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Text;
 using UnityEditor;
 using UnityEditor.Build.Reporting;
@@ -33,8 +34,19 @@ public static class C04PlayerActionBuild
         });
         if (report.summary.result != BuildResult.Succeeded || report.summary.totalErrors != 0 || !File.Exists(output))
             throw new InvalidOperationException("C04 Windows Player build failed: result=" + report.summary.result + " errors=" + report.summary.totalErrors);
-        string record = "{\"result\":\"" + report.summary.result + "\",\"target\":\"" + report.summary.platform +
-            "\",\"errors\":" + report.summary.totalErrors + ",\"bytes\":" + report.summary.totalSize + ",\"scenes\":[\"" + String.Join("\",\"", scenes) + "\"]}";
+        string outputSha256;
+        using (SHA256 sha = SHA256.Create())
+        using (FileStream input = File.OpenRead(output))
+            outputSha256 = BitConverter.ToString(sha.ComputeHash(input)).Replace("-", String.Empty).ToLowerInvariant();
+        string target = BuildTarget.StandaloneWindows64.ToString();
+        string buildIdentityInput = target + "\n" + outputSha256 + "\n" + String.Join("\n", scenes);
+        string buildIdentity;
+        using (SHA256 sha = SHA256.Create())
+            buildIdentity = BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(buildIdentityInput))).Replace("-", String.Empty).ToLowerInvariant();
+        string record = "{\"result\":\"" + report.summary.result + "\",\"target\":\"" + target +
+            "\",\"errors\":" + report.summary.totalErrors + ",\"bytes\":" + new FileInfo(output).Length +
+            ",\"output\":\"" + Path.GetFileName(output) + "\",\"outputSha256\":\"" + outputSha256 +
+            "\",\"buildIdentity\":\"" + buildIdentity + "\",\"scenes\":[\"" + String.Join("\",\"", scenes) + "\"]}";
         using (var stream = new FileStream(marker, FileMode.CreateNew, FileAccess.Write, FileShare.Read))
         {
             byte[] bytes = new UTF8Encoding(false).GetBytes(record + "\n");

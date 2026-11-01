@@ -232,9 +232,13 @@ namespace Mahjong.LocalHost
                 var discards = new List<DiscardView>();
                 TileId? seatDraw = null;
                 bool riichiPending = false;
-                for (int i = 0; i < request.CommittedEvents.Count; i++)
+                // Public discard history is part of the authoritative RoundStateMachine,
+                // including an explicitly seeded legal initial scenario and claimed river
+                // entries. The durable event cursor remains independent: this projection reads
+                // real Domain events without fabricating TableEventRecord/Protocol events.
+                for (int i = 0; i < round.Events.Count; i++)
                 {
-                    TableEventRecord record = request.CommittedEvents[i];
+                    RoundEvent record = round.Events[i];
                     if (record.Seat != seat)
                     {
                         continue;
@@ -253,12 +257,6 @@ namespace Mahjong.LocalHost
                     }
 
                     if (record.Type != RoundEventType.TileDiscarded || !record.Tile.HasValue)
-                    {
-                        continue;
-                    }
-
-                    TilePosition pos = round.Tiles.PositionOf(record.Tile.Value);
-                    if (pos.Zone != TileZone.Discard || pos.Seat != seat)
                     {
                         continue;
                     }

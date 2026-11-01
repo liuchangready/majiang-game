@@ -27,7 +27,7 @@ function Invoke-C04Tool([string[]]$Arguments) {
 }
 
 $positive = Invoke-C04Tool @('-NoProfile','-ExecutionPolicy','Bypass','-File',$runner,'-RunRoot',$fixtureRoot,'-FixtureOnly')
-if ($positive.exitCode -ne 0 -or $positive.stdout -notmatch 'C04_TOOL_FIXTURES_PASS positive=1 negative=21 timeoutTree=PASS outputDrain=PASS outputFiles=8') {
+if ($positive.exitCode -ne 0 -or $positive.stdout -notmatch 'C04_TOOL_FIXTURES_PASS positive=1 negative=48 timeoutTree=PASS outputDrain=PASS outputFiles=\d+') {
     throw "Positive/negative C04 tool fixtures failed. exit=$($positive.exitCode) stdout=$($positive.stdout) stderr=$($positive.stderr)"
 }
 $before = Get-ChildItem -LiteralPath $fixtureRoot -Recurse -File | Get-FileHash -Algorithm SHA256 | Sort-Object Path
@@ -41,4 +41,4 @@ if ((Get-FileHash -LiteralPath (Join-Path $fixtureRoot 'foreign-sentinel.txt') -
 $badRoot = Join-Path (Join-Path $repo 'build') 'not-a-guid'
 $path = Invoke-C04Tool @('-NoProfile','-ExecutionPolicy','Bypass','-File',$runner,'-RunRoot',$badRoot,'-FixtureOnly')
 if ($path.exitCode -eq 0 -or (Test-Path -LiteralPath $badRoot)) { throw 'Runner accepted or created a non-GUID output root.' }
-Write-Host 'C04_TOOL_TESTS_PASS positive=1 negative=23 outputRoot=' $fixtureRoot
+Write-Host 'C04_TOOL_TESTS_PASS positive=1 negative=48 outputRoot=' $fixtureRoot

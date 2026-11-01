@@ -111,8 +111,10 @@ namespace Mahjong.Unity.Tests.PlayMode
                     }
                     Assert.IsNotNull(after.Own?.DrawnTileId, "Closed Kan must be followed by the authority's replacement draw.");
                     Assert.AreEqual(73u, after.Own!.DrawnTileId);
-                    Assert.AreEqual(PlayerMeldKind.ClosedKan, after.Own!.Melds[0].Kind);
-                    CollectionAssert.AreEquivalent(new uint[] { 0, 1, 2, 3 }, after.Own.Melds[0].TileIds);
+                    Assert.AreEqual(PlayerMeldKind.ClosedKan, after.OwnMelds[0].Kind);
+                    CollectionAssert.AreEquivalent(new uint[] { 0, 1, 2, 3 }, after.OwnMelds[0].TileIds);
+                    Assert.IsFalse(ContainsAny(after.Own!.ClosedTiles, new uint[] { 0, 1, 2, 3 }),
+                        "Kan entities must leave the closed hand in the authoritative post-state.");
                 }
                 else if (action == PlayerActionKind.DeclareRiichi)
                 {
@@ -124,9 +126,12 @@ namespace Mahjong.Unity.Tests.PlayMode
                 else
                 {
                     Assert.AreEqual(action == PlayerActionKind.DeclarePon ? PlayerMeldKind.Pon : PlayerMeldKind.Chi,
-                        mapper.Project(coordinator.Current).Own!.Melds[0].Kind);
+                        mapper.Project(coordinator.Current).OwnMelds[0].Kind);
                     uint[] expectedTiles = action == PlayerActionKind.DeclarePon ? new uint[] { 0, 1, 2 } : new uint[] { 0, 4, 8 };
-                    CollectionAssert.AreEquivalent(expectedTiles, mapper.Project(coordinator.Current).Own!.Melds[0].TileIds);
+                    PlayerTableViewState after = mapper.Project(coordinator.Current);
+                    CollectionAssert.AreEquivalent(expectedTiles, after.OwnMelds[0].TileIds);
+                    Assert.IsFalse(ContainsAny(after.Own!.ClosedTiles, expectedTiles),
+                        "Claimed entities must leave the closed hand in the authoritative post-state.");
                 }
             }
             finally
@@ -155,6 +160,14 @@ namespace Mahjong.Unity.Tests.PlayMode
             if (button == null || !button.interactable) return false;
             button.onClick.Invoke();
             return true;
+        }
+
+        private static bool ContainsAny(System.Collections.Generic.IReadOnlyList<uint> actual, uint[] expected)
+        {
+            for (int i = 0; i < actual.Count; i++)
+                for (int j = 0; j < expected.Length; j++)
+                    if (actual[i] == expected[j]) return true;
+            return false;
         }
     }
 }
