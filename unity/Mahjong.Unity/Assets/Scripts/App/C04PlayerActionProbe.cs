@@ -318,11 +318,34 @@ namespace Mahjong.Unity.App
                 yield break;
             }
             LocalTableRecoveryFacts afterAuthority = afterAuthorityTask.Result.Facts;
-            if (afterAuthority.RoundId != baselineRound || afterAuthority.StateVersion != confirmedBatch.StateVersion.ToString() ||
-                afterAuthority.EventSeq != confirmedBatch.EventSeq.ToString() || afterAuthority.Physical.TileCount != 136 ||
+            if (afterAuthority.Physical.TileCount != 136 ||
                 afterAuthority.Physical.UniqueCount != 136)
             {
-                Fail("AFTER_AUTHORITY_DIVERGED", "The durable post-action LocalHost checkpoint differs from the exact confirmed publication or violates physical 136/unique 136.");
+                Fail("AFTER_AUTHORITY_DIVERGED", "The captured durable LocalHost envelope does not preserve physical 136/unique 136.");
+                yield break;
+            }
+            string exactActionPhysicalAudit;
+            try
+            {
+                exactActionPhysicalAudit = LocalPlayerActionScenario.ReadCommittedActionPhysicalAudit(
+                    afterAuthorityTask.Result.AuthoritySaveBytes,
+                    requestId,
+                    view.Identity.ScopeId,
+                    baselineRound,
+                    baselineVersion,
+                    confirmedBatch.StateVersion,
+                    confirmation.Event.EventSeq,
+                    0);
+            }
+            catch (Exception exception)
+            {
+                Fail("AFTER_AUTHORITY_DIVERGED", "The captured durable envelope does not contain the exact confirmed action state: " +
+                    exception.GetType().Name + ": " + exception.Message);
+                yield break;
+            }
+            if (exactActionPhysicalAudit.Split('\n').Length != 136)
+            {
+                Fail("AFTER_AUTHORITY_DIVERGED", "The exact confirmed durable action state did not yield the full 136-entity physical audit.");
                 yield break;
             }
 

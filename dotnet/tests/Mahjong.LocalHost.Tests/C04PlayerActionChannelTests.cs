@@ -166,6 +166,16 @@ namespace Mahjong.LocalHost.Tests
                         value.Seat == 0 && value.Type == EventFor(actionType));
                     Assert.True(actionEvent.EventSeq <= receipt.Resolution.EventSeq!.Value.Value,
                         "The matching action event must be at or before the Applied receipt's event high-water mark.");
+                    string exactActionPhysicalAudit = LocalPlayerActionScenario.ReadCommittedActionPhysicalAudit(
+                        acceptedCapture.AuthoritySaveBytes,
+                        requestId,
+                        receipt.Command.Key.ScopeId.Value,
+                        before.RoundId,
+                        before.StateVersion,
+                        actionBatch.StateVersion,
+                        actionEvent.EventSeq,
+                        0);
+                    Assert.Equal(136, exactActionPhysicalAudit.Split('\n').Length);
 
                     uint[] expectedActionTiles = actionType == ProtocolActionType.DeclarePon
                         ? new uint[] { 0, 1, 2 }

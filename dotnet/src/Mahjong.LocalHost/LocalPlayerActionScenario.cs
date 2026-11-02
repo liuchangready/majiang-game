@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
+using Mahjong.Contracts;
 using Mahjong.Domain;
 using Mahjong.TableRuntime;
 
@@ -107,6 +108,94 @@ namespace Mahjong.LocalHost
                     throw new InvalidOperationException("C04 authority physical placements differ from recovery facts.");
             }
             return canonical;
+        }
+
+        /// <summary>
+        /// Reads the physical image from the durable operation that committed one accepted
+        /// Player action. The save envelope may already contain later autonomous commands, so
+        /// this deliberately selects and validates the exact request/version/event operation
+        /// instead of treating the envelope's newest state as the action's post-state.
+        /// </summary>
+        public static string ReadCommittedActionPhysicalAudit(
+            byte[] authoritySaveBytes,
+            string requestId,
+            string scopeId,
+            string roundId,
+            ulong baselineVersion,
+            ulong commandVersion,
+            ulong actionEventSeq,
+            int actionSeat)
+        {
+            if (authoritySaveBytes == null) throw new ArgumentNullException(nameof(authoritySaveBytes));
+            if (string.IsNullOrWhiteSpace(requestId)) throw new ArgumentException("Request id is required.", nameof(requestId));
+            if (string.IsNullOrWhiteSpace(scopeId)) throw new ArgumentException("Scope id is required.", nameof(scopeId));
+            if (string.IsNullOrWhiteSpace(roundId)) throw new ArgumentException("Round id is required.", nameof(roundId));
+            if (commandVersion != checked(baselineVersion + 1))
+                throw new InvalidOperationException("The accepted action command version does not immediately follow its baseline.");
+
+            LocalSave save = LocalSaveCodec.DecodeEnvelope(authoritySaveBytes);
+            var matches = new List<LocalDurableOperation>();
+            for (int i = 0; i < save.Operations.Count; i++)
+            {
+                LocalDurableOperation operation = save.Operations[i];
+                TableDurableReceipt? receipt = operation.Receipt;
+                TableCommandJournalRecord? journal = operation.Journal;
+                if (operation.Kind != LocalOperationKind.Commit || receipt == null || journal == null ||
+                    receipt.Receipt.Status != ReceiptStatus.Applied ||
+                    !string.Equals(receipt.RequestId.Value, requestId, StringComparison.Ordinal) ||
+                    !string.Equals(receipt.ScopeId.Value, scopeId, StringComparison.Ordinal) ||
+                    !string.Equals(journal.RequestId.Value, requestId, StringComparison.Ordinal) ||
+                    !string.Equals(journal.ScopeId.Value, scopeId, StringComparison.Ordinal) ||
+                    journal.EvaluatedStateVersion.Value != baselineVersion ||
+                    journal.CommandVersion.Value != commandVersion ||
+                    receipt.Receipt.EvaluatedStateVersion.Value != baselineVersion ||
+                    receipt.Receipt.CommandVersion?.Value != commandVersion ||
+                    !receipt.Receipt.EventSeq.HasValue || receipt.Receipt.EventSeq.Value.Value < actionEventSeq)
+                    continue;
+
+                bool eventMatches = operation.Events.Any(value =>
+                    value.CommandVersion.Value == commandVersion &&
+                    value.Seq.Value == actionEventSeq && value.Seat == actionSeat);
+                if (eventMatches) matches.Add(operation);
+            }
+
+            if (matches.Count != 1)
+                throw new InvalidOperationException("The persisted envelope does not contain exactly one durable commit bound to the confirmed Player action.");
+
+            LocalDurableOperation accepted = matches[0];
+            if (accepted.ExpectedStateVersion != baselineVersion || accepted.NextStatePayload == null ||
+                accepted.NextStatePayload.Length == 0 || accepted.NextStateFingerprint == 0)
+                throw new InvalidOperationException("The exact accepted action operation has no valid post-action authority state.");
+
+            RoundRecoveryState recovered = RoundRecoveryCodec.Decode(accepted.NextStatePayload);
+            if (recovered.Version != checked((long)commandVersion) || recovered.Spec.RoundId != roundId ||
+                recovered.SourceFingerprint != accepted.NextStateFingerprint)
+                throw new InvalidOperationException("The durable action state payload differs from its committed version, round, or fingerprint.");
+
+            RoundStateMachine round = RoundRecovery.Restore(recovered);
+            if (!string.Equals(round.RoundId, roundId, StringComparison.Ordinal))
+                throw new InvalidOperationException("The restored durable action state belongs to another round.");
+            ConservationReport physical = TilePositionMap.Validate(round.Tiles);
+            IReadOnlyList<TilePlacement> placements = round.Tiles.AsPlacements();
+            if (!physical.IsValid || physical.AssignedCount != TileId.Count || placements.Count != TileId.Count)
+                throw new InvalidOperationException("The exact accepted action state does not conserve all 136 physical entities.");
+
+            var lines = new List<string>(placements.Count);
+            var ids = new HashSet<int>();
+            foreach (TilePlacement placement in placements)
+            {
+                if (!placement.Position.IsAssigned || placement.Tile.Value < 0 || placement.Tile.Value >= TileId.Count ||
+                    !ids.Add(placement.Tile.Value))
+                    throw new InvalidOperationException("The exact accepted action state contains an unassigned or duplicate physical entity.");
+                lines.Add("tile|" + placement.Tile.Value.ToString("D3", CultureInfo.InvariantCulture) + "|" +
+                    placement.Position.Zone.ToString().ToUpperInvariant() + "|" +
+                    placement.Position.Seat.ToString(CultureInfo.InvariantCulture) + "|" +
+                    placement.Position.Index.ToString(CultureInfo.InvariantCulture));
+            }
+            if (ids.Count != TileId.Count)
+                throw new InvalidOperationException("The exact accepted action state omits a physical entity.");
+            lines.Sort(StringComparer.Ordinal);
+            return string.Join("\n", lines);
         }
 
         private static RoundStateMachine BuildCallWindow(string action)
