@@ -484,6 +484,7 @@ function Test-C04CaseSummary {
     $payloadBytes = [Convert]::FromBase64String($Summary.canonicalPayloadBase64)
     $payload = ConvertFrom-C04CanonicalPayload $payloadBytes
     $expectedAction = @{ 'C04-G2-01'=6; 'C04-G2-02'=5; 'C04-G2-03'=8; 'C04-G2-04'=7 }[$ExpectedCase]
+    $expectedPayloadTiles = @{ 'C04-G2-01'='0,1,2'; 'C04-G2-02'='0,4,8'; 'C04-G2-03'='124'; 'C04-G2-04'='0,1,2,3' }[$ExpectedCase]
     $expectedEventTiles = @{ 'C04-G2-01'='0,1,2'; 'C04-G2-02'='0,4,8'; 'C04-G2-03'=''; 'C04-G2-04'='0,1,2,3' }[$ExpectedCase]
     if ($null -eq $expectedAction -or [UInt32]$payload[4] -ne $expectedAction -or [UInt32]$Summary.payloadActionType -ne $expectedAction) { throw 'Canonical SubmitAction type does not match its fixed case.' }
     if ($payload[1] -cne $Summary.roundId -or $Summary.payloadRoundId -cne $payload[1]) { throw 'Canonical round id is not bound to the case summary.' }
@@ -494,7 +495,7 @@ function Test-C04CaseSummary {
     $payloadMeldType = if ($payload.ContainsKey(7)) { [UInt32]$payload[7] } else { 0 }
     if ($payloadOption -cne [string]$Summary.candidateOptionId -or $payloadOption -cne [string]$Summary.payloadOptionId -or $payloadMeldType -ne $expectedMeldType -or [UInt32]$Summary.payloadMeldType -ne $expectedMeldType) { throw 'Canonical candidate option/meld type does not match the fixed candidate.' }
     $payloadTiles = if ($payload.ContainsKey(6)) { (@($payload[6]) | Sort-Object) -join ',' } else { '' }
-    if (($payloadTiles -ne $expectedEventTiles) -or (($Summary.payloadTileIds -split ',' | Where-Object { $_ } | Sort-Object) -join ',') -ne $expectedEventTiles) { throw 'Canonical physical tile selection does not match its fixed case.' }
+    if (($payloadTiles -ne $expectedPayloadTiles) -or (($Summary.payloadTileIds -split ',' | Where-Object { $_ } | Sort-Object) -join ',') -ne $expectedPayloadTiles) { throw 'Canonical physical tile selection does not match its fixed case.' }
     if ($Summary.receiptStatus -ne 'Applied' -or [UInt64]$Summary.receiptCommandVersion -le [UInt64]$Summary.stateVersionBefore) { throw 'Applied receipt command version is not above the subscribed baseline.' }
     if ([UInt64]$Summary.eventCommandVersion -ne [UInt64]$Summary.receiptCommandVersion -or [UInt64]$Summary.eventCommandVersion -le [UInt64]$Summary.stateVersionBefore) { throw 'C04 event command version does not match the post-baseline Applied command.' }
     if ([UInt64]$Summary.stateVersionAfter -le [UInt64]$Summary.stateVersionBefore -or [UInt64]$Summary.stateVersionAfter -ne [UInt64]$Summary.receiptCommandVersion) { throw 'C04 authoritative state version does not equal the Applied command version above baseline.' }
