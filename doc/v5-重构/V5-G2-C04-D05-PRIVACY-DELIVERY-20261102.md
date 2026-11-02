@@ -51,6 +51,39 @@
 | C04-G5-02 | BLOCKED | 没有从合法公共命令得到真实非空私有 fee/ledger 对照；不能以空字段、相等 scalar 或 verifier 自测替代。 |
 | C04-G5-03 | BLOCKED | role-switch/cache clearing 与 .NET 原始旧 wire rejection 有证据；Unity/Windows Player 的延迟旧真实 wire 投递负例未执行。 |
 
+> **R5 集成合同状态（2026-11-03，B）**：从真实集成 HEAD `6315277b` 接续，D05-B-I1 的 schema2、self-test 独占目录、四 owner/ownerEpoch 场景闭包已修复。实际 Unity PlayMode **7/7**，四场景 raw 均通过 accepted verifier；Windows Player 测试 XML **7/7**，但 Test Player 临时包被 Unity 删除，runner 无法完成同包 P1/P2/G5 闭包，最终 D05 仍不标 PASS。
+
+## R5 集成合同返修（D05-B-I1）
+
+### 身份与结论
+
+- 集成起点 `6315277b`（A `4cde1db7` + Luna `15981ccc` + D03）；最终代码头 `fc7c8479c8f37d9fe0596ef29989900dd6310a13`，clean/diff-check0。
+- 未回退/未重新合并 A/Luna，未改 A/Luna 源；仅 B9 runner/Unity tests/report。依赖已集成，不再写“A/Luna 未交付”。
+
+### 三项合同修复
+
+1. **schema2**：raw gate 改为 2；短测覆盖 schema2 通过及旧 schema1/空/缺场景拒绝。`integrated-contract-probe` 对同一合法样本 `runnerRawGate=ACCEPTED`。
+2. **self-test 独占目录**：改为 `RunRoot/verifier-selftest` 新目录，不再 `unused.json`；fresh self-test 17 正/67 负、native0，仓库 clean。
+3. **四 owner/ownerEpoch 闭包**：role-switch 4、four-owner 4、closed-binding 4（seat0 旧/新 + 1..3）、recovery 首主机 single 保留原决策、恢复后 4；逐场景 accepted verifier 全通过，无手写帧/丢帧/放宽。
+
+### 实际执行
+
+- Unity PlayMode **7/7 PASS**，XML SHA `84788E9E319406E60320735B933B0E3D67E00486FE7FE15DCC9C5993302F3861`；raw role-switch 11/four-owner 49/closed-binding 6/recovery 9，四场景 verifier native0。
+- Windows Player 测试 **7/7 PASS**，XML SHA `0B872B182D9D30AE2E07E91996D390F7259109F9EC0E6F4C8268343BA9DEE34D`。
+- LocalHost **174/174** fresh，XML SHA `5CB9492287DA33C0B9E2A29DCF8D445D8F15269CF2EEBB4A5D297CE44BD5DBE7`；TableRuntime 483 沿用集成结果。
+- 最终 Unity 证据：summary `615B3823000BF82C8D714E4A262FF2BE26E01AAAE6CE45A8C8FCAE5BB8F9264F`，manifest `121C62C1A90D10BE13408FDF9D36A624C92B9FBD418B8EAF269F438CEFF09211`，seal `87D34FFB3E205CCF300A817196893DA83D83C0C6140B73406B772D4A1E066F29`。
+
+### 新发现未闭合：D05-B-I2（MAJOR，Test Player 包闭包）
+
+- Windows Player 测试 7/7 通过，但 Unity Test Runner 删除临时 `PlayerWithTests` 包；`Get-C04TestPlayerPackage` 找不到 `staging-project/Temp/PlayerWithTests`，runner 报 `Unity Test Player Temp directory is missing` 并非零。
+- 证据根 `build/25f6220e8b334ff6b0251f1c9b3bd9c4`：XML 7/7，runner failure 明确；P1/P2/G5 的同一 Test Player 包身份/完整闭包未完成，不能把 Windows XML 7/7 当最终 PASS。
+- 下一轮修复：运行期保留/复制 Test Player 包，或用 `-BuildPlayer` 产物并让 Windows 测试绑定该包；不得删包检查或临时 XML 冒充同包证据。
+
+### 状态
+
+- D05-B-I1：schema2/self-test/四场景闭包闭合；Unity 7/7 真实通过。
+- D05-B-I2：Windows 测试 7/7，但同包 P1/P2/G5 仍 BLOCKED；D05 未最终完成。
+
 > **R4 返修状态（2026-11-03，B）**：R4 两个 MAJOR 已批修。进程 ownership 只保留 PPID/Job 可证明亲缘，删除名称/参数相似度 fallback；role-switch 改为独立 `role-switch-raw`，四场景采集互不依赖执行顺序。独立 161/161、483/483、runner 16/16、finalization 4/4、sibling ownership false、capture-order 四路径 PASS、orphan 明确 UNKNOWN。真实 Unity/Windows 仍 BLOCKED_ON_PRIVACY_AND_RECOVERY。R4 细节见下，R3/R2/R1 历史保留。
 
 ## R4 返修交付（2026-11-03，B：B-R4-01/02）
