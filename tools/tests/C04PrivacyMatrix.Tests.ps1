@@ -53,10 +53,11 @@ function Invoke-BoundedProcess{
     $psi.RedirectStandardOutput=$true;$psi.RedirectStandardError=$true
     $process=[Diagnostics.Process]::new();$process.StartInfo=$psi
     $started=$false;$outTask=$null;$errTask=$null;$state='START_FAILED';$exitCode=$null;$failure=$null;$cancelRequested=$false;$timedOut=$false;$forcedStop=$false
-    $identity=$null;$stdout='';$stderr='';$outDrained=$false;$errDrained=$false
+    $identity=$null;$stdout='';$stderr='';$outDrained=$false;$errDrained=$false;$watch=$null;$stopPath='NOT_STARTED'
     try{
         if(-not $process.Start()){throw "Process $Name did not start."};$started=$true
         $identity=[ordered]@{pid=$process.Id;startUtc=$process.StartTime.ToUniversalTime().ToString('o')}
+        $stopPath='NATIVE_EXIT'
         $outTask=$process.StandardOutput.ReadToEndAsync();$errTask=$process.StandardError.ReadToEndAsync()
         $watch=[Diagnostics.Stopwatch]::StartNew()
         while(-not $process.WaitForExit(100)){
@@ -67,14 +68,14 @@ function Invoke-BoundedProcess{
                 $cancelRequested=$true
                 if($process.WaitForExit(2500)){break}
                 $failure='cooperative cancel grace expired; terminating the task-owned process'
-                $process.Kill();$forcedStop=$true
+                $process.Kill();$forcedStop=$true;$stopPath='OWNED_PROCESS_TERMINATED_AFTER_GRACE'
                 if(-not $process.WaitForExit(5000)){$state='UNKNOWN';$failure='owned process did not stop after bounded cancellation';break}
                 break
             }
             if($watch.ElapsedMilliseconds -ge $TimeoutMs){
                 $timedOut=$true;$failure="process exceeded ${TimeoutMs}ms timeout"
                 if($process.CloseMainWindow()){$process.WaitForExit(1000)|Out-Null}
-                if(-not $process.HasExited){$process.Kill();$forcedStop=$true}
+                if(-not $process.HasExited){$process.Kill();$forcedStop=$true;$stopPath='OWNED_PROCESS_TERMINATED_AFTER_GRACE'}
                 if(-not $process.WaitForExit(5000)){$state='UNKNOWN';$failure='owned process did not stop after bounded timeout';break}
                 break
             }
@@ -87,16 +88,37 @@ function Invoke-BoundedProcess{
         }
     }catch{$failure=$_.Exception.Message;if($state -ne 'UNKNOWN'){$state='FAILED'}}
     finally{
-        if($started -and $process.HasExited -and $state -ne 'UNKNOWN'){
-            if($null -ne $outTask -and $outTask.IsCompleted){$stdout=$outTask.GetAwaiter().GetResult();$outDrained=$true}
-            if($null -ne $errTask -and $errTask.IsCompleted){$stderr=$errTask.GetAwaiter().GetResult();$errDrained=$true}
+        if($started){
+            try{
+                if(-not $process.HasExited -and $identity){
+                    $sameProcess=$process.Id -eq [int]$identity.pid -and $process.StartTime.ToUniversalTime().ToString('o') -eq [string]$identity.startUtc
+                    if(-not $sameProcess){$state='UNKNOWN';$failure="$failure; process identity changed before cleanup"}
+                    else{
+                        $stopPath='EXCEPTION_OWNED_PROCESS_CLEANUP'
+                        if($process.CloseMainWindow()){$process.WaitForExit(500)|Out-Null}
+                        if(-not $process.HasExited){$process.Kill();$forcedStop=$true}
+                        if(-not $process.WaitForExit(5000)){$state='UNKNOWN';$failure="$failure; owned process did not stop during exception cleanup"}
+                    }
+                }
+            }catch{$state='UNKNOWN';$failure="$failure; owned process cleanup failed: $($_.Exception.Message)"}
+            if($state -ne 'UNKNOWN' -and $null -ne $outTask -and $null -ne $errTask){
+                try{
+                    $outDrained=$outTask.Wait(5000);$errDrained=$errTask.Wait(5000)
+                    if($outDrained){$stdout=$outTask.GetAwaiter().GetResult()};if($errDrained){$stderr=$errTask.GetAwaiter().GetResult()}
+                    if(-not($outDrained -and $errDrained)){$state='UNKNOWN';$failure="$failure; output stream did not reach EOF during cleanup"}
+                }catch{$state='UNKNOWN';$failure="$failure; output drain failed: $($_.Exception.Message)"}
+            }
         }
-        if($state -ne 'UNKNOWN'){
-            Write-StableText (Join-Path $caseRoot 'stdout.log') $stdout
-            Write-StableText (Join-Path $caseRoot 'stderr.log') $stderr
-            Write-StableText (Join-Path $caseRoot 'native-exit.txt') ("nativeExit=$exitCode`n")
+        if($state -ne 'UNKNOWN' -and $outDrained -and $errDrained){
+            try{
+                Write-StableText (Join-Path $caseRoot 'stdout.log') $stdout
+                Write-StableText (Join-Path $caseRoot 'stderr.log') $stderr
+                $nativeText=if($state -eq 'EXITED'){"nativeExit=$exitCode`nstopPath=NATIVE_EXIT`n"}else{"nativeExit=null`nstopPath=$stopPath`nobservedProcessExit=$exitCode`n"}
+                Write-StableText (Join-Path $caseRoot 'native-exit.txt') $nativeText
+            }catch{$state='FAILED';$failure="$failure; stable output sealing failed: $($_.Exception.Message)"}
         }
-        $record=[ordered]@{name=$Name;state=$state;nativeExit=$exitCode;identity=$identity;stopPath=if($forcedStop){'OWNED_PROCESS_TERMINATED_AFTER_GRACE'}elseif($cancelRequested){'COOPERATIVE_CANCEL'}elseif($timedOut){'TIMEOUT_EXITED_NORMALLY'}else{'NATIVE_EXIT'};elapsedMs=if($null -ne $watch){[int]$watch.ElapsedMilliseconds}else{0};
+        if($state -eq 'CANCELLED' -and -not $forcedStop){$stopPath='COOPERATIVE_CANCEL'}elseif($timedOut -and -not $forcedStop){$stopPath='TIMEOUT_EXITED_NORMALLY'}
+        $record=[ordered]@{name=$Name;state=$state;nativeExit=if($state -eq 'EXITED'){$exitCode}else{$null};observedProcessExit=$exitCode;identity=$identity;stopPath=$stopPath;elapsedMs=if($null -ne $watch){[int]$watch.ElapsedMilliseconds}else{0};
             stdoutChars=$stdout.Length;stderrChars=$stderr.Length;stdoutDrained=$outDrained;stderrDrained=$errDrained;failure=$failure}
         $script:Results.Add($record)
         $process.Dispose()
@@ -106,10 +128,11 @@ function Invoke-BoundedProcess{
     return [pscustomobject]@{Name=$Name;State=$state;NativeExit=$exitCode;Stdout=$stdout;Stderr=$stderr;ElapsedMs=$record.elapsedMs}
 }
 
-function Invoke-Verifier([string]$Name,[string]$InputPath,[bool]$ExpectSuccess){
-    $run=Invoke-BoundedProcess -Name $Name -FilePath $DotnetPath -Arguments @($VerifierDll,'verify',$InputPath) -TimeoutMs $ProcessTimeoutMs -WorkingDirectory (Split-Path -Parent $VerifierDll)
-    if($ExpectSuccess -and $run.NativeExit -ne 0){throw "Verifier $Name expected native 0, got $($run.NativeExit). $($run.Stderr)"}
-    if(-not $ExpectSuccess -and $run.NativeExit -eq 0){throw "Verifier $Name accepted an invalid raw capture."}
+function Invoke-Verifier([string]$Name,[string]$InputPath,[bool]$ExpectSuccess,[int]$ExpectedExit=2,[string]$ExecutableOverride=$DotnetPath,[string[]]$PrefixArguments=@()){
+    $run=Invoke-BoundedProcess -Name $Name -FilePath $ExecutableOverride -Arguments (@($PrefixArguments)+@($VerifierDll,'verify',$InputPath)) -TimeoutMs $ProcessTimeoutMs -WorkingDirectory (Split-Path -Parent $VerifierDll)
+    if($run.State -ne 'EXITED'){throw "Verifier $Name did not exit normally; state=$($run.State), stopPath=$((($script:Results|Where-Object name -eq $Name|Select-Object -Last 1).stopPath))"}
+    if($ExpectSuccess -and ($run.NativeExit -ne 0 -or $run.Stdout -notmatch 'PRIVACY_MATRIX_PASS frames=[1-9][0-9]* sha256=[0-9a-f]{64}')){throw "Verifier $Name expected native 0 and a fresh pass marker, got $($run.NativeExit). $($run.Stderr)"}
+    if(-not $ExpectSuccess -and ($run.NativeExit -ne $ExpectedExit -or $run.Stderr -notmatch '(frame\[|same-state |SyncResponse |envelope cursor |typed |VERIFY_ERROR)')){throw "Verifier $Name expected a normal native $ExpectedExit refusal with a diagnostic; got state=$($run.State) exit=$($run.NativeExit). $($run.Stderr)"}
     return $run
 }
 
@@ -117,7 +140,7 @@ $outcome='FAIL';$summaryPath=Join-Path $RunRoot 'summary.json'
 try{
     $fixtureRoot=Join-Path $RunRoot 'wirecodec-fixtures'
     $self=Invoke-BoundedProcess -Name 'self-test' -FilePath $DotnetPath -Arguments @($VerifierDll,'self-test',$fixtureRoot) -TimeoutMs $ProcessTimeoutMs -WorkingDirectory (Split-Path -Parent $VerifierDll)
-    if($self.NativeExit -ne 0 -or $self.Stdout -notmatch 'SELF_TEST_PASS positive=2 negative=29 serializedFrames=5 source=WireCodec'){throw "WireCodec self-test failed or did not run the fixed genuine mutation set. native=$($self.NativeExit) $($self.Stderr)"}
+    if($self.State -ne 'EXITED' -or $self.NativeExit -ne 0 -or $self.Stdout -notmatch 'SELF_TEST_PASS positive=4 negative=35 serializedFrames=5 source=WireCodec'){throw "WireCodec self-test failed or did not run the fixed genuine mutation set. state=$($self.State) native=$($self.NativeExit) $($self.Stderr)"}
 
     $validPath=Join-Path $fixtureRoot 'valid.json'
     $valid=Invoke-Verifier 'wirecodec-valid-positive' $validPath $true
@@ -126,6 +149,7 @@ try{
 
     $negativeNames=@('raw-empty','raw-invalid-one-byte','cross-seat-raw-summary-unchanged','hand-count-summary-rewritten','missing-welcome','welcome-record-is-not-projection','truncated-projection-wire',
         'zero-version-without-valid-genesis','public-private-summary','unknown-field-summary-false',
+        'wrong-sync-state-version','wrong-envelope-cursor','wrong-projection-message-type-summary-rewritten','wrong-welcome-owner-epoch-header-unset','foreign-closed-hand-content','public-current-hidden-tile-as-discard',
         'wrong-welcome-session','wrong-welcome-role','wrong-welcome-seat','wrong-welcome-envelope-session','wrong-welcome-envelope-binding','wrong-welcome-scope-id','wrong-welcome-scope-role','wrong-welcome-scope-room',
         'wrong-welcome-version','wrong-welcome-owner-epoch','wrong-welcome-binding-epoch','wrong-projection-owner',
         'wrong-projection-audience','wrong-projection-message-type','unknown-projection-message-type','wrong-projection-version','projection-unknown-field','welcome-unknown-field','public-nested-unknown-field')
@@ -175,8 +199,30 @@ exit 90
     if(Get-Process -Id $timeoutIdentity.identity.pid -ErrorAction SilentlyContinue){throw 'Owned process is still running after timeout cleanup.'}
     foreach($requiredLog in @('stdout.log','stderr.log','native-exit.txt')){if(-not(Test-Path -LiteralPath (Join-Path $RunRoot "owned-timeout/$requiredLog") -PathType Leaf)){throw 'Timed out process did not receive stable output and exit finalization.'}}
 
+    $cleanupFailure=$false;$badCancelPath=Join-Path (Join-Path $RunRoot 'missing-parent') 'cancel.request'
+    try{[void](Invoke-BoundedProcess -Name 'owned-exception-cleanup' -FilePath $powershell -Arguments @('-NoProfile','-File',$probePath,'timeout','') -TimeoutMs 10000 -CancelFile $badCancelPath -CancelAfterMs 1 -WorkingDirectory $RunRoot)}catch{$cleanupFailure=$true}
+    if(-not $cleanupFailure){throw 'Fault-injected cancellation-file write unexpectedly succeeded.'}
+    $cleanupRecord=$script:Results|Where-Object name -eq 'owned-exception-cleanup'|Select-Object -Last 1
+    if($cleanupRecord.state -ne 'FAILED' -or $cleanupRecord.stopPath -ne 'EXCEPTION_OWNED_PROCESS_CLEANUP' -or -not $cleanupRecord.stdoutDrained -or -not $cleanupRecord.stderrDrained -or $null -ne $cleanupRecord.nativeExit){throw 'Exception cleanup did not stop and drain the owned child without fabricating a native exit.'}
+    if(Get-Process -Id $cleanupRecord.identity.pid -ErrorAction SilentlyContinue){throw 'Owned process survived exception cleanup.'}
+    $cleanupOut=Join-Path $RunRoot 'owned-exception-cleanup/stdout.log';$cleanupHash=(Get-FileHash -Algorithm SHA256 -LiteralPath $cleanupOut).Hash;Start-Sleep -Milliseconds 200
+    if((Get-FileHash -Algorithm SHA256 -LiteralPath $cleanupOut).Hash -ne $cleanupHash){throw 'Exception cleanup output changed after stable sealing.'}
+
+    $timeoutShim=Join-Path $RunRoot 'negative-timeout-shim.ps1'
+    @'
+param([string]$Verifier,[string]$Mode,[string]$InputPath)
+if($Mode -eq 'verify' -and [IO.Path]::GetFileName($InputPath) -eq 'raw-empty.json'){Start-Sleep -Seconds 60;exit 2}
+& 'D:/Unity/dotnet/dotnet.exe' $Verifier $Mode $InputPath
+exit $LASTEXITCODE
+'@|Set-Content -LiteralPath $timeoutShim -Encoding UTF8
+    $priorTimeout=$ProcessTimeoutMs;$ProcessTimeoutMs=1000;$timeoutNegativeCaught=$false
+    try{[void](Invoke-Verifier 'negative-timeout-shim-must-not-count-as-rejection' (Join-Path $fixtureRoot 'raw-empty.json') $false 2 $powershell @('-NoProfile','-File',$timeoutShim))}catch{$timeoutNegativeCaught=$true}
+    finally{$ProcessTimeoutMs=$priorTimeout}
+    $shimRecord=$script:Results|Where-Object name -eq 'negative-timeout-shim-must-not-count-as-rejection'|Select-Object -Last 1
+    if(-not $timeoutNegativeCaught -or $shimRecord.state -ne 'TIMED_OUT' -or $shimRecord.nativeExit -ne $null){throw 'A timed out verifier shim was accepted as a negative refusal.'}
+
     $legacyResult=$null
-    if($LegacyRawFramesPath){$legacy=Invoke-Verifier 'legacy-no-welcome-sample-negative' $LegacyRawFramesPath $false;$legacyResult=[ordered]@{state='REJECTED_AS_EXPECTED';nativeExit=$legacy.NativeExit;sha256=(Get-FileHash -Algorithm SHA256 -LiteralPath $LegacyRawFramesPath).Hash}}
+    if($LegacyRawFramesPath){$legacy=Invoke-Verifier 'legacy-no-welcome-sample-negative' $LegacyRawFramesPath $false 3;$legacyResult=[ordered]@{state='REJECTED_AS_EXPECTED';nativeExit=$legacy.NativeExit;sha256=(Get-FileHash -Algorithm SHA256 -LiteralPath $LegacyRawFramesPath).Hash}}
 
     $outcome='PASS'
     $summary=[ordered]@{schemaVersion=2;result=$outcome;startedUtc=$script:StartedAt.ToString('o');finishedUtc=[DateTime]::UtcNow.ToString('o');
@@ -184,7 +230,7 @@ exit 90
         realCapture=if($RawFramesPath){'PASS'}else{'NOT_RUN_NO_CURRENT_APPLICATION_CAPTURE'};
         realFrameCount=$realFrameCount;realCaptureSha256=$realCaptureSha256;tamperedCaptureNativeExit=$tampered.NativeExit;
         largeOutput=@{nativeExit=$large.NativeExit;stdoutChars=$large.Stdout.Length;stderrChars=$large.Stderr.Length};
-        cancellation=@{nativeExit=$cancel.NativeExit;state=$cancel.State;processStopped=$true};cancelRefused=@{nativeExit=$refuseCancel.NativeExit;state=$refuseCancel.State;processStopped=$true};
+        cancellation=@{nativeExit=$cancel.NativeExit;state=$cancel.State;processStopped=$true};cancelRefused=@{nativeExit=$refuseCancel.NativeExit;state=$refuseCancel.State;processStopped=$true};exceptionCleanup=@{state=$cleanupRecord.state;stopPath=$cleanupRecord.stopPath;stdoutDrained=$cleanupRecord.stdoutDrained;stderrDrained=$cleanupRecord.stderrDrained;nativeExit=$cleanupRecord.nativeExit};timeoutShim=@{state=$shimRecord.state;nativeExit=$shimRecord.nativeExit};
         nativeFailure=@{nativeExit=$nativeFailure.NativeExit;stderr=$nativeFailure.Stderr};timeout=@{nativeExit=$timeout.NativeExit;state=$timeout.State;processStopped=$true};
         legacySample=$legacyResult;processes=@($script:Results)}
     Write-StableText $summaryPath ($summary|ConvertTo-Json -Depth 12)
