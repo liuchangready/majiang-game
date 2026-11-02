@@ -1368,7 +1368,7 @@ exit `$LASTEXITCODE
         $matrixResult = Start-C04Owned ('privacy-matrix-tests-' + $scene.scene) 'powershell.exe' @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $matrixTests, '-DotnetPath', $DotnetPath, '-VerifierDll', $verifierDll, '-RawFramesPath', $scene.path, '-RunRoot', $verifierEvidence) $repo 240
         Assert-C04NativeSuccess $matrixResult ('privacy-matrix-tests-' + $scene.scene)
       }
-      $summary.rawFrames = @($rawResults)
+      $summary.rawFrames = $rawResults.ToArray()
     }
 
     $summary.status = 'PASS'
