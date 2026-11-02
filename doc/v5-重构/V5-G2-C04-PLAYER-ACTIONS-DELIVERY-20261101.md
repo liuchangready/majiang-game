@@ -3,8 +3,8 @@
 ## 冻结候选与结论
 
 - acceptedBase：`8fd7c6cb701dfbb41c28938de4186749bdd1d6c7`；本地分支基线：`734b3775fb7e658fcac33d3d6ce07cf195e96001`。
-- 最后受测代码候选：`91a8c7ce613f35a8bf28368d2ae441a73ab5cb67`。本报告提交只更新本文，不改变该受测候选。
-- 结论：**D03 当前不通过，未申请批准**。原 4 组缺陷均无新增 ID；R1-01 已关闭，R1-02 的 API/编译/PlayMode 子项已关闭。R1-02 Windows Player 的 fresh 构建已有先前候选 native 0 证据，但本候选被 shared-plugin NuGet SSL 错误挡在 Unity 前；四个 GAME 尚未在最新候选完成。R1-03 已修 canonical digest、单行 JSONL 和同 acceptance publication after-snapshot 绑定，但最后一项尚无最新候选实测。R1-04 严格 marker/稳定 seal 门禁及 59 个负例通过工具夹具；最新候选未走到 Unity package/build 阶段。
+- R4 独立审查代码：`91a8c7ce613f35a8bf28368d2ae441a73ab5cb67`。本轮最新代码候选：`ac841640`（后续仅报告提交不改变代码）。
+- 结论：**D03 当前不通过，未申请批准**。R1-01、R1-02 API/编译/四项 PlayMode 子项和 R1-04 严格 marker 类型子项保持关闭。R1-02 runner 已补完整 NuGet seed array 支持；当前 fresh .NET、四 raw verifier positives/九 negatives 和 shared provenance 全过，但 Unity warmup 首次发现并修正 Probe overload 错误。最新隔离 run 约 10 分钟未取得 Unity mutex，PlayMode、Player、四 GAME 未执行。R1-03 verifier 的完整原始事实绑定已在四个真实 .NET channel TOOL_FIXTURE 通过，GAME 侧证据尚未取得。R1-04 最终 source/resolved-package/pre-post build closure 与成功 seal 尚无本候选实测。
 - 没有 push、PR/MR 操作、approve、合并或部署。
 
 ## 完整缺陷清单与修复映射
@@ -47,3 +47,39 @@
 `git diff --check 734b3775..91a8c7ce` 通过；最后状态 tracked clean。范围相对 base 限于 18 个授权文件：交付本文、LocalPlayerActionScenario、LocalSnapshotFacts、LocalTableRuntime、TableActor、TableRuntimeContracts、C04PlayerActionChannelTests、verifier csproj/Program、工具测试/runner、C04 Build/Probe/Factory/PlayMode 及对应三个 Unity `.meta`；无 Domain/Client/Protocol/asmdef、D01/D04/UI15/C01/C02/census 变更。
 
 当前仍需 latest-candidate fresh shared-plugin/Unity/Player 与四个 GAME 通过，才能关闭 R1-02/R1-03/R1-04 并交给 caller 独立审查。没有将历史 Player 成功、旧 marker 或工具夹具冒充本候选通过；没有 push/PR/approve/MR/merge/deploy。
+## 第5轮批量返修与独立复验（2026-11-02）
+
+本节记录本轮新增的实际复验和后续根因修复；R4 记录的 3 组仍是完整缺陷分母，未新增产品缺陷 ID。代码提交候选为 `ac841640`（父提交 `a8600669`、`74819bb7`）；当前受限于 Unity mutex 未取得，**D03 仍不通过**。无 push、PR/MR、approve、merge 或 deploy。
+
+### D03-R1-02 — BLOCKER：本候选还没有完成 Windows Player / 四个 GAME
+
+- **位置**：`tools/unity/run-p45-c04-player-actions.ps1` 的 NuGet seed、Unity import、package closure 与 build 阶段；`unity/Mahjong.Unity/Assets/Scripts/App/C04PlayerActionProbe.cs` 的 after binding capture。
+- **复现命令**：`powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-c04-player-actions.ps1 -RunRoot build/<fresh-guid> -NugetSeedRoot E:\majiang-review\caller-c04-d03-r4-8c2e719a\build\caller-review\shared-seeded-packages -NugetSeedAuditPath E:\majiang-review\caller-c04-d03-r4-8c2e719a\build\caller-review\nuget-seed-audit.json`。
+- **实际 vs 期望**：`build/e96efb830bf940cc8443ec92eced0262` 首次发现 audit JSON array 被 PS5 pipeline 嵌套成一条拼接 path，fresh run 在 seed 阶段拒绝；根因是原工具夹具只用单行 audit。首失败 `failure.json` SHA `9F20B0CB23F1B14776C675310789B8FC5638FB239B8A752EB88D22023F9F7115` / partial manifest SHA `54655E4ACDD81FAE561146866BCF6348C647FAE0D0C1C7582E1000DAE4FDA3E4` 原样保留。修复后 `build/0406f26ef29549278ca11606759b0f53` 的 seed、LocalHost、TableRuntime、raw verifier positives/negatives、shared build/provenance 均通过；Unity warmup 实际发现 `C04PlayerActionProbe.cs:498` 把 `TableVisibleEventBatch` 传给只收 identity/Observed batch 的 overload，native 1。其原始 Unity log SHA `655E94CC7957DE5D4513B84BB5B984C1C34FD875668B3AE8634FA19ADBA44F42`。补充 Client batch identity overload 后，`build/e6ccbf93bef74f6d9d0b1a6f0d4dcda6` warmup native 0（log SHA `507790C13966BC3607BFFFC969431837C69BA41E5E740806478968B18F269E99`），但执行会话中断，未产生闭包结果或稳定 summary，不能算通过。最新独占 run `build/b1d5db9ae0f64e11b08f08c9cac793fc` 等待 mutex 约 10 分钟后未获资源；按无法获锁边界结束自己的等待。该 root 的 `logs/runner.log` SHA `6F86F9C36F732952375F567A7C6FA144DD9A0C7B832F389DF118F5EABEB95AE1` 只记录 WAIT_MUTEX，尚无 Unity/PlayMode/Player/GAME 阶段。
+- **证据路径与 SHA-256**：`build/0406f26ef29549278ca11606759b0f53/dotnet-results/LocalHost.xml` `6749AC56DAEEFFC0DCF4773F23E60A70DDA8535158AA2CB419511DF3EFEDA9FC`（138/138，0 skip/error，runner 中原生 0）；`dotnet-results/TableRuntime.xml` `5C55A43D714A80D015F4128540E5EA7AE9F4D22C54FF7CD53A4F17B4EC17A705`（483/483，原生 0）；`tool-verifier-matrix.json` `1ED7524A25808BD80ED414993AEFECEABF078D9EF1E080CF94B0C7EC2657B085`；`logs/unity-package-import-warmup.stdout.txt` `7ED64BC0DB6CA1E2365834102F388626C3ACA2408B8DB7DDF8DE3BAFEE232E53`；partial-run 原始文件保留在各自 GUID root。
+- **修复要求与本轮映射**：NuGet importer 直接解析完整 JSON array；工具夹具现有双包正例逐包核 SHA256、SHA512、size/cache record 并校验复制。Probe 从同一个 `TableVisibleEventBatch` 序列化 after binding，并将同 accepted publication 的所有事件及 projection cursor 原样绑定。首失败都保留。此修复不覆盖 Unity/Player/GAME 缺口。
+- **验收断言**：seed 28 包的 fresh build、精确四 PlayMode、Windows Player native 0 / errors 0 / strict marker、四个真实 GAME 各自完整原始证据并封存同一源码/包闭包。当前未达到；最新 run 仍在锁等待，PlayMode/Player/GAME=`NOT_RUN`。
+
+### D03-R1-03 — MAJOR：typed raw 原件与事实逐项绑定
+
+- **位置**：`dotnet/tools/C04PlayerActionVerifier/Program.cs`、`dotnet/src/Mahjong.LocalHost/LocalPlayerActionScenario.cs`、`dotnet/tests/Mahjong.LocalHost.Tests/C04PlayerActionChannelTests.cs`，及 Player 的 `RawEventBatchJsonBase64` capture。
+- **复现命令**：`powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-c04-player-actions.ps1 -RunRoot build/0406f26ef29549278ca11606759b0f53 -NugetSeedRoot E:\majiang-review\caller-c04-d03-r4-8c2e719a\build\caller-review\shared-seeded-packages -NugetSeedAuditPath E:\majiang-review\caller-c04-d03-r4-8c2e719a\build\caller-review\nuget-seed-audit.json`；该 run 对 fresh LocalHost 写出的四份 raw TOOL_FIXTURE 实际调用 fresh verifier，并逐项运行所列 negative mutations。
+- **实际 vs 期望**：当前四份 .NET raw positives 均为 verifier native 0；9 项变体均 native 1 拒绝。完整验证现用 generated `PlayerSnapshot.Parser` 解码 baseline/after，`LocalTableRecoveryFactsReader` 解 authority 原件并逐实体重算 136 placements/hash；校验真实 raw receipt、binding、accepted event batch、request/scope/account、room/session/round/seat/epoch/version/cursor/event/typed payload 与 summary，并验证 Pon/Chi claimed tile 来源、Riichi 1000 点及一根供托、Kan 0..3 加 deadwall replacement 73。PLAYER/GAME 原始封装仍未能执行，不能把 TOOL_FIXTURE 当 GAME。
+- **统一负例矩阵 / 证据**：`build/0406f26ef29549278ca11606759b0f53/tool-verifier-matrix.json` SHA `1ED7524A25808BD80ED414993AEFECEABF078D9EF1E080CF94B0C7EC2657B085`：四个 `TOOL_FIXTURE_LOCALHOST_CHANNEL` positives 全 PASS，9 个 negatives 全 REJECTED：MalformedBaselineProtobuf、InvalidAfterProtobuf、CoherentOwnerEpochFlatRewrite、CoherentBindingEpochFlatRewrite、ForeignRequestScope、ForeignRoom、PhysicalImageHashMismatch、AcceptanceSequenceMismatch、ClaimedTileStillInHand。四个原件和逐案 stdout/stderr 都在 `tool-channel-fixtures/` 与 `logs/verifier-*`。
+- **验收断言**：拒绝非法 protobuf、缺失原件/hash不符、相干篡改 identity/request/epoch、物理位置伪造；四份真实 GAME 原始记录可用相同 helper 解码并通过。TOOL 矩阵通过；GAME 验收因 R1-02 锁等待未运行，故该组真实 Player 证据要求仍未关闭。
+
+### D03-R1-04 — MAJOR：严格 marker 子项关闭，最终包闭环未完成
+
+- **位置**：`tools/unity/run-p45-c04-player-actions.ps1` marker/source closure/post-build closure/seal checks。
+- **复现命令**：`powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/tests/C04PlayerActions.Tests.ps1`。
+- **实际 vs 期望**：工具套件 native 0：2 positive / 61 negative；严格 errors/bytes 整数类型、精确 target/scenes/build identity、manifest/owned files 与 stage gate 夹具均过。当前候选仍没有完成 resolved package 输入闭包及同候选 Windows Player/post-build closure/seal，故不能以工具门禁代替实际 package evidence。
+- **证据路径**：最近完整工具输出 `build/4786affdd0c145ecbaba43c93a79c4eb`；Unity阶段目前仅有 `b1d.../logs/runner.log` 的 WAIT_MUTEX 记录。R4 strict-marker native fixture 关闭证据保留于上一轮原始 manifest，未改写。
+- **修复要求与验收断言**：保留整数类型和 fail-closed guards；本候选完成 source/generated/resolved package pre/post 闭包绑定、native 结果及 marker/exe hash 绑定、writers 停止后的稳定 seal。当前包闭环未实跑，R1-04 总组仍未关闭。
+
+### 本轮命令与范围
+
+- 新鲜 LocalHost：restore/build/test 均原生 0；LocalHost XML 138/138/0 failed/skip/error。fresh C04 verifier build 0，四例 verify 0。TableRuntime XML 483/483/0 failed/skip/error。
+- 工具夹具：`tools/tests/C04PlayerActions.Tests.ps1` 原生 0，2 positives / 61 negatives；此前双包 seed 夹具修复前后的输出和首次失败均留在各自 `build/<GUID>`。
+- 共享插件：本轮 run `0406...` seeded fresh source build native 0；provenance、copied plugin guard 均 native 0。seed source 文件 SHA 与 caller audit 一致；不复用旧业务 DLL。
+- Unity warmup 首次实际原生失败并已修编译错误；修后 run `e6cc...` warmup native 0，但未得到完整 runner seal；最新 `b1d...` mutex 未获。当前没有新的 PlayMode、Windows Player、GAME、PG、Android 或 CI 运行。
+- 授权文件改动均限既有授权路径；当前代码提交为 `74819bb7`、`a8600669`、`ac841640`。本报告文件记录了当前未完成的 mutex 状态并随本轮最终 diff 提交；无生成物入库。
