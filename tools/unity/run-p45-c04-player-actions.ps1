@@ -8,6 +8,9 @@ param(
     [string]$NugetSeedRoot,
     [string]$NugetSeedAuditPath,
     [string]$ExpectedCandidate,
+    [int]$MutexTimeoutSeconds = 600,
+    [int]$MutexHeartbeatSeconds = 30,
+    [string]$MutexCancelFile,
     [switch]$PreflightOnly,
     [switch]$FixtureOnly
 )
@@ -204,7 +207,19 @@ function Invoke-OwnedNative {
     $pidOwned = $process.Id
     $startTimeOwned = $process.StartTime.ToUniversalTime().ToString('o')
     $stdoutTask = $process.StandardOutput.ReadToEndAsync(); $stderrTask = $process.StandardError.ReadToEndAsync()
-    $exited = $process.WaitForExit($Timeout * 1000)
+    $deadline = [DateTimeOffset]::UtcNow.AddSeconds($Timeout)
+    $nextHeartbeat = [DateTimeOffset]::UtcNow.AddSeconds(30)
+    $exited = $false
+    while (-not $exited) {
+        $remaining = [int][Math]::Ceiling(($deadline - [DateTimeOffset]::UtcNow).TotalMilliseconds)
+        if ($remaining -le 0) { break }
+        $slice = [Math]::Min(30000, $remaining)
+        $exited = $process.WaitForExit($slice)
+        if (-not $exited -and [DateTimeOffset]::UtcNow -ge $nextHeartbeat) {
+            Write-RunLog "HEARTBEAT stage=$Name waitedSeconds=$([int]([DateTimeOffset]::UtcNow - $started).TotalSeconds) timeoutSeconds=$Timeout pid=$pidOwned"
+            $nextHeartbeat = [DateTimeOffset]::UtcNow.AddSeconds(30)
+        }
+    }
     $didTimeout = -not $exited
     $treeKillExit = $null
     if ($didTimeout) {
@@ -572,6 +587,48 @@ function Test-C04ActionEvidence {
 
 if ($FixtureOnly) {
     Assert-C04RunCacheIsolation $RunRoot | Out-Null
+    $mutexName = 'Local\MahjongV5P45UnityValidation'
+    $mutexHolderPath = Join-Path $RunRoot 'fixture-mutex-holder.ps1'
+    $mutexAcquiredPath = Join-Path $RunRoot 'fixture-mutex-acquired.txt'
+    $mutexHolder = @'
+$mutex = New-Object System.Threading.Mutex($false, $args[0])
+if (-not $mutex.WaitOne(5000)) { exit 41 }
+[IO.File]::WriteAllText($args[1], 'held')
+Start-Sleep -Seconds 8
+$mutex.ReleaseMutex(); $mutex.Dispose()
+'@
+    [IO.File]::WriteAllText($mutexHolderPath, $mutexHolder, (New-Object Text.UTF8Encoding($false)))
+    $holderArgs = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' + $mutexHolderPath + ' ' + $mutexName + ' ' + $mutexAcquiredPath
+    $holder = Start-Process -FilePath 'powershell.exe' -ArgumentList $holderArgs -WorkingDirectory $RunRoot -PassThru -WindowStyle Hidden
+    $holderDeadline = [DateTimeOffset]::UtcNow.AddSeconds(6)
+    while (-not (Test-Path -LiteralPath $mutexAcquiredPath) -and [DateTimeOffset]::UtcNow -lt $holderDeadline) { Start-Sleep -Milliseconds 100 }
+    if (-not (Test-Path -LiteralPath $mutexAcquiredPath)) { throw 'Short mutex timeout fixture could not establish an owned lock holder.' }
+    $timeoutRoot = Join-Path (Join-Path $repo 'build') ([Guid]::NewGuid().ToString('N'))
+    $frozenHead = (& git -C $repo rev-parse HEAD 2>&1 | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $frozenHead -notmatch '^[0-9a-f]{40}$') { throw 'Unable to resolve candidate for short mutex fixture.' }
+    $timeoutArgs = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' + $PSCommandPath + ' -RunRoot ' + $timeoutRoot + ' -ExpectedCandidate ' + $frozenHead + ' -MutexTimeoutSeconds 1 -MutexHeartbeatSeconds 1'
+    $timeoutRun = Invoke-OwnedNative -Name 'FixtureShortMutexTimeoutAndStableSeal' -FilePath 'powershell.exe' -Arguments $timeoutArgs -WorkingDirectory $repo -StdoutPath (Join-Path $logs 'fixture-mutex-timeout.stdout.txt') -StderrPath (Join-Path $logs 'fixture-mutex-timeout.stderr.txt') -Timeout 60
+    if ($timeoutRun.exitCode -eq 0 -or -not (Test-Path -LiteralPath (Join-Path $timeoutRoot 'failure.json')) -or -not (Test-Path -LiteralPath (Join-Path $timeoutRoot 'summary.json')) -or -not (Test-Path -LiteralPath (Join-Path $timeoutRoot 'manifest.sha256'))) {
+        throw 'Short shared-mutex timeout did not return nonzero and create stable failure/summary/manifest evidence.'
+    }
+    $timeoutManifest = Join-Path $timeoutRoot 'manifest.json'
+    $timeoutManifestHash = (Get-Content -LiteralPath (Join-Path $timeoutRoot 'manifest.sha256') -Raw).Trim().Split(' ')[0]
+    if ((Get-Sha256 $timeoutManifest) -cne $timeoutManifestHash) { throw 'Short mutex timeout manifest seal hash does not match.' }
+    if ($holder -and -not $holder.HasExited) { $holder.WaitForExit(10000) | Out-Null }
+    if ($holder -and -not $holder.HasExited) { throw 'Owned short mutex fixture holder did not exit within its bounded lifetime.' }
+    $cancelPath = Join-Path $RunRoot 'fixture-mutex-cancel.request'
+    [IO.File]::WriteAllText($cancelPath, 'cancel', (New-Object Text.UTF8Encoding($false)))
+    $cancelRoot = Join-Path (Join-Path $repo 'build') ([Guid]::NewGuid().ToString('N'))
+    $cancelArgs = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' + $PSCommandPath + ' -RunRoot ' + $cancelRoot + ' -ExpectedCandidate ' + $frozenHead + ' -MutexTimeoutSeconds 10 -MutexHeartbeatSeconds 1 -MutexCancelFile ' + $cancelPath
+    $cancelRun = Invoke-OwnedNative -Name 'FixtureShortMutexCancellationAndStableSeal' -FilePath 'powershell.exe' -Arguments $cancelArgs -WorkingDirectory $repo -StdoutPath (Join-Path $logs 'fixture-mutex-cancel.stdout.txt') -StderrPath (Join-Path $logs 'fixture-mutex-cancel.stderr.txt') -Timeout 60
+    if ($cancelRun.exitCode -eq 0 -or -not (Test-Path -LiteralPath (Join-Path $cancelRoot 'failure.json')) -or -not (Test-Path -LiteralPath (Join-Path $cancelRoot 'summary.json')) -or -not (Test-Path -LiteralPath (Join-Path $cancelRoot 'manifest.sha256'))) {
+        throw 'Mutex cancellation did not return nonzero and create stable failure/summary/manifest evidence.'
+    }
+    $cancelFailure = Get-Content -LiteralPath (Join-Path $cancelRoot 'failure.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($cancelFailure.error -notmatch 'Cancelled' -or @($cancelFailure.fixedCaseMatrix | Where-Object { $_.playMode -ne 'NOT_RUN' -or $_.windowsPlayer -ne 'NOT_RUN' }).Count -ne 0) { throw 'Mutex cancellation did not preserve cancelled/NOT_RUN status.' }
+    $cancelManifest = Join-Path $cancelRoot 'manifest.json'
+    $cancelManifestHash = (Get-Content -LiteralPath (Join-Path $cancelRoot 'manifest.sha256') -Raw).Trim().Split(' ')[0]
+    if ((Get-Sha256 $cancelManifest) -cne $cancelManifestHash) { throw 'Short mutex cancellation manifest seal hash does not match.' }
     $ownedChildPath = Join-Path $RunRoot 'owned-timeout-child.ps1'
     $nestedPidPath = Join-Path $RunRoot 'owned-descendant.pid'
     $ownedScript = @'
@@ -895,7 +952,7 @@ Start-Sleep -Seconds 25
         throw 'Fixture evidence seal must contain stable owned outputs and exclude volatile process/download roots.'
     }
     [IO.File]::WriteAllText((Join-Path $RunRoot 'fixture-seal.json'), (($fixtureFiles | ConvertTo-Json -Depth 5) + "`n"), (New-Object Text.UTF8Encoding($false)))
-    Write-Host "C04_TOOL_FIXTURES_PASS positive=2 negative=$($negatives.Count + $evidenceNegatives.Count + $markerNegatives.Count + 17) protobuf=PASS malformed=2 timeoutTree=PASS outputDrain=PASS outputFiles=$($fixtureFiles.Count)"
+    Write-Host "C04_TOOL_FIXTURES_PASS positive=2 negative=$($negatives.Count + $evidenceNegatives.Count + $markerNegatives.Count + 17) protobuf=PASS malformed=2 timeoutTree=PASS mutexTimeoutSeal=PASS mutexCancellationSeal=PASS outputDrain=PASS outputFiles=$($fixtureFiles.Count)"
     exit 0
 }
 
@@ -907,14 +964,39 @@ function Get-C04FailureClass([string]$message) {
     return 'UNKNOWN'
 }
 
+function Wait-C04UnityMutex([System.Threading.Mutex]$Mutex,[int]$TimeoutSeconds,[int]$HeartbeatSeconds,[string]$Stage,[string]$CancelFile) {
+    if ($TimeoutSeconds -lt 1 -or $TimeoutSeconds -gt 600) { throw 'MutexTimeoutSeconds must be between 1 and 600.' }
+    if ($HeartbeatSeconds -lt 1 -or $HeartbeatSeconds -gt 30) { throw 'MutexHeartbeatSeconds must be between 1 and 30.' }
+    $started = [DateTimeOffset]::UtcNow
+    $deadline = $started.AddSeconds($TimeoutSeconds)
+    $waited = 0
+    while ([DateTimeOffset]::UtcNow -lt $deadline) {
+        if (-not [string]::IsNullOrWhiteSpace($CancelFile) -and (Test-Path -LiteralPath $CancelFile -PathType Leaf)) {
+            Write-RunLog "WAIT_MUTEX_CANCELLED stage=$Stage waitedSeconds=$([Math]::Round(([DateTimeOffset]::UtcNow - $started).TotalSeconds,3)) cancelFile=$CancelFile"
+            return [pscustomobject]@{ acquired=$false; waitedSeconds=([DateTimeOffset]::UtcNow - $started).TotalSeconds; outcome='CANCELLED' }
+        }
+        $remaining = [int][Math]::Ceiling(($deadline - [DateTimeOffset]::UtcNow).TotalMilliseconds)
+        $slice = [Math]::Min($HeartbeatSeconds * 1000, $remaining)
+        $acquired = $false
+        try { $acquired = $Mutex.WaitOne([TimeSpan]::FromMilliseconds($slice)) }
+        catch [System.Threading.AbandonedMutexException] { $acquired = $true }
+        if ($acquired) { return [pscustomobject]@{ acquired=$true; waitedSeconds=([DateTimeOffset]::UtcNow - $started).TotalSeconds; outcome='ACQUIRED' } }
+        $waited += $slice
+        Write-RunLog "WAIT_MUTEX_HEARTBEAT stage=$Stage waitedSeconds=$([Math]::Round($waited / 1000.0,3)) timeoutSeconds=$TimeoutSeconds cancelled=false"
+    }
+    Write-RunLog "WAIT_MUTEX_TIMEOUT stage=$Stage waitedSeconds=$TimeoutSeconds cancelled=false"
+    return [pscustomobject]@{ acquired=$false; waitedSeconds=([DateTimeOffset]::UtcNow - $started).TotalSeconds; outcome='TIMEOUT' }
+}
+
 try {
     $mutexName = 'Local\MahjongV5P45UnityValidation'
     $script:mutex = New-Object System.Threading.Mutex($false, $mutexName)
-    $waitStart = [DateTimeOffset]::UtcNow
     Write-RunLog "WAIT_MUTEX name=$mutexName root=$RunRoot"
-    try { $script:mutexHeld = $script:mutex.WaitOne([TimeSpan]::FromMinutes(60)) } catch [System.Threading.AbandonedMutexException] { $script:mutexHeld = $true }
-    if (-not $script:mutexHeld) { throw 'Timed out waiting for the shared Unity validation mutex; no Unity stage ran.' }
-    Write-RunLog ('MUTEX_ACQUIRED waitedSeconds=' + ([DateTimeOffset]::UtcNow - $waitStart).TotalSeconds.ToString('F3'))
+    $mutexWait = Wait-C04UnityMutex $script:mutex $MutexTimeoutSeconds $MutexHeartbeatSeconds 'UnityValidation' $MutexCancelFile
+    $script:mutexHeld = $mutexWait.acquired
+    if (-not $script:mutexHeld -and $mutexWait.outcome -eq 'CANCELLED') { throw 'Cancelled while waiting for shared Unity validation mutex; no Unity stage ran.' }
+    if (-not $script:mutexHeld) { throw "Timed out waiting for shared Unity validation mutex after $MutexTimeoutSeconds seconds; no Unity stage ran." }
+    Write-RunLog ('MUTEX_ACQUIRED waitedSeconds=' + $mutexWait.waitedSeconds.ToString('F3'))
     $nugetSeedRecord = Import-C04NugetSeed $NugetSeedRoot $NugetSeedAuditPath $nugetRoot (Join-Path $RunRoot 'nuget-seed-copy-audit.json')
     Assert-C04RunCacheIsolation $RunRoot | Out-Null
     Write-RunLog "RUN_CACHE_ROOTS upm=$upmRoot npm=$upmNpmRoot packages=$upmPackagesRoot"
@@ -1077,6 +1159,20 @@ EditorUserSettings:
         if ($badRun.exitCode -eq 0) { throw "Fresh C04 verifier accepted invalid raw-record fixture: $($negativeCase.name)." }
         $verifierMatrix.Add([ordered]@{ caseId='C04-G2-01'; kind='TOOL_FIXTURE_NEGATIVE'; mutation=$negativeCase.name; result='REJECTED'; nativeExitCode=$badRun.exitCode; evidenceSha256=(Get-Sha256 $badPath); stdoutSha256=$badRun.stdoutSha256; stderrSha256=$badRun.stderrSha256 })
     }
+    $mutationRoot = Join-Path $RunRoot 'c04-r5-mutation-cases'
+    $mutationCreate = Invoke-OwnedNative -Name 'CreateC04R5MutationMatrix' -FilePath $DotnetPath -Arguments ('exec ' + (Quote-Arg $script:C04VerifierPath) + ' make-mutations ' + (Quote-Arg $positivePonPath) + ' ' + (Quote-Arg $mutationRoot)) -WorkingDirectory $dotnetResults -StdoutPath (Join-Path $logs 'r5-mutations-create.stdout.txt') -StderrPath (Join-Path $logs 'r5-mutations-create.stderr.txt') -Timeout 30
+    if ($mutationCreate.exitCode -ne 0 -or (Get-Content -LiteralPath $mutationCreate.stdout -Raw) -notmatch 'C04_MUTATION_FIXTURES_CREATED invalid=12 positiveCounterDistinct=1') { throw 'Unable to generate the complete R5 raw evidence mutation matrix.' }
+    $r5Cases = @(Get-ChildItem -LiteralPath $mutationRoot -Filter '*.json' -File | Sort-Object Name)
+    if ($r5Cases.Count -ne 14) { throw "R5 mutation matrix did not produce 12 raw negatives, producer missing-source negative, and one independent-counter positive; count=$($r5Cases.Count)." }
+    foreach ($r5Case in $r5Cases) {
+        $name = [IO.Path]::GetFileNameWithoutExtension($r5Case.Name)
+        $isPositive = $name -eq 'counter-distinct-from-cursor-model'
+        $run = Invoke-OwnedNative -Name ('C04R5Mutation-' + $name) -FilePath $DotnetPath -Arguments ('exec ' + (Quote-Arg $script:C04VerifierPath) + ' verify ' + (Quote-Arg $r5Case.FullName)) -WorkingDirectory $dotnetResults -StdoutPath (Join-Path $logs ('r5-' + $name + '.stdout.txt')) -StderrPath (Join-Path $logs ('r5-' + $name + '.stderr.txt')) -Timeout 60
+        if ($isPositive) {
+            if ($run.exitCode -ne 0 -or (Get-Content -LiteralPath $run.stdout -Raw) -notmatch 'C04_PROTOBUF_AND_AUTHORITY_IMAGE_PASS') { throw 'Verifier rejected the valid TOOL_FIXTURE acceptance counter distinct from its projection cursor.' }
+        } elseif ($run.exitCode -eq 0) { throw "Verifier accepted invalid R5 mutation input $name through the production runner." }
+        $verifierMatrix.Add([ordered]@{ caseId='C04-G2-01'; kind=$(if($isPositive){'TOOL_FIXTURE_COUNTER_DISTINCT_POSITIVE'}else{'TOOL_FIXTURE_R5_NEGATIVE'}); mutation=$name; result=$(if($isPositive){'PASS'}else{'REJECTED'}); nativeExitCode=$run.exitCode; evidenceSha256=(Get-Sha256 $r5Case.FullName); stdoutSha256=$run.stdoutSha256; stderrSha256=$run.stderrSha256 }) | Out-Null
+    }
     [IO.File]::WriteAllText((Join-Path $RunRoot 'tool-verifier-matrix.json'),(($verifierMatrix | ConvertTo-Json -Depth 8) + "`n"),(New-Object Text.UTF8Encoding($false)))
     $dotnetClosureSha = Get-ClosureManifest $dotnetArtifacts (Join-Path $RunRoot 'dotnet-build-artifacts-closure.json')
     $localHostTestEvidence = [ordered]@{ buildCommand=$DotnetPath + ' ' + $buildArgs; buildNativeExitCode=$localHostBuild.exitCode; testCommand=$DotnetPath + ' ' + $testArgs; nativeExitCode=$localHostTests.exitCode; total=$totalTests; passed=$passedTests; failed=$failedTests; skipped=$skippedTests; xml='dotnet-results/LocalHost.xml'; xmlSha256=(Get-Sha256 $dotnetXml); affectedTableRuntime=[ordered]@{ command=$DotnetPath + ' ' + $runtimeArgs; nativeExitCode=$runtimeTests.exitCode; total=$runtimeTotal; passed=$runtimePassed; failed=$runtimeFailed; skipped=$runtimeSkipped; xml='dotnet-results/TableRuntime.xml'; xmlSha256=(Get-Sha256 $runtimeXml); stdoutSha256=$runtimeTests.stdoutSha256; stderrSha256=$runtimeTests.stderrSha256 }; buildArtifacts='dotnet-build-artifacts-closure.json'; buildArtifactsSha256=$dotnetClosureSha; buildStdoutSha256=$localHostBuild.stdoutSha256; buildStderrSha256=$localHostBuild.stderrSha256; stdoutSha256=$localHostTests.stdoutSha256; stderrSha256=$localHostTests.stderrSha256; nugetSeed=$nugetSeedRecord }
@@ -1214,6 +1310,7 @@ EditorUserSettings:
         $actionLines = @(Get-Content -LiteralPath $actionEvidencePath -Encoding UTF8)
         if ($actionLines.Count -ne 1 -or [string]::IsNullOrWhiteSpace($actionLines[0])) { throw "Player $($case.id) evidence must contain exactly one stable action record." }
         $actionEvidence = $actionLines[0] | ConvertFrom-Json
+        if ($actionEvidence.EvidenceSource -cne 'GAME') { throw "Player $($case.id) raw evidence is not explicitly classified as GAME by the Unity producer." }
         $summary | Add-Member -NotePropertyName nativeExitCode -NotePropertyValue $player.exitCode -Force
         $summary | Add-Member -NotePropertyName nativeTimedOut -NotePropertyValue $player.timedOut -Force
         $executionPath = Join-Path $caseDir 'execution.json'
@@ -1262,6 +1359,8 @@ catch {
         }
         $failure = [ordered]@{ status='FAIL'; task='G2-C04-D03'; acceptedBase='8fd7c6cb701dfbb41c28938de4186749bdd1d6c7'; frozenCandidate=$gitHead; error=$_.Exception.Message; failureClass=(Get-C04FailureClass $_.Exception.Message); fixedCaseMatrix=$caseMatrix; stageRecords=$script:stageRecords }
         [IO.File]::WriteAllText($failurePath, (($failure | ConvertTo-Json -Depth 8) + "`n"), (New-Object Text.UTF8Encoding($false)))
+        $failedSummary = [ordered]@{ schemaVersion=1; task='G2-C04-D03'; status='FAIL'; acceptedBase='8fd7c6cb701dfbb41c28938de4186749bdd1d6c7'; frozenCandidate=$gitHead; failure='failure.json'; failureClass=$failure.failureClass; fixedCaseMatrix=$caseMatrix; stages=$script:stageRecords; notRunAfterFailure=$true }
+        [IO.File]::WriteAllText((Join-Path $RunRoot 'summary.json'), (($failedSummary | ConvertTo-Json -Depth 8) + "`n"), (New-Object Text.UTF8Encoding($false)))
     }
     $script:LogOpen = $false
     $manifestPath = Join-Path $RunRoot 'manifest.json'

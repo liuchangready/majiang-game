@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Google.Protobuf;
 using Mahjong.Contracts.Wire;
 using Mahjong.LocalHost;
@@ -23,6 +24,7 @@ internal static class Program
         try
         {
             if (args.Length == 1 && args[0] == "selftest") return SelfTest();
+            if (args.Length == 3 && args[0] == "make-mutations") return MakeMutationFixtures(args[1], args[2]);
             if (args.Length == 3 && args[0] == "verify-payload")
             {
                 ValidateCanonicalPayload(Convert.FromBase64String(args[1]), args[2]);
@@ -75,6 +77,57 @@ internal static class Program
         Console.WriteLine("C04_PROTOBUF_FIXTURE_PASS valid=1 invalid=2 canonicalDigest=PASS wrongDigestRejected=1");
         return 0;
     }
+
+    private static int MakeMutationFixtures(string sourcePath, string outputDirectory)
+    {
+        string original = File.ReadAllText(sourcePath);
+        Directory.CreateDirectory(outputDirectory);
+        string[] names = { "missing-evidence-source", "after-hand-omission", "after-hand-duplicate", "baseline-hand-omission", "baseline-hand-duplicate", "public-hand-count", "raw-binding-role", "raw-batch-role", "raw-batch-kind", "raw-game-role", "raw-acceptance-mismatch", "game-source-missing-acceptance", "coherent-after-stream-cursor", "counter-distinct-from-cursor-model" };
+        foreach (string name in names)
+        {
+            JsonObject evidence = JsonNode.Parse(original)!.AsObject();
+            PlayerSnapshot baseline = ParseSnapshot(evidence, "BaselinePlayerSnapshotBase64");
+            PlayerSnapshot after = ParseSnapshot(evidence, "AfterPlayerSnapshotBase64");
+            if (name == "after-hand-omission" && !after.PrivateView.ClosedTiles.Remove(20U)) throw new InvalidDataException("Mutation fixture lacks after hand entity 20.");
+            if (name == "after-hand-duplicate") after.PrivateView.ClosedTiles.Add(20U);
+            if (name == "baseline-hand-omission" && !baseline.PrivateView.ClosedTiles.Remove(20U)) throw new InvalidDataException("Mutation fixture lacks baseline hand entity 20.");
+            if (name == "baseline-hand-duplicate") baseline.PrivateView.ClosedTiles.Add(20U);
+            if (name == "public-hand-count") after.PublicView.Board.Players.Single(player => player.Seat == 0).HandCount = 99;
+            if (name == "coherent-after-stream-cursor") { after.Cursor.StreamVersion = 999; evidence["AfterCursorStream"] = 999; }
+            evidence["BaselinePlayerSnapshotBase64"] = Convert.ToBase64String(baseline.ToByteArray());
+            evidence["AfterPlayerSnapshotBase64"] = Convert.ToBase64String(after.ToByteArray());
+            evidence["HandTileIds"] = string.Join(",", after.PrivateView.ClosedTiles);
+            JsonObject rawBatch = ParseEmbeddedObject(evidence, "RawEventBatchJsonBase64");
+            if (name == "missing-evidence-source") evidence.Remove("EvidenceSource");
+            if (name == "raw-binding-role")
+                foreach (string key in new[] { "BaselineBindingJsonBase64", "AfterBindingJsonBase64" })
+                {
+                    JsonObject binding = ParseEmbeddedObject(evidence, key);
+                    binding["Role"] = "Spectator";
+                    evidence[key] = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(binding.ToJsonString()));
+                }
+            if (name == "raw-batch-role") rawBatch["Role"] = 999;
+            if (name == "raw-batch-kind") rawBatch["Kind"] = 999;
+            if (name == "raw-game-role") { evidence["EvidenceSource"] = "GAME"; rawBatch["Role"] = "Spectator"; rawBatch["Kind"] = "Incremental"; }
+            if (name == "raw-acceptance-mismatch") { evidence["EvidenceSource"] = "GAME"; rawBatch["AcceptanceSequence"] = 999; }
+            if (name == "game-source-missing-acceptance") { evidence["EvidenceSource"] = "GAME"; rawBatch.Remove("AcceptanceSequence"); }
+            if (name == "counter-distinct-from-cursor-model")
+            {
+                rawBatch["AcceptanceSequence"] = 42; evidence["AcceptanceSequence"] = 42; evidence["AfterAcceptanceSequence"] = 42;
+            }
+            evidence["RawEventBatchJsonBase64"] = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(rawBatch.ToJsonString()));
+            string path = Path.Combine(outputDirectory, name + ".json");
+            File.WriteAllText(path, evidence.ToJsonString() + Environment.NewLine);
+        }
+        Console.WriteLine("C04_MUTATION_FIXTURES_CREATED invalid=12 positiveCounterDistinct=1 source=TOOL_FIXTURE (GAME tags are schema probes only)");
+        return 0;
+    }
+
+    private static PlayerSnapshot ParseSnapshot(JsonObject evidence, string property) =>
+        PlayerSnapshot.Parser.ParseFrom(Convert.FromBase64String(evidence[property]?.GetValue<string>() ?? throw new InvalidDataException("Missing mutation snapshot " + property + ".")));
+
+    private static JsonObject ParseEmbeddedObject(JsonObject evidence, string property) =>
+        JsonNode.Parse(Convert.FromBase64String(evidence[property]?.GetValue<string>() ?? throw new InvalidDataException("Missing mutation raw JSON " + property + ".")))!.AsObject();
 
     private static void Verify(string path)
     {
@@ -228,10 +281,20 @@ internal static class Program
                     throw new InvalidDataException(prefix + " protobuf discard is not in its authoritative river or claimed meld history.");
             }
         }
-        foreach (uint tile in own.ClosedTiles) RequirePosition(positions, checked((int)tile), "HAND/0/", prefix + " protobuf own closed tile");
+        var closedSet = new HashSet<uint>();
+        foreach (uint tile in own.ClosedTiles)
+        {
+            if (!closedSet.Add(tile)) throw new InvalidDataException(prefix + " protobuf repeats an own closed-hand physical entity.");
+            RequirePosition(positions, checked((int)tile), "HAND/0/", prefix + " protobuf own closed tile");
+        }
         if (own.HasDrawnTileId) RequirePosition(positions, checked((int)own.DrawnTileId), "HAND/0/", prefix + " protobuf own drawn tile");
-        foreach (MeldView ownerMeld in own.OwnerMelds)
-        foreach (uint tile in ownerMeld.TileIds) RequirePosition(positions, checked((int)tile), "MELD/0/", prefix + " protobuf own meld tile");
+        var privateHand = closedSet.Select(value => checked((int)value)).ToHashSet();
+        if (own.HasDrawnTileId) privateHand.Add(checked((int)own.DrawnTileId)); // A drawn marker may name an entity already listed in ClosedTiles.
+        var authorityHand = PositionsForSeat(positions, "HAND", 0);
+        if (!privateHand.SetEquals(authorityHand)) throw new InvalidDataException(prefix + " protobuf private hand is not the complete unique authoritative hand entity set.");
+
+        var authorityMeldsBySeat = Enumerable.Range(0, 4).ToDictionary(seat => seat, seat => PositionsForSeat(positions, "MELD", seat));
+        var publicSeats = new HashSet<int>();
         string closed = string.Join(",", own.ClosedTiles.Select(value => value.ToString(CultureInfo.InvariantCulture)));
         string meld = own.OwnerMelds.Count == 0 ? string.Empty : string.Join(",", own.OwnerMelds[0].TileIds.Select(value => value.ToString(CultureInfo.InvariantCulture)));
         string drawn = own.HasDrawnTileId ? own.DrawnTileId.ToString(CultureInfo.InvariantCulture) : string.Empty;
@@ -244,9 +307,11 @@ internal static class Program
             long score = board.Scores.Single(value => value.Seat == 0).Score;
             Equal(RequiredString(evidence, "SeatScoreAfter"), score.ToString(CultureInfo.InvariantCulture), "protobuf seat score");
             Equal(RequiredString(evidence, "RiichiSticksAfter"), board.RiichiSticks.ToString(CultureInfo.InvariantCulture), "protobuf riichi sticks");
+            VerifyPublicHandAndMelds(board, authorityMeldsBySeat, positions, prefix, publicSeats);
         }
         else
         {
+            VerifyPublicHandAndMelds(physicalBoard, authorityMeldsBySeat, positions, prefix, publicSeats);
             string expectedCase = RequiredString(evidence, "CaseId");
             int[] owned = expectedCase switch
             {
@@ -262,6 +327,47 @@ internal static class Program
                 expectedCase == "C04-G2-02" && own.ClosedTiles.Contains(4U))
                 throw new InvalidDataException("Claimed call tile must originate from the opponent's latest discard, not the caller hand.");
         }
+        var ownerMeldIds = new HashSet<int>();
+        foreach (MeldView ownerMeld in own.OwnerMelds)
+            foreach (uint tile in ownerMeld.TileIds)
+            {
+                if (!ownerMeldIds.Add(checked((int)tile))) throw new InvalidDataException(prefix + " protobuf repeats an own meld entity.");
+                RequirePosition(positions, checked((int)tile), "MELD/0/", prefix + " protobuf own meld tile");
+            }
+        if (!ownerMeldIds.SetEquals(authorityMeldsBySeat[0])) throw new InvalidDataException(prefix + " protobuf owner melds are not the complete authoritative meld entity set.");
+    }
+
+    private static HashSet<int> PositionsForSeat(Dictionary<int, string> positions, string zone, int seat)
+    {
+        string prefix = zone + "/" + seat.ToString(CultureInfo.InvariantCulture) + "/";
+        return positions.Where(pair => pair.Value.StartsWith(prefix, StringComparison.Ordinal)).Select(pair => pair.Key).ToHashSet();
+    }
+
+    private static void VerifyPublicHandAndMelds(PublicBoardView board,
+        Dictionary<int, HashSet<int>> authorityMeldsBySeat, Dictionary<int, string> positions, string prefix,
+        HashSet<int> publicSeats)
+    {
+        foreach (PlayerPublicView player in board.Players)
+        {
+            if (player.Seat < 0 || player.Seat > 3 || !publicSeats.Add(player.Seat)) throw new InvalidDataException(prefix + " protobuf public board has a missing/duplicate/invalid seat.");
+            HashSet<int> hand = PositionsForSeat(positions, "HAND", player.Seat);
+            if (player.HandCount != hand.Count) throw new InvalidDataException(prefix + " protobuf public hand count differs from authoritative physical hand count for seat " + player.Seat.ToString(CultureInfo.InvariantCulture) + ".");
+            var meldTiles = new HashSet<int>();
+            foreach (MeldView meld in player.Melds)
+            {
+                string meldType = meld.Type.ToString();
+                int expectedTiles = meldType == "Chi" || meldType == "Pon" ? 3 : 4;
+                if (meld.TileIds.Count != expectedTiles) throw new InvalidDataException(prefix + " protobuf public meld has an incomplete physical tile list.");
+                foreach (uint tile in meld.TileIds)
+                {
+                    int id = checked((int)tile);
+                    if (!meldTiles.Add(id)) throw new InvalidDataException(prefix + " protobuf repeats a physical entity in public melds.");
+                    RequirePosition(positions, id, "MELD/" + player.Seat.ToString(CultureInfo.InvariantCulture) + "/", prefix + " protobuf public meld tile");
+                }
+            }
+            if (!meldTiles.IsSubsetOf(authorityMeldsBySeat[player.Seat])) throw new InvalidDataException(prefix + " protobuf public melds contain an entity outside the authoritative meld set for seat " + player.Seat.ToString(CultureInfo.InvariantCulture) + ".");
+        }
+        if (publicSeats.Count != 4) throw new InvalidDataException(prefix + " protobuf public board does not contain all four seats.");
     }
 
     private static void VerifyActionEffects(JsonElement evidence, PlayerSnapshot baseline, PlayerSnapshot after,
@@ -368,6 +474,10 @@ internal static class Program
 
     private static void VerifyRawBindingAndAcceptedEvent(JsonElement evidence, PlayerSnapshot baseline, PlayerSnapshot after)
     {
+        Equal("Player", RequiredString(evidence, "EventRole"), "captured flat Player role");
+        Equal("Incremental", RequiredString(evidence, "EventBatchKind"), "captured flat batch kind");
+        if (JsonRequired(evidence, "EventFullBaseline").ValueKind != JsonValueKind.False)
+            throw new InvalidDataException("Captured flat action event is not an incremental Player publication.");
         using JsonDocument baselineBinding = ParseEmbeddedJson(evidence, "BaselineBindingJsonBase64");
         using JsonDocument afterBinding = ParseEmbeddedJson(evidence, "AfterBindingJsonBase64");
         using JsonDocument rawReceipt = ParseEmbeddedJson(evidence, "RawReceiptJsonBase64");
@@ -384,6 +494,9 @@ internal static class Program
         string scope = RequiredString(evidence, "ScopeId");
         foreach (JsonElement binding in new[] { baselineBinding.RootElement, afterBinding.RootElement })
         {
+            string bindingRole = JsonEnumName(JsonRequired(binding, "Role"), typeof(Mahjong.Contracts.ProtocolRole));
+            if (bindingRole != RequiredString(evidence, "EventRole"))
+                throw new InvalidDataException("Raw Player binding role is not Player.");
             Equal(session, JsonString(binding, "SessionId"), "raw binding session");
             Equal(room, JsonString(binding, "RoomId"), "raw binding room");
             Equal(room, JsonString(binding, "TableId"), "raw binding table");
@@ -397,6 +510,10 @@ internal static class Program
 
         using JsonDocument acceptedBatch = ParseEmbeddedJson(evidence, "RawEventBatchJsonBase64");
         JsonElement batch = acceptedBatch.RootElement;
+        if (JsonEnumName(JsonRequired(batch, "Role"), typeof(Mahjong.Contracts.ProtocolRole)) != RequiredString(evidence, "EventRole"))
+            throw new InvalidDataException("Raw accepted batch role is not Player.");
+        if (JsonEnumName(JsonRequired(batch, "Kind"), typeof(Mahjong.Client.TableVisibleEventBatchKind)) != RequiredString(evidence, "EventBatchKind"))
+            throw new InvalidDataException("Raw accepted batch kind is not Incremental.");
         Equal(room, JsonString(batch, "RoomId"), "accepted publication room");
         Equal(RequiredString(evidence, "BaselineTableId"), JsonString(batch, "TableId"), "accepted publication table");
         Equal(session, JsonString(batch, "SessionId"), "accepted publication session");
@@ -428,7 +545,9 @@ internal static class Program
         Equal(RequiredString(evidence, "ReceiptEventSeq"), JsonNumber(batch, "EventSeq"), "accepted publication receipt event high-water");
         Equal(RequiredString(evidence, "AcceptanceSequence"), RequiredString(evidence, "AfterAcceptanceSequence"), "accepted publication/after snapshot acceptance sequence");
         Equal(RequiredString(evidence, "AfterCursor"), JsonNumber(batch, "ProjectionSeq"), "accepted publication projection cursor");
-        Equal(RequiredString(evidence, "AcceptanceSequence"), RequiredString(evidence, "AfterCursor"), "accepted publication cursor sequence");
+        Equal(RequiredString(evidence, "AfterCursorStream"), JsonNumber(batch, "StreamVersion"), "accepted publication stream cursor");
+        Equal(RequiredString(evidence, "AcceptanceSequence"), JsonNumber(batch, "AcceptanceSequence"), "raw accepted publication acceptance sequence");
+        Equal(RequiredString(evidence, "AcceptanceSequence"), RequiredString(evidence, "AfterAcceptanceSequence"), "accepted publication/after snapshot acceptance sequence");
         Equal(RequiredString(evidence, "ReceiptCommandVersion"), JsonNumber(batch, "StateVersion"), "accepted publication command version");
         if (RequiredString(evidence, "CaseId") == "C04-G2-03")
         {
@@ -454,6 +573,20 @@ internal static class Program
     }
 
     private static string JsonString(JsonElement value, string name) => JsonRequired(value, name).GetString() ?? string.Empty;
+    private static string JsonEnumName(JsonElement value, Type enumType)
+    {
+        if (!enumType.IsEnum) throw new ArgumentException("Expected enum type.", nameof(enumType));
+        if (value.ValueKind == JsonValueKind.String)
+        {
+            string? name = value.GetString();
+            if (string.IsNullOrEmpty(name) || !Enum.TryParse(enumType, name, false, out object? parsed) ||
+                !Enum.IsDefined(enumType, parsed!)) throw new InvalidDataException("Raw enum field has an unknown string value.");
+            return Enum.GetName(enumType, parsed!)!;
+        }
+        if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out int number) && Enum.IsDefined(enumType, number))
+            return Enum.GetName(enumType, number)!;
+        throw new InvalidDataException("Raw enum field has a missing or unknown value/type.");
+    }
     private static string JsonNumber(JsonElement value, string name) => JsonRequired(value, name).GetRawText();
     private static ulong JsonUInt64(JsonElement value, string name) => JsonRequired(value, name).GetUInt64();
     private static bool JsonBoolean(JsonElement value, string name) => JsonRequired(value, name).GetBoolean();

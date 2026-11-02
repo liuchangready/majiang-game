@@ -335,7 +335,25 @@ namespace Mahjong.LocalHost.Tests
                 ["EventRole"] = batch.Role.ToString(),
                 ["EventBatchKind"] = batch.Kind.ToString(),
                 ["EventFullBaseline"] = batch.IsFullBaseline,
-                ["RawEventBatchJsonBase64"] = Convert.ToBase64String(JsonSerializer.SerializeToUtf8Bytes(batch)),
+                ["RawEventBatchJsonBase64"] = Convert.ToBase64String(JsonSerializer.SerializeToUtf8Bytes(new Dictionary<string, object?>
+                {
+                    ["Kind"] = batch.Kind,
+                    ["IsFullBaseline"] = batch.IsFullBaseline,
+                    ["SessionId"] = batch.SessionId, ["RoomId"] = batch.RoomId, ["TableId"] = batch.TableId,
+                    ["RoundId"] = batch.RoundId, ["ScopeId"] = batch.ScopeId, ["Role"] = batch.Role,
+                    ["Seat"] = batch.Seat, ["BindingEpoch"] = batch.BindingEpoch,
+                    ["ConnectionEpoch"] = batch.ConnectionEpoch, ["OwnerEpoch"] = batch.OwnerEpoch,
+                    ["StateVersion"] = batch.StateVersion, ["EventSeq"] = batch.EventSeq,
+                    ["ProjectionSeq"] = batch.ProjectionSeq, ["StreamVersion"] = batch.StreamVersion,
+                    // TOOL_FIXTURE uses a deliberately separate captured publication counter; it does not claim Coordinator provenance.
+                    ["AcceptanceSequence"] = after.Cursor.ProjectionSeq,
+                    ["Events"] = batch.Events.Select(value => new Dictionary<string, object?>
+                    {
+                        ["Type"] = value.Type, ["EventSeq"] = value.EventSeq, ["CommandVersion"] = value.CommandVersion,
+                        ["Seat"] = value.Seat, ["TileId"] = value.TileId ?? 0U, ["TileIds"] = value.TileIds,
+                        ["Payload"] = new Dictionary<string, object?> { ["DiscardTileId"] = value.Payload.DiscardTileId ?? 0U }
+                    }).ToArray()
+                })),
                 ["EventCommandVersion"] = actionEvent.CommandVersion,
                 ["EventSeq"] = actionEvent.EventSeq,
                 ["EventTileIds"] = string.Join(",", actionEvent.TileIds),

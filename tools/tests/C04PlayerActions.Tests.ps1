@@ -27,7 +27,7 @@ function Invoke-C04Tool([string[]]$Arguments) {
 }
 
 $positive = Invoke-C04Tool @('-NoProfile','-ExecutionPolicy','Bypass','-File',$runner,'-RunRoot',$fixtureRoot,'-FixtureOnly')
-if ($positive.exitCode -ne 0 -or $positive.stdout -notmatch 'C04_TOOL_FIXTURES_PASS positive=2 negative=61 protobuf=PASS malformed=2 timeoutTree=PASS outputDrain=PASS outputFiles=\d+') {
+if ($positive.exitCode -ne 0 -or $positive.stdout -notmatch 'C04_TOOL_FIXTURES_PASS positive=2 negative=61 protobuf=PASS malformed=2 timeoutTree=PASS mutexTimeoutSeal=PASS mutexCancellationSeal=PASS outputDrain=PASS outputFiles=\d+') {
     throw "Positive/negative C04 tool fixtures failed. exit=$($positive.exitCode) stdout=$($positive.stdout) stderr=$($positive.stderr)"
 }
 $sealPath = Join-Path $fixtureRoot 'fixture-seal.json'

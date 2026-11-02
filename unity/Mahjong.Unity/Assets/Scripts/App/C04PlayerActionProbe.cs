@@ -446,7 +446,7 @@ namespace Mahjong.Unity.App
             };
             WriteActionEvidence(new C04PlayerActionEvidence
             {
-                CaseId = _caseId, AccountId = coordinator.Current.Binding?.AccountId ?? string.Empty,
+                EvidenceSource = "GAME", CaseId = _caseId, AccountId = coordinator.Current.Binding?.AccountId ?? string.Empty,
                 BaselineAccountId = coordinator.Current.Binding?.AccountId ?? string.Empty,
                 AfterAccountId = coordinator.Current.Binding?.AccountId ?? string.Empty,
                 RequestId = requestId, ScopeId = view.Identity.ScopeId,
@@ -681,6 +681,7 @@ namespace Mahjong.Unity.App
                 BindingEpoch = batch.BindingEpoch, ConnectionEpoch = batch.ConnectionEpoch, OwnerEpoch = batch.OwnerEpoch,
                 StateVersion = batch.StateVersion, EventSeq = batch.EventSeq,
                 ProjectionSeq = acceptedCursor.ProjectionSeq.Value,
+                StreamVersion = acceptedCursor.StreamVersion.Value,
                 AcceptanceSequence = batch.AcceptanceSequence, Events = rawEvents.ToArray()
             };
             return Convert.ToBase64String(Encoding.UTF8.GetBytes(JsonUtility.ToJson(raw, false)));
@@ -846,6 +847,7 @@ namespace Mahjong.Unity.App
         [Serializable]
         private sealed class C04PlayerActionEvidence
         {
+            public string EvidenceSource = string.Empty;
             public string CaseId = string.Empty, AccountId = string.Empty, RequestId = string.Empty, ScopeId = string.Empty;
             public string BaselineAccountId = string.Empty, AfterAccountId = string.Empty, BaselineScopeId = string.Empty, AfterScopeId = string.Empty;
             public string PayloadBase64 = string.Empty, PayloadSha256 = string.Empty;
@@ -923,7 +925,7 @@ namespace Mahjong.Unity.App
             public string RoundId = string.Empty, ScopeId = string.Empty, Role = string.Empty;
             public bool IsFullBaseline;
             public int Seat = -1;
-            public ulong BindingEpoch, ConnectionEpoch, OwnerEpoch, StateVersion, EventSeq, ProjectionSeq;
+            public ulong BindingEpoch, ConnectionEpoch, OwnerEpoch, StateVersion, EventSeq, ProjectionSeq, StreamVersion;
             public long AcceptanceSequence;
             public C04RawAcceptedEvent[] Events = Array.Empty<C04RawAcceptedEvent>();
         }
