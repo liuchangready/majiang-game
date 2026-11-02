@@ -491,7 +491,9 @@ function Test-C04CaseSummary {
     if ($payload[2] -cne $Summary.decisionId -or $Summary.payloadDecisionId -cne $payload[2] -or [string]::IsNullOrWhiteSpace($Summary.decisionId)) { throw 'Canonical decision id does not match the submitted candidate.' }
     if ([UInt64]$payload[3] -ne [UInt64]$Summary.controlEpoch -or [UInt64]$Summary.payloadControlEpoch -ne [UInt64]$payload[3]) { throw 'Canonical control epoch is not bound to the candidate.' }
     $payloadOption = if ($payload.ContainsKey(5)) { [string]$payload[5] } else { '' }
-    $expectedMeldType = if ($ExpectedCase -eq 'C04-G2-04') { 4 } else { 0 }
+    # SubmitAction carries the Kan operation in ActionType and the exact entities
+    # in TileIds; MeldType belongs to the resulting event/snapshot, not this payload.
+    $expectedMeldType = 0
     $payloadMeldType = if ($payload.ContainsKey(7)) { [UInt32]$payload[7] } else { 0 }
     if ($payloadOption -cne [string]$Summary.candidateOptionId -or $payloadOption -cne [string]$Summary.payloadOptionId -or $payloadMeldType -ne $expectedMeldType -or [UInt32]$Summary.payloadMeldType -ne $expectedMeldType) { throw 'Canonical candidate option/meld type does not match the fixed candidate.' }
     $payloadTiles = if ($payload.ContainsKey(6)) { (@($payload[6]) | Sort-Object) -join ',' } else { '' }
@@ -530,7 +532,7 @@ function Test-C04ActionEvidence {
     $rawTiles = if ($parsed.ContainsKey(6)) { (@($parsed[6]) | Sort-Object) -join ',' } else { '' }
     if (-not $actionByCase.ContainsKey($ExpectedCase) -or [UInt32]$parsed[4] -ne $actionByCase[$ExpectedCase] -or $rawTiles -ne $tilesByCase[$ExpectedCase]) { throw 'Raw canonical action kind or physical selection differs from the frozen C04 case.' }
     $rawMeldType = if ($parsed.ContainsKey(7)) { [UInt32]$parsed[7] } else { 0 }
-    if ($rawMeldType -ne $(if ($ExpectedCase -eq 'C04-G2-04') { 4 } else { 0 })) { throw 'Raw canonical meld type differs from the frozen action case.' }
+    if ($rawMeldType -ne 0) { throw 'Raw canonical action unexpectedly carries a meld type outside the fixed payload contract.' }
     if ($Evidence.baselineRoomId -cne $Summary.roomId -or $Evidence.baselineSessionId -cne $Summary.sessionId -or
         $Evidence.baselineTableId -cne $Summary.tableId -or $Evidence.baselineRoundId -cne $Summary.roundId -or
         [int]$Evidence.baselineSeat -ne [int]$Summary.seat -or [UInt64]$Evidence.baselineBindingEpoch -ne [UInt64]$Summary.bindingEpoch -or
