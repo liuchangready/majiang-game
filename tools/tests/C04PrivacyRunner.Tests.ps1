@@ -370,14 +370,18 @@ Invoke-Case 'required raw scenes are all present and any missing scene is reject
     $dir = New-TestDirectory 'raw-scenes'
     $roleSwitch = Join-Path $dir 'role-switch-raw'
     [IO.Directory]::CreateDirectory($roleSwitch) | Out-Null
-    Write-C04Utf8 (Join-Path $roleSwitch 'raw-frames.json') '{"schemaVersion":1,"frames":[{}]}'
+    Write-C04Utf8 (Join-Path $roleSwitch 'raw-frames.json') '{"schemaVersion":2,"frames":[{}]}'
     foreach ($name in @('four-owner-raw', 'closed-binding-raw', 'recovery-raw')) {
         $sub = Join-Path $dir $name
         [IO.Directory]::CreateDirectory($sub) | Out-Null
-        Write-C04Utf8 (Join-Path $sub 'raw-frames.json') '{"schemaVersion":1,"frames":[{}]}'
+        Write-C04Utf8 (Join-Path $sub 'raw-frames.json') '{"schemaVersion":2,"frames":[{}]}'
     }
     $scenes = @(Get-C04ValidatedRawScenes -PrivacyEvidence $dir)
     Assert-Equal 4 $scenes.Count 'required raw scene count'
+    $rolePath = Join-Path $roleSwitch 'raw-frames.json'
+    Write-C04Utf8 $rolePath '{"schemaVersion":1,"frames":[{}]}'
+    Assert-Throws { Get-C04ValidatedRawScenes -PrivacyEvidence $dir } 'schema is empty or unsupported'
+    Write-C04Utf8 $rolePath '{"schemaVersion":2,"frames":[{}]}'
     Remove-Item -LiteralPath (Join-Path $dir 'closed-binding-raw/raw-frames.json') -Force
     Assert-Throws { Get-C04ValidatedRawScenes -PrivacyEvidence $dir } "Required raw scene 'closed-binding'"
 }

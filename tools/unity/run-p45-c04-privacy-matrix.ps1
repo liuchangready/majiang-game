@@ -507,7 +507,7 @@ function Get-C04ValidatedRawScenes([string]$PrivacyEvidence) {
       throw "Required raw scene '$($scene.scene)' did not seal $($scene.path)."
     }
     $raw = [IO.File]::ReadAllText($scene.path, [Text.Encoding]::UTF8) | ConvertFrom-Json
-    if ([int]$raw.schemaVersion -ne 1 -or @($raw.frames).Count -lt 1) {
+    if ([int]$raw.schemaVersion -ne 2 -or @($raw.frames).Count -lt 1) {
       throw "Raw scene '$($scene.scene)' schema is empty or unsupported."
     }
     $results.Add([pscustomobject]@{
@@ -1301,7 +1301,7 @@ exit `$LASTEXITCODE
     $verifierResult = Start-C04Owned 'privacy-verifier-build' $DotnetPath @('build', $verifierProject, '-c', 'Release', '--nologo', '-nr:false') $repo 300
     Assert-C04NativeSuccess $verifierResult 'privacy-verifier-build'
     $verifierDll = Join-Path $repo 'dotnet/tools/C04PrivacyMatrixVerifier/bin/Release/net8.0/C04PrivacyMatrixVerifier.dll'
-    $selfResult = Start-C04Owned 'privacy-verifier-selftest' $DotnetPath @($verifierDll, 'self-test', 'unused.json') $repo 60
+    $selfResult = Start-C04Owned 'privacy-verifier-selftest' $DotnetPath @($verifierDll, 'self-test', (Join-Path $script:RunRoot 'verifier-selftest')) $repo 60
     Assert-C04NativeSuccess $selfResult 'privacy-verifier-selftest'
 
     $summary.mutex = [ordered]@{ name = $script:C04MutexName; acquired = $false; waitedSeconds = $null }

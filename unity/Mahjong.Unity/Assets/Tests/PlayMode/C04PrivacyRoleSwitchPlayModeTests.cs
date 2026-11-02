@@ -238,7 +238,6 @@ namespace Mahjong.Unity.Tests.PlayMode
             LocalTableChannelFactory.DisableC04PrivacyRoomModeForTest();
             string root = Path.Combine(Application.temporaryCachePath, "c04-recovery-" + Guid.NewGuid().ToString("N"));
             string roomId = "c04-recovery-" + Guid.NewGuid().ToString("N");
-            C04PrivacyProbe.Begin(Path.Combine(EvidenceRoot(), "recovery-raw"));
             var paths = new UnityAppPaths(root);
             paths.EnsureDirectoriesCreated();
             var config = new AppConfig { pumpBarrierTimeoutMs = 5000, closeTimeoutMs = 5000, cancelObservationMs = 50 };
@@ -249,6 +248,9 @@ namespace Mahjong.Unity.Tests.PlayMode
             ITableChannel? firstChannel = null;
             ITableChannel? recoveredChannel = null;
             RawCaptureChannel? recoveredCapture = null;
+            var recoveryOtherChannels = new ITableChannel[3];
+            var recoveryOtherSessions = new TableSession[3];
+            var recoveryOtherPumps = new List<Task>();
             var outbox = new InMemoryOutboxStore();
             try
             {
@@ -307,6 +309,7 @@ namespace Mahjong.Unity.Tests.PlayMode
                 firstFactory.CloseRoomAsync(CancellationToken.None).GetAwaiter().GetResult();
 
                 recoveredFactory = new LocalTableChannelFactory(config, paths, roomId, "owner-" + Guid.NewGuid().ToString("N"), TimeSpan.FromMinutes(2));
+                C04PrivacyProbe.Begin(Path.Combine(EvidenceRoot(), "recovery-raw"));
                 ITableChannel rawRecovered = recoveredFactory.CreateRoomViewerAsync(LocalRoomViewerRole.Player, 0, CancellationToken.None).GetAwaiter().GetResult();
                 recoveredChannel = rawRecovered;
                 recoveredCapture = new RawCaptureChannel(rawRecovered);
@@ -343,6 +346,26 @@ namespace Mahjong.Unity.Tests.PlayMode
                 Assert.AreEqual(afterSubmitVersion, recoveredSession.PlayerSnapshot!.StateVersion);
                 Assert.AreEqual(afterSubmitEventSeq, recoveredSession.PlayerSnapshot.EventSeq);
 
+                for (int seat = 1; seat < 4; seat++)
+                {
+                    recoveryOtherChannels[seat - 1] = recoveredFactory.CreateRoomViewerAsync(LocalRoomViewerRole.Player, seat, CancellationToken.None).GetAwaiter().GetResult();
+                    var otherTicket = recoveryOtherChannels[seat - 1] as ILocalTableTicketSource;
+                    Assert.IsNotNull(otherTicket);
+                    recoveryOtherSessions[seat - 1] = new TableSession(recoveryOtherChannels[seat - 1], new InMemoryOutboxStore());
+                    Task otherOpen = recoveryOtherSessions[seat - 1].OpenAsync(
+                        new TableSessionOpenRequest(otherTicket!.SessionTicket, LocalTableChannelFactory.ClientBuild),
+                        CancellationToken.None);
+                    yield return WaitTask(() => otherOpen.IsCompleted, 30f, "recovery positive seat " + seat + " open");
+                    Assert.IsFalse(otherOpen.IsFaulted, otherOpen.Exception?.ToString());
+                    yield return PumpUntilReady(recoveryOtherSessions[seat - 1], 30f, "recovery positive seat " + seat);
+                    for (int i = 0; i < 16 && recoveryOtherSessions[seat - 1].PlayerSnapshot == null; i++)
+                    {
+                        Task pump = recoveryOtherSessions[seat - 1].PumpOnceAsync(CancellationToken.None);
+                        yield return WaitTask(() => pump.IsCompleted, 10f, "recovery positive seat " + seat + " snapshot");
+                    }
+                    Assert.IsNotNull(recoveryOtherSessions[seat - 1].PlayerSnapshot);
+                }
+
                 string evidence = Path.Combine(EvidenceRoot(), "recovery-query");
                 Directory.CreateDirectory(evidence);
                 File.WriteAllText(Path.Combine(evidence, "recovery-query.json"),
@@ -361,6 +384,11 @@ namespace Mahjong.Unity.Tests.PlayMode
             finally
             {
                 C04PrivacyProbe.ResetForTest();
+                for (int seat = 0; seat < 3; seat++)
+                {
+                    CloseBlocking(recoveryOtherSessions[seat]);
+                    CloseBlocking(recoveryOtherChannels[seat]);
+                }
                 CloseBlocking(recoveredSession);
                 CloseBlocking(recoveredChannel);
                 CloseBlocking(firstSession);
@@ -501,6 +529,9 @@ namespace Mahjong.Unity.Tests.PlayMode
             ITableChannel? reopenedInner = null;
             RawCaptureChannel? reopenedChannel = null;
             TableSession? reopened = null;
+            var otherChannels = new ITableChannel[3];
+            var otherSessions = new TableSession[3];
+            var otherPumps = new List<Task>();
             Task? firstPump = null;
             Task? spectatorPump = null;
             Task? reopenedPump = null;
@@ -542,6 +573,16 @@ namespace Mahjong.Unity.Tests.PlayMode
                 reopenedPump = PumpLoopAsync(reopened, pumpCts.Token);
                 await WaitReadyAsync(reopened, pumpCts.Token).ConfigureAwait(false);
                 if (reopened.Binding!.SessionId.Value == oldSession) throw new InvalidOperationException("Reopened player reused the old session.");
+                for (int seat = 1; seat < 4; seat++)
+                {
+                    otherChannels[seat - 1] = await factory.CreateRoomViewerAsync(LocalRoomViewerRole.Player, seat, CancellationToken.None).ConfigureAwait(false);
+                    var otherTicket = otherChannels[seat - 1] as ILocalTableTicketSource
+                        ?? throw new InvalidOperationException("A positive-control player channel did not expose its ticket.");
+                    otherSessions[seat - 1] = new TableSession(otherChannels[seat - 1], new InMemoryOutboxStore());
+                    await otherSessions[seat - 1].OpenAsync(new TableSessionOpenRequest(otherTicket.SessionTicket, LocalTableChannelFactory.ClientBuild), pumpCts.Token).ConfigureAwait(false);
+                    otherPumps.Add(PumpLoopAsync(otherSessions[seat - 1], pumpCts.Token));
+                    await WaitReadyAsync(otherSessions[seat - 1], pumpCts.Token).ConfigureAwait(false);
+                }
                 string currentTiles = string.Join(",", reopened.PlayerSnapshot!.PrivateView.ClosedTiles);
                 reopenedChannel.InjectNextReceive(oldFrame);
                 Task pump = reopened.PumpOnceAsync(CancellationToken.None);
@@ -559,12 +600,18 @@ namespace Mahjong.Unity.Tests.PlayMode
                 if (firstPump != null) { try { await firstPump.ConfigureAwait(false); } catch { } }
                 if (spectatorPump != null) { try { await spectatorPump.ConfigureAwait(false); } catch { } }
                 if (reopenedPump != null) { try { await reopenedPump.ConfigureAwait(false); } catch { } }
+                try { await Task.WhenAll(otherPumps).ConfigureAwait(false); } catch { }
                 if (first != null) try { await first.CloseAsync("C04_TEST_DONE", CancellationToken.None).ConfigureAwait(false); } catch { }
                 if (firstChannel != null) try { await firstChannel.CloseAsync(new TableChannelCloseReason("C04_TEST_DONE", true), CancellationToken.None).ConfigureAwait(false); } catch { }
                 if (spectator != null) try { await spectator.CloseAsync("C04_TEST_DONE", CancellationToken.None).ConfigureAwait(false); } catch { }
                 if (spectatorChannel != null) try { await spectatorChannel.CloseAsync(new TableChannelCloseReason("C04_TEST_DONE", true), CancellationToken.None).ConfigureAwait(false); } catch { }
                 if (reopened != null) try { await reopened.CloseAsync("C04_TEST_DONE", CancellationToken.None).ConfigureAwait(false); } catch { }
                 if (reopenedChannel != null) try { await reopenedChannel.CloseAsync(new TableChannelCloseReason("C04_TEST_DONE", true), CancellationToken.None).ConfigureAwait(false); } catch { }
+                for (int seat = 0; seat < 3; seat++)
+                {
+                    if (otherSessions[seat] != null) try { await otherSessions[seat].CloseAsync("C04_TEST_DONE", CancellationToken.None).ConfigureAwait(false); } catch { }
+                    if (otherChannels[seat] != null) try { await otherChannels[seat].CloseAsync(new TableChannelCloseReason("C04_TEST_DONE", true), CancellationToken.None).ConfigureAwait(false); } catch { }
+                }
                 try { await factory.CloseRoomAsync(CancellationToken.None).ConfigureAwait(false); } catch { }
             }
         }
