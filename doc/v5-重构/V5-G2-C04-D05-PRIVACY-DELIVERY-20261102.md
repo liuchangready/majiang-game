@@ -56,7 +56,7 @@
 ### 身份、范围与结论
 
 - 工作树：`E:/majiang-review/g2-c04-d05-acceptance-matrix-ds-20261102-r1`；分支：`wt/v5-g2-c04-d05-acceptance-matrix-ds-20261102-r1`。
-- 任务卡基线：`6123f0a17e8a47997e577086a125dc58da7a3d7e`（其父 `90140b34`）；R1 代码提交：`e16bab8c85dde812aa5121cd23bf13e0507bac24`；提交前 tracked/untracked clean，`git diff --check` 0。
+- 任务卡基线：`6123f0a17e8a47997e577086a125dc58da7a3d7e`（其父 `90140b34`）；R1 代码提交：`b560a9bda85a9e145c8f75f6d846a3d458dd965e`；提交前 tracked/untracked clean，`git diff --check` 0。
 - 本卡唯一允许修改的 9 个 tracked 路径中实际改动 6 个（4 改 + 2 新增）；`C04PrivacyBuild.cs.meta`、`C04PrivacyRoleSwitchPlayModeTests.cs.meta` 与 `LocalPrivacyScenario.cs`（dotnet 无 meta）未改/新增正确。没有修改 A 的 19 文件、Luna 的 6 文件、Domain/Client/proto/actor/schema/asmdef。
 - 结论：**R1-04 runner 独立组件修复完成；R1-03 独立可做的隐私/慢队列/旧 raw/恢复对账场景完成并通过 .NET 回归；最终 Unity/Windows 同候选同包矩阵 `BLOCKED_ON_PRIVACY_AND_RECOVERY`。D05 未完成、未批准。**
 - 本轮没有构建新 Player 包，没有运行真实 Unity/Windows Player，没有使用旧 verifier 冒充新候选 PASS，也没有 approve/push/PR/merge/deploy/scheduler/ complete.flag 操作。
@@ -118,7 +118,7 @@
 |---|---|---|
 | XML 只查 passed/failed | `Assert-C04UnityXml` 固定 3 个 case 全名、`total/passed` 精确、fail/error/skip/inconclusive/not-run 全 0、`result=Passed`、所有 case `Passed`、无 failure/error 节点 | `C04PrivacyRunner.Tests.ps1` 的 valid + skipped/errors/failed/wrongCase/wrongResult/notrun/missing 全部按预期拒绝 |
 | marker 只 `Test-Path` | `Assert-C04BuildMarker` 校验 schema/kind/result/errors/target/sourceHead/buildCommit/errorMessages/output/playerBytes/playerSha/package manifest count/bytes/hash/scenes/plugin hashes | 有效 fixture 通过；wrong source/errors/playerBytes/plugin hash/missing scene/missing plugin 均拒绝 |
-| HEAD/porcelain 只记录 | `Get-C04SourceIdentity` + `Assert-C04SourceIdentity` 拒绝 dirty、diff --check 非零、错 expected head | 真实 preflight `e16bab8c`：clean、输入闭包 534 文件/13,577,831 bytes/SHA `9a8c3c88a1c0b82f52fb417d1474043d79b08712307dc42b8918c8e0915a3b02` |
+| HEAD/porcelain 只记录 | `Get-C04SourceIdentity` + `Assert-C04SourceIdentity` 拒绝 dirty、diff --check 非零、错 expected head | 真实 preflight `b560a9bd`：clean、输入闭包 534 文件/13,578,188 bytes/SHA `b734e6fc0f3aaef7b8a7d22022b3a8612faf6b315069214301b2df727d88c1f8` |
 | 复制 live 输入无闭包 | `Copy-C04UnityInputs` 复制 Assets/Packages/ProjectSettings，复制前后逐文件 SHA 清单相等；目标侧 mutation 立即失败 | runner 测试 `copy input closure...` PASS；mutation 触发 `input closure mismatch` |
 | native 非零被吞 | `Assert-C04NativeSuccess` 明确拒绝 timedOut/cancelled/aliveAfter/非 0 | 大输出子进程 exit 7：返回 exit 7、stdout/stderr 各 ≥1 MiB、`Assert` 抛错 |
 | 超时/取消后 writer 残留 | `Invoke-C04OwnedProcess` 有界 `CloseMainWindow`，宽限后仅对 PID+StartTime 匹配的自有进程 `Kill`，等待退出；`Stop-C04OwnedProcess` 拒绝身份变化 | timeout 1s/grace 2s 子进程被停止、`aliveAfter=false`、PID 不存在；cancel-file 同；均非 PASS |
@@ -127,8 +127,8 @@
 | 封存可被写坏 | `Write-C04SealedEvidence` 写 summary/manifest/seal，manifest 排除自身和 seal，二次 seal 拒绝 | seal 测试：manifest 哈希休眠后不变，二次调用抛 `already sealed` |
 | exe/包 bytes 口径 | `C04PrivacyBuild` 写 `playerBytes`/`packageBytes`/`packageFileCount`/`packageManifest`/`packageManifestSha256`；runner 分别校验 | 编译检查 0 error；旧 667,136/128,346,555 口径已在正文纠正，旧 marker 未改 |
 
-- runner 自测：`powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/tests/C04PrivacyRunner.Tests.ps1 -TestRunRoot build/<guid>`，**9/9 PASS、native 0**，JSON SHA `38943EA1AECD661A50500A1E9E96B348C95D8403921DEB84E8B8BF2D334B19A9`，证据 `build/9a1fc1fbea60431ab11dd1b1af1f0def`。
-- runner 干净预检：`... -RunRoot build/74df... -PreflightOnly -ExpectedSourceHead e16...`，**PASS/native 0**；summary SHA `EDCC29CDDED9B8EBC917BACB5293A1DF61443CA66C385CC9AD09710B76017E34`，manifest SHA `CAEBFC30A44B2E70855FE34BA8E339A91842B05C5E7F957195AB417251FE31A4`，seal SHA `084E5E56E95788EF7E2627BD0FF0E04DD25478A1D8CC7E7F15251511DD5825AD`。
+- runner 自测：`powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/tests/C04PrivacyRunner.Tests.ps1 -TestRunRoot build/<guid>`，**9/9 PASS、native 0**，JSON SHA `ECA2C18237786E1690662F2770B2ED4D50DF7D672C77F0D08EF2D303557B8F3A`，证据 `build/aea54d077ceb4b4eb7ac2c4188a8eb17`。
+- runner 干净预检：`... -RunRoot build/cb29... -PreflightOnly -ExpectedSourceHead b560...`，**PASS/native 0**；summary SHA `716E317E0540A1F858D83FBD7A7D540EB3E7EF7874EEB79A2A4004B2CC002A7F`，manifest SHA `8AD15CD8A6018E69986549232FBE3C7FBE748C535E074F46EA14394FC1CB7AD7`，seal SHA `B5D22E991C86F71F994EFA3949F6A78D2047A5F0EF0A15C6BBEDCA0C2C18894A`。
 
 ### R1-03 实现与固定行
 
@@ -169,7 +169,7 @@
 - 慢队列/非空袖牌/费用/旧 raw/恢复对账的 5 个 `C04PrivacyStreamMatrixTests` 均含在 158/158；未用 skip/空测试/旧 DLL。
 - Unity 静态编译检查（仅类型/语法，不是 Unity 运行）：PlayMode 文件对 Luna D05 预建 App/UI/Client 程序集编译，exit 0、1 个既有 nullable warning、0 error；Editor 构建脚本对 UnityEditor/UnityEngine 编译，exit 0、0 error。DLL SHA：PlayMode `7975B44376A41E380DF745BA7CBD00F907EFA17B1C12F90D3F7C78A912277E74`；Editor `0AEC7886B5FDBFFB20AF8A8CB4E9D5459E17726DC5C323ADCDFA56920597CE23`。
 - verifier 组件（不是正式隐私 PASS）：build exit 0；`self-test unused.json` exit 0，仅输出 `SELF_TEST_PASS positive=1 negative=5`；DLL SHA `EC36FAA4362385673B7516742FB5CC5AEE42225C42900B3F57EE84A9A4378F56`。R1-01 四变体仍按旧 verifier 误 PASS，不能引用该 self-test 作为 G5 证据。
-- 本轮源码身份：R1 代码提交 `e16bab8c85dde812aa5121cd23bf13e0507bac24`。关键文件 SHA：`LocalPrivacyScenario.cs` `45EB16E14DC065E14844839640734E279E07EE7C2486CC0F73BBA84149F64857`；`C04PrivacyStreamMatrixTests.cs` `A6723C924CF45654964C321F9902C255E939F7CC5D5507D88BC7AE4CFE570310`；runner `747A7F20EB98B44AA4FCB3B4D7753B1D3D2FAD0E5EEAD0F3C784FF88BB32316E`；runner tests `0A735560F636AED51D95B3071F1999B586AA4C42693DD8638309CFADFA552710`；Unity PlayMode `AAA9962EBA4398B439667F49FD1ECF57A74B7B848599306601D5806143092305`；Unity Editor `5EAE5135255EE4AF3C449A877A8C0D79D66B37F177E81279054B30628D28D84B`。
+- 本轮源码身份：R1 代码提交 `b560a9bda85a9e145c8f75f6d846a3d458dd965e`。关键文件 SHA：`LocalPrivacyScenario.cs` `45EB16E14DC065E14844839640734E279E07EE7C2486CC0F73BBA84149F64857`；`C04PrivacyStreamMatrixTests.cs` `A6723C924CF45654964C321F9902C255E939F7CC5D5507D88BC7AE4CFE570310`；runner `82B47FEB88D95F012139B8A742FDFEF33C75894CD218E4944560C26F43676421`；runner tests `0A735560F636AED51D95B3071F1999B586AA4C42693DD8638309CFADFA552710`；Unity PlayMode `AAA9962EBA4398B439667F49FD1ECF57A74B7B848599306601D5806143092305`；Unity Editor `5EAE5135255EE4AF3C449A877A8C0D79D66B37F177E81279054B30628D28D84B`。
 - 无新 Player/包/Windows XML 原件；P1/P2 不产生 PASS。
 
 ### 首次失败、重试与未覆盖
@@ -227,4 +227,4 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
 
 ## 交接判定
 
-R1 前历史结论：实现、可重复的 .NET/Unity/Player 实际验证、raw verifier 和清单曾封存；未覆盖项显式 BLOCKED/PARTIAL。该历史不覆盖本轮：R1 新候选最终 Unity/Windows 同包矩阵仍 `BLOCKED_ON_PRIVACY_AND_RECOVERY`，等 A/Luna 集成冻结后按上节命令接续；B 的独立组件已完成，D05 未完成、未批准。代码提交 `e16bab8c` 与本 docs-only 报告提交分开；不推送、不创建 PR/MR、不合并、不部署、不改 scheduler，不复活已删除的原合并线程。
+R1 前历史结论：实现、可重复的 .NET/Unity/Player 实际验证、raw verifier 和清单曾封存；未覆盖项显式 BLOCKED/PARTIAL。该历史不覆盖本轮：R1 新候选最终 Unity/Windows 同包矩阵仍 `BLOCKED_ON_PRIVACY_AND_RECOVERY`，等 A/Luna 集成冻结后按上节命令接续；B 的独立组件已完成，D05 未完成、未批准。代码提交 `b560a9bd` 与本 docs-only 报告提交分开；不推送、不创建 PR/MR、不合并、不部署、不改 scheduler，不复活已删除的原合并线程。
