@@ -729,6 +729,8 @@ internal static class Program
             !Eq(persistedRequest.PayloadSha256, rawPayloadSha256) ||
             persistedRequest.EvaluatedStateVersion != command.ExpectedStateVersion.ToString(CultureInfo.InvariantCulture))
             Fail(id + ":RECOVERY_REQUEST_BINDING_MISSING_OR_MISMATCH");
+        else if (!Eq(persistedRequest.ReasonCode, receipt.ReasonCode))
+            Fail(id + ":DURABLE_REJECTION_REASON_MISMATCH");
         if (receipt.Status == WireReceiptStatus.Applied)
         {
             if (!receipt.HasCommandVersion || !receipt.HasEventSeq) Fail(id + ":APPLIED_RECEIPT_VERSION_MISSING");
@@ -962,16 +964,19 @@ internal static class Program
         if (!privateMeld.SequenceEqual(exactMeld)) Fail(x.Id + ":PRIVATE_MELDS_DO_NOT_MATCH_EXACT_RECOVERY");
 
         VerifyPrivateMarkGroups(x.Id, cheatState.MarkGroups, view.Cheat.TileMark);
-        CommandType actionType = x.Command.Command.Type;
-        if (actionType == CommandType.SubmitSleeveBloom || actionType == CommandType.SubmitSleeveBloomChoice)
-        {
-            VerifySleeveOfferProjection(x.Id, "IMMEDIATE", cheatState.ImmediateOffer, view.Cheat.SleeveBloom);
-            VerifySleeveOfferProjection(x.Id, "OFF_TURN", cheatState.OffTurnOffer, view.Cheat.OffTurnSleeveBloom);
-            VerifySleeveReservationProjection(x.Id, cheatState.Reservation, view.Cheat.SleeveBloomReservation);
-            if (!Eq(cheatState.WindowId ?? string.Empty, view.Cheat.WindowId)) Fail(x.Id + ":PRIVATE_SLEEVE_WINDOW_MISMATCH");
-        }
-        if (actionType == CommandType.SubmitBeamSwap || actionType == CommandType.SubmitBeamSwapChoice)
-            VerifyBeamOfferProjection(x.Id, cheatState.BeamSwapOffer, view.Cheat.BeamSwap);
+        VerifySleeveOfferProjection(x.Id, "IMMEDIATE", cheatState.ImmediateOffer, view.Cheat.SleeveBloom);
+        VerifySleeveOfferProjection(x.Id, "OFF_TURN", cheatState.OffTurnOffer, view.Cheat.OffTurnSleeveBloom);
+        VerifySleeveReservationProjection(x.Id, cheatState.Reservation, view.Cheat.SleeveBloomReservation);
+        bool hasWindowProjection = cheatState.ImmediateOffer != null || cheatState.OffTurnOffer != null || cheatState.Reservation != null ||
+            view.Cheat.SleeveBloom != null || view.Cheat.OffTurnSleeveBloom != null || view.Cheat.SleeveBloomReservation != null ||
+            !string.IsNullOrEmpty(view.Cheat.WindowId);
+        // A later recovery envelope may already contain a newly opened decision window
+        // while the exact accepted publication for the preceding command predates it.
+        // In that empty-offer case an empty publication WindowId is valid; any projected
+        // offer/reservation/window must still bind exactly to the committed private state.
+        if (hasWindowProjection && !Eq(cheatState.WindowId ?? string.Empty, view.Cheat.WindowId))
+            Fail(x.Id + ":PRIVATE_SLEEVE_WINDOW_MISMATCH");
+        VerifyBeamOfferProjection(x.Id, cheatState.BeamSwapOffer, view.Cheat.BeamSwap);
 
         if (x.Command.Command.Type == CommandType.SubmitTileMark)
         {
@@ -1023,6 +1028,9 @@ internal static class Program
             (hasDeadline ? actual.DeadlineRemainingMs < 0 || actual.DeadlineRemainingMs > expected.DeadlineMillis : actual.DeadlineRemainingMs != 0) ||
             actual.DrawKind.ToString() != expected.DrawKind.ToString())
             Fail(id + ":PRIVATE_SLEEVE_" + mode + "_OFFER_MISMATCH");
+        // The production TableProjectionContractMapper deliberately projects no reserved
+        // tile for SleeveBloomOffer. The wire's optional field must therefore remain absent.
+        if (actual.HasReservedTileId) Fail(id + ":PRIVATE_SLEEVE_RESERVED_TILE_PROJECTION_MISMATCH");
     }
 
     private static void VerifySleeveReservationProjection(string id, DomainSleeveBloomReservation? expected, WireSleeveBloomReservationView? actual)

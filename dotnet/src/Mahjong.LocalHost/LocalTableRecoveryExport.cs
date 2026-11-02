@@ -13,9 +13,9 @@ using Mahjong.TableRuntime;
 namespace Mahjong.LocalHost
 {
     /// <summary>
-    /// One persisted confirmed request/receipt fact. Identity is the full
-    /// account + scope + request composite; payloadSha256 is the real ToHex value of the
-    /// committed payload digest, never a re-serialized approximation.
+    /// One persisted request/receipt fact. Identity is the full account + scope + request
+    /// composite; payloadSha256 is the real ToHex value of the committed payload digest,
+    /// never a re-serialized approximation. ReasonCode is copied from the persisted receipt.
     /// </summary>
     public sealed class LocalTableRecoveryRequestFact
     {
@@ -30,6 +30,23 @@ namespace Mahjong.LocalHost
             string evaluatedStateVersion,
             string? commandVersion,
             string? eventSeq)
+            : this(accountId, scopeId, requestId, receiptId, confirmed, status, payloadSha256,
+                evaluatedStateVersion, commandVersion, eventSeq, string.Empty)
+        {
+        }
+
+        public LocalTableRecoveryRequestFact(
+            string accountId,
+            string scopeId,
+            string requestId,
+            string receiptId,
+            bool confirmed,
+            string status,
+            string payloadSha256,
+            string evaluatedStateVersion,
+            string? commandVersion,
+            string? eventSeq,
+            string reasonCode)
         {
             AccountId = accountId;
             ScopeId = scopeId;
@@ -41,6 +58,7 @@ namespace Mahjong.LocalHost
             EvaluatedStateVersion = evaluatedStateVersion;
             CommandVersion = commandVersion;
             EventSeq = eventSeq;
+            ReasonCode = reasonCode ?? throw new ArgumentNullException(nameof(reasonCode));
         }
 
         public string AccountId { get; }
@@ -53,6 +71,7 @@ namespace Mahjong.LocalHost
         public string EvaluatedStateVersion { get; }
         public string? CommandVersion { get; }
         public string? EventSeq { get; }
+        public string ReasonCode { get; }
     }
 
     /// <summary>
@@ -532,7 +551,8 @@ namespace Mahjong.LocalHost
                         : null,
                     receipt.Receipt.EventSeq.HasValue
                         ? receipt.Receipt.EventSeq.Value.Value.ToString(CultureInfo.InvariantCulture)
-                        : null));
+                          : null,
+                      receipt.Receipt.ReasonCode));
             }
 
             requests.Sort((left, right) =>
