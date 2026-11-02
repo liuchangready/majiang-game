@@ -53,11 +53,20 @@ function New-PluginFixture {
 }
 
 function New-PackageFixture {
-    param([string]$Dir, [switch]$ValidEvidence)
+    param([string]$Dir, [switch]$ValidEvidence, [switch]$UnityArtifact)
     New-Item -ItemType Directory -Force -Path $Dir | Out-Null
     $exe = Join-Path $Dir 'Mahjong.exe'
     Copy-Item -LiteralPath (Get-Command powershell.exe).Source -Destination $exe -Force
-    $plugin = New-PluginFixture -Dir (Join-Path $Dir 'plugins')
+    if ($UnityArtifact) {
+        $marker = 'UnityPlayer.dll'
+        $exeBytes = [byte[]](0x4D,0x5A) + [System.Text.Encoding]::ASCII.GetBytes($marker) + (New-Object byte[] 70000)
+        [System.IO.File]::WriteAllBytes($exe, $exeBytes)
+        $pluginDir = Join-Path $Dir 'Mahjong_Data\Managed'
+        New-Item -ItemType Directory -Force -Path $pluginDir | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $pluginDir 'Mahjong.Domain.dll'), 'fixture')
+        [System.IO.File]::WriteAllBytes((Join-Path $Dir 'UnityPlayer.dll'), ([byte[]](0x4D,0x5A) + (New-Object byte[] 1050000)))
+        [System.IO.File]::WriteAllText((Join-Path $Dir 'Mahjong_Data\globalgamemanagers'), ('g' * 2048))
+    }    $plugin = New-PluginFixture -Dir (Join-Path $Dir 'plugins')
     $closure = Get-C04PluginClosure -ProvenancePath $plugin.provenance -PluginDir $plugin.dir
     Assert-True $closure.ok 'fixture plugin closure'
     $closurePath = Join-Path $Dir 'c04-plugin-closure.csv'
@@ -69,6 +78,7 @@ function New-PackageFixture {
     $report = New-FixtureReport -OutputPath $exe
     $report.plugins = @($closure.files | Where-Object { $_.name.EndsWith('.dll') } | ForEach-Object { [ordered]@{ name = $_.name; bytes = $_.bytes; sha256 = $_.sha256 } })
     Write-C04Json -Path $reportPath -Object $report
+
     $head = ((git -C $root rev-parse HEAD) -join '').Trim()
     $identity = Get-C04SourceIdentity
     $evidence = Join-Path $Dir 'evidence'
@@ -79,6 +89,8 @@ function New-PackageFixture {
     $null = Write-C04ManifestFile -Path $stagedManifest -Rows @([pscustomobject]@{ path = 'fixture.txt'; bytes = 1; sha256 = ('c' * 64) }) -Kind 'staged'
     $stagedFinalManifest = Join-Path $evidence 'staging\staged-project-final-manifest.csv'
     $null = Write-C04ManifestFile -Path $stagedFinalManifest -Rows @([pscustomobject]@{ path = 'fixture-final.txt'; bytes = 1; sha256 = ('d' * 64) }) -Kind 'staged-final'
+    $stagedCodeManifest = Join-Path $evidence 'staging\staged-code-manifest.csv'
+    $null = Write-C04ManifestFile -Path $stagedCodeManifest -Rows @() -Kind 'staged-code'
     Copy-Item -LiteralPath $closurePath -Destination (Join-Path $evidence 'staging\plugin-closure.csv') -Force
     Copy-Item -LiteralPath $reportPath -Destination (Join-Path $evidence 'build\player\c04-build-report.json') -Force
     Copy-Item -LiteralPath $exe -Destination (Join-Path $evidence 'build\player\Mahjong.exe') -Force
@@ -94,8 +106,15 @@ function New-PackageFixture {
         foreach ($file in @($closure.files)) {
             Copy-Item -LiteralPath (Join-Path $plugin.dir $file.name) -Destination (Join-Path $evidence ('staging\repo\unity\Mahjong.Unity\Assets\Plugins\Mahjong\' + $file.name)) -Force
         }
+        $projectRoot = Join-Path $evidence 'staging\repo\unity\Mahjong.Unity'
+        [System.IO.File]::WriteAllText((Join-Path $projectRoot 'fixture.txt'), 'fixture')
+        [System.IO.File]::WriteAllText((Join-Path $projectRoot 'fixture-final.txt'), 'final')
+        $stagedRows = Get-C04FileTable -Root $projectRoot -ExcludeDirectoryNames @('Library','Temp','Logs','obj','UserSettings') -ExcludeRelativeDirectories @('.vscode') -ExcludeFileSuffixes @('.csproj','.slnx','.pdb.meta')
+        $null = Write-C04ManifestFile -Path $stagedManifest -Rows $stagedRows -Kind 'staged'
+        $null = Write-C04ManifestFile -Path $stagedFinalManifest -Rows $stagedRows -Kind 'staged-final'
+        $null = Write-C04ManifestFile -Path $stagedCodeManifest -Rows @([pscustomobject]@{ path = 'fixture.cs'; bytes = (Get-Item -LiteralPath $inputFile).Length; sha256 = (Get-C04Sha256 $inputFile) }) -Kind 'staged-code'
     }
-    $seal = Write-C04PackageSeal -PackageRoot $Dir -PlayerPath $exe -ReportPath $reportPath -ProvenancePath $provenanceCopy -PluginClosurePath $closurePath -BuildEvidenceRoot $evidence -SourceHead $head -SourceIdentitySha256 $identity.identitySha256 -SourceManifestSha256 (Get-C04Sha256 $sourceManifest) -StagedInputManifestSha256 (Get-C04Sha256 $stagedManifest) -StagedFinalManifestSha256 (Get-C04Sha256 $stagedFinalManifest) -BuildCommit $head -BuildId 'fixture-build' -SourceInputFileCount $identity.inputFileCount -SourceInputBytes $identity.inputBytes -StagedInputFileCount 1 -PluginClosure $closure
+    $seal = Write-C04PackageSeal -PackageRoot $Dir -PlayerPath $exe -ReportPath $reportPath -ProvenancePath $provenanceCopy -PluginClosurePath $closurePath -BuildEvidenceRoot $evidence -SourceHead $head -SourceIdentitySha256 $identity.identitySha256 -SourceManifestSha256 (Get-C04Sha256 $sourceManifest) -StagedInputManifestSha256 (Get-C04Sha256 $stagedManifest) -StagedFinalManifestSha256 (Get-C04Sha256 $stagedFinalManifest) -StagedCodeManifestSha256 (Get-C04Sha256 $stagedCodeManifest) -BuildCommit $head -BuildId 'fixture-build' -SourceInputFileCount $identity.inputFileCount -SourceInputBytes $identity.inputBytes -StagedInputFileCount 1 -PluginClosure $closure
     return [pscustomobject]@{ dir = $Dir; exe = $exe; report = $reportPath; provenance = $provenanceCopy; closure = $closure; closurePath = $closurePath; seal = $seal; head = $head; identity = $identity }
 }
 # 1. Quoting and bounded process basics
@@ -177,7 +196,7 @@ $diff = @(Test-C04ManifestAgainstRoot -Root $staged.project -ManifestPath $orig.
 Assert-Match $diff 'STAGING_CHANGED:Assets/Extra.asset' 'staging-asset-mutation-detected'
 
 # 5. Package seal requires real source/build/provenance/report/plugin relations.
-$package = New-PackageFixture -Dir (Join-Path $testRoot 'package') -ValidEvidence
+$package = New-PackageFixture -Dir (Join-Path $testRoot 'package') -ValidEvidence -UnityArtifact
 $check = Test-C04PackageSeal -PlayerPath $package.exe -ExpectedSourceHead $package.head -ExpectedBuildCommit $package.head -CurrentSourceIdentitySha256 $package.identity.identitySha256
 Assert-True $check.ok 'package-seal-good'
 $fakeHead = ('a' * 40)

@@ -325,7 +325,12 @@ function Stop-C04Job {
     param([IntPtr]$Job, [string]$Reason)
     if ($Job -eq [IntPtr]::Zero) { return [pscustomobject]@{ stopped = 0; remaining = 0 } }
     $before = Get-C04JobActiveProcesses $Job
-    if ($before -lt 0) { [void][C04ProcessJob]::CloseHandle($Job); return [pscustomobject]@{ stopped = 0; remaining = -1 } }
+    if ($before -lt 0) {
+        $okUnknown = [C04ProcessJob]::TerminateJobObject($Job, 1)
+        [void][C04ProcessJob]::CloseHandle($Job)
+        Write-C04Log ("STOP_JOB query_unknown terminated={0} reason={1}" -f $okUnknown, $Reason)
+        return [pscustomobject]@{ stopped = 0; remaining = -1 }
+    }
     $ok = [C04ProcessJob]::TerminateJobObject($Job, 1)
     Start-Sleep -Milliseconds 200
     $after = Get-C04JobActiveProcesses $Job
@@ -507,22 +512,33 @@ function Start-C04BoundedProcess {
     $specPath = Join-Path $launchDir 'spec.json'
     $signalPath = Join-Path $launchDir 'go.signal'
     $wrapperPath = Join-Path $launchDir 'launch.ps1'
-    $spec = [ordered]@{ file = $FilePath; argline = $argumentString; cwd = $WorkingDirectory }
+    $targetResultPath = Join-Path $launchDir 'target-result.json'
+    $spec = [ordered]@{ file = $FilePath; argline = $argumentString; cwd = $WorkingDirectory; result = $targetResultPath }
     Write-C04Json -Path $specPath -Object $spec
     $wrapperLines = @(
         'param([string]$Spec,[string]$Signal)',
+        '$ErrorActionPreference=''Stop''',
         'while (-not (Test-Path -LiteralPath $Signal)) { Start-Sleep -Milliseconds 25 }',
         '$s = Get-Content -LiteralPath $Spec -Raw | ConvertFrom-Json',
-        'if ($s.cwd) { Set-Location -LiteralPath $s.cwd }',
-        '$exe = [string]$s.file',
-        '$psi = New-Object System.Diagnostics.ProcessStartInfo',
-        '$psi.FileName = $exe',
-        '$psi.Arguments = [string]$s.argline',
-        '$psi.UseShellExecute = $false',
-        'if ($s.cwd) { $psi.WorkingDirectory = [string]$s.cwd }',
-        '$p = [System.Diagnostics.Process]::Start($psi)',
-        '$p.WaitForExit()',
-        'exit $p.ExitCode'
+        'try {',
+        '  $psi = New-Object System.Diagnostics.ProcessStartInfo',
+        '  $psi.FileName = [string]$s.file',
+        '  $psi.Arguments = [string]$s.argline',
+        '  $psi.UseShellExecute = $false',
+        '  if ($s.cwd) { $psi.WorkingDirectory = [string]$s.cwd }',
+        '  $p = [System.Diagnostics.Process]::Start($psi)',
+        '  if ($null -eq $p) { throw ''TARGET_START_NULL'' }',
+        '  $targetPid = $p.Id',
+        '  $p.WaitForExit()',
+        '  $targetExit = $p.ExitCode',
+        '  $result = [ordered]@{ status = ''EXITED''; wrapperPid = $PID; targetPid = $targetPid; exitCode = $targetExit }',
+        '  [System.IO.File]::WriteAllText([string]$s.result, ($result | ConvertTo-Json), (New-Object System.Text.UTF8Encoding($false)))',
+        '  exit $targetExit',
+        '} catch {',
+        '  $result = [ordered]@{ status = ''START_FAILED''; wrapperPid = $PID; targetPid = 0; exitCode = $null; error = $_.Exception.ToString() }',
+        '  [System.IO.File]::WriteAllText([string]$s.result, ($result | ConvertTo-Json), (New-Object System.Text.UTF8Encoding($false)))',
+        '  exit 90',
+        '}'
     )
     [System.IO.File]::WriteAllLines($wrapperPath, $wrapperLines, (New-Object System.Text.UTF8Encoding($false)))
 
@@ -568,11 +584,11 @@ function Start-C04BoundedProcess {
         if ($current.Count -eq 1) { $startTimeUtc = Get-C04ProcessCreationUtc $current[0] }
         if ($startTimeUtc -eq [datetime]::MinValue) { try { $startTimeUtc = $process.StartTime.ToUniversalTime() } catch { } }
         if ($startTimeUtc -eq [datetime]::MinValue) { throw "C04FAIL:OWNERSHIP_UNKNOWN:$Label pid=$pidValue has no exact start identity" }
+        $ownershipKnown = $true
         if (-not [C04ProcessJob]::AssignProcessToJobObject($jobHandle, $process.Handle)) {
             [void][C04ProcessJob]::CloseHandle($jobHandle); $jobHandle = [IntPtr]::Zero
             throw "C04FAIL:OWNERSHIP_UNKNOWN:$Label could not assign wrapper to job"
         }
-        $ownershipKnown = $true
         Write-C04Log ("JOB {0} assigned pid={1} active={2}" -f $Label, $pidValue, (Get-C04JobActiveProcesses $jobHandle))
         [System.IO.File]::WriteAllText($signalPath, 'go')
         $outTask = $process.StandardOutput.BaseStream.CopyToAsync($outStream)
@@ -621,8 +637,8 @@ function Start-C04BoundedProcess {
         $jobRemaining = $cleanup.remaining
         $fallbackSet = Stop-C04OwnedSet -RootProcessId $pidValue -Observed $observed -Reason $cleanupReason -IncludeRoot $false -SinceUtc $startTimeUtc
         $ownedStopped += $fallbackSet.stopped
-        if ($fallbackSet.remaining -gt 0) { $cleanupFailed = $true }
-        if ($cleanup.remaining -gt 0) { $cleanupFailed = $true }
+        if ($fallbackSet.remaining -ne 0) { $cleanupFailed = $true }
+        if ($cleanup.remaining -ne 0) { $cleanupFailed = $true }
         try { if (-not $process.HasExited) { [void]$process.WaitForExit(5000) } } catch { }
 
         $waitMs = [Math]::Max(1000, $DrainGrace * 1000)
@@ -633,7 +649,7 @@ function Start-C04BoundedProcess {
             $jobClosed = $true
             $jobHandle = [IntPtr]::Zero
             $ownedStopped += $cleanup2.stopped
-            if ($cleanup2.remaining -gt 0) { $cleanupFailed = $true }
+            if ($cleanup2.remaining -ne 0) { $cleanupFailed = $true }
             $drained = Wait-C04StreamTasks -Tasks ([System.Threading.Tasks.Task[]]@($outTask, $errTask)) -Milliseconds $waitMs
         }
     }
@@ -651,8 +667,8 @@ function Start-C04BoundedProcess {
                 $jobRemaining = $cleanup3.remaining
                 $fallback3 = Stop-C04OwnedSet -RootProcessId $pidValue -Observed $observed -Reason 'EXCEPTION_OR_FINAL' -IncludeRoot $false -SinceUtc $startTimeUtc
                 $ownedStopped += $fallback3.stopped
-                if ($fallback3.remaining -gt 0) { $cleanupFailed = $true }
-                if ($cleanup3.remaining -gt 0) { $cleanupFailed = $true }
+                if ($fallback3.remaining -ne 0) { $cleanupFailed = $true }
+                if ($cleanup3.remaining -ne 0) { $cleanupFailed = $true }
             }
             catch { $cleanupFailed = $true }
             $jobClosed = $true
@@ -664,17 +680,24 @@ function Start-C04BoundedProcess {
         try { if ($errStream) { $errStream.Flush(); $errStream.Dispose() } } catch { }
     }
 
-    $remainingObserved = if ($jobRemaining -gt 0) { $jobRemaining } else { @(Get-C04OwnedProcessSet -RootProcessId $pidValue -Observed $observed -SinceUtc $startTimeUtc).Count }
-    if ($remainingObserved -gt 0) { $cleanupFailed = $true }
-    $rawExit = $null
-    $exitKnown = $false
-    try {
-        if ($process.HasExited) {
-            $rawExit = $process.ExitCode
-            $exitKnown = -not ($timedOut -or $cancelled) -and $cleanupFailed -eq $false
+    $remainingObserved = if ($jobRemaining -ne 0) { $jobRemaining } else { @(Get-C04OwnedProcessSet -RootProcessId $pidValue -Observed $observed -SinceUtc $startTimeUtc).Count }
+    if ($remainingObserved -ne 0) { $cleanupFailed = $true }
+    $targetStartFailed = $false
+    $targetPid = 0
+    $targetExit = $null
+    if (Test-Path -LiteralPath $targetResultPath -PathType Leaf) {
+        try {
+            $targetResult = Get-Content -LiteralPath $targetResultPath -Raw | ConvertFrom-Json
+            $targetPid = [int]$targetResult.targetPid
+            if ([string]$targetResult.status -ne 'EXITED') { $targetStartFailed = $true }
+            elseif ($null -ne $targetResult.exitCode) { $targetExit = [int]$targetResult.exitCode }
+            else { $targetStartFailed = $true }
         }
+        catch { $targetStartFailed = $true }
     }
-    catch { }
+    elseif (-not $timedOut -and -not $cancelled) { $targetStartFailed = $true }
+    $rawExit = $targetExit
+    $exitKnown = (-not ($timedOut -or $cancelled)) -and (-not $targetStartFailed) -and ($null -ne $targetExit) -and ($cleanupFailed -eq $false) -and ($remainingObserved -eq 0)
     try { $process.Dispose() } catch { }
 
     $result = [pscustomobject]@{
@@ -685,6 +708,9 @@ function Start-C04BoundedProcess {
         pid = $pidValue
         startTimeUtc = $startTimeUtc.ToString('O')
         ownershipKnown = $ownershipKnown
+        wrapperPid = $pidValue
+        targetPid = $targetPid
+        targetStartFailed = $targetStartFailed
         exitCode = if ($exitKnown) { $rawExit } else { $null }
         exitCodeKnown = $exitKnown
         rawExitCode = $rawExit
@@ -720,8 +746,11 @@ function Invoke-C04CheckedProcess {
     $result = Start-C04BoundedProcess -FilePath $FilePath -Arguments $Arguments -WorkingDirectory $WorkingDirectory -TimeoutSeconds $TimeoutSeconds -StdOutPath $StdOutPath -StdErrPath $StdErrPath -Label $Label -DrainGrace $DrainGraceSeconds -Heartbeat $HeartbeatSeconds
     if ($result.timedOut) { throw "C04FAIL:${TimeoutCode}:$Label timed out after $TimeoutSeconds seconds (pid=$($result.pid))" }
     if ($result.cancelled) { throw "C04FAIL:CANCELLED:$Label was cancelled (pid=$($result.pid))" }
+    if ($result.targetStartFailed) { throw "C04FAIL:TARGET_START_FAILED:$Label target did not start or produce a native result" }
     if (-not $result.exitCodeKnown) { throw "C04FAIL:UNKNOWN_EXIT:$Label native result unknown (pid=$($result.pid))" }
+    if ($result.targetStartFailed) { throw 'C04FAIL:TARGET_START_FAILED:result target did not start or produce a native result' }
     if (-not $result.drainComplete) { throw "C04FAIL:DRAIN_INCOMPLETE:$Label output streams were not drained" }
+    if ($result.targetStartFailed) { throw "C04FAIL:TARGET_START_FAILED:$Label target did not start or produce a native result" }
     if ($result.ownedProcessesRemaining -ne 0 -or $result.cleanupFailed) { throw "C04FAIL:OWNED_WRITER_REMAINS:$Label owned writers remain (pid=$($result.pid))" }
     if ([int]$result.exitCode -ne 0) { throw "C04FAIL:${NativeCode}:$Label exited $($result.exitCode)" }
     return $result
@@ -1163,6 +1192,7 @@ function Write-C04PackageSeal {
         [string]$SourceManifestSha256,
         [string]$StagedInputManifestSha256,
         [string]$StagedFinalManifestSha256,
+        [string]$StagedCodeManifestSha256,
         [string]$BuildCommit,
         [string]$BuildId = 'unknown',
         [int]$SourceInputFileCount = 0,
@@ -1199,19 +1229,22 @@ function Write-C04PackageSeal {
     $sourceManifestPath = Join-Path $evidenceRootFull 'source-input-manifest.csv'
     $stagedManifestPath = Join-Path $evidenceRootFull 'staging\staged-project-input-manifest.csv'
     $stagedFinalPath = Join-Path $evidenceRootFull 'staging\staged-project-final-manifest.csv'
+    $stagedCodePath = Join-Path $evidenceRootFull 'staging\staged-code-manifest.csv'
     $evidenceClosurePath = Join-Path $evidenceRootFull 'staging\plugin-closure.csv'
     $evidenceReportPath = Join-Path $evidenceRootFull 'build\player\c04-build-report.json'
-    foreach ($requiredEvidence in @($sourceManifestPath, $stagedManifestPath, $stagedFinalPath, $evidenceClosurePath, $evidenceReportPath)) {
+    foreach ($requiredEvidence in @($sourceManifestPath, $stagedManifestPath, $stagedFinalPath, $stagedCodePath, $evidenceClosurePath, $evidenceReportPath)) {
         if (-not (Test-Path -LiteralPath $requiredEvidence -PathType Leaf)) { throw "C04FAIL:PACKAGE_BUILD_EVIDENCE_INCOMPLETE:$requiredEvidence" }
     }
     $sourceManifestSha = Get-C04Sha256 $sourceManifestPath
     $stagedManifestSha = Get-C04Sha256 $stagedManifestPath
     $stagedFinalSha = Get-C04Sha256 $stagedFinalPath
+    $stagedCodeSha = Get-C04Sha256 $stagedCodePath
     $evidenceClosureSha = Get-C04Sha256 $evidenceClosurePath
     $evidenceReportSha = Get-C04Sha256 $evidenceReportPath
     if ($sourceManifestSha -ne $SourceManifestSha256) { throw 'C04FAIL:PACKAGE_SOURCE_MANIFEST_MISMATCH' }
     if ($stagedManifestSha -ne $StagedInputManifestSha256) { throw 'C04FAIL:PACKAGE_STAGED_MANIFEST_MISMATCH' }
     if ($stagedFinalSha -ne $StagedFinalManifestSha256) { throw 'C04FAIL:PACKAGE_STAGED_FINAL_MANIFEST_MISMATCH' }
+    if ($stagedCodeSha -ne $StagedCodeManifestSha256) { throw 'C04FAIL:PACKAGE_STAGED_CODE_MANIFEST_MISMATCH' }
     if ($evidenceClosureSha -ne (Get-C04Sha256 $closureFull)) { throw 'C04FAIL:PACKAGE_CLOSURE_MISMATCH' }
     if ($evidenceReportSha -ne (Get-C04Sha256 $reportFull)) { throw 'C04FAIL:PACKAGE_EVIDENCE_REPORT_MISMATCH' }
     $evidenceClosureRows = @(Import-Csv -LiteralPath $evidenceClosurePath | ForEach-Object { [pscustomobject]@{ name = $_.path; bytes = [long]$_.bytes; sha256 = [string]$_.sha256 } })
@@ -1241,6 +1274,7 @@ function Write-C04PackageSeal {
         sourceInputBytes = $SourceInputBytes
         stagedInputManifestSha256 = $stagedManifestSha
         stagedFinalManifestSha256 = $stagedFinalSha
+        stagedCodeManifestSha256 = $stagedCodeSha
         stagedInputFileCount = $StagedInputFileCount
         packageManifestSha256 = $manifestSha
         buildReportSha256 = $evidenceReportSha
@@ -1268,6 +1302,7 @@ function Write-C04PackageSeal {
         sourceIdentitySha256 = $SourceIdentitySha256
         sourceManifestSha256 = $sourceManifestSha
         stagedFinalManifestSha256 = $stagedFinalSha
+        stagedCodeManifestSha256 = $stagedCodeSha
         buildEvidenceRelativePath = $evidenceRelative
         buildCommit = $BuildCommit
         packageRoot = $packageRootFull
@@ -1292,6 +1327,32 @@ function Write-C04PackageSeal {
     }
     Write-C04Json -Path $sealPath -Object $seal
     return [pscustomobject]@{ sealPath = $sealPath; seal = $seal; receiptPath = $receiptPath; receipt = $receipt; manifestPath = $manifestPath; manifest = $manifest }
+}
+
+function Test-C04UnityPlayerArtifact {
+    param([string]$PlayerPath)
+    $errors = New-Object System.Collections.Generic.List[string]
+    $playerDir = Split-Path -Parent $PlayerPath
+    try {
+        $bytes = [System.IO.File]::ReadAllBytes($PlayerPath)
+        $text = [System.Text.Encoding]::ASCII.GetString($bytes)
+        if (-not $text.Contains('UnityPlayer.dll')) { $errors.Add('PLAYER_NOT_UNITY_EXECUTABLE') | Out-Null }
+    }
+    catch { $errors.Add('PLAYER_UNREADABLE') | Out-Null }
+    $unityPlayer = Join-Path $playerDir 'UnityPlayer.dll'
+    if (-not (Test-Path -LiteralPath $unityPlayer -PathType Leaf)) { $errors.Add('PLAYER_UNITY_DLL_MISSING') | Out-Null }
+    else {
+        $item = Get-Item -LiteralPath $unityPlayer
+        if ($item.Length -lt 1048576) { $errors.Add('PLAYER_UNITY_DLL_TOO_SMALL') | Out-Null }
+        $stream = [System.IO.File]::OpenRead($unityPlayer)
+        try { if ($stream.ReadByte() -ne 0x4D -or $stream.ReadByte() -ne 0x5A) { $errors.Add('PLAYER_UNITY_DLL_NOT_PE') | Out-Null } } finally { $stream.Dispose() }
+    }
+    $dataRoot = Join-Path $playerDir 'Mahjong_Data'
+    $global = Join-Path $dataRoot 'globalgamemanagers'
+    if (-not (Test-Path -LiteralPath $global -PathType Leaf) -or (Get-Item -LiteralPath $global).Length -lt 1024) { $errors.Add('PLAYER_DATA_GLOBALGAMEMANAGERS_MISSING') | Out-Null }
+    $managed = Join-Path $dataRoot 'Managed'
+    if (-not (Test-Path -LiteralPath $managed -PathType Container) -or @(Get-ChildItem -LiteralPath $managed -Filter '*.dll' -File).Count -eq 0) { $errors.Add('PLAYER_MANAGED_ASSEMBLIES_MISSING') | Out-Null }
+    return @($errors)
 }
 
 function Test-C04PackageSeal {
@@ -1352,6 +1413,7 @@ function Test-C04PackageSeal {
         if ([string]$seal.playerSha256 -ne (Get-C04Sha256 $playerFull)) { $errors.Add('PACKAGE_PLAYER_HASH_MISMATCH') | Out-Null }
         if ($playerBytes -lt 65536) { $errors.Add('PACKAGE_PLAYER_NOT_REAL_BINARY') | Out-Null }
         else {
+            foreach ($artifactError in @(Test-C04UnityPlayerArtifact -PlayerPath $playerFull)) { $errors.Add($artifactError) | Out-Null }
             $stream = [System.IO.File]::OpenRead($playerFull)
             try { if ($stream.ReadByte() -ne 0x4D -or $stream.ReadByte() -ne 0x5A) { $errors.Add('PACKAGE_PLAYER_NOT_PE') | Out-Null } }
             finally { $stream.Dispose() }
@@ -1418,6 +1480,19 @@ function Test-C04PackageSeal {
             }
             if (Test-Path -LiteralPath $stagedFinalManifest) {
                 if ((Get-C04Sha256 $stagedFinalManifest) -ne [string]$seal.stagedFinalManifestSha256) { $errors.Add('PACKAGE_EVIDENCE_STAGED_FINAL_HASH') | Out-Null }
+            }
+            $stagedCodeManifest = Join-Path $evidenceFull 'staging\staged-code-manifest.csv'
+            if (-not (Test-Path -LiteralPath $stagedCodeManifest -PathType Leaf)) { $errors.Add('PACKAGE_EVIDENCE_CODE_MANIFEST_MISSING') | Out-Null }
+            elseif ((Get-C04Sha256 $stagedCodeManifest) -ne [string]$seal.stagedCodeManifestSha256) { $errors.Add('PACKAGE_EVIDENCE_CODE_HASH') | Out-Null }
+            $stagingProject = Join-Path $evidenceFull 'staging\repo\unity\Mahjong.Unity'
+            if (Test-Path -LiteralPath $stagingProject -PathType Container) {
+                foreach ($treeError in @(Test-C04ManifestAgainstRoot -Root $stagingProject -ManifestPath $stagedManifest -ExcludeDirectoryNames @('Library','Temp','Logs','obj','UserSettings') -ExcludeRelativeDirectories @('.vscode') -ExcludeFileSuffixes @('.csproj','.slnx','.pdb.meta'))) { $errors.Add('PACKAGE_EVIDENCE_STAGED_TREE:' + $treeError) | Out-Null }
+                foreach ($treeError in @(Test-C04ManifestAgainstRoot -Root $stagingProject -ManifestPath $stagedFinalManifest -ExcludeDirectoryNames @('Library','Temp','Logs','obj','UserSettings') -ExcludeRelativeDirectories @('.vscode') -ExcludeFileSuffixes @('.csproj','.slnx','.pdb.meta'))) { $errors.Add('PACKAGE_EVIDENCE_FINAL_TREE:' + $treeError) | Out-Null }
+            }
+            else { $errors.Add('PACKAGE_EVIDENCE_STAGING_TREE_MISSING') | Out-Null }
+            $stagingRepo = Join-Path $evidenceFull 'staging\repo'
+            if ((Test-Path -LiteralPath $stagingRepo -PathType Container) -and (Test-Path -LiteralPath $stagedCodeManifest -PathType Leaf)) {
+                foreach ($treeError in @(Test-C04ManifestAgainstRoot -Root $stagingRepo -ManifestPath $stagedCodeManifest -ExcludeDirectoryNames @('bin','obj','Library','Temp','Logs') -ExcludeRelativeDirectories @('unity'))) { $errors.Add('PACKAGE_EVIDENCE_CODE_TREE:' + $treeError) | Out-Null }
             }
             if (Test-Path -LiteralPath $evidenceClosure) {
                 if ((Get-C04Sha256 $evidenceClosure) -ne [string]$receipt.pluginClosureSha256) { $errors.Add('PACKAGE_EVIDENCE_CLOSURE_HASH') | Out-Null }
@@ -1523,34 +1598,42 @@ function Copy-C04TransitionSnapshot {
 }
 
 function Test-C04AdditiveYamlTransition {
-    param([string]$Before, [string]$After)
+    param([string]$Before, [string]$After, [string]$Mode)
     if (-not (Test-Path -LiteralPath $Before) -or -not (Test-Path -LiteralPath $After)) { return $false }
     $beforeLines = @(Get-Content -LiteralPath $Before -Encoding UTF8 | ForEach-Object { $_.TrimEnd() } | Where-Object { $_.Trim().Length -gt 0 })
     $afterLines = @(Get-Content -LiteralPath $After -Encoding UTF8 | ForEach-Object { $_.TrimEnd() } | Where-Object { $_.Trim().Length -gt 0 })
-    if ($beforeLines.Count -eq 0) { return $false }
-    if (-not $beforeLines[0].StartsWith('%YAML')) { return $false }
+    if ($beforeLines.Count -eq 0 -or -not $beforeLines[0].StartsWith('%YAML')) { return $false }
+    $beforeCounts = @{}
+    foreach ($line in $beforeLines) { $beforeCounts[$line] = 1 + [int]($beforeCounts[$line]) }
     $afterCounts = @{}
     foreach ($line in $afterLines) { $afterCounts[$line] = 1 + [int]($afterCounts[$line]) }
-    foreach ($line in $beforeLines) {
-        if ([int]$afterCounts[$line] -lt 1) { return $false }
-        $afterCounts[$line] = [int]$afterCounts[$line] - 1
+    foreach ($line in $beforeCounts.Keys) {
+        if ([int]$afterCounts[$line] -lt [int]$beforeCounts[$line]) { return $false }
+    }
+    if ($Mode -eq 'project') {
+        $cursor = 0
+        foreach ($line in $beforeLines) {
+            $found = -1
+            for ($i = $cursor; $i -lt $afterLines.Count; $i++) { if ($afterLines[$i] -eq $line) { $found = $i; break } }
+            if ($found -lt 0) { return $false }
+            $cursor = $found + 1
+        }
+    }
+    $allowedKeys = @()
+    if ($Mode -eq 'project') { $allowedKeys = @('additionalIl2CppArgs,androidAppCategoryOther,AndroidKeyaliasName,AndroidKeystoreName,aotOptions,appleDeveloperTeamID,bluetoothUsageDescription,cameraUsageDescription,cloudProjectId,hmiCpuConfiguration,hmiPlayerDataPath,iOSLaunchScreenCustomStoryboardPath,iOSLaunchScreeniPadCustomStoryboardPath,iOSManualSigningProvisioningProfileID,locationUsageDescription,m_CertPath,m_ModelFolderPath,m_Name,m_PortalFolderPath,m_SubKind,m_VersionName,metroCertificateIssuer,metroCertificatePassword,metroCertificatePath,metroCertificateSubject,metroFTAName,metroPackageVersion,metroProtocolName,metroTileShortName,microphoneUsageDescription,monoEnv,organizationId,projectName,ps4BackgroundImagePath,ps4BGMPath,ps4ExtraSceSysFile,ps4IconImagesFolder,ps4NPtitleDatPath,ps4NPTitleSecret,ps4NPTrophyPackPath,ps4ParamSfxPath,ps4PatchChangeinfoPath,ps4PatchLatestPkgPath,ps4PatchPkgPath,ps4PrivacyGuardImagePath,ps4PronunciationSIGPath,ps4PronunciationXMLPath,ps4RemotePlayKeyMappingDir,ps4SaveDataImagePath,ps4SdkOverride,ps4ShareFilePath,ps4ShareOverlayImagePath,ps4StartupImagePath,ps4StartupImagesFolder,qnxGraphicConfPath,spritePackerPolicy,switchAccessibleURLs,switchApplicationErrorCodeCategory,switchCompilerFlags,switchLegalInformation,switchLocalCommunicationIds_0,switchLocalCommunicationIds_1,switchLocalCommunicationIds_2,switchLocalCommunicationIds_3,switchLocalCommunicationIds_4,switchLocalCommunicationIds_5,switchLocalCommunicationIds_6,switchLocalCommunicationIds_7,switchManualHTML,switchNetLibKey,switchNMETAOverride,switchNSODependencies,switchPresenceGroupId,switchPublisherNames_0,switchPublisherNames_1,switchPublisherNames_2,switchPublisherNames_3,switchPublisherNames_4,switchPublisherNames_5,switchPublisherNames_6,switchPublisherNames_7,switchPublisherNames_8,switchPublisherNames_9,switchPublisherNames_10,switchPublisherNames_11,switchPublisherNames_12,switchPublisherNames_13,switchPublisherNames_14,switchPublisherNames_15,switchTitleNames_0,switchTitleNames_1,switchTitleNames_2,switchTitleNames_3,switchTitleNames_4,switchTitleNames_5,switchTitleNames_6,switchTitleNames_7,switchTitleNames_8,switchTitleNames_9,switchTitleNames_10,switchTitleNames_11,switchTitleNames_12,switchTitleNames_13,switchTitleNames_14,switchTitleNames_15,templatePackageId,tvOSManualSigningProvisioningProfileID,vcxProjDefaultLanguage,VisionOSManualSigningProvisioningProfileID,webGLEmscriptenArgs,webGLModulesDirectory,XboxOneAppManifestOverridePath,XboxOneContentId,XboxOneDescription,XboxOneGameOsOverridePath,XboxOneOverrideIdentityName,XboxOneOverrideIdentityPublisher,XboxOnePackagingOverridePath,XboxOneProductId,XboxOneSandboxId,XboxOneSCId,XboxOneTitleId,XboxOneUpdateKey'.Split(',')) }
+    elseif ($Mode -eq 'font') { $allowedKeys = @('m_LockedProperties','m_MipmapLimitGroupName','m_PlatformBlob','path','sourceFontFileName','sourceFontFileGUID','characterSequence','referencedFontAssetGUID','referencedTextAssetGUID','m_SourceFontFilePath','Name') }
+    else { return $false }
+    foreach ($line in $afterCounts.Keys) {
+        $extra = [int]$afterCounts[$line] - [int]($beforeCounts[$line])
+        if ($extra -le 0) { continue }
+        if ($line -notmatch '^\s*([A-Za-z0-9_]+):\s*$') { return $false }
+        $key = $Matches[1]
+        if ($allowedKeys -notcontains $key) { return $false }
+        $limit = if ($key -eq 'm_SubKind') { 18 } else { 1 }
+        if ($extra -gt $limit) { return $false }
     }
     return $true
 }
-
-function Test-C04GeneratedUnityFile {
-    param([string]$Relative, [string]$Path)
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
-    $text = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
-    if ($Relative -match '\.csproj$') { return ($text -match '<Project') -and ($text -match '<TargetFramework') }
-    if ($Relative -eq 'Mahjong.Unity.slnx') { return ($text.TrimStart().StartsWith('<?xml') -or $text -match '<Solution') }
-    if ($Relative -eq '.vscode/settings.json') { return ($text -match '"files\.exclude"') }
-    if ($Relative -eq '.vscode/launch.json') { return ($text -match '"configurations"') }
-    if ($Relative -eq '.vscode/extensions.json') { return ($text -match '"recommendations"') }
-    if ($Relative -match '\.pdb\.meta$') { return ($text -match 'fileFormatVersion:\s*2') -and ($text -match 'guid:\s*[0-9a-fA-F]{32}') }
-    return $false
-}
-
 function Split-C04StagingTransitions {
     param([string[]]$Errors, [string]$BeforeRoot, [string]$AfterRoot)
     $allowed = Get-C04TransitionAllowlist
@@ -1565,7 +1648,7 @@ function Split-C04StagingTransitions {
             $before = if ($BeforeRoot) { Join-Path $BeforeRoot ($path.Replace('/', '\')) } else { '' }
             $after = if ($AfterRoot) { Join-Path $AfterRoot ($path.Replace('/', '\')) } else { '' }
             if ($allowed.ContainsKey($path) -and $allowed[$path] -eq $action -and $BeforeRoot -and $AfterRoot) {
-                if ($action -eq 'changed') { $valid = Test-C04AdditiveYamlTransition -Before $before -After $after }
+                if ($action -eq 'changed') { $mode = if ($path -match 'ProjectSettings.asset$') { 'project' } elseif ($path -match 'SDF.asset$') { 'font' } else { 'other' }; $valid = Test-C04AdditiveYamlTransition -Before $before -After $after -Mode $mode }
                 elseif ($action -eq 'removed') { $valid = (Test-Path -LiteralPath $before -PathType Leaf) -and -not (Test-Path -LiteralPath $after) }
             }
             if (-not $valid -and $kind -eq 'EXTRA' -and $AfterRoot -and (Test-C04GeneratedUnityFile -Relative $path -Path $after)) { $valid = $true }
@@ -1736,6 +1819,7 @@ function Invoke-C04Verifier {
     $status = if ($result.timedOut) { 'TIMEOUT' }
         elseif ($result.cancelled) { 'CANCELLED' }
         elseif (-not $result.exitCodeKnown) { 'UNKNOWN' }
+        elseif ($result.targetStartFailed) { 'TARGET_START_FAILED' }
         elseif (-not $result.drainComplete) { 'DRAIN_INCOMPLETE' }
         elseif ($result.ownedProcessesRemaining -ne 0 -or $result.cleanupFailed) { 'OWNED_WRITER_REMAINS' }
         elseif ([int]$result.exitCode -eq 0) { 'PASS' }
@@ -1786,6 +1870,7 @@ function Invoke-C04SharedBuild {
     if ($result.timedOut) { throw "C04FAIL:SHARED_BUILD_TIMEOUT:shared build timed out after $SharedBuildTimeoutSeconds seconds" }
     if ($result.cancelled) { throw 'C04FAIL:CANCELLED:shared build cancelled' }
     if (-not $result.exitCodeKnown) { throw 'C04FAIL:UNKNOWN_EXIT:shared build native result unknown' }
+    if ($result.targetStartFailed) { throw 'C04FAIL:TARGET_START_FAILED:result target did not start or produce a native result' }
     if (-not $result.drainComplete) { throw 'C04FAIL:DRAIN_INCOMPLETE:shared build output was not drained' }
     if ($result.ownedProcessesRemaining -ne 0 -or $result.cleanupFailed) { throw 'C04FAIL:OWNED_WRITER_REMAINS:shared build left an owned writer' }
     if ([int]$result.exitCode -ne 0) { throw "C04FAIL:SHARED_BUILD:shared build exited $($result.exitCode)" }
@@ -1796,6 +1881,7 @@ function Invoke-C04SharedBuild {
     if ($guard.timedOut) { throw "C04FAIL:SHARED_GUARD_TIMEOUT:shared plugin guard timed out after $SharedBuildTimeoutSeconds seconds" }
     if ($guard.cancelled) { throw 'C04FAIL:CANCELLED:shared plugin guard cancelled' }
     if (-not $guard.exitCodeKnown) { throw 'C04FAIL:UNKNOWN_EXIT:shared plugin guard native result unknown' }
+    if ($guard.targetStartFailed) { throw 'C04FAIL:TARGET_START_FAILED:guard target did not start or produce a native result' }
     if (-not $guard.drainComplete) { throw 'C04FAIL:DRAIN_INCOMPLETE:shared plugin guard output was not drained' }
     if ($guard.ownedProcessesRemaining -ne 0 -or $guard.cleanupFailed) { throw 'C04FAIL:OWNED_WRITER_REMAINS:shared plugin guard left an owned writer' }
     if ([int]$guard.exitCode -ne 0) { throw "C04FAIL:SHARED_GUARD:shared plugin guard exited $($guard.exitCode)" }
@@ -1850,6 +1936,7 @@ function Invoke-C04UnityWarmup {
     if ($result.timedOut) { throw "C04FAIL:UNITY_WARMUP_TIMEOUT:Unity import warmup timed out after $UnityImportTimeoutSeconds seconds" }
     if ($result.cancelled) { throw 'C04FAIL:CANCELLED:Unity import warmup cancelled' }
     if (-not $result.exitCodeKnown) { throw 'C04FAIL:UNKNOWN_EXIT:Unity import warmup native result unknown' }
+    if ($result.targetStartFailed) { throw 'C04FAIL:TARGET_START_FAILED:result target did not start or produce a native result' }
     if (-not $result.drainComplete) { throw 'C04FAIL:DRAIN_INCOMPLETE:Unity import warmup output was not drained' }
     if ($result.ownedProcessesRemaining -ne 0 -or $result.cleanupFailed) { throw 'C04FAIL:OWNED_WRITER_REMAINS:Unity import warmup left an owned writer' }
     if ([int]$result.exitCode -ne 0) { throw "C04FAIL:UNITY_WARMUP:Unity import warmup exited $($result.exitCode)" }
@@ -1881,6 +1968,7 @@ function Invoke-C04UnityBuild {
     if ($result.timedOut) { throw "C04FAIL:UNITY_BUILD_TIMEOUT:Unity build timed out after $UnityBuildTimeoutSeconds seconds" }
     if ($result.cancelled) { throw 'C04FAIL:CANCELLED:Unity build cancelled' }
     if (-not $result.exitCodeKnown) { throw 'C04FAIL:UNKNOWN_EXIT:Unity build native result unknown' }
+    if ($result.targetStartFailed) { throw 'C04FAIL:TARGET_START_FAILED:result target did not start or produce a native result' }
     if (-not $result.drainComplete) { throw 'C04FAIL:DRAIN_INCOMPLETE:Unity build output was not drained' }
     if ($result.ownedProcessesRemaining -ne 0 -or $result.cleanupFailed) { throw 'C04FAIL:OWNED_WRITER_REMAINS:Unity build left an owned writer' }
     $reportCheck = Test-C04BuildReport -Path $ReportPath -ExpectedOutput $PlayerPath -ExpectedPluginFiles @($PluginClosure.files)
@@ -1922,6 +2010,7 @@ function Invoke-C04CaseRun {
     $controlCode = ''
     if ($process.timedOut) { $errors.Add('PLAYER_TIMEOUT') | Out-Null; $controlCode = 'PLAYER_TIMEOUT' }
     elseif ($process.cancelled) { $errors.Add('PLAYER_CANCELLED') | Out-Null; $controlCode = 'PLAYER_CANCELLED' }
+    elseif ($process.targetStartFailed) { $errors.Add('PLAYER_TARGET_START_FAILED') | Out-Null; $controlCode = 'PLAYER_TARGET_START_FAILED' }
     elseif (-not $process.exitCodeKnown) { $errors.Add('PLAYER_UNKNOWN_EXIT') | Out-Null; $controlCode = 'PLAYER_UNKNOWN_EXIT' }
     elseif (-not $process.drainComplete) { $errors.Add('PLAYER_DRAIN_INCOMPLETE') | Out-Null; $controlCode = 'PLAYER_DRAIN_INCOMPLETE' }
     elseif ($process.ownedProcessesRemaining -ne 0 -or $process.cleanupFailed) { $errors.Add('PLAYER_OWNED_WRITER_REMAINS') | Out-Null; $controlCode = 'PLAYER_OWNED_WRITER_REMAINS' }
@@ -1937,6 +2026,7 @@ function Invoke-C04CaseRun {
             if ($verifierResult.status -eq 'TIMEOUT') { $controlCode = 'VERIFIER_TIMEOUT' }
             elseif ($verifierResult.status -eq 'CANCELLED') { $controlCode = 'VERIFIER_CANCELLED' }
             elseif ($verifierResult.status -eq 'UNKNOWN') { $controlCode = 'VERIFIER_UNKNOWN_EXIT' }
+            elseif ($verifierResult.status -eq 'TARGET_START_FAILED') { $controlCode = 'VERIFIER_TARGET_START_FAILED' }
             elseif ($verifierResult.status -eq 'DRAIN_INCOMPLETE') { $controlCode = 'VERIFIER_DRAIN_INCOMPLETE' }
             elseif ($verifierResult.status -eq 'OWNED_WRITER_REMAINS') { $controlCode = 'VERIFIER_OWNED_WRITER_REMAINS' }
         }
@@ -2149,17 +2239,17 @@ try {
         $reportFull = Join-Path $packageRoot 'c04-build-report.json'
         $unityLog = Join-Path $stagingRoot 'logs\unity-player-build.log'
         $warmupLog = Join-Path $stagingRoot 'logs\unity-import-warmup.log'
-        $preWarmupRows = Get-C04FileTable -Root $stagingProject -ExcludeDirectoryNames @('Library', 'Temp', 'Logs', 'obj', 'UserSettings')
+        $preWarmupRows = Get-C04FileTable -Root $stagingProject -ExcludeDirectoryNames @('Library', 'Temp', 'Logs', 'obj', 'UserSettings') -ExcludeRelativeDirectories @('.vscode') -ExcludeFileSuffixes @('.csproj', '.slnx', '.pdb.meta')
         $preWarmupManifest = Write-C04ManifestFile -Path (Join-Path $stagingRoot 'staged-project-pre-warmup.csv') -Rows $preWarmupRows -Kind 'pre-warmup'
         $preWarmupSnapshot = Join-Path $stagingRoot 'transitions-pre-warmup'
         Copy-C04TransitionSnapshot -Root $stagingProject -SnapshotRoot $preWarmupSnapshot
         $stagedCodeRows = Get-C04FileTable -Root $stagingRepo.repo -ExcludeDirectoryNames @('bin', 'obj', 'Library', 'Temp', 'Logs') -ExcludeRelativeDirectories @('unity')
         $stagedCodeManifest = Write-C04ManifestFile -Path (Join-Path $stagingRoot 'staged-code-manifest.csv') -Rows $stagedCodeRows -Kind 'staged-code'
         $warmup = Invoke-C04UnityWarmup -StagingProject $stagingProject -UnityLogPath $warmupLog
-        $warmupErrors = @(Test-C04ManifestAgainstRoot -Root $stagingProject -ManifestPath $preWarmupManifest.path -ExcludeDirectoryNames @('Library', 'Temp', 'Logs', 'obj', 'UserSettings'))
+        $warmupErrors = @(Test-C04ManifestAgainstRoot -Root $stagingProject -ManifestPath $preWarmupManifest.path -ExcludeDirectoryNames @('Library', 'Temp', 'Logs', 'obj', 'UserSettings') -ExcludeRelativeDirectories @('.vscode') -ExcludeFileSuffixes @('.csproj', '.slnx', '.pdb.meta'))
         $warmupDiff = Split-C04StagingTransitions -Errors $warmupErrors -BeforeRoot $preWarmupSnapshot -AfterRoot $stagingProject
         if ($warmupDiff.fatal.Count -gt 0) { throw ('C04FAIL:STAGING_CHANGED_DURING_WARMUP:' + ($warmupDiff.fatal -join ',')) }
-        $stagedInputRows = Get-C04FileTable -Root $stagingProject -ExcludeDirectoryNames @('Library', 'Temp', 'Logs', 'obj', 'UserSettings')
+        $stagedInputRows = Get-C04FileTable -Root $stagingProject -ExcludeDirectoryNames @('Library', 'Temp', 'Logs', 'obj', 'UserSettings') -ExcludeRelativeDirectories @('.vscode') -ExcludeFileSuffixes @('.csproj', '.slnx', '.pdb.meta')
         $stagedInputManifest = Write-C04ManifestFile -Path (Join-Path $stagingRoot 'staged-project-input-manifest.csv') -Rows $stagedInputRows -Kind 'c04-staged-project-input'
         $preBuildSnapshot = Join-Path $stagingRoot 'transitions-pre-build'
         Copy-C04TransitionSnapshot -Root $stagingProject -SnapshotRoot $preBuildSnapshot
@@ -2172,7 +2262,7 @@ try {
             }
         }
 
-        $stagingErrors = @(Test-C04ManifestAgainstRoot -Root $stagingProject -ManifestPath $stagedInputManifest.path -ExcludeDirectoryNames @('Library', 'Temp', 'Logs', 'obj', 'UserSettings'))
+        $stagingErrors = @(Test-C04ManifestAgainstRoot -Root $stagingProject -ManifestPath $stagedInputManifest.path -ExcludeDirectoryNames @('Library', 'Temp', 'Logs', 'obj', 'UserSettings') -ExcludeRelativeDirectories @('.vscode') -ExcludeFileSuffixes @('.csproj', '.slnx', '.pdb.meta'))
         $stagingDiff = Split-C04StagingTransitions -Errors $stagingErrors -BeforeRoot $preBuildSnapshot -AfterRoot $stagingProject
         if ($stagingDiff.transitions.Count -gt 0 -or $stagingDiff.fatal.Count -gt 0) {
             Write-C04Json -Path (Join-Path $stagingRoot 'staging-workspace-diff.json') -Object ([ordered]@{ transitions = @($stagingDiff.transitions); fatal = @($stagingDiff.fatal) })
@@ -2181,7 +2271,7 @@ try {
             throw ('C04FAIL:STAGING_CHANGED_DURING_BUILD:' + ($stagingDiff.fatal -join ','))
         }
 
-        $finalRows = Get-C04FileTable -Root $stagingProject -ExcludeDirectoryNames @('Library', 'Temp', 'Logs', 'obj', 'UserSettings')
+        $finalRows = Get-C04FileTable -Root $stagingProject -ExcludeDirectoryNames @('Library', 'Temp', 'Logs', 'obj', 'UserSettings') -ExcludeRelativeDirectories @('.vscode') -ExcludeFileSuffixes @('.csproj', '.slnx', '.pdb.meta')
         $finalManifest = Write-C04ManifestFile -Path (Join-Path $stagingRoot 'staged-project-final-manifest.csv') -Rows $finalRows -Kind 'staged-final'
         $codeErrors = @(Test-C04ManifestAgainstRoot -Root $stagingRepo.repo -ManifestPath $stagedCodeManifest.path -ExcludeDirectoryNames @('bin', 'obj', 'Library', 'Temp', 'Logs') -ExcludeRelativeDirectories @('unity'))
         if ($codeErrors.Count -gt 0) { throw ('C04FAIL:STAGED_CODE_CHANGED:' + ($codeErrors -join ',')) }
