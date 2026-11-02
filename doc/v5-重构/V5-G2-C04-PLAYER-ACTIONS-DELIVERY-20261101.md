@@ -1,6 +1,45 @@
 # V5 G2-C04-D03 Player 动作确认返修交付（2026-11-02）
 
-## 冻结候选与结论
+## 新任务接续与最终候选执行（2026-11-02）
+
+本节接续原 `thread_20261101_152052_d8c3` 的 R5 复核；原任务因 `no rollout found` 保留为 failed 历史。本次按用户明确授权在新接续任务中继续，不调用桥接恢复/批准流程，也不删除或改写原失败与历史报告。原已知缺陷全集仍是 D03-R1-02 BLOCKER、D03-R1-03 MAJOR、D03-R1-04 MAJOR，0 新组；R1-01、R1-02 已关闭 API/PlayMode 编译子项、R1-04 严格 marker 数字类型子项保持关闭。
+
+- **源码候选**：代码提交 `5bae914f4b26efba3b90446c865d62191cf055c4`（父 `f824b33acaf50d9a5c00ce82e57073f62cbe955d`）；唯一变更为 verifier、Unity producer、.NET raw fixture、runner 与工具测试。报告 docs-only 提交独立记录在本文件之后；源码 SHA 不包括报告提交。工作树最终 tracked clean，无生成物入库。
+- **最终同候选命令**：`powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File tools/unity/run-p45-c04-player-actions.ps1 -RunRoot build/eb5c0fd0c1b2492f942a7ccdf5561d37 -ExpectedCandidate 5bae914f4b26efba3b90446c865d62191cf055c4 -NugetSeedRoot E:/majiang-review/caller-c04-d03-r4-8c2e719a/build/caller-review/shared-seeded-packages -NugetSeedAuditPath E:/majiang-review/caller-c04-d03-r4-8c2e719a/build/caller-review/nuget-seed-audit.json`。seed 审计文件 SHA-256 为 `A8C89C218F306D028B5B0A76C6EF24C32AD203A7A5FF7F987A622090098F588D`，28 包逐项复制校验；E 盘阶段开始时剩余 218,672,775,168 bytes。
+- **本次最终状态**：runner native exit 1，失败在 Unity import warmup。LocalHost build、138 项测试、TableRuntime 483 项测试、verifier build/selftest、四个 raw positive、9 个既有 raw negative、R5 的 12 个 raw negative 与一个缺 source negative、独立 acceptance-counter 正例、shared plugin build/provenance/copy guard 均已完成。Unity warmup native exit 198，编辑器日志为 `No valid Unity Editor license found. Please activate your license.`，同时 LicensingClient 报告没有 entitlement groups/free entitlements。该环境门禁发生在 PlayMode 前；四项 PlayMode、fresh Player package、Pon/Chi/Riichi/ClosedKan GAME 全部 `NOT_RUN`。不得把此任务专项写成 C04/G2 正式通过。
+
+### D03-R1-02 — BLOCKER：最终 Player 与四个 GAME 未能执行
+
+- **位置**：`tools/unity/run-p45-c04-player-actions.ps1` 的 mutex/warmup/PlayMode/Player/GAME 阶段；`C04PlayerActionBuild.cs`、`C04PlayerActionProbe.cs`。
+- **复现命令**：见上方最终同候选命令；fresh root 为 `build/eb5c0fd0c1b2492f942a7ccdf5561d37`。
+- **实际 vs 期望**：共享 mutex 0.014s 获取；fresh source archive、LocalHost build/tests、TableRuntime tests、raw verifier 矩阵、shared plugin build 和 provenance/copy guard 均 native 0。Unity warmup 进程正常退出但 native 198，Unity 明确报告无有效 Editor license。PlayMode 0/4（未运行）、Player build 未运行、四 GAME 均 `NOT_RUN`。期望为精确 4/4 PlayMode、同包 fresh Windows Player、每个动作经 Player→真实命令链→Applied receipt/匹配可见事件/同 publication 后态/136 实体效果并被最终 helper 接受；本候选未满足。
+- **证据与封存**：`build/eb5c0fd0c1b2492f942a7ccdf5561d37/logs/unity-package-import-warmup.unity.log` SHA-256 `74102C8CD5DEB9B4B4EFF5DDBDB2870CB7D912AA77B32C3465B9B4FB1E233201`；warmup stdout SHA `C1C785C30AA3A48A4032BE3A922F520B7BABE4C2AA9B40557497342D963BD19D`；runner log SHA `A49656C304F1C10247B7465678C3FD7D9B3AD35CB690C15BF868138820CBB19`。Unity native code/exit=198 见 `summary.json`/`failure.json` 的 command record。失败 manifest 有 3014 项，逐项核验 missing/mismatch=0；`manifest.json` SHA `22ECB220D1546E69815BA8605357F27EBD496B4FD9246664D2BCE128785925DC`，`manifest.sha256` 文件 SHA `AF287C9804F1534ACE5EDAD8BA2344F54594094FE5F30D1194A3E8C822897628`，封存记录与 manifest SHA 相同。summary SHA `E9654EBCFAE3F459191662DEABFC90A4BDC1278ECDB90CA50AEB17B52430E48B`，failure SHA `A7F0BE73A91B53745A14519149AF650C7835F244F997C7D88C5D453072FC97C9`。
+- **修复映射与验收断言**：runner 已改为默认最多等待 mutex 600 秒、每不超过 30 秒记录心跳，接受取消文件并以失败状态封存；不绕锁、不杀其他进程。工具夹具对 runner 实际执行的 1 秒锁超时和取消分别验证非零退出、`failure.json`+`summary.json`+`manifest.sha256`、hash 一致和四 GAME `NOT_RUN`。本次真机/Player 验收仍因 Unity license 无法执行，环境许可恢复后由父代理复核决定后续动作。
+
+### D03-R1-03 — MAJOR：完整实体集合与 raw accepted publication 契约
+
+- **位置**：`dotnet/tools/C04PlayerActionVerifier/Program.cs` 的 `VerifyPlayerView`/`VerifyRawBindingAndAcceptedEvent`；`unity/Mahjong.Unity/Assets/Scripts/App/C04PlayerActionProbe.cs` 的 `WriteActionEvidence`/raw batch encoder；`C04PlayerActionChannelTests.cs` 的工具 fixture producer；runner 的 verifier gate。
+- **复现命令**：本轮 final runner 命令自动生成 fresh TOOL_FIXTURE，执行 `dotnet exec <fresh-verifier> verify <fixture.json>` 以及 9 项旧 negative、R5 变体；独立轻量复验也见 `build/g2-c04-light/verifier-final-build.log`、`fixtures-v2/`、`mutations-v2/` 与 `mutations-final/`。
+- **实际 vs 期望**：Unity producer 显式写入 `EvidenceSource="GAME"`，producer/helper static audit `build/g2-c04-light/producer-schema-audit-final.json` SHA-256 `39427081E9F0E5D2212820E9C2F04218A0F0FAD8A8079502763711F2BF2102DE` 显示 61 个 helper 字面必需字段全部有声明、缺项 0；缺 source 输入被 fresh verifier 拒绝。真实 JsonUtility producer 正向序列化仍未能由 Unity 执行。验证器以 authority 136 实体位置重建 complete unique hand set，支持 drawn marker 指向 closed hand 中同一实体；核对四座 public HandCount 与 authority，public meld 不得重复/越权且 tile 数匹配类型，own meld 必须完整匹配 authority。raw binding 和 accepted batch 只接受已知 ProtocolRole=`Player`、batch kind=`Incremental`，显式处理 .NET numeric enum 与 Unity string enum；raw/flat role-kind 一致。raw accepted batch 必须携带真实 AcceptanceSequence 和 StreamVersion/ProjectionSeq；counter 独立于 cursor，不再要求两者相等。Unity GAME raw batch 编入同一 confirmed publication 的 StreamVersion 和 acceptance counter，Unity evidence 单行 JSON 保留原 authority/protobuf/receipt/event bytes。
+- **统一负例矩阵结果**：final `tool-verifier-matrix.json` SHA-256 `f70dc0b4dc377ec84347c98fb54adef5f533119ec7b1c0d372305232089f5dff`。fresh .NET positive 4/4 PASS；旧 raw negative 9/9 native 1；R5 raw negative 12/12 与缺 source 1/1 native 1；合法 counter!=cursor 模型 1/1 native 0。R5 文件覆盖 after/baseline hand omission/duplicate、public hand count 99、binding role、batch role/kind、GAME role schema、raw acceptance mismatch/missing、after stream mismatch；旧 malformed protobuf、相干 epoch、foreign scope/room、hash、claimed tile 负例保持拒绝。矩阵和全部原始 stdout/stderr 均在最终 GUID root。
+- **修复映射与验收断言**：GAME source 由 producer 自身输出；不放宽 helper，不把 TOOL_FIXTURE 冒充 GAME。R1-03 的 helper 负例和正例全部通过；真实 Unity producer 序列化正例、四个 Player GAME 仍须暖机/运行后实证，因此本组总体暂不关闭。
+
+### D03-R1-04 — MAJOR：稳定封存已验证，最终 Player package closure 未到达
+
+- **位置**：`tools/unity/run-p45-c04-player-actions.ps1` 的 wait/cancel、source/NuGet/shared/Unity closure、failure/summary/manifest seal；交付报告候选身份区。
+- **复现命令**：`powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/tests/C04PlayerActions.Tests.ps1`；最终同候选 runner 命令。
+- **实际 vs 期望**：工具 suite native 0，2 positive / 61 negative（`build/g2-c04-light/C04PlayerActions.Tests-final.log` SHA-256 `3fc8b08dc9f9a19e766888b87823bd37784b19f40e047ae213f563a1356e93dc`）；1秒 mutex timeout 与预置取消文件均被 runner 自身以非零退出封存，timeout root `build/9e99520fa1ab49888e3002c6e08100db`、cancel root `build/116da93f16664fac8d6e2d871ce64257`，summary/failure/manifest SHA 全匹配且后续阶段 NOT_RUN。timeout failure/summary/manifest SHA 分别为 `67576135d9c0e26dc9331fa9be8c471d3c8e97c9395d7fbc077170c8f9546505`、`996fc8dbe3d5e6e6e13a51582bb0009bdcace834f0f5ee8be2a432ac3bb1823b`、`bb5c7706155083e006cfbc12278ac9d8d85b5bb0e89fb7a409cfffb59abea863`；cancel failure/summary/manifest SHA 分别为 `5ab86fffe7856f072c3df10e9f9cf1de5bf0aa3e20a4f8076e39ccd40f70c220`、同上 summary SHA、`ee44dd8ef8bb0f271d775dd5a5ca6d34f1efa9e541c4b5178e56966cf1cf1a80`。最终 root 的 source-prebuild closure SHA `f3825982c28a6ce06b7da25abe1fbf89ba62cc191f5c283b1160779cfd580d3d`、NuGet seed copy audit SHA `cf91b498e42be023f5b1ec238c695f2dc90b7ffa71222208ce35bad2a842ed47`、shared plugin closure SHA `1ecef2449b58c0aca832ca12ec218adedf943927099c7b2adc744ff7498694f3` 均纳入稳定 manifest；最终 summary/failure/manifest 完整封存且无活动 runner writer。Unity warmup 未获 license，故 resolved-package warmup 后输入 closure、pre/post build、Player package manifest 均未生成，不能宣称同包闭环成功。
+- **早期夹具失败保留**：本轮第一次 mutex negative 夹具因 PowerShell Start-Process 参数路径缺失失败，roots `87faba6f1cf24e00ad316766b2dcd65d`、`7d8f22b161f2468689a3270886e70463`、`7b48b8bc433349c09e1ceb46f63aea8b`、`cf66d454b19b4c59b4487bd5a8bdedd8` 原样保留；根因是夹具传入当前脚本路径变量为空。修复后正式 timeout/cancel 根和最后一次工具 suite 均通过；不把早期夹具失败改写为成功。
+- **修复映射与验收断言**：稳定 source/package/shared 输入闭包及失败封存都已在本候选验证；任何非零退出均在本任务 writer 退出后封存。仍需同一 source SHA 的 Unity package resolved/pre-post closure、真实 Windows Player 完整文件 hash 与四案同包证据。marker 数值类型仍按已关闭项保持严格；没有改写旧失败产物。
+
+### 最终同包门禁计数、当前矩阵与边界
+
+- `dotnet build dotnet/tests/Mahjong.LocalHost.Tests/Mahjong.LocalHost.Tests.csproj -c Release --artifacts-path <fresh-E-root>` native 0；LocalHost xUnit 138/138 pass、0 fail/skip；TableRuntime 483/483 pass、0 fail/skip。XML SHA 分别为 `A62A3ECEE6DCC25A126AFECD834A7157FEC0EA261271CD574B05B29E49B3125F` 和 `2FA983C2AF9319F57678E270DFFC684169331BE0659AE1398332C1BA0F33BB2F`。
+- fresh verifier build/selftest native 0；4个 TOOL fixture positive、9旧 raw negative、13 R5 negative 和独立 counter positive 通过预期。`tool-verifier-matrix.json` SHA-256 `f70dc0b4dc377ec84347c98fb54adef5f533119ec7b1c0d372305232089f5dff`；C04工具套件 native 0，2正/61负。
+- 四项 GAME：Pon `NOT_RUN`；Chi `NOT_RUN`；Riichi `NOT_RUN`；ClosedKan `NOT_RUN`。PlayMode 4 项 `NOT_RUN`，Windows Player package `NOT_RUN`；阻断为 Unity Editor license 失效，不是成功或测试 skip。
+- 最终 root `build/eb5c0fd0c1b2492f942a7ccdf5561d37` manifest 3014 条，长度/SHA 逐项核验 0 坏项；封存后无 writer。R1-03 代码/工具证据通过，但真实 GAME 契约未执行；R1-02 仍 BLOCKER，R1-03 与 R1-04 仍 MAJOR。未 push、PR/MR、approve、merge、deploy；V4 仍是唯一生产架构，G2–G5 未获批准。
+
+## 历史轮次报告快照（前序候选，不代表本次状态）
 
 - acceptedBase：`8fd7c6cb701dfbb41c28938de4186749bdd1d6c7`；本地分支基线：`734b3775fb7e658fcac33d3d6ce07cf195e96001`。
 - R4 独立审查代码：`91a8c7ce613f35a8bf28368d2ae441a73ab5cb67`。本轮最新代码候选：`ac841640`（后续仅报告提交不改变代码）。
