@@ -7,6 +7,8 @@ param(
     [int]$TimeoutSeconds = 1800,
     [string]$NugetSeedRoot,
     [string]$NugetSeedAuditPath,
+    [string]$ExpectedCandidate,
+    [switch]$PreflightOnly,
     [switch]$FixtureOnly
 )
 
@@ -897,6 +899,14 @@ Start-Sleep -Seconds 25
     exit 0
 }
 
+function Get-C04FailureClass([string]$message) {
+    if ($message -match 'NuGet|NU1301|SSL|package source|restore') { return 'ENV_NUGET' }
+    if ($message -match 'Unity|Player build|BuildReport|build marker|PlayMode') { return 'ENV_UNITY' }
+    if ($message -match 'acceptance sequence|receipt|visible event|snapshot|action evidence|summary') { return 'EVIDENCE' }
+    if ($message -match 'LocalHost|TableRuntime|verifier|shared plugin') { return 'PRODUCT' }
+    return 'UNKNOWN'
+}
+
 try {
     $mutexName = 'Local\MahjongV5P45UnityValidation'
     $script:mutex = New-Object System.Threading.Mutex($false, $mutexName)
@@ -911,6 +921,13 @@ try {
 
     $gitHead = (& git -C $repo rev-parse HEAD 2>&1 | Out-String).Trim()
     if ($LASTEXITCODE -ne 0 -or $gitHead -notmatch '^[0-9a-f]{40}$') { throw 'Unable to resolve frozen candidate HEAD.' }
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedCandidate)) {
+        $expectedHead = $ExpectedCandidate.Trim().ToLowerInvariant()
+        if ($expectedHead -notmatch '^[0-9a-f]{40}$') { throw 'ExpectedCandidate must be a 40-character lowercase or uppercase SHA-1.' }
+        if ($gitHead -ne $expectedHead) {
+            throw "Frozen candidate mismatch: expected $expectedHead but repository HEAD is $gitHead. Refusing to mix evidence across candidates."
+        }
+    }
     $gitStatusLines = @(& git -C $repo status --short 2>&1)
     if ($LASTEXITCODE -ne 0) { throw 'git status failed before source staging.' }
     $gitStatus = ($gitStatusLines -join "`n").Trim()
@@ -953,6 +970,26 @@ EditorUserSettings:
     [IO.File]::WriteAllText($userSettings, $isolatedImportSettings + "`n", (New-Object Text.UTF8Encoding($false)))
     $isolatedImportSettingsSha = Get-Sha256 $userSettings
     [IO.File]::WriteAllText((Join-Path $RunRoot 'unity-generated-inputs.json'), (([ordered]@{ path='unity/Mahjong.Unity/UserSettings/EditorUserSettings.asset'; purpose='per-run project-scoped setting in the byte-verified frozen repository copy; does not change machine preferences'; sha256=$isolatedImportSettingsSha; bytes=(Get-Item -LiteralPath $userSettings).Length } | ConvertTo-Json -Depth 4) + "`n"), (New-Object Text.UTF8Encoding($false)))
+
+    # Force every restore in the staged frozen repository to the verified seed cache.
+    # nuget.org is deliberately removed: an SSL/network failure must classify as an
+    # environment failure before any Unity/Player stage starts, never as a product red.
+    $nugetConfigPath = Join-Path $sourceRepo 'NuGet.config'
+    $nugetConfigText = @"
+<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <packageSources>
+    <clear />
+    <add key="c04-seed" value="$nugetRoot" />
+  </packageSources>
+  <config>
+    <add key="globalPackagesFolder" value="$nugetRoot" />
+    <add key="auditMode" value="direct" />
+  </config>
+</configuration>
+"@
+    [IO.File]::WriteAllText($nugetConfigPath, $nugetConfigText + "`n", (New-Object Text.UTF8Encoding($false)))
+    if (-not (Test-Path -LiteralPath $nugetConfigPath -PathType Leaf)) { throw 'Failed to write the offline NuGet.config into the staged repository.' }
 
     $dotnetResults = Join-Path $RunRoot 'dotnet-results'
     $dotnetArtifacts = Join-Path $RunRoot 'dotnet-artifacts'
@@ -1098,6 +1135,63 @@ EditorUserSettings:
     [IO.File]::WriteAllText($upmVolatilityPath,(($upmCacheVolatility | ConvertTo-Json -Depth 5) + "`n"),(New-Object Text.UTF8Encoding($false)))
     $upmCacheClosureSha = Get-Sha256 $upmVolatilityPath
 
+    if ($PreflightOnly) {
+        $preflight = [ordered]@{
+            schemaVersion = 1
+            task = 'G2-C04-D03-PREFLIGHT'
+            status = 'PREFLIGHT_PASS'
+            acceptedBase = '8fd7c6cb701dfbb41c28938de4186749bdd1d6c7'
+            frozenCandidate = $gitHead
+            sourceTreeStatus = $gitStatus
+            sourceDiffCheck = 'PASS'
+            sourceClosureManifest = 'source-prebuild-closure.json'
+            sourceClosureManifestSha256 = $sourceClosureSha
+            stagedRepositoryRoot = $sourceRepo
+            nugetConfig = $nugetConfigPath
+            nugetConfigSha256 = (Get-Sha256 $nugetConfigPath)
+            nugetSeed = $nugetSeedRecord
+            unityProjectRoot = $project
+            unityShortPathStaging = 'unity-short-path-staging.json'
+            unityShortPathStagingSha256 = $shortPathProjectSha
+            generatedUnityInputs = 'unity-generated-inputs.json'
+            generatedUnityInputsSha256 = (Get-Sha256 (Join-Path $RunRoot 'unity-generated-inputs.json'))
+            unityResolvedPackageInputClosure = 'unity-resolved-package-input-closure.json'
+            unityResolvedPackageInputClosureSha256 = $resolvedPackageInputsSha
+            unityPrebuildInputClosureSha256 = $preBuildInputsSha
+            unityPostbuildInputClosureSha256 = $postBuildInputsSha
+            unityPostbuildInputChangesSha256 = (Get-Sha256 (Join-Path $RunRoot 'unity-postbuild-input-changes.json'))
+            upmDownloadCacheVolatilitySha256 = $upmCacheClosureSha
+            postBuildAssetsClosureSha256 = $postBuildClosureSha
+            sharedPluginClosureSha256 = $pluginClosureSha
+            sharedPluginProvenance = (Join-Path $project 'Library/SharedPluginProvenance/provenance.json')
+            sharedPluginProvenanceSha256 = $provenanceSha
+            scriptAssembliesClosureSha256 = $scriptAssembliesSha
+            localHostTests = $localHostTestEvidence
+            playMode = [ordered]@{ testCount=$testNodes.Count; passed=$testNodes.Count; failed=0; skipped=0; exactNames=$actualNames; xml=$playXml; xmlSha256=(Get-Sha256 $playXml) }
+            buildMarker = $buildMarker
+            buildMarkerSha256 = (Get-Sha256 $buildMarker)
+            playerPackageManifest = 'player-package.json'
+            playerPackageSha256 = (Get-Sha256 (Join-Path $RunRoot 'player-package.json'))
+            commands = $script:stageRecords
+            cases = @()
+            platforms = [ordered]@{ windowsPlayer='PREFLIGHT_ONLY'; android='NOT_RUN (C05 owner)'; ios='NOT_RUN'; remoteTransport='NOT_IN_SCOPE' }
+        }
+        $preflightPath = Join-Path $RunRoot 'preflight.json'
+        [IO.File]::WriteAllText($preflightPath, (($preflight | ConvertTo-Json -Depth 12) + "`n"), (New-Object Text.UTF8Encoding($false)))
+        $script:LogOpen = $false
+        $artifactFiles = Get-C04StableArtifactFiles $RunRoot
+        $artifacts = New-Object System.Collections.Generic.List[object]
+        foreach ($file in $artifactFiles) {
+            $artifacts.Add([ordered]@{ path=$file.FullName.Substring($RunRoot.Length).TrimStart('\','/').Replace('\','/'); bytes=[long]$file.Length; sha256=(Get-Sha256 $file.FullName) }) | Out-Null
+        }
+        $manifest = [ordered]@{ schemaVersion=1; task='G2-C04-D03-PREFLIGHT'; root=$RunRoot; entryCount=$artifacts.Count; separatedVolatileRoots=(Get-C04SeparatedVolatileRoots $RunRoot); entries=$artifacts }
+        $manifestPath = Join-Path $RunRoot 'manifest.json'
+        [IO.File]::WriteAllText($manifestPath, (($manifest | ConvertTo-Json -Depth 10) + "`n"), (New-Object Text.UTF8Encoding($false)))
+        [IO.File]::WriteAllText((Join-Path $RunRoot 'manifest.sha256'), ((Get-Sha256 $manifestPath) + "  manifest.json`n"), (New-Object Text.UTF8Encoding($false)))
+        Write-Host "C04_PREFLIGHT_PASS candidate=$gitHead manifest=$(Get-Sha256 $manifestPath) root=$RunRoot"
+        return
+    }
+
     $caseSpecs = @(
         @{ id='C04-G2-01'; action='pon'; event='PonDeclared' },
         @{ id='C04-G2-02'; action='chi'; event='ChiDeclared' },
@@ -1166,7 +1260,7 @@ catch {
             }
             $caseMatrix.Add([ordered]@{ caseId=$caseId; dotnet=$dotnetStatus; playMode='NOT_RUN'; windowsPlayer='NOT_RUN' }) | Out-Null
         }
-        $failure = [ordered]@{ status='FAIL'; task='G2-C04-D03'; acceptedBase='8fd7c6cb701dfbb41c28938de4186749bdd1d6c7'; frozenCandidate=$gitHead; error=$_.Exception.Message; fixedCaseMatrix=$caseMatrix; stageRecords=$script:stageRecords }
+        $failure = [ordered]@{ status='FAIL'; task='G2-C04-D03'; acceptedBase='8fd7c6cb701dfbb41c28938de4186749bdd1d6c7'; frozenCandidate=$gitHead; error=$_.Exception.Message; failureClass=(Get-C04FailureClass $_.Exception.Message); fixedCaseMatrix=$caseMatrix; stageRecords=$script:stageRecords }
         [IO.File]::WriteAllText($failurePath, (($failure | ConvertTo-Json -Depth 8) + "`n"), (New-Object Text.UTF8Encoding($false)))
     }
     $script:LogOpen = $false
