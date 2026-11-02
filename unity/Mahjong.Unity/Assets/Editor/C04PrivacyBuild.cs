@@ -50,12 +50,15 @@ public static class C04PrivacyBuild
         string playerSha = File.Exists(fullOutput) ? Sha256(fullOutput) : String.Empty;
         string[] pluginEntries = pluginNames.OrderBy(value => value, StringComparer.Ordinal)
             .Select(value => "\"" + Escape(value) + "\":\"" + Sha256(Path.Combine(pluginRoot, value)) + "\"").ToArray();
+        string errorMessagesJson = errorMessages.Length == 0
+            ? String.Empty
+            : "\"" + String.Join("\",\"", errorMessages.Select(Escape)) + "\"";
         string json = "{\"schemaVersion\":1,\"kind\":\"c04-privacy-player-build\",\"result\":\"" + summary.result +
             "\",\"errors\":" + summary.totalErrors + ",\"warnings\":" + summary.totalWarnings +
             ",\"target\":\"" + summary.platform + "\",\"output\":\"" + Escape(fullOutput) +
             "\",\"playerSha256\":\"" + playerSha + "\",\"bytes\":" + summary.totalSize +
             ",\"sourceHead\":\"" + Escape(sourceHead) + "\",\"buildCommit\":\"" + Escape(buildCommit) +
-            "\",\"errorMessages\":[\"" + String.Join("\",\"", errorMessages.Select(Escape)) + "\"],\"scenes\":[\"" + String.Join("\",\"", scenes.Select(Escape)) + "\"],\"plugins\":{" + String.Join(",", pluginEntries) + "}}";
+            "\",\"errorMessages\":[" + errorMessagesJson + "],\"scenes\":[\"" + String.Join("\",\"", scenes.Select(Escape)) + "\"],\"plugins\":{" + String.Join(",", pluginEntries) + "}}";
         File.WriteAllText(log, json, new UTF8Encoding(false));
         Debug.Log("C04_PRIVACY_BUILD: " + json);
         if (summary.result != BuildResult.Succeeded || summary.totalErrors != 0 || !File.Exists(fullOutput))
