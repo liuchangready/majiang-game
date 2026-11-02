@@ -41,13 +41,11 @@ namespace Mahjong.LocalHost.Tests
             await channel.OpenAsync(new TableChannelConnectRequest(ticket, "c04-player-action", null), timeout.Token);
             var session = new TableSession(channel, new InMemoryOutboxStore());
             Task pump = Task.CompletedTask;
-            var visibleEvents = new System.Collections.Concurrent.ConcurrentQueue<TableVisibleEventBatch>();
             var visiblePublications = new System.Collections.Concurrent.ConcurrentQueue<TableSnapshotChangedEventArgs>();
             EventHandler<TableSnapshotChangedEventArgs> snapshotHandler = (_, args) =>
             {
                 if (args.VisibleEventBatch.Kind == TableVisibleEventBatchKind.Incremental)
                 {
-                    visibleEvents.Enqueue(args.VisibleEventBatch);
                     visiblePublications.Enqueue(args);
                 }
             };
@@ -118,35 +116,29 @@ namespace Mahjong.LocalHost.Tests
                     Assert.Equal((uint)actionType,
                         typedPayload.RequireUInt32(CommandPayloadFields.ActionType, "actionType"));
 
-                    PlayerSnapshot after;
-                    try
+                    ulong targetVersion = receipt.Resolution.CommandVersion!.Value.Value;
+                    TableSnapshotChangedEventArgs? laterRiichiPublication = null;
+                    if (actionType == ProtocolActionType.DeclareRiichi)
                     {
-                        after = await WaitForVersionAsync(session, before.StateVersion, timeout.Token);
+                        // Reproduce the CI condition deterministically: the driver's later
+                        // legal command is already published before this test reads the
+                        // target. session.PlayerSnapshot is therefore beyond the action;
+                        // the target must still be selected by its exact receipt version
+                        // and event, never by the latest snapshot.
+                        laterRiichiPublication = await WaitForLaterPublicationAsync(
+                            visiblePublications, targetVersion, timeout.Token);
+                        Assert.True(laterRiichiPublication.PlayerSnapshot!.StateVersion > targetVersion);
+                        Assert.True((session.PlayerSnapshot?.StateVersion ?? 0UL) > targetVersion,
+                            "The fixed Riichi runtime must already have published a later legal command before target selection.");
                     }
-                    catch (OperationCanceledException)
-                    {
-                        var localRuntime = Assert.IsType<LocalTableChannel>(channel).RuntimeForMatch!;
-                        RoundStateMachine authorityRound = localRuntime.ActorForTest.GetRoundStateForHost();
-                        TableStreamFrame? lastStreamFrame = localRuntime.LastStreamFrameForTest;
-                        TableStreamTermination? termination = DebugTerminationSink.LastTermination;
-                        throw new InvalidOperationException(
-                            "Applied C04 action had no visible post-state: baseline=" + before.StateVersion +
-                            " receiptVersion=" + receipt.Resolution.CommandVersion.Value.Value +
-                            " receiptEventSeq=" + receipt.Resolution.EventSeq.Value.Value +
-                            " current=" + (session.PlayerSnapshot?.StateVersion.ToString() ?? "<none>") +
-                            " state=" + session.State + " lastError=" + (session.LastError ?? "<none>") +
-                            " visibleBatches=" + visibleEvents.Count +
-                            " authorityVersion=" + (await localRuntime.ActorForTest.GetSnapshotAsync(CancellationToken.None)).StateVersion.Value +
-                            " roundVersion=" + authorityRound.Version + " phase=" + authorityRound.Phase +
-                            " window=" + (authorityRound.Window == null ? "<none>" : authorityRound.Window.FromSeat.ToString()) +
-                            " driver=" + localRuntime.DriverForTest.DescribeDriverForTest() +
-                            " lastFrame=" + (lastStreamFrame == null ? "<none>" :
-                                lastStreamFrame.StateVersion.Value + "/" + lastStreamFrame.EventSeq.Value +
-                                "/" + lastStreamFrame.Cursor.StreamVersion.Value + ":" + lastStreamFrame.Cursor.ProjectionSeq.Value) +
-                            " termination=" + (termination?.ReasonCode ?? "<none>") + ":" +
-                                (termination?.Detail ?? string.Empty));
-                    }
+
+                    TableSnapshotChangedEventArgs acceptedPublication = await WaitForAppliedPublicationAsync(
+                        visiblePublications, targetVersion, before.RoundId, actionType, timeout.Token);
+                    PlayerSnapshot after = acceptedPublication.PlayerSnapshot
+                        ?? throw new InvalidOperationException("The matching incremental publication omitted its PlayerSnapshot.");
+                    TableVisibleEventBatch actionBatch = acceptedPublication.VisibleEventBatch;
                     Assert.Equal(before.RoundId, after.RoundId);
+                    Assert.Equal(targetVersion, after.StateVersion);
                     Assert.True(before.StateVersion + 1UL == after.StateVersion,
                         "The first real submitted command must advance the pre-seeded checkpoint exactly once.");
                     RoundStateMachine authoritativeRound = localChannel.RuntimeForMatch!.ActorForTest.GetRoundStateForHost();
@@ -154,14 +146,15 @@ namespace Mahjong.LocalHost.Tests
                     Assert.True(physicalAudit.IsValid, physicalAudit.ToString());
                     Assert.Equal(136, physicalAudit.AssignedCount);
                     Assert.Equal(0, physicalAudit.UnassignedCount);
-                    TableVisibleEventBatch actionBatch = await WaitForActionEventAsync(
-                        visibleEvents, receipt.Resolution.CommandVersion!.Value.Value, before.RoundId, actionType, timeout.Token);
-                    TableSnapshotChangedEventArgs acceptedPublication = visiblePublications.SingleOrDefault(value =>
-                        ReferenceEquals(value.VisibleEventBatch, actionBatch))
-                        ?? throw new InvalidOperationException("The matching incremental event batch has no retained TableSnapshotChangedEventArgs.");
-                    after = acceptedPublication.PlayerSnapshot
-                        ?? throw new InvalidOperationException("The matching incremental publication omitted its PlayerSnapshot.");
                     Assert.Equal(actionBatch.Cursor.ProjectionSeq.Value, after.Cursor.ProjectionSeq);
+                    Assert.Single(visiblePublications, value =>
+                        value.PlayerSnapshot != null &&
+                        value.PlayerSnapshot.StateVersion == targetVersion &&
+                        value.VisibleEventBatch.StateVersion == targetVersion &&
+                        value.VisibleEventBatch.Events.Any(actionEventValue =>
+                            actionEventValue.CommandVersion == targetVersion &&
+                            actionEventValue.Seat == 0 &&
+                            actionEventValue.Type == EventFor(actionType)));
                     TableVisibleEvent actionEvent = Assert.Single(actionBatch.Events, value =>
                         value.CommandVersion == receipt.Resolution.CommandVersion.Value.Value &&
                         value.Seat == 0 && value.Type == EventFor(actionType));
@@ -194,6 +187,18 @@ namespace Mahjong.LocalHost.Tests
                         acceptedCapture.AuthoritySaveBytes, requestId, receipt.Command.Key.ScopeId.Value,
                         before.RoundId, before.StateVersion, actionBatch.StateVersion, actionEvent.EventSeq + 1,
                         EventFor(actionType).ToString(), 0));
+                    Assert.Throws<InvalidOperationException>(() => LocalPlayerActionScenario.ReadCommittedActionPhysicalAudit(
+                        acceptedCapture.AuthoritySaveBytes, requestId, receipt.Command.Key.ScopeId.Value,
+                        before.RoundId + "-foreign", before.StateVersion, actionBatch.StateVersion, actionEvent.EventSeq,
+                        EventFor(actionType).ToString(), 0));
+                    Assert.Throws<InvalidOperationException>(() => LocalPlayerActionScenario.ReadCommittedActionPhysicalAudit(
+                        acceptedCapture.AuthoritySaveBytes, requestId, receipt.Command.Key.ScopeId.Value,
+                        before.RoundId, before.StateVersion, actionBatch.StateVersion, actionEvent.EventSeq,
+                        EventFor(actionType).ToString(), 1));
+                    Assert.Throws<InvalidOperationException>(() => LocalPlayerActionScenario.ReadCommittedActionPhysicalAudit(
+                        acceptedCapture.AuthoritySaveBytes, requestId, receipt.Command.Key.ScopeId.Value,
+                        before.RoundId, before.StateVersion, actionBatch.StateVersion, actionEvent.EventSeq,
+                        ProtocolEventType.TileDiscarded.ToString(), 0));
                     LocalSave tamperedSave = LocalSaveCodec.DecodeEnvelope(acceptedCapture.AuthoritySaveBytes);
                     LocalDurableOperation acceptedOperation = Assert.Single(tamperedSave.Operations, value =>
                         value.Journal?.CommandVersion.Value == actionBatch.StateVersion);
@@ -264,18 +269,25 @@ namespace Mahjong.LocalHost.Tests
                     }
                     if (actionType == ProtocolActionType.DeclareRiichi)
                     {
-                        ulong latestVersion = actionBatch.StateVersion;
-                        DateTime advanceDeadline = DateTime.UtcNow.AddSeconds(10);
-                        while (latestVersion <= actionBatch.StateVersion && DateTime.UtcNow < advanceDeadline)
-                        {
-                            latestVersion = (await localChannel.RuntimeForMatch!.ActorForTest
-                                .GetSnapshotAsync(timeout.Token)).StateVersion.Value;
-                            if (latestVersion <= actionBatch.StateVersion) await Task.Delay(25, timeout.Token);
-                        }
-                        Assert.True(latestVersion > actionBatch.StateVersion,
-                            "The deterministic Riichi runtime must commit a later autonomous command for the newer-envelope positive case.");
+                        TableSnapshotChangedEventArgs later = laterRiichiPublication
+                            ?? throw new InvalidOperationException("The Riichi later-publication regression was not established.");
+                        PlayerSnapshot latest = session.PlayerSnapshot
+                            ?? throw new InvalidOperationException("The Riichi later publication has no current PlayerSnapshot.");
+                        Assert.True(later.PlayerSnapshot!.StateVersion > actionBatch.StateVersion);
+                        Assert.True(latest.StateVersion > actionBatch.StateVersion);
+                        Assert.True(latest.StateVersion >= later.PlayerSnapshot.StateVersion);
+                        Assert.Equal(actionBatch.StateVersion, acceptedPublication.PlayerSnapshot!.StateVersion);
+                        TableSnapshotChangedEventArgs retainedTarget = Assert.Single(visiblePublications, value =>
+                            value.PlayerSnapshot != null &&
+                            value.PlayerSnapshot.StateVersion == actionBatch.StateVersion &&
+                            value.VisibleEventBatch.Events.Any(valueEvent =>
+                                valueEvent.CommandVersion == actionBatch.StateVersion &&
+                                valueEvent.Seat == 0 &&
+                                valueEvent.Type == EventFor(actionType)));
+                        Assert.Same(acceptedPublication, retainedTarget);
                         LocalTableRecoveryCapture laterCapture = await localChannel.RuntimeForMatch!.CaptureRecoveryAsync(timeout.Token);
                         Assert.True(ulong.Parse(laterCapture.Facts.StateVersion, System.Globalization.CultureInfo.InvariantCulture) > actionBatch.StateVersion);
+                        Assert.True(ulong.Parse(laterCapture.Facts.StateVersion, System.Globalization.CultureInfo.InvariantCulture) >= latest.StateVersion);
                         string retainedActionAudit = LocalPlayerActionScenario.ReadCommittedActionPhysicalAudit(
                             laterCapture.AuthoritySaveBytes,
                             requestId,
@@ -497,17 +509,89 @@ namespace Mahjong.LocalHost.Tests
             }
         }
 
-        private static async Task<PlayerSnapshot> WaitForVersionAsync(
-            TableSession session,
-            ulong afterVersion,
+        private static async Task<TableSnapshotChangedEventArgs> WaitForAppliedPublicationAsync(
+            System.Collections.Concurrent.ConcurrentQueue<TableSnapshotChangedEventArgs> publications,
+            ulong commandVersion,
+            string roundId,
+            ProtocolActionType actionType,
             CancellationToken cancellationToken)
         {
+            DateTime deadline = DateTime.UtcNow.AddSeconds(10);
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                if (session.State == TableConnectionState.Faulted) throw new InvalidOperationException("Local session faulted: " + session.LastError);
-                PlayerSnapshot? snapshot = session.PlayerSnapshot;
-                if (snapshot != null && snapshot.StateVersion > afterVersion) return snapshot;
+                foreach (TableSnapshotChangedEventArgs publication in publications)
+                {
+                    PlayerSnapshot? snapshot = publication.PlayerSnapshot;
+                    TableVisibleEventBatch batch = publication.VisibleEventBatch;
+                    if (snapshot != null &&
+                        snapshot.StateVersion == commandVersion &&
+                        string.Equals(snapshot.RoundId, roundId, StringComparison.Ordinal) &&
+                        batch.Kind == TableVisibleEventBatchKind.Incremental &&
+                        batch.StateVersion == commandVersion &&
+                        string.Equals(batch.RoundId, roundId, StringComparison.Ordinal) &&
+                        batch.Events.Any(value =>
+                            value.CommandVersion == commandVersion &&
+                            value.Seat == 0 &&
+                            value.Type == EventFor(actionType)))
+                    {
+                        return publication;
+                    }
+                }
+
+                if (DateTime.UtcNow >= deadline)
+                {
+                    string observed = string.Join(",", publications
+                        .Where(value => value.PlayerSnapshot != null)
+                        .Select(value => value.PlayerSnapshot!.StateVersion + "@" + value.VisibleEventBatch.StateVersion)
+                        .ToArray());
+                    throw new InvalidOperationException(
+                        "The exact Applied action publication was not observed within 10s: version=" +
+                        commandVersion + " round=" + roundId + " event=" + EventFor(actionType) +
+                        " observed=" + observed);
+                }
+
+                await Task.Delay(10, cancellationToken);
+            }
+        }
+
+        private static async Task<TableSnapshotChangedEventArgs> WaitForLaterPublicationAsync(
+            System.Collections.Concurrent.ConcurrentQueue<TableSnapshotChangedEventArgs> publications,
+            ulong afterVersion,
+            CancellationToken cancellationToken)
+        {
+            DateTime deadline = DateTime.UtcNow.AddSeconds(10);
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                foreach (TableSnapshotChangedEventArgs publication in publications)
+                {
+                    PlayerSnapshot? snapshot = publication.PlayerSnapshot;
+                    if (snapshot != null &&
+                        snapshot.StateVersion > afterVersion &&
+                        publication.VisibleEventBatch.Kind == TableVisibleEventBatchKind.Incremental)
+                    {
+                        return publication;
+                    }
+                }
+
+                if (DateTime.UtcNow >= deadline)
+                {
+                    ulong latest = 0;
+                    foreach (TableSnapshotChangedEventArgs publication in publications)
+                    {
+                        if (publication.PlayerSnapshot != null &&
+                            publication.PlayerSnapshot.StateVersion > latest)
+                        {
+                            latest = publication.PlayerSnapshot.StateVersion;
+                        }
+                    }
+
+                    throw new InvalidOperationException(
+                        "The fixed Riichi runtime did not publish a legal command after the target within 10s: target=" +
+                        afterVersion + " latestPublication=" + latest);
+                }
+
                 await Task.Delay(10, cancellationToken);
             }
         }
@@ -524,26 +608,6 @@ namespace Mahjong.LocalHost.Tests
                 PlayerSnapshot? snapshot = session.PlayerSnapshot;
                 if (snapshot != null && snapshot.StateVersion > afterVersion && snapshot.PrivateView.HasDrawnTileId)
                     return snapshot;
-                await Task.Delay(10, cancellationToken);
-            }
-        }
-
-        private static async Task<TableVisibleEventBatch> WaitForActionEventAsync(
-            System.Collections.Concurrent.ConcurrentQueue<TableVisibleEventBatch> batches,
-            ulong commandVersion,
-            string roundId,
-            ProtocolActionType actionType,
-            CancellationToken cancellationToken)
-        {
-            while (true)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                foreach (TableVisibleEventBatch batch in batches)
-                {
-                    if (batch.StateVersion == commandVersion && batch.RoundId == roundId &&
-                        batch.Events.Any(value => value.CommandVersion == commandVersion && value.Seat == 0 && value.Type == EventFor(actionType)))
-                        return batch;
-                }
                 await Task.Delay(10, cancellationToken);
             }
         }
