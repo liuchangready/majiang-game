@@ -267,3 +267,24 @@ D:/Unity/dotnet/dotnet.exe exec <verifier> make-mutations "$ROOT/action-fixtures
 封存后不再写已哈希产物；代码提交与报告提交分离，报告提交为 docs-only。
 
 调用方复核建议：先核对 `git log`/`git diff 957ad475..HEAD` 只含测试与本报告；再按 §6 命令复跑目标类与全 LocalHost；最后独立决定是否将本修复集成到 D05 最终候选，并保留其冻结基线不变。
+
+## 10. 调用方独立复核（2026-11-02）
+
+Codex 在本工作树对 `50278cfb6c944810ac4be7755fb51d546b60486b` 独立检查代码、真实通道时序及交付原件，接受本任务唯一缺陷组 **D-CI-01** 的修复。相对 `957ad475` 只有指定测试与本文档变更，严格 `before + 1`、同 publication 快照/事件、原 request/scope 的持久化 commit 绑定和 136 张守恒均保留；无 production、D05、runner/verifier 或平台范围修改。接收方封存清单的 29 项长度与 SHA-256（含外部 CI 失败原件）全部匹配；反事实 XML 保留 Riichi 原断言失败，不改写为成功。
+
+调用方使用 `D:/Unity/dotnet/dotnet.exe` 8.0.426、独占 NuGet/TEMP/CLI 目录和正常 bin 路径，实际执行 LocalHost `build -c Release -t:Rebuild --source <既有只读 seed> -nr:false`，并直接运行 fresh xUnit DLL（`-noLogo -automated -failSkips -result-xml <独占 XML>`；定向额外指定 `-class Mahjong.LocalHost.Tests.C04PlayerActionChannelTests`）。构建 native 0、零警告/错误；定向 **4/4**、全 LocalHost **147/147**、TableRuntime **483/483**，均 native 0、零 failed/skipped/not-run。四项真实 CrashWorker/ForceKilledProcess 用例均 Pass。
+
+调用方 fresh Rebuild C04PlayerActionVerifier 后，对本次 LocalHost 新生成的四份 `TOOL_FIXTURE_LOCALHOST_CHANNEL` 逐案 `verify` 均 native 0；`selftest` native 0；`make-mutations` 的 13 个负例均 native 1，既有 `counter-distinct-from-cursor-model` 正例 native 0。Riichi 原件为 baseline 0、receipt/目标/after 1、`RiichiDeclared` seq 1、receipt high-water 3、物理实体 136/136；用例实际先确认 later/latest > target，再选原目标 publication。
+
+调用方证据根：`build/reviewer-ci01-1e09d9c8f1d540e0958b04b20e71e034/`。命令/退出见 `*.args.json`、`*.exit` 与日志，构建命令亦见本节；结果见 `summary.json`、`verifier-results.json`，fresh DLL 身份见 `artifacts.json`。关键 XML SHA-256：
+
+| 原件 | SHA-256 |
+|---|---|
+| `target-final.xml` | `8C210F039B0308FB5BAAC1712C1708B356E3C4D72BF34A77063377EC7ADFA74A` |
+| `localhost.xml` | `36781C4F0E8DFA1A6C5999BA494583C93853DF5A3D55818FD491520E8B1B14B1` |
+| `tableruntime.xml` | `D64FDBE191E57C7EDFBC57B2330CE721614D0A5A3482C1EB8D958499CE1E8370` |
+| `manifest-sha256.txt` | `14216C4740A1A068EC377D5173450C7CE4BAF045CB423C10A67CF97B4D0EBB09` |
+
+调用方首次脚本文件调用受本机执行策略限制，未启动测试；随后 scriptblock 调用的第一次定向 XML 为 4/4，但包装器未获得 native exit，保留为 UNKNOWN。修正自有 Process handle 保留及非空 exit 检查后，以独立 `target-final` 原件重跑得到 native 0；未修改测试或断言，原记录保留。
+
+本结论仅接受测试侧 CI 缺陷修复；未新执行 Unity/Player/IL2CPP/设备/PG 或完整 G2 矩阵，不认证新 publication 的远端 CI，不修改 D05 冻结基线。发布沿用现有 Draft PR20 `feat/v5-post-g1-batch`，不另开子任务 PR、不合并 v5、不部署或修改 scheduler；V4 仍为生产架构，G2–G5 未批准。
