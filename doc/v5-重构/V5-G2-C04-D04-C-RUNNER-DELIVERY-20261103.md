@@ -119,15 +119,15 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/tests/C04PlayerChe
 ```
 
 - Runner：**51/51, native 0**；log
-  `build/r3-finaltests-0697a8c8b0fe4ac9b9189eea936109da/runner.log`，SHA
-  `01B7C54DD50024E710F5A4E3B2AF83A349D9C80F41B2E401E0DB3F70BA115B21`。
+  `build/r3-tests-462179db1fba4c6fb0da7a5799b85a3e/runner.log`，SHA
+  `0DB8A384AD6FF74C14330EEC98361047F743E305C35A3122BC33D508D5D8E965`。
 - Compatibility：**20/20, native 0**；log 同目录 `cheats.log`，SHA
   `15B40D45D430574A5D2B9F8057F4F3FD2F697C1E273E073DE77F88CB55FAB8F4`。
 - Review probes（新复制根，native0）：`peerSentinelAlive=true/ownedStopped=0`；
   `descendantTraversal=2/2`；`syntheticGate.ok=false`；`syntheticMain=exit2/FAIL`；
   `inputMutation.fatal非空/allowedCount=0`；`strictReport.ok=false`。
 
-真实 fresh build（commit `a0c10b14ae70c75869e8f782bbd7ee3f69c720ea`）：
+真实 fresh build（build code `a0c10b14ae70c75869e8f782bbd7ee3f69c720ea`; final receipt-binding commit `bb3a192bfb85d25952bd51171550734176aa0644`）：
 `build/r3-evidence-330dfc18ad104ab29d4746dabc0137e8/`；`summary.json` SHA
 `4BF739AF2396C90EA8A3B2BE26A3517AF2A8E0BD8A5AB51885884D009FB0A527`，`seal.json` SHA
 `C74FEC9CB4AE9133620F5D3788EEDC8DFD06D9575A033018D86594966FEB7A59`，BuildReport SHA
@@ -148,7 +148,7 @@ A/B 未实现、未运行 Player/PlayMode；全 D04 仍 0 BLOCKER / 3 原 MAJOR�
 
 ## 5. 提交与清洁
 
-- 代码/测试/报告提交：`a0c10b14ae70c75869e8f782bbd7ee3f69c720ea`（本报告随后 doc-only 更新，
+- 最终代码/测试提交：`bb3a192bfb85d25952bd51171550734176aa0644`；fresh build 证据来自 `a0c10b14…`（最终提交仅增加 receipt↔seal source manifest 关系检查，已由 51/51 测试覆盖，不重跑昂贵构建）。报告随后 doc-only 更新，
   HEAD 以 `git log -1` 为准）。
 - `git status --porcelain` clean；`git diff --check` exit 0。
 - 未 push/PR/merge/deploy/approve；未改共享生产源码/asmdef/机器许可。
