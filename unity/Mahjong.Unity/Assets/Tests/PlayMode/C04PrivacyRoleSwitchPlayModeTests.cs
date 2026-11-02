@@ -168,6 +168,9 @@ namespace Mahjong.Unity.Tests.PlayMode
             ITableChannel? seatOneChannel = null;
             RawCaptureChannel? seatZeroCapture = null;
             RawCaptureChannel? seatOneCapture = null;
+            using var pumpCts = new CancellationTokenSource(TimeSpan.FromSeconds(70));
+            Task? zeroPump = null;
+            Task? onePump = null;
             try
             {
                 ITableChannel rawZero = factory.CreateRoomViewerAsync(LocalRoomViewerRole.Player, 0, CancellationToken.None).GetAwaiter().GetResult();
@@ -176,10 +179,13 @@ namespace Mahjong.Unity.Tests.PlayMode
                 var zeroTicket = rawZero as ILocalTableTicketSource;
                 Assert.IsNotNull(zeroTicket);
                 seatZero = new TableSession(seatZeroCapture, new InMemoryOutboxStore());
-                Task zeroOpen = seatZero.OpenAsync(new TableSessionOpenRequest(zeroTicket!.SessionTicket, LocalTableChannelFactory.ClientBuild), CancellationToken.None);
+                Task zeroOpen = seatZero.OpenAsync(new TableSessionOpenRequest(zeroTicket!.SessionTicket, LocalTableChannelFactory.ClientBuild), pumpCts.Token);
                 yield return WaitTask(() => zeroOpen.IsCompleted, 30f, "delayed seat zero open");
                 Assert.IsFalse(zeroOpen.IsFaulted, zeroOpen.Exception?.ToString());
-                yield return PumpUntilReady(seatZero, 30f, "delayed seat zero baseline");
+                zeroPump = PumpLoopAsync(seatZero, pumpCts.Token);
+                Task zeroReady = WaitReadyAsync(seatZero, pumpCts.Token);
+                yield return WaitTask(() => zeroReady.IsCompleted, 30f, "delayed seat zero baseline");
+                Assert.IsFalse(zeroReady.IsFaulted, zeroReady.Exception?.ToString());
                 Assert.IsNotNull(seatZeroCapture.CapturedPlayerSnapshotFrame);
                 byte[] oldFrame = seatZeroCapture.CapturedPlayerSnapshotFrame!;
                 WireDecodeResult oldDecode = WireCodec.Decode(oldFrame);
@@ -192,10 +198,13 @@ namespace Mahjong.Unity.Tests.PlayMode
                 var oneTicket = rawOne as ILocalTableTicketSource;
                 Assert.IsNotNull(oneTicket);
                 seatOne = new TableSession(seatOneCapture, new InMemoryOutboxStore());
-                Task oneOpen = seatOne.OpenAsync(new TableSessionOpenRequest(oneTicket!.SessionTicket, LocalTableChannelFactory.ClientBuild), CancellationToken.None);
+                Task oneOpen = seatOne.OpenAsync(new TableSessionOpenRequest(oneTicket!.SessionTicket, LocalTableChannelFactory.ClientBuild), pumpCts.Token);
                 yield return WaitTask(() => oneOpen.IsCompleted, 30f, "delayed seat one open");
                 Assert.IsFalse(oneOpen.IsFaulted, oneOpen.Exception?.ToString());
-                yield return PumpUntilReady(seatOne, 30f, "delayed seat one baseline");
+                onePump = PumpLoopAsync(seatOne, pumpCts.Token);
+                Task oneReady = WaitReadyAsync(seatOne, pumpCts.Token);
+                yield return WaitTask(() => oneReady.IsCompleted, 30f, "delayed seat one baseline");
+                Assert.IsFalse(oneReady.IsFaulted, oneReady.Exception?.ToString());
                 PlayerSnapshot current = seatOne.PlayerSnapshot!;
                 Assert.AreEqual(1, current.PrivateView.Seat);
                 string currentTiles = string.Join(",", current.PrivateView.ClosedTiles);
@@ -223,6 +232,9 @@ namespace Mahjong.Unity.Tests.PlayMode
             }
             finally
             {
+                pumpCts.Cancel();
+                if (zeroPump != null) { try { zeroPump.GetAwaiter().GetResult(); } catch { } }
+                if (onePump != null) { try { onePump.GetAwaiter().GetResult(); } catch { } }
                 CloseBlocking(seatOne);
                 CloseBlocking(seatOneChannel);
                 CloseBlocking(seatZero);
@@ -243,6 +255,9 @@ namespace Mahjong.Unity.Tests.PlayMode
             paths.EnsureDirectoriesCreated();
             Directory.CreateDirectory(paths.LocalSaveDirectory);
             var config = new AppConfig { pumpBarrierTimeoutMs = 5000, closeTimeoutMs = 5000, cancelObservationMs = 50 };
+            using var pumpCts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+            Task? firstPump = null;
+            Task? recoveredPump = null;
             LocalTableChannelFactory? firstFactory = null;
             LocalTableChannelFactory? recoveredFactory = null;
             TableSession? firstSession = null;
@@ -262,10 +277,13 @@ namespace Mahjong.Unity.Tests.PlayMode
                 var firstTicket = rawFirst as ILocalTableTicketSource;
                 Assert.IsNotNull(firstTicket);
                 firstSession = new TableSession(rawFirst, outbox);
-                Task open = firstSession.OpenAsync(new TableSessionOpenRequest(firstTicket!.SessionTicket, LocalTableChannelFactory.ClientBuild), CancellationToken.None);
+                Task open = firstSession.OpenAsync(new TableSessionOpenRequest(firstTicket!.SessionTicket, LocalTableChannelFactory.ClientBuild), pumpCts.Token);
                 yield return WaitTask(() => open.IsCompleted, 30f, "recovery first open");
                 Assert.IsFalse(open.IsFaulted, open.Exception?.ToString());
-                yield return PumpUntilReady(firstSession, 30f, "recovery first baseline");
+                firstPump = PumpLoopAsync(firstSession, pumpCts.Token);
+                Task firstReady = WaitReadyAsync(firstSession, pumpCts.Token);
+                yield return WaitTask(() => firstReady.IsCompleted, 30f, "recovery first baseline");
+                Assert.IsFalse(firstReady.IsFaulted, firstReady.Exception?.ToString());
                 PlayerSnapshot baseline = firstSession.PlayerSnapshot!;
                 DecisionView? decision = baseline.PrivateView.Decision;
                 Assert.IsNotNull(decision);
@@ -323,10 +341,13 @@ namespace Mahjong.Unity.Tests.PlayMode
                 {
                     if (args.Command.Key.RequestId.Value == requestId) reconciled = args;
                 };
-                Task recoverOpen = recoveredSession.OpenAsync(new TableSessionOpenRequest(recoveredTicket!.SessionTicket, LocalTableChannelFactory.ClientBuild), CancellationToken.None);
+                Task recoverOpen = recoveredSession.OpenAsync(new TableSessionOpenRequest(recoveredTicket!.SessionTicket, LocalTableChannelFactory.ClientBuild), pumpCts.Token);
                 yield return WaitTask(() => recoverOpen.IsCompleted, 30f, "recovery reopen");
                 Assert.IsFalse(recoverOpen.IsFaulted, recoverOpen.Exception?.ToString());
-                yield return PumpUntilReady(recoveredSession, 30f, "recovery reopened baseline");
+                recoveredPump = PumpLoopAsync(recoveredSession, pumpCts.Token);
+                Task recoveredReady = WaitReadyAsync(recoveredSession, pumpCts.Token);
+                yield return WaitTask(() => recoveredReady.IsCompleted, 30f, "recovery reopened baseline");
+                Assert.IsFalse(recoveredReady.IsFaulted, recoveredReady.Exception?.ToString());
                 for (int i = 0; i < 30 && recoveredSession.PendingCommands.Count > 0; i++)
                 {
                     Task reconcile = recoveredSession.ReconcilePendingAsync(CancellationToken.None);
@@ -385,6 +406,9 @@ namespace Mahjong.Unity.Tests.PlayMode
             }
             finally
             {
+                pumpCts.Cancel();
+                if (firstPump != null) { try { firstPump.GetAwaiter().GetResult(); } catch { } }
+                if (recoveredPump != null) { try { recoveredPump.GetAwaiter().GetResult(); } catch { } }
                 C04PrivacyProbe.ResetForTest();
                 for (int seat = 0; seat < 3; seat++)
                 {
@@ -517,7 +541,7 @@ namespace Mahjong.Unity.Tests.PlayMode
         private static async Task<bool> RunClosedBindingRawPathAsync(string root, string roomId)
         {
             C04PrivacyProbe.Begin(Path.Combine(root, "closed-binding-raw"));
-            LocalTableChannelFactory.DisableC04PrivacyRoomModeForTest();
+            LocalTableChannelFactory.EnableC04PrivacyRoomMode();
             var paths = new UnityAppPaths(root);
             paths.EnsureDirectoriesCreated();
             Directory.CreateDirectory(paths.LocalSaveDirectory);
@@ -878,6 +902,13 @@ namespace Mahjong.Unity.Tests.PlayMode
                     throw new InvalidOperationException("ClaimControl was rejected: " + claimReceipt.Resolution.ReasonCode);
                 PlayerSnapshot claimedSnapshot = claimed.PlayerSnapshot
                     ?? throw new InvalidOperationException("No snapshot after ClaimControl.");
+                for (int i = 0; i < 200; i++)
+                {
+                    claimedSnapshot = claimed.PlayerSnapshot ?? claimedSnapshot;
+                    if ((claimedSnapshot.PrivateView.Control?.ControlEpoch ?? 0UL) > claimEpoch &&
+                        claimedSnapshot.PrivateView.Control?.ControlledByComputer != true) break;
+                    await Task.Delay(20, pumpCts.Token).ConfigureAwait(false);
+                }
                 ulong claimedEpoch = claimedSnapshot.PrivateView.Control?.ControlEpoch ?? 0UL;
                 if (claimedEpoch <= claimEpoch) throw new InvalidOperationException("ClaimControl did not advance the control epoch.");
                 if (claimedSnapshot.PrivateView.Control?.ControlledByComputer == true)
