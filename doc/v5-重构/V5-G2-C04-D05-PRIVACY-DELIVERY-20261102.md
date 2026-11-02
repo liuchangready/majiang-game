@@ -51,9 +51,58 @@
 | C04-G5-02 | BLOCKED | 没有从合法公共命令得到真实非空私有 fee/ledger 对照；不能以空字段、相等 scalar 或 verifier 自测替代。 |
 | C04-G5-03 | BLOCKED | role-switch/cache clearing 与 .NET 原始旧 wire rejection 有证据；Unity/Windows Player 的延迟旧真实 wire 投递负例未执行。 |
 
-> **R2 返修状态（2026-11-03，B）**：审查提出的 3 个 MAJOR 已全部在 B 的授权文件内批量修复：包闭包/路径/封存失败门禁、进程与后代 writer 有界收尾、四席/观战/慢队列/旧 raw/控制场景。独立 .NET 与工具负例通过；真实 Unity/Windows 同包矩阵仍 `BLOCKED_ON_PRIVACY_AND_RECOVERY`，A/Luna 未集成，不冒充 PASS。R2 细节见下文，R1 历史保留。
+> **R3 返修状态（2026-11-03，B）**：R3 的 3 个 MAJOR 已全部在 B9 内批量修复：封存顺序/失败证据、未解决 orphan writer、非空 raw 采集与 U3 claim/stale-epoch。独立 160/160、483/483、runner 16/16、finalization/orphan/Unity helper 短负例通过；真实 Unity/Windows 仍 BLOCKED_ON_PRIVACY_AND_RECOVERY。R3 细节见下文，R2/R1 历史保留。
 
-## R2 返修交付（2026-11-03，B：review NOT_ACCEPTED 的 3 MAJOR）
+## R3 返修交付（2026-11-03，B：B-R3-01/02/03）
+
+### 身份、结论与范围
+
+- R3 代码头：`76b64bb232390b2d76e6a47630637762e027795e`；工作树 clean，`git diff --check` 0。仅改 B 的 3 个已授权代码/测试/工具路径；未改 A/Luna 文件或 Domain/Client/proto/actor/schema/asmdef。
+- 结论：**3 项 B 自身缺口独立修复并通过短正负例；最终 Unity/Windows 真实矩阵仍因 A/Luna 未集成冻结而 BLOCKED，D05 未完成。**
+
+### B-R3-01：封存后不再写文件
+
+- 位置：`run-p45-c04-privacy-matrix.ps1` Main finally。
+- 修复：先把 `finalization-failure.txt`、summary 的最终 status/error/finalizationFailures 全部落盘，再执行唯一一次 `Write-C04SealedEvidence`；seal 成功后没有任何日志/失败文件写入。seal 失败则删除无效 manifest/seal、写 `seal-failure.txt`、保留原始 failure 并最终非零。`Release-C04Mutex` 不再 `catch {}` 吞 `ReleaseMutex` 异常，改为 `try/finally` dispose 并让异常上抛。
+- 实测：reviewer `finalization-probe.ps1`（只注入自有 mutex release 失败）在 clean HEAD 输出 `mainThrew=true`，`sealExists=true`，`sealedCount=4/manifestCount=4/actualCount=4`，`finalizationFailureExists=true/finalizationFailureListed=true`；JSON SHA `52DBA65F93CFB4F1046C51F90DD28ED2D8B6621B05D7F462A0A49D630548D336`。seal I/O 注入仍 native 非零且无有效 seal，`build/seal-r3-final3.log`。
+
+### B-R3-02：orphan writer 不再被 parent 缺失误清
+
+- 位置：`Invoke-C04OwnedProcess`、`Get-C04CapturedDescendants`、`Stop-C04OwnedRecord`、Main finally。
+- 修复：
+  - 启动后立即登记 PID/StartTime/输出路径；在父进程仍可观察时按 PPID 与同 image/路径参数捕获后代身份（PID+StartTime），同时使用 Windows Job Object；捕获失败不伪造所有权。
+  - `drainUnresolved`/captured descendant 未确认停止时，`Stop-C04OwnedRecord` 先停止已捕获的自有后代并复核 PID+StartTime；无法证明停止则保持 alive/UNKNOWN，不释放 mutex/subst、不写正常 seal。
+  - Main finally 在仍有 writer 时 `SEAL_WITHHELD_RESIDUAL_WRITER`，不产出正常 seal；`StopRecord` 不再只凭 parent PID 缺失清 false。
+- 实测：reviewer `orphan-probe.ps1`（root→middle→writer，writer 持继承输出 30s）在 clean 代码上：`registeredAliveBeforeCleanup=true`、`registeredAliveAfterCleanup=false`、`realWriterAliveAfterCleanup=false`、`elapsed=4.76s`（原 7.199s 且 real writer 仍活）；JSON SHA `62E5D5AE720D890A1CA175FF967AC4120FD21589DFAB60456FD8766AC286BB41`。
+- 保留通过项：普通一层后代、大 stdout/stderr、native 非零、取消、post-start 异常、single-return、Stop identity mismatch、锁等待超时；本轮 runner **16/16 PASS**，JSON SHA `C210432FE125094E2339F3E81CDF7A78733758B075831B1458BCC3AD8F3072FF`。actual Main seal probe 改为有界 `Invoke-C04OwnedProcess`，不再 `Start-Process -Wait`。
+
+### B-R3-03：非空 raw、逐场景门禁与 U3
+
+- 修复：
+  - `RunFourOwnerPrivacyScenarioAsync` 与 `RunClosedBindingRawPathAsync` 现在在真实 factory/TableSession 场景内启动 `C04PrivacyProbe.Begin`；对应 UnityTest 在 Task 完成后 `Seal` 并把 raw 复制到 `four-owner-raw/`、`closed-binding-raw/`；recovery 场景写 `recovery-raw/`。每个场景独立 Begin/Seal/Reset，失败 `finally` 清理。
+  - runner 通过 `Get-C04ValidatedRawScenes` 强制四个场景：role-switch、four-owner、closed-binding、recovery；逐场景解析 schema/frames 并分别调用 privacy verifier，缺任一场景直接失败。工具测试 `required raw scenes...` 覆盖缺 scene。
+  - U3 扩展为 release → spectator AI 推进 → 新 player ClaimControl（epoch 前进/恢复真人）→ 旧 control epoch 的 decision 被 Rejected；同时保留 player→spectator→player raw 路径。
+  - Test Player package 身份仍由 `Get-C04TestPlayerPackage` 记录，供 P1/P2 同一 Test Player 包执行；实际未跑。
+- 实测：
+  - reviewer Unity helper 重新编译当前测试源码后：`Version=6`、四席、TargetClosedTiles=13、Ledger=2、CheatPoints=109、非空 offer；`captureAfter=True capturedFrames=49`（原 captureAfter=False/0）；日志 SHA `96826EDE4E84AE23FE407E196C07319D759CA046528FA1A3D258E05F35D5CAD6`。
+  - Unity PlayMode 6 例静态编译 0 error、1 个既有 nullable warning；PlayMode DLL SHA `8B1C9DD7FDED84E6426C3611834F97CC221905A41BF670FCA55DAE4D95D5BB2F`。不是实际 Unity 运行；Unity/Windows 仍待 A/Luna 冻结。
+- 说明：旧 verifier 不能作为正式 PASS；B 只为 raw 采集/逐场景门禁与 U3 场景源码负责，Luna typed verifier 与 A 控制修复未越界。
+
+### R3 验证证据
+
+- LocalHost：**160/160**，XML SHA `D6A42F6B7716E8D001D1FA1DC00C4301A6C95A72AF02E3EA510B8BA89BF6E006`。
+- TableRuntime：**483/483**，XML SHA `E908C4552AE5A0D8B3910A4BDF2EB119DF430C676BF18B1DEFD329E35160DECC`。
+- runner：**16/16**，JSON SHA `C210432FE125094E2339F3E81CDF7A78733758B075831B1458BCC3AD8F3072FF`。
+- clean preflight：summary SHA `B1CDDA6A46636486E0943049A010B67CB052709BEAD54DEBAA0C77EF687FE4BE`；manifest SHA `6C73A0FC17B5F9686D0E447B7A30EE12D5B0A74FA5932A1A38A369416D271FE3`；seal SHA `8DF17A2CD9691F179FC00B984473355698C9F6E66545A7CDAA98AAF4EF77F63E`；closure 534 文件/13,626,820 bytes/SHA `cc3f0939cde5516fde85a9bed483fb080b53ee1046fd133bc2336fd64547bf6c`。
+- 源码 SHA：runner `384A245150D1927F0DD3C02E00136653A1C10DD99F81138961C52C8481866AE1`；runner tests `0685C34EDABB83234326C6CBB980B292E0AE5181B0C1D6FCEE7DDB676DDB602F`；PlayMode `554C8C0A8B387692448658386D2F49C3052FAEDF050E4C8849BC644FD139CE06`。
+
+### R3 后固定行
+
+- B-R3-01/02：独立门禁与 orphan 收尾通过；完整 Unity/Windows 仍待依赖执行。
+- B-R3-03：N3 四席/观战同版本非空 target 正例、慢队列活请求、player→spectator→player raw、U3 claim/stale 源码完成；N3/G5 的正式 typed verifier 仍 BLOCKED_ON_PRIVACY；U3/P1/P2 实际执行仍 BLOCKED。
+- 原 6 个 UnityTest 保留并精确对齐 XML 分母；未 skip、未删除、未用 .NET 替代 Unity 运行。
+
+
 
 ### 结论与身份
 
