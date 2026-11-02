@@ -51,6 +51,74 @@
 | C04-G5-02 | BLOCKED | 没有从合法公共命令得到真实非空私有 fee/ledger 对照；不能以空字段、相等 scalar 或 verifier 自测替代。 |
 | C04-G5-03 | BLOCKED | role-switch/cache clearing 与 .NET 原始旧 wire rejection 有证据；Unity/Windows Player 的延迟旧真实 wire 投递负例未执行。 |
 
+> **R2 返修状态（2026-11-03，B）**：审查提出的 3 个 MAJOR 已全部在 B 的授权文件内批量修复：包闭包/路径/封存失败门禁、进程与后代 writer 有界收尾、四席/观战/慢队列/旧 raw/控制场景。独立 .NET 与工具负例通过；真实 Unity/Windows 同包矩阵仍 `BLOCKED_ON_PRIVACY_AND_RECOVERY`，A/Luna 未集成，不冒充 PASS。R2 细节见下文，R1 历史保留。
+
+## R2 返修交付（2026-11-03，B：review NOT_ACCEPTED 的 3 MAJOR）
+
+### 结论与身份
+
+- 被审/修复工作树：`E:/majiang-review/g2-c04-d05-acceptance-matrix-ds-20261102-r1`；分支不变。
+- R2 代码头：`d1706b8d8fa3bcd23dbc56dba1e4ffcf7fc7ee2c`；R2 前被审头 `f7c781c5`。工作树 clean，`git diff --check` 0。
+- 只改 B 的授权 9 路径中的 5 个代码/测试/工具文件；未改 A/Luna 文件、Domain/Client/proto/actor/schema/asmdef。
+- 结论：**B-R2-01/02/03 的独立实现与短负例已修复并通过；最终 Unity/Windows 真实矩阵仍 BLOCKED_ON_PRIVACY_AND_RECOVERY，D05 未完成、未批准。**
+
+### B-R2-01（MAJOR，R1-04 包闭包/封存门禁）
+
+- 复现：`probe-v3/probe-runner.ps1 -Root <新根>`；`seal-failure-probe-v2.ps1 -ReviewRoot <本根>`。
+- 修复：
+  - `Assert-C04BuildMarker` 现在要求 marker 必需字段存在且类型正确，禁止 null→0 放行。
+  - 包路径使用规范化绝对根 + 末尾目录分隔符；拒绝 rooted、`..`、同名前缀逃逸和 reparse point。
+  - 清单路径唯一、大小写不敏感；exe 和 8 个 required plugin 必须在闭包内；实际目录文件集合与清单集合精确相等（唯一排除 `player-package.sha256` 自身）；校验 actual count/bytes/hash。
+  - `Write-C04SealedEvidence` 失败不再被 `Write-Host` 吞掉；Main finally 收集 seal/env restore/subst/mutex/process cleanup 失败，最终 native 非零并写 `finalization-failure.txt`；找不到 seal 时不以成功退出。
+  - 持久化 `source-closure.sha256`、`staged-input.sha256`、`source-closure-final.sha256`；最终再次验证 source closure/HEAD 未变。
+- 修复后实测（新根 `build/probe-r2-final-ef3dc51f763c48948798b9d28bcd0d91`）：
+  - `unlistedPackageFile` → `Player package contains an unlisted file: UNLISTED-RUNTIME.dll`（拒绝）。
+  - `siblingPrefixEscape` → `Package manifest path contains parent traversal`（拒绝）。
+  - `seal-failure-probe-v2` 在 clean HEAD 上 native **1**，输出 `SEAL_FAILED`/`Runner finalization failed`，没有 `ACTUAL_MAIN_RETURNED_SUCCESS`；日志 `build/seal-r2-final.log` SHA `EA4F674409C275C8CD41B53E59FFFEED418799047F5242F742CBBEDB08474954`。
+- 工具负例：`C04PrivacyRunner.Tests.ps1` 增加 unlisted、sibling escape、null required field、package manifest closure、Test Player package 等用例；**14/14 PASS**，JSON SHA `40BA29CF0A1D32B09037835856066F15D901AA6B23CD45166BBE38D77AC3F80A`。
+
+### B-R2-02（MAJOR，R1-04 进程/资源收尾）
+
+- 复现：`probe-v3/probe-runner.ps1 -Root <新根>` 的 `InheritedOutput.exe`：父进程先退、子进程继承 stdout/stderr 后睡 7s；`Invoke-C04OwnedProcess -TimeoutSeconds 1 -CloseGraceSeconds 1`。
+- 修复：
+  - 启动后立即把 PID/StartTicks/输出路径登记到 `OwnedRegistry`；异常路径不再漏登记。
+  - 总预算覆盖父进程、stdout/stderr drain；超时后识别并停止可证明自有的 descendant process tree（PID+创建时间+PPID），再以 5s 有界 drain；无法停止则 `drainUnresolved=true`/UNKNOWN，不释放仍被使用的锁或 staging drive。
+  - 所有 `GetResult`/`WaitForExit` 有界并清除 void task 管道输出；函数只返回一个 `PSCustomObject`。
+  - Main finally 主动清理登记的残留 writer；mutex 只在 `allStopped` 时释放，subst 只在 `allStopped` 时撤销；cleanup/seal 失败纳入整体非零。
+- 修复后实测：
+  - 同一 descendant fixture：`wallSeconds=3.469`、`elapsedSeconds=3.37`（修复前 7.205/7.155）、`outputTypes=[PSCustomObject]`、`timedOut=true`、`descendantsStopped=1`，无残留自有 writer。
+  - 新短负例覆盖：large stdout/stderr、native 非零、父先退+子持管道、拒绝正常退出、cancel-file、post-start 注入异常登记清理、Stop identity mismatch、锁等待超时、single-return cardinality；`C04PrivacyRunner.Tests.ps1` **14/14**。
+  - 真实 Main 封存注入 probe 在 clean tree native 非零；reviewer 原 `seal-failure-probe-v2` 已复验。
+
+### B-R2-03（MAJOR，R1-03 B producer/断言）
+
+- 修复：
+  - .NET 新增 `Real_room_four_owners_and_spectator_observe_same_version_non_empty_private_target_facts`：真实 `LocalTableRoom` 四人类 + 四 `TableSession` + spectator；真实公共命令产生非空 TileMark/ledger/SleeveBloom offer，所有 owner/spectator 在同一 stateVersion 校验 seat/手牌/私有费用，target 的非空 offer 与费用保留。
+  - 慢队列测试在 overflow 后由原 player 发送真实 `ReleaseControl` 请求并收到 receipt/仍 Ready，证明不是只读取旧缓存。
+  - 新增 `Closed_player_to_spectator_to_new_player_receive_path_rejects_old_private_raw`：player→关闭→spectator→新 player 的真实 receive 路径注入旧 raw，旧 session id/手牌不污染新 binding。
+  - Unity PlayMode 增到 **6 个** `UnityTest`：原四席/角色切换、延迟 raw、冷重开、四席非空 ownership、released AI 无 player binding、closed player→spectator→player raw 路径；全部使用生产 `LocalTableChannelFactory`/`TableSession`，未删除旧 3 例，未 skip。
+  - `C04ExpectedTests` 与精确 XML 分母更新为 6；Windows 模式新增 `Get-C04TestPlayerPackage`，记录同一个 Test Player 包的 exe/包 count/bytes/manifest SHA/plugin 闭包，P1/P2 可由同一 Windows Test Player 包执行；代码路径已实现，实际未运行。
+- 验证：LocalHost **160/160**（首次 159/160 为 A 所属既有 `C04RoomTicketTests` 帧顺序竞争，fresh 重跑 160/160；两次 XML 均保留）；TableRuntime **483/483**；Unity 测试静态编译 0 error、1 个既有 nullable warning，不是实际 Unity 运行。
+- 仍未完成：A 的 R1-02 released/cold controller 修复、Luna 的 R1-01 typed raw verifier 未集成；因此 Unity/Windows 不执行，U3/P1/P2 只到可执行源码/命令与 BLOCKED 状态，不标 PASS。
+
+### R2 验证证据
+
+- LocalHost 绿色重跑 XML：`build/1f3a7069aeb8431eb5957466e6ced29e/localhost.xml`，SHA `02CD91D61A03FB462885639ACD0111EA567C28A685A9BC7AAD2E6A6A3089E64B`；首次 flake XML `build/31b607847a754c5782069b46fc21635c/localhost.xml` SHA `49FC2991CF26839E7234E0F9860CCDCA1BAE0ABCEF8665ADEF5727EE12A9CBFB` 保留。
+- TableRuntime XML：`build/31b607847a754c5782069b46fc21635c/tableruntime.xml`，SHA `B4D2AB0D43587DD03AC4A18B261C9DFC56485C5F5D2D1D4E5B2C00681A94EB28`，483/483。
+- runner 14/14 JSON：`build/e1610fbb6c7546708c980f68d5e1e434/runner-tests.json`，SHA `40BA29CF0A1D32B09037835856066F15D901AA6B23CD45166BBE38D77AC3F80A`。
+- clean preflight：`build/26592ffeea844e9c94970fe981cdd582/summary.json` SHA `92C5E9B06DF8169FDAF206952C86004A0476766F35644D1982556DC9DD82EAC7`；manifest SHA `126880BE74127C0EEB5EDA6CA27F476E548052F07FAD8A6878DF54FB153AFA3E`；seal SHA `D36FAFEC7D8274868ED6C4AF0F3F8EABC9DB7CF7A16B82BFE014F2BFAB2EE13E`；input closure 534 文件/13,614,467 bytes/SHA `56015dcfcbd3f475ce9b1c61ccba81ffe3c2f016ce11e1bdb180a7eb3a981558`。
+- reviewer runner probe JSON：`build/probe-r2-final-ef3dc51f763c48948798b9d28bcd0d91/additional-runner-probes.json` SHA `CF085C0A6CA620C6295BAF8D3A2BD36444C63E7166EFB42DB26A95291F305A0C`。
+- 关键源码 SHA：`LocalPrivacyScenario.cs` `C19E6AA172B89EDE5D9949BA5E601C2804EF6CD9CD704EE4F5A0BAC1F4CD6612`；`C04PrivacyStreamMatrixTests.cs` `DE0F17A487F1C02A26DC3FB5361C26E590469966747F4DDA491983A44956DAC2`；runner `E420EF1CB5582AFFC1428B13D0516D18D82989AB9B3140CCEF12040F5655E859`；runner tests `E2545992DBCE60D7C3281C3CDEB5D9326C1A2E475E379CC40CC13325A691260D`；PlayMode `CB1E3B83666D73EAC93139657BE597E9374929A1389D3F64CA85640404E2B4BF`。
+
+### R2 后固定行更新
+
+- N3：PARTIAL；.NET 四席/观战同版本非空 target 正例已通过；完整 typed raw 仍待 Luna R1-01。
+- N5：新增慢队列后原 player 真实 ReleaseControl/receipt 通过；组件层仍 PASS。
+- N6/U3：U3 Unity 源码已补，但 A R1-02 未集成，状态仍 BLOCKED_ON_RECOVERY/NOT_RUN。
+- U1/U2：PlayMode 源码 6 例、静态编译 0 error；实际 Unity/Test Player 未执行。
+- P1/P2：同一 Windows Test Player 包身份 runner 已实现；实际未执行、未同包验证，仍 BLOCKED_ON_PRIVACY_AND_RECOVERY。
+- C04-G5-01/02/03：仍 PARTIAL/BLOCKED，需 Luna verifier 与真实 Unity/Windows 同包矩阵。
+
 ## R1 返修交付（2026-11-02，B：G2-C04-D05-R1-ACCEPTANCE-MATRIX）
 
 ### 身份、范围与结论
