@@ -51,6 +51,55 @@
 | C04-G5-02 | BLOCKED | 没有从合法公共命令得到真实非空私有 fee/ledger 对照；不能以空字段、相等 scalar 或 verifier 自测替代。 |
 | C04-G5-03 | BLOCKED | role-switch/cache clearing 与 .NET 原始旧 wire rejection 有证据；Unity/Windows Player 的延迟旧真实 wire 投递负例未执行。 |
 
+> **R6 修正状态（2026-11-03，B）**：I2 已用 Unity `-buildPlayerPath` 保留实际 Test Player 包并通过包门禁；I4 改为严格稳定枚举、`upm-cache` 预裁剪、state 落 RunRoot；I3 恢复强断言后 recovery 真实 lookup 通过，但 ClaimControl 暴露 A 公共行为缺口（receipt Applied 后仍 `ControlledByComputer=true`、epoch 不前进）。旧 7/7 已标记为 false-positive，不用于最终验收。
+
+## R6 修正（I2/I3/I4）
+
+### 身份
+
+- 最终代码头 `e63cd1d05539d64ce1da79672236045fed741032`；clean/diff-check0。
+- 未改 A/Luna，未新任务/委派，未 push/PR/merge。
+
+### I2：Test Player 包保留
+
+- Windows 测试增加 `-buildPlayerPath RunRoot/test-player`；`Get-C04TestPlayerPackage -PlayerRoot` 直接读取保留包，不再依赖被删除的 `staging/Temp`。
+- 实际 Windows 运行后 `test-player/PlayerWithTests` 保留；包门禁通过：
+  - `packageFileCount=357`
+  - `packageBytes=201647558`
+  - executable `PlayerWithTests.exe`，SHA `93043e47abfce89ae9d048dbf34108e101edb367150e6203e0bcee27cd5a623d`
+  - package manifest SHA `7a7151764cc6a7e5c9cf9f9d3c85759d5127c071dad45cea3215f618449ccaef`
+  - `samePackageForP1P2=true`
+- 原 Windows XML 仍为旧 false-positive 证据；新 Windows 运行 XML 6/7，唯一失败为 ClaimControl（见 I3）。
+
+### I3：恢复/控制强断言
+
+- Recovery：
+  - 首 host 使用 `RawCaptureChannel` 有界丢弃一次原 request 的真实 Receipt，关闭前 `PendingCommands>0` 断言存在；
+  - recover 后恢复 `Assert.IsNotNull(reconciled)`、`FromReceiptLookup=true`、scope/request/digest 对应、`ReceiptQueryFrames>0`；
+  - 真实 Unity `RealRoom_ColdReopen...` 本次通过，证明 lookup 实际发生。
+- ClaimControl：
+  - 保留强断言 `Claimed=true`、`ControlHuman=true`；同时写入 `claimEpochAdvanced` 实际值，不再写常量。
+  - 真实 PlayMode/Windows 均在 `ClaimControl` 后观察到 `receipt Applied` 但 `PrivateView.Control.ControlledByComputer=true`，`claimEpoch` 保持 1。测试因此失败，未放宽。
+  - 最小 owner 复现：`RunReleasedControlScenarioAsync` 在 release→spectator AI 推进后，新 player seat0 打开并发送 `CommandKind.ClaimControl`，`SubmitExpectReceiptAsync` 收到 Applied；随后 `PlayerSnapshot.PrivateView.Control` 仍 AI/epoch 1。A owner 文件：`dotnet/src/Mahjong.TableRuntime/TableActor.cs` `ReclaimControlAsync` 与 `dotnet/src/Mahjong.LocalHost/LocalTableRuntime.cs` `HandleControlCommandAsync`。这是 A 公共控制行为缺口，不是 B 测试可放宽项。
+
+### I4：严格枚举与 state 隔离
+
+- `Get-C04StableFiles` 递归前裁剪排除目录；`Get-C04FileManifest`、`Get-C04SelectedManifest`、`Assert-C04BuildMarker`、Test Player 包均使用严格枚举；不可读/消失/集合变化直接失败，不再 `SilentlyContinue`/skip。
+- `Write-C04SealedEvidence` 显式排除 `upm-cache`；不再遍历 volatile cache。
+- 测试 state/save/outbox 从 `Application.persistentDataPath` 改为 `StateRoot()` 派生自 runner 的 `EvidenceRoot` 父级（唯一 RunRoot），不再写用户持久目录。
+- reviewer enumeration ACL probe 复跑：
+  - 可读 unlisted DLL：`Player package contains an unlisted file...`
+  - 目录被 Deny ListDirectory：`EnumerateFileSystemEntries ... Access denied`
+  - 两者均不 ACCEPTED；ACL finally 恢复。
+
+### 实际验证与边界
+
+- Unity PlayMode：`6/7`，仅 ClaimControl 失败；旧 `5f1...` 7/7 为 false-positive，保留但不用于验收。
+- Windows Player：`6/7`，同一 ClaimControl 失败；包已保留，旧 `25f...` 7/7 同样不用于验收。
+- LocalHost 174/174、TableRuntime 483 源码未变，沿用集成有效结果。
+- runner 短自测 16/16；accepted verifier 四 raw 场景仍 native0。
+- 结论：I2/I4 已闭合；I3 recovery 已闭合，I3 claim 触发 A 公共控制缺口，D05 仍未最终 PASS。
+
 > **R5 集成合同状态（2026-11-03，B）**：从真实集成 HEAD `6315277b` 接续，D05-B-I1 的 schema2、self-test 独占目录、四 owner/ownerEpoch 场景闭包已修复。实际 Unity PlayMode **7/7**，四场景 raw 均通过 accepted verifier；Windows Player 测试 XML **7/7**，但 Test Player 临时包被 Unity 删除，runner 无法完成同包 P1/P2/G5 闭包，最终 D05 仍不标 PASS。
 
 ## R5 集成合同返修（D05-B-I1）
