@@ -565,10 +565,10 @@ function Get-C04TestPlayerPackage {
       Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
     if ($null -eq $candidate) { throw 'Unity did not leave a PlayerWithTests package under the isolated staging Temp.' }
   }
-  $exe = Get-C04StableFiles -Root $candidate.FullName | Where-Object { $_.FullName -like '*.exe' } |
-    Sort-Object Length -Descending | Select-Object -First 1
+  $exe = Get-C04StableFiles -Root $candidate.FullName | Where-Object { [IO.Path]::GetFileName($_.FullName) -eq 'PlayerWithTests.exe' } |
+    Select-Object -First 1
   if ($null -eq $exe) { throw 'PlayerWithTests package has no executable.' }
-  $packageRoot = [IO.Path]::GetFullPath($exe.DirectoryName)
+  $packageRoot = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($exe.FullName))
   $packageRootWithSeparator = $packageRoot.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
   $manifestPath = Join-Path $RunRoot 'test-player-package.sha256'
   if (Test-Path -LiteralPath $manifestPath) { throw 'Test Player package manifest already exists.' }
@@ -586,7 +586,7 @@ function Get-C04TestPlayerPackage {
   }
   Write-C04Utf8 $manifestPath (($lines -join "`n") + "`n")
   $manifestSha = Get-C04Sha256File $manifestPath
-  $managed = Join-Path $packageRoot (([IO.Path]::GetFileNameWithoutExtension($exe.Name)) + '_Data/Managed')
+  $managed = Join-Path $packageRoot (([IO.Path]::GetFileNameWithoutExtension([IO.Path]::GetFileName($exe.FullName))) + '_Data/Managed')
   foreach ($name in $script:C04RequiredPlugins) {
     if (-not (Test-Path -LiteralPath (Join-Path $managed $name) -PathType Leaf)) {
       throw "Test Player package is missing required managed plugin $name."
