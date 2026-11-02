@@ -59,3 +59,5 @@ unity/**/crashlytics-build.properties
 # .NET 共享程序集构建输出
 dotnet/**/bin/
 dotnet/**/obj/
+tools/tests/C04ControlContract/bin/
+tools/tests/C04ControlContract/obj/
