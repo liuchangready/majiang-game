@@ -1,0 +1,15 @@
+E:\majiang-review\g2-c04-d05-acceptance-matrix-ds-20261102-r1\tools\tests\C04ControlContract\bin\Release\net8.0\C04ControlContract.exe
+E:\majiang-review\g2-c04-d05-acceptance-matrix-ds-20261102-r1\tools\tests\C04ControlContract\bin\Release\net8.0\C04ControlContract.deps.json
+E:\majiang-review\g2-c04-d05-acceptance-matrix-ds-20261102-r1\tools\tests\C04ControlContract\bin\Release\net8.0\C04ControlContract.runtimeconfig.json
+E:\majiang-review\g2-c04-d05-acceptance-matrix-ds-20261102-r1\tools\tests\C04ControlContract\bin\Release\net8.0\C04ControlContract.dll
+E:\majiang-review\g2-c04-d05-acceptance-matrix-ds-20261102-r1\tools\tests\C04ControlContract\bin\Release\net8.0\C04ControlContract.pdb
+E:\majiang-review\g2-c04-d05-acceptance-matrix-ds-20261102-r1\tools\tests\C04ControlContract\obj\Release\net8.0\C04ControlContract.GeneratedMSBuildEditorConfig.editorconfig
+E:\majiang-review\g2-c04-d05-acceptance-matrix-ds-20261102-r1\tools\tests\C04ControlContract\obj\Release\net8.0\C04ControlContract.AssemblyInfoInputs.cache
+E:\majiang-review\g2-c04-d05-acceptance-matrix-ds-20261102-r1\tools\tests\C04ControlContract\obj\Release\net8.0\C04ControlContract.AssemblyInfo.cs
+E:\majiang-review\g2-c04-d05-acceptance-matrix-ds-20261102-r1\tools\tests\C04ControlContract\obj\Release\net8.0\C04ControlContract.csproj.CoreCompileInputs.cache
+E:\majiang-review\g2-c04-d05-acceptance-matrix-ds-20261102-r1\tools\tests\C04ControlContract\obj\Release\net8.0\C04ControlContract.sourcelink.json
+E:\majiang-review\g2-c04-d05-acceptance-matrix-ds-20261102-r1\tools\tests\C04ControlContract\obj\Release\net8.0\C04ControlContract.dll
+E:\majiang-review\g2-c04-d05-acceptance-matrix-ds-20261102-r1\tools\tests\C04ControlContract\obj\Release\net8.0\refint\C04ControlContract.dll
+E:\majiang-review\g2-c04-d05-acceptance-matrix-ds-20261102-r1\tools\tests\C04ControlContract\obj\Release\net8.0\C04ControlContract.pdb
+E:\majiang-review\g2-c04-d05-acceptance-matrix-ds-20261102-r1\tools\tests\C04ControlContract\obj\Release\net8.0\C04ControlContract.genruntimeconfig.cache
+E:\majiang-review\g2-c04-d05-acceptance-matrix-ds-20261102-r1\tools\tests\C04ControlContract\obj\Release\net8.0\ref\C04ControlContract.dll
