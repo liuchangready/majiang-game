@@ -248,7 +248,7 @@ namespace Mahjong.Unity.Tests.PlayMode
         [UnityTest]
         public IEnumerator RealRoom_ColdReopenReconcilesOriginalRequestWithoutDuplicate()
         {
-            LocalTableChannelFactory.DisableC04PrivacyRoomModeForTest();
+            LocalTableChannelFactory.EnableC04PrivacyRoomMode();
             string root = Path.Combine(Application.persistentDataPath, "c04-recovery-" + Guid.NewGuid().ToString("N"));
             string roomId = "c04-recovery-" + Guid.NewGuid().ToString("N");
             var paths = new UnityAppPaths(root);
