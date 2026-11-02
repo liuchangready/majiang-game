@@ -2,6 +2,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
@@ -403,10 +404,8 @@ namespace Mahjong.Unity.Tests.PlayMode
             var bannerGo = Go("BannerRoot");
             var bannerPresenter = bannerGo.AddComponent<ConnectionBannerPresenter>();
             var bannerText = Text();
-            var so = new UnityEditor.SerializedObject(bannerPresenter);
-            so.FindProperty("_bannerRoot").objectReferenceValue = bannerGo;
-            so.FindProperty("_bannerText").objectReferenceValue = bannerText;
-            so.ApplyModifiedPropertiesWithoutUndo();
+            SetUiFixtureField(bannerPresenter, "_bannerRoot", bannerGo);
+            SetUiFixtureField(bannerPresenter, "_bannerText", bannerText);
 
             var presGo = Go("SpectatorPres");
             var presenter = presGo.AddComponent<SpectatorPresenter>();
@@ -514,6 +513,15 @@ namespace Mahjong.Unity.Tests.PlayMode
             Assert.IsNotNull(shutdownTaskB.Result);
             Assert.IsTrue(shutdownTaskB.Result.MenuAllowed);
             channelB.Dispose();
+        }
+
+        private static void SetUiFixtureField(ConnectionBannerPresenter presenter, string fieldName, object value)
+        {
+            FieldInfo field = typeof(ConnectionBannerPresenter).GetField(
+                fieldName,
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.IsNotNull(field, "Connection banner UI fixture field is missing: " + fieldName);
+            field.SetValue(presenter, value);
         }
 
         [UnityTest]
