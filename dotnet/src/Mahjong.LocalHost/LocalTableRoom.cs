@@ -198,8 +198,10 @@ namespace Mahjong.LocalHost
         /// Seeds the per-seat human-controller predicate. Fresh rooms pass the SeatPlan
         /// controllers; a recovered room passes the persisted checkpoint controllers so a
         /// newer SeatPlan can never silently replace the recovered control state.
+        /// <paramref name="alreadyStarted"/> restores the persisted Playing phase so a
+        /// recovered open decision keeps its existing deadline even without a live player.
         /// </summary>
-        internal void InitializeControl(IReadOnlyList<SeatControllerKind> controllers)
+        internal void InitializeControl(IReadOnlyList<SeatControllerKind> controllers, bool alreadyStarted)
         {
             if (controllers == null) throw new ArgumentNullException(nameof(controllers));
             if (controllers.Count != 4)
@@ -208,6 +210,7 @@ namespace Mahjong.LocalHost
             {
                 for (int seat = 0; seat < 4; seat++)
                     _humanControlledSeats[seat] = IsHumanKind(controllers[seat]);
+                _phaseStarted = alreadyStarted;
                 _controlInitialized = true;
             }
         }

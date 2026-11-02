@@ -162,9 +162,16 @@ namespace Mahjong.LocalHost
                         : TableProjectionFactsCodec.Decode(checkpoint.CommittedFactsPayload, round.RoundId, checkpoint.StateVersion);
                     TableControlCheckpoint recoveredControl = DecodeControlCheckpoint(checkpoint);
                     SeatControllerKind[] controllers = ControllersFromSnapshot(recoveredControl.Snapshot);
-                    // Seed the room before the actor can start its driver, so a fresh default
-                    // all-false seed can never transition the room out of AwaitingSeats.
-                    room?.InitializeControl(controllers);
+                    TableTimingCheckpoint recoveredTiming = await LoadRecoveredTimingAsync(
+                        store,
+                        options.RoomId,
+                        checkpoint,
+                        cancellationToken).ConfigureAwait(false);
+                    bool alreadyStarted = HasStartedProgress(checkpoint, recoveredTiming);
+                    // Seed the room before the actor can start its driver. A recovered room
+                    // that already has progress/open decisions must keep ticking on its
+                    // persisted deadlines; a genuinely fresh room still waits for bindings.
+                    room?.InitializeControl(controllers, alreadyStarted);
                     actor = CreateActor(options, environment, clock, store, facts, round, checkpoint, controllers, temporaryFuriten, riichiFuriten);
                     facts.SettlementProvider = () => actor.LastSettlementCalculation;
                     TableRecoveryResult recovered = await actor.RecoverFromStoreAsync(cancellationToken).ConfigureAwait(false);
@@ -181,7 +188,7 @@ namespace Mahjong.LocalHost
                     RoundStateMachine round = options.InitialRound ?? facts.CreateInitialRound(options);
                     TableCheckpoint checkpoint = facts.CreateInitialCheckpoint(options, round);
                     SeatControllerKind[] controllers = ControllersFromSeatPlan(options);
-                    room?.InitializeControl(controllers);
+                    room?.InitializeControl(controllers, alreadyStarted: false);
                     await store.CreateRoomAsync(checkpoint, cancellationToken).ConfigureAwait(false);
                     actor = CreateActor(options, environment, clock, store, facts, round, checkpoint, controllers, temporaryFuriten, riichiFuriten);
                     facts.SettlementProvider = () => actor.LastSettlementCalculation;
@@ -303,6 +310,42 @@ namespace Mahjong.LocalHost
                     "The persisted control checkpoint could not be restored: " + exception.Message,
                     exception);
             }
+        }
+
+        private static async ValueTask<TableTimingCheckpoint> LoadRecoveredTimingAsync(
+            LocalTableStore store,
+            string roomId,
+            TableCheckpoint checkpoint,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                // The timing journal is the authoritative latest decision timing; the base
+                // checkpoint is the fallback when no journal record exists yet.
+                TableTimingJournalRecord? latest = await store.LoadTimingAsync(roomId, cancellationToken)
+                    .ConfigureAwait(false);
+                if (latest != null) return latest.Timing;
+                return TableTimingCheckpointCodec.Decode(checkpoint.TimingPayload);
+            }
+            catch (Exception exception) when (
+                exception is InvalidDataException ||
+                exception is ArgumentException ||
+                exception is OverflowException)
+            {
+                throw new LocalTableException(
+                    LocalTableErrorKind.CorruptState,
+                    "The persisted timing checkpoint could not be restored: " + exception.Message,
+                    exception);
+            }
+        }
+
+        private static bool HasStartedProgress(TableCheckpoint checkpoint, TableTimingCheckpoint timing)
+        {
+            // A pending decision is the strongest started evidence; committed state/events
+            // also mean the table previously left AwaitingSeats. A fresh room has none.
+            return timing.Decisions.Count > 0 ||
+                   checkpoint.StateVersion.Value > 0UL ||
+                   checkpoint.LastEventSeq.Value > 0UL;
         }
 
         private static SeatControllerKind[] ControllersFromSnapshot(ControlRegistrySnapshot snapshot)
