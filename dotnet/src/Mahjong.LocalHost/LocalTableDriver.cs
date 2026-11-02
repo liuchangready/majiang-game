@@ -23,6 +23,7 @@ namespace Mahjong.LocalHost
         private readonly Func<bool> _isActive;
         private readonly bool[] _temporaryFuriten;
         private readonly bool[] _riichiFuriten;
+        private readonly Func<int, bool>? _canOpenHumanDecision;
         private readonly CancellationTokenSource _stop = new CancellationTokenSource();
         private readonly long[] _controlEpochs = new long[4];
         private readonly bool[] _aiSeats = new bool[4];
@@ -46,7 +47,8 @@ namespace Mahjong.LocalHost
             RequestScopeId[] scopes,
             Func<bool> isActive,
             bool[] temporaryFuriten,
-            bool[] riichiFuriten)
+            bool[] riichiFuriten,
+            Func<int, bool>? canOpenHumanDecision = null)
         {
             _actor = actor;
             _options = options;
@@ -55,6 +57,7 @@ namespace Mahjong.LocalHost
             _isActive = isActive;
             _temporaryFuriten = temporaryFuriten;
             _riichiFuriten = riichiFuriten;
+            _canOpenHumanDecision = canOpenHumanDecision;
             for (int i = 0; i < 4; i++)
             {
                 _lastDecisionKeys[i] = string.Empty;
@@ -224,6 +227,8 @@ namespace Mahjong.LocalHost
                         break;
                     }
 
+                    if (!_aiSeats[seat] && _canOpenHumanDecision != null && !_canOpenHumanDecision(seat)) break;
+
                     IReadOnlyList<LegalActionOption> candidates = LocalCandidateProvider.DeriveTurnCandidates(
                         round,
                         seat,
@@ -274,6 +279,8 @@ namespace Mahjong.LocalHost
 
                             continue;
                         }
+
+                        if (!_aiSeats[responseSeat] && _canOpenHumanDecision != null && !_canOpenHumanDecision(responseSeat)) continue;
 
                         IReadOnlyList<LegalActionOption> responseCandidates = LocalCandidateProvider.DeriveResponseCandidates(
                             round,

@@ -352,6 +352,10 @@ namespace Mahjong.Unity.Tests.PlayMode
             yield return WaitForRealSnapshot(composition, 60f);
             string firstSession = composition.SessionCoordinator!.Current.Binding!.SessionId;
             string firstRoom = composition.SessionCoordinator.Current.Binding.RoomId;
+            Assert.IsInstanceOf<LocalTableChannelFactory>(composition.ChannelFactory);
+            var roomFactory = (LocalTableChannelFactory)composition.ChannelFactory;
+            Assert.IsTrue(roomFactory.IsRoomOpen,
+                "The running single-viewer composition must own exactly one cached room.");
 
             Task<bool> back = app.Router.ReturnToMenuAsync();
             yield return WaitUntil(() => back.IsCompleted, 30f, "return to menu");
@@ -359,6 +363,8 @@ namespace Mahjong.Unity.Tests.PlayMode
             Assert.AreEqual(SceneId.Menu, app.Router.CurrentScene);
             Assert.IsNull(composition.SessionCoordinator,
                 "Returning to the menu must release the real local session and its file lease.");
+            Assert.IsFalse(roomFactory.IsRoomOpen,
+                "The single-viewer owner must dispose the room (lease/driver) on a clean shutdown, not leave it cached.");
             Assert.IsTrue(app.Router.IsLocalGameStartAvailable,
                 "A clean close must leave the composition reusable.");
 
@@ -367,6 +373,8 @@ namespace Mahjong.Unity.Tests.PlayMode
             Assert.AreEqual(LocalGameStartStatus.Started, secondStart.Result.Status,
                 "A clean return-to-menu followed by a fresh start must reopen the real host.");
             yield return WaitForRealSnapshot(composition, 60f);
+            Assert.IsTrue(roomFactory.IsRoomOpen,
+                "The fresh start must own a newly opened room rather than reuse a disposed one.");
             SessionViewState second = composition.SessionCoordinator!.Current;
             Debug.Log(
                 "PLAYMODE_REAL_REENTRY firstSession=" + firstSession +
