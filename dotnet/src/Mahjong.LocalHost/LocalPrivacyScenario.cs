@@ -32,7 +32,8 @@ namespace Mahjong.LocalHost
         /// </summary>
         public static async Task<LocalPrivacyScenarioFacts> CaptureSleeveAndFeeAsync(
             TableSession session,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            bool submitChoice = true)
         {
             if (session == null) throw new ArgumentNullException(nameof(session));
             await WaitReadyAsync(session, cancellationToken).ConfigureAwait(false);
@@ -86,12 +87,16 @@ namespace Mahjong.LocalHost
             if (bloomCheat.CheatPoints >= markCheat.CheatPoints)
                 throw new InvalidOperationException("The legal SleeveBloom command did not deduct the owner-private fee.");
 
-            PlayerSnapshot choice = await SubmitCheatAsync(
-                session,
-                CommandKind.SubmitSleeveBloomChoice,
-                CommandPayloadFactory.SubmitSleeveBloomChoice(offer.OfferId, SleeveBloomChoice.First),
-                "privacy-matrix-sleeve-choice",
-                cancellationToken).ConfigureAwait(false);
+            PlayerSnapshot choice = bloom;
+            if (submitChoice)
+            {
+                choice = await SubmitCheatAsync(
+                    session,
+                    CommandKind.SubmitSleeveBloomChoice,
+                    CommandPayloadFactory.SubmitSleeveBloomChoice(offer.OfferId, SleeveBloomChoice.First),
+                    "privacy-matrix-sleeve-choice",
+                    cancellationToken).ConfigureAwait(false);
+            }
 
             return new LocalPrivacyScenarioFacts
             {

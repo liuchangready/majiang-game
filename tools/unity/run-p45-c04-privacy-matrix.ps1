@@ -23,7 +23,10 @@ $script:C04MutexName = 'Local\MahjongV5P45UnityValidation'
 $script:C04ExpectedTests = @(
   'Mahjong.Unity.Tests.PlayMode.C04PrivacyRoleSwitchPlayModeTests.RealRoom_FourPlayersSpectatorAndRoleSwitchUseIndependentSessions',
   'Mahjong.Unity.Tests.PlayMode.C04PrivacyRoleSwitchPlayModeTests.RealRoom_DelayedOldRawReceiveIsRejectedByNewBinding',
-  'Mahjong.Unity.Tests.PlayMode.C04PrivacyRoleSwitchPlayModeTests.RealRoom_ColdReopenReconcilesOriginalRequestWithoutDuplicate'
+  'Mahjong.Unity.Tests.PlayMode.C04PrivacyRoleSwitchPlayModeTests.RealRoom_ColdReopenReconcilesOriginalRequestWithoutDuplicate',
+  'Mahjong.Unity.Tests.PlayMode.C04PrivacyRoleSwitchPlayModeTests.RealRoom_LegalSleeveAndFeeOwnershipAcrossFourSeatsAndSpectator',
+  'Mahjong.Unity.Tests.PlayMode.C04PrivacyRoleSwitchPlayModeTests.RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly',
+  'Mahjong.Unity.Tests.PlayMode.C04PrivacyRoleSwitchPlayModeTests.RealRoom_ClosedPlayerToSpectatorToNewPlayerReceivePathRejectsOldRaw'
 )
 $script:C04RequiredScenes = @(
   'Assets/Scenes/Boot.unity',
@@ -318,6 +321,33 @@ function Assert-C04UnityXml {
   }
 }
 
+function Get-C04RequiredJsonProperty($Object, [string]$Name) {
+  if ($null -eq $Object) { throw "Marker object is null; cannot read $Name." }
+  $property = $Object.PSObject.Properties[$Name]
+  if ($null -eq $property -or $null -eq $property.Value) { throw "Marker required field $Name is missing or null." }
+  return $property.Value
+}
+
+function Get-C04RequiredMarkerString($Object, [string]$Name) {
+  $value = [string](Get-C04RequiredJsonProperty $Object $Name)
+  if ([string]::IsNullOrWhiteSpace($value)) { throw "Marker required string field $Name is empty." }
+  return $value
+}
+
+function Get-C04RequiredMarkerLong($Object, [string]$Name) {
+  $raw = Get-C04RequiredJsonProperty $Object $Name
+  [long]$value = 0
+  if (-not [long]::TryParse([string]$raw, [ref]$value)) { throw "Marker required integer field $Name is invalid: $raw" }
+  return $value
+}
+
+function Get-C04RequiredMarkerInt($Object, [string]$Name) {
+  $raw = Get-C04RequiredJsonProperty $Object $Name
+  [int]$value = 0
+  if (-not [int]::TryParse([string]$raw, [ref]$value)) { throw "Marker required integer field $Name is invalid: $raw" }
+  return $value
+}
+
 function Assert-C04BuildMarker {
   param(
     [Parameter(Mandatory = $true)][string]$MarkerPath,
@@ -326,29 +356,39 @@ function Assert-C04BuildMarker {
   )
   if (-not (Test-Path -LiteralPath $MarkerPath -PathType Leaf)) { throw "Player build marker is missing: $MarkerPath" }
   $marker = [IO.File]::ReadAllText($MarkerPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
-  if ([int]$marker.schemaVersion -ne 1) { throw 'Player marker schemaVersion is not 1.' }
-  if ([string]$marker.kind -ne 'c04-privacy-player-build') { throw 'Player marker kind is not c04-privacy-player-build.' }
-  if ([string]$marker.result -ne 'Succeeded') { throw "Player marker result=$($marker.result), expected Succeeded." }
-  if ([int]$marker.errors -ne 0) { throw "Player marker errors=$($marker.errors), expected 0." }
-  if ([string]$marker.target -ne 'StandaloneWindows64') { throw "Player marker target=$($marker.target), expected StandaloneWindows64." }
-  if (-not [string]::Equals([string]$marker.sourceHead, $ExpectedSourceHead, [StringComparison]::OrdinalIgnoreCase)) {
-    throw "Player marker sourceHead=$($marker.sourceHead), expected $ExpectedSourceHead."
+  if ((Get-C04RequiredMarkerInt $marker 'schemaVersion') -ne 1) { throw 'Player marker schemaVersion is not 1.' }
+  if ((Get-C04RequiredMarkerString $marker 'kind') -ne 'c04-privacy-player-build') { throw 'Player marker kind is not c04-privacy-player-build.' }
+  $markerResult = Get-C04RequiredMarkerString $marker 'result'
+  if ($markerResult -ne 'Succeeded') { throw "Player marker result=$markerResult, expected Succeeded." }
+  if ((Get-C04RequiredMarkerLong $marker 'errors') -ne 0) { throw "Player marker errors=$((Get-C04RequiredMarkerLong $marker 'errors')), expected 0." }
+  $markerTarget = Get-C04RequiredMarkerString $marker 'target'
+  if ($markerTarget -ne 'StandaloneWindows64') { throw "Player marker target=$markerTarget, expected StandaloneWindows64." }
+  $markerSource = Get-C04RequiredMarkerString $marker 'sourceHead'
+  $markerCommit = Get-C04RequiredMarkerString $marker 'buildCommit'
+  if (-not [string]::Equals($markerSource, $ExpectedSourceHead, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Player marker sourceHead=$markerSource, expected $ExpectedSourceHead."
   }
-  if (-not [string]::Equals([string]$marker.buildCommit, $ExpectedBuildCommit, [StringComparison]::OrdinalIgnoreCase)) {
-    throw "Player marker buildCommit=$($marker.buildCommit), expected $ExpectedBuildCommit."
+  if (-not [string]::Equals($markerCommit, $ExpectedBuildCommit, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Player marker buildCommit=$markerCommit, expected $ExpectedBuildCommit."
   }
-  if (@($marker.errorMessages).Count -ne 0) { throw 'Player marker contains error messages.' }
-  if ([string]::IsNullOrWhiteSpace([string]$marker.output)) { throw 'Player marker output is empty.' }
-  $output = [IO.Path]::GetFullPath([string]$marker.output)
+  $errorProperty = $marker.PSObject.Properties['errorMessages']
+  if ($null -eq $errorProperty -or $null -eq $errorProperty.Value) { throw 'Player marker required field errorMessages is missing or null.' }
+  if (@($errorProperty.Value).Count -ne 0) { throw 'Player marker contains error messages.' }
+  $markerOutput = Get-C04RequiredMarkerString $marker 'output'
+  $output = [IO.Path]::GetFullPath($markerOutput)
   if (-not (Test-Path -LiteralPath $output -PathType Leaf)) { throw "Player marker output is missing: $output" }
   $actualPlayerBytes = (Get-Item -LiteralPath $output).Length
   $actualPlayerSha = Get-C04Sha256File $output
-  if ([long]$marker.playerBytes -ne $actualPlayerBytes) { throw "Player marker playerBytes=$($marker.playerBytes), actual=$actualPlayerBytes." }
-  if (-not [string]::Equals([string]$marker.playerSha256, $actualPlayerSha, [StringComparison]::OrdinalIgnoreCase)) {
+  $markerPlayerBytes = Get-C04RequiredMarkerLong $marker 'playerBytes'
+  if ($markerPlayerBytes -ne $actualPlayerBytes) { throw "Player marker playerBytes=$markerPlayerBytes, actual=$actualPlayerBytes." }
+  $markerPlayerSha = Get-C04RequiredMarkerString $marker 'playerSha256'
+  if (-not [string]::Equals($markerPlayerSha, $actualPlayerSha, [StringComparison]::OrdinalIgnoreCase)) {
     throw 'Player marker playerSha256 does not match the actual executable.'
   }
 
-  $sceneNames = @($marker.scenes)
+  $sceneValue = Get-C04RequiredJsonProperty $marker 'scenes'
+  $sceneNames = @($sceneValue)
+  if ($sceneNames.Count -eq 0) { throw 'Player marker scenes is empty.' }
   foreach ($scene in $script:C04RequiredScenes) {
     if ($sceneNames -notcontains $scene) { throw "Player marker is missing required scene $scene." }
   }
@@ -357,11 +397,12 @@ function Assert-C04BuildMarker {
   }
 
   $pluginRoot = [IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $output) 'Mahjong_Data/Managed'))
-  $markerPlugins = $marker.plugins
-  if ($null -eq $markerPlugins) { throw 'Player marker has no plugin identity map.' }
+  $markerPlugins = Get-C04RequiredJsonProperty $marker 'plugins'
   foreach ($name in $script:C04RequiredPlugins) {
     $property = $markerPlugins.PSObject.Properties[$name]
-    if ($null -eq $property) { throw "Player marker is missing plugin $name." }
+    if ($null -eq $property -or $null -eq $property.Value -or [string]::IsNullOrWhiteSpace([string]$property.Value)) {
+      throw "Player marker is missing plugin $name."
+    }
     $candidate = Join-Path $pluginRoot $name
     if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { throw "Built player plugin is missing: $candidate" }
     $actual = Get-C04Sha256File $candidate
@@ -370,33 +411,73 @@ function Assert-C04BuildMarker {
     }
   }
 
-  $packageManifestPath = [string]$marker.packageManifest
-  if ([string]::IsNullOrWhiteSpace($packageManifestPath)) { throw 'Player marker packageManifest is empty.' }
-  $packageManifestPath = [IO.Path]::GetFullPath($packageManifestPath)
+  $packageManifestPath = [IO.Path]::GetFullPath((Get-C04RequiredMarkerString $marker 'packageManifest'))
+  $packageRoot = [IO.Path]::GetFullPath((Split-Path -Parent $output))
+  $packageRootWithSeparator = $packageRoot.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+  if (-not [string]::Equals([IO.Path]::GetDirectoryName($packageManifestPath), $packageRoot, [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'Player package manifest is not inside the player package root.'
+  }
   if (-not (Test-Path -LiteralPath $packageManifestPath -PathType Leaf)) { throw 'Player package manifest is missing.' }
   $manifestSha = Get-C04Sha256File $packageManifestPath
-  if (-not [string]::Equals([string]$marker.packageManifestSha256, $manifestSha, [StringComparison]::OrdinalIgnoreCase)) {
+  $markerManifestSha = Get-C04RequiredMarkerString $marker 'packageManifestSha256'
+  if (-not [string]::Equals($markerManifestSha, $manifestSha, [StringComparison]::OrdinalIgnoreCase)) {
     throw 'Player marker packageManifestSha256 does not match the manifest.'
   }
+  $markerPackageCount = Get-C04RequiredMarkerLong $marker 'packageFileCount'
+  $markerPackageBytes = Get-C04RequiredMarkerLong $marker 'packageBytes'
   $lines = @([IO.File]::ReadAllLines($packageManifestPath, [Text.Encoding]::UTF8) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-  if ($lines.Count -ne [int]$marker.packageFileCount) { throw "Player package manifest count=$($lines.Count), marker=$($marker.packageFileCount)." }
-  $packageRoot = [IO.Path]::GetDirectoryName($output)
+  if ($lines.Count -ne $markerPackageCount) { throw "Player package manifest count=$($lines.Count), marker=$markerPackageCount." }
+
   [long]$packageBytes = 0
-  $seen = @{}
+  $manifestSet = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
   foreach ($line in $lines) {
     if ($line -notmatch '^([0-9a-fA-F]{64})  (.+)$') { throw "Malformed package manifest line: $line" }
     $expectedHash = $matches[1].ToLowerInvariant()
-    $relative = $matches[2] -replace '/', '\'
-    if ($seen.ContainsKey($relative)) { throw "Duplicate package manifest entry: $relative" }
-    $seen[$relative] = $true
+    $rawRelative = $matches[2]
+    if ([IO.Path]::IsPathRooted($rawRelative)) { throw "Package manifest path is rooted: $rawRelative" }
+    $relative = $rawRelative -replace '/', '\'
+    if ($relative -match '(^|[\\/])\.\.([\\/]|$)') { throw "Package manifest path contains parent traversal: $rawRelative" }
+    $normalizedRelative = $relative -replace '/', '\'
+    if (-not $manifestSet.Add($normalizedRelative)) { throw "Duplicate package manifest entry: $rawRelative" }
     $full = [IO.Path]::GetFullPath((Join-Path $packageRoot $relative))
-    if (-not $full.StartsWith($packageRoot, [StringComparison]::OrdinalIgnoreCase)) { throw "Package manifest path escapes the output: $relative" }
-    if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { throw "Package manifest file is missing: $relative" }
+    if (-not $full.StartsWith($packageRootWithSeparator, [StringComparison]::OrdinalIgnoreCase)) {
+      throw "Package manifest path escapes the output root: $rawRelative"
+    }
+    if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { throw "Package manifest file is missing: $rawRelative" }
+    $fileItem = Get-Item -LiteralPath $full
+    if (($fileItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Package manifest file is a reparse point: $rawRelative" }
     $actual = Get-C04Sha256File $full
-    if (-not [string]::Equals($expectedHash, $actual, [StringComparison]::OrdinalIgnoreCase)) { throw "Package file hash mismatch: $relative" }
-    $packageBytes += (Get-Item -LiteralPath $full).Length
+    if (-not [string]::Equals($expectedHash, $actual, [StringComparison]::OrdinalIgnoreCase)) { throw "Package file hash mismatch: $rawRelative" }
+    $packageBytes += $fileItem.Length
   }
-  if ($packageBytes -ne [long]$marker.packageBytes) { throw "Player marker packageBytes=$($marker.packageBytes), actual=$packageBytes." }
+  if ($packageBytes -ne $markerPackageBytes) { throw "Player marker packageBytes=$markerPackageBytes, actual=$packageBytes." }
+
+  $exeRelative = $output.Substring($packageRootWithSeparator.Length)
+  if (-not $manifestSet.Contains($exeRelative)) { throw 'Player executable is not listed in the package manifest closure.' }
+  foreach ($name in $script:C04RequiredPlugins) {
+    $pluginRelative = 'Mahjong_Data\Managed\' + $name
+    if (-not $manifestSet.Contains($pluginRelative)) { throw "Required player plugin $name is not listed in the package manifest closure." }
+  }
+
+  $actualSet = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+  [long]$actualPackageBytes = 0
+  foreach ($file in (Get-ChildItem -LiteralPath $packageRoot -Recurse -File -Force)) {
+    $fileFull = [IO.Path]::GetFullPath($file.FullName)
+    if ([string]::Equals($fileFull, $packageManifestPath, [StringComparison]::OrdinalIgnoreCase)) { continue }
+    if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Player package contains a reparse point: $($file.FullName)" }
+    if (-not $fileFull.StartsWith($packageRootWithSeparator, [StringComparison]::OrdinalIgnoreCase)) {
+      throw "Player package file escapes the output root: $($file.FullName)"
+    }
+    $relative = $fileFull.Substring($packageRootWithSeparator.Length)
+    if (-not $manifestSet.Contains($relative)) { throw "Player package contains an unlisted file: $relative" }
+    if (-not $actualSet.Add($relative)) { throw "Player package contains a duplicate path: $relative" }
+    $actualPackageBytes += $file.Length
+  }
+  foreach ($relative in $manifestSet) {
+    if (-not $actualSet.Contains($relative)) { throw "Player package manifest lists a missing file: $relative" }
+  }
+  if ($actualSet.Count -ne $manifestSet.Count) { throw 'Player package actual file set does not equal the manifest closure.' }
+  if ($actualPackageBytes -ne $packageBytes) { throw "Player package actual bytes=$actualPackageBytes, manifest=$packageBytes." }
 
   return [pscustomobject]@{
     markerPath = [IO.Path]::GetFullPath($MarkerPath)
@@ -407,8 +488,61 @@ function Assert-C04BuildMarker {
     packageBytes = $packageBytes
     packageManifest = $packageManifestPath
     packageManifestSha256 = $manifestSha
-    sourceHead = [string]$marker.sourceHead
-    buildCommit = [string]$marker.buildCommit
+    sourceHead = $markerSource
+    buildCommit = $markerCommit
+  }
+}
+
+function Get-C04TestPlayerPackage {
+  param(
+    [Parameter(Mandatory = $true)][string]$StagingProject,
+    [Parameter(Mandatory = $true)][string]$RunRoot,
+    [Parameter(Mandatory = $true)][string]$SourceHead
+  )
+  $tempRoot = Join-Path $StagingProject 'Temp'
+  if (-not (Test-Path -LiteralPath $tempRoot -PathType Container)) { throw 'Unity Test Player Temp directory is missing.' }
+  $candidate = Get-ChildItem -LiteralPath $tempRoot -Recurse -Directory -Filter 'PlayerWithTests' -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+  if ($null -eq $candidate) { throw 'Unity did not leave a PlayerWithTests package under the isolated staging Temp.' }
+  $exe = Get-ChildItem -LiteralPath $candidate.FullName -Recurse -File -Filter '*.exe' -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+  if ($null -eq $exe) { throw 'PlayerWithTests package has no executable.' }
+  $packageRoot = [IO.Path]::GetFullPath($exe.DirectoryName)
+  $packageRootWithSeparator = $packageRoot.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+  $manifestPath = Join-Path $RunRoot 'test-player-package.sha256'
+  if (Test-Path -LiteralPath $manifestPath) { throw 'Test Player package manifest already exists.' }
+  $files = @(Get-ChildItem -LiteralPath $packageRoot -Recurse -File -Force | Sort-Object FullName)
+  $lines = New-Object Collections.Generic.List[string]
+  [long]$bytes = 0
+  foreach ($file in $files) {
+    if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Test Player package contains a reparse point: $($file.FullName)" }
+    if (-not $file.FullName.StartsWith($packageRootWithSeparator, [StringComparison]::OrdinalIgnoreCase)) {
+      throw "Test Player package file escapes the package root: $($file.FullName)"
+    }
+    $relative = $file.FullName.Substring($packageRootWithSeparator.Length) -replace '\\', '/'
+    $lines.Add((Get-C04Sha256File $file.FullName) + '  ' + $relative)
+    $bytes += $file.Length
+  }
+  Write-C04Utf8 $manifestPath (($lines -join "`n") + "`n")
+  $manifestSha = Get-C04Sha256File $manifestPath
+  $managed = Join-Path $packageRoot (([IO.Path]::GetFileNameWithoutExtension($exe.Name)) + '_Data/Managed')
+  foreach ($name in $script:C04RequiredPlugins) {
+    if (-not (Test-Path -LiteralPath (Join-Path $managed $name) -PathType Leaf)) {
+      throw "Test Player package is missing required managed plugin $name."
+    }
+  }
+  return [pscustomobject]@{
+    kind = 'WINDOWS_TEST_PLAYER_PACKAGE'
+    sourceHead = $SourceHead
+    executable = $exe.FullName
+    executableBytes = $exe.Length
+    executableSha256 = Get-C04Sha256File $exe.FullName
+    packageRoot = $packageRoot
+    packageFileCount = $files.Count
+    packageBytes = $bytes
+    packageManifest = $manifestPath
+    packageManifestSha256 = $manifestSha
+    samePackageForP1P2 = $true
   }
 }
 
@@ -445,6 +579,76 @@ function Stop-C04OwnedProcess {
   return [pscustomobject]@{ stopped = $true; normalCloseHonored = $false; forceStopped = $true; alive = $false; normalCloseRequested = $normalRequested }
 }
 
+function Wait-C04TaskBounded($Task, [int]$Milliseconds, [string]$Label) {
+  if ($null -eq $Task) { throw "$Label task is null." }
+  if ($Task.IsCompleted) {
+    $null = $Task.GetAwaiter().GetResult()
+    return
+  }
+  $delay = [Threading.Tasks.Task]::Delay([Math]::Max(1, $Milliseconds))
+  $completed = [Threading.Tasks.Task]::WhenAny($Task, $delay).GetAwaiter().GetResult()
+  if (-not [object]::ReferenceEquals($completed, $Task)) { throw "$Label did not complete within $Milliseconds ms." }
+  $null = $Task.GetAwaiter().GetResult()
+}
+
+function Get-C04OwnedDescendantProcessIds([int]$ParentId, [long]$ParentStartTicks) {
+  $found = New-Object Collections.Generic.List[int]
+  $queue = New-Object Collections.Generic.Queue[int]
+  $queue.Enqueue($ParentId)
+  $visited = New-Object 'System.Collections.Generic.HashSet[int]'
+  $null = $visited.Add($ParentId)
+  while ($queue.Count -gt 0) {
+    $current = $queue.Dequeue()
+    $children = @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$current" -ErrorAction SilentlyContinue)
+    foreach ($child in $children) {
+      if ($null -eq $child.ProcessId -or $visited.Contains([int]$child.ProcessId)) { continue }
+      try {
+        $created = ([datetime]$child.CreationDate).ToUniversalTime().Ticks
+      } catch { continue }
+      if ($created -lt $ParentStartTicks) { continue }
+      $childId = [int]$child.ProcessId
+      $null = $visited.Add($childId)
+      $found.Add($childId)
+      $queue.Enqueue($childId)
+    }
+  }
+  return @($found)
+}
+
+function Stop-C04OwnedDescendants([int]$ParentId, [long]$ParentStartTicks, [int]$GraceSeconds) {
+  $stopped = New-Object Collections.Generic.List[object]
+  $alreadyExited = New-Object Collections.Generic.List[int]
+  $failures = New-Object Collections.Generic.List[string]
+  foreach ($childId in (Get-C04OwnedDescendantProcessIds -ParentId $ParentId -ParentStartTicks $ParentStartTicks)) {
+    try {
+      $child = Get-Process -Id $childId -ErrorAction SilentlyContinue
+      if ($null -eq $child) { $alreadyExited.Add($childId); continue }
+      $childTicks = $child.StartTime.ToUniversalTime().Ticks
+      if ($childTicks -lt $ParentStartTicks) { throw "descendant $childId start time predates the owned parent" }
+      $result = Stop-C04OwnedProcess -Process $child -OwnedPid $childId -StartTicks $childTicks -GraceSeconds $GraceSeconds
+      $stopped.Add([pscustomobject]@{ pid = $childId; normalCloseHonored = $result.normalCloseHonored; forceStopped = $result.forceStopped })
+    } catch {
+      $failures.Add("descendant ${childId}: $($_.Exception.Message)")
+    }
+  }
+  return [pscustomobject]@{ stopped = $stopped.ToArray(); alreadyExited = $alreadyExited.ToArray(); failures = $failures.ToArray() }
+}
+
+function Stop-C04OwnedRecord($Record, [int]$GraceSeconds) {
+  if ($null -eq $Record) { return }
+  if (-not $Record.aliveAfter) { return }
+  try {
+    $process = Get-Process -Id ([int]$Record.pid) -ErrorAction SilentlyContinue
+    if ($null -eq $process) { $Record.aliveAfter = $false; return }
+    $ticks = $process.StartTime.ToUniversalTime().Ticks
+    if ($ticks -ne [long]$Record.startTicks) { throw "PID $($Record.pid) start identity changed" }
+    $null = Stop-C04OwnedProcess -Process $process -OwnedPid ([int]$Record.pid) -StartTicks ([long]$Record.startTicks) -GraceSeconds $GraceSeconds
+    $Record.aliveAfter = $false
+  } catch {
+    throw
+  }
+}
+
 function Invoke-C04OwnedProcess {
   param(
     [Parameter(Mandatory = $true)][string]$Name,
@@ -455,7 +659,9 @@ function Invoke-C04OwnedProcess {
     [string]$CancelFile = '',
     [int]$CloseGraceSeconds = 15,
     [string]$EvidenceDirectory = '',
-    [int]$HeartbeatSeconds = 30
+    [int]$HeartbeatSeconds = 30,
+    [System.Collections.IList]$OwnedRegistry = $null,
+    [switch]$InjectPostStartFailure
   )
   if ([string]::IsNullOrWhiteSpace($EvidenceDirectory)) { $EvidenceDirectory = $WorkingDirectory }
   [IO.Directory]::CreateDirectory($EvidenceDirectory) | Out-Null
@@ -481,16 +687,48 @@ function Invoke-C04OwnedProcess {
   if (-not $process.Start()) { throw "$Name did not start." }
   $pidValue = $process.Id
   $startTicks = $process.StartTime.ToUniversalTime().Ticks
-  $stdoutStream = [IO.File]::Open($stdoutPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
-  $stderrStream = [IO.File]::Open($stderrPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
-  $stdoutTask = $process.StandardOutput.BaseStream.CopyToAsync($stdoutStream)
-  $stderrTask = $process.StandardError.BaseStream.CopyToAsync($stderrStream)
+  $state = [pscustomobject]@{
+    name = $Name
+    pid = $pidValue
+    startTicks = $startTicks
+    aliveAfter = $true
+    phase = 'started'
+    exitCode = $null
+    timedOut = $false
+    cancelled = $false
+    forceStopped = $false
+    drainTimedOut = $false
+    drainUnresolved = $false
+    elapsedSeconds = $null
+    descendantsStopped = 0
+    cleanupFailures = @()
+    stdoutPath = $stdoutPath
+    stderrPath = $stderrPath
+    cleanupError = $null
+  }
+  if ($null -ne $OwnedRegistry) { $OwnedRegistry.Add($state) }
+
+  $stdoutStream = $null
+  $stderrStream = $null
+  $stdoutTask = $null
+  $stderrTask = $null
   $timedOut = $false
+  $drainTimedOut = $false
   $cancelled = $false
   $stopResult = $null
-  $nextHeartbeat = [DateTime]::UtcNow.AddSeconds([Math]::Max(1, $HeartbeatSeconds))
+  $cleanupFailures = New-Object Collections.Generic.List[string]
+  $descendantStop = $null
+  $drainUnresolved = $false
+  $exitCode = $null
   try {
-    while (-not $process.WaitForExit(1000)) {
+    $stdoutStream = [IO.File]::Open($stdoutPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+    $stderrStream = [IO.File]::Open($stderrPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+    $stdoutTask = $process.StandardOutput.BaseStream.CopyToAsync($stdoutStream)
+    $stderrTask = $process.StandardError.BaseStream.CopyToAsync($stderrStream)
+    if ($InjectPostStartFailure) { throw 'INJECTED_POST_START_FAILURE' }
+    $nextHeartbeat = [DateTime]::UtcNow.AddSeconds([Math]::Max(1, $HeartbeatSeconds))
+    $totalBudgetMs = [Math]::Max(1000, ($TimeoutSeconds + $CloseGraceSeconds) * 1000)
+    while (-not $process.WaitForExit(250)) {
       if (-not [string]::IsNullOrWhiteSpace($CancelFile) -and (Test-Path -LiteralPath $CancelFile)) {
         $cancelled = $true
         Write-C04Utf8 $cancelPath ("cancel-file observed at " + [DateTimeOffset]::UtcNow.ToString('o') + "`n")
@@ -508,18 +746,56 @@ function Invoke-C04OwnedProcess {
         $nextHeartbeat = [DateTime]::UtcNow.AddSeconds([Math]::Max(1, $HeartbeatSeconds))
       }
     }
+
     if (-not $process.HasExited) {
-      throw "$Name is still alive after the bounded stop path."
+      if ($null -eq $stopResult) {
+        $stopResult = Stop-C04OwnedProcess -Process $process -OwnedPid $pidValue -StartTicks $startTicks -GraceSeconds $CloseGraceSeconds
+      }
     }
-    $process.WaitForExit()
-    $stdoutTask.GetAwaiter().GetResult()
-    $stderrTask.GetAwaiter().GetResult()
-    $sw.Stop()
+    if (-not $process.WaitForExit(5000)) {
+      throw "$Name parent process did not exit after the bounded stop path."
+    }
     $exitCode = $process.ExitCode
+
+    $drainBudgetMs = [Math]::Max(1000, $totalBudgetMs - [int]$sw.ElapsedMilliseconds)
+    try {
+      Wait-C04TaskBounded $stdoutTask $drainBudgetMs ($Name + ' stdout drain')
+      Wait-C04TaskBounded $stderrTask $drainBudgetMs ($Name + ' stderr drain')
+    } catch {
+      $drainTimedOut = $true
+      $timedOut = $true
+      $descendantStop = Stop-C04OwnedDescendants -ParentId $pidValue -ParentStartTicks $startTicks -GraceSeconds 1
+      if (@($descendantStop.failures).Count -gt 0) {
+        $drainUnresolved = $true
+        foreach ($failure in $descendantStop.failures) { $cleanupFailures.Add($failure) }
+      }
+      try {
+        Wait-C04TaskBounded $stdoutTask 5000 ($Name + ' stdout drain after descendant stop')
+        Wait-C04TaskBounded $stderrTask 5000 ($Name + ' stderr drain after descendant stop')
+        $drainTimedOut = $true
+      } catch {
+        $drainUnresolved = $true
+        $cleanupFailures.Add('output drain remained blocked: ' + $_.Exception.Message)
+      }
+    }
+
+    $sw.Stop()
     $normalHonored = if ($null -eq $stopResult) { $true } else { [bool]$stopResult.normalCloseHonored }
     $forceStopped = if ($null -eq $stopResult) { $false } else { [bool]$stopResult.forceStopped }
-    $line = "nativeExit=$exitCode`nelapsedSeconds=$([Math]::Round($sw.Elapsed.TotalSeconds,3))`npid=$pidValue`nstartTicks=$startTicks`ntimedOut=$($timedOut.ToString().ToLowerInvariant())`ncancelled=$($cancelled.ToString().ToLowerInvariant())`nnormalCloseHonored=$($normalHonored.ToString().ToLowerInvariant())`nforceStopped=$($forceStopped.ToString().ToLowerInvariant())`n"
+    $line = "nativeExit=$exitCode`nelapsedSeconds=$([Math]::Round($sw.Elapsed.TotalSeconds,3))`npid=$pidValue`nstartTicks=$startTicks`ntimedOut=$($timedOut.ToString().ToLowerInvariant())`ndrainTimedOut=$($drainTimedOut.ToString().ToLowerInvariant())`ncancelled=$($cancelled.ToString().ToLowerInvariant())`nnormalCloseHonored=$($normalHonored.ToString().ToLowerInvariant())`nforceStopped=$($forceStopped.ToString().ToLowerInvariant())`ndrainUnresolved=$($drainUnresolved.ToString().ToLowerInvariant())`n"
     Write-C04Utf8 $exitPath $line
+    $aliveAfter = [bool]$drainUnresolved
+    $state.aliveAfter = $aliveAfter
+    $state.phase = 'finished'
+    $state.exitCode = $exitCode
+    $state.timedOut = $timedOut
+    $state.cancelled = $cancelled
+    $state.forceStopped = $forceStopped
+    $state.drainTimedOut = $drainTimedOut
+    $state.drainUnresolved = $drainUnresolved
+    $state.elapsedSeconds = [Math]::Round($sw.Elapsed.TotalSeconds, 3)
+    $state.descendantsStopped = $(if ($null -eq $descendantStop) { 0 } else { @($descendantStop.stopped).Count })
+    $state.cleanupFailures = @($cleanupFailures)
     return [pscustomobject]@{
       name = $Name
       pid = $pidValue
@@ -529,10 +805,14 @@ function Invoke-C04OwnedProcess {
       workingDirectory = $psi.WorkingDirectory
       exitCode = $exitCode
       timedOut = $timedOut
+      drainTimedOut = $drainTimedOut
       cancelled = $cancelled
       normalCloseHonored = $normalHonored
       forceStopped = $forceStopped
-      aliveAfter = (-not $process.HasExited)
+      aliveAfter = $aliveAfter
+      drainUnresolved = $drainUnresolved
+      descendantsStopped = $(if ($null -eq $descendantStop) { 0 } else { @($descendantStop.stopped).Count })
+      cleanupFailures = @($cleanupFailures)
       elapsedSeconds = [Math]::Round($sw.Elapsed.TotalSeconds, 3)
       stdoutPath = $stdoutPath
       stderrPath = $stderrPath
@@ -540,14 +820,27 @@ function Invoke-C04OwnedProcess {
     }
   }
   finally {
+    $cleanupError = $null
     if (-not $process.HasExited) {
-      try { $stopResult = Stop-C04OwnedProcess -Process $process -OwnedPid $pidValue -StartTicks $startTicks -GraceSeconds $CloseGraceSeconds } catch { }
+      try {
+        $null = Stop-C04OwnedProcess -Process $process -OwnedPid $pidValue -StartTicks $startTicks -GraceSeconds $CloseGraceSeconds
+      } catch {
+        $cleanupError = $_.Exception.Message
+      }
     }
-    try { if ($null -ne $stdoutTask -and $stdoutTask.IsCompleted) { $null = $stdoutTask.GetAwaiter().GetResult() } } catch { }
-    try { if ($null -ne $stderrTask -and $stderrTask.IsCompleted) { $null = $stderrTask.GetAwaiter().GetResult() } } catch { }
-    $stdoutStream.Dispose()
-    $stderrStream.Dispose()
+    if ($null -ne $stdoutTask) { try { $null = $stdoutTask.Wait(5000) } catch { } }
+    if ($null -ne $stderrTask) { try { $null = $stderrTask.Wait(5000) } catch { } }
+    if ($null -ne $stdoutStream) { $stdoutStream.Dispose() }
+    if ($null -ne $stderrStream) { $stderrStream.Dispose() }
+    $state.aliveAfter = (-not $process.HasExited) -or $drainUnresolved -or ($null -ne $cleanupError)
+    if ($null -ne $cleanupError) {
+      $state.cleanupError = $cleanupError
+      $cleanupFailures.Add($cleanupError)
+    }
     $process.Dispose()
+    if ($null -ne $cleanupError) {
+      throw "Owned process cleanup failed: $cleanupError"
+    }
   }
 }
 
@@ -642,8 +935,7 @@ function Log([string]$Text) {
 }
 
 function Start-C04Owned([string]$Name, [string]$Exe, [string[]]$Arguments, [string]$Cwd, [int]$Timeout) {
-  $result = Invoke-C04OwnedProcess -Name $Name -FileName $Exe -Arguments $Arguments -WorkingDirectory $Cwd -TimeoutSeconds $Timeout -CancelFile $MutexCancelFile -CloseGraceSeconds $ProcessCloseGraceSeconds -EvidenceDirectory $script:RunRoot -HeartbeatSeconds $MutexHeartbeatSeconds
-  $script:OwnedProcesses.Add($result)
+  $result = Invoke-C04OwnedProcess -Name $Name -FileName $Exe -Arguments $Arguments -WorkingDirectory $Cwd -TimeoutSeconds $Timeout -CancelFile $MutexCancelFile -CloseGraceSeconds $ProcessCloseGraceSeconds -EvidenceDirectory $script:RunRoot -HeartbeatSeconds $MutexHeartbeatSeconds -OwnedRegistry $script:OwnedProcesses
   Log "PROCESS $Name pid=$($result.pid) exit=$($result.exitCode) elapsed=$($result.elapsedSeconds)s timedOut=$($result.timedOut) cancelled=$($result.cancelled) forceStopped=$($result.forceStopped)"
   return $result
 }
@@ -710,7 +1002,15 @@ function Invoke-C04RunnerMain {
     Log "SOURCE head=$($identity.head) clean=true"
 
     $sourceManifest = Get-C04SelectedManifest -Base $repo -RelativeRoots @('dotnet', 'tools/unity')
-    $summary.inputClosure = [ordered]@{ count = $sourceManifest.count; bytes = $sourceManifest.bytes; sha256 = $sourceManifest.sha256 }
+    $sourceClosurePath = Join-Path $script:RunRoot 'source-closure.sha256'
+    Write-C04Utf8 $sourceClosurePath $sourceManifest.canonical
+    $summary.inputClosure = [ordered]@{
+      count = $sourceManifest.count
+      bytes = $sourceManifest.bytes
+      sha256 = $sourceManifest.sha256
+      manifest = $sourceClosurePath
+      manifestSha256 = (Get-C04Sha256File $sourceClosurePath)
+    }
     Log "INPUT_CLOSURE count=$($sourceManifest.count) bytes=$($sourceManifest.bytes) sha256=$($sourceManifest.sha256)"
 
     if ($PreflightOnly) {
@@ -721,7 +1021,15 @@ function Invoke-C04RunnerMain {
 
     $staging = Join-Path $script:RunRoot 'staging-project'
     $copied = Copy-C04UnityInputs -Repo $repo -Destination $staging
-    $summary.stagedInput = [ordered]@{ count = $copied.staged.count; bytes = $copied.staged.bytes; sha256 = $copied.staged.sha256 }
+    $stagedClosurePath = Join-Path $script:RunRoot 'staged-input.sha256'
+    Write-C04Utf8 $stagedClosurePath $copied.staged.canonical
+    $summary.stagedInput = [ordered]@{
+      count = $copied.staged.count
+      bytes = $copied.staged.bytes
+      sha256 = $copied.staged.sha256
+      manifest = $stagedClosurePath
+      manifestSha256 = (Get-C04Sha256File $stagedClosurePath)
+    }
     Log "STAGED_INPUT count=$($copied.staged.count) sha256=$($copied.staged.sha256)"
     $occupied = @(Get-PSDrive -PSProvider FileSystem | ForEach-Object { $_.Name.ToUpperInvariant() })
     foreach ($letter in @('R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z')) {
@@ -806,6 +1114,10 @@ exit `$LASTEXITCODE
       $unityResult = Start-C04Owned $stageName $UnityPath $unityArgs $unityProject $TimeoutSeconds
       Assert-C04NativeSuccess $unityResult $stageName
       $summary.testXml = Assert-C04UnityXml -XmlPath $testXml -ExpectedTests $script:C04ExpectedTests
+      if ($WindowsPlayerTests) {
+        $summary.testPlayerPackage = Get-C04TestPlayerPackage -StagingProject $staging -RunRoot $script:RunRoot -SourceHead $identity.head
+        Log "TEST_PLAYER_PACKAGE exe=$($summary.testPlayerPackage.executable) files=$($summary.testPlayerPackage.packageFileCount) bytes=$($summary.testPlayerPackage.packageBytes) sha=$($summary.testPlayerPackage.packageManifestSha256)"
+      }
       if ($WindowsPlayerTests -and -not (Test-Path -LiteralPath (Join-Path $privacyEvidence 'raw-frames.json'))) {
         throw 'Windows test Player did not seal real raw channel frames under its isolated evidence root.'
       }
@@ -824,6 +1136,11 @@ exit `$LASTEXITCODE
     $summary.status = 'PASS'
     $sourceAfter = Get-C04SelectedManifest -Base $repo -RelativeRoots @('dotnet', 'tools/unity')
     Assert-C04ManifestEqual $sourceManifest $sourceAfter 'Frozen source input'
+    $sourceFinalClosurePath = Join-Path $script:RunRoot 'source-closure-final.sha256'
+    Write-C04Utf8 $sourceFinalClosurePath $sourceAfter.canonical
+    $summary.inputClosure['finalSha256'] = $sourceAfter.sha256
+    $summary.inputClosure['finalManifest'] = $sourceFinalClosurePath
+    $summary.inputClosure['finalManifestSha256'] = (Get-C04Sha256File $sourceFinalClosurePath)
     $identityAfter = Get-C04SourceIdentity -Repo $repo -ExpectedHead $identity.head
     Log "SOURCE_FROZEN head=$($identityAfter.head) closure=$($sourceAfter.sha256)"
     Log 'RUNNER_STAGE_PASS'
@@ -838,14 +1155,28 @@ exit `$LASTEXITCODE
   }
   finally {
     Log 'FINALLY_START'
+    $finalizationFailures = New-Object Collections.Generic.List[string]
+    foreach ($process in $script:OwnedProcesses.ToArray()) {
+      if ($process.aliveAfter) {
+        try {
+          Stop-C04OwnedRecord -Record $process -GraceSeconds $ProcessCloseGraceSeconds
+        } catch {
+          $finalizationFailures.Add("owned process $($process.pid) cleanup failed: $($_.Exception.Message)")
+        }
+      }
+    }
     $allStopped = $true
     foreach ($process in $script:OwnedProcesses) {
       if ($process.aliveAfter) { $allStopped = $false }
     }
     if ($script:MutexHandle) {
       if ($allStopped) {
-        Release-C04Mutex $script:MutexHandle
-        Log 'MUTEX_RELEASED'
+        try {
+          Release-C04Mutex $script:MutexHandle
+          Log 'MUTEX_RELEASED'
+        } catch {
+          $finalizationFailures.Add('mutex release failed: ' + $_.Exception.Message)
+        }
       } else {
         $summary.unknown = $true
         Log 'MUTEX_HELD_RESIDUAL_WRITER'
@@ -853,9 +1184,19 @@ exit `$LASTEXITCODE
       $script:MutexHandle = $null
     }
     if ($script:StageDrive) {
-      & subst.exe $script:StageDrive /D
-      Log "UNITY_STAGING_DRIVE_RELEASED drive=$($script:StageDrive)"
-      $script:StageDrive = $null
+      if ($allStopped) {
+        try {
+          & subst.exe $script:StageDrive /D
+          if ($LASTEXITCODE -ne 0) { throw "subst release exited $LASTEXITCODE" }
+          Log "UNITY_STAGING_DRIVE_RELEASED drive=$($script:StageDrive)"
+          $script:StageDrive = $null
+        } catch {
+          $finalizationFailures.Add('staging drive release failed: ' + $_.Exception.Message)
+        }
+      } else {
+        $finalizationFailures.Add('staging drive retained because an owned writer is still alive')
+        Log "UNITY_STAGING_DRIVE_RETAINED drive=$($script:StageDrive)"
+      }
     }
     Log 'FINALLY_ENV_RESTORE'
     foreach ($key in $script:OldEnvironment.Keys) {
@@ -867,8 +1208,8 @@ exit `$LASTEXITCODE
           [Environment]::SetEnvironmentVariable([string]$key, [string]$value)
         }
       } catch {
-        Log "ENV_RESTORE_FAIL key=$key valueType=$(if ($null -eq $value) { 'null' } else { $value.GetType().FullName }) message=$($_.Exception.Message)"
-        throw
+        $finalizationFailures.Add("env restore failed for ${key}: $($_.Exception.Message)")
+        Log "ENV_RESTORE_FAIL key=$key message=$($_.Exception.Message)"
       }
     }
     if (-not $allStopped) {
@@ -878,6 +1219,11 @@ exit `$LASTEXITCODE
     }
     Log 'FINALLY_ASSIGN_SUMMARY'
     $summary.finishedUtc = [DateTimeOffset]::UtcNow.ToString('o')
+    if ($finalizationFailures.Count -gt 0) {
+      $summary.status = 'FAIL'
+      $summary.error = ($finalizationFailures -join '; ')
+      $summary.finalizationFailures = @($finalizationFailures)
+    }
     Log 'FINALLY_ASSIGN_PROCESSES'
     $summary['processes'] = $script:OwnedProcesses.ToArray()
     Log 'FINALLY_SEAL'
@@ -885,10 +1231,33 @@ exit `$LASTEXITCODE
       $sealed = Write-C04SealedEvidence -RunRoot $script:RunRoot -Summary $summary
       Write-Host ("SEALED manifest=" + $sealed.manifestSha256 + " files=" + $sealed.manifest.count)
     } catch {
+      $finalizationFailures.Add('evidence seal failed: ' + $_.Exception.ToString())
+      $summary.status = 'FAIL'
+      $summary.error = ($finalizationFailures -join '; ')
+      $summary.finalizationFailures = @($finalizationFailures)
+      try {
+        $summaryPath = Join-Path $script:RunRoot 'summary.json'
+        if (Test-Path -LiteralPath $summaryPath) { Write-C04Json $summaryPath $summary }
+        foreach ($sealFile in @('manifest.sha256', 'seal.json')) {
+          $candidate = Join-Path $script:RunRoot $sealFile
+          if (Test-Path -LiteralPath $candidate) { Remove-Item -LiteralPath $candidate -Force }
+        }
+      } catch { }
       Write-Host ("SEAL_FAILED " + $_.Exception.ToString())
+    }
+    if ($finalizationFailures.Count -gt 0) {
+      $summary.status = 'FAIL'
+      $summary.error = ($finalizationFailures -join '; ')
+      $summary.finalizationFailures = @($finalizationFailures)
+      try {
+        Write-C04Utf8 (Join-Path $script:RunRoot 'finalization-failure.txt') (($finalizationFailures -join "`n") + "`n")
+      } catch { }
     }
   }
   if ($null -ne $failure) { throw $failure }
+  if ($null -ne $finalizationFailures -and $finalizationFailures.Count -gt 0) {
+    throw ('Runner finalization failed: ' + ($finalizationFailures -join '; '))
+  }
 }
 
 Invoke-C04RunnerMain

@@ -8,7 +8,9 @@ using Mahjong.Contracts;
 using Mahjong.Contracts.Wire;
 using Xunit;
 using DecisionView = Mahjong.Contracts.Wire.DecisionView;
+using GamePhase = Mahjong.Contracts.Wire.GamePhase;
 using PlayerSnapshot = Mahjong.Contracts.Wire.PlayerSnapshot;
+using PrivateCheatView = Mahjong.Contracts.Wire.PrivateCheatView;
 using PublicSnapshot = Mahjong.Contracts.Wire.PublicSnapshot;
 
 namespace Mahjong.LocalHost.Tests
@@ -118,6 +120,103 @@ namespace Mahjong.LocalHost.Tests
         }
 
         [Fact]
+        public async Task Real_room_four_owners_and_spectator_observe_same_version_non_empty_private_target_facts()
+        {
+            await using var harness = new P41Harness();
+            harness.Options.SeatPlan = LocalTableSeatPlan.AllFourHumanSeats;
+            await using LocalTableRoom room = await LocalTableHost.OpenRoomAsync(harness.Options, TestContext.Current.CancellationToken);
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(60));
+            var channels = new ITableChannel[4];
+            var sessions = new TableSession[4];
+            ITableChannel? spectatorChannel = null;
+            TableSession? spectator = null;
+            using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token);
+            using var driverCts = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token);
+            var pumps = new List<Task>();
+            Task? driver = null;
+            try
+            {
+                for (int seat = 0; seat < 4; seat++)
+                {
+                    LocalTableConnectionTicket ticket = room.CreatePlayerTicket(seat);
+                    channels[seat] = await room.ConnectAsync(ticket, timeout.Token);
+                    sessions[seat] = new TableSession(channels[seat], new InMemoryOutboxStore());
+                    await sessions[seat].OpenAsync(new TableSessionOpenRequest(ticket.Value, "room-owner-" + seat), timeout.Token);
+                    pumps.Add(PumpAsync(sessions[seat], pumpCts.Token));
+                }
+                foreach (TableSession session in sessions) await PumpUntilReadyAsync(session, timeout.Token);
+
+                LocalTableConnectionTicket spectatorTicket = room.CreateSpectatorTicket();
+                spectatorChannel = await room.ConnectAsync(spectatorTicket, timeout.Token);
+                spectator = new TableSession(spectatorChannel, new InMemoryOutboxStore());
+                await spectator.OpenAsync(new TableSessionOpenRequest(spectatorTicket.Value, "room-owner-spectator"), timeout.Token);
+                pumps.Add(PumpAsync(spectator, pumpCts.Token));
+                await PumpUntilReadyAsync(spectator, timeout.Token);
+
+                driver = DriveOtherSeatsAsync(sessions, 0, driverCts.Token);
+                LocalPrivacyScenarioFacts facts = await LocalPrivacyScenario.CaptureSleeveAndFeeAsync(sessions[0], timeout.Token, submitChoice: false);
+                driverCts.Cancel();
+                try { await driver; } catch (OperationCanceledException) { }
+
+                ulong targetVersion = facts.SleeveStateVersion;
+                foreach (TableSession session in sessions)
+                    targetVersion = Math.Max(targetVersion, session.PlayerSnapshot?.StateVersion ?? 0UL);
+                targetVersion = Math.Max(targetVersion, spectator.PublicSnapshot?.StateVersion ?? 0UL);
+                for (int i = 0; i < 300; i++)
+                {
+                    bool allAtVersion = true;
+                    foreach (TableSession session in sessions)
+                        allAtVersion &= (session.PlayerSnapshot?.StateVersion ?? 0UL) == targetVersion;
+                    allAtVersion &= (spectator.PublicSnapshot?.StateVersion ?? 0UL) == targetVersion;
+                    if (allAtVersion) break;
+                    await Task.Delay(20, timeout.Token);
+                }
+
+                PlayerSnapshot[] snapshots = new PlayerSnapshot[4];
+                for (int seat = 0; seat < 4; seat++)
+                {
+                    snapshots[seat] = Assert.IsType<PlayerSnapshot>(sessions[seat].PlayerSnapshot);
+                    Assert.Equal(seat, snapshots[seat].PrivateView.Seat);
+                    Assert.NotEmpty(snapshots[seat].PrivateView.ClosedTiles);
+                    Assert.Equal(targetVersion, snapshots[seat].StateVersion);
+                    Assert.NotNull(sessions[seat].Binding);
+                    Assert.Equal(seat, sessions[seat].Binding!.SeatId);
+                }
+                PublicSnapshot publicSnapshot = Assert.IsType<PublicSnapshot>(spectator.PublicSnapshot);
+                Assert.Null(spectator.PlayerSnapshot);
+                Assert.Equal(targetVersion, publicSnapshot.StateVersion);
+                Assert.NotNull(publicSnapshot.View);
+
+                PrivateCheatView targetCheat = Assert.IsType<PrivateCheatView>(snapshots[0].PrivateView.Cheat);
+                Assert.NotNull(targetCheat.SleeveBloom);
+                Assert.False(string.IsNullOrWhiteSpace(targetCheat.SleeveBloom.OfferId));
+                Assert.NotEmpty(targetCheat.LedgerEntries);
+                Assert.True(targetCheat.CheatPoints < 120);
+                string targetOffer = targetCheat.SleeveBloom.OfferId;
+                for (int seat = 1; seat < 4; seat++)
+                {
+                    PrivateCheatView foreign = Assert.IsType<PrivateCheatView>(snapshots[seat].PrivateView.Cheat);
+                    if (foreign.SleeveBloom != null)
+                        Assert.NotEqual(targetOffer, foreign.SleeveBloom.OfferId);
+                }
+            }
+            finally
+            {
+                pumpCts.Cancel();
+                if (driver != null) { try { await driver; } catch { } }
+                try { await Task.WhenAll(pumps); } catch { }
+                if (spectator != null) try { await spectator.CloseAsync("TEST_DONE", CancellationToken.None); } catch { }
+                if (spectatorChannel != null) try { await spectatorChannel.CloseAsync(new TableChannelCloseReason("TEST_DONE", true), CancellationToken.None); } catch { }
+                for (int seat = 0; seat < 4; seat++)
+                {
+                    if (sessions[seat] != null) try { await sessions[seat].CloseAsync("TEST_DONE", CancellationToken.None); } catch { }
+                    if (channels[seat] != null) try { await channels[seat].CloseAsync(new TableChannelCloseReason("TEST_DONE", true), CancellationToken.None); } catch { }
+                }
+            }
+        }
+
+        [Fact]
         public async Task Slow_real_channel_queue_saturates_without_stopping_room_or_other_bindings()
         {
             await using var harness = new P41Harness();
@@ -131,10 +230,13 @@ namespace Mahjong.LocalHost.Tests
             LocalTableConnectionTicket slowTicket = room.CreateSpectatorTicket();
             ITableChannel slowChannel = await room.ConnectAsync(slowTicket, timeout.Token);
             var slow = new TableSession(slowChannel, new InMemoryOutboxStore());
+            using var playerPumpCts = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token);
+            Task? playerPump = null;
             try
             {
                 await player.OpenAsync(new TableSessionOpenRequest(playerTicket.Value, "slow-player"), timeout.Token);
                 await PumpUntilReadyAsync(player, timeout.Token);
+                playerPump = PumpAsync(player, playerPumpCts.Token);
 
                 await slow.OpenAsync(new TableSessionOpenRequest(slowTicket.Value, "slow-spectator"), timeout.Token);
                 await PumpUntilReadyAsync(slow, timeout.Token);
@@ -168,6 +270,45 @@ namespace Mahjong.LocalHost.Tests
                 Assert.Equal(TableConnectionState.Ready, player.State);
                 Assert.NotNull(player.PlayerSnapshot);
 
+                PlayerSnapshot beforeLiveRequest = player.PlayerSnapshot!;
+                BusinessPayload releasePayload = CommandPayloadFactory.ReleaseControl(
+                    beforeLiveRequest.RoundId,
+                    beforeLiveRequest.PrivateView.Control?.ControlEpoch ?? 0UL);
+                var liveRequest = new RequestId("slow-player-live-request");
+                var liveResolved = new TaskCompletionSource<TableReceiptResolvedEventArgs>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                EventHandler<TableReceiptResolvedEventArgs> liveHandler = (_, args) =>
+                {
+                    if (args.Command.Key.RequestId.Value == liveRequest.Value) liveResolved.TrySetResult(args);
+                };
+                player.ReceiptResolved += liveHandler;
+                try
+                {
+                    var liveCommand = new ProtocolCommand(
+                        CommandKind.ReleaseControl,
+                        releasePayload,
+                        liveRequest,
+                        player.Binding!.Scope.ScopeId,
+                        new StateVersion(beforeLiveRequest.StateVersion),
+                        new RoundId(beforeLiveRequest.RoundId),
+                        decisionId: null,
+                        controlEpoch: new ControlEpoch(beforeLiveRequest.PrivateView.Control?.ControlEpoch ?? 0UL));
+                    CommandSubmission liveSubmission = await player.SubmitAsync(liveCommand, timeout.Token);
+                    Assert.True(liveSubmission.Sent);
+                    for (int i = 0; i < 500 && !liveResolved.Task.IsCompleted; i++)
+                        await Task.Delay(10, timeout.Token);
+                    Assert.True(liveResolved.Task.IsCompleted, "The original player request did not resolve.");
+                    TableReceiptResolvedEventArgs liveReceipt = await liveResolved.Task;
+                    Assert.True(
+                        liveReceipt.Resolution.ReceiptStatus == Mahjong.Contracts.ReceiptStatus.Recorded ||
+                        liveReceipt.Resolution.ReceiptStatus == Mahjong.Contracts.ReceiptStatus.Applied);
+                    Assert.Equal(TableConnectionState.Ready, player.State);
+                }
+                finally
+                {
+                    player.ReceiptResolved -= liveHandler;
+                }
+
                 LocalTableConnectionTicket replacementTicket = room.CreateSpectatorTicket();
                 ITableChannel replacementChannel = await room.ConnectAsync(replacementTicket, timeout.Token);
                 var replacement = new TableSession(replacementChannel, new InMemoryOutboxStore());
@@ -185,6 +326,8 @@ namespace Mahjong.LocalHost.Tests
             }
             finally
             {
+                playerPumpCts.Cancel();
+                if (playerPump != null) { try { await playerPump; } catch { } }
                 try { await player.CloseAsync("TEST_DONE", CancellationToken.None); } catch { }
                 try { await playerChannel.CloseAsync(new TableChannelCloseReason("TEST_DONE", true), CancellationToken.None); } catch { }
                 try { await slow.CloseAsync("TEST_DONE", CancellationToken.None); } catch { }
@@ -248,6 +391,74 @@ namespace Mahjong.LocalHost.Tests
                 }
                 try { await seatZero.CloseAsync("TEST_DONE", CancellationToken.None); } catch { }
                 try { await seatZeroChannel.CloseAsync(new TableChannelCloseReason("TEST_DONE", true), CancellationToken.None); } catch { }
+            }
+        }
+
+        [Fact]
+        public async Task Closed_player_to_spectator_to_new_player_receive_path_rejects_old_private_raw()
+        {
+            await using var harness = new P41Harness();
+            harness.Options.SeatPlan = LocalTableSeatPlan.AllFourHumanSeats;
+            await using LocalTableRoom room = await LocalTableHost.OpenRoomAsync(harness.Options, TestContext.Current.CancellationToken);
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+            timeout.CancelAfter(MatrixTimeout);
+
+            LocalTableConnectionTicket firstTicket = room.CreatePlayerTicket(0);
+            ITableChannel firstInner = await room.ConnectAsync(firstTicket, timeout.Token);
+            var firstChannel = new CaptureChannel(firstInner);
+            var first = new TableSession(firstChannel, new InMemoryOutboxStore());
+            ITableChannel? spectatorChannel = null;
+            TableSession? spectator = null;
+            ITableChannel? reopenedInner = null;
+            CaptureChannel? reopenedChannel = null;
+            TableSession? reopened = null;
+            try
+            {
+                await first.OpenAsync(new TableSessionOpenRequest(firstTicket.Value, "path-first"), timeout.Token);
+                await PumpUntilReadyAsync(first, timeout.Token);
+                byte[] oldFrame = firstChannel.CapturedPlayerSnapshotFrame
+                    ?? throw new InvalidOperationException("No real private frame was captured before player close.");
+                WireDecodeResult decoded = WireCodec.Decode(oldFrame);
+                Assert.True(decoded.IsOk);
+                Assert.Equal(0, decoded.Envelope!.SeatId);
+                string oldSession = first.Binding!.SessionId.Value;
+
+                await first.CloseAsync("ROLE_SWITCH", CancellationToken.None);
+                await firstChannel.CloseAsync(new TableChannelCloseReason("ROLE_SWITCH", true), CancellationToken.None);
+
+                LocalTableConnectionTicket spectatorTicket = room.CreateSpectatorTicket();
+                spectatorChannel = await room.ConnectAsync(spectatorTicket, timeout.Token);
+                spectator = new TableSession(spectatorChannel, new InMemoryOutboxStore());
+                await spectator.OpenAsync(new TableSessionOpenRequest(spectatorTicket.Value, "path-spectator"), timeout.Token);
+                await PumpUntilReadyAsync(spectator, timeout.Token);
+                Assert.Null(spectator.PlayerSnapshot);
+                Assert.NotNull(spectator.PublicSnapshot);
+
+                LocalTableConnectionTicket reopenedTicket = room.CreatePlayerTicket(0);
+                reopenedInner = await room.ConnectAsync(reopenedTicket, timeout.Token);
+                reopenedChannel = new CaptureChannel(reopenedInner);
+                reopened = new TableSession(reopenedChannel, new InMemoryOutboxStore());
+                await reopened.OpenAsync(new TableSessionOpenRequest(reopenedTicket.Value, "path-reopened"), timeout.Token);
+                await PumpUntilReadyAsync(reopened, timeout.Token);
+                var current = Assert.IsType<PlayerSnapshot>(reopened.PlayerSnapshot);
+                string currentTiles = string.Join(",", current.PrivateView.ClosedTiles);
+                Assert.NotEqual(oldSession, reopened.Binding!.SessionId.Value);
+
+                reopenedChannel.InjectNextReceive(oldFrame);
+                await reopened.PumpOnceAsync(timeout.Token);
+                var after = Assert.IsType<PlayerSnapshot>(reopened.PlayerSnapshot);
+                Assert.Equal(reopened.Binding.SessionId.Value, after.SessionId);
+                Assert.Equal(0, after.PrivateView.Seat);
+                Assert.Equal(currentTiles, string.Join(",", after.PrivateView.ClosedTiles));
+            }
+            finally
+            {
+                if (reopened != null) try { await reopened.CloseAsync("TEST_DONE", CancellationToken.None); } catch { }
+                if (reopenedChannel != null) try { await reopenedChannel.CloseAsync(new TableChannelCloseReason("TEST_DONE", true), CancellationToken.None); } catch { }
+                if (spectator != null) try { await spectator.CloseAsync("TEST_DONE", CancellationToken.None); } catch { }
+                if (spectatorChannel != null) try { await spectatorChannel.CloseAsync(new TableChannelCloseReason("TEST_DONE", true), CancellationToken.None); } catch { }
+                try { await first.CloseAsync("TEST_DONE", CancellationToken.None); } catch { }
+                try { await firstChannel.CloseAsync(new TableChannelCloseReason("TEST_DONE", true), CancellationToken.None); } catch { }
             }
         }
 
@@ -391,6 +602,90 @@ namespace Mahjong.LocalHost.Tests
                 exception is InvalidOperationException)
             {
             }
+        }
+
+        private static async Task DriveOtherSeatsAsync(
+            TableSession[] sessions,
+            int targetSeat,
+            CancellationToken cancellationToken)
+        {
+            var lastSentVersion = new Dictionary<int, ulong>();
+            try
+            {
+                while (!cancellationToken.IsCancellationRequested)
+                {
+                    for (int seat = 0; seat < sessions.Length; seat++)
+                    {
+                        if (seat == targetSeat || sessions[seat] == null) continue;
+                        PlayerSnapshot? snapshot = sessions[seat].PlayerSnapshot;
+                        var board = snapshot?.PublicView?.Board;
+                        if (snapshot == null || board == null || board.CurrentSeat != seat) continue;
+                        if (sessions[seat].PendingCommands.Count > 0) continue;
+                        if (lastSentVersion.TryGetValue(seat, out ulong sentVersion) &&
+                            sentVersion == snapshot.StateVersion) continue;
+
+                        ProtocolActionType? action = null;
+                        uint[]? tiles = null;
+                        switch (board.Phase)
+                        {
+                            case GamePhase.CheatWindow:
+                            case GamePhase.Discard:
+                                action = ProtocolActionType.DiscardTile;
+                                uint tile = snapshot.PrivateView.HasDrawnTileId
+                                    ? snapshot.PrivateView.DrawnTileId
+                                    : snapshot.PrivateView.ClosedTiles[0];
+                                tiles = new[] { tile };
+                                break;
+                            case GamePhase.ResponseWindow:
+                            case GamePhase.ChankanWindow:
+                                action = ProtocolActionType.Pass;
+                                break;
+                        }
+                        if (!action.HasValue) continue;
+                        try
+                        {
+                            await SubmitActionNoWaitAsync(sessions[seat], action.Value, tiles, cancellationToken);
+                            lastSentVersion[seat] = snapshot.StateVersion;
+                        }
+                        catch (Exception exception) when (
+                            exception is OperationCanceledException ||
+                            exception is TableChannelClosedException ||
+                            exception is InvalidOperationException)
+                        {
+                        }
+                    }
+                    await Task.Delay(10, cancellationToken);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
+
+        private static async Task SubmitActionNoWaitAsync(
+            TableSession session,
+            ProtocolActionType action,
+            uint[]? tiles,
+            CancellationToken cancellationToken)
+        {
+            PlayerSnapshot snapshot = session.PlayerSnapshot
+                ?? throw new InvalidOperationException("No player snapshot is available for the room driver.");
+            BusinessPayload payload = CommandPayloadFactory.SubmitAction(
+                snapshot.RoundId,
+                "room-driver",
+                0UL,
+                action,
+                tileIds: tiles);
+            var command = new ProtocolCommand(
+                CommandKind.SubmitAction,
+                payload,
+                new RequestId("room-driver-" + Guid.NewGuid().ToString("N")),
+                session.Binding!.Scope.ScopeId,
+                new StateVersion(snapshot.StateVersion),
+                new RoundId(snapshot.RoundId),
+                decisionId: null,
+                controlEpoch: new ControlEpoch(snapshot.PrivateView.Control?.ControlEpoch ?? 0UL));
+            await session.SubmitAsync(command, cancellationToken);
         }
 
         private static Envelope HeartbeatEnvelope(string sessionId, ulong bindingEpoch, string roomId, int sequence)

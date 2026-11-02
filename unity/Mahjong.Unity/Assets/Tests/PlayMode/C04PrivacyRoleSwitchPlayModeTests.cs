@@ -1,6 +1,7 @@
 #nullable enable
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
@@ -19,6 +20,7 @@ using UnityEngine.SceneManagement;
 using UnityEngine.TestTools;
 using DecisionView = Mahjong.Contracts.Wire.DecisionView;
 using PlayerSnapshot = Mahjong.Contracts.Wire.PlayerSnapshot;
+using PrivateCheatView = Mahjong.Contracts.Wire.PrivateCheatView;
 using WireEnvelope = Mahjong.Contracts.Wire.Envelope;
 using WireMessageType = Mahjong.Contracts.Wire.MessageType;
 
@@ -362,6 +364,591 @@ namespace Mahjong.Unity.Tests.PlayMode
                 LocalTableChannelFactory.DisableC04PrivacyRoomModeForTest();
                 try { if (Directory.Exists(root)) Directory.Delete(root, true); } catch { }
             }
+        }
+
+        [UnityTest]
+        public IEnumerator RealRoom_ClosedPlayerToSpectatorToNewPlayerReceivePathRejectsOldRaw()
+        {
+            string root = Path.Combine(Application.temporaryCachePath, "c04-closed-path-" + Guid.NewGuid().ToString("N"));
+            string roomId = "c04-closed-path-" + Guid.NewGuid().ToString("N");
+            Task<bool> task = Task.Run(() => RunClosedBindingRawPathAsync(root, roomId));
+            yield return WaitTask(() => task.IsCompleted, 90f, "closed player/spectator/player raw path");
+            Assert.IsFalse(task.IsFaulted, task.Exception?.ToString());
+            Assert.IsTrue(task.Result);
+            string directory = Path.Combine(EvidenceRoot(), "closed-binding-raw");
+            Directory.CreateDirectory(directory);
+            File.WriteAllText(Path.Combine(directory, "closed-binding-raw.json"),
+                "{\"schemaVersion\":1,\"path\":\"player->spectator->player\",\"oldRawAccepted\":false}",
+                new UTF8Encoding(false));
+            try { if (Directory.Exists(root)) Directory.Delete(root, true); } catch { }
+        }
+
+        [UnityTest]
+        public IEnumerator RealRoom_LegalSleeveAndFeeOwnershipAcrossFourSeatsAndSpectator()
+        {
+            string root = Path.Combine(Application.temporaryCachePath, "c04-owner-" + Guid.NewGuid().ToString("N"));
+            string roomId = "c04-owner-" + Guid.NewGuid().ToString("N");
+            Task<FourOwnerEvidence> task = Task.Run(() => RunFourOwnerPrivacyScenarioAsync(root, roomId));
+            yield return WaitTask(() => task.IsCompleted, 180f, "four-owner privacy scenario");
+            Assert.IsFalse(task.IsFaulted, task.Exception?.ToString());
+            FourOwnerEvidence evidence = task.Result;
+            Assert.AreEqual(4, evidence.SeatCount);
+            Assert.AreEqual(evidence.Version, evidence.SpectatorVersion);
+            Assert.IsTrue(evidence.TargetClosedTiles > 0);
+            Assert.IsTrue(evidence.TargetLedgerEntries > 0);
+            Assert.IsTrue(evidence.TargetCheatPoints < 120);
+            Assert.IsFalse(string.IsNullOrEmpty(evidence.TargetOfferId));
+            Assert.IsTrue(evidence.SpectatorHasPublic);
+            Assert.IsFalse(evidence.SpectatorHasPlayer);
+            string directory = Path.Combine(EvidenceRoot(), "four-owner");
+            Directory.CreateDirectory(directory);
+            File.WriteAllText(Path.Combine(directory, "four-owner.json"),
+                "{\"schemaVersion\":1,\"version\":\"" + evidence.Version +
+                "\",\"seats\":" + evidence.SeatCount +
+                ",\"targetClosedTiles\":" + evidence.TargetClosedTiles +
+                ",\"targetLedgerEntries\":" + evidence.TargetLedgerEntries +
+                ",\"targetCheatPoints\":" + evidence.TargetCheatPoints +
+                ",\"targetOfferId\":\"" + evidence.TargetOfferId +
+                "\",\"spectatorVersion\":\"" + evidence.SpectatorVersion +
+                "\",\"spectatorHasPublic\":" + evidence.SpectatorHasPublic.ToString().ToLowerInvariant() +
+                ",\"spectatorHasPlayer\":" + evidence.SpectatorHasPlayer.ToString().ToLowerInvariant() + "}",
+                new UTF8Encoding(false));
+            try { if (Directory.Exists(root)) Directory.Delete(root, true); } catch { }
+        }
+
+        [UnityTest]
+        public IEnumerator RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly()
+        {
+            string root = Path.Combine(Application.temporaryCachePath, "c04-release-" + Guid.NewGuid().ToString("N"));
+            string roomId = "c04-release-" + Guid.NewGuid().ToString("N");
+            Task<ReleaseEvidence> task = Task.Run(() => RunReleasedControlScenarioAsync(root, roomId));
+            yield return WaitTask(() => task.IsCompleted, 90f, "released-seat authority scenario");
+            Assert.IsFalse(task.IsFaulted, task.Exception?.ToString());
+            ReleaseEvidence evidence = task.Result;
+            Assert.IsTrue(evidence.AdvancedWithoutPlayerBinding, "Released AI did not advance after the player binding closed.");
+            Assert.Greater(evidence.AfterVersion, evidence.ReleaseVersion);
+            string directory = Path.Combine(EvidenceRoot(), "released-control");
+            Directory.CreateDirectory(directory);
+            File.WriteAllText(Path.Combine(directory, "released-control.json"),
+                "{\"schemaVersion\":1,\"releaseVersion\":\"" + evidence.ReleaseVersion +
+                "\",\"afterVersion\":\"" + evidence.AfterVersion +
+                "\",\"advancedWithoutPlayerBinding\":true}", new UTF8Encoding(false));
+            try { if (Directory.Exists(root)) Directory.Delete(root, true); } catch { }
+        }
+
+        private static async Task<bool> RunClosedBindingRawPathAsync(string root, string roomId)
+        {
+            LocalTableChannelFactory.DisableC04PrivacyRoomModeForTest();
+            var paths = new UnityAppPaths(root);
+            paths.EnsureDirectoriesCreated();
+            var config = new AppConfig { pumpBarrierTimeoutMs = 5000, closeTimeoutMs = 5000, cancelObservationMs = 50 };
+            var factory = new LocalTableChannelFactory(config, paths, roomId, "owner-" + Guid.NewGuid().ToString("N"), TimeSpan.FromMinutes(2));
+            using var pumpCts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+            ITableChannel? firstInner = null;
+            RawCaptureChannel? firstChannel = null;
+            TableSession? first = null;
+            ITableChannel? spectatorChannel = null;
+            TableSession? spectator = null;
+            ITableChannel? reopenedInner = null;
+            RawCaptureChannel? reopenedChannel = null;
+            TableSession? reopened = null;
+            Task? firstPump = null;
+            Task? spectatorPump = null;
+            Task? reopenedPump = null;
+            try
+            {
+                firstInner = await factory.CreateRoomViewerAsync(LocalRoomViewerRole.Player, 0, CancellationToken.None).ConfigureAwait(false);
+                firstChannel = new RawCaptureChannel(firstInner);
+                var firstTicket = firstInner as ILocalTableTicketSource
+                    ?? throw new InvalidOperationException("The first player channel did not expose its ticket.");
+                first = new TableSession(firstChannel, new InMemoryOutboxStore());
+                await first.OpenAsync(new TableSessionOpenRequest(firstTicket.SessionTicket, LocalTableChannelFactory.ClientBuild), pumpCts.Token).ConfigureAwait(false);
+                firstPump = PumpLoopAsync(first, pumpCts.Token);
+                await WaitReadyAsync(first, pumpCts.Token).ConfigureAwait(false);
+                byte[] oldFrame = firstChannel.CapturedPlayerSnapshotFrame
+                    ?? throw new InvalidOperationException("No old private frame was captured.");
+                string oldSession = first.Binding!.SessionId.Value;
+
+                await first.CloseAsync("ROLE_SWITCH", CancellationToken.None).ConfigureAwait(false);
+                await firstChannel.CloseAsync(new TableChannelCloseReason("ROLE_SWITCH", true), CancellationToken.None).ConfigureAwait(false);
+                first = null;
+                firstChannel = null;
+                firstInner = null;
+
+                spectatorChannel = await factory.CreateRoomViewerAsync(LocalRoomViewerRole.Spectator, -1, CancellationToken.None).ConfigureAwait(false);
+                var spectatorTicket = spectatorChannel as ILocalTableTicketSource
+                    ?? throw new InvalidOperationException("The spectator channel did not expose its ticket.");
+                spectator = new TableSession(spectatorChannel, new InMemoryOutboxStore());
+                await spectator.OpenAsync(new TableSessionOpenRequest(spectatorTicket.SessionTicket, LocalTableChannelFactory.ClientBuild), pumpCts.Token).ConfigureAwait(false);
+                spectatorPump = PumpLoopAsync(spectator, pumpCts.Token);
+                await WaitReadyAsync(spectator, pumpCts.Token).ConfigureAwait(false);
+                if (spectator.PlayerSnapshot != null) throw new InvalidOperationException("Spectator exposed a player snapshot.");
+
+                reopenedInner = await factory.CreateRoomViewerAsync(LocalRoomViewerRole.Player, 0, CancellationToken.None).ConfigureAwait(false);
+                reopenedChannel = new RawCaptureChannel(reopenedInner);
+                var reopenedTicket = reopenedInner as ILocalTableTicketSource
+                    ?? throw new InvalidOperationException("The reopened player channel did not expose its ticket.");
+                reopened = new TableSession(reopenedChannel, new InMemoryOutboxStore());
+                await reopened.OpenAsync(new TableSessionOpenRequest(reopenedTicket.SessionTicket, LocalTableChannelFactory.ClientBuild), pumpCts.Token).ConfigureAwait(false);
+                reopenedPump = PumpLoopAsync(reopened, pumpCts.Token);
+                await WaitReadyAsync(reopened, pumpCts.Token).ConfigureAwait(false);
+                if (reopened.Binding!.SessionId.Value == oldSession) throw new InvalidOperationException("Reopened player reused the old session.");
+                string currentTiles = string.Join(",", reopened.PlayerSnapshot!.PrivateView.ClosedTiles);
+                reopenedChannel.InjectNextReceive(oldFrame);
+                Task pump = reopened.PumpOnceAsync(CancellationToken.None);
+                if (!pump.Wait(TimeSpan.FromSeconds(10))) throw new TimeoutException("Injected old raw receive did not complete.");
+                PlayerSnapshot after = reopened.PlayerSnapshot
+                    ?? throw new InvalidOperationException("No snapshot after old raw injection.");
+                if (after.SessionId != reopened.Binding.SessionId.Value) throw new InvalidOperationException("Old session id replaced the new binding.");
+                if (after.PrivateView.Seat != 0) throw new InvalidOperationException("Old raw changed the owner seat.");
+                if (string.Join(",", after.PrivateView.ClosedTiles) != currentTiles) throw new InvalidOperationException("Old raw changed the reopened hand.");
+                return true;
+            }
+            finally
+            {
+                pumpCts.Cancel();
+                if (firstPump != null) { try { await firstPump.ConfigureAwait(false); } catch { } }
+                if (spectatorPump != null) { try { await spectatorPump.ConfigureAwait(false); } catch { } }
+                if (reopenedPump != null) { try { await reopenedPump.ConfigureAwait(false); } catch { } }
+                if (first != null) try { await first.CloseAsync("C04_TEST_DONE", CancellationToken.None).ConfigureAwait(false); } catch { }
+                if (firstChannel != null) try { await firstChannel.CloseAsync(new TableChannelCloseReason("C04_TEST_DONE", true), CancellationToken.None).ConfigureAwait(false); } catch { }
+                if (spectator != null) try { await spectator.CloseAsync("C04_TEST_DONE", CancellationToken.None).ConfigureAwait(false); } catch { }
+                if (spectatorChannel != null) try { await spectatorChannel.CloseAsync(new TableChannelCloseReason("C04_TEST_DONE", true), CancellationToken.None).ConfigureAwait(false); } catch { }
+                if (reopened != null) try { await reopened.CloseAsync("C04_TEST_DONE", CancellationToken.None).ConfigureAwait(false); } catch { }
+                if (reopenedChannel != null) try { await reopenedChannel.CloseAsync(new TableChannelCloseReason("C04_TEST_DONE", true), CancellationToken.None).ConfigureAwait(false); } catch { }
+                try { await factory.CloseRoomAsync(CancellationToken.None).ConfigureAwait(false); } catch { }
+            }
+        }
+
+        private static async Task<FourOwnerEvidence> RunFourOwnerPrivacyScenarioAsync(string root, string roomId)
+        {
+            LocalTableChannelFactory.EnableC04PrivacyRoomMode();
+            var paths = new UnityAppPaths(root);
+            paths.EnsureDirectoriesCreated();
+            var config = new AppConfig { pumpBarrierTimeoutMs = 5000, closeTimeoutMs = 5000, cancelObservationMs = 50 };
+            var factory = new LocalTableChannelFactory(config, paths, roomId, "owner-" + Guid.NewGuid().ToString("N"), TimeSpan.FromMinutes(2));
+            var channels = new ITableChannel[4];
+            var sessions = new TableSession[4];
+            ITableChannel? spectatorChannel = null;
+            TableSession? spectator = null;
+            using var pumpCts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+            var pumps = new List<Task>();
+            Task? driver = null;
+            using var driverCts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+            try
+            {
+                for (int seat = 0; seat < 4; seat++)
+                {
+                    channels[seat] = await factory.CreateRoomViewerAsync(LocalRoomViewerRole.Player, seat, CancellationToken.None).ConfigureAwait(false);
+                    var ticket = channels[seat] as ILocalTableTicketSource
+                        ?? throw new InvalidOperationException("The real room channel did not expose its ticket.");
+                    sessions[seat] = new TableSession(channels[seat], new InMemoryOutboxStore());
+                    await sessions[seat].OpenAsync(new TableSessionOpenRequest(ticket.SessionTicket, LocalTableChannelFactory.ClientBuild), pumpCts.Token).ConfigureAwait(false);
+                    pumps.Add(PumpLoopAsync(sessions[seat], pumpCts.Token));
+                }
+                foreach (TableSession session in sessions) await WaitReadyAsync(session, pumpCts.Token).ConfigureAwait(false);
+
+                spectatorChannel = await factory.CreateRoomViewerAsync(LocalRoomViewerRole.Spectator, -1, CancellationToken.None).ConfigureAwait(false);
+                var spectatorTicket = spectatorChannel as ILocalTableTicketSource
+                    ?? throw new InvalidOperationException("The spectator channel did not expose its ticket.");
+                spectator = new TableSession(spectatorChannel, new InMemoryOutboxStore());
+                await spectator.OpenAsync(new TableSessionOpenRequest(spectatorTicket.SessionTicket, LocalTableChannelFactory.ClientBuild), pumpCts.Token).ConfigureAwait(false);
+                pumps.Add(PumpLoopAsync(spectator, pumpCts.Token));
+                await WaitReadyAsync(spectator, pumpCts.Token).ConfigureAwait(false);
+
+                driver = DriveOtherSeatsAsync(sessions, 0, driverCts.Token);
+                TargetPrivacyFacts facts = await RunTargetSleeveAsync(sessions[0], pumpCts.Token).ConfigureAwait(false);
+                driverCts.Cancel();
+                try { await driver.ConfigureAwait(false); } catch (OperationCanceledException) { }
+
+                ulong common = facts.SleeveStateVersion;
+                foreach (TableSession session in sessions) common = Math.Max(common, session.PlayerSnapshot?.StateVersion ?? 0UL);
+                common = Math.Max(common, spectator.PublicSnapshot?.StateVersion ?? 0UL);
+                for (int i = 0; i < 400; i++)
+                {
+                    bool all = true;
+                    foreach (TableSession session in sessions) all &= (session.PlayerSnapshot?.StateVersion ?? 0UL) == common;
+                    all &= (spectator.PublicSnapshot?.StateVersion ?? 0UL) == common;
+                    if (all) break;
+                    await Task.Delay(20, pumpCts.Token).ConfigureAwait(false);
+                }
+
+                var snapshots = new PlayerSnapshot[4];
+                for (int seat = 0; seat < 4; seat++)
+                {
+                    snapshots[seat] = sessions[seat].PlayerSnapshot
+                        ?? throw new InvalidOperationException("No player snapshot for seat " + seat);
+                    if (snapshots[seat].PrivateView.Seat != seat) throw new InvalidOperationException("Owner seat mismatch.");
+                    if (snapshots[seat].PrivateView.ClosedTiles.Count == 0) throw new InvalidOperationException("Owner hand is empty.");
+                    if (snapshots[seat].StateVersion != common) throw new InvalidOperationException("Owner state version is not common.");
+                }
+                var publicSnapshot = spectator.PublicSnapshot
+                    ?? throw new InvalidOperationException("No spectator public snapshot.");
+                if (publicSnapshot.StateVersion != common) throw new InvalidOperationException("Spectator version is not common.");
+                if (spectator.PlayerSnapshot != null) throw new InvalidOperationException("Spectator exposed a player snapshot.");
+                PrivateCheatView? targetCheat = snapshots[0].PrivateView.Cheat;
+                if (targetCheat?.SleeveBloom == null) throw new InvalidOperationException("Target SleeveBloom offer is empty.");
+                if (targetCheat.LedgerEntries.Count == 0) throw new InvalidOperationException("Target private ledger is empty.");
+
+                return new FourOwnerEvidence
+                {
+                    Version = common,
+                    SeatCount = 4,
+                    TargetClosedTiles = snapshots[0].PrivateView.ClosedTiles.Count,
+                    TargetLedgerEntries = targetCheat.LedgerEntries.Count,
+                    TargetCheatPoints = targetCheat.CheatPoints,
+                    TargetOfferId = targetCheat.SleeveBloom.OfferId,
+                    SpectatorVersion = publicSnapshot.StateVersion,
+                    SpectatorHasPublic = true,
+                    SpectatorHasPlayer = false
+                };
+            }
+            finally
+            {
+                driverCts.Cancel();
+                if (driver != null) { try { await driver.ConfigureAwait(false); } catch { } }
+                pumpCts.Cancel();
+                try { await Task.WhenAll(pumps).ConfigureAwait(false); } catch { }
+                if (spectator != null) try { await spectator.CloseAsync("C04_TEST_DONE", CancellationToken.None).ConfigureAwait(false); } catch { }
+                if (spectatorChannel != null) try { await spectatorChannel.CloseAsync(new TableChannelCloseReason("C04_TEST_DONE", true), CancellationToken.None).ConfigureAwait(false); } catch { }
+                for (int seat = 0; seat < 4; seat++)
+                {
+                    if (sessions[seat] != null) try { await sessions[seat].CloseAsync("C04_TEST_DONE", CancellationToken.None).ConfigureAwait(false); } catch { }
+                    if (channels[seat] != null) try { await channels[seat].CloseAsync(new TableChannelCloseReason("C04_TEST_DONE", true), CancellationToken.None).ConfigureAwait(false); } catch { }
+                }
+                try { await factory.CloseRoomAsync(CancellationToken.None).ConfigureAwait(false); } catch { }
+                LocalTableChannelFactory.DisableC04PrivacyRoomModeForTest();
+            }
+        }
+
+        private static async Task<ReleaseEvidence> RunReleasedControlScenarioAsync(string root, string roomId)
+        {
+            LocalTableChannelFactory.DisableC04PrivacyRoomModeForTest();
+            var paths = new UnityAppPaths(root);
+            paths.EnsureDirectoriesCreated();
+            var config = new AppConfig { pumpBarrierTimeoutMs = 5000, closeTimeoutMs = 5000, cancelObservationMs = 50 };
+            var factory = new LocalTableChannelFactory(config, paths, roomId, "owner-" + Guid.NewGuid().ToString("N"), TimeSpan.FromMinutes(2));
+            using var pumpCts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+            ITableChannel? channel = null;
+            TableSession? session = null;
+            ITableChannel? spectatorChannel = null;
+            TableSession? spectator = null;
+            Task? playerPump = null;
+            Task? spectatorPump = null;
+            try
+            {
+                channel = await factory.CreateRoomViewerAsync(LocalRoomViewerRole.Player, 0, CancellationToken.None).ConfigureAwait(false);
+                var ticket = channel as ILocalTableTicketSource
+                    ?? throw new InvalidOperationException("The player channel did not expose its ticket.");
+                session = new TableSession(channel, new InMemoryOutboxStore());
+                await session.OpenAsync(new TableSessionOpenRequest(ticket.SessionTicket, LocalTableChannelFactory.ClientBuild), pumpCts.Token).ConfigureAwait(false);
+                playerPump = PumpLoopAsync(session, pumpCts.Token);
+                await WaitReadyAsync(session, pumpCts.Token).ConfigureAwait(false);
+                PlayerSnapshot before = session.PlayerSnapshot
+                    ?? throw new InvalidOperationException("No baseline player snapshot.");
+                ulong epoch = before.PrivateView.Control?.ControlEpoch ?? 0UL;
+                BusinessPayload payload = CommandPayloadFactory.ReleaseControl(before.RoundId, epoch);
+                var command = new ProtocolCommand(
+                    CommandKind.ReleaseControl,
+                    payload,
+                    new RequestId("unity-release-" + Guid.NewGuid().ToString("N")),
+                    session.Binding!.Scope.ScopeId,
+                    new StateVersion(before.StateVersion),
+                    new RoundId(before.RoundId),
+                    decisionId: null,
+                    controlEpoch: new ControlEpoch(epoch));
+                PlayerSnapshot released = await SubmitAndWaitAsync(session, command, before.StateVersion, pumpCts.Token).ConfigureAwait(false);
+                ulong releaseVersion = released.StateVersion;
+
+                await session.CloseAsync("RELEASE_CLOSE", CancellationToken.None).ConfigureAwait(false);
+                await channel.CloseAsync(new TableChannelCloseReason("RELEASE_CLOSE", true), CancellationToken.None).ConfigureAwait(false);
+                session = null;
+                channel = null;
+
+                spectatorChannel = await factory.CreateRoomViewerAsync(LocalRoomViewerRole.Spectator, -1, CancellationToken.None).ConfigureAwait(false);
+                var spectatorTicket = spectatorChannel as ILocalTableTicketSource
+                    ?? throw new InvalidOperationException("The spectator channel did not expose its ticket.");
+                spectator = new TableSession(spectatorChannel, new InMemoryOutboxStore());
+                await spectator.OpenAsync(new TableSessionOpenRequest(spectatorTicket.SessionTicket, LocalTableChannelFactory.ClientBuild), pumpCts.Token).ConfigureAwait(false);
+                spectatorPump = PumpLoopAsync(spectator, pumpCts.Token);
+                await WaitReadyAsync(spectator, pumpCts.Token).ConfigureAwait(false);
+                ulong after = releaseVersion;
+                for (int i = 0; i < 600; i++)
+                {
+                    after = spectator.PublicSnapshot?.StateVersion ?? after;
+                    if (after > releaseVersion) break;
+                    await Task.Delay(25, pumpCts.Token).ConfigureAwait(false);
+                }
+                return new ReleaseEvidence
+                {
+                    ReleaseVersion = releaseVersion,
+                    AfterVersion = after,
+                    AdvancedWithoutPlayerBinding = after > releaseVersion
+                };
+            }
+            finally
+            {
+                pumpCts.Cancel();
+                if (playerPump != null) { try { await playerPump.ConfigureAwait(false); } catch { } }
+                if (spectatorPump != null) { try { await spectatorPump.ConfigureAwait(false); } catch { } }
+                if (session != null) try { await session.CloseAsync("C04_TEST_DONE", CancellationToken.None).ConfigureAwait(false); } catch { }
+                if (channel != null) try { await channel.CloseAsync(new TableChannelCloseReason("C04_TEST_DONE", true), CancellationToken.None).ConfigureAwait(false); } catch { }
+                if (spectator != null) try { await spectator.CloseAsync("C04_TEST_DONE", CancellationToken.None).ConfigureAwait(false); } catch { }
+                if (spectatorChannel != null) try { await spectatorChannel.CloseAsync(new TableChannelCloseReason("C04_TEST_DONE", true), CancellationToken.None).ConfigureAwait(false); } catch { }
+                try { await factory.CloseRoomAsync(CancellationToken.None).ConfigureAwait(false); } catch { }
+            }
+        }
+
+        private static async Task<TargetPrivacyFacts> RunTargetSleeveAsync(TableSession session, CancellationToken cancellationToken)
+        {
+            PlayerSnapshot baseline = session.PlayerSnapshot
+                ?? throw new InvalidOperationException("No target baseline.");
+            if (baseline.PrivateView.ClosedTiles.Count < 4) throw new InvalidOperationException("Target has fewer than four closed tiles.");
+            uint[] markTiles = new uint[4];
+            for (int i = 0; i < 4; i++) markTiles[i] = baseline.PrivateView.ClosedTiles[i];
+            PlayerSnapshot marked = await SubmitCheatAndWaitAsync(
+                session,
+                CommandKind.SubmitTileMark,
+                CommandPayloadFactory.SubmitTileMark(baseline.RoundId, "unity-room", 0UL, markTiles),
+                "unity-room-mark",
+                cancellationToken).ConfigureAwait(false);
+            if (marked.PrivateView.Cheat == null || marked.PrivateView.Cheat.LedgerEntries.Count == 0)
+                throw new InvalidOperationException("TileMark did not produce private fee/ledger facts.");
+
+            await DiscardOnceAsync(session, cancellationToken).ConfigureAwait(false);
+            await AdvanceToTargetCheatWindowAsync(session, cancellationToken).ConfigureAwait(false);
+            PlayerSnapshot bloom = await SubmitCheatAndWaitAsync(
+                session,
+                CommandKind.SubmitSleeveBloom,
+                CommandPayloadFactory.SubmitSleeveBloom(session.PlayerSnapshot!.RoundId, "unity-room", 0UL),
+                "unity-room-sleeve",
+                cancellationToken).ConfigureAwait(false);
+            PrivateCheatView cheat = bloom.PrivateView.Cheat
+                ?? throw new InvalidOperationException("SleeveBloom did not produce a private cheat view.");
+            if (cheat.SleeveBloom == null) throw new InvalidOperationException("SleeveBloom offer is empty.");
+            return new TargetPrivacyFacts { SleeveStateVersion = bloom.StateVersion };
+        }
+
+        private static async Task DiscardOnceAsync(TableSession session, CancellationToken cancellationToken)
+        {
+            PlayerSnapshot snapshot = session.PlayerSnapshot
+                ?? throw new InvalidOperationException("No target snapshot for discard.");
+            uint tile = snapshot.PrivateView.HasDrawnTileId
+                ? snapshot.PrivateView.DrawnTileId
+                : snapshot.PrivateView.ClosedTiles[0];
+            await SubmitActionNoWaitAsync(session, ProtocolActionType.DiscardTile, new[] { tile }, cancellationToken).ConfigureAwait(false);
+            await Task.Delay(30, cancellationToken).ConfigureAwait(false);
+        }
+
+        private static async Task AdvanceToTargetCheatWindowAsync(TableSession session, CancellationToken cancellationToken)
+        {
+            for (int i = 0; i < 600; i++)
+            {
+                PlayerSnapshot? snapshot = session.PlayerSnapshot;
+                var board = snapshot?.PublicView?.Board;
+                if (snapshot != null && board != null && board.CurrentSeat == 0)
+                {
+                    if (board.Phase == Mahjong.Contracts.Wire.GamePhase.CheatWindow) return;
+                    if (board.Phase == Mahjong.Contracts.Wire.GamePhase.Discard)
+                    {
+                        uint tile = snapshot.PrivateView.HasDrawnTileId
+                            ? snapshot.PrivateView.DrawnTileId
+                            : snapshot.PrivateView.ClosedTiles[0];
+                        await SubmitActionNoWaitAsync(session, ProtocolActionType.DiscardTile, new[] { tile }, cancellationToken).ConfigureAwait(false);
+                    }
+                    else if (board.Phase == Mahjong.Contracts.Wire.GamePhase.ResponseWindow ||
+                             board.Phase == Mahjong.Contracts.Wire.GamePhase.ChankanWindow)
+                    {
+                        await SubmitActionNoWaitAsync(session, ProtocolActionType.Pass, null, cancellationToken).ConfigureAwait(false);
+                    }
+                }
+                await Task.Delay(20, cancellationToken).ConfigureAwait(false);
+            }
+            throw new TimeoutException("Target seat did not reach a legal CheatWindow.");
+        }
+
+        private static async Task<PlayerSnapshot> SubmitCheatAndWaitAsync(
+            TableSession session,
+            CommandKind kind,
+            BusinessPayload payload,
+            string prefix,
+            CancellationToken cancellationToken)
+        {
+            PlayerSnapshot before = session.PlayerSnapshot
+                ?? throw new InvalidOperationException("No snapshot before " + prefix + ".");
+            var command = new ProtocolCommand(
+                kind,
+                payload,
+                new RequestId(prefix + "-" + Guid.NewGuid().ToString("N")),
+                session.Binding!.Scope.ScopeId,
+                new StateVersion(before.StateVersion),
+                new RoundId(before.RoundId),
+                decisionId: null,
+                controlEpoch: new ControlEpoch(before.PrivateView.Control?.ControlEpoch ?? 0UL));
+            return await SubmitAndWaitAsync(session, command, before.StateVersion, cancellationToken).ConfigureAwait(false);
+        }
+
+        private static async Task SubmitActionNoWaitAsync(
+            TableSession session,
+            ProtocolActionType action,
+            uint[]? tiles,
+            CancellationToken cancellationToken)
+        {
+            PlayerSnapshot before = session.PlayerSnapshot
+                ?? throw new InvalidOperationException("No snapshot for action.");
+            BusinessPayload payload = CommandPayloadFactory.SubmitAction(
+                before.RoundId,
+                "unity-room-driver",
+                0UL,
+                action,
+                tileIds: tiles);
+            var command = new ProtocolCommand(
+                CommandKind.SubmitAction,
+                payload,
+                new RequestId("unity-room-action-" + Guid.NewGuid().ToString("N")),
+                session.Binding!.Scope.ScopeId,
+                new StateVersion(before.StateVersion),
+                new RoundId(before.RoundId),
+                decisionId: null,
+                controlEpoch: new ControlEpoch(before.PrivateView.Control?.ControlEpoch ?? 0UL));
+            CommandSubmission submission = await session.SubmitAsync(command, cancellationToken).ConfigureAwait(false);
+            if (!submission.Sent) throw new InvalidOperationException("A room action was not sent.");
+        }
+
+        private static async Task<PlayerSnapshot> SubmitAndWaitAsync(
+            TableSession session,
+            ProtocolCommand command,
+            ulong beforeVersion,
+            CancellationToken cancellationToken)
+        {
+            var resolved = new TaskCompletionSource<TableReceiptResolvedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
+            EventHandler<TableReceiptResolvedEventArgs> handler = (_, args) =>
+            {
+                if (args.Command.Key.RequestId.Value == command.RequestId.Value) resolved.TrySetResult(args);
+            };
+            session.ReceiptResolved += handler;
+            try
+            {
+                CommandSubmission submission = await session.SubmitAsync(command, cancellationToken).ConfigureAwait(false);
+                if (!submission.Sent) throw new InvalidOperationException("The command was not sent.");
+                for (int i = 0; i < 600 && !resolved.Task.IsCompleted; i++)
+                    await Task.Delay(20, cancellationToken).ConfigureAwait(false);
+                if (!resolved.Task.IsCompleted) throw new TimeoutException("The command receipt did not resolve.");
+                TableReceiptResolvedEventArgs receipt = await resolved.Task.ConfigureAwait(false);
+                if (receipt.Resolution.ReceiptStatus != Mahjong.Contracts.ReceiptStatus.Applied &&
+                    receipt.Resolution.ReceiptStatus != Mahjong.Contracts.ReceiptStatus.Recorded)
+                    throw new InvalidOperationException("The command was rejected: " + receipt.Resolution.ReasonCode);
+                for (int i = 0; i < 600 && (session.PlayerSnapshot?.StateVersion ?? 0UL) <= beforeVersion; i++)
+                    await Task.Delay(20, cancellationToken).ConfigureAwait(false);
+                return session.PlayerSnapshot
+                    ?? throw new InvalidOperationException("No snapshot after command resolution.");
+            }
+            finally
+            {
+                session.ReceiptResolved -= handler;
+            }
+        }
+
+        private static async Task PumpLoopAsync(TableSession session, CancellationToken cancellationToken)
+        {
+            try
+            {
+                while (!cancellationToken.IsCancellationRequested) await session.PumpOnceAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (
+                exception is OperationCanceledException ||
+                exception is TableChannelClosedException ||
+                exception is InvalidOperationException)
+            {
+            }
+        }
+
+        private static async Task WaitReadyAsync(TableSession session, CancellationToken cancellationToken)
+        {
+            for (int i = 0; i < 400 && session.State != TableConnectionState.Ready; i++)
+            {
+                if (session.State == TableConnectionState.Faulted)
+                    throw new InvalidOperationException("Session faulted: " + (session.LastError ?? "<none>"));
+                await Task.Delay(25, cancellationToken).ConfigureAwait(false);
+            }
+            if (session.State != TableConnectionState.Ready) throw new TimeoutException("Session did not become Ready.");
+        }
+
+        private static async Task DriveOtherSeatsAsync(TableSession[] sessions, int targetSeat, CancellationToken cancellationToken)
+        {
+            var lastSentVersion = new Dictionary<int, ulong>();
+            try
+            {
+                while (!cancellationToken.IsCancellationRequested)
+                {
+                    for (int seat = 0; seat < sessions.Length; seat++)
+                    {
+                        if (seat == targetSeat || sessions[seat] == null) continue;
+                        PlayerSnapshot? snapshot = sessions[seat].PlayerSnapshot;
+                        var board = snapshot?.PublicView?.Board;
+                        if (snapshot == null || board == null || board.CurrentSeat != seat) continue;
+                        if (sessions[seat].PendingCommands.Count > 0) continue;
+                        if (lastSentVersion.TryGetValue(seat, out ulong sent) && sent == snapshot.StateVersion) continue;
+                        ProtocolActionType? action = null;
+                        uint[]? tiles = null;
+                        if (board.Phase == Mahjong.Contracts.Wire.GamePhase.CheatWindow ||
+                            board.Phase == Mahjong.Contracts.Wire.GamePhase.Discard)
+                        {
+                            action = ProtocolActionType.DiscardTile;
+                            uint tile = snapshot.PrivateView.HasDrawnTileId
+                                ? snapshot.PrivateView.DrawnTileId
+                                : snapshot.PrivateView.ClosedTiles[0];
+                            tiles = new[] { tile };
+                        }
+                        else if (board.Phase == Mahjong.Contracts.Wire.GamePhase.ResponseWindow ||
+                                 board.Phase == Mahjong.Contracts.Wire.GamePhase.ChankanWindow)
+                        {
+                            action = ProtocolActionType.Pass;
+                        }
+                        if (!action.HasValue) continue;
+                        try
+                        {
+                            await SubmitActionNoWaitAsync(sessions[seat], action.Value, tiles, cancellationToken).ConfigureAwait(false);
+                            lastSentVersion[seat] = snapshot.StateVersion;
+                        }
+                        catch (Exception exception) when (
+                            exception is OperationCanceledException ||
+                            exception is TableChannelClosedException ||
+                            exception is InvalidOperationException)
+                        {
+                        }
+                    }
+                    await Task.Delay(10, cancellationToken).ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
+
+        private sealed class FourOwnerEvidence
+        {
+            public ulong Version;
+            public int SeatCount;
+            public int TargetClosedTiles;
+            public int TargetLedgerEntries;
+            public long TargetCheatPoints;
+            public string TargetOfferId = string.Empty;
+            public ulong SpectatorVersion;
+            public bool SpectatorHasPublic;
+            public bool SpectatorHasPlayer;
+        }
+
+        private sealed class ReleaseEvidence
+        {
+            public ulong ReleaseVersion;
+            public ulong AfterVersion;
+            public bool AdvancedWithoutPlayerBinding;
+        }
+
+        private sealed class TargetPrivacyFacts
+        {
+            public ulong SleeveStateVersion;
         }
 
         private static IEnumerator PumpUntilReady(TableSession session, float seconds, string label)
