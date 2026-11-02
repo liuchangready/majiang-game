@@ -248,7 +248,7 @@ namespace Mahjong.Unity.Tests.PlayMode
         [UnityTest]
         public IEnumerator RealRoom_ColdReopenReconcilesOriginalRequestWithoutDuplicate()
         {
-            LocalTableChannelFactory.EnableC04PrivacyRoomMode();
+            LocalTableChannelFactory.DisableC04PrivacyRoomModeForTest();
             string root = Path.Combine(Application.persistentDataPath, "c04-recovery-" + Guid.NewGuid().ToString("N"));
             string roomId = "c04-recovery-" + Guid.NewGuid().ToString("N");
             var paths = new UnityAppPaths(root);
@@ -328,6 +328,7 @@ namespace Mahjong.Unity.Tests.PlayMode
                 firstChannel = null;
                 firstFactory.CloseRoomAsync(CancellationToken.None).GetAwaiter().GetResult();
 
+                LocalTableChannelFactory.EnableC04PrivacyRoomMode();
                 recoveredFactory = new LocalTableChannelFactory(config, paths, roomId, "owner-" + Guid.NewGuid().ToString("N"), TimeSpan.FromMinutes(2));
                 C04PrivacyProbe.Begin(Path.Combine(EvidenceRoot(), "recovery-raw"));
                 ITableChannel rawRecovered = recoveredFactory.CreateRoomViewerAsync(LocalRoomViewerRole.Player, 0, CancellationToken.None).GetAwaiter().GetResult();
