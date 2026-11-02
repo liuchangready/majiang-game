@@ -70,6 +70,9 @@ namespace Mahjong.TableRuntime
 
         public OwnerEpoch InitialOwnerEpoch { get; set; } = new OwnerEpoch(1);
 
+        /// <summary>Initial committed state version for a freshly composed actor. Recovery installs its verified baseline separately.</summary>
+        public StateVersion InitialStateVersion { get; set; } = new StateVersion(0);
+
         /// <summary>Initial durable timing version. The first durable write advances it by one.</summary>
         public long InitialTimingVersion { get; set; } = 1L;
 
@@ -137,6 +140,11 @@ namespace Mahjong.TableRuntime
             if (InitialOwnerEpoch.Value == 0)
             {
                 throw new ArgumentOutOfRangeException(nameof(InitialOwnerEpoch), "Owner epoch starts at 1.");
+            }
+
+            if (InitialStateVersion.Value < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(InitialStateVersion), InitialStateVersion, "Initial state version must be non-negative.");
             }
 
             if (InitialTimingVersion < 0)

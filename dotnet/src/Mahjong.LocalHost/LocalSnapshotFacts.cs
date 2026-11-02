@@ -104,6 +104,15 @@ namespace Mahjong.LocalHost
 
         public TableCheckpoint CreateInitialCheckpoint(LocalTableHostOptions options, RoundStateMachine round)
         {
+            // Only the frozen C04 fixtures are composed from legally pre-advanced
+            // Domain history before LocalHost owns a durable event stream. Keep all
+            // ordinary LocalHost and existing test-fixture composition at version 0.
+            if (round == null) throw new ArgumentNullException(nameof(round));
+            ulong initialVersion = round.RoundId.StartsWith("c04-", StringComparison.Ordinal)
+                ? checked((ulong)round.Version)
+                : 0UL;
+            var initialStateVersion = new StateVersion(initialVersion);
+            var initialEventSeq = new EventSeq(0);
             var controllers = new Dictionary<int, SeatControllerKind>
             {
                 { 0, SeatControllerKind.LocalHuman },
@@ -136,8 +145,8 @@ namespace Mahjong.LocalHost
             TableProjectionContextData facts = Capture(new TableProjectionContextRequest(
                 options.RoomId,
                 round,
-                new StateVersion(0),
-                new EventSeq(0),
+                initialStateVersion,
+                initialEventSeq,
                 new OwnerEpoch(1),
                 0L,
                 0L,
@@ -149,8 +158,8 @@ namespace Mahjong.LocalHost
             return TableCheckpointFactory.Create(
                 options.RoomId,
                 round,
-                new StateVersion(0),
-                new EventSeq(0),
+                initialStateVersion,
+                initialEventSeq,
                 new TableControlCheckpoint(registry.Capture(), 0L),
                 timing,
                 options.RulesetVersion,
@@ -219,14 +228,35 @@ namespace Mahjong.LocalHost
             var publicFacts = new List<TableSeatPublicFacts>(4);
             var privateFacts = new List<TableSeatPrivateFacts>(4);
             int[] discardCounters = new int[4];
+            var projectionEvents = new List<(RoundEventType Type, int Seat, TileId? Tile)>();
+            if (round.RoundId.StartsWith("c04-", StringComparison.Ordinal))
+            {
+                // C04 is the sole opt-in path with a legally pre-advanced Domain round
+                // before LocalHost has a durable event stream. Preserve its real public
+                // river history without changing ordinary projection-source behavior.
+                for (int i = 0; i < round.Events.Count; i++)
+                {
+                    RoundEvent record = round.Events[i];
+                    projectionEvents.Add((record.Type, record.Seat, record.Tile));
+                }
+            }
+            else
+            {
+                for (int i = 0; i < request.CommittedEvents.Count; i++)
+                {
+                    TableEventRecord record = request.CommittedEvents[i];
+                    projectionEvents.Add((record.Type, record.Seat, record.Tile));
+                }
+            }
+
             for (int seat = 0; seat < 4; seat++)
             {
                 var discards = new List<DiscardView>();
                 TileId? seatDraw = null;
                 bool riichiPending = false;
-                for (int i = 0; i < request.CommittedEvents.Count; i++)
+                for (int i = 0; i < projectionEvents.Count; i++)
                 {
-                    TableEventRecord record = request.CommittedEvents[i];
+                    var record = projectionEvents[i];
                     if (record.Seat != seat)
                     {
                         continue;
@@ -249,9 +279,11 @@ namespace Mahjong.LocalHost
                         continue;
                     }
 
-                    TilePosition pos = round.Tiles.PositionOf(record.Tile.Value);
-                    if (pos.Zone != TileZone.Discard || pos.Seat != seat)
+                    TilePosition position = round.Tiles.PositionOf(record.Tile.Value);
+                    if (position.Zone != TileZone.Discard || position.Seat != seat)
                     {
+                        // A call keeps its original river Domain event, but the physical
+                        // entity now belongs to the caller's meld rather than the river.
                         continue;
                     }
 

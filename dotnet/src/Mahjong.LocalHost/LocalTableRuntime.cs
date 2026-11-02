@@ -245,6 +245,7 @@ namespace Mahjong.LocalHost
                 ControlReserve = 32,
                 SnapshotEventWindow = 128,
                 InitialOwnerEpoch = store.LeaseEpoch,
+                InitialStateVersion = checkpoint.StateVersion,
                 InitialTimingVersion = checkpoint.TimingVersion,
                 InitialControllers = controllers,
                 DecisionClockConfig = new DecisionClockConfig(20_000L, 3_000L, ReserveScope.Round),
@@ -310,6 +311,8 @@ namespace Mahjong.LocalHost
         internal TableActor ActorForTest => _actor;
 
         internal LocalTableStore StoreForTest => _store;
+
+        internal TableStreamFrame? LastStreamFrameForTest => _sink?.LastFrame;
 
         internal bool DriverRunning => _driver.IsRunning;
 

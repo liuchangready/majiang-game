@@ -86,7 +86,7 @@ namespace Mahjong.TableRuntime
 
         private readonly Dictionary<string, CheatRequestBinding> _cheatRequestBindings =
             new Dictionary<string, CheatRequestBinding>(StringComparer.Ordinal);
-        private StateVersion _stateVersion = new StateVersion(0);
+        private StateVersion _stateVersion;
         private EventSeq _lastEventSeq = new EventSeq(0);
         private OwnerEpoch _ownerEpoch;
         private long _controlVersion;
@@ -200,6 +200,7 @@ namespace Mahjong.TableRuntime
                     durableContext.Outbox,
                     clock);
             _ownerEpoch = options.InitialOwnerEpoch;
+            _stateVersion = options.InitialStateVersion;
             _timingVersion = options.InitialTimingVersion;
             _mailbox = new TableMailbox(options.MailboxCapacity, options.ControlReserve);
             _control = new ControlRegistry(options.DisconnectPolicy, CopyControllers(options.InitialControllers));

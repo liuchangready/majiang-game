@@ -72,6 +72,7 @@ namespace Mahjong.Unity.App
         public const string ClientBuild = "unity-p42b-localhost";
 
         private static int _matchModeEnabled;
+        private static string? _playerActionScenario;
 
         private readonly string _roomId;
         private readonly string _ownerInstanceId;
@@ -125,6 +126,26 @@ namespace Mahjong.Unity.App
             Interlocked.Exchange(ref _matchModeEnabled, 0);
         }
 
+        /// <summary>
+        /// Explicit process-level test opt-in for one frozen C04 Player action.
+        /// Only the four named scenarios are accepted. The default application
+        /// never sets this switch and retains the ordinary random local deal.
+        /// </summary>
+        public static void EnablePlayerActionScenario(string scenarioId)
+        {
+            // Validate the closed scenario set and fixture construction before
+            // AppComposition can acquire any channel resources.
+            LocalPlayerActionScenario.ValidateScenario(scenarioId);
+            if (MatchModeEnabled)
+                throw new InvalidOperationException("A C04 action fixture cannot be combined with full-match mode.");
+            Interlocked.Exchange(ref _playerActionScenario, scenarioId);
+        }
+
+        public static void DisablePlayerActionScenarioForTest()
+        {
+            Interlocked.Exchange(ref _playerActionScenario, null);
+        }
+
         /// <summary>Stable room id used by the single local production table.</summary>
         public string RoomId => _roomId;
 
@@ -165,6 +186,9 @@ namespace Mahjong.Unity.App
 
             if (MatchModeEnabled)
             {
+                if (!string.IsNullOrEmpty(Volatile.Read(ref _playerActionScenario)))
+                    return Task.FromException<ITableChannel>(new InvalidOperationException(
+                        "A C04 action fixture cannot be combined with full-match mode."));
                 return CreateMatchRoundAsync(cancellationToken);
             }
 
@@ -240,6 +264,10 @@ namespace Mahjong.Unity.App
                 LeaseDuration = _leaseDuration,
                 AutoFlushInterval = TimeSpan.FromMilliseconds(500)
             };
+
+            string? scenario = Volatile.Read(ref _playerActionScenario);
+            if (!string.IsNullOrEmpty(scenario))
+                LocalPlayerActionScenario.ConfigureHostOptions(options, scenario!);
 
             cancellationToken.ThrowIfCancellationRequested();
 
