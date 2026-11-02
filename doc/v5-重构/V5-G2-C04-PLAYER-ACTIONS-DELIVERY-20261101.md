@@ -1,5 +1,11 @@
 # V5 G2-C04-D03 Player 动作确认返修交付（2026-11-02）
 
+### 恢复接续许可预检（2026-11-02）
+
+- 当前工作区 HEAD `a09e13fd495b50e5ae66a10f372a58e587c452e9` 为文档接续提交；代码候选保持 `5bae914f4b26efba3b90446c865d62191cf055c4`。runner 的 `ExpectedCandidate` 会严格要求 Git HEAD 精确匹配，因此本次只做 Unity 启动许可预检，没有启动 full runner（它会在启动 Unity 前重复长时间 .NET 闭包）。
+- **实际命令**：在持有源码约定 mutex `Local\MahjongV5P45Unity` 期间，从当前候选复制 Assets/Packages/ProjectSettings 到全新 `E:\bd5f96ce68b047b19a710a1d57bd5a24\p`，以每任务临时目录启动 `D:\Unity\Hub\Editor\6000.3.27f1\Editor\Unity.exe -batchmode -projectPath "E:\bd5f96ce68b047b19a710a1d57bd5a24\p" -logFile "E:\majiang-review\g2-c04-player-actions-luna6-20261101-1520\build\bd5f96ce68b047b19a710a1d57bd5a24\logs\unity-license-preflight.unity.log" -quit`；120 秒硬超时，本次 Unity 进程 4.379 秒退出，mutex 已释放。没有读取/修改账号、凭据、许可证密钥或机器许可配置，没有尝试激活或绕过。
+- **结果 BLOCKED**：Unity native exit 198；日志明确写 `No valid Unity Editor license found. Please activate your license.`，LicensingClient 两次回报 `Found 0 entitlement groups and 0 free entitlements matching requested entitlement ids`。本次是启动/许可门禁，不是代码失败；没有运行 PlayMode、Player Build 或 GAME，也没有重复 .NET 长跑。用户需先在 Unity Hub 中登录并为 Unity `6000.3.27f1` 配置有效 Editor license/entitlement，再通知继续；本代理未尝试授权设置更改。
+- **证据封存**：fresh root `build/bd5f96ce68b047b19a710a1d57bd5a24`，独立 staged project `E:\bd5f96ce68b047b19a710a1d57bd5a24\p`（348 文件；closure SHA `495F4BC6ADAC665586261E9E1DAAE60469F6135EF88BD949EB21D94BF85FF13C`）。Unity log SHA `CBDA1EBD8285C764019B0B1C5B78DB866452BA46717CA70C2A5299359B431EF5`；result SHA `A99C2D1A489E4F598639CE397F0AFF4F110BC330738411D63373EB6FF2384569`；stdout SHA `88D55DC902CA884EA4453F3AF8D4E48251A5FEF4D062B62D1F959030501880C0`；stderr SHA `E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855`；manifest SHA `F1AD860CE256E23568851C6D199F38E3B45F93DCBD5A2C4893C5482009CF09B4`；manifest.sha256 文件 SHA `50440418474D826563E8C24ED5C1516F7DE8AE17697C52B586403F36B6B1A65F`。Unity 已退出，稳定证据封存；现有 R1-02/R1-03/R1-04 结论不变，仍未闭环。
 ## 新任务接续与最终候选执行（2026-11-02）
 
 本节接续原 `thread_20261101_152052_d8c3` 的 R5 复核；原任务因 `no rollout found` 保留为 failed 历史。本次按用户明确授权在新接续任务中继续，不调用桥接恢复/批准流程，也不删除或改写原失败与历史报告。原已知缺陷全集仍是 D03-R1-02 BLOCKER、D03-R1-03 MAJOR、D03-R1-04 MAJOR，0 新组；R1-01、R1-02 已关闭 API/PlayMode 编译子项、R1-04 严格 marker 数字类型子项保持关闭。
