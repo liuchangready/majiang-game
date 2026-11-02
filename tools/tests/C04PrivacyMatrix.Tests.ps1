@@ -132,7 +132,7 @@ function Invoke-Verifier([string]$Name,[string]$InputPath,[bool]$ExpectSuccess,[
     $run=Invoke-BoundedProcess -Name $Name -FilePath $ExecutableOverride -Arguments (@($PrefixArguments)+@($VerifierDll,'verify',$InputPath)) -TimeoutMs $ProcessTimeoutMs -WorkingDirectory (Split-Path -Parent $VerifierDll)
     if($run.State -ne 'EXITED'){throw "Verifier $Name did not exit normally; state=$($run.State), stopPath=$((($script:Results|Where-Object name -eq $Name|Select-Object -Last 1).stopPath))"}
     if($ExpectSuccess -and ($run.NativeExit -ne 0 -or $run.Stdout -notmatch 'PRIVACY_MATRIX_PASS frames=[1-9][0-9]* sha256=[0-9a-f]{64}')){throw "Verifier $Name expected native 0 and a fresh pass marker, got $($run.NativeExit). $($run.Stderr)"}
-    if(-not $ExpectSuccess -and ($run.NativeExit -ne $ExpectedExit -or $run.Stderr -notmatch '(frame\[|same-state |SyncResponse |envelope cursor |typed |VERIFY_ERROR)')){throw "Verifier $Name expected a normal native $ExpectedExit refusal with a diagnostic; got state=$($run.State) exit=$($run.NativeExit). $($run.Stderr)"}
+    if(-not $ExpectSuccess -and ($run.NativeExit -ne $ExpectedExit -or $run.Stderr -notmatch '(frame\[|same-state |same-room stateVersion |different round |settlement event |visible event |SyncResponse |envelope cursor |typed |VERIFY_ERROR)')){throw "Verifier $Name expected a normal native $ExpectedExit refusal with a diagnostic; got state=$($run.State) exit=$($run.NativeExit). $($run.Stderr)"}
     return $run
 }
 
@@ -140,7 +140,7 @@ $outcome='FAIL';$summaryPath=Join-Path $RunRoot 'summary.json'
 try{
     $fixtureRoot=Join-Path $RunRoot 'wirecodec-fixtures'
     $self=Invoke-BoundedProcess -Name 'self-test' -FilePath $DotnetPath -Arguments @($VerifierDll,'self-test',$fixtureRoot) -TimeoutMs $ProcessTimeoutMs -WorkingDirectory (Split-Path -Parent $VerifierDll)
-    if($self.State -ne 'EXITED' -or $self.NativeExit -ne 0 -or $self.Stdout -notmatch 'SELF_TEST_PASS positive=4 negative=35 serializedFrames=5 source=WireCodec'){throw "WireCodec self-test failed or did not run the fixed genuine mutation set. state=$($self.State) native=$($self.NativeExit) $($self.Stderr)"}
+    if($self.State -ne 'EXITED' -or $self.NativeExit -ne 0 -or $self.Stdout -notmatch 'SELF_TEST_PASS positive=6 negative=44 serializedFrames=5 source=WireCodec'){throw "WireCodec self-test failed or did not run the fixed genuine mutation set. state=$($self.State) native=$($self.NativeExit) $($self.Stderr)"}
 
     $validPath=Join-Path $fixtureRoot 'valid.json'
     $valid=Invoke-Verifier 'wirecodec-valid-positive' $validPath $true
@@ -152,7 +152,9 @@ try{
         'wrong-sync-state-version','wrong-envelope-cursor','wrong-projection-message-type-summary-rewritten','wrong-welcome-owner-epoch-header-unset','foreign-closed-hand-content','public-current-hidden-tile-as-discard',
         'wrong-welcome-session','wrong-welcome-role','wrong-welcome-seat','wrong-welcome-envelope-session','wrong-welcome-envelope-binding','wrong-welcome-scope-id','wrong-welcome-scope-role','wrong-welcome-scope-room',
         'wrong-welcome-version','wrong-welcome-owner-epoch','wrong-welcome-binding-epoch','wrong-projection-owner',
-        'wrong-projection-audience','wrong-projection-message-type','unknown-projection-message-type','wrong-projection-version','projection-unknown-field','welcome-unknown-field','public-nested-unknown-field')
+        'wrong-projection-audience','wrong-projection-message-type','unknown-projection-message-type','wrong-projection-version','projection-unknown-field','welcome-unknown-field','public-nested-unknown-field',
+        'foreign-empty-round','foreign-whitespace-round','foreign-forged-round','public-hidden-empty-round','public-hidden-whitespace-round','public-hidden-forged-round',
+        'hidden-tile-in-public-settlement-event','hidden-tile-in-player-update-event','hidden-tile-in-public-update-event')
     foreach($caseName in $negativeNames){$casePath=Join-Path $fixtureRoot "$caseName.json";if(-not(Test-Path -LiteralPath $casePath -PathType Leaf)){throw "Required serialized negative fixture is missing: $caseName"};[void](Invoke-Verifier "negative-$caseName" $casePath $false)}
 
     $realFrameCount=0;$realCaptureSha256=$null;$tampered=$null
