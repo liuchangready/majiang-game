@@ -40,7 +40,7 @@ namespace Mahjong.Unity.Tests.PlayMode
             AppRoot app = AppRoot.EnsureInitialized(
                 new AppConfig { pumpBarrierTimeoutMs = 5000, closeTimeoutMs = 5000, cancelObservationMs = 50 },
                 null,
-                Path.Combine(Application.persistentDataPath, "c04-privacy-room-" + Guid.NewGuid().ToString("N")));
+                StateRoot("c04-privacy-room"));
 
             Task<bool> lobby = app.Router.LoadAsync(SceneId.Lobby);
             yield return WaitTask(() => lobby.IsCompleted, 30f, "Lobby load");
@@ -152,7 +152,7 @@ namespace Mahjong.Unity.Tests.PlayMode
         public IEnumerator RealRoom_DelayedOldRawReceiveIsRejectedByNewBinding()
         {
             LocalTableChannelFactory.EnableC04PrivacyRoomMode();
-            string root = Path.Combine(Application.persistentDataPath, "c04-delayed-" + Guid.NewGuid().ToString("N"));
+            string root = StateRoot("c04-delayed");
             var paths = new UnityAppPaths(root);
             paths.EnsureDirectoriesCreated();
             Directory.CreateDirectory(paths.LocalSaveDirectory);
@@ -249,7 +249,7 @@ namespace Mahjong.Unity.Tests.PlayMode
         public IEnumerator RealRoom_ColdReopenReconcilesOriginalRequestWithoutDuplicate()
         {
             LocalTableChannelFactory.DisableC04PrivacyRoomModeForTest();
-            string root = Path.Combine(Application.persistentDataPath, "c04-recovery-" + Guid.NewGuid().ToString("N"));
+            string root = StateRoot("c04-recovery");
             string roomId = "c04-recovery-" + Guid.NewGuid().ToString("N");
             var paths = new UnityAppPaths(root);
             paths.EnsureDirectoriesCreated();
@@ -272,11 +272,13 @@ namespace Mahjong.Unity.Tests.PlayMode
             try
             {
                 firstFactory = new LocalTableChannelFactory(config, paths, roomId, "owner-" + Guid.NewGuid().ToString("N"), TimeSpan.FromMinutes(2));
+                string requestId = "c04-unity-recovery-original";
                 ITableChannel rawFirst = firstFactory.CreateRoomViewerAsync(LocalRoomViewerRole.Player, 0, CancellationToken.None).GetAwaiter().GetResult();
-                firstChannel = rawFirst;
+                var firstCapture = new RawCaptureChannel(rawFirst, requestId);
+                firstChannel = firstCapture;
                 var firstTicket = rawFirst as ILocalTableTicketSource;
                 Assert.IsNotNull(firstTicket);
-                firstSession = new TableSession(rawFirst, outbox);
+                firstSession = new TableSession(firstCapture, outbox);
                 Task open = firstSession.OpenAsync(new TableSessionOpenRequest(firstTicket!.SessionTicket, LocalTableChannelFactory.ClientBuild), pumpCts.Token);
                 yield return WaitTask(() => open.IsCompleted, 30f, "recovery first open");
                 Assert.IsFalse(open.IsFaulted, open.Exception?.ToString());
@@ -296,7 +298,6 @@ namespace Mahjong.Unity.Tests.PlayMode
                         break;
                     }
                 }
-                string requestId = "c04-unity-recovery-original";
                 BusinessPayload payload = CommandPayloadFactory.SubmitAction(
                     baseline.RoundId,
                     decision.DecisionId,
@@ -321,6 +322,7 @@ namespace Mahjong.Unity.Tests.PlayMode
                 yield return PumpUntilVersion(firstSession, baseline.StateVersion + 1, 30f, "recovery original applied");
                 ulong afterSubmitVersion = firstSession.PlayerSnapshot!.StateVersion;
                 ulong afterSubmitEventSeq = firstSession.PlayerSnapshot.EventSeq;
+                Assert.Greater(firstSession.PendingCommands.Count, 0, "The original request was confirmed before recovery; no receipt lookup would be exercised.");
 
                 CloseBlocking(firstSession);
                 CloseBlocking(firstChannel);
@@ -359,14 +361,13 @@ namespace Mahjong.Unity.Tests.PlayMode
                 }
 
                 Assert.IsEmpty(recoveredSession.PendingCommands);
-                if (reconciled != null)
-                {
-                    Assert.IsTrue(reconciled.Resolution.FromReceiptLookup);
-                    Assert.AreEqual(Mahjong.Contracts.ReceiptStatus.Applied, reconciled.Resolution.ReceiptStatus);
-                    Assert.AreEqual(originalScope.Value, reconciled.Command.Key.ScopeId.Value);
-                    Assert.AreEqual(requestId, reconciled.Command.Key.RequestId.Value);
-                    Assert.AreEqual(originalDigest, reconciled.Resolution.CanonicalPayloadSha256);
-                }
+                Assert.IsNotNull(reconciled, "Recovery did not resolve the original request from a receipt lookup.");
+                Assert.IsTrue(reconciled!.Resolution.FromReceiptLookup);
+                Assert.AreEqual(Mahjong.Contracts.ReceiptStatus.Applied, reconciled.Resolution.ReceiptStatus);
+                Assert.AreEqual(originalScope.Value, reconciled.Command.Key.ScopeId.Value);
+                Assert.AreEqual(requestId, reconciled.Command.Key.RequestId.Value);
+                Assert.AreEqual(originalDigest, reconciled.Resolution.CanonicalPayloadSha256);
+                Assert.Greater(recoveredCapture.ReceiptQueryFrames, 0, "Recovery did not send a ReceiptQuery.");
                 Assert.AreEqual(0, recoveredCapture.CommandFrames);
                 Assert.AreEqual(afterSubmitVersion, recoveredSession.PlayerSnapshot!.StateVersion);
                 Assert.AreEqual(afterSubmitEventSeq, recoveredSession.PlayerSnapshot.EventSeq);
@@ -405,7 +406,7 @@ namespace Mahjong.Unity.Tests.PlayMode
                     "\",\"stateVersion\":\"" + afterSubmitVersion +
                     "\",\"eventSeq\":\"" + afterSubmitEventSeq +
                     "\",\"commandFrames\":0,\"receiptQueryFrames\":" + recoveredCapture.ReceiptQueryFrames +
-                    ",\"fromReceiptLookup\":true,\"zeroDuplicateStateDelta\":true}", new UTF8Encoding(false));
+                    ",\"fromReceiptLookup\":" + (reconciled != null && reconciled.Resolution.FromReceiptLookup).ToString().ToLowerInvariant() + ",\"zeroDuplicateStateDelta\":true}", new UTF8Encoding(false));
                 Assert.Greater(C04PrivacyProbe.CapturedFrameCount, 0);
                 string rawSha = C04PrivacyProbe.Seal();
                 Assert.AreEqual(64, rawSha.Length);
@@ -437,7 +438,7 @@ namespace Mahjong.Unity.Tests.PlayMode
         [UnityTest]
         public IEnumerator RealRoom_ClosedPlayerToSpectatorToNewPlayerReceivePathRejectsOldRaw()
         {
-            string root = Path.Combine(Application.persistentDataPath, "c04-closed-path-" + Guid.NewGuid().ToString("N"));
+            string root = StateRoot("c04-closed-path");
             string roomId = "c04-closed-path-" + Guid.NewGuid().ToString("N");
             try
             {
@@ -463,7 +464,7 @@ namespace Mahjong.Unity.Tests.PlayMode
         [UnityTest]
         public IEnumerator RealRoom_LegalSleeveAndFeeOwnershipAcrossFourSeatsAndSpectator()
         {
-            string root = Path.Combine(Application.persistentDataPath, "c04-owner-" + Guid.NewGuid().ToString("N"));
+            string root = StateRoot("c04-owner");
             string roomId = "c04-owner-" + Guid.NewGuid().ToString("N");
             try
             {
@@ -510,7 +511,7 @@ namespace Mahjong.Unity.Tests.PlayMode
         [UnityTest]
         public IEnumerator RealRoom_OpenDecisionDeadlineContinuesAfterPlayerClose()
         {
-            string root = Path.Combine(Application.persistentDataPath, "c04-deadline-" + Guid.NewGuid().ToString("N"));
+            string root = StateRoot("c04-deadline");
             string roomId = "c04-deadline-" + Guid.NewGuid().ToString("N");
             Task<ReleaseEvidence> task = Task.Run(() => RunOpenDeadlineScenarioAsync(root, roomId));
             yield return WaitTask(() => task.IsCompleted, 75f, "open deadline after player close");
@@ -524,7 +525,7 @@ namespace Mahjong.Unity.Tests.PlayMode
         [UnityTest]
         public IEnumerator RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly()
         {
-            string root = Path.Combine(Application.persistentDataPath, "c04-release-" + Guid.NewGuid().ToString("N"));
+            string root = StateRoot("c04-release");
             string roomId = "c04-release-" + Guid.NewGuid().ToString("N");
             Task<ReleaseEvidence> task = Task.Run(() => RunReleasedControlScenarioAsync(root, roomId));
             yield return WaitTask(() => task.IsCompleted, 90f, "released-seat authority scenario");
@@ -532,7 +533,8 @@ namespace Mahjong.Unity.Tests.PlayMode
             ReleaseEvidence evidence = task.Result;
             Assert.IsTrue(evidence.AdvancedWithoutPlayerBinding, "Released AI did not advance after the player binding closed.");
             Assert.Greater(evidence.AfterVersion, evidence.ReleaseVersion);
-            Assert.IsTrue(evidence.Claimed, "ClaimControl did not restore human control.");
+            Assert.IsTrue(evidence.Claimed, "ClaimControl was not accepted.");
+            Assert.IsTrue(evidence.ControlHuman, "ClaimControl did not restore human control.");
             Assert.IsTrue(evidence.StaleDecisionRejected, "A stale control epoch decision was not rejected.");
             string directory = Path.Combine(EvidenceRoot(), "released-control");
             Directory.CreateDirectory(directory);
@@ -542,6 +544,8 @@ namespace Mahjong.Unity.Tests.PlayMode
                 "\",\"claimEpoch\":\"" + evidence.ClaimEpoch +
                 "\",\"advancedWithoutPlayerBinding\":" + evidence.AdvancedWithoutPlayerBinding.ToString().ToLowerInvariant() +
                 ",\"claimed\":" + evidence.Claimed.ToString().ToLowerInvariant() +
+                ",\"claimEpochAdvanced\":" + evidence.ClaimEpochAdvanced.ToString().ToLowerInvariant() +
+                ",\"controlHuman\":" + evidence.ControlHuman.ToString().ToLowerInvariant() +
                 ",\"staleDecisionRejected\":" + evidence.StaleDecisionRejected.ToString().ToLowerInvariant() + "}", new UTF8Encoding(false));
             try { if (Directory.Exists(root)) Directory.Delete(root, true); } catch { }
         }
@@ -939,6 +943,8 @@ namespace Mahjong.Unity.Tests.PlayMode
                     AdvancedWithoutPlayerBinding = after > releaseVersion,
                     Claimed = true,
                     ClaimEpoch = claimedEpoch,
+                    ClaimEpochAdvanced = claimedEpoch > claimEpoch,
+                    ControlHuman = claimedSnapshot.PrivateView.Control?.ControlledByComputer != true,
                     StaleDecisionRejected = true
                 };
             }
@@ -1231,6 +1237,8 @@ namespace Mahjong.Unity.Tests.PlayMode
             public bool AdvancedWithoutPlayerBinding;
             public bool Claimed;
             public ulong ClaimEpoch;
+            public bool ClaimEpochAdvanced;
+            public bool ControlHuman;
             public bool StaleDecisionRejected;
         }
 
@@ -1298,8 +1306,15 @@ namespace Mahjong.Unity.Tests.PlayMode
         {
             private readonly ITableChannel _inner;
             private byte[]? _injectedFrame;
+            private string? _dropReceiptRequestId;
 
             public RawCaptureChannel(ITableChannel inner) => _inner = inner;
+
+            public RawCaptureChannel(ITableChannel inner, string dropReceiptRequestId)
+            {
+                _inner = inner;
+                _dropReceiptRequestId = dropReceiptRequestId;
+            }
 
             public bool IsOpen => _inner.IsOpen;
             public byte[]? CapturedPlayerSnapshotFrame { get; private set; }
@@ -1324,15 +1339,26 @@ namespace Mahjong.Unity.Tests.PlayMode
             {
                 byte[]? injected = Interlocked.Exchange(ref _injectedFrame, null);
                 if (injected != null) return new ReadOnlyMemory<byte>(injected);
-                ReadOnlyMemory<byte> frame = await _inner.ReceiveAsync(cancellationToken);
-                WireDecodeResult decoded = WireCodec.Decode(frame.ToArray());
-                if (decoded.IsOk && decoded.Envelope != null &&
-                    decoded.Envelope.MessageType == WireMessageType.SyncResponse &&
-                    decoded.Envelope.SyncResponse?.Target == SyncTarget.PlayerStream)
+                while (true)
                 {
-                    CapturedPlayerSnapshotFrame = frame.ToArray();
+                    ReadOnlyMemory<byte> frame = await _inner.ReceiveAsync(cancellationToken);
+                    WireDecodeResult decoded = WireCodec.Decode(frame.ToArray());
+                    if (decoded.IsOk && decoded.Envelope != null &&
+                        decoded.Envelope.MessageType == WireMessageType.Receipt &&
+                        !string.IsNullOrEmpty(_dropReceiptRequestId) &&
+                        string.Equals(decoded.Envelope.RequestId, _dropReceiptRequestId, StringComparison.Ordinal))
+                    {
+                        _dropReceiptRequestId = null;
+                        continue;
+                    }
+                    if (decoded.IsOk && decoded.Envelope != null &&
+                        decoded.Envelope.MessageType == WireMessageType.SyncResponse &&
+                        decoded.Envelope.SyncResponse?.Target == SyncTarget.PlayerStream)
+                    {
+                        CapturedPlayerSnapshotFrame = frame.ToArray();
+                    }
+                    return frame;
                 }
-                return frame;
             }
 
             public void InjectNextReceive(byte[] frame)
@@ -1372,6 +1398,12 @@ namespace Mahjong.Unity.Tests.PlayMode
             Assert.IsTrue(predicate(), "Timed out waiting for " + label);
         }
 
+        private static string StateRoot(string prefix)
+        {
+            string evidence = EvidenceRoot();
+            string runRoot = Path.GetDirectoryName(evidence) ?? Application.temporaryCachePath;
+            return Path.Combine(runRoot, "state", prefix + "-" + Guid.NewGuid().ToString("N"));
+        }
         private static string EvidenceRoot()
         {
             string[] args = Environment.GetCommandLineArgs();
@@ -1379,7 +1411,7 @@ namespace Mahjong.Unity.Tests.PlayMode
             if (index >= 0 && index + 1 < args.Length) return args[index + 1];
             string? environmentPath = Environment.GetEnvironmentVariable("MAHJONG_C04_PRIVACY_EVIDENCE");
             if (!string.IsNullOrWhiteSpace(environmentPath)) return environmentPath;
-            return Path.Combine(Application.persistentDataPath, "c04-privacy-evidence-" + Guid.NewGuid().ToString("N"));
+            return Path.Combine(Application.temporaryCachePath, "c04-privacy-evidence-" + Guid.NewGuid().ToString("N"));
         }
     }
 }

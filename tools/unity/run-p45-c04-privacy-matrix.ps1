@@ -73,6 +73,31 @@ function Get-C04Sha256File([string]$Path) {
   finally { $stream.Dispose(); $sha.Dispose() }
 }
 
+function Get-C04StableFiles([string]$Root, [string[]]$ExcludeDirectoryNames = @()) {
+  $rootFull = [IO.Path]::GetFullPath($Root)
+  if (-not (Test-Path -LiteralPath $rootFull -PathType Container)) { throw "Stable file root is missing: $rootFull" }
+  $excluded = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+  foreach ($name in $ExcludeDirectoryNames) { [void]$excluded.Add($name) }
+  $result = New-Object Collections.Generic.List[object]
+  $stack = New-Object 'System.Collections.Generic.Stack[string]'
+  $stack.Push($rootFull)
+  while ($stack.Count -gt 0) {
+    $dir = $stack.Pop()
+    foreach ($entry in [IO.Directory]::EnumerateFileSystemEntries($dir)) {
+      $name = [IO.Path]::GetFileName($entry)
+      $attributes = [IO.File]::GetAttributes($entry)
+      if (($attributes -band [IO.FileAttributes]::Directory) -ne 0) {
+        if ($excluded.Contains($name)) { continue }
+        if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Stable file traversal encountered a directory reparse point: $entry" }
+        $stack.Push($entry)
+      } else {
+        $item = Get-Item -LiteralPath $entry -ErrorAction Stop
+        $result.Add([pscustomobject]@{ FullName = $item.FullName; Length = [long]$item.Length; Attributes = $item.Attributes })
+      }
+    }
+  }
+  return $result.ToArray()
+}
 function Get-C04FileManifest {
   param(
     [Parameter(Mandatory = $true)][string]$Root,
@@ -87,7 +112,7 @@ function Get-C04FileManifest {
   foreach ($name in $ExcludeFileNames) { $excludedFiles[$name.ToLowerInvariant()] = $true }
 
   $rows = New-Object Collections.Generic.List[object]
-  $all = Get-ChildItem -LiteralPath $rootFull -Recurse -File -Force -ErrorAction SilentlyContinue
+  $all = Get-C04StableFiles -Root $rootFull -ExcludeDirectoryNames $ExcludeDirectoryNames
   foreach ($file in $all) {
     $relative = $file.FullName.Substring($rootFull.Length).TrimStart('\', '/')
     $parts = $relative -split '[\\/]'
@@ -187,7 +212,7 @@ function Get-C04SelectedManifest {
   foreach ($relativeRoot in $RelativeRoots) {
     $candidate = Join-Path $baseFull $relativeRoot
     if (-not (Test-Path -LiteralPath $candidate -PathType Container)) { throw "Selected-manifest root is missing: $candidate" }
-    foreach ($file in (Get-ChildItem -LiteralPath $candidate -Recurse -File -Force -ErrorAction SilentlyContinue)) {
+    foreach ($file in (Get-C04StableFiles -Root $candidate -ExcludeDirectoryNames $ExcludeDirectoryNames)) {
       $relative = $file.FullName.Substring($baseFull.Length).TrimStart('\', '/')
       $parts = $relative -split '[\\/]'
       $skip = $false
@@ -463,7 +488,7 @@ function Assert-C04BuildMarker {
 
   $actualSet = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
   [long]$actualPackageBytes = 0
-  foreach ($file in (Get-ChildItem -LiteralPath $packageRoot -Recurse -File -Force -ErrorAction SilentlyContinue)) {
+  foreach ($file in (Get-C04StableFiles -Root $packageRoot)) {
     $fileFull = [IO.Path]::GetFullPath($file.FullName)
     if ([string]::Equals($fileFull, $packageManifestPath, [StringComparison]::OrdinalIgnoreCase)) { continue }
     if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Player package contains a reparse point: $($file.FullName)" }
@@ -525,21 +550,29 @@ function Get-C04TestPlayerPackage {
   param(
     [Parameter(Mandatory = $true)][string]$StagingProject,
     [Parameter(Mandatory = $true)][string]$RunRoot,
-    [Parameter(Mandatory = $true)][string]$SourceHead
+    [Parameter(Mandatory = $true)][string]$SourceHead,
+    [string]$PlayerRoot = ''
   )
-  $tempRoot = Join-Path $StagingProject 'Temp'
-  if (-not (Test-Path -LiteralPath $tempRoot -PathType Container)) { throw 'Unity Test Player Temp directory is missing.' }
-  $candidate = Get-ChildItem -LiteralPath $tempRoot -Recurse -Directory -Filter 'PlayerWithTests' -ErrorAction SilentlyContinue |
-    Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
-  if ($null -eq $candidate) { throw 'Unity did not leave a PlayerWithTests package under the isolated staging Temp.' }
-  $exe = Get-ChildItem -LiteralPath $candidate.FullName -Recurse -File -Filter '*.exe' -ErrorAction SilentlyContinue |
-    Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+  $candidate = $null
+  if (-not [string]::IsNullOrWhiteSpace($PlayerRoot)) {
+    $explicit = Join-Path $PlayerRoot 'PlayerWithTests'
+    if (-not (Test-Path -LiteralPath $explicit -PathType Container)) { throw "Retained Test Player package is missing: $explicit" }
+    $candidate = Get-Item -LiteralPath $explicit
+  } else {
+    $tempRoot = Join-Path $StagingProject 'Temp'
+    if (-not (Test-Path -LiteralPath $tempRoot -PathType Container)) { throw 'Unity Test Player Temp directory is missing.' }
+    $candidate = Get-ChildItem -LiteralPath $tempRoot -Recurse -Directory -Filter 'PlayerWithTests' -ErrorAction SilentlyContinue |
+      Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+    if ($null -eq $candidate) { throw 'Unity did not leave a PlayerWithTests package under the isolated staging Temp.' }
+  }
+  $exe = Get-C04StableFiles -Root $candidate.FullName | Where-Object { $_.FullName -like '*.exe' } |
+    Sort-Object Length -Descending | Select-Object -First 1
   if ($null -eq $exe) { throw 'PlayerWithTests package has no executable.' }
   $packageRoot = [IO.Path]::GetFullPath($exe.DirectoryName)
   $packageRootWithSeparator = $packageRoot.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
   $manifestPath = Join-Path $RunRoot 'test-player-package.sha256'
   if (Test-Path -LiteralPath $manifestPath) { throw 'Test Player package manifest already exists.' }
-  $files = @(Get-ChildItem -LiteralPath $packageRoot -Recurse -File -Force | Sort-Object FullName)
+  $files = @(Get-C04StableFiles -Root $packageRoot | Sort-Object FullName)
   $lines = New-Object Collections.Generic.List[string]
   [long]$bytes = 0
   foreach ($file in $files) {
@@ -1132,7 +1165,7 @@ function Write-C04SealedEvidence {
   $summaryPath = Join-Path $root 'summary.json'
   if (Test-Path -LiteralPath $summaryPath) { throw 'Evidence is already sealed; refusing to overwrite summary.json.' }
   Write-C04Json $summaryPath $Summary
-  $manifest = Get-C04FileManifest -Root $root -ExcludeDirectoryNames @('.git', 'Library', 'Temp', 'obj', 'bin', 'Logs', 'UserSettings') -ExcludeFileNames @('manifest.sha256', 'seal.json')
+  $manifest = Get-C04FileManifest -Root $root -ExcludeDirectoryNames @('.git', 'Library', 'Temp', 'obj', 'bin', 'Logs', 'UserSettings', 'upm-cache') -ExcludeFileNames @('manifest.sha256', 'seal.json')
   $manifestPath = Join-Path $root 'manifest.sha256'
   Write-C04Utf8 $manifestPath $manifest.canonical
   $manifestSha = Get-C04Sha256File $manifestPath
@@ -1339,7 +1372,7 @@ exit `$LASTEXITCODE
       }
       if ($WindowsPlayerTests) {
         $env:MAHJONG_C04_PRIVACY_EVIDENCE = $privacyEvidence
-        $unityArgs = @('-batchmode', '-projectPath', $unityProject, '-runTests', '-testPlatform', 'StandaloneWindows64',
+        $unityArgs = @('-batchmode', '-projectPath', $unityProject, '-runTests', '-testPlatform', 'StandaloneWindows64', '-buildPlayerPath', (Join-Path $script:RunRoot 'test-player'),
           '-testFilter', 'Mahjong.Unity.Tests.PlayMode.C04PrivacyRoleSwitchPlayModeTests',
           '-testResults', $testXml, '-logFile', $unityLog, '-upmCachePath', $upm)
       } else {
@@ -1352,7 +1385,7 @@ exit `$LASTEXITCODE
       Assert-C04NativeSuccess $unityResult $stageName
       $summary.testXml = Assert-C04UnityXml -XmlPath $testXml -ExpectedTests $script:C04ExpectedTests
       if ($WindowsPlayerTests) {
-        $summary.testPlayerPackage = Get-C04TestPlayerPackage -StagingProject $staging -RunRoot $script:RunRoot -SourceHead $identity.head
+        $summary.testPlayerPackage = Get-C04TestPlayerPackage -StagingProject $staging -RunRoot $script:RunRoot -SourceHead $identity.head -PlayerRoot (Join-Path $script:RunRoot 'test-player')
         Log "TEST_PLAYER_PACKAGE exe=$($summary.testPlayerPackage.executable) files=$($summary.testPlayerPackage.packageFileCount) bytes=$($summary.testPlayerPackage.packageBytes) sha=$($summary.testPlayerPackage.packageManifestSha256)"
       }
       if ($WindowsPlayerTests -and -not (Test-Path -LiteralPath (Join-Path $privacyEvidence 'role-switch-raw/raw-frames.json'))) {
