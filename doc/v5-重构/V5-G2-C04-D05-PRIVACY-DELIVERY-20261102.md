@@ -51,6 +51,60 @@
 | C04-G5-02 | BLOCKED | 没有从合法公共命令得到真实非空私有 fee/ledger 对照；不能以空字段、相等 scalar 或 verifier 自测替代。 |
 | C04-G5-03 | BLOCKED | role-switch/cache clearing 与 .NET 原始旧 wire rejection 有证据；Unity/Windows Player 的延迟旧真实 wire 投递负例未执行。 |
 
+> **R4 返修状态（2026-11-03，B）**：R4 两个 MAJOR 已批修。进程 ownership 只保留 PPID/Job 可证明亲缘，删除名称/参数相似度 fallback；role-switch 改为独立 `role-switch-raw`，四场景采集互不依赖执行顺序。独立 161/161、483/483、runner 16/16、finalization 4/4、sibling ownership false、capture-order 四路径 PASS、orphan 明确 UNKNOWN。真实 Unity/Windows 仍 BLOCKED_ON_PRIVACY_AND_RECOVERY。R4 细节见下，R3/R2/R1 历史保留。
+
+## R4 返修交付（2026-11-03，B：B-R4-01/02）
+
+### 身份与结论
+
+- R4 代码头：`e212b3ad294ab01b6d6e27b2969da7a74e3db819`；被审 R3 头 `40515787`。工作树 clean，`git diff --check` 0。
+- 仅改 B9 内 `LocalPrivacyScenario.cs`、`C04PrivacyStreamMatrixTests.cs`、runner、runner tests、PlayMode tests；未改 A/Luna/Domain/Client/proto/actor/schema/asmdef。
+- 结论：**R4 两个 B 自身 MAJOR 已修复并通过定向短负例；最终 Unity/Windows 矩阵仍待 A/Luna 冻结，D05 未完成。**
+
+### B-R4-01：删除相似度 ownership 误认领
+
+- 位置：runner `Get-C04ImageDescendants` / `Get-C04CapturedDescendants` / `Stop-C04OwnedRecord` / `Invoke-C04OwnedProcess` 启动登记段。
+- 修复：
+  - 完全删除“同 image 名 + 任一路径参数子串 + 创建时间”的 fallback；不再把同名同参数 sibling 当作后代。
+  - 只保留可证明的 PPID 后代捕获与 Windows Job Object 归属；无法证明亲缘的进程不捕获、不终止，保留 UNKNOWN 身份。
+  - 启动成功后先登记 PID/StartTime/输出路径，再进入 capture/初始化；capture 在 try/finally 内，初始化异常仍会清理已登记自有进程。
+  - `Stop-C04OwnedRecord` 在 `drainUnresolved` 且无 captured descendant 时不再清 false/抛错；保留 alive=true/UNKNOWN，Main 因 residual writer 不写正常 seal。
+  - 保留普通一层后代、大输出、取消、post-start 异常、单返回、Stop identity mismatch 等负例。
+- 实测 reviewer `process-ownership-probe.ps1`：`unrelatedCaptured=false`、`unrelatedTerminated=false`，sibling 未被认领/终止；JSON SHA `1C099D9DCD81591AD0D7AF20B7D9A256E2D3514D1DD93583835BD0FD3F3EBA69`。
+- 真实多层 orphan：`registeredAliveBeforeCleanup=true`、`registeredAliveAfterCleanup=true`、`realWriterAliveAfterCleanup=true`，即**明确 UNKNOWN**、不伪造回收；reviewer 最后自行清理 writer。JSON SHA `D2B40D6D4D35A41E898EBED21280F244A3BE3BFF1917E822F79D616F758586ED`。
+- 回归：runner **16/16**，JSON SHA `209E5BA62043BA8704FA6A0A90E67BFA67CEED18BF17EDB5DC3A1B4488739DAD`；finalization 4/4 完整封存保留。
+
+### B-R4-02：多场景采集目录隔离
+
+- 位置：`C04PrivacyRoleSwitchPlayModeTests.cs` 原 role-switch Begin、recovery/four-owner/closed-binding Begin/copy；runner `Get-C04ValidatedRawScenes`。
+- 修复：
+  - role-switch 改为独立 `EvidenceRoot()/role-switch-raw`，不再使用公共父目录；recovery/four-owner/closed-binding 均用各自唯一子目录。
+  - runner 要求四场景：`role-switch-raw`、`four-owner-raw`、`closed-binding-raw`、`recovery-raw`；逐场景解析 schema/frames 并分别调用 verifier，缺任一即失败。
+  - 每个 case `Begin/Seal/Reset` 独立；失败 finally Reset，不覆盖其他场景原件。
+  - Unity 测试 7 例：原 6 例保留，新增 open-deadline-after-player-close；精确 XML 分母同步 7，不删不 skip。
+  - U3 扩展已含 ClaimControl、旧 control epoch decision 拒绝、release→spectator AI 推进、open deadline 继续；四 owner 非空正对照新增 .NET 每 seat 循环（all-four room 目标 seat 驱动）。
+- 实测：
+  - reviewer capture-order 的“先 recovery 后 role-switch”路径在**实际子目录合同**下四路径均 PASS：`role-switch-raw=PASS`、`recovery-raw=PASS`、`four-owner-raw=PASS`、`closed-binding-raw=PASS`，log SHA `7FA919F43DA38064A184EEF6F757044D80B69E36BC2FEF274D439D7164258A3B`。
+  - 当前 Unity helper：四席、Version6、TargetClosedTiles=13、Ledger=2、Points=109、非空 offer，`captureAfter=True`、capturedFrames=49（原 0）；组件证据，不是实际 Unity 运行。
+  - LocalHost **161/161**（新增每 seat 非空正例），XML SHA `0986088C3FCE8BD1DA32D77DEEEA2DA56FABC64674DE2AEB3CE4880C9B650F3E`；TableRuntime **483/483**，XML SHA `A2F54B091E5B203C069D26A8EB8562E8FFF92001A83312827D85CC239CAACD61`。
+  - Unity 测试静态编译 0 error、0 warning；PlayMode DLL SHA `8A4A744082E1304C54DD7D56E2F71D8367BA5537578E9056A3C025F023E20227`。不是实际 Unity/Windows 执行。
+
+### R4 clean preflight 与证据
+
+- summary SHA `709AEF2E117E59444D75B47DE0CAF2A2CA2B6BE9C3D6CA0B260B08F5C954DFE9`
+- manifest SHA `A01CCDA51C99D51584FA567102C035138A7D30FEEF2E1D73FA161D3A3125197F`
+- seal SHA `078B579694678D327D607C027E4E4F0E13209E9B32CAE1E27DCB6621EE26794E`
+- closure 534 文件 / 13,632,812 bytes / SHA `c5002e05e60a6f2fb22e55ee7f89cf7cc469327d4cba340c19b265849e85ed38`
+- finalization JSON SHA `088360730A6A9DE8591D1AC22DEAD3B865271D2285DFC00F0ECBCE827CDCEAC7`
+- runner 16/16 JSON SHA `209E5BA62043BA8704FA6A0A90E67BFA67CEED18BF17EDB5DC3A1B4488739DAD`
+- 源码 SHA：`LocalPrivacyScenario.cs` `048612E88EF6B0A5886CD84682A3972BB468690BCB4BA83BF0AB9450540A3717`；矩阵测试 `CDBB2A569A1E99F58F267BB297F3552012373F185E470D76338E6E107825A185`；runner `222F22F20F94EA1B5CFECD9980DF90FF47E4A6ACE19F4394A027F6531F76ADA7`；runner tests `F0B297E41CBABD677204E8AFC57DF5C84C7969BD760962FD69859B86AF3C0B6D`；PlayMode `0AAA41906EF1B239EAA6969B93ED313CEB8616C5A36A3DC5A56BE4B9286728C2`。
+
+### R4 后状态
+
+- B-R4-01：sibling 误认领关闭；普通 orphan 为明确 UNKNOWN，不误杀、不伪清。
+- B-R4-02：四场景目录隔离/顺序独立；7 个 UnityTest 精确分母；四 owner 非空 .NET 正例通过。
+- 仍 BLOCKED_ON_PRIVACY_AND_RECOVERY：Luna typed verifier 未集成，A released/cold controller 未集成；真实 Unity/Windows P1/P2 未执行，不标 PASS。
+
 > **R3 返修状态（2026-11-03，B）**：R3 的 3 个 MAJOR 已全部在 B9 内批量修复：封存顺序/失败证据、未解决 orphan writer、非空 raw 采集与 U3 claim/stale-epoch。独立 160/160、483/483、runner 16/16、finalization/orphan/Unity helper 短负例通过；真实 Unity/Windows 仍 BLOCKED_ON_PRIVACY_AND_RECOVERY。R3 细节见下文，R2/R1 历史保留。
 
 ## R3 返修交付（2026-11-03，B：B-R3-01/02/03）
