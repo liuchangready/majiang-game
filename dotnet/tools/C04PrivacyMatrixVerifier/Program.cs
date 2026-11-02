@@ -39,7 +39,10 @@ if (args[0] == "self-test")
         foreach (var (name, positive) in new[] { ("legal-open-pon", BuildLegalOpenPonFixture(fixture)),
                      ("legal-public-reveal-progress", BuildLegalPublicRevealProgressFixture(fixture)),
                      ("legal-round-switch", BuildLegalRoundSwitchFixture(fixture)),
-                     ("legal-historical-public-event", BuildLegalHistoricalPublicEventFixture(fixture)) })
+                     ("legal-historical-public-event-after-tile-reuse", BuildLegalHistoricalPublicEventFixture(fixture)),
+                     ("authorized-tsumo-settlement-event", BuildTsumoFixture(fixture, "settlement")),
+                     ("authorized-tsumo-player-update", BuildTsumoFixture(fixture, "player-update")),
+                     ("authorized-tsumo-public-update", BuildTsumoFixture(fixture, "public-update")) })
         {
             List<string> positiveErrors = Verify(ReadCapture(WriteFixtureAndReadback(args[1], positive)).frames ?? []);
             Require(positiveErrors.Count == 0, $"{name} WireCodec fixture was rejected: {string.Join("; ", positiveErrors)}");
@@ -51,7 +54,7 @@ if (args[0] == "self-test")
             WriteFixture(casePath, item.Value);
             Require(Verify(ReadCapture(casePath).frames ?? []).Count != 0, $"self-test mutation was accepted: {item.Key}");
         }
-        Console.WriteLine($"SELF_TEST_PASS positive=6 negative={negative.Count} serializedFrames={capture.frames!.Length} source=WireCodec");
+        Console.WriteLine($"SELF_TEST_PASS positive=9 negative={negative.Count} serializedFrames={capture.frames!.Length} source=WireCodec");
         return 0;
     }
     catch (Exception exception)
@@ -91,7 +94,8 @@ static List<string> Verify(IEnumerable<Frame> frames)
 {
     var errors = new List<string>();
     var owners = new HashSet<int>();
-    var visibility = new List<(string room, string round, ulong version, int owner, HashSet<uint> hidden, HashSet<uint> publicTiles)>();
+    var visibility = new List<SnapshotVisibility>();
+    var publicEvents = new List<PublicEventFact>();
     var scopeSessions = new Dictionary<string, string>(StringComparer.Ordinal);
     var sessionScopes = new Dictionary<string, string>(StringComparer.Ordinal);
     var sessionBindings = new Dictionary<string, (string role, int seat, string account, string room)>(StringComparer.Ordinal);
@@ -179,7 +183,9 @@ static List<string> Verify(IEnumerable<Frame> frames)
             ProjectionFacts facts = ReadProjection(envelope, role, seat);
             CompareSummary(row, facts);
             ValidateRedundantContract(envelope, facts);
-            visibility.Add((welcome.RoomId, facts.RoundId, facts.StateVersion, facts.OwnerSeat, facts.HiddenTileIds, facts.PublicTileIds));
+            visibility.Add(new SnapshotVisibility(welcome.RoomId, facts.RoundId, facts.StateVersion, facts.EventSeq,
+                facts.OwnerSeat, facts.HiddenTileIds, facts.PublicTileIds, facts.PublicPhase, facts.DrawnTileId));
+            publicEvents.AddRange(facts.PublicEvents);
             bool fullGenesis = facts.IsFull && facts.StateVersion == 0 && facts.EventSeq == 0;
             bool emptyGenesisPush = !facts.IsFull && facts.StateVersion == 0 && facts.EventSeq == 0 &&
                 facts.CursorStreamVersion == 0 && facts.CursorProjectionSeq > 0 && facts.VisibleEventCount == 0;
@@ -218,6 +224,7 @@ static List<string> Verify(IEnumerable<Frame> frames)
         foreach (var row in rows.Where(x => x.owner >= 0))
             if (row.hidden.Overlaps(publicTiles)) errors.Add($"same-state hidden private tile is present in the public board for seat {row.owner}");
     }
+    ValidatePublicEventVisibility(publicEvents, visibility, errors);
     return errors;
 }
 
@@ -268,7 +275,7 @@ static ProjectionFacts ReadProjection(Envelope envelope, string role, int welcom
     {
         PlayerSnapshot actualPlayer = player ?? throw new InvalidDataException("player projection is absent");
         PlayerPrivateView privateView = actualPlayer.PrivateView ?? throw new InvalidDataException("player private projection is absent");
-        Require(actualPlayer.PublicView != null, "player projection lacks typed public snapshot");
+        PublicMatchView playerPublicView = actualPlayer.PublicView ?? throw new InvalidDataException("player projection lacks typed public snapshot");
         Require(actualPlayer.Cursor != null, "player projection lacks typed stream cursor");
         int owner = privateView.Seat;
         Require(owner == welcomeSeat, "typed private owner differs from decoded Welcome seat");
@@ -284,38 +291,47 @@ static ProjectionFacts ReadProjection(Envelope envelope, string role, int welcom
         Require(logicalHandCount == 13 - 3 * privateView.OwnerMelds.Count || logicalHandCount == 14 - 3 * privateView.OwnerMelds.Count,
             $"typed owner concealed hand size {logicalHandCount} is inconsistent with owner meld count {privateView.OwnerMelds.Count}");
         Require(privateView.Cheat != null && privateView.Control != null, "typed owner private cheat/control view is absent");
-    Require(actualPlayer.PublicView?.Board != null, "typed player snapshot lacks its public board needed for content privacy checks");
+        Require(playerPublicView.Board != null, "typed player snapshot lacks its public board needed for content privacy checks");
     Require(actualPlayer.SessionId == envelope.SessionId, "typed player snapshot session differs from envelope");
         Require(!string.IsNullOrWhiteSpace(actualPlayer.RoundId), "nonempty private hand projection lacks a typed round identity");
         Require(CountUnknownFields(actualPlayer) == 0, "player snapshot tree contains unknown fields");
         PrivateCheatView cheat = privateView.Cheat ?? throw new InvalidDataException("player private cheat view is absent");
         PlayerControlView control = privateView.Control ?? throw new InvalidDataException("player private control view is absent");
-        HashSet<uint> publicTiles = ExtractPublicTiles(actualPlayer.PublicView, actualPlayer.RoundId, actualPlayer.StateVersion, actualPlayer.EventSeq);
+        HashSet<uint> publicTiles = ExtractPublicTiles(playerPublicView);
+        var publicEvents = ReadSettlementEvents(envelope.RoomId, playerPublicView, actualPlayer.StateVersion, actualPlayer.EventSeq);
         if (envelope.BodyCase == Envelope.BodyOneofCase.PlayerUpdate)
             foreach (EventEnvelope visibleEvent in envelope.PlayerUpdate.VisibleEvents)
-                AddPlayerVisibleEventTiles(publicTiles, visibleEvent, actualPlayer.RoundId, actualPlayer.StateVersion, actualPlayer.EventSeq);
+            {
+                ValidatePlayerEventEnvelope(visibleEvent, actualPlayer.EventSeq, actualPlayer.StateVersion);
+                if (visibleEvent.Visibility is EventVisibility.Public or EventVisibility.SettlementPublic)
+                    publicEvents.Add(ReadPlayerPublicEvent(visibleEvent, envelope.RoomId, "PlayerUpdate public visible event"));
+            }
         return new ProjectionFacts(audience, full, actualPlayer.Cursor?.StreamVersion ?? 0, actualPlayer.Cursor?.ProjectionSeq ?? 0,
             visibleEvents, actualPlayer.SessionId, actualPlayer.RoundId, actualPlayer.StateVersion, actualPlayer.EventSeq, owner, owner, privateView.ClosedTiles.Count,
             true, cheat.CheatPoints, cheat.LedgerEntries.Count, cheat.TileMark?.Groups.Count ?? 0,
             CountSleeveOffer(cheat.SleeveBloom), CountSleeveOffer(cheat.OffTurnSleeveBloom), cheat.SleeveBloomReservation == null ? 0 : 1,
             privateView.SleeveTiles.Count, privateView.OwnerMelds.Count, true, control.ControlEpoch,
-            control.ControlVersion, false, hiddenIds, publicTiles);
+            control.ControlVersion, false, hiddenIds, publicTiles, playerPublicView.Board!.Phase,
+            privateView.HasDrawnTileId ? privateView.DrawnTileId : null, publicEvents);
     }
     PublicSnapshot actualPublic = publicSnapshot ?? throw new InvalidDataException("public projection is absent");
-    Require(actualPublic.View?.Board != null, "public projection lacks typed public board needed for content privacy checks");
+    PublicMatchView publicView = actualPublic.View ?? throw new InvalidDataException("public projection lacks typed public view");
+    Require(publicView.Board != null, "public projection lacks typed public board needed for content privacy checks");
     Require(actualPublic.Cursor != null, "public projection lacks typed stream cursor");
     Require(actualPublic.SessionId == envelope.SessionId, "typed public snapshot session differs from envelope");
     Require(CountUnknownFields(actualPublic) == 0, "public snapshot tree contains unknown fields");
-    HashSet<uint> publicTileIds = ExtractPublicTiles(actualPublic.View, actualPublic.RoundId, actualPublic.StateVersion, actualPublic.EventSeq);
+    HashSet<uint> publicTileIds = ExtractPublicTiles(publicView);
+    var publicEventFacts = ReadSettlementEvents(envelope.RoomId, publicView, actualPublic.StateVersion, actualPublic.EventSeq);
     if (envelope.BodyCase == Envelope.BodyOneofCase.PublicUpdate)
         foreach (PublicEventEnvelope visibleEvent in envelope.PublicUpdate.VisibleEvents)
-            AddPublicUpdateEventTiles(publicTileIds, visibleEvent, actualPublic.RoundId, actualPublic.StateVersion, actualPublic.EventSeq);
+            publicEventFacts.Add(ReadPublicEvent(visibleEvent, envelope.RoomId, actualPublic.EventSeq,
+                actualPublic.StateVersion, "PublicUpdate visible event"));
     return new ProjectionFacts(audience, full, actualPublic.Cursor?.StreamVersion ?? 0, actualPublic.Cursor?.ProjectionSeq ?? 0,
         visibleEvents, actualPublic.SessionId, actualPublic.RoundId, actualPublic.StateVersion, actualPublic.EventSeq, -1, -1, 0, false, 0, 0, 0, 0, 0, 0,
-        0, 0, false, 0, 0, true, new HashSet<uint>(), publicTileIds);
+        0, 0, false, 0, 0, true, new HashSet<uint>(), publicTileIds, publicView.Board!.Phase, null, publicEventFacts);
 }
 
-static HashSet<uint> ExtractPublicTiles(PublicMatchView? view, string currentRoundId, ulong stateVersion, ulong snapshotEventSeq)
+static HashSet<uint> ExtractPublicTiles(PublicMatchView? view)
 {
     var result = new HashSet<uint>();
     PublicMatchView actualView = view ?? throw new InvalidDataException("typed public view is absent");
@@ -328,33 +344,30 @@ static HashSet<uint> ExtractPublicTiles(PublicMatchView? view, string currentRou
     }
     if (board.LastDiscard != null) Add(board.LastDiscard.TileId);
     foreach (uint id in board.DoraIndicators) Add(id);
-    if (actualView.SettlementEvents.Count != 0)
-        Require(!string.IsNullOrWhiteSpace(actualView.SettlementRoundId), "public settlement events lack a settlement round identity");
-    foreach (PublicEventEnvelope item in actualView.SettlementEvents)
-    {
-        HashSet<uint> exposed = ReadPublicEventTiles(item, snapshotEventSeq, stateVersion, "settlement event");
-        Require(item.CommandVersion != stateVersion || StringComparer.Ordinal.Equals(actualView.SettlementRoundId, currentRoundId),
-            "current-version settlement event belongs to a different round than its typed snapshot");
-        if (StringComparer.Ordinal.Equals(actualView.SettlementRoundId, currentRoundId) && item.CommandVersion == stateVersion)
-            result.UnionWith(exposed);
-    }
     return result;
 }
 
-static void AddPublicUpdateEventTiles(HashSet<uint> result, PublicEventEnvelope item, string roundId, ulong stateVersion, ulong snapshotEventSeq)
+static List<PublicEventFact> ReadSettlementEvents(string roomId, PublicMatchView view, ulong stateVersion, ulong snapshotEventSeq)
 {
-    HashSet<uint> exposed = ReadPublicEventTiles(item, snapshotEventSeq, stateVersion, "PublicUpdate visible event");
-    if (item.CommandVersion == stateVersion && !string.IsNullOrWhiteSpace(roundId)) result.UnionWith(exposed);
+    var result = new List<PublicEventFact>();
+    if (view.SettlementEvents.Count == 0) return result;
+    Require(!string.IsNullOrWhiteSpace(view.SettlementRoundId), "public settlement events lack a settlement round identity");
+    foreach (PublicEventEnvelope item in view.SettlementEvents)
+        result.Add(ReadPublicEvent(item, roomId, snapshotEventSeq, stateVersion, "settlement event", view.SettlementRoundId));
+    return result;
 }
 
-static void AddPlayerVisibleEventTiles(HashSet<uint> result, EventEnvelope item, string roundId, ulong stateVersion, ulong snapshotEventSeq)
+static PublicEventFact ReadPlayerPublicEvent(EventEnvelope item, string roomId, string label)
 {
-    ValidatePlayerEventEnvelope(item, snapshotEventSeq, stateVersion);
-    if (item.Visibility is EventVisibility.Public or EventVisibility.SettlementPublic)
-    {
-        HashSet<uint> exposed = ReadPlayerPublicEventTiles(item, stateVersion, "PlayerUpdate public visible event");
-        if (item.CommandVersion == stateVersion && !string.IsNullOrWhiteSpace(roundId)) result.UnionWith(exposed);
-    }
+    Require(!item.HasUnknownPayload, label + " contains unknown event data and cannot be privacy-audited");
+    Require(item.Visibility is EventVisibility.Public or EventVisibility.SettlementPublic, label + " is not explicitly public");
+    Require(PublicEventType(item.EventType), label + " carries a private event type");
+    ValidateSettlementEvent(item.EventType, item.Visibility,
+        item.EventCase == EventEnvelope.EventOneofCase.DoraRevealed && item.DoraRevealed.IsUraDora,
+        item.EventCase == EventEnvelope.EventOneofCase.DoraRevealed && item.DoraRevealed.UraAuthorized, label);
+    EventTileContent content = ReadEventTileContent(item, label);
+    return new PublicEventFact(roomId, item.CommandVersion, item.EventSeq, item.EventType, item.Visibility,
+        content.ActorSeat, content.WinTileId, content.TileIds, null, label);
 }
 
 static void ValidatePlayerEventEnvelope(EventEnvelope item, ulong snapshotEventSeq, ulong stateVersion)
@@ -367,19 +380,8 @@ static void ValidatePlayerEventEnvelope(EventEnvelope item, ulong snapshotEventS
     Require(EventTypeMatches(item.EventType, item.EventCase), "PlayerUpdate event type differs from its typed event body");
 }
 
-static HashSet<uint> ReadPlayerPublicEventTiles(EventEnvelope item, ulong stateVersion, string label)
-{
-    Require(!item.HasUnknownPayload, label + " contains unknown event data and cannot be privacy-audited");
-    Require(item.Visibility is EventVisibility.Public or EventVisibility.SettlementPublic, label + " is not explicitly public");
-    Require(PublicEventType(item.EventType), label + " carries a private event type");
-    ValidateSettlementEvent(item.EventType, item.Visibility, item.EventCase == EventEnvelope.EventOneofCase.DoraRevealed ? item.DoraRevealed.IsUraDora : false,
-        item.EventCase == EventEnvelope.EventOneofCase.DoraRevealed ? item.DoraRevealed.UraAuthorized : false, label);
-    var result = new HashSet<uint>();
-    AddEventTileIds(result, item, label);
-    return result;
-}
-
-static HashSet<uint> ReadPublicEventTiles(PublicEventEnvelope item, ulong snapshotEventSeq, ulong stateVersion, string label)
+static PublicEventFact ReadPublicEvent(PublicEventEnvelope item, string roomId, ulong snapshotEventSeq, ulong stateVersion,
+    string label, string? settlementRoundId = null)
 {
     Require(item.EventSchemaVersion == ProtocolConstants.EventSchemaVersion, label + " schema version is not current");
     Require(item.EventSeq > 0 && item.EventSeq <= snapshotEventSeq, label + " event sequence exceeds its typed snapshot");
@@ -390,9 +392,9 @@ static HashSet<uint> ReadPublicEventTiles(PublicEventEnvelope item, ulong snapsh
     Require(PublicEventType(item.EventType), label + " carries a private event type");
     ValidateSettlementEvent(item.EventType, item.Visibility, item.EventCase == PublicEventEnvelope.EventOneofCase.DoraRevealed ? item.DoraRevealed.IsUraDora : false,
         item.EventCase == PublicEventEnvelope.EventOneofCase.DoraRevealed ? item.DoraRevealed.UraAuthorized : false, label);
-    var result = new HashSet<uint>();
-    AddPublicEventTileIds(result, item, label);
-    return result;
+    EventTileContent content = ReadPublicEventTileContent(item, label);
+    return new PublicEventFact(roomId, item.CommandVersion, item.EventSeq, item.EventType, item.Visibility,
+        content.ActorSeat, content.WinTileId, content.TileIds, settlementRoundId, label);
 }
 
 static void ValidateSettlementEvent(EventType eventType, EventVisibility visibility, bool isUraDora, bool uraAuthorized, string label)
@@ -454,50 +456,62 @@ static bool PublicEventTypeMatches(EventType type, PublicEventEnvelope.EventOneo
     _ => false
 };
 
-static void AddEventTileIds(HashSet<uint> target, EventEnvelope item, string label)
+static EventTileContent ReadEventTileContent(EventEnvelope item, string label)
 {
+    var target = new HashSet<uint>();
+    int? actorSeat = null;
+    uint? winTileId = null;
     void Add(uint id) { Require(id < 136, label + " has an invalid physical tile id"); target.Add(id); }
     switch (item.EventCase)
     {
-        case EventEnvelope.EventOneofCase.TileDiscarded: Add(item.TileDiscarded.TileId); break;
-        case EventEnvelope.EventOneofCase.ChiDeclared: AddMeld(item.ChiDeclared.Meld); break;
-        case EventEnvelope.EventOneofCase.PonDeclared: AddMeld(item.PonDeclared.Meld); break;
+        case EventEnvelope.EventOneofCase.TileDiscarded: actorSeat = item.TileDiscarded.Player; Add(item.TileDiscarded.TileId); break;
+        case EventEnvelope.EventOneofCase.ChiDeclared: actorSeat = item.ChiDeclared.Player; AddMeld(item.ChiDeclared.Meld); break;
+        case EventEnvelope.EventOneofCase.PonDeclared: actorSeat = item.PonDeclared.Player; AddMeld(item.PonDeclared.Meld); break;
         case EventEnvelope.EventOneofCase.KanDeclared:
+            actorSeat = item.KanDeclared.Player;
             if (item.KanDeclared.KanType == KanType.Closed) Require(item.KanDeclared.Meld == null, label + " exposes a closed-kan meld body");
             else if (item.KanDeclared.Meld != null) AddMeld(item.KanDeclared.Meld);
             break;
-        case EventEnvelope.EventOneofCase.RiichiDeclared: Add(item.RiichiDeclared.DiscardTileId); break;
+        case EventEnvelope.EventOneofCase.RiichiDeclared: actorSeat = item.RiichiDeclared.Player; Add(item.RiichiDeclared.DiscardTileId); break;
         case EventEnvelope.EventOneofCase.TsumoWin:
-            Add(item.TsumoWin.WinTileId); AddBreakdown(item.TsumoWin.Breakdown); break;
+            actorSeat = item.TsumoWin.Player; winTileId = item.TsumoWin.WinTileId; Add(item.TsumoWin.WinTileId); AddBreakdown(item.TsumoWin.Breakdown); break;
         case EventEnvelope.EventOneofCase.RonWin:
-            Add(item.RonWin.WinTileId); AddBreakdown(item.RonWin.Breakdown); break;
+            actorSeat = item.RonWin.Winner; winTileId = item.RonWin.WinTileId; Add(item.RonWin.WinTileId); AddBreakdown(item.RonWin.Breakdown); break;
         case EventEnvelope.EventOneofCase.DoraRevealed: Add(item.DoraRevealed.IndicatorTileId); break;
     }
     void AddMeld(MeldView? meld) { if (meld != null) foreach (uint id in meld.TileIds) Add(id); }
     void AddBreakdown(ScoreBreakdownView? breakdown) { if (breakdown != null) foreach (uint id in breakdown.UraTiles) Add(id); }
+    if (actorSeat is int actor) Require(actor is >= 0 and <= 3, label + " has an invalid acting seat");
+    return new EventTileContent(target, actorSeat, winTileId);
 }
 
-static void AddPublicEventTileIds(HashSet<uint> target, PublicEventEnvelope item, string label)
+static EventTileContent ReadPublicEventTileContent(PublicEventEnvelope item, string label)
 {
+    var target = new HashSet<uint>();
+    int? actorSeat = null;
+    uint? winTileId = null;
     void Add(uint id) { Require(id < 136, label + " has an invalid physical tile id"); target.Add(id); }
     switch (item.EventCase)
     {
-        case PublicEventEnvelope.EventOneofCase.TileDiscarded: Add(item.TileDiscarded.TileId); break;
-        case PublicEventEnvelope.EventOneofCase.ChiDeclared: AddMeld(item.ChiDeclared.Meld); break;
-        case PublicEventEnvelope.EventOneofCase.PonDeclared: AddMeld(item.PonDeclared.Meld); break;
+        case PublicEventEnvelope.EventOneofCase.TileDiscarded: actorSeat = item.TileDiscarded.Player; Add(item.TileDiscarded.TileId); break;
+        case PublicEventEnvelope.EventOneofCase.ChiDeclared: actorSeat = item.ChiDeclared.Player; AddMeld(item.ChiDeclared.Meld); break;
+        case PublicEventEnvelope.EventOneofCase.PonDeclared: actorSeat = item.PonDeclared.Player; AddMeld(item.PonDeclared.Meld); break;
         case PublicEventEnvelope.EventOneofCase.KanDeclared:
+            actorSeat = item.KanDeclared.Player;
             if (item.KanDeclared.KanType == KanType.Closed) Require(item.KanDeclared.Meld == null, label + " exposes a closed-kan meld body");
             else if (item.KanDeclared.Meld != null) AddMeld(item.KanDeclared.Meld);
             break;
-        case PublicEventEnvelope.EventOneofCase.RiichiDeclared: Add(item.RiichiDeclared.DiscardTileId); break;
+        case PublicEventEnvelope.EventOneofCase.RiichiDeclared: actorSeat = item.RiichiDeclared.Player; Add(item.RiichiDeclared.DiscardTileId); break;
         case PublicEventEnvelope.EventOneofCase.TsumoWin:
-            Add(item.TsumoWin.WinTileId); AddBreakdown(item.TsumoWin.Breakdown); break;
+            actorSeat = item.TsumoWin.Player; winTileId = item.TsumoWin.WinTileId; Add(item.TsumoWin.WinTileId); AddBreakdown(item.TsumoWin.Breakdown); break;
         case PublicEventEnvelope.EventOneofCase.RonWin:
-            Add(item.RonWin.WinTileId); AddBreakdown(item.RonWin.Breakdown); break;
+            actorSeat = item.RonWin.Winner; winTileId = item.RonWin.WinTileId; Add(item.RonWin.WinTileId); AddBreakdown(item.RonWin.Breakdown); break;
         case PublicEventEnvelope.EventOneofCase.DoraRevealed: Add(item.DoraRevealed.IndicatorTileId); break;
     }
     void AddMeld(MeldView? meld) { if (meld != null) foreach (uint id in meld.TileIds) Add(id); }
     void AddBreakdown(ScoreBreakdownView? breakdown) { if (breakdown != null) foreach (uint id in breakdown.UraTiles) Add(id); }
+    if (actorSeat is int actor) Require(actor is >= 0 and <= 3, label + " has an invalid acting seat");
+    return new EventTileContent(target, actorSeat, winTileId);
 }
 
 static void ValidateRedundantContract(Envelope envelope, ProjectionFacts facts)
@@ -509,6 +523,75 @@ static void ValidateRedundantContract(Envelope envelope, ProjectionFacts facts)
 
 static int CountSleeveOffer(SleeveBloomView? offer) => offer == null ? 0 :
     (offer.HasFirstTileId ? 1 : 0) + (offer.HasSecondTileId ? 1 : 0) + (offer.HasReservedTileId ? 1 : 0);
+
+static void ValidatePublicEventVisibility(List<PublicEventFact> events, List<SnapshotVisibility> snapshots, List<string> errors)
+{
+    foreach (PublicEventFact item in events.Where(e => e.TileIds.Count != 0))
+    {
+        SnapshotVisibility[] source = snapshots.Where(s => s.room == item.RoomId && s.version == item.CommandVersion).ToArray();
+        if (source.Length == 0)
+        {
+            errors.Add($"{item.Label} exposes tile identities at commandVersion {item.CommandVersion} without a matching historical snapshot");
+            continue;
+        }
+
+        string[] sourceRounds = source.Select(s => s.round).Distinct(StringComparer.Ordinal).ToArray();
+        if (sourceRounds.Length != 1 || string.IsNullOrWhiteSpace(sourceRounds[0]) ||
+            item.SettlementRoundId != null && item.SettlementRoundId != sourceRounds[0])
+        {
+            errors.Add($"{item.Label} commandVersion {item.CommandVersion} does not bind to one matching historical round");
+            continue;
+        }
+
+        SnapshotVisibility[] ownerRows = source.Where(s => s.owner is >= 0 and <= 3).GroupBy(s => s.owner).Select(g => g.First()).ToArray();
+        if (!Enumerable.Range(0, 4).All(seat => ownerRows.Any(s => s.owner == seat)))
+        {
+            errors.Add($"{item.Label} commandVersion {item.CommandVersion} lacks all four historical owner projections");
+            continue;
+        }
+        if (ownerRows.Any(s => s.eventSeq < item.EventSeq))
+        {
+            errors.Add($"{item.Label} event_seq {item.EventSeq} exceeds a matching historical owner snapshot");
+            continue;
+        }
+
+        SnapshotVisibility? winner = null;
+        if (item.EventType is EventType.TsumoWin or EventType.RonWin)
+        {
+            if (item.Visibility != EventVisibility.SettlementPublic || item.ActorSeat is not int actor || item.WinTileId is not uint winTile)
+            {
+                errors.Add($"{item.Label} win exposure lacks settlement visibility, actor or winning tile");
+                continue;
+            }
+            winner = ownerRows.SingleOrDefault(s => s.owner == actor);
+            if (winner == null || winner.publicPhase is not (GamePhase.RoundEnd or GamePhase.MatchEnd))
+            {
+                errors.Add($"{item.Label} has no matching terminal owner snapshot for its winner");
+                continue;
+            }
+            if (item.EventType == EventType.TsumoWin && winner.drawnTileId != winTile)
+            {
+                errors.Add($"{item.Label} winning tile does not match the winner's terminal drawn tile");
+                continue;
+            }
+            if (item.EventType == EventType.RonWin && !winner.publicTiles.Contains(winTile))
+            {
+                errors.Add($"{item.Label} ron winning tile is absent from the matching public terminal board");
+                continue;
+            }
+        }
+
+        foreach (uint tileId in item.TileIds)
+        foreach (SnapshotVisibility owner in ownerRows.Where(s => s.hidden.Contains(tileId)))
+        {
+            bool authorizedWinningDraw = item.EventType == EventType.TsumoWin && item.Visibility == EventVisibility.SettlementPublic &&
+                item.ActorSeat == owner.owner && item.WinTileId == tileId && winner?.owner == owner.owner && owner.drawnTileId == tileId &&
+                owner.publicPhase is GamePhase.RoundEnd or GamePhase.MatchEnd;
+            if (!authorizedWinningDraw)
+                errors.Add($"{item.Label} at commandVersion {item.CommandVersion} publicly exposes tile {tileId} still hidden for seat {owner.owner}");
+        }
+    }
+}
 
 static void CompareSummary(Frame row, ProjectionFacts f)
 {
@@ -633,17 +716,182 @@ static FrameFile BuildLegalRoundSwitchFixture(FrameFile source)
 
 static FrameFile BuildLegalHistoricalPublicEventFixture(FrameFile source)
 {
-    FrameFile progressed = BuildLegalPublicRevealProgressFixture(source);
-    Frame[] rows = progressed.frames!;
-    rows[0] = MutateProjection(rows[0], envelope =>
+    Frame[] versionOne = source.frames!.Select((row, index) => MutateProjectionAndRefreshSummary(row, envelope =>
     {
-        PlayerSnapshot snapshot = envelope.SyncResponse.Player;
-        snapshot.PublicView.SettlementRoundId = snapshot.RoundId;
-        snapshot.PublicView.SettlementEvents.Add(new PublicEventEnvelope { EventSchemaVersion = ProtocolConstants.EventSchemaVersion,
-            EventSeq = 1, CommandVersion = 1, EventType = EventType.TileDiscarded, Visibility = EventVisibility.Public,
-            TileDiscarded = new TileDiscarded { TurnNumber = 1, Player = 0, TileId = 0 } });
+        if (envelope.SyncResponse.Player != null && index == 0)
+        {
+            PlayerSnapshot player = envelope.SyncResponse.Player;
+            player.PrivateView.ClosedTiles.Remove(0);
+            player.PrivateView.DrawnTileId = 70;
+            player.PublicView.Board.Players[0].Discards.Add(new DiscardView { TileId = 0, TurnNumber = 1 });
+        }
+        if (envelope.SyncResponse.Public != null)
+            envelope.SyncResponse.Public.View.Board.Players[0].Discards.Add(new DiscardView { TileId = 0, TurnNumber = 1 });
+    })).ToArray();
+
+    Frame[] versionTwo = versionOne.Select(row => MutateProjectionAndRefreshSummary(row, envelope =>
+    {
+        envelope.SyncResponse.StateVersion = 2;
+        envelope.SyncResponse.EventSeq = 2;
+        if (envelope.SyncResponse.Player != null)
+        {
+            PlayerSnapshot player = envelope.SyncResponse.Player;
+            player.StateVersion = 2; player.EventSeq = 2; player.RoundId = "round-next";
+            player.Cursor = new StreamCursor { StreamVersion = 2, ProjectionSeq = 2 };
+            player.PrivateView.ClosedTiles.Clear();
+            player.PrivateView.ClosedTiles.Add(Enumerable.Range(player.PrivateView.Seat * 13, 13).Select(i => (uint)i));
+            player.PrivateView.ClearDrawnTileId();
+            player.PublicView = new PublicMatchView { Board = FixturePublicBoard() };
+        }
+        if (envelope.SyncResponse.Public != null)
+        {
+            PublicSnapshot spectator = envelope.SyncResponse.Public;
+            spectator.StateVersion = 2; spectator.EventSeq = 2; spectator.RoundId = "round-next";
+            spectator.Cursor = new StreamCursor { StreamVersion = 2, ProjectionSeq = 2 };
+            spectator.View = new PublicMatchView { Board = FixturePublicBoard() };
+        }
+    })).ToArray();
+    versionTwo[4] = MutateProjectionAndRefreshSummary(versionTwo[4], envelope =>
+    {
+        PublicMatchView view = envelope.SyncResponse.Public.View;
+        view.SettlementRoundId = "round";
+        view.SettlementEvents.Add(TileDiscardEvent(1, 1, 0));
     });
+    return CombineFrames(versionOne, versionTwo);
+}
+
+static FrameFile BuildTsumoFixture(FrameFile source, string route, string invalid = "")
+{
+    Frame[] rows = source.frames!.Select((row, index) => MutateProjectionAndRefreshSummary(row, envelope =>
+    {
+        PublicMatchView view = envelope.SyncResponse.Player?.PublicView ?? envelope.SyncResponse.Public.View;
+        view.Board.Phase = invalid == "nonterminal" ? GamePhase.Draw : GamePhase.RoundEnd;
+        foreach (PlayerPublicView seat in view.Board.Players) seat.HandCount = seat.Seat == 0 ? 14u : 13u;
+        if (envelope.SyncResponse.Player != null)
+        {
+            PlayerSnapshot player = envelope.SyncResponse.Player;
+            player.PrivateView.ClosedTiles.Clear();
+            if (player.PrivateView.Seat == 0)
+            {
+                player.PrivateView.ClosedTiles.Add(new uint[] { 0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16 });
+                player.PrivateView.DrawnTileId = 17;
+            }
+            else
+            {
+                player.PrivateView.ClearDrawnTileId();
+                player.PrivateView.ClosedTiles.Add(Enumerable.Range(40 + (player.PrivateView.Seat - 1) * 13, 13).Select(i => (uint)i));
+            }
+            if (route == "settlement")
+            {
+                player.PublicView.SettlementRoundId = player.RoundId;
+                player.PublicView.SettlementEvents.Add(TsumoEvent(invalid));
+            }
+        }
+        else if (route == "settlement")
+        {
+            envelope.SyncResponse.Public.View.SettlementRoundId = envelope.SyncResponse.Public.RoundId;
+            envelope.SyncResponse.Public.View.SettlementEvents.Add(TsumoEvent(invalid));
+        }
+    })).ToArray();
+
+    if (route == "player-update") rows[0] = BuildTsumoPlayerUpdate(rows[0], invalid);
+    if (route == "public-update") rows[4] = BuildTsumoPublicUpdate(rows[4], invalid);
     return new FrameFile { schemaVersion = 2, frames = rows };
+}
+
+static PublicEventEnvelope TsumoEvent(string invalid) => new()
+{
+    EventSchemaVersion = ProtocolConstants.EventSchemaVersion,
+    EventSeq = 1,
+    CommandVersion = invalid == "wrong-version" ? 2u : 1u,
+    EventType = EventType.TsumoWin,
+    Visibility = invalid == "wrong-visibility" ? EventVisibility.Public : EventVisibility.SettlementPublic,
+    TsumoWin = new TsumoWin { Player = invalid == "wrong-owner" ? 1 : 0, WinTileId = invalid == "wrong-tile" ? 16u : 17u }
+};
+
+static EventEnvelope TsumoPlayerEvent(string invalid) => new()
+{
+    EventSchemaVersion = ProtocolConstants.EventSchemaVersion,
+    EventSeq = 1,
+    CommandVersion = invalid == "wrong-version" ? 2u : 1u,
+    EventType = EventType.TsumoWin,
+    Visibility = invalid == "wrong-visibility" ? EventVisibility.Public : EventVisibility.SettlementPublic,
+    TsumoWin = new TsumoWin { Player = invalid == "wrong-owner" ? 1 : 0, WinTileId = invalid == "wrong-tile" ? 16u : 17u }
+};
+
+static Frame BuildTsumoPlayerUpdate(Frame source, string invalid)
+{
+    Envelope welcome = WireCodec.Decode(Convert.FromBase64String(source.welcomeRawBase64)).Envelope!;
+    Envelope projection = WireCodec.Decode(Convert.FromBase64String(source.rawBase64)).Envelope!;
+    PlayerSnapshot snapshot = projection.SyncResponse.Player.Clone();
+    projection.MessageType = MessageType.PlayerUpdate;
+    projection.Cursor = snapshot.Cursor.Clone();
+    projection.PlayerUpdate = new PlayerUpdate { Snapshot = snapshot, Cursor = snapshot.Cursor.Clone(), FromCursor = new StreamCursor(),
+        IsFullSnapshot = true, VisibleEvents = { TsumoPlayerEvent(invalid) } };
+    return CreateRow(welcome, projection);
+}
+
+static Frame BuildTsumoPublicUpdate(Frame source, string invalid)
+{
+    Envelope welcome = WireCodec.Decode(Convert.FromBase64String(source.welcomeRawBase64)).Envelope!;
+    Envelope projection = WireCodec.Decode(Convert.FromBase64String(source.rawBase64)).Envelope!;
+    PublicSnapshot snapshot = projection.SyncResponse.Public.Clone();
+    projection.MessageType = MessageType.PublicUpdate;
+    projection.Cursor = snapshot.Cursor.Clone();
+    projection.PublicUpdate = new PublicUpdate { Snapshot = snapshot, Cursor = snapshot.Cursor.Clone(), FromCursor = new StreamCursor(),
+        IsFullSnapshot = true, VisibleEvents = { TsumoEvent(invalid) } };
+    return CreateRow(welcome, projection);
+}
+
+static FrameFile BuildHistoricalLeakFixture(FrameFile source, string route, bool keepHistory)
+{
+    Frame[] versionTwo = source.frames!.Select(row => MutateProjectionAndRefreshSummary(row, envelope =>
+    {
+        envelope.SyncResponse.StateVersion = 2; envelope.SyncResponse.EventSeq = 2;
+        if (envelope.SyncResponse.Player != null)
+        {
+            envelope.SyncResponse.Player.StateVersion = 2; envelope.SyncResponse.Player.EventSeq = 2;
+            envelope.SyncResponse.Player.Cursor = new StreamCursor { StreamVersion = 2, ProjectionSeq = 2 };
+        }
+        if (envelope.SyncResponse.Public != null)
+        {
+            envelope.SyncResponse.Public.StateVersion = 2; envelope.SyncResponse.Public.EventSeq = 2;
+            envelope.SyncResponse.Public.Cursor = new StreamCursor { StreamVersion = 2, ProjectionSeq = 2 };
+        }
+    })).ToArray();
+
+    if (route == "player-update") versionTwo[0] = BuildHiddenTilePlayerUpdate(versionTwo[0], 1);
+    else if (route == "public-update") versionTwo[4] = BuildHiddenTilePublicUpdate(versionTwo[0], versionTwo[4], 1);
+    else versionTwo[4] = MutateProjectionAndRefreshSummary(versionTwo[4], envelope =>
+    {
+        PublicMatchView view = envelope.SyncResponse.Public.View;
+        view.SettlementRoundId = envelope.SyncResponse.Public.RoundId;
+        view.SettlementEvents.Add(TileDiscardEvent(1, 1, 0));
+    });
+
+    Frame[] combined = keepHistory ? source.frames!.Concat(versionTwo).ToArray() : versionTwo;
+    return CombineFrames([], combined);
+}
+
+static PublicEventEnvelope TileDiscardEvent(ulong eventSeq, ulong commandVersion, uint tileId) => new()
+{
+    EventSchemaVersion = ProtocolConstants.EventSchemaVersion, EventSeq = eventSeq, CommandVersion = commandVersion,
+    EventType = EventType.TileDiscarded, Visibility = EventVisibility.Public,
+    TileDiscarded = new TileDiscarded { TurnNumber = 1, Player = 0, TileId = tileId }
+};
+
+static Frame MutateProjectionAndRefreshSummary(Frame frame, Action<Envelope> mutation)
+{
+    Envelope welcome = WireCodec.Decode(Convert.FromBase64String(frame.welcomeRawBase64)).Envelope!;
+    Envelope projection = WireCodec.Decode(Convert.FromBase64String(frame.rawBase64)).Envelope!;
+    mutation(projection);
+    return CreateRow(welcome, projection);
+}
+
+static FrameFile CombineFrames(Frame[] history, Frame[] current)
+{
+    Frame[] combined = history.Concat(current).Select((frame, index) => frame with { ordinal = index + 1 }).ToArray();
+    return new FrameFile { schemaVersion = 2, frames = combined };
 }
 
 static Dictionary<string, FrameFile> BuildNegativeFixtures(FrameFile source)
@@ -691,6 +939,14 @@ static Dictionary<string, FrameFile> BuildNegativeFixtures(FrameFile source)
     }));
     One("hidden-tile-in-player-update-event", 0, BuildHiddenTilePlayerUpdate(rows[0]));
     One("hidden-tile-in-public-update-event", 4, BuildHiddenTilePublicUpdate(rows[0], rows[4]));
+    foreach (string route in new[] { "player-update", "public-update", "settlement" })
+    foreach (bool keepHistory in new[] { false, true })
+        cases.Add($"old-version-hidden-event-{route}-{(keepHistory ? "with-history" : "without-history")}",
+            BuildHistoricalLeakFixture(source, route, keepHistory));
+    cases.Add("tsumo-win-wrong-owner", BuildTsumoFixture(source, "public-update", "wrong-owner"));
+    cases.Add("tsumo-win-wrong-tile", BuildTsumoFixture(source, "settlement", "wrong-tile"));
+    cases.Add("tsumo-win-nonterminal", BuildTsumoFixture(source, "player-update", "nonterminal"));
+    cases.Add("tsumo-win-wrong-event-version", BuildTsumoFixture(source, "public-update", "wrong-version"));
     One("unknown-field-summary-false", 0, rows[0] with { unknownFieldsZero = false });
     One("missing-welcome", 0, rows[0] with { welcomeRawBase64 = string.Empty, welcomeWireSha256 = string.Empty });
     One("welcome-record-is-not-projection", 0, rows[0] with { rawBase64 = rows[0].welcomeRawBase64, wireSha256 = rows[0].welcomeWireSha256 });
@@ -724,7 +980,7 @@ static Frame MutateProjection(Frame frame, Action<Envelope> mutation)
     return frame with { rawBase64 = Convert.ToBase64String(envelope.ToByteArray()), wireSha256 = Sha(envelope.ToByteArray()) };
 }
 
-static Frame BuildHiddenTilePlayerUpdate(Frame playerFrame)
+static Frame BuildHiddenTilePlayerUpdate(Frame playerFrame, ulong? eventCommandVersion = null)
 {
     Envelope welcome = WireCodec.Decode(Convert.FromBase64String(playerFrame.welcomeRawBase64)).Envelope!;
     Envelope projection = WireCodec.Decode(Convert.FromBase64String(playerFrame.rawBase64)).Envelope!;
@@ -735,12 +991,12 @@ static Frame BuildHiddenTilePlayerUpdate(Frame playerFrame)
     projection.PlayerUpdate = new PlayerUpdate { Snapshot = snapshot, Cursor = snapshot.Cursor.Clone(),
         FromCursor = new StreamCursor(), IsFullSnapshot = true,
         VisibleEvents = { new EventEnvelope { EventSchemaVersion = ProtocolConstants.EventSchemaVersion, EventSeq = snapshot.EventSeq,
-            CommandVersion = snapshot.StateVersion, EventType = EventType.TileDiscarded, Visibility = EventVisibility.Public,
+            CommandVersion = eventCommandVersion ?? snapshot.StateVersion, EventType = EventType.TileDiscarded, Visibility = EventVisibility.Public,
             TileDiscarded = new TileDiscarded { TurnNumber = 1, Player = 0, TileId = hidden } } } };
     return CreateRow(welcome, projection);
 }
 
-static Frame BuildHiddenTilePublicUpdate(Frame playerFrame, Frame publicFrame)
+static Frame BuildHiddenTilePublicUpdate(Frame playerFrame, Frame publicFrame, ulong? eventCommandVersion = null)
 {
     Envelope welcome = WireCodec.Decode(Convert.FromBase64String(publicFrame.welcomeRawBase64)).Envelope!;
     Envelope projection = WireCodec.Decode(Convert.FromBase64String(publicFrame.rawBase64)).Envelope!;
@@ -752,7 +1008,7 @@ static Frame BuildHiddenTilePublicUpdate(Frame playerFrame, Frame publicFrame)
     projection.PublicUpdate = new PublicUpdate { Snapshot = snapshot, Cursor = snapshot.Cursor.Clone(),
         FromCursor = new StreamCursor(), IsFullSnapshot = true,
         VisibleEvents = { new PublicEventEnvelope { EventSchemaVersion = ProtocolConstants.EventSchemaVersion, EventSeq = snapshot.EventSeq,
-            CommandVersion = snapshot.StateVersion, EventType = EventType.TileDiscarded, Visibility = EventVisibility.Public,
+            CommandVersion = eventCommandVersion ?? snapshot.StateVersion, EventType = EventType.TileDiscarded, Visibility = EventVisibility.Public,
             TileDiscarded = new TileDiscarded { TurnNumber = 1, Player = 0, TileId = hidden } } } };
     return CreateRow(welcome, projection);
 }
@@ -961,7 +1217,16 @@ sealed record ProjectionFacts(string Audience, bool IsFull, ulong CursorStreamVe
     string SessionId, string RoundId, ulong StateVersion, ulong EventSeq, int SeatId, int OwnerSeat, int PrivateClosedTileCount, bool HasPrivateCheatView,
     long PrivateCheatPoints, int PrivateLedgerEntryCount, int PrivateMarkedTileCount, int PrivateImmediateSleeveOfferTileCount,
     int PrivateOffTurnSleeveOfferTileCount, int PrivateSleeveReservationCount, int OwnerSleeveTileCount, int OwnerMeldCount,
-    bool HasPrivateControlView, ulong ControlEpoch, ulong ControlVersion, bool HasPublicSnapshot, HashSet<uint> HiddenTileIds, HashSet<uint> PublicTileIds);
+    bool HasPrivateControlView, ulong ControlEpoch, ulong ControlVersion, bool HasPublicSnapshot, HashSet<uint> HiddenTileIds, HashSet<uint> PublicTileIds,
+    GamePhase PublicPhase, uint? DrawnTileId, List<PublicEventFact> PublicEvents);
+
+sealed record SnapshotVisibility(string room, string round, ulong version, ulong eventSeq, int owner,
+    HashSet<uint> hidden, HashSet<uint> publicTiles, GamePhase publicPhase, uint? drawnTileId);
+
+sealed record EventTileContent(HashSet<uint> TileIds, int? ActorSeat, uint? WinTileId);
+
+sealed record PublicEventFact(string RoomId, ulong CommandVersion, ulong EventSeq, EventType EventType, EventVisibility Visibility,
+    int? ActorSeat, uint? WinTileId, HashSet<uint> TileIds, string? SettlementRoundId, string Label);
 
 sealed record Frame
 {
