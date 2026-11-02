@@ -48,6 +48,26 @@ public static class C04PrivacyBuild
             .Where(message => !String.IsNullOrWhiteSpace(message))
             .ToArray();
         string playerSha = File.Exists(fullOutput) ? Sha256(fullOutput) : String.Empty;
+        long playerBytes = File.Exists(fullOutput) ? new FileInfo(fullOutput).Length : 0L;
+        string outputDirectory = Path.GetDirectoryName(fullOutput)!;
+        string packageManifestPath = Path.Combine(outputDirectory, "player-package.sha256");
+        string[] packageFiles = Directory.GetFiles(outputDirectory, "*", SearchOption.AllDirectories)
+            .Where(path => !String.Equals(Path.GetFullPath(path), Path.GetFullPath(packageManifestPath), StringComparison.OrdinalIgnoreCase))
+            .OrderBy(path => path, StringComparer.Ordinal)
+            .ToArray();
+        long packageBytes = 0L;
+        var manifestBuilder = new StringBuilder();
+        foreach (string packageFile in packageFiles)
+        {
+            FileInfo info = new FileInfo(packageFile);
+            packageBytes += info.Length;
+            string relative = packageFile.Substring(outputDirectory.Length)
+                .TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                .Replace('\\', '/');
+            manifestBuilder.Append(Sha256(packageFile)).Append("  ").Append(relative).Append('\n');
+        }
+        File.WriteAllText(packageManifestPath, manifestBuilder.ToString(), new UTF8Encoding(false));
+        string packageManifestSha = Sha256(packageManifestPath);
         string[] pluginEntries = pluginNames.OrderBy(value => value, StringComparer.Ordinal)
             .Select(value => "\"" + Escape(value) + "\":\"" + Sha256(Path.Combine(pluginRoot, value)) + "\"").ToArray();
         string errorMessagesJson = errorMessages.Length == 0
@@ -56,7 +76,10 @@ public static class C04PrivacyBuild
         string json = "{\"schemaVersion\":1,\"kind\":\"c04-privacy-player-build\",\"result\":\"" + summary.result +
             "\",\"errors\":" + summary.totalErrors + ",\"warnings\":" + summary.totalWarnings +
             ",\"target\":\"" + summary.platform + "\",\"output\":\"" + Escape(fullOutput) +
-            "\",\"playerSha256\":\"" + playerSha + "\",\"bytes\":" + summary.totalSize +
+            "\",\"playerSha256\":\"" + playerSha + "\",\"playerBytes\":" + playerBytes +
+            ",\"packageFileCount\":" + packageFiles.Length + ",\"packageBytes\":" + packageBytes +
+            ",\"packageManifest\":\"" + Escape(packageManifestPath) + "\",\"packageManifestSha256\":\"" + packageManifestSha +
+            "\",\"bytes\":" + summary.totalSize +
             ",\"sourceHead\":\"" + Escape(sourceHead) + "\",\"buildCommit\":\"" + Escape(buildCommit) +
             "\",\"errorMessages\":[" + errorMessagesJson + "],\"scenes\":[\"" + String.Join("\",\"", scenes.Select(Escape)) + "\"],\"plugins\":{" + String.Join(",", pluginEntries) + "}}";
         File.WriteAllText(log, json, new UTF8Encoding(false));
