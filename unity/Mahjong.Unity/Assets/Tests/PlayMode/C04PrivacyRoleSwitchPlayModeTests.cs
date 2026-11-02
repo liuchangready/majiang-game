@@ -35,7 +35,7 @@ namespace Mahjong.Unity.Tests.PlayMode
             if (previous != null) UnityEngine.Object.DestroyImmediate(previous.gameObject);
             yield return null;
             LocalTableChannelFactory.EnableC04PrivacyRoomMode();
-            string evidenceRoot = EvidenceRoot();
+            string evidenceRoot = Path.Combine(EvidenceRoot(), "role-switch-raw");
             C04PrivacyProbe.Begin(evidenceRoot);
             AppRoot app = AppRoot.EnsureInitialized(
                 new AppConfig { pumpBarrierTimeoutMs = 5000, closeTimeoutMs = 5000, cancelObservationMs = 50 },
@@ -446,6 +446,20 @@ namespace Mahjong.Unity.Tests.PlayMode
         }
 
         [UnityTest]
+        public IEnumerator RealRoom_OpenDecisionDeadlineContinuesAfterPlayerClose()
+        {
+            string root = Path.Combine(Application.temporaryCachePath, "c04-deadline-" + Guid.NewGuid().ToString("N"));
+            string roomId = "c04-deadline-" + Guid.NewGuid().ToString("N");
+            Task<ReleaseEvidence> task = Task.Run(() => RunOpenDeadlineScenarioAsync(root, roomId));
+            yield return WaitTask(() => task.IsCompleted, 75f, "open deadline after player close");
+            Assert.IsFalse(task.IsFaulted, task.Exception?.ToString());
+            ReleaseEvidence evidence = task.Result;
+            Assert.IsTrue(evidence.AdvancedWithoutPlayerBinding, "Open decision deadline did not continue after player close.");
+            Assert.Greater(evidence.AfterVersion, evidence.ReleaseVersion);
+            try { if (Directory.Exists(root)) Directory.Delete(root, true); } catch { }
+        }
+
+        [UnityTest]
         public IEnumerator RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly()
         {
             string root = Path.Combine(Application.temporaryCachePath, "c04-release-" + Guid.NewGuid().ToString("N"));
@@ -654,6 +668,73 @@ namespace Mahjong.Unity.Tests.PlayMode
                 }
                 try { await factory.CloseRoomAsync(CancellationToken.None).ConfigureAwait(false); } catch { }
                 LocalTableChannelFactory.DisableC04PrivacyRoomModeForTest();
+            }
+        }
+
+        private static async Task<ReleaseEvidence> RunOpenDeadlineScenarioAsync(string root, string roomId)
+        {
+            LocalTableChannelFactory.DisableC04PrivacyRoomModeForTest();
+            var paths = new UnityAppPaths(root);
+            paths.EnsureDirectoriesCreated();
+            var config = new AppConfig { pumpBarrierTimeoutMs = 5000, closeTimeoutMs = 5000, cancelObservationMs = 50 };
+            var factory = new LocalTableChannelFactory(config, paths, roomId, "owner-" + Guid.NewGuid().ToString("N"), TimeSpan.FromMinutes(2));
+            using var pumpCts = new CancellationTokenSource(TimeSpan.FromSeconds(65));
+            ITableChannel? channel = null;
+            TableSession? session = null;
+            ITableChannel? spectatorChannel = null;
+            TableSession? spectator = null;
+            Task? playerPump = null;
+            Task? spectatorPump = null;
+            try
+            {
+                channel = await factory.CreateRoomViewerAsync(LocalRoomViewerRole.Player, 0, CancellationToken.None).ConfigureAwait(false);
+                var ticket = channel as ILocalTableTicketSource
+                    ?? throw new InvalidOperationException("The deadline player channel did not expose its ticket.");
+                session = new TableSession(channel, new InMemoryOutboxStore());
+                await session.OpenAsync(new TableSessionOpenRequest(ticket.SessionTicket, LocalTableChannelFactory.ClientBuild), pumpCts.Token).ConfigureAwait(false);
+                playerPump = PumpLoopAsync(session, pumpCts.Token);
+                await WaitReadyAsync(session, pumpCts.Token).ConfigureAwait(false);
+                PlayerSnapshot baseline = session.PlayerSnapshot
+                    ?? throw new InvalidOperationException("No deadline baseline.");
+                if (baseline.PrivateView.Decision == null) throw new InvalidOperationException("The open-deadline scenario needs a live decision.");
+                ulong beforeVersion = baseline.StateVersion;
+
+                await session.CloseAsync("DEADLINE_CLOSE", CancellationToken.None).ConfigureAwait(false);
+                await channel.CloseAsync(new TableChannelCloseReason("DEADLINE_CLOSE", true), CancellationToken.None).ConfigureAwait(false);
+                session = null;
+                channel = null;
+
+                spectatorChannel = await factory.CreateRoomViewerAsync(LocalRoomViewerRole.Spectator, -1, CancellationToken.None).ConfigureAwait(false);
+                var spectatorTicket = spectatorChannel as ILocalTableTicketSource
+                    ?? throw new InvalidOperationException("The deadline spectator channel did not expose its ticket.");
+                spectator = new TableSession(spectatorChannel, new InMemoryOutboxStore());
+                await spectator.OpenAsync(new TableSessionOpenRequest(spectatorTicket.SessionTicket, LocalTableChannelFactory.ClientBuild), pumpCts.Token).ConfigureAwait(false);
+                spectatorPump = PumpLoopAsync(spectator, pumpCts.Token);
+                await WaitReadyAsync(spectator, pumpCts.Token).ConfigureAwait(false);
+                ulong after = beforeVersion;
+                for (int i = 0; i < 1200; i++)
+                {
+                    after = spectator.PublicSnapshot?.StateVersion ?? after;
+                    if (after > beforeVersion) break;
+                    await Task.Delay(25, pumpCts.Token).ConfigureAwait(false);
+                }
+                return new ReleaseEvidence
+                {
+                    ReleaseVersion = beforeVersion,
+                    AfterVersion = after,
+                    AdvancedWithoutPlayerBinding = after > beforeVersion
+                };
+            }
+            finally
+            {
+                pumpCts.Cancel();
+                if (playerPump != null) { try { await playerPump.ConfigureAwait(false); } catch { } }
+                if (spectatorPump != null) { try { await spectatorPump.ConfigureAwait(false); } catch { } }
+                if (session != null) try { await session.CloseAsync("C04_TEST_DONE", CancellationToken.None).ConfigureAwait(false); } catch { }
+                if (channel != null) try { await channel.CloseAsync(new TableChannelCloseReason("C04_TEST_DONE", true), CancellationToken.None).ConfigureAwait(false); } catch { }
+                if (spectator != null) try { await spectator.CloseAsync("C04_TEST_DONE", CancellationToken.None).ConfigureAwait(false); } catch { }
+                if (spectatorChannel != null) try { await spectatorChannel.CloseAsync(new TableChannelCloseReason("C04_TEST_DONE", true), CancellationToken.None).ConfigureAwait(false); } catch { }
+                try { await factory.CloseRoomAsync(CancellationToken.None).ConfigureAwait(false); } catch { }
             }
         }
 

@@ -345,8 +345,9 @@ Invoke-Case 'unresolved record without captured identity is not cleared' {
         cleanupError = $null
         descendantsStopped = 0
     }
-    Assert-Throws { Stop-C04OwnedRecord $record 1 } 'no captured descendant identity'
+    Stop-C04OwnedRecord $record 1
     Assert-True $record.aliveAfter 'unresolved record was cleared'
+    Assert-True ($record.cleanupError -like '*no captured descendant identity*') 'unresolved record did not preserve UNKNOWN reason'
 }
 
 Invoke-Case 'test player package identity is bound to the same executable/plugin closure' {
@@ -367,7 +368,9 @@ Invoke-Case 'test player package identity is bound to the same executable/plugin
 
 Invoke-Case 'required raw scenes are all present and any missing scene is rejected' {
     $dir = New-TestDirectory 'raw-scenes'
-    Write-C04Utf8 (Join-Path $dir 'raw-frames.json') '{"schemaVersion":1,"frames":[{}]}'
+    $roleSwitch = Join-Path $dir 'role-switch-raw'
+    [IO.Directory]::CreateDirectory($roleSwitch) | Out-Null
+    Write-C04Utf8 (Join-Path $roleSwitch 'raw-frames.json') '{"schemaVersion":1,"frames":[{}]}'
     foreach ($name in @('four-owner-raw', 'closed-binding-raw', 'recovery-raw')) {
         $sub = Join-Path $dir $name
         [IO.Directory]::CreateDirectory($sub) | Out-Null

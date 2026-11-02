@@ -120,6 +120,62 @@ namespace Mahjong.LocalHost.Tests
         }
 
         [Fact]
+        public async Task Legal_public_commands_produce_non_empty_facts_for_each_human_owner_seat()
+        {
+            for (int targetSeat = 0; targetSeat < 4; targetSeat++)
+            {
+                await using var harness = new P41Harness();
+                harness.Options.SeatPlan = LocalTableSeatPlan.AllFourHumanSeats;
+                await using LocalTableRoom room = await LocalTableHost.OpenRoomAsync(harness.Options, TestContext.Current.CancellationToken);
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+                timeout.CancelAfter(TimeSpan.FromSeconds(75));
+                var channels = new ITableChannel[4];
+                var sessions = new TableSession[4];
+                using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token);
+                using var driverCts = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token);
+                var pumps = new List<Task>();
+                Task? driver = null;
+                try
+                {
+                    for (int seat = 0; seat < 4; seat++)
+                    {
+                        LocalTableConnectionTicket ticket = room.CreatePlayerTicket(seat);
+                        channels[seat] = await room.ConnectAsync(ticket, timeout.Token);
+                        sessions[seat] = new TableSession(channels[seat], new InMemoryOutboxStore());
+                        await sessions[seat].OpenAsync(new TableSessionOpenRequest(ticket.Value, "owner-seat-" + seat), timeout.Token);
+                        pumps.Add(PumpAsync(sessions[seat], pumpCts.Token));
+                    }
+                    foreach (TableSession session in sessions) await PumpUntilReadyAsync(session, timeout.Token);
+                    driver = DriveOtherSeatsAsync(sessions, targetSeat, driverCts.Token);
+                    LocalPrivacyScenarioFacts facts = await LocalPrivacyScenario.CaptureSleeveAndFeeAsync(
+                        sessions[targetSeat],
+                        timeout.Token,
+                        submitChoice: false,
+                        seatId: targetSeat);
+                    driverCts.Cancel();
+                    try { await driver; } catch (OperationCanceledException) { }
+                    Assert.Equal(targetSeat, sessions[targetSeat].PlayerSnapshot!.PrivateView.Seat);
+                    Assert.True(facts.TileMarkLedgerEntryCount > facts.BaselineLedgerEntryCount);
+                    Assert.True(facts.SleeveLedgerEntryCount > facts.TileMarkLedgerEntryCount);
+                    Assert.NotEmpty(facts.SleeveOfferTiles);
+                    Assert.False(string.IsNullOrWhiteSpace(facts.SleeveOfferId));
+                }
+                finally
+                {
+                    driverCts.Cancel();
+                    if (driver != null) { try { await driver; } catch { } }
+                    pumpCts.Cancel();
+                    try { await Task.WhenAll(pumps); } catch { }
+                    for (int seat = 0; seat < 4; seat++)
+                    {
+                        if (sessions[seat] != null) try { await sessions[seat].CloseAsync("TEST_DONE", CancellationToken.None); } catch { }
+                        if (channels[seat] != null) try { await channels[seat].CloseAsync(new TableChannelCloseReason("TEST_DONE", true), CancellationToken.None); } catch { }
+                    }
+                }
+            }
+        }
+
+        [Fact]
         public async Task Real_room_four_owners_and_spectator_observe_same_version_non_empty_private_target_facts()
         {
             await using var harness = new P41Harness();

@@ -26,6 +26,7 @@ $script:C04ExpectedTests = @(
   'Mahjong.Unity.Tests.PlayMode.C04PrivacyRoleSwitchPlayModeTests.RealRoom_ColdReopenReconcilesOriginalRequestWithoutDuplicate',
   'Mahjong.Unity.Tests.PlayMode.C04PrivacyRoleSwitchPlayModeTests.RealRoom_LegalSleeveAndFeeOwnershipAcrossFourSeatsAndSpectator',
   'Mahjong.Unity.Tests.PlayMode.C04PrivacyRoleSwitchPlayModeTests.RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly',
+  'Mahjong.Unity.Tests.PlayMode.C04PrivacyRoleSwitchPlayModeTests.RealRoom_OpenDecisionDeadlineContinuesAfterPlayerClose',
   'Mahjong.Unity.Tests.PlayMode.C04PrivacyRoleSwitchPlayModeTests.RealRoom_ClosedPlayerToSpectatorToNewPlayerReceivePathRejectsOldRaw'
 )
 $script:C04RequiredScenes = @(
@@ -495,7 +496,7 @@ function Assert-C04BuildMarker {
 
 function Get-C04ValidatedRawScenes([string]$PrivacyEvidence) {
   $required = @(
-    [pscustomobject]@{ scene = 'role-switch'; path = (Join-Path $PrivacyEvidence 'raw-frames.json') },
+    [pscustomobject]@{ scene = 'role-switch'; path = (Join-Path $PrivacyEvidence 'role-switch-raw/raw-frames.json') },
     [pscustomobject]@{ scene = 'four-owner'; path = (Join-Path $PrivacyEvidence 'four-owner-raw/raw-frames.json') },
     [pscustomobject]@{ scene = 'closed-binding'; path = (Join-Path $PrivacyEvidence 'closed-binding-raw/raw-frames.json') },
     [pscustomobject]@{ scene = 'recovery'; path = (Join-Path $PrivacyEvidence 'recovery-raw/raw-frames.json') }
@@ -669,17 +670,20 @@ function Stop-C04OwnedRecord($Record, [int]$GraceSeconds) {
   if ($Record.drainUnresolved) {
     $captured = @($Record.capturedDescendants)
     if ($captured.Count -eq 0) {
-      throw "Owned writer $($Record.pid) has unresolved output but no captured descendant identity."
+      $Record.cleanupError = 'unresolved output with no captured descendant identity'
+      return
     }
     $stopResult = Stop-C04CapturedDescendants -Snapshots $captured -GraceSeconds $GraceSeconds
     if (@($stopResult.failures).Count -gt 0) {
-      throw "Owned captured descendants could not be stopped: $((@($stopResult.failures)) -join '; ')"
+      $Record.cleanupError = 'captured descendants could not be stopped: ' + ((@($stopResult.failures)) -join '; ')
+      return
     }
     $Record.descendantsStopped = [int]$Record.descendantsStopped + @($stopResult.stopped).Count
     foreach ($snapshot in $captured) {
       $live = Get-Process -Id ([int]$snapshot.pid) -ErrorAction SilentlyContinue
       if ($null -ne $live -and $live.StartTime.ToUniversalTime().Ticks -eq [long]$snapshot.startTicks) {
-        throw "Captured owned descendant $($snapshot.pid) is still alive; refusing to clear parent state."
+        $Record.cleanupError = "captured descendant $($snapshot.pid) is still alive"
+        return
       }
     }
     $Record.drainUnresolved = $false
@@ -780,39 +784,13 @@ public sealed class C04OwnedJob : IDisposable {
   $script:C04JobSupportInitialized = $true
 }
 
-function Get-C04ImageDescendants([string]$FileName, [string[]]$Arguments, [long]$ParentStartTicks, [int]$ExcludePid) {
-  $name = [IO.Path]::GetFileName($FileName)
-  $needles = @($Arguments | Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and $_.Length -ge 6 -and ($_.IndexOf('\') -ge 0 -or $_.IndexOf('/') -ge 0) } | Select-Object -First 3)
-  if ([string]::IsNullOrWhiteSpace($name) -or $needles.Count -eq 0) { return @() }
-  if ($name -in @('powershell.exe', 'pwsh.exe', 'cmd.exe')) { return @() }
-  $escapedName = $name.Replace("'", "''")
-  $processes = @(Get-CimInstance Win32_Process -Filter "Name='$escapedName'" -ErrorAction SilentlyContinue)
-  $found = New-Object Collections.Generic.List[object]
-  foreach ($candidate in $processes) {
-    if ([int]$candidate.ProcessId -eq $ExcludePid -or [int]$candidate.ProcessId -eq $PID) { continue }
-    try { $created = ([datetime]$candidate.CreationDate).ToUniversalTime().Ticks } catch { continue }
-    if ($created -lt ($ParentStartTicks - [TimeSpan]::FromSeconds(2).Ticks)) { continue }
-    $commandLine = [string]$candidate.CommandLine
-    $owned = $false
-    foreach ($needle in $needles) {
-      if ($commandLine.IndexOf($needle, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $owned = $true; break }
-    }
-    if (-not $owned) { continue }
-    $found.Add([pscustomobject]@{ pid = [int]$candidate.ProcessId; startTicks = $created })
-  }
-  return $found.ToArray()
-}
-
-function Get-C04CapturedDescendants([int]$ParentId, [long]$ParentStartTicks, [string]$FileName, [string[]]$Arguments, [int]$Rounds = 16, [int]$DelayMs = 25) {
+function Get-C04CapturedDescendants([int]$ParentId, [long]$ParentStartTicks, [int]$Rounds = 16, [int]$DelayMs = 25) {
   $snapshots = New-Object Collections.Generic.List[object]
   $seen = New-Object 'System.Collections.Generic.HashSet[int]'
   for ($round = 0; $round -lt $Rounds; $round++) {
     $candidates = New-Object Collections.Generic.List[int]
     foreach ($childId in (Get-C04OwnedDescendantProcessIds -ParentId $ParentId -ParentStartTicks $ParentStartTicks)) {
       $candidates.Add([int]$childId)
-    }
-    foreach ($imageChild in (Get-C04ImageDescendants -FileName $FileName -Arguments $Arguments -ParentStartTicks $ParentStartTicks -ExcludePid $ParentId)) {
-      $candidates.Add([int]$imageChild.pid)
     }
     foreach ($childId in $candidates) {
       if (-not $seen.Add($childId)) { continue }
@@ -895,7 +873,7 @@ function Invoke-C04OwnedProcess {
   } catch {
     $job = $null
   }
-  $capturedDescendants = @(Get-C04CapturedDescendants -ParentId $pidValue -ParentStartTicks $startTicks -FileName $FileName -Arguments $Arguments)
+  $capturedDescendants = @()
   $state = [pscustomobject]@{
     name = $Name
     pid = $pidValue
@@ -933,6 +911,8 @@ function Invoke-C04OwnedProcess {
   $drainUnresolved = $false
   $exitCode = $null
   try {
+    $capturedDescendants = @(Get-C04CapturedDescendants -ParentId $pidValue -ParentStartTicks $startTicks)
+    $state.capturedDescendants = $capturedDescendants
     $stdoutStream = [IO.File]::Open($stdoutPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
     $stderrStream = [IO.File]::Open($stderrPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
     $stdoutTask = $process.StandardOutput.BaseStream.CopyToAsync($stdoutStream)
@@ -1374,8 +1354,8 @@ exit `$LASTEXITCODE
         $summary.testPlayerPackage = Get-C04TestPlayerPackage -StagingProject $staging -RunRoot $script:RunRoot -SourceHead $identity.head
         Log "TEST_PLAYER_PACKAGE exe=$($summary.testPlayerPackage.executable) files=$($summary.testPlayerPackage.packageFileCount) bytes=$($summary.testPlayerPackage.packageBytes) sha=$($summary.testPlayerPackage.packageManifestSha256)"
       }
-      if ($WindowsPlayerTests -and -not (Test-Path -LiteralPath (Join-Path $privacyEvidence 'raw-frames.json'))) {
-        throw 'Windows test Player did not seal real raw channel frames under its isolated evidence root.'
+      if ($WindowsPlayerTests -and -not (Test-Path -LiteralPath (Join-Path $privacyEvidence 'role-switch-raw/raw-frames.json'))) {
+        throw 'Windows test Player did not seal role-switch raw channel frames under its isolated evidence root.'
       }
       $requiredRawScenes = @(Get-C04ValidatedRawScenes -PrivacyEvidence $privacyEvidence)
       $rawResults = New-Object Collections.Generic.List[object]

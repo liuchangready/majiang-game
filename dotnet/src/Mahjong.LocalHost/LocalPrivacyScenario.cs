@@ -33,12 +33,17 @@ namespace Mahjong.LocalHost
         public static async Task<LocalPrivacyScenarioFacts> CaptureSleeveAndFeeAsync(
             TableSession session,
             CancellationToken cancellationToken,
-            bool submitChoice = true)
+            bool submitChoice = true,
+            int seatId = 0)
         {
             if (session == null) throw new ArgumentNullException(nameof(session));
+            if (seatId < 0 || seatId > 3) throw new ArgumentOutOfRangeException(nameof(seatId));
             await WaitReadyAsync(session, cancellationToken).ConfigureAwait(false);
+            await AdvanceToSeatCheatWindowAsync(session, seatId, cancellationToken).ConfigureAwait(false);
 
             PlayerSnapshot baseline = RequireSnapshot(session, "baseline");
+            if (baseline.PrivateView.Seat != seatId)
+                throw new InvalidOperationException("The target session is not bound to requested seat " + seatId + ".");
             PrivateCheatView baselineCheat = RequireCheat(baseline, "baseline");
             if (baseline.PrivateView.ClosedTiles.Count < 4)
                 throw new InvalidOperationException("The legal scenario needs at least four owner closed tiles.");
@@ -46,10 +51,11 @@ namespace Mahjong.LocalHost
             uint[] markTiles = new uint[4];
             for (int i = 0; i < markTiles.Length; i++) markTiles[i] = baseline.PrivateView.ClosedTiles[i];
 
-            PlayerSnapshot afterMark = await SubmitCheatAsync(
+            PlayerSnapshot afterMark = await SubmitCheatWithRetryAsync(
                 session,
+                seatId,
                 CommandKind.SubmitTileMark,
-                CommandPayloadFactory.SubmitTileMark(baseline.RoundId, "privacy-matrix", 0UL, markTiles),
+                snapshot => CommandPayloadFactory.SubmitTileMark(snapshot.RoundId, "privacy-matrix", 0UL, markTiles),
                 "privacy-matrix-mark",
                 cancellationToken).ConfigureAwait(false);
             PrivateCheatView markCheat = RequireCheat(afterMark, "tile-mark");
@@ -62,12 +68,13 @@ namespace Mahjong.LocalHost
             if (markCheat.CheatPoints >= baselineCheat.CheatPoints)
                 throw new InvalidOperationException("The legal TileMark command did not deduct the owner-private fee.");
 
-            await DiscardOnceAsync(session, cancellationToken).ConfigureAwait(false);
-            PlayerSnapshot draw = await AdvanceToSeatZeroCheatWindowAsync(session, cancellationToken).ConfigureAwait(false);
-            PlayerSnapshot bloom = await SubmitCheatAsync(
+            await DiscardOnceAsync(session, seatId, cancellationToken).ConfigureAwait(false);
+            await AdvanceToSeatCheatWindowAsync(session, seatId, cancellationToken).ConfigureAwait(false);
+            PlayerSnapshot bloom = await SubmitCheatWithRetryAsync(
                 session,
+                seatId,
                 CommandKind.SubmitSleeveBloom,
-                CommandPayloadFactory.SubmitSleeveBloom(draw.RoundId, "privacy-matrix", 0UL),
+                snapshot => CommandPayloadFactory.SubmitSleeveBloom(snapshot.RoundId, "privacy-matrix", 0UL),
                 "privacy-matrix-sleeve",
                 cancellationToken).ConfigureAwait(false);
             PrivateCheatView bloomCheat = RequireCheat(bloom, "sleeve-bloom");
@@ -149,18 +156,44 @@ namespace Mahjong.LocalHost
             return cheat;
         }
 
-        private static async Task DiscardOnceAsync(TableSession session, CancellationToken cancellationToken)
+        private static async Task DiscardOnceAsync(TableSession session, int seatId, CancellationToken cancellationToken)
         {
-            PlayerSnapshot snapshot = RequireSnapshot(session, "discard");
-            uint tile = snapshot.PrivateView.HasDrawnTileId
-                ? snapshot.PrivateView.DrawnTileId
-                : snapshot.PrivateView.ClosedTiles[0];
-            await SubmitActionAsync(session, ProtocolActionType.DiscardTile, new[] { tile }, cancellationToken)
-                .ConfigureAwait(false);
+            for (int i = 0; i < 120; i++)
+            {
+                PlayerSnapshot snapshot = RequireSnapshot(session, "discard");
+                var board = snapshot.PublicView?.Board;
+                if (board != null && board.CurrentSeat == seatId)
+                {
+                    if (board.Phase == GamePhase.CheatWindow || board.Phase == GamePhase.Discard)
+                    {
+                        uint tile = snapshot.PrivateView.HasDrawnTileId
+                            ? snapshot.PrivateView.DrawnTileId
+                            : snapshot.PrivateView.ClosedTiles[0];
+                        try
+                        {
+                            await SubmitActionAsync(session, ProtocolActionType.DiscardTile, new[] { tile }, cancellationToken)
+                                .ConfigureAwait(false);
+                            return;
+                        }
+                        catch (InvalidOperationException exception) when (
+                            exception.Message.IndexOf("TILE_TRANSITION_REJECTED", StringComparison.Ordinal) >= 0 ||
+                            exception.Message.IndexOf("STALE_STATE_VERSION", StringComparison.Ordinal) >= 0)
+                        {
+                        }
+                    }
+                    else if (board.Phase == GamePhase.ResponseWindow || board.Phase == GamePhase.ChankanWindow)
+                    {
+                        await SubmitActionAsync(session, ProtocolActionType.Pass, null, cancellationToken).ConfigureAwait(false);
+                    }
+                }
+                await Task.Delay(15, cancellationToken).ConfigureAwait(false);
+            }
+            throw new TimeoutException("The target seat could not discard through a legal phase.");
         }
 
-        private static async Task<PlayerSnapshot> AdvanceToSeatZeroCheatWindowAsync(
+        private static async Task<PlayerSnapshot> AdvanceToSeatCheatWindowAsync(
             TableSession session,
+            int seatId,
             CancellationToken cancellationToken)
         {
             for (int i = 0; i < 300; i++)
@@ -174,12 +207,12 @@ namespace Mahjong.LocalHost
 
                 if (snapshot.PublicView?.Board != null &&
                     snapshot.PublicView.Board.Phase == GamePhase.CheatWindow &&
-                    snapshot.PublicView.Board.CurrentSeat == 0)
+                    snapshot.PublicView.Board.CurrentSeat == seatId)
                 {
                     return snapshot;
                 }
 
-                if (snapshot.PublicView?.Board != null && snapshot.PublicView.Board.CurrentSeat == 0)
+                if (snapshot.PublicView?.Board != null && snapshot.PublicView.Board.CurrentSeat == seatId)
                 {
                     switch (snapshot.PublicView.Board.Phase)
                     {
@@ -211,23 +244,67 @@ namespace Mahjong.LocalHost
             uint[]? tiles,
             CancellationToken cancellationToken)
         {
-            PlayerSnapshot before = RequireSnapshot(session, "action");
-            BusinessPayload payload = CommandPayloadFactory.SubmitAction(
-                before.RoundId,
-                "local-direct",
-                0UL,
-                action,
-                tileIds: tiles);
-            var command = new ProtocolCommand(
-                CommandKind.SubmitAction,
-                payload,
-                new RequestId("privacy-action-" + Guid.NewGuid().ToString("N")),
-                session.Binding!.Scope.ScopeId,
-                new StateVersion(before.StateVersion),
-                new RoundId(before.RoundId),
-                decisionId: null,
-                controlEpoch: new ControlEpoch(0));
-            return await SubmitAndWaitAsync(session, command, before, "action", cancellationToken).ConfigureAwait(false);
+            for (int attempt = 0; attempt < 4; attempt++)
+            {
+                PlayerSnapshot before = RequireSnapshot(session, "action");
+                BusinessPayload payload = CommandPayloadFactory.SubmitAction(
+                    before.RoundId,
+                    "local-direct",
+                    0UL,
+                    action,
+                    tileIds: tiles);
+                var command = new ProtocolCommand(
+                    CommandKind.SubmitAction,
+                    payload,
+                    new RequestId("privacy-action-" + Guid.NewGuid().ToString("N")),
+                    session.Binding!.Scope.ScopeId,
+                    new StateVersion(before.StateVersion),
+                    new RoundId(before.RoundId),
+                    decisionId: null,
+                    controlEpoch: new ControlEpoch(before.PrivateView.Control?.ControlEpoch ?? 0UL));
+                try
+                {
+                    return await SubmitAndWaitAsync(session, command, before, "action", cancellationToken).ConfigureAwait(false);
+                }
+                catch (InvalidOperationException exception) when (
+                    attempt < 3 && exception.Message.IndexOf("STALE_STATE_VERSION", StringComparison.Ordinal) >= 0)
+                {
+                    await Task.Delay(20, cancellationToken).ConfigureAwait(false);
+                }
+            }
+
+            throw new InvalidOperationException("The legal action could not be submitted after stale-version retries.");
+        }
+
+        private static async Task<PlayerSnapshot> SubmitCheatWithRetryAsync(
+            TableSession session,
+            int seatId,
+            CommandKind kind,
+            Func<PlayerSnapshot, BusinessPayload> payloadFactory,
+            string requestPrefix,
+            CancellationToken cancellationToken)
+        {
+            for (int attempt = 0; attempt < 4; attempt++)
+            {
+                await AdvanceToSeatCheatWindowAsync(session, seatId, cancellationToken).ConfigureAwait(false);
+                PlayerSnapshot snapshot = RequireSnapshot(session, requestPrefix);
+                try
+                {
+                    return await SubmitCheatAsync(
+                        session,
+                        kind,
+                        payloadFactory(snapshot),
+                        requestPrefix,
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch (InvalidOperationException exception) when (
+                    attempt < 3 && exception.Message.IndexOf("STALE_STATE_VERSION", StringComparison.Ordinal) >= 0)
+                {
+                    await Task.Delay(20, cancellationToken).ConfigureAwait(false);
+                }
+            }
+
+            throw new InvalidOperationException("The legal cheat command could not be submitted after stale-version retries.");
         }
 
         private static async Task<PlayerSnapshot> SubmitCheatAsync(
