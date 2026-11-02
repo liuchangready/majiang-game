@@ -147,13 +147,66 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/tests/C04PlayerChe
 
 - 旧 R8 `REVIEW.txt`（SHA `18FD…A1A44`）与 manifest 只读保留。
 - 历史 `player-build.json`/`player-build2.json`（`Succeeded/errors=3`）只读保留。
-- 本轮实际 fresh build 的 6 条 step 原文保留在 `build/rework-fresh-113ec3b4e59d4a2696b2479ea5887718/`；
+- 本轮实际 fresh build 的 6 条 step 原文保留在 `build/rework-final-build-65e173d846264df58a7127c5db5b270b/`；
   未删除、未改计数。
 - 旧 candidate/旧 tree/旧 build/player 未覆盖。
 
 ## 5. 本轮真实负例与 fresh build 证据
 
-（见最终回复/证据索引；本节由同一交付提交固定路径与 SHA。）
+### 5.1 真实进程/控制负例
+
+- `process-probe`（真实中间父进程退出、writer 继续写）：修复后 `exit=0 known=true`,
+  `drain=true`, `remaining=0`, `stopped=1`, `childAlive=false`，`writesBefore==writesAfter`
+  （17→17 / 16→16，按运行）；writer 在返回前已停止。
+- `control-probes`（真实短 stub 经 `Invoke-C04UnityBuild`）：timeout 抛
+  `C04FAIL:UNITY_BUILD_TIMEOUT`、`mappedExit=4`；cancel 抛 `C04FAIL:CANCELLED`、`mappedExit=5`。
+- 本轮最终代码的进程日志：`build/rework-final-build-65e173d846264df58a7127c5db5b270b/runner.log`；
+  shared-build 正确清理 2 个 owned 子进程，warmup 清理 1 个；Unity player build 无遗留。
+- 所有早于本次启动 5 秒的进程被时间门禁跳过，未再出现旧 PID 误杀。
+
+### 5.2 严格 fresh build（实际失败关闭）
+
+提交：`f7edc68d1d8b43c85fa8812a15445027150bc0df`。
+证据根：`build/rework-final-build-65e173d846264df58a7127c5db5b270b/`。
+
+| 阶段 | native | 结果 |
+|---|---|---|
+| staging shared-build | 0 | fresh solution build |
+| check-shared-plugins | 0 | provenance 通过 |
+| Unity import warmup | 0 | 172.76s |
+| Unity Player build | **1** | BuildReport `Succeeded/errors=6`，C# 严格门禁抛异常 |
+
+- runner final native **3**；`C04_D04_C_STATUS=FAIL`；`GAME_STATUS=NOT_RUN`；
+  `SOURCE_STABLE=True`；**无 package seal、无 package manifest、无 BUILD PASS**。
+- BuildReport 原值：`result=Succeeded, errors=6, stepErrorCount=6`；6 条均为
+  `AutodeskInteractive.shadergraph` / `TraceVirtualOffset.urtshader` 的
+  `Host type is not matching any asset type`（Build player 与 Preprocess Player 重复）。
+  未改计数、未过滤；runner 以 `BUILD_REPORT_ERRORS:6` + `UNITY_NATIVE_EXIT_1` 失败。
+- staging 冻结只允许 6 个精确派生转换（ProjectSettings.asset、Font SDF.asset 变更，
+  PerformanceTestRunInfo/Settings json+meta 删除）；`fatal=[]`，记录在
+  `staging/staging-workspace-diff.json`。其他类型变更会 fatal。
+- 失败封存：`seal.json` status FAIL，partial manifest 覆盖 **1091** 个 build/staging 文件
+  （`partial-artifacts.csv`），独立 `Test-C04EvidenceSeal` = 0 errors。
+
+关键 SHA-256：
+
+| 证据 | SHA-256 |
+|---|---|
+| summary.json | `4B7B1C6E3936A278CCE4B253AF71796397829EE1F55A9B5D1D14F0CB9DA19401` |
+| summary.txt | `F84DCDBC9BEBA1656637150A3159A1CDCA48AD5AD66865B4D5672F23D693FC5B` |
+| manifest.csv | `481AF56346D4300DDAF26D191EE4504961C8F60741E52AEF967D2599B80819B9` |
+| seal.json | `DEC24519D47742BF90D504A6FF1F9F90D146077A160179277D2FFB539280D446` |
+| partial-artifacts.csv | `355215E421838EFCBE62FB77EF9DEDFCBB66B4A6EDCBDC3944AF6802B98948D2` |
+| BuildReport | `40A9671D3131B5914217BDFFD030514382AAFC632D3DCF9F3FBFE0F4C87FB05D` |
+| unity-player-build.log | `E624CFB1A7CB5960A7F1E839D978569B3F21855A4D6DCAB4C5BBCEEB25F62662` |
+| staging-workspace-diff.json | `DE090D922BCDDC2C298C2CD1B86C6FF935B0FC7E48E5D407B8F51A6E658A9F41` |
+
+### 5.3 测试证据
+
+- `build/rework-final-tests-5dbb42294d8846bfa3c9b82c44856a48/runner.log`：
+  **51/51**, SHA `DF2CEC8F8872E2CE99DFE25D1A7D8419CE911A90C9448F10263DF3CD51F73B92`。
+- 同目录 `cheats.log`：**20/20**, SHA
+  `15B40D45D430574A5D2B9F8057F4F3FD2F697C1E273E073DE77F88CB55FAB8F4`。
 
 ## 6. 结论与边界
 
@@ -168,5 +221,5 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/tests/C04PlayerChe
 
 ## 7. 提交与清洁
 
-- 代码/测试提交与最终 doc-only 提交、diff-check、clean 状态见最终回复。
+- 构建代码/测试提交：`f7edc68d1d8b43c85fa8812a15445027150bc0df`；最终 doc-only 后继 HEAD 以 `git log -1` 为准，不改变 source input identity。\n- `git status --porcelain` clean；`git diff --check` exit 0。
 - 未 push/PR/merge/deploy/approve；未改共享生产源码/asmdef/机器许可。
