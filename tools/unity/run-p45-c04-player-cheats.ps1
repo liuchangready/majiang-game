@@ -51,6 +51,8 @@ $script:C04KnownNonFatalBuildErrors = @(
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 if (-not $ProjectPath) { $ProjectPath = Join-Path $root 'unity\Mahjong.Unity' }
 $mutexName = 'Local\MahjongV5P45UnityValidation'
+$script:C04TempRoot = Join-Path $root ('build\temp\c04-runner-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Force -Path $script:C04TempRoot | Out-Null
 $script:C04LogPath = $null
 $script:C04CancelFile = $CancelFile
 $script:C04Cancelled = $false
@@ -283,8 +285,16 @@ public static class C04ProcessJob {
     [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr handle);
 }
 "@
-    try { Add-Type -TypeDefinition $source -Language CSharp -ErrorAction Stop | Out-Null; $script:C04JobReady = $true }
-    catch { $script:C04JobReady = $false; $script:C04JobUnavailable = $true }
+    $tempDir = Join-Path $root ('build\temp\addtype-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
+    $oldTemp = $env:TEMP; $oldTmp = $env:TMP
+    try {
+        $env:TEMP = $tempDir; $env:TMP = $tempDir
+        Add-Type -TypeDefinition $source -Language CSharp -ErrorAction Stop | Out-Null
+        $script:C04JobReady = $true
+    }
+    catch { $script:C04JobReady = $false; $script:C04JobUnavailable = $true; Write-C04Log ("JOB_SUPPORT_UNAVAILABLE " + $_.Exception.Message) }
+    finally { $env:TEMP = $oldTemp; $env:TMP = $oldTmp }
 }
 
 function New-C04JobHandle {
@@ -315,12 +325,14 @@ function Stop-C04Job {
     param([IntPtr]$Job, [string]$Reason)
     if ($Job -eq [IntPtr]::Zero) { return [pscustomobject]@{ stopped = 0; remaining = 0 } }
     $before = Get-C04JobActiveProcesses $Job
+    if ($before -lt 0) { [void][C04ProcessJob]::CloseHandle($Job); return [pscustomobject]@{ stopped = 0; remaining = -1 } }
     $ok = [C04ProcessJob]::TerminateJobObject($Job, 1)
     Start-Sleep -Milliseconds 200
     $after = Get-C04JobActiveProcesses $Job
     [void][C04ProcessJob]::CloseHandle($Job)
     Write-C04Log ("STOP_JOB active_before={0} active_after={1} terminated={2} reason={3}" -f $before, $after, $ok, $Reason)
-    return [pscustomobject]@{ stopped = [Math]::Max(0, $before); remaining = if ($ok -and $after -le 0) { 0 } else { [Math]::Max(0, $after) } }
+    $remaining = if (-not $ok -or $after -lt 0) { -1 } elseif ($after -eq 0) { 0 } else { $after }
+    return [pscustomobject]@{ stopped = [Math]::Max(0, $before); remaining = $remaining }
 }
 function ConvertTo-C04QuotedArgument {
     param([AllowEmptyString()][string]$Argument)
@@ -384,7 +396,6 @@ function Get-C04OwnedProcessSet {
             if ($pidValue -eq $PID -or $seen.ContainsKey($pidValue)) { continue }
             $childCreated = Get-C04ProcessCreationUtc $child
             if ($SinceUtc -ne [datetime]::MinValue -and $childCreated -ne [datetime]::MinValue -and $childCreated -lt $SinceUtc.AddSeconds(-5)) { continue }
-            $seen[$pidValue] = $true
             $result.Add($child) | Out-Null
             $queue.Enqueue($pidValue)
         }
@@ -416,39 +427,6 @@ function Stop-C04ExactProcess {
     }
 }
 
-function Get-C04CommandTokens {
-    param([string[]]$Arguments)
-    $tokens = New-Object System.Collections.Generic.List[string]
-    foreach ($argument in @($Arguments)) {
-        if ([string]::IsNullOrWhiteSpace($argument)) { continue }
-        if ($argument.Length -lt 16) { continue }
-        if ($argument -notmatch '[\\/]') { continue }
-        if ($argument.StartsWith('-')) { continue }
-        if (-not $tokens.Contains($argument)) { $tokens.Add($argument) | Out-Null }
-    }
-    return $tokens.ToArray()
-}
-
-function Stop-C04OwnedCommandMatches {
-    param([string[]]$Tokens, [datetime]$SinceUtc, [string]$Reason)
-    if (-not $Tokens -or $Tokens.Count -eq 0) { return 0 }
-    $stopped = 0
-    foreach ($process in @(Get-C04AllProcesses)) {
-        $pidValue = [int]$process.ProcessId
-        if ($pidValue -eq $PID) { continue }
-        $command = [string]$process.CommandLine
-        if ([string]::IsNullOrWhiteSpace($command)) { continue }
-        $matches = $false
-        foreach ($token in $Tokens) {
-            if ($command.IndexOf($token, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $matches = $true; break }
-        }
-        if (-not $matches) { continue }
-        $created = Get-C04ProcessCreationUtc $process
-        if ($created -ne [datetime]::MinValue -and $SinceUtc -ne [datetime]::MinValue -and $created -lt $SinceUtc.AddSeconds(-5)) { continue }
-        if (Stop-C04ExactProcess -ProcessId $pidValue -CreationTimeUtc $created -Reason $Reason) { $stopped++ }
-    }
-    return $stopped
-}
 function Stop-C04OwnedSet {
     param(
         [int]$RootProcessId,
@@ -524,14 +502,37 @@ function Start-C04BoundedProcess {
     }
 
     $argumentString = (@($Arguments) | ForEach-Object { ConvertTo-C04QuotedArgument ([string]$_) }) -join ' '
+    $launchDir = Join-Path $script:C04TempRoot ("launch-" + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Force -Path $launchDir | Out-Null
+    $specPath = Join-Path $launchDir 'spec.json'
+    $signalPath = Join-Path $launchDir 'go.signal'
+    $wrapperPath = Join-Path $launchDir 'launch.ps1'
+    $spec = [ordered]@{ file = $FilePath; argline = $argumentString; cwd = $WorkingDirectory }
+    Write-C04Json -Path $specPath -Object $spec
+    $wrapperLines = @(
+        'param([string]$Spec,[string]$Signal)',
+        'while (-not (Test-Path -LiteralPath $Signal)) { Start-Sleep -Milliseconds 25 }',
+        '$s = Get-Content -LiteralPath $Spec -Raw | ConvertFrom-Json',
+        'if ($s.cwd) { Set-Location -LiteralPath $s.cwd }',
+        '$exe = [string]$s.file',
+        '$psi = New-Object System.Diagnostics.ProcessStartInfo',
+        '$psi.FileName = $exe',
+        '$psi.Arguments = [string]$s.argline',
+        '$psi.UseShellExecute = $false',
+        'if ($s.cwd) { $psi.WorkingDirectory = [string]$s.cwd }',
+        '$p = [System.Diagnostics.Process]::Start($psi)',
+        '$p.WaitForExit()',
+        'exit $p.ExitCode'
+    )
+    [System.IO.File]::WriteAllLines($wrapperPath, $wrapperLines, (New-Object System.Text.UTF8Encoding($false)))
+
     $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = $FilePath
-    $psi.Arguments = $argumentString
+    $psi.FileName = (Get-Command powershell.exe).Source
+    $psi.Arguments = (@('-NoProfile','-ExecutionPolicy','Bypass','-File',$wrapperPath,'-Spec',$specPath,'-Signal',$signalPath) | ForEach-Object { ConvertTo-C04QuotedArgument ([string]$_) }) -join ' '
     $psi.UseShellExecute = $false
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
     $psi.CreateNoWindow = $true
-    if ($WorkingDirectory) { $psi.WorkingDirectory = $WorkingDirectory }
 
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $psi
@@ -552,36 +553,31 @@ function Start-C04BoundedProcess {
     $cleanupFailed = $false
     $caught = $null
     $observed = @{}
-    $commandTokens = @(Get-C04CommandTokens $Arguments)
     $jobHandle = [IntPtr]::Zero
     $jobClosed = $false
     $jobRemaining = 0
     try {
+        $jobHandle = New-C04JobHandle
+        if ($jobHandle -eq [IntPtr]::Zero) { throw "C04FAIL:OWNERSHIP_UNKNOWN:$Label job containment unavailable" }
         $outStream = [System.IO.File]::Open($StdOutPath, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read)
         $errStream = [System.IO.File]::Open($StdErrPath, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read)
-        $jobHandle = New-C04JobHandle
         if (-not $process.Start()) { throw "C04FAIL:PROCESS_START:$Label" }
         $processStarted = $true
         $pidValue = $process.Id
         $current = @(Get-CimInstance Win32_Process -Filter "ProcessId=$pidValue" -ErrorAction SilentlyContinue)
-        if ($current.Count -eq 1) {
-            $startTimeUtc = Get-C04ProcessCreationUtc $current[0]
+        if ($current.Count -eq 1) { $startTimeUtc = Get-C04ProcessCreationUtc $current[0] }
+        if ($startTimeUtc -eq [datetime]::MinValue) { try { $startTimeUtc = $process.StartTime.ToUniversalTime() } catch { } }
+        if ($startTimeUtc -eq [datetime]::MinValue) { throw "C04FAIL:OWNERSHIP_UNKNOWN:$Label pid=$pidValue has no exact start identity" }
+        if (-not [C04ProcessJob]::AssignProcessToJobObject($jobHandle, $process.Handle)) {
+            [void][C04ProcessJob]::CloseHandle($jobHandle); $jobHandle = [IntPtr]::Zero
+            throw "C04FAIL:OWNERSHIP_UNKNOWN:$Label could not assign wrapper to job"
         }
-        if ($startTimeUtc -eq [datetime]::MinValue) {
-            try { $startTimeUtc = $process.StartTime.ToUniversalTime() } catch { }
-        }
-        if ($jobHandle -ne [IntPtr]::Zero -and -not [C04ProcessJob]::AssignProcessToJobObject($jobHandle, $process.Handle)) {
-            $jobHandle = [IntPtr]::Zero
-        }
-        if ($jobHandle -ne [IntPtr]::Zero) { Write-C04Log ("JOB {0} assigned pid={1} active={2}" -f $Label, $pidValue, (Get-C04JobActiveProcesses $jobHandle)) }
-        $ownershipKnown = ($startTimeUtc -ne [datetime]::MinValue)
-        if (-not $ownershipKnown -and -not $process.HasExited) {
-            throw "C04FAIL:OWNERSHIP_UNKNOWN:$Label pid=$pidValue has no exact start identity"
-        }
+        $ownershipKnown = $true
+        Write-C04Log ("JOB {0} assigned pid={1} active={2}" -f $Label, $pidValue, (Get-C04JobActiveProcesses $jobHandle))
+        [System.IO.File]::WriteAllText($signalPath, 'go')
         $outTask = $process.StandardOutput.BaseStream.CopyToAsync($outStream)
         $errTask = $process.StandardError.BaseStream.CopyToAsync($errStream)
         Write-C04Log ("START {0} pid={1} start={2} timeout={3}s file={4}" -f $Label, $pidValue, $startTimeUtc.ToString('O'), $TimeoutSeconds, $FilePath)
-
         $lastHeartbeat = Get-Date
         $nextDescendantScan = (Get-Date).AddMilliseconds(250)
         while (-not $process.HasExited) {
@@ -623,7 +619,6 @@ function Start-C04BoundedProcess {
         $jobHandle = [IntPtr]::Zero
         $ownedStopped += $cleanup.stopped
         $jobRemaining = $cleanup.remaining
-        $ownedStopped += Stop-C04OwnedCommandMatches -Tokens $commandTokens -SinceUtc $startTimeUtc -Reason $cleanupReason
         $fallbackSet = Stop-C04OwnedSet -RootProcessId $pidValue -Observed $observed -Reason $cleanupReason -IncludeRoot $false -SinceUtc $startTimeUtc
         $ownedStopped += $fallbackSet.stopped
         if ($fallbackSet.remaining -gt 0) { $cleanupFailed = $true }
@@ -654,7 +649,6 @@ function Start-C04BoundedProcess {
                 $cleanup3 = Stop-C04Job -Job $jobHandle -Reason 'EXCEPTION_OR_FINAL'
                 $ownedStopped += $cleanup3.stopped
                 $jobRemaining = $cleanup3.remaining
-                $ownedStopped += Stop-C04OwnedCommandMatches -Tokens $commandTokens -SinceUtc $startTimeUtc -Reason 'EXCEPTION_OR_FINAL'
                 $fallback3 = Stop-C04OwnedSet -RootProcessId $pidValue -Observed $observed -Reason 'EXCEPTION_OR_FINAL' -IncludeRoot $false -SinceUtc $startTimeUtc
                 $ownedStopped += $fallback3.stopped
                 if ($fallback3.remaining -gt 0) { $cleanupFailed = $true }
@@ -663,10 +657,6 @@ function Start-C04BoundedProcess {
             catch { $cleanupFailed = $true }
             $jobClosed = $true
             $jobHandle = [IntPtr]::Zero
-        }
-        if ($processStarted -and $commandTokens.Count -gt 0) {
-            try { $ownedStopped += Stop-C04OwnedCommandMatches -Tokens $commandTokens -SinceUtc $startTimeUtc -Reason 'EXCEPTION_OR_FINAL' }
-            catch { $cleanupFailed = $true }
         }
         try { if ($outTask) { [void]$outTask.Wait(2000) } } catch { }
         try { if ($errTask) { [void]$errTask.Wait(2000) } } catch { }
@@ -1167,9 +1157,12 @@ function Write-C04PackageSeal {
         [string]$ReportPath,
         [string]$ProvenancePath,
         [string]$PluginClosurePath,
+        [string]$BuildEvidenceRoot,
         [string]$SourceHead,
         [string]$SourceIdentitySha256,
+        [string]$SourceManifestSha256,
         [string]$StagedInputManifestSha256,
+        [string]$StagedFinalManifestSha256,
         [string]$BuildCommit,
         [string]$BuildId = 'unknown',
         [int]$SourceInputFileCount = 0,
@@ -1198,6 +1191,32 @@ function Write-C04PackageSeal {
         if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "C04FAIL:PACKAGE_REQUIRED_MISSING:$required" }
         if (-not (Test-C04PathWithin $required $packageRootFull)) { throw "C04FAIL:PACKAGE_MEMBER_OUTSIDE:$required" }
     }
+    if ([string]::IsNullOrWhiteSpace($BuildEvidenceRoot)) { throw 'C04FAIL:PACKAGE_BUILD_EVIDENCE_MISSING' }
+    $buildRoot = (Get-C04FullPath (Join-Path $root 'build')).TrimEnd('\', '/')
+    $evidenceRootFull = (Assert-C04PathSafe -Path $BuildEvidenceRoot -Label 'build-evidence').TrimEnd('\', '/')
+    if (-not (Test-C04PathWithin $evidenceRootFull $buildRoot) -or $evidenceRootFull.Equals($buildRoot, [StringComparison]::OrdinalIgnoreCase)) { throw 'C04FAIL:PACKAGE_BUILD_EVIDENCE_OUTSIDE' }
+    $evidenceRelative = $evidenceRootFull.Substring($buildRoot.Length).TrimStart('\', '/').Replace('\', '/')
+    $sourceManifestPath = Join-Path $evidenceRootFull 'source-input-manifest.csv'
+    $stagedManifestPath = Join-Path $evidenceRootFull 'staging\staged-project-input-manifest.csv'
+    $stagedFinalPath = Join-Path $evidenceRootFull 'staging\staged-project-final-manifest.csv'
+    $evidenceClosurePath = Join-Path $evidenceRootFull 'staging\plugin-closure.csv'
+    $evidenceReportPath = Join-Path $evidenceRootFull 'build\player\c04-build-report.json'
+    foreach ($requiredEvidence in @($sourceManifestPath, $stagedManifestPath, $stagedFinalPath, $evidenceClosurePath, $evidenceReportPath)) {
+        if (-not (Test-Path -LiteralPath $requiredEvidence -PathType Leaf)) { throw "C04FAIL:PACKAGE_BUILD_EVIDENCE_INCOMPLETE:$requiredEvidence" }
+    }
+    $sourceManifestSha = Get-C04Sha256 $sourceManifestPath
+    $stagedManifestSha = Get-C04Sha256 $stagedManifestPath
+    $stagedFinalSha = Get-C04Sha256 $stagedFinalPath
+    $evidenceClosureSha = Get-C04Sha256 $evidenceClosurePath
+    $evidenceReportSha = Get-C04Sha256 $evidenceReportPath
+    if ($sourceManifestSha -ne $SourceManifestSha256) { throw 'C04FAIL:PACKAGE_SOURCE_MANIFEST_MISMATCH' }
+    if ($stagedManifestSha -ne $StagedInputManifestSha256) { throw 'C04FAIL:PACKAGE_STAGED_MANIFEST_MISMATCH' }
+    if ($stagedFinalSha -ne $StagedFinalManifestSha256) { throw 'C04FAIL:PACKAGE_STAGED_FINAL_MANIFEST_MISMATCH' }
+    if ($evidenceClosureSha -ne (Get-C04Sha256 $closureFull)) { throw 'C04FAIL:PACKAGE_CLOSURE_MISMATCH' }
+    if ($evidenceReportSha -ne (Get-C04Sha256 $reportFull)) { throw 'C04FAIL:PACKAGE_EVIDENCE_REPORT_MISMATCH' }
+    $evidenceClosureRows = @(Import-Csv -LiteralPath $evidenceClosurePath | ForEach-Object { [pscustomobject]@{ name = $_.path; bytes = [long]$_.bytes; sha256 = [string]$_.sha256 } })
+    $evidencePluginSet = Get-C04PluginSetSha $evidenceClosureRows
+    if ($evidencePluginSet -ne $PluginClosure.pluginSetSha256) { throw 'C04FAIL:PACKAGE_PLUGIN_SET_MISMATCH' }
     $report = Read-C04Json -Path $reportFull
     if ($null -eq $report) { throw 'C04FAIL:PACKAGE_REPORT_MALFORMED' }
     $manifest = Write-C04ManifestFile -Path $manifestPath -Rows (Get-C04PackageRows -PackageRoot $packageRootFull) -Kind 'c04-player-package'
@@ -1212,19 +1231,21 @@ function Write-C04PackageSeal {
         kind = 'c04-fresh-build-receipt'
         freshBuild = $true
         buildId = $BuildId
+        buildEvidenceRelativePath = $evidenceRelative
         runnerVersion = $script:C04RunnerVersion
         builtAtUtc = [DateTime]::UtcNow.ToString('O')
         sourceHead = $SourceHead
         buildCommit = $BuildCommit
-        sourceInputManifestSha256 = $SourceIdentitySha256
+        sourceInputManifestSha256 = $sourceManifestSha
         sourceInputFileCount = $SourceInputFileCount
         sourceInputBytes = $SourceInputBytes
-        stagedInputManifestSha256 = $StagedInputManifestSha256
+        stagedInputManifestSha256 = $stagedManifestSha
+        stagedFinalManifestSha256 = $stagedFinalSha
         stagedInputFileCount = $StagedInputFileCount
         packageManifestSha256 = $manifestSha
-        buildReportSha256 = $reportSha
+        buildReportSha256 = $evidenceReportSha
         pluginProvenanceSha256 = $provenanceSha
-        pluginClosureSha256 = $closureSha
+        pluginClosureSha256 = $evidenceClosureSha
         pluginSetSha256 = $PluginClosure.pluginSetSha256
         pluginFileCount = @($PluginClosure.files).Count
         playerRelativePath = $playerRelative
@@ -1245,6 +1266,9 @@ function Write-C04PackageSeal {
         sealedAtUtc = [DateTime]::UtcNow.ToString('O')
         sourceHead = $SourceHead
         sourceIdentitySha256 = $SourceIdentitySha256
+        sourceManifestSha256 = $sourceManifestSha
+        stagedFinalManifestSha256 = $stagedFinalSha
+        buildEvidenceRelativePath = $evidenceRelative
         buildCommit = $BuildCommit
         packageRoot = $packageRootFull
         playerRelativePath = $playerRelative
@@ -1262,7 +1286,7 @@ function Write-C04PackageSeal {
         pluginProvenanceRelativePath = $provenanceFull.Substring($packageRootFull.Length).TrimStart('\', '/').Replace('\', '/')
         pluginProvenanceSha256 = $provenanceSha
         pluginClosureRelativePath = $closureFull.Substring($packageRootFull.Length).TrimStart('\', '/').Replace('\', '/')
-        pluginClosureSha256 = $closureSha
+        pluginClosureSha256 = $evidenceClosureSha
         pluginSetSha256 = $PluginClosure.pluginSetSha256
         pluginFileCount = @($PluginClosure.files).Count
     }
@@ -1352,7 +1376,7 @@ function Test-C04PackageSeal {
         if ([string]::IsNullOrWhiteSpace([string]$receipt.buildId)) { $errors.Add('PACKAGE_RECEIPT_BUILD_ID') | Out-Null }
         if ([string]$receipt.sourceHead -ne [string]$seal.sourceHead) { $errors.Add('PACKAGE_RECEIPT_SOURCE_HEAD') | Out-Null }
         if ([string]$receipt.buildCommit -ne [string]$seal.buildCommit) { $errors.Add('PACKAGE_RECEIPT_BUILD_COMMIT') | Out-Null }
-        if ([string]$receipt.sourceInputManifestSha256 -ne $sourceIdentity) { $errors.Add('PACKAGE_RECEIPT_SOURCE_INPUT') | Out-Null }
+        if ([string]::IsNullOrWhiteSpace([string]$receipt.sourceInputManifestSha256)) { $errors.Add('PACKAGE_RECEIPT_SOURCE_INPUT') | Out-Null }
         if ([string]$receipt.packageManifestSha256 -ne [string]$seal.packageManifestSha256) { $errors.Add('PACKAGE_RECEIPT_MANIFEST') | Out-Null }
         if ([string]$receipt.buildReportSha256 -ne [string]$seal.buildReportSha256) { $errors.Add('PACKAGE_RECEIPT_REPORT') | Out-Null }
         if ([string]$receipt.pluginProvenanceSha256 -ne [string]$seal.pluginProvenanceSha256) { $errors.Add('PACKAGE_RECEIPT_PROVENANCE') | Out-Null }
@@ -1360,6 +1384,74 @@ function Test-C04PackageSeal {
         if ([string]$receipt.pluginSetSha256 -ne [string]$seal.pluginSetSha256) { $errors.Add('PACKAGE_RECEIPT_PLUGIN_SET') | Out-Null }
         if ([string]$receipt.playerSha256 -ne [string]$seal.playerSha256 -or [long]$receipt.playerBytes -ne [long]$seal.playerBytes) { $errors.Add('PACKAGE_RECEIPT_PLAYER') | Out-Null }
         if ([int]$receipt.buildErrors -ne 0) { $errors.Add('PACKAGE_RECEIPT_BUILD_ERRORS') | Out-Null }
+    }
+    $evidenceRelative = [string]$seal.buildEvidenceRelativePath
+    if ([string]::IsNullOrWhiteSpace($evidenceRelative)) { $errors.Add('PACKAGE_EVIDENCE_PATH') | Out-Null }
+    else {
+        $buildRoot = (Get-C04FullPath (Join-Path $root 'build')).TrimEnd('\', '/')
+        $evidenceFull = Get-C04FullPath (Join-Path $buildRoot ($evidenceRelative.Replace('/', '\')))
+        if (-not (Test-C04PathWithin $evidenceFull $buildRoot) -or $evidenceFull.Equals($buildRoot, [StringComparison]::OrdinalIgnoreCase)) { $errors.Add('PACKAGE_EVIDENCE_OUTSIDE') | Out-Null }
+        elseif (-not (Test-Path -LiteralPath $evidenceFull -PathType Container)) { $errors.Add('PACKAGE_EVIDENCE_MISSING') | Out-Null }
+        else {
+            $sourceManifest = Join-Path $evidenceFull 'source-input-manifest.csv'
+            $stagedManifest = Join-Path $evidenceFull 'staging\staged-project-input-manifest.csv'
+            $stagedFinalManifest = Join-Path $evidenceFull 'staging\staged-project-final-manifest.csv'
+            $evidenceClosure = Join-Path $evidenceFull 'staging\plugin-closure.csv'
+            $evidenceReport = Join-Path $evidenceFull 'build\player\c04-build-report.json'
+            foreach ($requiredEvidence in @($sourceManifest, $stagedManifest, $stagedFinalManifest, $evidenceClosure, $evidenceReport)) {
+                if (-not (Test-Path -LiteralPath $requiredEvidence -PathType Leaf)) { $errors.Add('PACKAGE_EVIDENCE_INCOMPLETE:' + (Split-Path -Leaf $requiredEvidence)) | Out-Null }
+            }
+            if (Test-Path -LiteralPath $sourceManifest) {
+                if ((Get-C04Sha256 $sourceManifest) -ne [string]$seal.sourceManifestSha256) { $errors.Add('PACKAGE_EVIDENCE_SOURCE_HASH') | Out-Null }
+                $expectedSource = @{}
+                foreach ($row in @(Get-C04SourceInputRows -RepoRoot $root)) { $expectedSource[[string]$row.path] = $row }
+                $actualSource = @{}
+                foreach ($row in @(Import-Csv -LiteralPath $sourceManifest)) { $actualSource[[string]$row.path] = $row }
+                if ($expectedSource.Count -ne $actualSource.Count) { $errors.Add('PACKAGE_EVIDENCE_SOURCE_COUNT') | Out-Null }
+                foreach ($key in $expectedSource.Keys) {
+                    if (-not $actualSource.ContainsKey($key)) { $errors.Add('PACKAGE_EVIDENCE_SOURCE_MISSING:' + $key) | Out-Null; continue }
+                    if ([long]$expectedSource[$key].bytes -ne [long]$actualSource[$key].bytes -or [string]$expectedSource[$key].sha256 -ne [string]$actualSource[$key].sha256) { $errors.Add('PACKAGE_EVIDENCE_SOURCE_CHANGED:' + $key) | Out-Null }
+                }
+            }
+            if (Test-Path -LiteralPath $stagedManifest) {
+                if ((Get-C04Sha256 $stagedManifest) -ne [string]$receipt.stagedInputManifestSha256) { $errors.Add('PACKAGE_EVIDENCE_STAGED_HASH') | Out-Null }
+            }
+            if (Test-Path -LiteralPath $stagedFinalManifest) {
+                if ((Get-C04Sha256 $stagedFinalManifest) -ne [string]$seal.stagedFinalManifestSha256) { $errors.Add('PACKAGE_EVIDENCE_STAGED_FINAL_HASH') | Out-Null }
+            }
+            if (Test-Path -LiteralPath $evidenceClosure) {
+                if ((Get-C04Sha256 $evidenceClosure) -ne [string]$receipt.pluginClosureSha256) { $errors.Add('PACKAGE_EVIDENCE_CLOSURE_HASH') | Out-Null }
+                $rows = @(Import-Csv -LiteralPath $evidenceClosure | ForEach-Object { [pscustomobject]@{ name = $_.path; bytes = [long]$_.bytes; sha256 = [string]$_.sha256 } })
+                if ((Get-C04PluginSetSha $rows) -ne [string]$seal.pluginSetSha256) { $errors.Add('PACKAGE_EVIDENCE_PLUGIN_SET') | Out-Null }
+            }
+            if (Test-Path -LiteralPath $evidenceReport) {
+                if ((Get-C04Sha256 $evidenceReport) -ne [string]$seal.buildReportSha256) { $errors.Add('PACKAGE_EVIDENCE_REPORT_HASH') | Out-Null }
+            }
+            $evidencePlayer = Join-Path $evidenceFull ('build\player\' + $playerRelative.Replace('/', '\'))
+            if (-not (Test-Path -LiteralPath $evidencePlayer -PathType Leaf)) { $errors.Add('PACKAGE_EVIDENCE_PLAYER_MISSING') | Out-Null }
+            elseif ((Get-C04Sha256 $evidencePlayer) -ne [string]$seal.playerSha256 -or (Get-Item -LiteralPath $evidencePlayer).Length -ne [long]$seal.playerBytes) { $errors.Add('PACKAGE_EVIDENCE_PLAYER_MISMATCH') | Out-Null }
+
+            $evidenceProvenance = Join-Path $evidenceFull 'staging\repo\unity\Mahjong.Unity\Library\SharedPluginProvenance\provenance.json'
+            if (-not (Test-Path -LiteralPath $evidenceProvenance)) { $errors.Add('PACKAGE_EVIDENCE_PROVENANCE_MISSING') | Out-Null }
+            elseif ((Get-C04Sha256 $evidenceProvenance) -ne [string]$seal.pluginProvenanceSha256) { $errors.Add('PACKAGE_EVIDENCE_PROVENANCE_HASH') | Out-Null }
+            else {
+                try { $provData = Get-Content -LiteralPath $evidenceProvenance -Raw | ConvertFrom-Json } catch { $provData = $null; $errors.Add('PACKAGE_EVIDENCE_PROVENANCE_MALFORMED') | Out-Null }
+                if ($provData) {
+                    $stagingRepo = Join-Path $evidenceFull 'staging\repo'
+                    foreach ($input in @($provData.inputs)) {
+                        $inputPath = Join-Path $stagingRepo ([string]$input.Path).Replace('/', '\')
+                        if (-not (Test-Path -LiteralPath $inputPath -PathType Leaf)) { $errors.Add('PACKAGE_EVIDENCE_INPUT_MISSING:' + [string]$input.Path) | Out-Null; continue }
+                        if ([long]$input.Length -ne (Get-Item -LiteralPath $inputPath).Length -or [string]$input.Sha256 -ne (Get-C04Sha256 $inputPath)) { $errors.Add('PACKAGE_EVIDENCE_INPUT_MISMATCH:' + [string]$input.Path) | Out-Null }
+                    }
+                    $stagingPlugins = Join-Path $stagingRepo 'unity\Mahjong.Unity\Assets\Plugins\Mahjong'
+                    foreach ($output in @($provData.outputs)) {
+                        $outputPath = Join-Path $stagingPlugins ([string]$output.Name)
+                        if (-not (Test-Path -LiteralPath $outputPath -PathType Leaf)) { $errors.Add('PACKAGE_EVIDENCE_OUTPUT_MISSING:' + [string]$output.Name) | Out-Null; continue }
+                        if ([string]$output.Sha256 -ne (Get-C04Sha256 $outputPath)) { $errors.Add('PACKAGE_EVIDENCE_OUTPUT_MISMATCH:' + [string]$output.Name) | Out-Null }
+                    }
+                }
+            }
+        }
     }
 
     $reportRelative = [string]$seal.buildReportRelativePath
@@ -1407,9 +1499,8 @@ function Test-C04PackageSeal {
 
     return [pscustomobject]@{ ok = ($errors.Count -eq 0); errors = @($errors); seal = $seal; manifest = $manifestPath }
 }
-function Split-C04StagingTransitions {
-    param([string[]]$Errors)
-    $allowed = @{
+function Get-C04TransitionAllowlist {
+    return @{
         'ProjectSettings/ProjectSettings.asset' = 'changed'
         'Assets/Art/UI/Fonts/NotoSansSC-Regular SDF.asset' = 'changed'
         'Assets/Resources/PerformanceTestRunInfo.json' = 'removed'
@@ -1417,15 +1508,75 @@ function Split-C04StagingTransitions {
         'Assets/Resources/PerformanceTestRunSettings.json' = 'removed'
         'Assets/Resources/PerformanceTestRunSettings.json.meta' = 'removed'
     }
+}
+
+function Copy-C04TransitionSnapshot {
+    param([string]$Root, [string]$SnapshotRoot)
+    New-Item -ItemType Directory -Force -Path $SnapshotRoot | Out-Null
+    foreach ($relative in @((Get-C04TransitionAllowlist).Keys) + @('Mahjong.Unity.slnx')) {
+        $source = Join-Path $Root ($relative.Replace('/', '\'))
+        if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { continue }
+        $target = Join-Path $SnapshotRoot ($relative.Replace('/', '\'))
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
+        Copy-Item -LiteralPath $source -Destination $target -Force
+    }
+}
+
+function Test-C04AdditiveYamlTransition {
+    param([string]$Before, [string]$After)
+    if (-not (Test-Path -LiteralPath $Before) -or -not (Test-Path -LiteralPath $After)) { return $false }
+    $beforeLines = @(Get-Content -LiteralPath $Before -Encoding UTF8 | ForEach-Object { $_.TrimEnd() } | Where-Object { $_.Trim().Length -gt 0 })
+    $afterLines = @(Get-Content -LiteralPath $After -Encoding UTF8 | ForEach-Object { $_.TrimEnd() } | Where-Object { $_.Trim().Length -gt 0 })
+    if ($beforeLines.Count -eq 0) { return $false }
+    if (-not $beforeLines[0].StartsWith('%YAML')) { return $false }
+    $afterCounts = @{}
+    foreach ($line in $afterLines) { $afterCounts[$line] = 1 + [int]($afterCounts[$line]) }
+    foreach ($line in $beforeLines) {
+        if ([int]$afterCounts[$line] -lt 1) { return $false }
+        $afterCounts[$line] = [int]$afterCounts[$line] - 1
+    }
+    return $true
+}
+
+function Test-C04GeneratedUnityFile {
+    param([string]$Relative, [string]$Path)
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+    $text = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
+    if ($Relative -match '\.csproj$') { return ($text -match '<Project') -and ($text -match '<TargetFramework') }
+    if ($Relative -eq 'Mahjong.Unity.slnx') { return ($text.TrimStart().StartsWith('<?xml') -or $text -match '<Solution') }
+    if ($Relative -eq '.vscode/settings.json') { return ($text -match '"files\.exclude"') }
+    if ($Relative -eq '.vscode/launch.json') { return ($text -match '"configurations"') }
+    if ($Relative -eq '.vscode/extensions.json') { return ($text -match '"recommendations"') }
+    if ($Relative -match '\.pdb\.meta$') { return ($text -match 'fileFormatVersion:\s*2') -and ($text -match 'guid:\s*[0-9a-fA-F]{32}') }
+    return $false
+}
+
+function Split-C04StagingTransitions {
+    param([string[]]$Errors, [string]$BeforeRoot, [string]$AfterRoot)
+    $allowed = Get-C04TransitionAllowlist
     $fatal = New-Object System.Collections.Generic.List[string]
     $transitions = New-Object System.Collections.Generic.List[object]
     foreach ($line in @($Errors)) {
+        $valid = $false
         if ($line -match '^STAGING_(CHANGED|MISSING|EXTRA):(.+)$') {
             $kind = $Matches[1]
             $path = $Matches[2]
             $action = if ($kind -eq 'CHANGED') { 'changed' } elseif ($kind -eq 'MISSING') { 'removed' } else { 'extra' }
-            if ($allowed.ContainsKey($path) -and $allowed[$path] -eq $action) {
-                $transitions.Add([pscustomobject]@{ path = $path; action = $action }) | Out-Null
+            $before = if ($BeforeRoot) { Join-Path $BeforeRoot ($path.Replace('/', '\')) } else { '' }
+            $after = if ($AfterRoot) { Join-Path $AfterRoot ($path.Replace('/', '\')) } else { '' }
+            if ($allowed.ContainsKey($path) -and $allowed[$path] -eq $action -and $BeforeRoot -and $AfterRoot) {
+                if ($action -eq 'changed') { $valid = Test-C04AdditiveYamlTransition -Before $before -After $after }
+                elseif ($action -eq 'removed') { $valid = (Test-Path -LiteralPath $before -PathType Leaf) -and -not (Test-Path -LiteralPath $after) }
+            }
+            if (-not $valid -and $kind -eq 'EXTRA' -and $AfterRoot -and (Test-C04GeneratedUnityFile -Relative $path -Path $after)) { $valid = $true }
+            if (-not $valid -and $kind -eq 'CHANGED' -and $path -eq 'Mahjong.Unity.slnx' -and $BeforeRoot -and $AfterRoot -and (Test-C04GeneratedUnityFile -Relative $path -Path $before) -and (Test-C04GeneratedUnityFile -Relative $path -Path $after)) { $valid = $true }
+            if ($valid) {
+                $transitions.Add([pscustomobject]@{
+                    path = $path
+                    action = $action
+                    beforeSha256 = if ($before -and (Test-Path -LiteralPath $before)) { Get-C04Sha256 $before } else { '' }
+                    afterSha256 = if ($after -and (Test-Path -LiteralPath $after)) { Get-C04Sha256 $after } else { '' }
+                }) | Out-Null
                 continue
             }
         }
@@ -1949,6 +2100,7 @@ try {
 
     $script:C04SourceBefore = Get-C04SourceIdentity
     Write-C04Json -Path (Join-Path $EvidenceRoot 'source-identity-before.json') -Object $script:C04SourceBefore
+    $sourceInputManifest = Write-C04ManifestFile -Path (Join-Path $EvidenceRoot 'source-input-manifest.csv') -Rows @($script:C04SourceBefore.inputRows) -Kind 'c04-source-input'
     $stagingRoot = Join-Path $EvidenceRoot 'staging'
     New-Item -ItemType Directory -Force -Path $stagingRoot | Out-Null
 
@@ -1997,9 +2149,20 @@ try {
         $reportFull = Join-Path $packageRoot 'c04-build-report.json'
         $unityLog = Join-Path $stagingRoot 'logs\unity-player-build.log'
         $warmupLog = Join-Path $stagingRoot 'logs\unity-import-warmup.log'
+        $preWarmupRows = Get-C04FileTable -Root $stagingProject -ExcludeDirectoryNames @('Library', 'Temp', 'Logs', 'obj', 'UserSettings')
+        $preWarmupManifest = Write-C04ManifestFile -Path (Join-Path $stagingRoot 'staged-project-pre-warmup.csv') -Rows $preWarmupRows -Kind 'pre-warmup'
+        $preWarmupSnapshot = Join-Path $stagingRoot 'transitions-pre-warmup'
+        Copy-C04TransitionSnapshot -Root $stagingProject -SnapshotRoot $preWarmupSnapshot
+        $stagedCodeRows = Get-C04FileTable -Root $stagingRepo.repo -ExcludeDirectoryNames @('bin', 'obj', 'Library', 'Temp', 'Logs') -ExcludeRelativeDirectories @('unity')
+        $stagedCodeManifest = Write-C04ManifestFile -Path (Join-Path $stagingRoot 'staged-code-manifest.csv') -Rows $stagedCodeRows -Kind 'staged-code'
         $warmup = Invoke-C04UnityWarmup -StagingProject $stagingProject -UnityLogPath $warmupLog
+        $warmupErrors = @(Test-C04ManifestAgainstRoot -Root $stagingProject -ManifestPath $preWarmupManifest.path -ExcludeDirectoryNames @('Library', 'Temp', 'Logs', 'obj', 'UserSettings'))
+        $warmupDiff = Split-C04StagingTransitions -Errors $warmupErrors -BeforeRoot $preWarmupSnapshot -AfterRoot $stagingProject
+        if ($warmupDiff.fatal.Count -gt 0) { throw ('C04FAIL:STAGING_CHANGED_DURING_WARMUP:' + ($warmupDiff.fatal -join ',')) }
         $stagedInputRows = Get-C04FileTable -Root $stagingProject -ExcludeDirectoryNames @('Library', 'Temp', 'Logs', 'obj', 'UserSettings')
         $stagedInputManifest = Write-C04ManifestFile -Path (Join-Path $stagingRoot 'staged-project-input-manifest.csv') -Rows $stagedInputRows -Kind 'c04-staged-project-input'
+        $preBuildSnapshot = Join-Path $stagingRoot 'transitions-pre-build'
+        Copy-C04TransitionSnapshot -Root $stagingProject -SnapshotRoot $preBuildSnapshot
         $unityBuild = Invoke-C04UnityBuild -StagingProject $stagingProject -PlayerPath $playerFull -ReportPath $reportFull -UnityLogPath $unityLog -PluginClosure $stagingBuild.closure
         if ($BuildReport) {
             $requestedReport = Get-C04FullPath $BuildReport
@@ -2010,7 +2173,7 @@ try {
         }
 
         $stagingErrors = @(Test-C04ManifestAgainstRoot -Root $stagingProject -ManifestPath $stagedInputManifest.path -ExcludeDirectoryNames @('Library', 'Temp', 'Logs', 'obj', 'UserSettings'))
-        $stagingDiff = Split-C04StagingTransitions -Errors $stagingErrors
+        $stagingDiff = Split-C04StagingTransitions -Errors $stagingErrors -BeforeRoot $preBuildSnapshot -AfterRoot $stagingProject
         if ($stagingDiff.transitions.Count -gt 0 -or $stagingDiff.fatal.Count -gt 0) {
             Write-C04Json -Path (Join-Path $stagingRoot 'staging-workspace-diff.json') -Object ([ordered]@{ transitions = @($stagingDiff.transitions); fatal = @($stagingDiff.fatal) })
         }
@@ -2018,6 +2181,10 @@ try {
             throw ('C04FAIL:STAGING_CHANGED_DURING_BUILD:' + ($stagingDiff.fatal -join ','))
         }
 
+        $finalRows = Get-C04FileTable -Root $stagingProject -ExcludeDirectoryNames @('Library', 'Temp', 'Logs', 'obj', 'UserSettings')
+        $finalManifest = Write-C04ManifestFile -Path (Join-Path $stagingRoot 'staged-project-final-manifest.csv') -Rows $finalRows -Kind 'staged-final'
+        $codeErrors = @(Test-C04ManifestAgainstRoot -Root $stagingRepo.repo -ManifestPath $stagedCodeManifest.path -ExcludeDirectoryNames @('bin', 'obj', 'Library', 'Temp', 'Logs') -ExcludeRelativeDirectories @('unity'))
+        if ($codeErrors.Count -gt 0) { throw ('C04FAIL:STAGED_CODE_CHANGED:' + ($codeErrors -join ',')) }
         $finalPluginClosure = Get-C04PluginClosure -ProvenancePath $stagingBuild.provenancePath -PluginDir $stagingBuild.pluginDir
         if (-not $finalPluginClosure.ok) { throw ('C04FAIL:PLUGIN_CLOSURE_FINAL:' + ($finalPluginClosure.errors -join ',')) }
         if ($finalPluginClosure.pluginSetSha256 -ne $stagingBuild.closure.pluginSetSha256) {
@@ -2035,7 +2202,7 @@ try {
         Copy-Item -LiteralPath $stagingBuild.provenancePath -Destination $provenanceCopy -Force
         $closureCopy = Join-Path $packageRoot 'c04-plugin-closure.csv'
         Copy-Item -LiteralPath (Join-Path $stagingRoot 'plugin-closure.csv') -Destination $closureCopy -Force
-        $packageSeal = Write-C04PackageSeal -PackageRoot $packageRoot -PlayerPath $playerFull -ReportPath $reportFull -ProvenancePath $provenanceCopy -PluginClosurePath $closureCopy -SourceHead $SourceHead -SourceIdentitySha256 $script:C04SourceBefore.identitySha256 -StagedInputManifestSha256 $stagedInputManifest.sha256 -BuildCommit $BuildCommit -BuildId (Split-Path -Leaf $EvidenceRoot) -SourceInputFileCount $script:C04SourceBefore.inputFileCount -SourceInputBytes $script:C04SourceBefore.inputBytes -StagedInputFileCount $stagedInputManifest.fileCount -PluginClosure $finalPluginClosure
+        $packageSeal = Write-C04PackageSeal -PackageRoot $packageRoot -PlayerPath $playerFull -ReportPath $reportFull -ProvenancePath $provenanceCopy -PluginClosurePath $closureCopy -BuildEvidenceRoot $EvidenceRoot -SourceHead $SourceHead -SourceIdentitySha256 $script:C04SourceBefore.identitySha256 -SourceManifestSha256 $sourceInputManifest.sha256 -StagedInputManifestSha256 $stagedInputManifest.sha256 -StagedFinalManifestSha256 $finalManifest.sha256 -BuildCommit $BuildCommit -BuildId (Split-Path -Leaf $EvidenceRoot) -SourceInputFileCount $script:C04SourceBefore.inputFileCount -SourceInputBytes $script:C04SourceBefore.inputBytes -StagedInputFileCount $stagedInputManifest.fileCount -PluginClosure $finalPluginClosure
         $sealCheck = Test-C04PackageSeal -PlayerPath $playerFull -ExpectedSourceHead $SourceHead -ExpectedBuildCommit $BuildCommit -CurrentSourceIdentitySha256 $script:C04SourceBefore.identitySha256
         if (-not $sealCheck.ok) { throw ('C04FAIL:PACKAGE_SEAL_INVALID:' + ($sealCheck.errors -join ',')) }
 

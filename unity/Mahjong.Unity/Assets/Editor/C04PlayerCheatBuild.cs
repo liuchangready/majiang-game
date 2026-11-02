@@ -127,6 +127,8 @@ public static class C04PlayerCheatBuild
                     "C04 preflight missing shared plugins: " + string.Join(",", missingPlugins));
             }
 
+            RepairPackageImportOrder();
+
             var options = new BuildPlayerOptions
             {
                 scenes = scenes,
@@ -193,6 +195,29 @@ public static class C04PlayerCheatBuild
         }
     }
 
+    private static void RepairPackageImportOrder()
+    {
+        // The URP/SRP global-settings postprocessor can observe these package
+        // assets as "Host type is not matching any asset type" during a cold
+        // batchmode import. Force a synchronous reimport before the build so the
+        // importer has a completed artifact instead of the partially imported
+        // package resource. This only touches Unity's ignored Library import
+        // cache, not tracked project assets or package sources.
+        string[] packageAssets =
+        {
+            "Packages/com.unity.render-pipelines.universal/Shaders/AutodeskInteractive/AutodeskInteractive.shadergraph",
+            "Packages/com.unity.render-pipelines.core/Editor/Lighting/ProbeVolume/VirtualOffset/TraceVirtualOffset.urtshader"
+        };
+        foreach (string assetPath in packageAssets)
+        {
+            if (AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(assetPath) == null)
+            {
+                continue;
+            }
+            AssetDatabase.ImportAsset(assetPath, ImportAssetOptions.ForceUpdate | ImportAssetOptions.ForceSynchronousImport);
+        }
+        AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+    }
     private static void CaptureSteps(BuildReport build, BuildObservation observation)
     {
         if (build.steps == null)

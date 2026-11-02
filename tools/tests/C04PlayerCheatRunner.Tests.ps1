@@ -53,7 +53,7 @@ function New-PluginFixture {
 }
 
 function New-PackageFixture {
-    param([string]$Dir)
+    param([string]$Dir, [switch]$ValidEvidence)
     New-Item -ItemType Directory -Force -Path $Dir | Out-Null
     $exe = Join-Path $Dir 'Mahjong.exe'
     Copy-Item -LiteralPath (Get-Command powershell.exe).Source -Destination $exe -Force
@@ -71,10 +71,33 @@ function New-PackageFixture {
     Write-C04Json -Path $reportPath -Object $report
     $head = ((git -C $root rev-parse HEAD) -join '').Trim()
     $identity = Get-C04SourceIdentity
-    $seal = Write-C04PackageSeal -PackageRoot $Dir -PlayerPath $exe -ReportPath $reportPath -ProvenancePath $provenanceCopy -PluginClosurePath $closurePath -SourceHead $head -SourceIdentitySha256 $identity.identitySha256 -StagedInputManifestSha256 ('c' * 64) -BuildCommit $head -BuildId 'fixture-build' -SourceInputFileCount $identity.inputFileCount -SourceInputBytes $identity.inputBytes -StagedInputFileCount 1 -PluginClosure $closure
+    $evidence = Join-Path $Dir 'evidence'
+    foreach ($d in @('staging','staging\repo','build\player','staging\repo\unity\Mahjong.Unity\Library\SharedPluginProvenance','staging\repo\unity\Mahjong.Unity\Assets\Plugins\Mahjong')) { New-Item -ItemType Directory -Force -Path (Join-Path $evidence $d) | Out-Null }
+    $sourceManifest = Join-Path $evidence 'source-input-manifest.csv'
+    $null = Write-C04ManifestFile -Path $sourceManifest -Rows @($identity.inputRows) -Kind 'source'
+    $stagedManifest = Join-Path $evidence 'staging\staged-project-input-manifest.csv'
+    $null = Write-C04ManifestFile -Path $stagedManifest -Rows @([pscustomobject]@{ path = 'fixture.txt'; bytes = 1; sha256 = ('c' * 64) }) -Kind 'staged'
+    $stagedFinalManifest = Join-Path $evidence 'staging\staged-project-final-manifest.csv'
+    $null = Write-C04ManifestFile -Path $stagedFinalManifest -Rows @([pscustomobject]@{ path = 'fixture-final.txt'; bytes = 1; sha256 = ('d' * 64) }) -Kind 'staged-final'
+    Copy-Item -LiteralPath $closurePath -Destination (Join-Path $evidence 'staging\plugin-closure.csv') -Force
+    Copy-Item -LiteralPath $reportPath -Destination (Join-Path $evidence 'build\player\c04-build-report.json') -Force
+    Copy-Item -LiteralPath $exe -Destination (Join-Path $evidence 'build\player\Mahjong.exe') -Force
+    Copy-Item -LiteralPath $provenanceCopy -Destination (Join-Path $evidence 'staging\repo\unity\Mahjong.Unity\Library\SharedPluginProvenance\provenance.json') -Force
+    if ($ValidEvidence) {
+        $inputFile = Join-Path $evidence 'staging\repo\fixture.cs'
+        [System.IO.File]::WriteAllText($inputFile, 'fixture-input')
+        $prov = Get-Content -LiteralPath $provenanceCopy -Raw | ConvertFrom-Json
+        $prov.inputs[0].Length = (Get-Item -LiteralPath $inputFile).Length
+        $prov.inputs[0].Sha256 = Get-C04Sha256 $inputFile
+        Write-C04Json -Path $provenanceCopy -Object $prov
+        Copy-Item -LiteralPath $provenanceCopy -Destination (Join-Path $evidence 'staging\repo\unity\Mahjong.Unity\Library\SharedPluginProvenance\provenance.json') -Force
+        foreach ($file in @($closure.files)) {
+            Copy-Item -LiteralPath (Join-Path $plugin.dir $file.name) -Destination (Join-Path $evidence ('staging\repo\unity\Mahjong.Unity\Assets\Plugins\Mahjong\' + $file.name)) -Force
+        }
+    }
+    $seal = Write-C04PackageSeal -PackageRoot $Dir -PlayerPath $exe -ReportPath $reportPath -ProvenancePath $provenanceCopy -PluginClosurePath $closurePath -BuildEvidenceRoot $evidence -SourceHead $head -SourceIdentitySha256 $identity.identitySha256 -SourceManifestSha256 (Get-C04Sha256 $sourceManifest) -StagedInputManifestSha256 (Get-C04Sha256 $stagedManifest) -StagedFinalManifestSha256 (Get-C04Sha256 $stagedFinalManifest) -BuildCommit $head -BuildId 'fixture-build' -SourceInputFileCount $identity.inputFileCount -SourceInputBytes $identity.inputBytes -StagedInputFileCount 1 -PluginClosure $closure
     return [pscustomobject]@{ dir = $Dir; exe = $exe; report = $reportPath; provenance = $provenanceCopy; closure = $closure; closurePath = $closurePath; seal = $seal; head = $head; identity = $identity }
 }
-
 # 1. Quoting and bounded process basics
 Assert-Equal (ConvertTo-C04QuotedArgument 'plain') 'plain' 'quote-plain'
 Assert-Equal (ConvertTo-C04QuotedArgument 'C:\a b\c') '"C:\a b\c"' 'quote-space'
@@ -154,7 +177,7 @@ $diff = @(Test-C04ManifestAgainstRoot -Root $staged.project -ManifestPath $orig.
 Assert-Match $diff 'STAGING_CHANGED:Assets/Extra.asset' 'staging-asset-mutation-detected'
 
 # 5. Package seal requires real source/build/provenance/report/plugin relations.
-$package = New-PackageFixture -Dir (Join-Path $testRoot 'package')
+$package = New-PackageFixture -Dir (Join-Path $testRoot 'package') -ValidEvidence
 $check = Test-C04PackageSeal -PlayerPath $package.exe -ExpectedSourceHead $package.head -ExpectedBuildCommit $package.head -CurrentSourceIdentitySha256 $package.identity.identitySha256
 Assert-True $check.ok 'package-seal-good'
 $fakeHead = ('a' * 40)
