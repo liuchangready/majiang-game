@@ -51,6 +51,55 @@
 | C04-G5-02 | BLOCKED | 没有从合法公共命令得到真实非空私有 fee/ledger 对照；不能以空字段、相等 scalar 或 verifier 自测替代。 |
 | C04-G5-03 | BLOCKED | role-switch/cache clearing 与 .NET 原始旧 wire rejection 有证据；Unity/Windows Player 的延迟旧真实 wire 投递负例未执行。 |
 
+> **R8 控制合同状态（2026-11-03，B）**：R7 的 reason 自相矛盾已修复：期望原因、生产 bool、外层断言统一使用 case 的 `DECISION_MISMATCH`；新增目标请求零重复/零 pending 断言；同一生产判据合同矩阵 1 个合法正例 PASS + 7 个错误输入 FAIL。fresh helper 实际 `StaleReason=DECISION_MISMATCH`、`StaleDecisionRejected=True`、commandFrames=1、pending=0；claim 仍 client epoch1/AI，外部投影缺口保留。D05 未最终 PASS。
+
+## R8 控制合同修复（I3）
+
+### 身份
+
+- 最终代码头 `23ca59571cf79f47598a353392d6cc070507e400`；clean/diff-check0。
+- 仅 B9 测试/合同工具/报告；未改 A/Client/actor。
+
+### 修复
+
+- 新增 `C04ControlContract` 生产判据，统一断言：
+  - control 非空
+  - epoch 增加
+  - `ControlledByComputer == false`
+  - `StaleReason == ExpectedStaleReason`
+  - stale 被拒
+  - stale 命令帧恰好 1
+  - stale 后无 pending target
+- `ReleaseEvidence` 增加 `ExpectedStaleReason`、`StaleCommandFrames`、`StalePendingAfter`；失败也先落 JSON。
+- stale 请求使用 release 前捕获的真实旧 `DecisionId`、action/tileIds/epoch；case 明确预期 `DECISION_MISMATCH`，`staleRejected` 使用同一原因，不再外层 `DECISION_MISMATCH` + 内层 `STALE_CONTROL_EPOCH` 冲突。
+- 新增 `tools/tests/C04ControlContract` 合同矩阵，使用同一 `C04ControlContract.cs`：
+  - 正例：全合法 → PASS
+  - 负例：control null、epoch 不变、仍 AI、错误 reason、未拒绝、重复命令、pending target → 全部 FAIL
+  - 结果 `C04_CONTROL_CONTRACT_PASS`，run log SHA `BD83BFDB2C0D57DE1E493C3617AF44265EA4321DACB4F9DD3BF8325CA4B94E32`
+
+### fresh 当前源码 helper 实际
+
+- `Claimed=true`
+- `ReceiptStatus=Recorded`
+- `ReceiptReason=LOCAL_CONTROL`
+- `ClaimEpochBefore=1`
+- `ClaimEpoch=1`
+- `ClaimEpochAdvanced=False`
+- `ControlPresent=True`
+- `ControlHuman=False`
+- `ExpectedStaleReason=DECISION_MISMATCH`
+- `StaleReason=DECISION_MISMATCH`
+- `StaleCommandFrames=1`
+- `StalePendingAfter=0`
+- `StaleDecisionRejected=True`
+- helper log SHA `100C85848B6A78EC217EEC82153A49D37DDAF601D26DB87E0C7BA5CA0054A621`
+
+### 结论
+
+- stale 合同自相矛盾已闭合；旧日志 `StaleDecisionRejected=False` 是修复前事实，R7 报告写 True 的时机错误已在本轮修正。
+- Claim client 仍 epoch1/AI，actor 已 epoch2/human；精确外部 Client 投影/刷新断点保留，B 不以 actor 结果替代 client。
+- I2/I4/recovery 保持关闭；D05 未最终 PASS。
+
 > **R7 控制判据状态（2026-11-03，B）**：I2/I4/recovery 保持关闭；I3 控制断言补齐为 control 非空、epoch 增加、human=false 三者同时成立，并用捕获的真实旧 decision 构造合法 stale 请求。实际公共组件复现：client `ControlPresent=true`、epoch 1→1、human=false，receipt `Recorded/LOCAL_CONTROL`；stale 精确 `DECISION_MISMATCH`。reviewer 同时观测 actor epoch2/human，说明断点在 Client 控制投影/刷新边界，不是 A actor 未收回。D05 仍未最终 PASS。
 
 ## R7 控制验收修复（I3）
