@@ -531,22 +531,30 @@ namespace Mahjong.Unity.Tests.PlayMode
             yield return WaitTask(() => task.IsCompleted, 90f, "released-seat authority scenario");
             Assert.IsFalse(task.IsFaulted, task.Exception?.ToString());
             ReleaseEvidence evidence = task.Result;
-            Assert.IsTrue(evidence.AdvancedWithoutPlayerBinding, "Released AI did not advance after the player binding closed.");
-            Assert.Greater(evidence.AfterVersion, evidence.ReleaseVersion);
-            Assert.IsTrue(evidence.Claimed, "ClaimControl was not accepted.");
-            Assert.IsTrue(evidence.ControlHuman, "ClaimControl did not restore human control.");
-            Assert.IsTrue(evidence.StaleDecisionRejected, "A stale control epoch decision was not rejected.");
             string directory = Path.Combine(EvidenceRoot(), "released-control");
             Directory.CreateDirectory(directory);
             File.WriteAllText(Path.Combine(directory, "released-control.json"),
                 "{\"schemaVersion\":1,\"releaseVersion\":\"" + evidence.ReleaseVersion +
                 "\",\"afterVersion\":\"" + evidence.AfterVersion +
+                "\",\"claimEpochBefore\":\"" + evidence.ClaimEpochBefore +
                 "\",\"claimEpoch\":\"" + evidence.ClaimEpoch +
                 "\",\"advancedWithoutPlayerBinding\":" + evidence.AdvancedWithoutPlayerBinding.ToString().ToLowerInvariant() +
                 ",\"claimed\":" + evidence.Claimed.ToString().ToLowerInvariant() +
                 ",\"claimEpochAdvanced\":" + evidence.ClaimEpochAdvanced.ToString().ToLowerInvariant() +
+                ",\"controlPresent\":" + evidence.ControlPresent.ToString().ToLowerInvariant() +
                 ",\"controlHuman\":" + evidence.ControlHuman.ToString().ToLowerInvariant() +
-                ",\"staleDecisionRejected\":" + evidence.StaleDecisionRejected.ToString().ToLowerInvariant() + "}", new UTF8Encoding(false));
+                ",\"receiptStatus\":\"" + evidence.ReceiptStatus +
+                "\",\"receiptReason\":\"" + evidence.ReceiptReason +
+                "\",\"staleReason\":\"" + evidence.StaleReason +
+                "\",\"staleDecisionRejected\":" + evidence.StaleDecisionRejected.ToString().ToLowerInvariant() + "}", new UTF8Encoding(false));
+            Assert.IsTrue(evidence.AdvancedWithoutPlayerBinding, "Released AI did not advance after the player binding closed.");
+            Assert.Greater(evidence.AfterVersion, evidence.ReleaseVersion);
+            Assert.IsTrue(evidence.Claimed, "ClaimControl was not accepted.");
+            Assert.IsTrue(evidence.ControlPresent, "ClaimControl did not produce a client control projection.");
+            Assert.IsTrue(evidence.ClaimEpochAdvanced, "ClaimControl did not advance the client control epoch.");
+            Assert.IsTrue(evidence.ControlHuman, "ClaimControl did not restore explicit human control.");
+            Assert.AreEqual("DECISION_MISMATCH", evidence.StaleReason, "The captured stale decision was rejected for the wrong reason.");
+            Assert.IsTrue(evidence.StaleDecisionRejected, "A legal stale control epoch request was not rejected.");
             try { if (Directory.Exists(root)) Directory.Delete(root, true); } catch { }
         }
 
@@ -844,6 +852,7 @@ namespace Mahjong.Unity.Tests.PlayMode
             Task? playerPump = null;
             Task? spectatorPump = null;
             Task? claimedPump = null;
+            Mahjong.Contracts.Wire.DecisionView? staleDecisionSeed = null;
             try
             {
                 channel = await factory.CreateRoomViewerAsync(LocalRoomViewerRole.Player, 0, CancellationToken.None).ConfigureAwait(false);
@@ -855,6 +864,7 @@ namespace Mahjong.Unity.Tests.PlayMode
                 await WaitReadyAsync(session, pumpCts.Token).ConfigureAwait(false);
                 PlayerSnapshot before = session.PlayerSnapshot
                     ?? throw new InvalidOperationException("No baseline player snapshot.");
+                staleDecisionSeed = before.PrivateView.Decision;
                 ulong epoch = before.PrivateView.Control?.ControlEpoch ?? 0UL;
                 BusinessPayload payload = CommandPayloadFactory.ReleaseControl(before.RoundId, epoch);
                 var command = new ProtocolCommand(
@@ -922,19 +932,32 @@ namespace Mahjong.Unity.Tests.PlayMode
                     await Task.Delay(20, pumpCts.Token).ConfigureAwait(false);
                 }
                 ulong claimedEpoch = claimedSnapshot.PrivateView.Control?.ControlEpoch ?? 0UL;
-
+                Mahjong.Contracts.Wire.DecisionView? staleDecision = staleDecisionSeed
+                    ?? throw new InvalidOperationException("No captured decision is available for a legal stale-epoch request.");
+                Mahjong.Contracts.Wire.LegalActionView? staleAction = null;
+                foreach (Mahjong.Contracts.Wire.LegalActionView action in staleDecision.Actions)
+                {
+                    if (action.ActionType == (uint)ProtocolActionType.Pass) { staleAction = action; break; }
+                    if (staleAction == null) staleAction = action;
+                }
+                if (staleAction == null) throw new InvalidOperationException("The live decision has no action for a legal stale-epoch request.");
                 var staleCommand = new ProtocolCommand(
                     CommandKind.SubmitAction,
-                    CommandPayloadFactory.SubmitAction(claimedSnapshot.RoundId, "unity-stale", 0UL, ProtocolActionType.Pass, tileIds: null),
+                    CommandPayloadFactory.SubmitAction(
+                        claimedSnapshot.RoundId,
+                        staleDecision.DecisionId,
+                        claimEpoch,
+                        (ProtocolActionType)staleAction!.ActionType,
+                        tileIds: staleAction!.TileIds),
                     new RequestId("unity-stale-" + Guid.NewGuid().ToString("N")),
                     claimed.Binding.Scope.ScopeId,
                     new StateVersion(claimedSnapshot.StateVersion),
                     new RoundId(claimedSnapshot.RoundId),
-                    decisionId: null,
-                    controlEpoch: new ControlEpoch(claimedEpoch == 0UL ? 1UL : claimedEpoch - 1UL));
+                    decisionId: new DecisionId(staleDecision.DecisionId),
+                    controlEpoch: new ControlEpoch(claimEpoch));
                 TableReceiptResolvedEventArgs staleReceipt = await SubmitExpectReceiptAsync(claimed, staleCommand, pumpCts.Token).ConfigureAwait(false);
-                if (staleReceipt.Resolution.ReceiptStatus != Mahjong.Contracts.ReceiptStatus.Rejected)
-                    throw new InvalidOperationException("A stale control epoch decision was not rejected.");
+                bool staleRejected = staleReceipt.Resolution.ReceiptStatus == Mahjong.Contracts.ReceiptStatus.Rejected &&
+                    string.Equals(staleReceipt.Resolution.ReasonCode, "STALE_CONTROL_EPOCH", StringComparison.Ordinal);
 
                 return new ReleaseEvidence
                 {
@@ -942,10 +965,15 @@ namespace Mahjong.Unity.Tests.PlayMode
                     AfterVersion = after,
                     AdvancedWithoutPlayerBinding = after > releaseVersion,
                     Claimed = true,
+                    ClaimEpochBefore = claimEpoch,
                     ClaimEpoch = claimedEpoch,
                     ClaimEpochAdvanced = claimedEpoch > claimEpoch,
-                    ControlHuman = claimedSnapshot.PrivateView.Control?.ControlledByComputer != true,
-                    StaleDecisionRejected = true
+                    ControlPresent = claimedSnapshot.PrivateView.Control != null,
+                    ControlHuman = claimedSnapshot.PrivateView.Control != null && claimedSnapshot.PrivateView.Control.ControlledByComputer == false,
+                    ReceiptStatus = claimReceipt.Resolution.ReceiptStatus.ToString(),
+                    ReceiptReason = claimReceipt.Resolution.ReasonCode,
+                    StaleReason = staleReceipt.Resolution.ReasonCode,
+                    StaleDecisionRejected = staleRejected
                 };
             }
             finally
@@ -1236,9 +1264,14 @@ namespace Mahjong.Unity.Tests.PlayMode
             public ulong AfterVersion;
             public bool AdvancedWithoutPlayerBinding;
             public bool Claimed;
+            public ulong ClaimEpochBefore;
             public ulong ClaimEpoch;
             public bool ClaimEpochAdvanced;
+            public bool ControlPresent;
             public bool ControlHuman;
+            public string ReceiptStatus = string.Empty;
+            public string ReceiptReason = string.Empty;
+            public string StaleReason = string.Empty;
             public bool StaleDecisionRejected;
         }
 
