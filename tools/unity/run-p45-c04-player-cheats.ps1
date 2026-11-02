@@ -1195,6 +1195,7 @@ function Get-C04ExitCodeForFailure {
     param([string]$Code)
     if ([string]::IsNullOrWhiteSpace($Code)) { return 1 }
     if ($Code -eq 'MUTEX_TIMEOUT') { return 6 }
+    if ($Code -match 'UNKNOWN') { return 7 }
     if ($Code -match 'CANCEL') { return 5 }
     if ($Code -match 'TIMEOUT') { return 4 }
     if ($Code -match '^(BUILD|UNITY|SHARED|PLUGIN|STAGING|PACKAGE_REPORT|BUILD_REPORT)') { return 3 }

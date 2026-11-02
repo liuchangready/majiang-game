@@ -325,6 +325,15 @@ Assert-True ($identity1.identitySha256 -ne $identity3.identitySha256) 'source-id
 $identity4 = Get-C04SourceIdentity -RepoRoot $gitRoot
 Assert-Equal $identity3.identitySha256 $identity4.identitySha256 'source-identity-docs-commit-stable'
 
+# 11b. Exit classification separates control/resource/unknown/build failures.
+Assert-Equal (Get-C04ExitCodeForFailure 'MUTEX_TIMEOUT') 6 'exit-mutex'
+Assert-Equal (Get-C04ExitCodeForFailure 'UNKNOWN_EXIT') 7 'exit-unknown'
+Assert-Equal (Get-C04ExitCodeForFailure 'CANCELLED') 5 'exit-cancel'
+Assert-Equal (Get-C04ExitCodeForFailure 'PLAYER_TIMEOUT') 4 'exit-timeout'
+Assert-Equal (Get-C04ExitCodeForFailure 'BUILD_FAILED') 3 'exit-build'
+Assert-Equal (Get-C04ExitCodeForFailure 'SKIPBUILD_INVALID') 2 'exit-precondition'
+Assert-Equal (Get-C04ExitCodeForFailure 'CASE_FAILED') 1 'exit-evidence'
+
 # 12. No retired local Strict verifier fallback
 Assert-True ($null -eq (Get-Command Assert-C04EvidenceStrict -ErrorAction SilentlyContinue)) 'no-local-strict-fallback'
 $caseDir = Join-Path $testRoot 'case'
