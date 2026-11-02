@@ -1865,7 +1865,11 @@ namespace Mahjong.Unity.Table
                 var ownerContext = BuildOwnerContext();
                 if (ownerContext == null) return;
 
-                bool isOffTurn = !string.IsNullOrEmpty(cheat.WindowId);
+                bool ownTurn = _latestView != null &&
+                    _latestView.Board.CurrentSeat == _latestView.Identity.Seat &&
+                    _latestView.Board.Phase == PlayerGamePhase.CheatWindow &&
+                    _latestView.Own?.DrawnTileId != null;
+                bool isOffTurn = !ownTurn && !string.IsNullOrEmpty(cheat.WindowId);
                 var kind = isOffTurn ? TableIntentKind.SubmitSleeveBloomOffTurn : TableIntentKind.SubmitSleeveBloom;
                 var outcome = _interactionState.BuildIntent(kind, ownerContext);
                 if (outcome.Accepted && outcome.Intent != null)
