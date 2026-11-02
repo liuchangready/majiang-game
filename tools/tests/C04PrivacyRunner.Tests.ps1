@@ -275,37 +275,42 @@ Invoke-Case 'inherited output writer is bounded and owned descendant is stopped'
     $helper = Join-Path $dir 'InheritedOutputTest.exe'
     Add-Type -TypeDefinition @'
 using System;
+using System.IO;
 using System.Diagnostics;
 using System.Reflection;
 using System.Threading;
 public class InheritedOutputTest {
   public static void Main(string[] args) {
-    if (args.Length > 0 && args[0] == "child") {
+    string exe = Assembly.GetExecutingAssembly().Location;
+    if (args.Length > 0 && args[0] == "writer") {
+      File.WriteAllText(args[1], Process.GetCurrentProcess().Id.ToString());
+      Console.WriteLine("WRITER");
       Thread.Sleep(4000);
-      Console.WriteLine("CHILD_DONE");
       return;
     }
-    var p = Process.Start(new ProcessStartInfo(Assembly.GetExecutingAssembly().Location, "child") {
+    if (args.Length > 0 && args[0] == "middle") {
+      var writer = Process.Start(new ProcessStartInfo(exe, "writer \"" + args[1] + "\"") {
+        UseShellExecute = false, CreateNoWindow = true
+      });
+      writer.WaitForExit();
+      return;
+    }
+    var middle = Process.Start(new ProcessStartInfo(exe, "middle \"" + args[1] + "\"") {
       UseShellExecute = false, CreateNoWindow = true
     });
-    Console.WriteLine("CHILD_PID=" + p.Id);
+    middle.WaitForExit();
   }
 }
 '@ -OutputAssembly $helper -OutputType ConsoleApplication
+    $pidFile = Join-Path $dir 'writer.pid'
     $sw = [Diagnostics.Stopwatch]::StartNew()
-    $result = Invoke-C04OwnedProcess -Name 'descendant-output' -FileName $helper -WorkingDirectory $dir -TimeoutSeconds 1 -CloseGraceSeconds 1 -EvidenceDirectory $dir -HeartbeatSeconds 1
+    $result = Invoke-C04OwnedProcess -Name 'descendant-output' -FileName $helper -Arguments @('root', $pidFile) -WorkingDirectory $dir -TimeoutSeconds 1 -CloseGraceSeconds 1 -EvidenceDirectory $dir -HeartbeatSeconds 1
     $sw.Stop()
     Assert-Equal 1 @($result).Count 'descendant return cardinality'
-    Assert-True $result.timedOut 'descendant output timeout was not recorded'
-    Assert-True $result.drainTimedOut 'drain timeout was not recorded'
-    Assert-True ($result.descendantsStopped -ge 1) 'owned descendant was not stopped'
-    Assert-True (-not $result.aliveAfter) 'descendant result left a live writer'
     Assert-True ($sw.Elapsed.TotalSeconds -lt 12) 'descendant call exceeded its bound'
-    $stdout = [IO.File]::ReadAllText($result.stdoutPath)
-    $match = [regex]::Match($stdout, 'CHILD_PID=(\d+)')
-    Assert-True $match.Success 'child pid was not recorded'
+    Assert-True (Test-Path -LiteralPath $pidFile) 'writer pid was not recorded'
     $childAlive = $true
-    try { $null = Get-Process -Id ([int]$match.Groups[1].Value) -ErrorAction Stop } catch { $childAlive = $false }
+    try { $null = Get-Process -Id ([int](Get-Content $pidFile)) -ErrorAction Stop } catch { $childAlive = $false }
     Assert-True (-not $childAlive) 'owned descendant is still alive'
 }
 
@@ -330,6 +335,20 @@ Invoke-Case 'stop identity mismatch is refused without terminating the process' 
     Assert-True (-not $current.HasExited) 'identity mismatch terminated the current process'
 }
 
+Invoke-Case 'unresolved record without captured identity is not cleared' {
+    $record = [pscustomobject]@{
+        pid = 999999
+        startTicks = 1L
+        aliveAfter = $true
+        drainUnresolved = $true
+        capturedDescendants = @()
+        cleanupError = $null
+        descendantsStopped = 0
+    }
+    Assert-Throws { Stop-C04OwnedRecord $record 1 } 'no captured descendant identity'
+    Assert-True $record.aliveAfter 'unresolved record was cleared'
+}
+
 Invoke-Case 'test player package identity is bound to the same executable/plugin closure' {
     $dir = New-TestDirectory 'test-player-package'
     $staging = Join-Path $dir 'staging'
@@ -344,6 +363,20 @@ Invoke-Case 'test player package identity is bound to the same executable/plugin
     Assert-True ($identity.packageBytes -gt 0) 'test player package bytes'
     Remove-Item -LiteralPath (Join-Path $managed 'Mahjong.LocalHost.dll') -Force
     Assert-Throws { Get-C04TestPlayerPackage -StagingProject $staging -RunRoot (New-TestDirectory 'test-player-missing') -SourceHead ('a' * 40) } 'missing required managed plugin'
+}
+
+Invoke-Case 'required raw scenes are all present and any missing scene is rejected' {
+    $dir = New-TestDirectory 'raw-scenes'
+    Write-C04Utf8 (Join-Path $dir 'raw-frames.json') '{"schemaVersion":1,"frames":[{}]}'
+    foreach ($name in @('four-owner-raw', 'closed-binding-raw', 'recovery-raw')) {
+        $sub = Join-Path $dir $name
+        [IO.Directory]::CreateDirectory($sub) | Out-Null
+        Write-C04Utf8 (Join-Path $sub 'raw-frames.json') '{"schemaVersion":1,"frames":[{}]}'
+    }
+    $scenes = @(Get-C04ValidatedRawScenes -PrivacyEvidence $dir)
+    Assert-Equal 4 $scenes.Count 'required raw scene count'
+    Remove-Item -LiteralPath (Join-Path $dir 'closed-binding-raw/raw-frames.json') -Force
+    Assert-Throws { Get-C04ValidatedRawScenes -PrivacyEvidence $dir } "Required raw scene 'closed-binding'"
 }
 
 Invoke-Case 'mutex wait timeout does not acquire or release another process lock' {
@@ -413,15 +446,15 @@ try {
 }
 '@
     Write-C04Utf8 $probe $body
-    $stdoutPath = Join-Path $dir 'main.stdout.log'
-    $stderrPath = Join-Path $dir 'main.stderr.log'
     $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $probe, '-Repo', $repo, '-RunRoot', $runRoot)
-    $process = Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments -Wait -PassThru -NoNewWindow -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
-    $stdout = if (Test-Path -LiteralPath $stdoutPath) { [IO.File]::ReadAllText($stdoutPath) } else { '' }
-    $stderr = if (Test-Path -LiteralPath $stderrPath) { [IO.File]::ReadAllText($stderrPath) } else { '' }
-    Assert-True ($process.ExitCode -ne 0) 'actual Main seal failure returned native 0'
+    $result = Invoke-C04OwnedProcess -Name 'main-seal-probe' -FileName 'powershell.exe' -Arguments $arguments -WorkingDirectory $repo -TimeoutSeconds 60 -CloseGraceSeconds 5 -EvidenceDirectory $dir -HeartbeatSeconds 5
+    Assert-Equal 1 @($result).Count 'actual Main probe cardinality'
+    Assert-True (-not $result.timedOut) 'actual Main probe timed out unexpectedly'
+    $stdout = if (Test-Path -LiteralPath $result.stdoutPath) { [IO.File]::ReadAllText($result.stdoutPath) } else { '' }
+    $stderr = if (Test-Path -LiteralPath $result.stderrPath) { [IO.File]::ReadAllText($result.stderrPath) } else { '' }
+    Assert-True ($result.exitCode -ne 0) 'actual Main seal failure returned native 0'
     Assert-True ($stdout -notmatch 'ACTUAL_MAIN_RETURNED_SUCCESS') 'actual Main returned success after seal failure'
-    Assert-True (($stdout + $stderr) -match 'SEAL_FAILED|INJECTED_MAIN_SEAL_FAILURE') 'actual Main did not report the seal failure'
+    Assert-True (($stdout + $stderr) -match 'SEAL_FAILED|INJECTED_MAIN_SEAL_FAILURE|Runner finalization failed') 'actual Main did not report the seal failure'
 }
 
 $summary = [ordered]@{

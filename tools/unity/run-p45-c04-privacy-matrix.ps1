@@ -493,6 +493,32 @@ function Assert-C04BuildMarker {
   }
 }
 
+function Get-C04ValidatedRawScenes([string]$PrivacyEvidence) {
+  $required = @(
+    [pscustomobject]@{ scene = 'role-switch'; path = (Join-Path $PrivacyEvidence 'raw-frames.json') },
+    [pscustomobject]@{ scene = 'four-owner'; path = (Join-Path $PrivacyEvidence 'four-owner-raw/raw-frames.json') },
+    [pscustomobject]@{ scene = 'closed-binding'; path = (Join-Path $PrivacyEvidence 'closed-binding-raw/raw-frames.json') },
+    [pscustomobject]@{ scene = 'recovery'; path = (Join-Path $PrivacyEvidence 'recovery-raw/raw-frames.json') }
+  )
+  $results = New-Object Collections.Generic.List[object]
+  foreach ($scene in $required) {
+    if (-not (Test-Path -LiteralPath $scene.path -PathType Leaf)) {
+      throw "Required raw scene '$($scene.scene)' did not seal $($scene.path)."
+    }
+    $raw = [IO.File]::ReadAllText($scene.path, [Text.Encoding]::UTF8) | ConvertFrom-Json
+    if ([int]$raw.schemaVersion -ne 1 -or @($raw.frames).Count -lt 1) {
+      throw "Raw scene '$($scene.scene)' schema is empty or unsupported."
+    }
+    $results.Add([pscustomobject]@{
+      scene = $scene.scene
+      path = $scene.path
+      count = @($raw.frames).Count
+      sha256 = Get-C04Sha256File $scene.path
+    })
+  }
+  return $results.ToArray()
+}
+
 function Get-C04TestPlayerPackage {
   param(
     [Parameter(Mandatory = $true)][string]$StagingProject,
@@ -605,7 +631,7 @@ function Get-C04OwnedDescendantProcessIds([int]$ParentId, [long]$ParentStartTick
       try {
         $created = ([datetime]$child.CreationDate).ToUniversalTime().Ticks
       } catch { continue }
-      if ($created -lt $ParentStartTicks) { continue }
+      if ($created -lt ($ParentStartTicks - [TimeSpan]::FromSeconds(2).Ticks)) { continue }
       $childId = [int]$child.ProcessId
       $null = $visited.Add($childId)
       $found.Add($childId)
@@ -624,7 +650,7 @@ function Stop-C04OwnedDescendants([int]$ParentId, [long]$ParentStartTicks, [int]
       $child = Get-Process -Id $childId -ErrorAction SilentlyContinue
       if ($null -eq $child) { $alreadyExited.Add($childId); continue }
       $childTicks = $child.StartTime.ToUniversalTime().Ticks
-      if ($childTicks -lt $ParentStartTicks) { throw "descendant $childId start time predates the owned parent" }
+      if ($childTicks -lt ($ParentStartTicks - [TimeSpan]::FromSeconds(2).Ticks)) { throw "descendant $childId start time predates the owned parent" }
       $result = Stop-C04OwnedProcess -Process $child -OwnedPid $childId -StartTicks $childTicks -GraceSeconds $GraceSeconds
       $stopped.Add([pscustomobject]@{ pid = $childId; normalCloseHonored = $result.normalCloseHonored; forceStopped = $result.forceStopped })
     } catch {
@@ -637,9 +663,40 @@ function Stop-C04OwnedDescendants([int]$ParentId, [long]$ParentStartTicks, [int]
 function Stop-C04OwnedRecord($Record, [int]$GraceSeconds) {
   if ($null -eq $Record) { return }
   if (-not $Record.aliveAfter) { return }
+  if (-not [string]::IsNullOrWhiteSpace([string]$Record.cleanupError)) {
+    throw "Owned writer $($Record.pid) has a cleanup error; refusing to clear its alive state."
+  }
+  if ($Record.drainUnresolved) {
+    $captured = @($Record.capturedDescendants)
+    if ($captured.Count -eq 0) {
+      throw "Owned writer $($Record.pid) has unresolved output but no captured descendant identity."
+    }
+    $stopResult = Stop-C04CapturedDescendants -Snapshots $captured -GraceSeconds $GraceSeconds
+    if (@($stopResult.failures).Count -gt 0) {
+      throw "Owned captured descendants could not be stopped: $((@($stopResult.failures)) -join '; ')"
+    }
+    $Record.descendantsStopped = [int]$Record.descendantsStopped + @($stopResult.stopped).Count
+    foreach ($snapshot in $captured) {
+      $live = Get-Process -Id ([int]$snapshot.pid) -ErrorAction SilentlyContinue
+      if ($null -ne $live -and $live.StartTime.ToUniversalTime().Ticks -eq [long]$snapshot.startTicks) {
+        throw "Captured owned descendant $($snapshot.pid) is still alive; refusing to clear parent state."
+      }
+    }
+    $Record.drainUnresolved = $false
+  }
+  foreach ($snapshot in @($Record.capturedDescendants)) {
+    if ($null -eq $snapshot) { continue }
+    $live = Get-Process -Id ([int]$snapshot.pid) -ErrorAction SilentlyContinue
+    if ($null -ne $live -and $live.StartTime.ToUniversalTime().Ticks -eq [long]$snapshot.startTicks) {
+      throw "Captured owned descendant $($snapshot.pid) is still alive; refusing to clear parent state."
+    }
+  }
   try {
     $process = Get-Process -Id ([int]$Record.pid) -ErrorAction SilentlyContinue
-    if ($null -eq $process) { $Record.aliveAfter = $false; return }
+    if ($null -eq $process) {
+      $Record.aliveAfter = $false
+      return
+    }
     $ticks = $process.StartTime.ToUniversalTime().Ticks
     if ($ticks -ne [long]$Record.startTicks) { throw "PID $($Record.pid) start identity changed" }
     $null = Stop-C04OwnedProcess -Process $process -OwnedPid ([int]$Record.pid) -StartTicks ([long]$Record.startTicks) -GraceSeconds $GraceSeconds
@@ -647,6 +704,150 @@ function Stop-C04OwnedRecord($Record, [int]$GraceSeconds) {
   } catch {
     throw
   }
+}
+
+$script:C04JobSupportInitialized = $false
+function Initialize-C04JobSupport {
+  if ($script:C04JobSupportInitialized) { return }
+  if (-not ('C04OwnedJob' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+public sealed class C04OwnedJob : IDisposable {
+  [StructLayout(LayoutKind.Sequential)] private struct JOBOBJECT_BASIC_LIMIT_INFORMATION {
+    public long PerProcessUserTimeLimit;
+    public long PerJobUserTimeLimit;
+    public uint LimitFlags;
+    public UIntPtr MinimumWorkingSetSize;
+    public UIntPtr MaximumWorkingSetSize;
+    public uint ActiveProcessLimit;
+    public UIntPtr Affinity;
+    public uint PriorityClass;
+    public uint SchedulingClass;
+  }
+  [StructLayout(LayoutKind.Sequential)] private struct IO_COUNTERS {
+    public ulong ReadOperationCount;
+    public ulong WriteOperationCount;
+    public ulong OtherOperationCount;
+    public ulong ReadTransferCount;
+    public ulong WriteTransferCount;
+    public ulong OtherTransferCount;
+  }
+  [StructLayout(LayoutKind.Sequential)] private struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
+    public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation;
+    public IO_COUNTERS IoInfo;
+    public UIntPtr ProcessMemoryLimit;
+    public UIntPtr JobMemoryLimit;
+    public UIntPtr PeakProcessMemoryUsed;
+    public UIntPtr PeakJobMemoryUsed;
+  }
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+  private static extern IntPtr CreateJobObject(IntPtr security, string name);
+  [DllImport("kernel32.dll")]
+  private static extern bool SetInformationJobObject(IntPtr job, int infoClass, IntPtr info, uint length);
+  [DllImport("kernel32.dll")]
+  private static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+  [DllImport("kernel32.dll")]
+  private static extern bool TerminateJobObject(IntPtr job, uint exitCode);
+  [DllImport("kernel32.dll")]
+  private static extern bool CloseHandle(IntPtr handle);
+  private IntPtr _handle;
+  private C04OwnedJob(IntPtr handle) { _handle = handle; }
+  public static C04OwnedJob TryCreate(Process process) {
+    IntPtr handle = CreateJobObject(IntPtr.Zero, null);
+    if (handle == IntPtr.Zero) return null;
+    var info = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
+    info.BasicLimitInformation.LimitFlags = 0x2000; // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    int size = Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION));
+    IntPtr buffer = Marshal.AllocHGlobal(size);
+    try {
+      Marshal.StructureToPtr(info, buffer, false);
+      if (!SetInformationJobObject(handle, 9, buffer, (uint)size)) { CloseHandle(handle); return null; }
+    } finally { Marshal.FreeHGlobal(buffer); }
+    try {
+      if (!AssignProcessToJobObject(handle, process.Handle)) { CloseHandle(handle); return null; }
+    } catch { CloseHandle(handle); return null; }
+    return new C04OwnedJob(handle);
+  }
+  public void Terminate() { if (_handle != IntPtr.Zero) TerminateJobObject(_handle, 1); }
+  public void Dispose() {
+    if (_handle != IntPtr.Zero) { CloseHandle(_handle); _handle = IntPtr.Zero; }
+  }
+}
+'@
+  }
+  $script:C04JobSupportInitialized = $true
+}
+
+function Get-C04ImageDescendants([string]$FileName, [string[]]$Arguments, [long]$ParentStartTicks, [int]$ExcludePid) {
+  $name = [IO.Path]::GetFileName($FileName)
+  $needles = @($Arguments | Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and $_.Length -ge 6 -and ($_.IndexOf('\') -ge 0 -or $_.IndexOf('/') -ge 0) } | Select-Object -First 3)
+  if ([string]::IsNullOrWhiteSpace($name) -or $needles.Count -eq 0) { return @() }
+  if ($name -in @('powershell.exe', 'pwsh.exe', 'cmd.exe')) { return @() }
+  $escapedName = $name.Replace("'", "''")
+  $processes = @(Get-CimInstance Win32_Process -Filter "Name='$escapedName'" -ErrorAction SilentlyContinue)
+  $found = New-Object Collections.Generic.List[object]
+  foreach ($candidate in $processes) {
+    if ([int]$candidate.ProcessId -eq $ExcludePid -or [int]$candidate.ProcessId -eq $PID) { continue }
+    try { $created = ([datetime]$candidate.CreationDate).ToUniversalTime().Ticks } catch { continue }
+    if ($created -lt ($ParentStartTicks - [TimeSpan]::FromSeconds(2).Ticks)) { continue }
+    $commandLine = [string]$candidate.CommandLine
+    $owned = $false
+    foreach ($needle in $needles) {
+      if ($commandLine.IndexOf($needle, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $owned = $true; break }
+    }
+    if (-not $owned) { continue }
+    $found.Add([pscustomobject]@{ pid = [int]$candidate.ProcessId; startTicks = $created })
+  }
+  return $found.ToArray()
+}
+
+function Get-C04CapturedDescendants([int]$ParentId, [long]$ParentStartTicks, [string]$FileName, [string[]]$Arguments, [int]$Rounds = 16, [int]$DelayMs = 25) {
+  $snapshots = New-Object Collections.Generic.List[object]
+  $seen = New-Object 'System.Collections.Generic.HashSet[int]'
+  for ($round = 0; $round -lt $Rounds; $round++) {
+    $candidates = New-Object Collections.Generic.List[int]
+    foreach ($childId in (Get-C04OwnedDescendantProcessIds -ParentId $ParentId -ParentStartTicks $ParentStartTicks)) {
+      $candidates.Add([int]$childId)
+    }
+    foreach ($imageChild in (Get-C04ImageDescendants -FileName $FileName -Arguments $Arguments -ParentStartTicks $ParentStartTicks -ExcludePid $ParentId)) {
+      $candidates.Add([int]$imageChild.pid)
+    }
+    foreach ($childId in $candidates) {
+      if (-not $seen.Add($childId)) { continue }
+      $child = Get-Process -Id $childId -ErrorAction SilentlyContinue
+      if ($null -eq $child) { continue }
+      try {
+        $ticks = $child.StartTime.ToUniversalTime().Ticks
+        if ($ticks -ge ($ParentStartTicks - [TimeSpan]::FromSeconds(2).Ticks)) {
+          $snapshots.Add([pscustomobject]@{ pid = $childId; startTicks = $ticks })
+        }
+      } catch {
+      }
+    }
+    Start-Sleep -Milliseconds $DelayMs
+  }
+  return $snapshots.ToArray()
+}
+
+function Stop-C04CapturedDescendants($Snapshots, [int]$GraceSeconds) {
+  $stopped = New-Object Collections.Generic.List[object]
+  $failures = New-Object Collections.Generic.List[string]
+  foreach ($snapshot in @($Snapshots)) {
+    if ($null -eq $snapshot -or [int]$snapshot.pid -eq $PID) { continue }
+    try {
+      $child = Get-Process -Id ([int]$snapshot.pid) -ErrorAction SilentlyContinue
+      if ($null -eq $child) { continue }
+      $ticks = $child.StartTime.ToUniversalTime().Ticks
+      if ($ticks -ne [long]$snapshot.startTicks) { throw "captured descendant $($snapshot.pid) start identity changed" }
+      $result = Stop-C04OwnedProcess -Process $child -OwnedPid ([int]$snapshot.pid) -StartTicks ([long]$snapshot.startTicks) -GraceSeconds $GraceSeconds
+      $stopped.Add([pscustomobject]@{ pid = [int]$snapshot.pid; normalCloseHonored = $result.normalCloseHonored; forceStopped = $result.forceStopped })
+    } catch {
+      $failures.Add("captured descendant $($snapshot.pid): $($_.Exception.Message)")
+    }
+  }
+  return [pscustomobject]@{ stopped = $stopped.ToArray(); failures = $failures.ToArray() }
 }
 
 function Invoke-C04OwnedProcess {
@@ -687,6 +888,14 @@ function Invoke-C04OwnedProcess {
   if (-not $process.Start()) { throw "$Name did not start." }
   $pidValue = $process.Id
   $startTicks = $process.StartTime.ToUniversalTime().Ticks
+  $job = $null
+  try {
+    Initialize-C04JobSupport
+    $job = [C04OwnedJob]::TryCreate($process)
+  } catch {
+    $job = $null
+  }
+  $capturedDescendants = @(Get-C04CapturedDescendants -ParentId $pidValue -ParentStartTicks $startTicks -FileName $FileName -Arguments $Arguments)
   $state = [pscustomobject]@{
     name = $Name
     pid = $pidValue
@@ -702,12 +911,15 @@ function Invoke-C04OwnedProcess {
     elapsedSeconds = $null
     descendantsStopped = 0
     cleanupFailures = @()
+    jobAssigned = ($null -ne $job)
+    capturedDescendants = $capturedDescendants
     stdoutPath = $stdoutPath
     stderrPath = $stderrPath
     cleanupError = $null
   }
   if ($null -ne $OwnedRegistry) { $OwnedRegistry.Add($state) }
 
+  $result = $null
   $stdoutStream = $null
   $stderrStream = $null
   $stdoutTask = $null
@@ -764,18 +976,33 @@ function Invoke-C04OwnedProcess {
     } catch {
       $drainTimedOut = $true
       $timedOut = $true
+      if ($null -ne $job) {
+        try { $job.Terminate() } catch { $cleanupFailures.Add('owned job termination failed: ' + $_.Exception.Message) }
+      }
+      if ($null -eq $OwnedRegistry) {
+        $capturedStop = Stop-C04CapturedDescendants -Snapshots $capturedDescendants -GraceSeconds 1
+        if (@($capturedStop.failures).Count -gt 0) {
+          $drainUnresolved = $true
+          foreach ($failure in $capturedStop.failures) { $cleanupFailures.Add($failure) }
+        }
+      }
       $descendantStop = Stop-C04OwnedDescendants -ParentId $pidValue -ParentStartTicks $startTicks -GraceSeconds 1
       if (@($descendantStop.failures).Count -gt 0) {
         $drainUnresolved = $true
         foreach ($failure in $descendantStop.failures) { $cleanupFailures.Add($failure) }
       }
-      try {
-        Wait-C04TaskBounded $stdoutTask 5000 ($Name + ' stdout drain after descendant stop')
-        Wait-C04TaskBounded $stderrTask 5000 ($Name + ' stderr drain after descendant stop')
-        $drainTimedOut = $true
-      } catch {
+      if ($null -ne $OwnedRegistry -and @($capturedDescendants).Count -gt 0) {
         $drainUnresolved = $true
-        $cleanupFailures.Add('output drain remained blocked: ' + $_.Exception.Message)
+        $cleanupFailures.Add('output drain blocked by captured descendant; caller-owned cleanup required')
+      } else {
+        try {
+          Wait-C04TaskBounded $stdoutTask 5000 ($Name + ' stdout drain after descendant stop')
+          Wait-C04TaskBounded $stderrTask 5000 ($Name + ' stderr drain after descendant stop')
+          $drainTimedOut = $true
+        } catch {
+          $drainUnresolved = $true
+          $cleanupFailures.Add('output drain remained blocked: ' + $_.Exception.Message)
+        }
       }
     }
 
@@ -796,7 +1023,7 @@ function Invoke-C04OwnedProcess {
     $state.elapsedSeconds = [Math]::Round($sw.Elapsed.TotalSeconds, 3)
     $state.descendantsStopped = $(if ($null -eq $descendantStop) { 0 } else { @($descendantStop.stopped).Count })
     $state.cleanupFailures = @($cleanupFailures)
-    return [pscustomobject]@{
+    $result = [pscustomobject]@{
       name = $Name
       pid = $pidValue
       startTicks = $startTicks
@@ -818,6 +1045,7 @@ function Invoke-C04OwnedProcess {
       stderrPath = $stderrPath
       exitPath = $exitPath
     }
+    return $result
   }
   finally {
     $cleanupError = $null
@@ -828,11 +1056,34 @@ function Invoke-C04OwnedProcess {
         $cleanupError = $_.Exception.Message
       }
     }
+    if ($null -eq $OwnedRegistry) {
+      $finalCapturedStop = Stop-C04CapturedDescendants -Snapshots $capturedDescendants -GraceSeconds 1
+      if (@($finalCapturedStop.failures).Count -gt 0) {
+        $drainUnresolved = $true
+        foreach ($failure in $finalCapturedStop.failures) { $cleanupFailures.Add($failure) }
+      }
+    }
     if ($null -ne $stdoutTask) { try { $null = $stdoutTask.Wait(5000) } catch { } }
     if ($null -ne $stderrTask) { try { $null = $stderrTask.Wait(5000) } catch { } }
+    if ($null -ne $job) {
+      try {
+        $job.Dispose()
+      } catch {
+        $cleanupFailures.Add('owned job dispose failed: ' + $_.Exception.Message)
+      }
+      $job = $null
+    }
     if ($null -ne $stdoutStream) { $stdoutStream.Dispose() }
     if ($null -ne $stderrStream) { $stderrStream.Dispose() }
     $state.aliveAfter = (-not $process.HasExited) -or $drainUnresolved -or ($null -ne $cleanupError)
+    $state.drainUnresolved = $drainUnresolved
+    $state.cleanupFailures = @($cleanupFailures)
+    if ($null -ne $result) {
+      $result.aliveAfter = $state.aliveAfter
+      $result.drainUnresolved = $drainUnresolved
+      $result.descendantsStopped = $state.descendantsStopped
+      $result.cleanupFailures = @($cleanupFailures)
+    }
     if ($null -ne $cleanupError) {
       $state.cleanupError = $cleanupError
       $cleanupFailures.Add($cleanupError)
@@ -884,8 +1135,11 @@ function Acquire-C04Mutex {
 
 function Release-C04Mutex($Handle) {
   if ($null -eq $Handle -or $null -eq $Handle.mutex) { return }
-  try { $Handle.mutex.ReleaseMutex() } catch { }
-  $Handle.mutex.Dispose()
+  try {
+    $Handle.mutex.ReleaseMutex()
+  } finally {
+    $Handle.mutex.Dispose()
+  }
 }
 
 function Write-C04SealedEvidence {
@@ -1123,16 +1377,17 @@ exit `$LASTEXITCODE
       if ($WindowsPlayerTests -and -not (Test-Path -LiteralPath (Join-Path $privacyEvidence 'raw-frames.json'))) {
         throw 'Windows test Player did not seal real raw channel frames under its isolated evidence root.'
       }
-      $rawFrames = Join-Path $privacyEvidence 'raw-frames.json'
-      if (-not (Test-Path -LiteralPath $rawFrames -PathType Leaf)) { throw 'PlayMode did not seal raw frames.' }
-      $raw = [IO.File]::ReadAllText($rawFrames, [Text.Encoding]::UTF8) | ConvertFrom-Json
-      if ([int]$raw.schemaVersion -ne 1 -or @($raw.frames).Count -lt 1) { throw 'Raw capture schema is empty or unsupported.' }
-      $rawSha = Get-C04Sha256File $rawFrames
-      $summary.rawFrames = [ordered]@{ path = $rawFrames; count = @($raw.frames).Count; sha256 = $rawSha }
-      $matrixTests = Join-Path $repo 'tools/tests/C04PrivacyMatrix.Tests.ps1'
-      $verifierEvidence = Join-Path $script:RunRoot 'verifier-tests'
-      $matrixResult = Start-C04Owned 'privacy-matrix-tests' 'powershell.exe' @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $matrixTests, '-DotnetPath', $DotnetPath, '-VerifierDll', $verifierDll, '-RawFramesPath', $rawFrames, '-RunRoot', $verifierEvidence) $repo 240
-      Assert-C04NativeSuccess $matrixResult 'privacy-matrix-tests'
+      $requiredRawScenes = @(Get-C04ValidatedRawScenes -PrivacyEvidence $privacyEvidence)
+      $rawResults = New-Object Collections.Generic.List[object]
+      foreach ($scene in $requiredRawScenes) {
+        $rawResults.Add($scene)
+        Log "RAW_SCENE scene=$($scene.scene) frames=$($scene.count) sha256=$($scene.sha256)"
+        $matrixTests = Join-Path $repo 'tools/tests/C04PrivacyMatrix.Tests.ps1'
+        $verifierEvidence = Join-Path $script:RunRoot ('verifier-tests/' + $scene.scene)
+        $matrixResult = Start-C04Owned ('privacy-matrix-tests-' + $scene.scene) 'powershell.exe' @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $matrixTests, '-DotnetPath', $DotnetPath, '-VerifierDll', $verifierDll, '-RawFramesPath', $scene.path, '-RunRoot', $verifierEvidence) $repo 240
+        Assert-C04NativeSuccess $matrixResult ('privacy-matrix-tests-' + $scene.scene)
+      }
+      $summary.rawFrames = @($rawResults)
     }
 
     $summary.status = 'PASS'
@@ -1169,6 +1424,13 @@ exit `$LASTEXITCODE
     $allStopped = $true
     foreach ($process in $script:OwnedProcesses) {
       if ($process.aliveAfter) { $allStopped = $false }
+    }
+    $skipSeal = -not $allStopped
+    if ($skipSeal) {
+      $summary.status = 'UNKNOWN'
+      $summary.unknown = $true
+      $finalizationFailures.Add('residual owned writer; normal seal withheld')
+      Log 'RESIDUAL_OWNED_WRITER_SEAL_WITHHELD'
     }
     if ($script:MutexHandle) {
       if ($allStopped) {
@@ -1221,38 +1483,46 @@ exit `$LASTEXITCODE
     Log 'FINALLY_ASSIGN_SUMMARY'
     $summary.finishedUtc = [DateTimeOffset]::UtcNow.ToString('o')
     if ($finalizationFailures.Count -gt 0) {
+      try {
+        Write-C04Utf8 (Join-Path $script:RunRoot 'finalization-failure.txt') (($finalizationFailures -join "`n") + "`n")
+      } catch {
+        $finalizationFailures.Add('finalization failure record write failed: ' + $_.Exception.Message)
+      }
       $summary.status = 'FAIL'
       $summary.error = ($finalizationFailures -join '; ')
       $summary.finalizationFailures = @($finalizationFailures)
+    }
+    if ($skipSeal) {
+      $summary.status = 'UNKNOWN'
+      $summary.unknown = $true
     }
     Log 'FINALLY_ASSIGN_PROCESSES'
     $summary['processes'] = $script:OwnedProcesses.ToArray()
-    Log 'FINALLY_SEAL'
-    try {
-      $sealed = Write-C04SealedEvidence -RunRoot $script:RunRoot -Summary $summary
-      Write-Host ("SEALED manifest=" + $sealed.manifestSha256 + " files=" + $sealed.manifest.count)
-    } catch {
-      $finalizationFailures.Add('evidence seal failed: ' + $_.Exception.ToString())
-      $summary.status = 'FAIL'
-      $summary.error = ($finalizationFailures -join '; ')
-      $summary.finalizationFailures = @($finalizationFailures)
+    if ($skipSeal) {
+      Write-C04Json (Join-Path $script:RunRoot 'summary.json') $summary
+      Write-Host 'SEAL_WITHHELD_RESIDUAL_WRITER'
+    } else {
+      Log 'FINALLY_SEAL'
       try {
-        $summaryPath = Join-Path $script:RunRoot 'summary.json'
-        if (Test-Path -LiteralPath $summaryPath) { Write-C04Json $summaryPath $summary }
-        foreach ($sealFile in @('manifest.sha256', 'seal.json')) {
-          $candidate = Join-Path $script:RunRoot $sealFile
-          if (Test-Path -LiteralPath $candidate) { Remove-Item -LiteralPath $candidate -Force }
-        }
-      } catch { }
-      Write-Host ("SEAL_FAILED " + $_.Exception.ToString())
-    }
-    if ($finalizationFailures.Count -gt 0) {
-      $summary.status = 'FAIL'
-      $summary.error = ($finalizationFailures -join '; ')
-      $summary.finalizationFailures = @($finalizationFailures)
-      try {
-        Write-C04Utf8 (Join-Path $script:RunRoot 'finalization-failure.txt') (($finalizationFailures -join "`n") + "`n")
-      } catch { }
+        $sealed = Write-C04SealedEvidence -RunRoot $script:RunRoot -Summary $summary
+        Write-Host ("SEALED manifest=" + $sealed.manifestSha256 + " files=" + $sealed.manifest.count)
+      } catch {
+        $sealFailure = 'evidence seal failed: ' + $_.Exception.ToString()
+        $finalizationFailures.Add($sealFailure)
+        $summary.status = 'FAIL'
+        $summary.error = ($finalizationFailures -join '; ')
+        $summary.finalizationFailures = @($finalizationFailures)
+        try {
+          $summaryPath = Join-Path $script:RunRoot 'summary.json'
+          if (Test-Path -LiteralPath $summaryPath) { Write-C04Json $summaryPath $summary }
+          foreach ($sealFile in @('manifest.sha256', 'seal.json')) {
+            $candidate = Join-Path $script:RunRoot $sealFile
+            if (Test-Path -LiteralPath $candidate) { Remove-Item -LiteralPath $candidate -Force }
+          }
+          Write-C04Utf8 (Join-Path $script:RunRoot 'seal-failure.txt') ($sealFailure + "`n")
+        } catch { }
+        Write-Host ("SEAL_FAILED " + $_.Exception.ToString())
+      }
     }
   }
   } while ($false)

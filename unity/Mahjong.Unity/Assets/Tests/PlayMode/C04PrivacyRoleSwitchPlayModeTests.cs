@@ -238,6 +238,7 @@ namespace Mahjong.Unity.Tests.PlayMode
             LocalTableChannelFactory.DisableC04PrivacyRoomModeForTest();
             string root = Path.Combine(Application.temporaryCachePath, "c04-recovery-" + Guid.NewGuid().ToString("N"));
             string roomId = "c04-recovery-" + Guid.NewGuid().ToString("N");
+            C04PrivacyProbe.Begin(Path.Combine(EvidenceRoot(), "recovery-raw"));
             var paths = new UnityAppPaths(root);
             paths.EnsureDirectoriesCreated();
             var config = new AppConfig { pumpBarrierTimeoutMs = 5000, closeTimeoutMs = 5000, cancelObservationMs = 50 };
@@ -352,9 +353,14 @@ namespace Mahjong.Unity.Tests.PlayMode
                     "\",\"eventSeq\":\"" + afterSubmitEventSeq +
                     "\",\"commandFrames\":0,\"receiptQueryFrames\":" + recoveredCapture.ReceiptQueryFrames +
                     ",\"fromReceiptLookup\":true,\"zeroDuplicateStateDelta\":true}", new UTF8Encoding(false));
+                Assert.Greater(C04PrivacyProbe.CapturedFrameCount, 0);
+                string rawSha = C04PrivacyProbe.Seal();
+                Assert.AreEqual(64, rawSha.Length);
+                Debug.Log("C04_PRIVACY_RAW scene=recovery frames=" + C04PrivacyProbe.CapturedFrameCount + " sha256=" + rawSha);
             }
             finally
             {
+                C04PrivacyProbe.ResetForTest();
                 CloseBlocking(recoveredSession);
                 CloseBlocking(recoveredChannel);
                 CloseBlocking(firstSession);
@@ -371,16 +377,25 @@ namespace Mahjong.Unity.Tests.PlayMode
         {
             string root = Path.Combine(Application.temporaryCachePath, "c04-closed-path-" + Guid.NewGuid().ToString("N"));
             string roomId = "c04-closed-path-" + Guid.NewGuid().ToString("N");
-            Task<bool> task = Task.Run(() => RunClosedBindingRawPathAsync(root, roomId));
-            yield return WaitTask(() => task.IsCompleted, 90f, "closed player/spectator/player raw path");
-            Assert.IsFalse(task.IsFaulted, task.Exception?.ToString());
-            Assert.IsTrue(task.Result);
-            string directory = Path.Combine(EvidenceRoot(), "closed-binding-raw");
-            Directory.CreateDirectory(directory);
-            File.WriteAllText(Path.Combine(directory, "closed-binding-raw.json"),
-                "{\"schemaVersion\":1,\"path\":\"player->spectator->player\",\"oldRawAccepted\":false}",
-                new UTF8Encoding(false));
-            try { if (Directory.Exists(root)) Directory.Delete(root, true); } catch { }
+            try
+            {
+                Task<bool> task = Task.Run(() => RunClosedBindingRawPathAsync(root, roomId));
+                yield return WaitTask(() => task.IsCompleted, 90f, "closed player/spectator/player raw path");
+                Assert.IsFalse(task.IsFaulted, task.Exception?.ToString());
+                Assert.IsTrue(task.Result);
+                Assert.Greater(C04PrivacyProbe.CapturedFrameCount, 0);
+                string rawSha = C04PrivacyProbe.Seal();
+                Assert.AreEqual(64, rawSha.Length);
+                string rawDirectory = Path.Combine(EvidenceRoot(), "closed-binding-raw");
+                Directory.CreateDirectory(rawDirectory);
+                File.Copy(Path.Combine(root, "closed-binding-raw", "raw-frames.json"), Path.Combine(rawDirectory, "raw-frames.json"), true);
+                Debug.Log("C04_PRIVACY_RAW scene=closed-binding frames=" + C04PrivacyProbe.CapturedFrameCount + " sha256=" + rawSha);
+            }
+            finally
+            {
+                C04PrivacyProbe.ResetForTest();
+                try { if (Directory.Exists(root)) Directory.Delete(root, true); } catch { }
+            }
         }
 
         [UnityTest]
@@ -388,6 +403,8 @@ namespace Mahjong.Unity.Tests.PlayMode
         {
             string root = Path.Combine(Application.temporaryCachePath, "c04-owner-" + Guid.NewGuid().ToString("N"));
             string roomId = "c04-owner-" + Guid.NewGuid().ToString("N");
+            try
+            {
             Task<FourOwnerEvidence> task = Task.Run(() => RunFourOwnerPrivacyScenarioAsync(root, roomId));
             yield return WaitTask(() => task.IsCompleted, 180f, "four-owner privacy scenario");
             Assert.IsFalse(task.IsFaulted, task.Exception?.ToString());
@@ -398,8 +415,15 @@ namespace Mahjong.Unity.Tests.PlayMode
             Assert.IsTrue(evidence.TargetLedgerEntries > 0);
             Assert.IsTrue(evidence.TargetCheatPoints < 120);
             Assert.IsFalse(string.IsNullOrEmpty(evidence.TargetOfferId));
-            Assert.IsTrue(evidence.SpectatorHasPublic);
-            Assert.IsFalse(evidence.SpectatorHasPlayer);
+                Assert.IsTrue(evidence.SpectatorHasPublic);
+                Assert.IsFalse(evidence.SpectatorHasPlayer);
+                Assert.Greater(C04PrivacyProbe.CapturedFrameCount, 0);
+                string rawSha = C04PrivacyProbe.Seal();
+                Assert.AreEqual(64, rawSha.Length);
+                Debug.Log("C04_PRIVACY_RAW scene=four-owner frames=" + C04PrivacyProbe.CapturedFrameCount + " sha256=" + rawSha);
+                string rawDirectory = Path.Combine(EvidenceRoot(), "four-owner-raw");
+                Directory.CreateDirectory(rawDirectory);
+                File.Copy(Path.Combine(root, "four-owner-raw", "raw-frames.json"), Path.Combine(rawDirectory, "raw-frames.json"), true);
             string directory = Path.Combine(EvidenceRoot(), "four-owner");
             Directory.CreateDirectory(directory);
             File.WriteAllText(Path.Combine(directory, "four-owner.json"),
@@ -413,7 +437,12 @@ namespace Mahjong.Unity.Tests.PlayMode
                 "\",\"spectatorHasPublic\":" + evidence.SpectatorHasPublic.ToString().ToLowerInvariant() +
                 ",\"spectatorHasPlayer\":" + evidence.SpectatorHasPlayer.ToString().ToLowerInvariant() + "}",
                 new UTF8Encoding(false));
-            try { if (Directory.Exists(root)) Directory.Delete(root, true); } catch { }
+            }
+            finally
+            {
+                C04PrivacyProbe.ResetForTest();
+                try { if (Directory.Exists(root)) Directory.Delete(root, true); } catch { }
+            }
         }
 
         [UnityTest]
@@ -427,17 +456,23 @@ namespace Mahjong.Unity.Tests.PlayMode
             ReleaseEvidence evidence = task.Result;
             Assert.IsTrue(evidence.AdvancedWithoutPlayerBinding, "Released AI did not advance after the player binding closed.");
             Assert.Greater(evidence.AfterVersion, evidence.ReleaseVersion);
+            Assert.IsTrue(evidence.Claimed, "ClaimControl did not restore human control.");
+            Assert.IsTrue(evidence.StaleDecisionRejected, "A stale control epoch decision was not rejected.");
             string directory = Path.Combine(EvidenceRoot(), "released-control");
             Directory.CreateDirectory(directory);
             File.WriteAllText(Path.Combine(directory, "released-control.json"),
                 "{\"schemaVersion\":1,\"releaseVersion\":\"" + evidence.ReleaseVersion +
                 "\",\"afterVersion\":\"" + evidence.AfterVersion +
-                "\",\"advancedWithoutPlayerBinding\":true}", new UTF8Encoding(false));
+                "\",\"claimEpoch\":\"" + evidence.ClaimEpoch +
+                "\",\"advancedWithoutPlayerBinding\":" + evidence.AdvancedWithoutPlayerBinding.ToString().ToLowerInvariant() +
+                ",\"claimed\":" + evidence.Claimed.ToString().ToLowerInvariant() +
+                ",\"staleDecisionRejected\":" + evidence.StaleDecisionRejected.ToString().ToLowerInvariant() + "}", new UTF8Encoding(false));
             try { if (Directory.Exists(root)) Directory.Delete(root, true); } catch { }
         }
 
         private static async Task<bool> RunClosedBindingRawPathAsync(string root, string roomId)
         {
+            C04PrivacyProbe.Begin(Path.Combine(root, "closed-binding-raw"));
             LocalTableChannelFactory.DisableC04PrivacyRoomModeForTest();
             var paths = new UnityAppPaths(root);
             paths.EnsureDirectoriesCreated();
@@ -522,6 +557,7 @@ namespace Mahjong.Unity.Tests.PlayMode
 
         private static async Task<FourOwnerEvidence> RunFourOwnerPrivacyScenarioAsync(string root, string roomId)
         {
+            C04PrivacyProbe.Begin(Path.Combine(root, "four-owner-raw"));
             LocalTableChannelFactory.EnableC04PrivacyRoomMode();
             var paths = new UnityAppPaths(root);
             paths.EnsureDirectoriesCreated();
@@ -633,8 +669,11 @@ namespace Mahjong.Unity.Tests.PlayMode
             TableSession? session = null;
             ITableChannel? spectatorChannel = null;
             TableSession? spectator = null;
+            ITableChannel? claimedChannel = null;
+            TableSession? claimed = null;
             Task? playerPump = null;
             Task? spectatorPump = null;
+            Task? claimedPump = null;
             try
             {
                 channel = await factory.CreateRoomViewerAsync(LocalRoomViewerRole.Player, 0, CancellationToken.None).ConfigureAwait(false);
@@ -679,11 +718,58 @@ namespace Mahjong.Unity.Tests.PlayMode
                     if (after > releaseVersion) break;
                     await Task.Delay(25, pumpCts.Token).ConfigureAwait(false);
                 }
+
+                claimedChannel = await factory.CreateRoomViewerAsync(LocalRoomViewerRole.Player, 0, CancellationToken.None).ConfigureAwait(false);
+                var claimedTicket = claimedChannel as ILocalTableTicketSource
+                    ?? throw new InvalidOperationException("The claimed player channel did not expose its ticket.");
+                claimed = new TableSession(claimedChannel, new InMemoryOutboxStore());
+                await claimed.OpenAsync(new TableSessionOpenRequest(claimedTicket.SessionTicket, LocalTableChannelFactory.ClientBuild), pumpCts.Token).ConfigureAwait(false);
+                claimedPump = PumpLoopAsync(claimed, pumpCts.Token);
+                await WaitReadyAsync(claimed, pumpCts.Token).ConfigureAwait(false);
+                PlayerSnapshot claimBase = claimed.PlayerSnapshot
+                    ?? throw new InvalidOperationException("No claimed baseline.");
+                ulong claimEpoch = claimBase.PrivateView.Control?.ControlEpoch ?? 0UL;
+                var claimCommand = new ProtocolCommand(
+                    CommandKind.ClaimControl,
+                    CommandPayloadFactory.ClaimControl(claimBase.RoundId, claimEpoch),
+                    new RequestId("unity-claim-" + Guid.NewGuid().ToString("N")),
+                    claimed.Binding!.Scope.ScopeId,
+                    new StateVersion(claimBase.StateVersion),
+                    new RoundId(claimBase.RoundId),
+                    decisionId: null,
+                    controlEpoch: new ControlEpoch(claimEpoch));
+                TableReceiptResolvedEventArgs claimReceipt = await SubmitExpectReceiptAsync(claimed, claimCommand, pumpCts.Token).ConfigureAwait(false);
+                if (claimReceipt.Resolution.ReceiptStatus != Mahjong.Contracts.ReceiptStatus.Applied &&
+                    claimReceipt.Resolution.ReceiptStatus != Mahjong.Contracts.ReceiptStatus.Recorded)
+                    throw new InvalidOperationException("ClaimControl was rejected: " + claimReceipt.Resolution.ReasonCode);
+                PlayerSnapshot claimedSnapshot = claimed.PlayerSnapshot
+                    ?? throw new InvalidOperationException("No snapshot after ClaimControl.");
+                ulong claimedEpoch = claimedSnapshot.PrivateView.Control?.ControlEpoch ?? 0UL;
+                if (claimedEpoch <= claimEpoch) throw new InvalidOperationException("ClaimControl did not advance the control epoch.");
+                if (claimedSnapshot.PrivateView.Control?.ControlledByComputer == true)
+                    throw new InvalidOperationException("ClaimControl did not restore human control.");
+
+                var staleCommand = new ProtocolCommand(
+                    CommandKind.SubmitAction,
+                    CommandPayloadFactory.SubmitAction(claimedSnapshot.RoundId, "unity-stale", 0UL, ProtocolActionType.Pass, tileIds: null),
+                    new RequestId("unity-stale-" + Guid.NewGuid().ToString("N")),
+                    claimed.Binding.Scope.ScopeId,
+                    new StateVersion(claimedSnapshot.StateVersion),
+                    new RoundId(claimedSnapshot.RoundId),
+                    decisionId: null,
+                    controlEpoch: new ControlEpoch(0));
+                TableReceiptResolvedEventArgs staleReceipt = await SubmitExpectReceiptAsync(claimed, staleCommand, pumpCts.Token).ConfigureAwait(false);
+                if (staleReceipt.Resolution.ReceiptStatus != Mahjong.Contracts.ReceiptStatus.Rejected)
+                    throw new InvalidOperationException("A stale control epoch decision was not rejected.");
+
                 return new ReleaseEvidence
                 {
                     ReleaseVersion = releaseVersion,
                     AfterVersion = after,
-                    AdvancedWithoutPlayerBinding = after > releaseVersion
+                    AdvancedWithoutPlayerBinding = after > releaseVersion,
+                    Claimed = true,
+                    ClaimEpoch = claimedEpoch,
+                    StaleDecisionRejected = true
                 };
             }
             finally
@@ -691,10 +777,13 @@ namespace Mahjong.Unity.Tests.PlayMode
                 pumpCts.Cancel();
                 if (playerPump != null) { try { await playerPump.ConfigureAwait(false); } catch { } }
                 if (spectatorPump != null) { try { await spectatorPump.ConfigureAwait(false); } catch { } }
+                if (claimedPump != null) { try { await claimedPump.ConfigureAwait(false); } catch { } }
                 if (session != null) try { await session.CloseAsync("C04_TEST_DONE", CancellationToken.None).ConfigureAwait(false); } catch { }
                 if (channel != null) try { await channel.CloseAsync(new TableChannelCloseReason("C04_TEST_DONE", true), CancellationToken.None).ConfigureAwait(false); } catch { }
                 if (spectator != null) try { await spectator.CloseAsync("C04_TEST_DONE", CancellationToken.None).ConfigureAwait(false); } catch { }
                 if (spectatorChannel != null) try { await spectatorChannel.CloseAsync(new TableChannelCloseReason("C04_TEST_DONE", true), CancellationToken.None).ConfigureAwait(false); } catch { }
+                if (claimed != null) try { await claimed.CloseAsync("C04_TEST_DONE", CancellationToken.None).ConfigureAwait(false); } catch { }
+                if (claimedChannel != null) try { await claimedChannel.CloseAsync(new TableChannelCloseReason("C04_TEST_DONE", true), CancellationToken.None).ConfigureAwait(false); } catch { }
                 try { await factory.CloseRoomAsync(CancellationToken.None).ConfigureAwait(false); } catch { }
             }
         }
@@ -813,6 +902,32 @@ namespace Mahjong.Unity.Tests.PlayMode
                 controlEpoch: new ControlEpoch(before.PrivateView.Control?.ControlEpoch ?? 0UL));
             CommandSubmission submission = await session.SubmitAsync(command, cancellationToken).ConfigureAwait(false);
             if (!submission.Sent) throw new InvalidOperationException("A room action was not sent.");
+        }
+
+        private static async Task<TableReceiptResolvedEventArgs> SubmitExpectReceiptAsync(
+            TableSession session,
+            ProtocolCommand command,
+            CancellationToken cancellationToken)
+        {
+            var resolved = new TaskCompletionSource<TableReceiptResolvedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
+            EventHandler<TableReceiptResolvedEventArgs> handler = (_, args) =>
+            {
+                if (args.Command.Key.RequestId.Value == command.RequestId.Value) resolved.TrySetResult(args);
+            };
+            session.ReceiptResolved += handler;
+            try
+            {
+                CommandSubmission submission = await session.SubmitAsync(command, cancellationToken).ConfigureAwait(false);
+                if (!submission.Sent) throw new InvalidOperationException("The command was not sent.");
+                for (int i = 0; i < 600 && !resolved.Task.IsCompleted; i++)
+                    await Task.Delay(20, cancellationToken).ConfigureAwait(false);
+                if (!resolved.Task.IsCompleted) throw new TimeoutException("The command receipt did not resolve.");
+                return await resolved.Task.ConfigureAwait(false);
+            }
+            finally
+            {
+                session.ReceiptResolved -= handler;
+            }
         }
 
         private static async Task<PlayerSnapshot> SubmitAndWaitAsync(
@@ -944,6 +1059,9 @@ namespace Mahjong.Unity.Tests.PlayMode
             public ulong ReleaseVersion;
             public ulong AfterVersion;
             public bool AdvancedWithoutPlayerBinding;
+            public bool Claimed;
+            public ulong ClaimEpoch;
+            public bool StaleDecisionRejected;
         }
 
         private sealed class TargetPrivacyFacts
