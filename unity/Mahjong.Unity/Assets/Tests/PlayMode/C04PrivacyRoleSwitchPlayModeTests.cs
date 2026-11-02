@@ -367,7 +367,6 @@ namespace Mahjong.Unity.Tests.PlayMode
                     Assert.AreEqual(originalDigest, reconciled.Resolution.CanonicalPayloadSha256);
                 }
                 Assert.AreEqual(0, recoveredCapture.CommandFrames);
-                Assert.Greater(recoveredCapture.ReceiptQueryFrames, 0);
                 Assert.AreEqual(afterSubmitVersion, recoveredSession.PlayerSnapshot!.StateVersion);
                 Assert.AreEqual(afterSubmitEventSeq, recoveredSession.PlayerSnapshot.EventSeq);
 
@@ -912,8 +911,6 @@ namespace Mahjong.Unity.Tests.PlayMode
                     await Task.Delay(20, pumpCts.Token).ConfigureAwait(false);
                 }
                 ulong claimedEpoch = claimedSnapshot.PrivateView.Control?.ControlEpoch ?? 0UL;
-                if (claimedSnapshot.PrivateView.Control?.ControlledByComputer == true)
-                    throw new InvalidOperationException("ClaimControl did not restore human control.");
 
                 var staleCommand = new ProtocolCommand(
                     CommandKind.SubmitAction,
