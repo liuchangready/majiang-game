@@ -87,7 +87,7 @@ function Get-C04FileManifest {
   foreach ($name in $ExcludeFileNames) { $excludedFiles[$name.ToLowerInvariant()] = $true }
 
   $rows = New-Object Collections.Generic.List[object]
-  $all = Get-ChildItem -LiteralPath $rootFull -Recurse -File -Force
+  $all = Get-ChildItem -LiteralPath $rootFull -Recurse -File -Force -ErrorAction SilentlyContinue
   foreach ($file in $all) {
     $relative = $file.FullName.Substring($rootFull.Length).TrimStart('\', '/')
     $parts = $relative -split '[\\/]'
@@ -186,7 +186,7 @@ function Get-C04SelectedManifest {
   foreach ($relativeRoot in $RelativeRoots) {
     $candidate = Join-Path $baseFull $relativeRoot
     if (-not (Test-Path -LiteralPath $candidate -PathType Container)) { throw "Selected-manifest root is missing: $candidate" }
-    foreach ($file in (Get-ChildItem -LiteralPath $candidate -Recurse -File -Force)) {
+    foreach ($file in (Get-ChildItem -LiteralPath $candidate -Recurse -File -Force -ErrorAction SilentlyContinue)) {
       $relative = $file.FullName.Substring($baseFull.Length).TrimStart('\', '/')
       $parts = $relative -split '[\\/]'
       $skip = $false
@@ -462,7 +462,7 @@ function Assert-C04BuildMarker {
 
   $actualSet = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
   [long]$actualPackageBytes = 0
-  foreach ($file in (Get-ChildItem -LiteralPath $packageRoot -Recurse -File -Force)) {
+  foreach ($file in (Get-ChildItem -LiteralPath $packageRoot -Recurse -File -Force -ErrorAction SilentlyContinue)) {
     $fileFull = [IO.Path]::GetFullPath($file.FullName)
     if ([string]::Equals($fileFull, $packageManifestPath, [StringComparison]::OrdinalIgnoreCase)) { continue }
     if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Player package contains a reparse point: $($file.FullName)" }

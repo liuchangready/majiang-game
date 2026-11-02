@@ -155,6 +155,7 @@ namespace Mahjong.Unity.Tests.PlayMode
             string root = Path.Combine(Application.temporaryCachePath, "c04-delayed-" + Guid.NewGuid().ToString("N"));
             var paths = new UnityAppPaths(root);
             paths.EnsureDirectoriesCreated();
+            Directory.CreateDirectory(paths.LocalSaveDirectory);
             var factory = new LocalTableChannelFactory(
                 new AppConfig { pumpBarrierTimeoutMs = 5000, closeTimeoutMs = 5000, cancelObservationMs = 50 },
                 paths,
@@ -240,6 +241,7 @@ namespace Mahjong.Unity.Tests.PlayMode
             string roomId = "c04-recovery-" + Guid.NewGuid().ToString("N");
             var paths = new UnityAppPaths(root);
             paths.EnsureDirectoriesCreated();
+            Directory.CreateDirectory(paths.LocalSaveDirectory);
             var config = new AppConfig { pumpBarrierTimeoutMs = 5000, closeTimeoutMs = 5000, cancelObservationMs = 50 };
             LocalTableChannelFactory? firstFactory = null;
             LocalTableChannelFactory? recoveredFactory = null;
@@ -518,6 +520,7 @@ namespace Mahjong.Unity.Tests.PlayMode
             LocalTableChannelFactory.DisableC04PrivacyRoomModeForTest();
             var paths = new UnityAppPaths(root);
             paths.EnsureDirectoriesCreated();
+            Directory.CreateDirectory(paths.LocalSaveDirectory);
             var config = new AppConfig { pumpBarrierTimeoutMs = 5000, closeTimeoutMs = 5000, cancelObservationMs = 50 };
             var factory = new LocalTableChannelFactory(config, paths, roomId, "owner-" + Guid.NewGuid().ToString("N"), TimeSpan.FromMinutes(2));
             using var pumpCts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
@@ -622,6 +625,7 @@ namespace Mahjong.Unity.Tests.PlayMode
             LocalTableChannelFactory.EnableC04PrivacyRoomMode();
             var paths = new UnityAppPaths(root);
             paths.EnsureDirectoriesCreated();
+            Directory.CreateDirectory(paths.LocalSaveDirectory);
             var config = new AppConfig { pumpBarrierTimeoutMs = 5000, closeTimeoutMs = 5000, cancelObservationMs = 50 };
             var factory = new LocalTableChannelFactory(config, paths, roomId, "owner-" + Guid.NewGuid().ToString("N"), TimeSpan.FromMinutes(2));
             var channels = new ITableChannel[4];
@@ -723,6 +727,7 @@ namespace Mahjong.Unity.Tests.PlayMode
             LocalTableChannelFactory.DisableC04PrivacyRoomModeForTest();
             var paths = new UnityAppPaths(root);
             paths.EnsureDirectoriesCreated();
+            Directory.CreateDirectory(paths.LocalSaveDirectory);
             var config = new AppConfig { pumpBarrierTimeoutMs = 5000, closeTimeoutMs = 5000, cancelObservationMs = 50 };
             var factory = new LocalTableChannelFactory(config, paths, roomId, "owner-" + Guid.NewGuid().ToString("N"), TimeSpan.FromMinutes(2));
             using var pumpCts = new CancellationTokenSource(TimeSpan.FromSeconds(65));
@@ -790,6 +795,7 @@ namespace Mahjong.Unity.Tests.PlayMode
             LocalTableChannelFactory.DisableC04PrivacyRoomModeForTest();
             var paths = new UnityAppPaths(root);
             paths.EnsureDirectoriesCreated();
+            Directory.CreateDirectory(paths.LocalSaveDirectory);
             var config = new AppConfig { pumpBarrierTimeoutMs = 5000, closeTimeoutMs = 5000, cancelObservationMs = 50 };
             var factory = new LocalTableChannelFactory(config, paths, roomId, "owner-" + Guid.NewGuid().ToString("N"), TimeSpan.FromMinutes(2));
             using var pumpCts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
