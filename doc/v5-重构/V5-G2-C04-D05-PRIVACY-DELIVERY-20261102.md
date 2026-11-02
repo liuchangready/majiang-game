@@ -1,5 +1,22 @@
 # G2-C04-D05 隐私通道交付记录
 
+> **调用方范围验收（2026-11-03）**：接受本任务 B9 的验收矩阵、runner 与真实场景判据实现；R9 遗留项关闭。此为任务范围接受和同一草稿 PR20 的批次同步，不是完整 D05/C04/G2 通过。
+
+## 调用方范围验收与统一草稿同步
+
+- 受审 B 头 `487d6c7a71b7d4ed69c83246aee6f41079ac0c02`，代码 `251a4680f4a2edd1eacf8ff11a5bddde596f599b`；R9 合同实际 1 个合法正例、8 个错误输入全通过，真实 stale 捕获/提交 epoch 均为 0，精确 `DECISION_MISMATCH`，无提交元数据、单次发送、无 pending。额外 B9 外路径已撤销，已知 B 范围缺陷为 0。
+- 原 A 恢复组件 `4cde1db7`、Luna 隐私组件 `15981ccc` 已接受并包含于本次候选；本调用方不改变它们原范围判定。当前远端 PR20 头 `03ca533d` 的 D04-A 及原有候选保持，不导入其他在途工作树、不接受未完成的 D04-B/C。
+- 隔离发布树 `E:/majiang-review/g2-d05-caller-publication-20261103-e72f71f0` 从该远端头合入 B，无冲突；被测合并代码头 `d83d4d642cca71df8b205d0724202b4f8d5cef7c`。B9 的 Git blob 全部与受审头一致；两个 .NET 文件因新 checkout 的换行符不同，原始字节哈希不同，LF 归一后相同，不冒称原字节一致。
+- 本次 fresh Release 构建零警告/错误；LocalHost **178/178**、零失败/跳过/错误，native0，XML SHA `5084E81A71F86AC2E7E456FA3BFB607703196E92490C0826CFF8886BBA9EB065`。当前隐私 verifier fresh build/native0，self-test **17 正例 / 67 负例**、native0。runner **16/16**、native0。Runtime 483/483 源码未变沿用既有独立结果，不称本轮重跑。
+- 首次 runner 自测的输出根放在原审查树，内部 Main 探针拒绝 `RunRoot must be a fresh child of repository build/`，未进入封存注入；这是调用方参数错误。保留首失败，仅改为发布树的独占 build 根后 16/16，通过未修改测试或 runner。
+- 本次证据根 `E:/majiang-review/g2-c04-d05-acceptance-matrix-ds-20261102-r1/build/caller-publication-bba0a3ca9b0543daa1e7683bd003dcba`；含实际 build/run 日志与 native exit、XML、首次失败、成功重跑、输入身份分析与 PR 同步记录。R9 独立证据 `build/reviewer-r9-afe017eef05c47788407409095877efe/REVIEW-FINAL.md` SHA `A8E9E23475D92395287F2D49A99D91494D3640C7D8F6330DD20D1E44F171E383` 保留，不改写旧证据。
+
+**批次门禁继续阻断**：公共 ClaimControl 回执为 Recorded/LOCAL_CONTROL，actor 已 epoch2/human，但同一客户端投影仍 epoch1/AI。B 强断言如实拒绝；不能用 actor 值或改缓存代替客户端结果。上次真实 Unity/Windows 各 6/7，旧 7/7 为已记录 false-positive，不能复用为最终验收；当前发布候选没有新的完整同版本同包 Unity/Windows 通过。后续须修复公共投影/推送/刷新链路后重验。没有新增 PG/WSS/Android/设备或当前头远端 CI 验收。
+
+仅同步既有 `feat/v5-post-g1-batch → v5` 的 PR20，继续 OPEN/Draft。任务范围批准不消除上述批次阻断，不合并 v5、不部署、不改 scheduler。
+
+
+
 日期：2026-11-02。执行者：GPT-6-Luna。独立复核者：当前调用方（父代理）。本记录供独立验收，不表示正式 G2/C04 批准。
 
 > **R1 返修状态（2026-11-02，B：G2-C04-D05-R1-ACCEPTANCE-MATRIX）**：R1-04 runner 已在独立组件层批量修复并由真实短负例验证；R1-03 的合法非空袖牌/费用、慢 consumer 真实队列、旧 raw receive、恢复原请求对账场景已实现并通过 .NET 回归。最终 Unity/Windows 同候选同包矩阵仍 `BLOCKED_ON_PRIVACY_AND_RECOVERY`，原因是 Luna 的 R1-01 raw 解码 verifier 与 A 的 R1-02 恢复/生命周期修复尚未集成冻结。D05 未完成、未批准；旧通过证据不冒充新候选通过。下文“R1 前历史状态”保留，R1 新候选状态见新增章节。
