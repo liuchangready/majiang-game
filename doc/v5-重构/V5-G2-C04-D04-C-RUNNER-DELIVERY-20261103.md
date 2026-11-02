@@ -202,8 +202,21 @@ Player build，得到同一类非致命 URP 包级 postprocess 错误的逐 step
 
 ## 9. 结论
 
-D04-C 工具组件面：**实现完成；82/82 机制测试通过；受控 fresh build 与 sealed package/SkipBuild
+D04-C 工具组件面：**实现完成；89/89 机制测试通过；受控 fresh build 与 sealed package/SkipBuild
 实际通过（BUILD_COMPONENT_ONLY）**。
 R1-06 最终同包 **GAME** 六行证据：**NOT_RUN / 仍开放**，由 D04-B 在 A/C 集成后的同一冻结包执行。
 R1-04 语义：仍由 D04-A 负责；runner 只调用固定 verifier CLI，A 未集成时不运行 Player、不冒充 PASS。
 全 D04：**0 BLOCKER / 3 原 MAJOR 不变，未通过**。
+
+## 10. 提交、清洁与重验边界
+
+- 构建代码提交：`e511a85a83c786f4b0862d9c01d155d78f1f3a58`（runner/C#/tests）。
+- 交付文档：构建代码提交之上的 doc-only 后继提交，HEAD 以 `git log -1` 为准；doc-only 提交
+  不改变 `Get-C04SourceIdentity`，因此 sealed package 的 `sourceIdentitySha256` 仍匹配。
+- 构建后 `git status --porcelain=v1` 为空；`git diff --check` exit 0；未 push/PR/merge/deploy/approve。
+- 构建/包/verifier 的源身份：构建时 `sourceHead=buildCommit=e511a85…`；最终文档提交后
+  `Test-C04PackageSeal` 以同一 source identity 复算 `PKG_OK=True`。
+- `SkipBuild` 必须传**构建代码 head** `e511a85…`，不能传 doc-only HEAD `2eba0f2…`。
+- 重验边界：本次未运行 Player authorized/negative 或 PlayMode；未证明 C04-G3-01..06、119/109/99、
+  SECOND/SWAP 精确实体、136 闭环、两独立真实拒绝或 A 的原始语义。D04-B 必须在 A/C 集成后的
+  同一冻结包重新执行完整矩阵，不能引用本组件 PASS 代替。
