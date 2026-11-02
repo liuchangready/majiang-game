@@ -822,6 +822,10 @@ exit `$LASTEXITCODE
     }
 
     $summary.status = 'PASS'
+    $sourceAfter = Get-C04SelectedManifest -Base $repo -RelativeRoots @('dotnet', 'tools/unity')
+    Assert-C04ManifestEqual $sourceManifest $sourceAfter 'Frozen source input'
+    $identityAfter = Get-C04SourceIdentity -Repo $repo -ExpectedHead $identity.head
+    Log "SOURCE_FROZEN head=$($identityAfter.head) closure=$($sourceAfter.sha256)"
     Log 'RUNNER_STAGE_PASS'
   }
   catch {
@@ -879,7 +883,7 @@ exit `$LASTEXITCODE
     Log 'FINALLY_SEAL'
     try {
       $sealed = Write-C04SealedEvidence -RunRoot $script:RunRoot -Summary $summary
-      Log "SEALED manifest=$($sealed.manifestSha256) files=$($sealed.manifest.count)"
+      Write-Host ("SEALED manifest=" + $sealed.manifestSha256 + " files=" + $sealed.manifest.count)
     } catch {
       Write-Host ("SEAL_FAILED " + $_.Exception.ToString())
     }
