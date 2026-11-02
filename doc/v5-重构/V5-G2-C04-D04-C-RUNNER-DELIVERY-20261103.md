@@ -63,9 +63,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/tests/C04PlayerChe
 
 当前结果（组件层）：
 
-- `C04PlayerCheatRunner.Tests`：**passed=62 failed=0**，native exit 0。
+- `C04PlayerCheatRunner.Tests`：**passed=69 failed=0**，native exit 0。
 - `C04PlayerCheats.Tests`：**passed=20 failed=0**，native exit 0。
-- 合计 **82 项**真实 PowerShell/.NET 进程与纯函数负例；无 skip、空测试、旧 DLL 或刷新摘要。
+- 合计 **89 项**真实 PowerShell/.NET 进程与纯函数负例；无 skip、空测试、旧 DLL 或刷新摘要。
 
 覆盖分组：
 
@@ -89,9 +89,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/tests/C04PlayerChe
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File tools/unity/run-p45-c04-player-cheats.ps1 -Case build `
-  -EvidenceRoot build/c04d04c-fresh-e6cdb97cc32d47e1a2af103dff9d129c `
-  -SourceHead 9bc20b851778c50f319e01ef699d4c116ac40366 `
-  -BuildCommit 9bc20b851778c50f319e01ef699d4c116ac40366 `
+  -EvidenceRoot build/c04d04c-fresh-40c1c9ec160e4d92acd7fb4220a62f53 `
+  -SourceHead e511a85a83c786f4b0862d9c01d155d78f1f3a58 `
+  -BuildCommit e511a85a83c786f4b0862d9c01d155d78f1f3a58 `
   -UnityImportTimeoutSeconds 900 -UnityBuildTimeoutSeconds 1500
 ```
 
@@ -101,10 +101,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 | 阶段 | native | 时间 | 证据 |
 |---|---|---|---|
 | pinned source snapshot | 复制 839 files / 53,663,633 bytes | 前置 | `staging/staged-source-manifest.csv` |
-| staging `build-shared.ps1` | 0 | 21.43s | `staging/logs/build-shared.*` / `plugin-closure.*` |
-| staging `check-shared-plugins.ps1` | 0 | 1.82s | `staging/logs/check-shared.*` |
-| Unity import warmup | 0 | 207.26s | `staging/logs/unity-import-warmup.log`（1,857,026 bytes，SHA `B5F10E6CA4D060072E40DA00AED136CDCE4CCBC369AD4B70004BC2090E3CA735`） |
-| Unity Player build | 0 | 147.61s | `staging/logs/unity-player-build.log`（831,352 bytes，SHA `DBE00804CC81B7DD913FAB6807DB9A1FC3AEBABB0C870FA9DD20E8FECB598710`） |
+| staging `build-shared.ps1` | 0 | 33.33s | `staging/logs/build-shared.*` / `plugin-closure.*` |
+| staging `check-shared-plugins.ps1` | 0 | 2.03s | `staging/logs/check-shared.*` |
+| Unity import warmup | 0 | 201.24s | `staging/logs/unity-import-warmup.log`（1,856,915 bytes，SHA `C19D286ECFB4419A9FFA23E8E4BF7BA83798B15D697AB438023A555876EC86F3`） |
+| Unity Player build | 0 | 149.18s | `staging/logs/unity-player-build.log`（831,396 bytes，SHA `8C21E8E80D62B3917F3BCFF56507C8CA16F78BBCF986F69D6511F9A9CB747076`） |
 
 BuildReport 原值：`result=Succeeded`，**errors=6**，warnings=200，stepCount=38，
 stepErrorCount=6，stepExceptionCount=0，Player `Mahjong.exe` 667,136 bytes，
@@ -129,13 +129,13 @@ Host type is not matching any asset type at Path Packages/com.unity.render-pipel
 
 包 sealed：
 
-- package manifest：207 files / 128,732,098 bytes，SHA `f92df21f1225aa43e8ecef9ec23ee3c280e94f41630fbb35966e59ff98f0d50e`。
-- package seal：SHA `11FC106BF4DEAD8FCCFFF5F21E47C040CFF1486C257A1D577A05A5D008EA62A4`；
-  buildReport SHA `f2b63751b33d818c018245918a3497524838bd4b62f84593782d970924cf5fd3`；
-  plugin provenance SHA `ab907ae76abcd6e08dc0f19ed470e514c7d6ad6a5629ada78549a768680c86da`；
-  pluginSet SHA `1d06804523f1f264e66489e095e47a0a562304acb2757b2c203c66fcdcb568c7`，19 files。
-- evidence seal：`seal.json` SHA `FB1D8BAE72143BAC29A1E93B64654F1E5440D39E2E50AEC3D77C849449B8DA24`；
-  manifest SHA `EDBEF7C60B591C8FCC3AAF480DC930B0B80ED8F62DD083DFF801B7D9A7CFD138`；
+- package manifest：207 files / 128,732,096 bytes，SHA `e2f22649b38048393152b881fd091bf00c38673da98b2145336dd3485161708e`。
+- package seal：SHA `82328DC057963A4AE977066616485ED5A57F06490E4FBCCEAB6BC866A32E9B40`；
+  buildReport SHA `b585d7149d1e3890b867d549e5e59bbdb94921e4b35c945b20b7736fb1cfd6df`；
+  plugin provenance SHA `a4d7fcc6523681836ed9f2371f189ae1785ba1dda25ca4a76835982941e6a4e4`；
+  pluginSet SHA `c226eea097b4c164bc8a4e6cbe0116c4a9853796a1a5a77089aae33faa45c0d4`，19 files。
+- evidence seal：`seal.json` SHA `B54E640EBFEB3C9308CEDFA934EEB775A868FCF1701FC5517962B06625EC40CB`；
+  manifest SHA `1E898F52E55D5BE79DEFC1A3C97124D58EEAC2B56EC956A8C8BCEEC67691A15A`；
   `Test-C04EvidenceSeal` 独立重算 **0 errors**。
 
 真实 SkipBuild 复验（新证据根）：
@@ -143,16 +143,16 @@ Host type is not matching any asset type at Path Packages/com.unity.render-pipel
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File tools/unity/run-p45-c04-player-cheats.ps1 -Case build -SkipBuild `
-  -EvidenceRoot build/c04d04c-skip-335ba0f087a046f983fcad3292ae6636 `
-  -PlayerPath build/c04d04c-fresh-e6cdb97cc32d47e1a2af103dff9d129c/build/player/Mahjong.exe `
-  -SourceHead 9bc20b851778c50f319e01ef699d4c116ac40366 `
-  -BuildCommit 9bc20b851778c50f319e01ef699d4c116ac40366
+  -EvidenceRoot build/c04d04c-skip-4faf361dd3b04f3a84c11b9618f43c1d `
+  -PlayerPath build/c04d04c-fresh-40c1c9ec160e4d92acd7fb4220a62f53/build/player/Mahjong.exe `
+  -SourceHead e511a85a83c786f4b0862d9c01d155d78f1f3a58 `
+  -BuildCommit e511a85a83c786f4b0862d9c01d155d78f1f3a58
 ```
 
 实际：runner native exit **0**，`BUILD_ONLY component PASS`，package manifest/seal/report/provenance
 逐字节重算通过；未传源码/包外路径、错 source head、错 build commit 或改动包均被拒绝（见机制负例）。
-`summary.json` SHA `019E242B55799E3CD107140906845F1A5F712D8022371A62BF2FEAE2843E82F8`，
-`seal.json` SHA `33FF9EB11537A31C6E4BD5294EC40F399616A76D2600948AB81AAAE30084BABE`。
+`summary.json` SHA `45B0DB70F15543945F20EBA4226D38C597AB808129D2F68FCACFE7F80745CB06`，
+`seal.json` SHA `E312368AD7CE9AEBFBB00D0957599CC99122914FD458B211F9E7DEC16CC03612`。
 
 ## 5.1 C# 编译检查（Unity 外）
 
@@ -176,19 +176,19 @@ D:\Unity\dotnet\dotnet.exe build <TEMP>/c04cs-<GUID>/check.csproj -c Release
 
 | 证据 | 路径 | SHA-256 / 说明 |
 |---|---|---|
-| runner 测试日志 | `build/c04-tests-d750c72ccde74fae85b2cefb1446e60f/runner-tests.log` | `61638CD04C1DAF4651A5848670E177ED16B989F018AEF80362C22857F4124E7E`；62/62，native 0 |
+| runner 测试日志 | `build/c04-tests-fa40abe66da14c72b2e29103791a74ee/runner-tests.log` | `A69E24E252AA370512387D9084AFEC2C19EF029CBCA4AD970AB574B242477E50`；69/69，native 0 |
 | compatibility 测试日志 | 同上目录 `cheats-tests.log` | `15B40D45D430574A5D2B9F8057F4F3FD2F697C1E273E073DE77F88CB55FAB8F4`；20/20，native 0 |
 | C# 编译检查 | `%TEMP%/c04cs-<GUID>` | 临时 netstandard2.1 + UnityEditor/UnityEngine 引用，0 warning/0 error |
-| fresh build summary | `build/c04d04c-fresh-e6cdb97cc32d47e1a2af103dff9d129c/summary.json` | `BCA6EA4DCC3FEA041F71C343A94482B7ECC0C5F9CD533B3A5D3139F2BF558BB0` |
-| fresh build summary.txt | 同目录 `summary.txt` | `7789E4A7A01852724A083ED3C81151414C3DC58FA7A29BA045D300C24A56FF68` |
-| fresh evidence manifest | 同目录 `manifest.csv` | `EDBEF7C60B591C8FCC3AAF480DC930B0B80ED8F62DD083DFF801B7D9A7CFD138` |
-| fresh evidence seal | 同目录 `seal.json` | `FB1D8BAE72143BAC29A1E93B64654F1E5440D39E2E50AEC3D77C849449B8DA24` |
-| BuildReport | `build/player/c04-build-report.json` | `F2B63751B33D818C018245918A3497524838BD4B62F84593782D970924CF5FD3` |
-| package manifest | `build/player/c04-package-manifest.csv` | `F92DF21F1225AA43E8ECEF9EC23EE3C280E94F41630FBB35966E59FF98F0D50E`（207 files / 128,732,098 bytes） |
-| package seal | `build/player/c04-package-seal.json` | `11FC106BF4DEAD8FCCFFF5F21E47C040CFF1486C257A1D577A05A5D008EA62A4` |
-| plugin provenance | `build/player/c04-plugin-provenance.json` | `AB907AE76ABCD6E08DC0F19ED470E514C7D6AD6A5629ADA78549A768680C86DA` |
-| SkipBuild summary | `build/c04d04c-skip-335ba0f087a046f983fcad3292ae6636/summary.json` | `019E242B55799E3CD107140906845F1A5F712D8022371A62BF2FEAE2843E82F8` |
-| SkipBuild seal | 同目录 `seal.json` | `33FF9EB11537A31C6E4BD5294EC40F399616A76D2600948AB81AAAE30084BABE` |
+| fresh build summary | `build/c04d04c-fresh-40c1c9ec160e4d92acd7fb4220a62f53/summary.json` | `388EB7C01D248D12CB0F7F40F58E6B015C79245A8F80C7B8F524681304132DE0` |
+| fresh build summary.txt | 同目录 `summary.txt` | `F54BEB989A42B450EA82F3725108B10492A2C3ED192431CD3CD1F9D831AB6C1C` |
+| fresh evidence manifest | 同目录 `manifest.csv` | `1E898F52E55D5BE79DEFC1A3C97124D58EEAC2B56EC956A8C8BCEEC67691A15A` |
+| fresh evidence seal | 同目录 `seal.json` | `B54E640EBFEB3C9308CEDFA934EEB775A868FCF1701FC5517962B06625EC40CB` |
+| BuildReport | `build/player/c04-build-report.json` | `B585D7149D1E3890B867D549E5E59BBDB94921E4B35C945B20B7736FB1CFD6DF` |
+| package manifest | `build/player/c04-package-manifest.csv` | `E2F22649B38048393152B881FD091BF00C38673DA98B2145336DD3485161708E`（207 files / 128,732,096 bytes） |
+| package seal | `build/player/c04-package-seal.json` | `82328DC057963A4AE977066616485ED5A57F06490E4FBCCEAB6BC866A32E9B40` |
+| plugin provenance | `build/player/c04-plugin-provenance.json` | `A4D7FCC6523681836ED9F2371F189AE1785BA1DDA25CA4A76835982941E6A4E4` |
+| SkipBuild summary | `build/c04d04c-skip-4faf361dd3b04f3a84c11b9618f43c1d/summary.json` | `45B0DB70F15543945F20EBA4226D38C597AB808129D2F68FCACFE7F80745CB06` |
+| SkipBuild seal | 同目录 `seal.json` | `E312368AD7CE9AEBFBB00D0957599CC99122914FD458B211F9E7DEC16CC03612` |
 | 历史 errors=3 | 旧树只读 | `player-build.json` / `player-build2.json` 原样保留 |
 
 ## 8. 历史 BuildReport errors=3 的最终诊断
