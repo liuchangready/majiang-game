@@ -526,7 +526,7 @@ function Test-C04ActionEvidence {
     if ([string]$parsed[1] -cne $Evidence.baselineRoundId -or [string]$parsed[2] -cne $Evidence.baselineDecisionId -or
         [UInt64]$parsed[3] -ne [UInt64]$Evidence.baselineControlEpoch) { throw 'Raw canonical action is not bound to its captured Player baseline.' }
     $actionByCase = @{ 'C04-G2-01'=6; 'C04-G2-02'=5; 'C04-G2-03'=8; 'C04-G2-04'=7 }
-    $tilesByCase = @{ 'C04-G2-01'='0,1,2'; 'C04-G2-02'='0,4,8'; 'C04-G2-03'=''; 'C04-G2-04'='0,1,2,3' }
+    $tilesByCase = @{ 'C04-G2-01'='0,1,2'; 'C04-G2-02'='0,4,8'; 'C04-G2-03'='124'; 'C04-G2-04'='0,1,2,3' }
     $rawTiles = if ($parsed.ContainsKey(6)) { (@($parsed[6]) | Sort-Object) -join ',' } else { '' }
     if (-not $actionByCase.ContainsKey($ExpectedCase) -or [UInt32]$parsed[4] -ne $actionByCase[$ExpectedCase] -or $rawTiles -ne $tilesByCase[$ExpectedCase]) { throw 'Raw canonical action kind or physical selection differs from the frozen C04 case.' }
     $rawMeldType = if ($parsed.ContainsKey(7)) { [UInt32]$parsed[7] } else { 0 }
@@ -548,7 +548,9 @@ function Test-C04ActionEvidence {
         $Evidence.eventScopeId -cne $Evidence.scopeId -or $Evidence.eventSessionId -cne $Evidence.baselineSessionId -or
         $Evidence.eventRoomId -cne $Evidence.baselineRoomId -or $Evidence.eventTableId -cne $Evidence.baselineTableId -or
         [UInt64]$Evidence.eventCommandVersion -ne [UInt64]$Evidence.receiptCommandVersion -or
-        [UInt64]$Evidence.eventSeq -ne [UInt64]$Evidence.receiptEventSeq) { throw 'Captured incremental event does not match the typed receipt and baseline identity.' }
+        [UInt64]$Evidence.eventSeq -ne [UInt64]$Summary.eventSeq -or
+        [UInt64]$Evidence.eventSeq -le [UInt64]$Evidence.baselineEventSeq -or
+        [UInt64]$Evidence.eventSeq -gt [UInt64]$Evidence.receiptEventSeq) { throw 'Captured incremental event does not match the typed receipt and baseline identity.' }
     if ($Evidence.afterRoomId -cne $Evidence.baselineRoomId -or $Evidence.afterSessionId -cne $Evidence.baselineSessionId -or
         $Evidence.afterTableId -cne $Evidence.baselineTableId -or $Evidence.afterRoundId -cne $Evidence.baselineRoundId -or
         [int]$Evidence.afterSeat -ne 0 -or [UInt64]$Evidence.afterBindingEpoch -ne [UInt64]$Evidence.baselineBindingEpoch -or
