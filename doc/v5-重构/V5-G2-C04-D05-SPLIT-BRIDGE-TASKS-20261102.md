@@ -97,11 +97,10 @@ runner先修固定候选与复制输入闭包、XML精确case/分母/零fail/err
 
 A/B均先填写独占阶段卡：实际命令、进入条件、成功断言、超时、输出和取消边界。短环境预检默认120秒，确定性工具/组件180秒，必要.NET整套600秒；A完成工具/采集合同交付，B在廉价缺陷全部修复且新verifier集成后进入贵验证。合理调整预算需记录原因，不降低断言。
 
-共享Unity锁Local\\MahjongV5P45UnityValidation，最多等600秒，每30秒心跳；Unity冷导入参考900秒，Player build1200秒，按实际场景设有限超时。E盘独占GUID输出、缓存/TEMP/Library/Player，不改机器许可、不强杀他人、不改旧原件。先正常取消并核验自有进程身份/停止writer再封存，未知退出UNKNOWN；具体原因修复/输入变化/资源变化后才重试。
+共享Unity锁Local\MahjongV5P45UnityValidation，最多等600秒，每30秒心跳；Unity冷导入参考900秒，Player build1200秒，按实际场景设有限超时。E盘独占GUID输出、缓存/TEMP/Library/Player，不改机器许可、不强杀他人、不改旧原件。先正常取消并核验自有进程身份/停止writer再封存，未知退出UNKNOWN；具体原因修复/输入变化/资源变化后才重试。
 
 阶段在授权内自动继续，不新增逐阶段人工确认。不能只完成第一条就结束。真实跨owner依赖须明确，独立工作全部做完；父代理协调最终候选。
 
 A唯一新交付报告为PRIVACY-VERIFIER-DELIVERY；B更新原PRIVACY-DELIVERY并保留历史。均给逐ID映射、真正正负例/命令/native/XML/计数/SHA/源码/输入/包身份、首次失败、未覆盖、commit及clean/diffcheck；代码和docs-only报告分开。
 
 两边均不得再委派、approve、push、建改PR、merge、deploy、改scheduler/complete.flag、改原bridge/原生任务历史、扩Domain/Client/proto/TableActor/存档schema/asmdef。D03/C01/C02/C03已接受范围不重开，D04人工保留，V4生产，G2–G5未批准。
-
