@@ -1376,7 +1376,7 @@ function Test-C04PackageSeal {
         if ([string]::IsNullOrWhiteSpace([string]$receipt.buildId)) { $errors.Add('PACKAGE_RECEIPT_BUILD_ID') | Out-Null }
         if ([string]$receipt.sourceHead -ne [string]$seal.sourceHead) { $errors.Add('PACKAGE_RECEIPT_SOURCE_HEAD') | Out-Null }
         if ([string]$receipt.buildCommit -ne [string]$seal.buildCommit) { $errors.Add('PACKAGE_RECEIPT_BUILD_COMMIT') | Out-Null }
-        if ([string]::IsNullOrWhiteSpace([string]$receipt.sourceInputManifestSha256)) { $errors.Add('PACKAGE_RECEIPT_SOURCE_INPUT') | Out-Null }
+        if ([string]::IsNullOrWhiteSpace([string]$receipt.sourceInputManifestSha256) -or [string]$receipt.sourceInputManifestSha256 -ne [string]$seal.sourceManifestSha256) { $errors.Add('PACKAGE_RECEIPT_SOURCE_INPUT') | Out-Null }
         if ([string]$receipt.packageManifestSha256 -ne [string]$seal.packageManifestSha256) { $errors.Add('PACKAGE_RECEIPT_MANIFEST') | Out-Null }
         if ([string]$receipt.buildReportSha256 -ne [string]$seal.buildReportSha256) { $errors.Add('PACKAGE_RECEIPT_REPORT') | Out-Null }
         if ([string]$receipt.pluginProvenanceSha256 -ne [string]$seal.pluginProvenanceSha256) { $errors.Add('PACKAGE_RECEIPT_PROVENANCE') | Out-Null }
