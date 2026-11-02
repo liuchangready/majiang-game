@@ -49,6 +49,7 @@ The index is versioned and classifies the capture honestly:
   "actions": [
     {
       "id": "tile-mark",
+      "welcome": { "path": "raw/tile-mark-welcome.pb", "sha256": "..." },
       "command": { "path": "raw/tile-mark-command.pb", "sha256": "..." },
       "receipt": { "path": "raw/tile-mark-receipt.pb", "sha256": "..." },
       "acceptedPrivatePublication": { "path": "raw/tile-mark-player-update.pb", "sha256": "..." },
@@ -61,17 +62,19 @@ The index is versioned and classifies the capture honestly:
         "cheatState": { "path": "raw/after-cheat.bin", "sha256": "..." }
       }
     }
-  ]
+  ],
+  "sentFrames": [{ "path": "raw/sent-00000.pb", "sha256": "..." }],
+  "receivedFrames": [{ "path": "raw/received-00000.pb", "sha256": "..." }]
 }
 ```
 
 An authorized index contains exactly these ordered rows: `tile-mark`, `sleeve-bloom`, `sleeve-second`, `beam-swap`, `beam-swap-choice`. Every row has original serialized command and receipt envelopes, its exact accepted private PlayerUpdate, and paired read-only recovery save plus current cheat-state bytes before and at the exact command commit. Recovery post-state must be the receipt's command version; a later `latest` save cannot stand in for it. The accepted event must be private, have the expected event type, and lie within that receipt's event high-water. Command version, event sequence, state version, stream version, and projection cursor remain separate values.
 
-A negative index contains exactly `unauthorized` and `insufficient-funds` rows. Each has a different original canonical payload and request ID, a typed REJECTED receipt, and before/after save plus cheat-state originals. The existing contract reasons are `DECISION_MISMATCH` for the missing decision authorization case and `INSUFFICIENT_FUNDS` for the low balance case. A wire/protocol error is not a business rejection. The verifier compares persisted versions, cheat fingerprint/version, ledger digest, physical digest, and the exact 136-position map for zero side effects. Negative rows do not claim an accepted publication.
+A negative index contains exactly `unauthorized` and `insufficient-funds` rows. Each has a different original canonical payload and request ID, a typed REJECTED receipt, a Welcome bound to the command's room/session/seat/scope, and before/after save plus cheat-state originals. The actual production-channel reasons are `DECISION_MISMATCH` for the missing decision authorization case and `CHEAT_INSUFFICIENT_FUNDS` for low balance (`INSUFFICIENT_FUNDS` is a different protocol constant and is not accepted). A wire/protocol error is not a business rejection. The verifier requires each composite durable request in its after recovery with exact raw payload SHA, receipt ID, evaluated version, REJECTED status, no confirmed command/event version, and zero state/event/cheat/ledger/entity side effects. Negative rows do not claim an accepted publication.
 
 ## Derived assertions
 
-For authorized rows the verifier decodes with the existing `WireCodec`, recomputes `CanonicalPayloadDigest` from the command's original canonical bytes, cross-checks command kind, request/scope/account/role/session/room/seat/round/control epoch, and matches the typed receipt and recovery receipt by their actual composite identity. It checks the accepted player-private publication uses the same owner binding and that its envelope/update/snapshot cursor values agree.
+For authorized rows the verifier decodes with the existing `WireCodec`, recomputes `CanonicalPayloadDigest` from the command's original canonical bytes, cross-checks command kind, request/scope/account/role/session/room/seat/round/control epoch, and matches the typed receipt and recovery request by their actual composite identity. Receipt room/session/seat and scope room/account/role bind to the command; Welcome binds the command scope to the player session. The actual LocalHost private PlayerUpdate envelope has no scope, so it is bound by exact raw transcript membership, room/session/seat, private owner and Welcome. Any optional publication scope must match if present. The exact accepted publication must be byte-identical to a received frame. Cursor copies must agree; stream version is checked within the command's before/after state window and against received history, while projection sequence is anchored to Welcome baseline and the preceding received frame. These values are not equated to event high-water or to each other.
 
 The two digest contracts remain distinct: `WireReceipt.CanonicalPayloadSha256` is compared with `CanonicalPayloadDigest.Compute(originalCanonicalPayload)`, while persisted recovery request facts are compared with SHA-256 of the exact original `canonical_payload` bytes. The recovery comparison also binds status, request/scope/account, command version and event sequence. Neither value is copied from the case summary or accepted as an arbitrary 64-hex string.
 
@@ -93,7 +96,7 @@ The acceptance matrix retains the old Strict controls that target this defect an
 | Negative semantics | Same payload/different request; unrelated or malformed/internal reason; altered reason; any state/event/ledger/entity delta | Nonzero |
 | Capture/package paths | Absolute path, `..`, missing path, reparse point, wrong source head, wrong manifest digest or package file hash/length | Nonzero |
 
-The current old R8 failures are one retained defect group, `C04-G3-R1-04` (MAJOR), not new discoveries: nominal evidence without originals, arbitrary raw hashes, and unrelated `MALFORMED_MESSAGE` / `INTERNAL_ERROR` reasons with self-claimed zero effect and a nonzero version change. The repaired same-payload/nonzero-version rejection remains required.
+The current old R8 failures are one retained defect group, `C04-G3-R1-04` (MAJOR), not new discoveries: nominal evidence without originals, arbitrary raw hashes, and unrelated `MALFORMED_MESSAGE` / `INTERNAL_ERROR` reasons with self-claimed zero effect and a nonzero version change. Same-payload/different-request and nonzero-state rejection controls remain required.
 
 ## Component commands
 
@@ -111,4 +114,4 @@ dotnet test dotnet/tests/Mahjong.LocalHost.Tests/Mahjong.LocalHost.Tests.csproj 
   --artifacts-path <repo>/build/<GUID>/localhost-artifacts
 ```
 
-The PowerShell test labels itself `TOOL_FIXTURE`; it exercises the real serialized LocalHost positive capture and verifies failure closure for missing originals, path escape, wrong package binding, arbitrary raw-file hash, and missing exact publication. The targeted LocalHost channel suite is a separate real component result, including two genuine business rejection tests. Neither result is Unity, Player, or full D04 PASS. The old R8 report and all older failure artifacts remain read-only.
+The PowerShell test labels itself `TOOL_FIXTURE`; it drives fresh serialized LocalHost authorized and two-row negative captures through the fixed thin wrapper, plus missing originals, path escape, wrong package binding, arbitrary raw-file hash, and 31 typed native-failure mutations with asserted structured causes. The mutations reserialize copied real frames and refresh only their file/index hashes. Two positive controls remain native 0: a valid lagging stream version and a later legitimate recovery envelope that still contains the exact earlier commit. The legacy C04 Strict fixture suite remains separately covered at 19/19, including its six-row assertion and negative controls. The targeted LocalHost channel suite is a separate real component result, including genuine business rejection cases. Neither result is Unity, Player, or full D04 PASS. The old R8 report and all older failure artifacts remain read-only.
