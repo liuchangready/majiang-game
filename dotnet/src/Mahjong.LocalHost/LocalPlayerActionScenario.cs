@@ -124,6 +124,7 @@ namespace Mahjong.LocalHost
             ulong baselineVersion,
             ulong commandVersion,
             ulong actionEventSeq,
+            string actionEventType,
             int actionSeat)
         {
             if (authoritySaveBytes == null) throw new ArgumentNullException(nameof(authoritySaveBytes));
@@ -146,6 +147,7 @@ namespace Mahjong.LocalHost
                     !string.Equals(receipt.ScopeId.Value, scopeId, StringComparison.Ordinal) ||
                     !string.Equals(journal.RequestId.Value, requestId, StringComparison.Ordinal) ||
                     !string.Equals(journal.ScopeId.Value, scopeId, StringComparison.Ordinal) ||
+                    !string.Equals(receipt.Api, journal.Api, StringComparison.Ordinal) ||
                     journal.EvaluatedStateVersion.Value != baselineVersion ||
                     journal.CommandVersion.Value != commandVersion ||
                     receipt.Receipt.EvaluatedStateVersion.Value != baselineVersion ||
@@ -155,12 +157,25 @@ namespace Mahjong.LocalHost
 
                 bool eventMatches = operation.Events.Any(value =>
                     value.CommandVersion.Value == commandVersion &&
-                    value.Seq.Value == actionEventSeq && value.Seat == actionSeat);
+                    value.Seq.Value == actionEventSeq &&
+                    string.Equals(value.Type.ToString(), actionEventType, StringComparison.Ordinal) &&
+                    value.Seat == actionSeat);
                 if (eventMatches) matches.Add(operation);
             }
 
             if (matches.Count != 1)
-                throw new InvalidOperationException("The persisted envelope does not contain exactly one durable commit bound to the confirmed Player action.");
+            {
+                LocalDurableOperation? candidate = save.Operations.FirstOrDefault(operation =>
+                    operation.Kind == LocalOperationKind.Commit && operation.Receipt != null && operation.Journal != null &&
+                    string.Equals(operation.Receipt.RequestId.Value, requestId, StringComparison.Ordinal) &&
+                    string.Equals(operation.Receipt.ScopeId.Value, scopeId, StringComparison.Ordinal));
+                string diagnostic = candidate == null ? "no request/scope commit" :
+                    "candidateVersion=" + candidate.Journal!.CommandVersion.Value.ToString(CultureInfo.InvariantCulture) +
+                    "; expectedVersion=" + commandVersion.ToString(CultureInfo.InvariantCulture) +
+                    "; apiMatch=" + string.Equals(candidate.Receipt!.Api, candidate.Journal.Api, StringComparison.Ordinal) +
+                    "; eventRecords=" + string.Join(",", candidate.Events.Select(value => value.Seq.Value + ":" + value.Type + ":" + value.Seat));
+                throw new InvalidOperationException("The persisted envelope does not contain exactly one durable commit bound to the confirmed Player action (" + diagnostic + ").");
+            }
 
             LocalDurableOperation accepted = matches[0];
             if (accepted.ExpectedStateVersion != baselineVersion || accepted.NextStatePayload == null ||

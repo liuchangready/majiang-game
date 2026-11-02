@@ -335,6 +335,7 @@ namespace Mahjong.Unity.App
                     baselineVersion,
                     confirmedBatch.StateVersion,
                     confirmation.Event.EventSeq,
+                    confirmation.Event.Type.ToString(),
                     0);
             }
             catch (Exception exception)

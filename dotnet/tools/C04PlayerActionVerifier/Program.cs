@@ -158,7 +158,18 @@ internal static class Program
         LocalTableRecoveryFacts baselineFacts = LocalTableRecoveryFactsReader.ReadPersistedFacts(baselineSaveBytes, baselineCheatBytes);
         LocalTableRecoveryFacts afterFacts = LocalTableRecoveryFactsReader.ReadPersistedFacts(afterSaveBytes, afterCheatBytes);
         Dictionary<int, string> baselinePositions = ReadPhysicalPositions(LocalPlayerActionScenario.ReadPhysicalAudit(baselineSaveBytes, baselineCheatBytes));
-        Dictionary<int, string> afterPositions = ReadPhysicalPositions(LocalPlayerActionScenario.ReadPhysicalAudit(afterSaveBytes, afterCheatBytes));
+        string exactActionAudit = LocalPlayerActionScenario.ReadCommittedActionPhysicalAudit(
+            afterSaveBytes,
+            RequiredString(evidence, "RequestId"),
+            RequiredString(evidence, "ScopeId"),
+            baseline.RoundId,
+            baseline.StateVersion,
+            RequiredUInt64(evidence, "EventCommandVersion"),
+            RequiredUInt64(evidence, "EventSeq"),
+            RequiredString(evidence, "EventType"),
+            RequiredInt(evidence, "EventSeat"));
+        Dictionary<int, string> afterPositions = ReadPhysicalPositions(exactActionAudit);
+        int afterActionDeadWallCount = afterPositions.Values.Count(value => value.StartsWith("DEADWALL/", StringComparison.Ordinal));
 
         Equal(RequiredString(evidence, "BaselineSessionId"), baseline.SessionId, "baseline session");
         Equal(RequiredString(evidence, "BaselineRoundId"), baseline.RoundId, "baseline round");
@@ -199,7 +210,8 @@ internal static class Program
         VerifyPhysical(evidence, "After", afterFacts.Physical);
         VerifyPlayerView(evidence, baseline, "Baseline", true, baselinePositions);
         VerifyPlayerView(evidence, after, "After", false, afterPositions);
-        VerifyActionEffects(evidence, baseline, after, baselineFacts.Physical, afterFacts.Physical, baselinePositions, afterPositions);
+        VerifyActionEffects(evidence, baseline, after, baselineFacts.Physical.DeadWallCount,
+            afterActionDeadWallCount, baselinePositions, afterPositions);
     }
 
     private static void ValidateCanonicalPayload(byte[] canonicalPayload, string expectedDigest)
@@ -371,7 +383,7 @@ internal static class Program
     }
 
     private static void VerifyActionEffects(JsonElement evidence, PlayerSnapshot baseline, PlayerSnapshot after,
-        LocalTableRecoveryPhysicalFact beforePhysical, LocalTableRecoveryPhysicalFact afterPhysical,
+        int beforeDeadWallCount, int afterActionDeadWallCount,
         Dictionary<int, string> beforePositions, Dictionary<int, string> afterPositions)
     {
         string caseId = RequiredString(evidence, "CaseId");
@@ -435,7 +447,7 @@ internal static class Program
         }
         if (caseId == "C04-G2-04")
         {
-            if (!afterOwn.HasDrawnTileId || afterOwn.DrawnTileId != 73 || afterPhysical.DeadWallCount != beforePhysical.DeadWallCount - 1 ||
+            if (!afterOwn.HasDrawnTileId || afterOwn.DrawnTileId != 73 || afterActionDeadWallCount != beforeDeadWallCount - 1 ||
                 !"DEADWALL".Equals(PositionZone(beforePositions, 73), StringComparison.Ordinal) ||
                 !"HAND".Equals(PositionZone(afterPositions, 73), StringComparison.Ordinal) ||
                 !afterPositions[73].StartsWith("HAND/0/", StringComparison.Ordinal))
@@ -464,12 +476,14 @@ internal static class Program
                 " confirmed=" + fact.Confirmed + " digest=" + fact.PayloadSha256 + " evaluated=" + fact.EvaluatedStateVersion +
                 " command=" + fact.CommandVersion + " event=" + fact.EventSeq + " baseline=" + baselineFacts.StateVersion + ".");
         Equal(commandVersion, RequiredString(evidence, "EventCommandVersion"), "authority receipt event command version");
-        Equal(commandVersion, afterFacts.StateVersion, "authority receipt command version");
+        if (ulong.Parse(afterFacts.StateVersion, CultureInfo.InvariantCulture) < ulong.Parse(commandVersion, CultureInfo.InvariantCulture))
+            throw new InvalidDataException("Latest authority state predates the accepted action command version.");
         if (ulong.Parse(afterFacts.EventSeq, CultureInfo.InvariantCulture) < ulong.Parse(eventSeq, CultureInfo.InvariantCulture))
             throw new InvalidDataException("Authority event high-water predates the accepted receipt: receipt=" + eventSeq + " authority=" + afterFacts.EventSeq + ".");
         if (ulong.Parse(RequiredString(evidence, "AfterStateVersion"), CultureInfo.InvariantCulture) <=
             ulong.Parse(RequiredString(evidence, "BaselineStateVersion"), CultureInfo.InvariantCulture))
             throw new InvalidDataException("Player snapshot state version did not advance after the submitted action.");
+        Equal(commandVersion, RequiredString(evidence, "AfterStateVersion"), "same-publication accepted action command version");
     }
 
     private static void VerifyRawBindingAndAcceptedEvent(JsonElement evidence, PlayerSnapshot baseline, PlayerSnapshot after)
@@ -655,6 +669,13 @@ internal static class Program
     private static int RequiredInt(JsonElement element, string name)
     {
         if (!TryProperty(element, name, out JsonElement value) || !value.TryGetInt32(out int result)) throw new InvalidDataException("Missing/noninteger evidence field " + name + ".");
+        return result;
+    }
+
+    private static ulong RequiredUInt64(JsonElement element, string name)
+    {
+        if (!TryProperty(element, name, out JsonElement value) || !value.TryGetUInt64(out ulong result))
+            throw new InvalidDataException("Missing/non-UInt64 evidence field " + name + ".");
         return result;
     }
 

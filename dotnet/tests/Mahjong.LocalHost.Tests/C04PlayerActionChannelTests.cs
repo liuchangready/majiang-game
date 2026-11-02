@@ -106,6 +106,7 @@ namespace Mahjong.LocalHost.Tests
                     Assert.True(receipt.Resolution.CommandVersion.Value.Value > before.StateVersion,
                         "Applied command version must advance beyond the subscribed baseline.");
                     LocalTableRecoveryCapture acceptedCapture = await localChannel.RuntimeForMatch!.CaptureRecoveryAsync(timeout.Token);
+                    LocalTableRecoveryCapture rawAfterCapture = acceptedCapture;
 
                     CanonicalPayloadDocument typedPayload = CanonicalPayloadParser.Parse(payload);
                     Assert.Equal((ushort)CommandKind.SubmitAction, typedPayload.CommandKind);
@@ -174,8 +175,34 @@ namespace Mahjong.LocalHost.Tests
                         before.StateVersion,
                         actionBatch.StateVersion,
                         actionEvent.EventSeq,
+                        EventFor(actionType).ToString(),
                         0);
                     Assert.Equal(136, exactActionPhysicalAudit.Split('\n').Length);
+                    Assert.Throws<InvalidOperationException>(() => LocalPlayerActionScenario.ReadCommittedActionPhysicalAudit(
+                        acceptedCapture.AuthoritySaveBytes, "foreign-request", receipt.Command.Key.ScopeId.Value,
+                        before.RoundId, before.StateVersion, actionBatch.StateVersion, actionEvent.EventSeq,
+                        EventFor(actionType).ToString(), 0));
+                    Assert.Throws<InvalidOperationException>(() => LocalPlayerActionScenario.ReadCommittedActionPhysicalAudit(
+                        acceptedCapture.AuthoritySaveBytes, requestId, "foreign-scope",
+                        before.RoundId, before.StateVersion, actionBatch.StateVersion, actionEvent.EventSeq,
+                        EventFor(actionType).ToString(), 0));
+                    Assert.Throws<InvalidOperationException>(() => LocalPlayerActionScenario.ReadCommittedActionPhysicalAudit(
+                        acceptedCapture.AuthoritySaveBytes, requestId, receipt.Command.Key.ScopeId.Value,
+                        before.RoundId, before.StateVersion, actionBatch.StateVersion + 1, actionEvent.EventSeq,
+                        EventFor(actionType).ToString(), 0));
+                    Assert.Throws<InvalidOperationException>(() => LocalPlayerActionScenario.ReadCommittedActionPhysicalAudit(
+                        acceptedCapture.AuthoritySaveBytes, requestId, receipt.Command.Key.ScopeId.Value,
+                        before.RoundId, before.StateVersion, actionBatch.StateVersion, actionEvent.EventSeq + 1,
+                        EventFor(actionType).ToString(), 0));
+                    LocalSave tamperedSave = LocalSaveCodec.DecodeEnvelope(acceptedCapture.AuthoritySaveBytes);
+                    LocalDurableOperation acceptedOperation = Assert.Single(tamperedSave.Operations, value =>
+                        value.Journal?.CommandVersion.Value == actionBatch.StateVersion);
+                    acceptedOperation.NextStateFingerprint ^= 1UL;
+                    byte[] fingerprintMismatch = LocalSaveCodec.EncodeEnvelope(tamperedSave);
+                    Assert.Throws<InvalidOperationException>(() => LocalPlayerActionScenario.ReadCommittedActionPhysicalAudit(
+                        fingerprintMismatch, requestId, receipt.Command.Key.ScopeId.Value,
+                        before.RoundId, before.StateVersion, actionBatch.StateVersion, actionEvent.EventSeq,
+                        EventFor(actionType).ToString(), 0));
 
                     uint[] expectedActionTiles = actionType == ProtocolActionType.DeclarePon
                         ? new uint[] { 0, 1, 2 }
@@ -235,7 +262,34 @@ namespace Mahjong.LocalHost.Tests
                         Assert.DoesNotContain(2u, after.PrivateView.ClosedTiles);
                         Assert.DoesNotContain(actionType == ProtocolActionType.DeclarePon ? 0u : 4u, after.PrivateView.ClosedTiles);
                     }
-                    WriteVerifierToolFixture(scenario, payload, session, before, after, baselineCapture, acceptedCapture,
+                    if (actionType == ProtocolActionType.DeclareRiichi)
+                    {
+                        ulong latestVersion = actionBatch.StateVersion;
+                        DateTime advanceDeadline = DateTime.UtcNow.AddSeconds(10);
+                        while (latestVersion <= actionBatch.StateVersion && DateTime.UtcNow < advanceDeadline)
+                        {
+                            latestVersion = (await localChannel.RuntimeForMatch!.ActorForTest
+                                .GetSnapshotAsync(timeout.Token)).StateVersion.Value;
+                            if (latestVersion <= actionBatch.StateVersion) await Task.Delay(25, timeout.Token);
+                        }
+                        Assert.True(latestVersion > actionBatch.StateVersion,
+                            "The deterministic Riichi runtime must commit a later autonomous command for the newer-envelope positive case.");
+                        LocalTableRecoveryCapture laterCapture = await localChannel.RuntimeForMatch!.CaptureRecoveryAsync(timeout.Token);
+                        Assert.True(ulong.Parse(laterCapture.Facts.StateVersion, System.Globalization.CultureInfo.InvariantCulture) > actionBatch.StateVersion);
+                        string retainedActionAudit = LocalPlayerActionScenario.ReadCommittedActionPhysicalAudit(
+                            laterCapture.AuthoritySaveBytes,
+                            requestId,
+                            receipt.Command.Key.ScopeId.Value,
+                            before.RoundId,
+                            before.StateVersion,
+                            actionBatch.StateVersion,
+                            actionEvent.EventSeq,
+                            EventFor(actionType).ToString(),
+                            0);
+                        Assert.Equal(136, retainedActionAudit.Split('\n').Length);
+                        rawAfterCapture = laterCapture;
+                    }
+                    WriteVerifierToolFixture(scenario, payload, session, before, after, baselineCapture, rawAfterCapture,
                         receipt, actionBatch, actionEvent);
                 }
                 finally
