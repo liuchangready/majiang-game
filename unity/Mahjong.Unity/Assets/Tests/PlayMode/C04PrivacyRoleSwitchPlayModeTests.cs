@@ -547,8 +547,12 @@ namespace Mahjong.Unity.Tests.PlayMode
                 "\",\"receiptReason\":\"" + evidence.ReceiptReason +
                 "\",\"expectedStaleReason\":\"" + evidence.ExpectedStaleReason +
                 "\",\"staleReason\":\"" + evidence.StaleReason +
+                "\",\"capturedDecisionEpoch\":" + evidence.CapturedDecisionEpoch +
+                ",\"staleEpoch\":" + evidence.StaleEpoch +
+                ",\"staleRound\":\"" + evidence.StaleRound +
                 "\",\"staleCommandFrames\":" + evidence.StaleCommandFrames +
                 ",\"stalePendingAfter\":" + evidence.StalePendingAfter +
+                ",\"staleNoCommitMetadata\":" + evidence.StaleNoCommitMetadata.ToString().ToLowerInvariant() +
                 ",\"staleDecisionRejected\":" + evidence.StaleDecisionRejected.ToString().ToLowerInvariant() + "}", new UTF8Encoding(false));
             C04ControlContract.Assert(
                 evidence.ControlPresent,
@@ -558,13 +562,15 @@ namespace Mahjong.Unity.Tests.PlayMode
                 evidence.StaleReason,
                 evidence.StaleDecisionRejected,
                 evidence.StaleCommandFrames,
-                evidence.StalePendingAfter);
+                evidence.StalePendingAfter,
+                evidence.StaleNoCommitMetadata);
             Assert.IsTrue(evidence.AdvancedWithoutPlayerBinding, "Released AI did not advance after the player binding closed.");
             Assert.Greater(evidence.AfterVersion, evidence.ReleaseVersion);
             Assert.IsTrue(evidence.Claimed, "ClaimControl was not accepted.");
             Assert.IsTrue(evidence.ControlPresent, "ClaimControl did not produce a client control projection.");
             Assert.IsTrue(evidence.ClaimEpochAdvanced, "ClaimControl did not advance the client control epoch.");
             Assert.IsTrue(evidence.ControlHuman, "ClaimControl did not restore explicit human control.");
+            Assert.AreEqual(evidence.CapturedDecisionEpoch, evidence.StaleEpoch, "The stale request did not use the decision epoch it was captured with.");
             Assert.AreEqual(evidence.ExpectedStaleReason, evidence.StaleReason, "The stale request was rejected for the wrong reason.");
             Assert.IsTrue(evidence.StaleDecisionRejected, "A legal stale decision was not rejected.");
             Assert.AreEqual(1, evidence.StaleCommandFrames, "The stale request caused duplicate command frames.");
@@ -868,6 +874,8 @@ namespace Mahjong.Unity.Tests.PlayMode
             Task? spectatorPump = null;
             Task? claimedPump = null;
             Mahjong.Contracts.Wire.DecisionView? staleDecisionSeed = null;
+            ulong staleEpochSeed = 0UL;
+            string staleRoundSeed = string.Empty;
             try
             {
                 channel = await factory.CreateRoomViewerAsync(LocalRoomViewerRole.Player, 0, CancellationToken.None).ConfigureAwait(false);
@@ -880,6 +888,8 @@ namespace Mahjong.Unity.Tests.PlayMode
                 PlayerSnapshot before = session.PlayerSnapshot
                     ?? throw new InvalidOperationException("No baseline player snapshot.");
                 staleDecisionSeed = before.PrivateView.Decision;
+                staleEpochSeed = before.PrivateView.Control?.ControlEpoch ?? 0UL;
+                staleRoundSeed = before.RoundId;
                 ulong epoch = before.PrivateView.Control?.ControlEpoch ?? 0UL;
                 BusinessPayload payload = CommandPayloadFactory.ReleaseControl(before.RoundId, epoch);
                 var command = new ProtocolCommand(
@@ -961,22 +971,25 @@ namespace Mahjong.Unity.Tests.PlayMode
                 var staleCommand = new ProtocolCommand(
                     CommandKind.SubmitAction,
                     CommandPayloadFactory.SubmitAction(
-                        claimedSnapshot.RoundId,
+                        staleRoundSeed,
                         staleDecision.DecisionId,
-                        claimEpoch,
+                        staleEpochSeed,
                         (ProtocolActionType)staleAction!.ActionType,
                         tileIds: staleAction!.TileIds),
                     new RequestId("unity-stale-" + Guid.NewGuid().ToString("N")),
                     claimed.Binding.Scope.ScopeId,
                     new StateVersion(claimedSnapshot.StateVersion),
-                    new RoundId(claimedSnapshot.RoundId),
+                    new RoundId(staleRoundSeed),
                     decisionId: new DecisionId(staleDecision.DecisionId),
-                    controlEpoch: new ControlEpoch(claimEpoch));
+                    controlEpoch: new ControlEpoch(staleEpochSeed));
                 TableReceiptResolvedEventArgs staleReceipt = await SubmitExpectReceiptAsync(claimed, staleCommand, pumpCts.Token).ConfigureAwait(false);
                 bool staleRejected = staleReceipt.Resolution.ReceiptStatus == Mahjong.Contracts.ReceiptStatus.Rejected &&
                     string.Equals(staleReceipt.Resolution.ReasonCode, "DECISION_MISMATCH", StringComparison.Ordinal);
                 int staleCommandFrames = claimedCapture.CommandFrames - staleCommandFramesBefore;
                 int stalePendingAfter = claimed.PendingCommands.Count;
+                bool staleNoCommitMetadata = !staleReceipt.Resolution.CommandVersion.HasValue &&
+                    !staleReceipt.Resolution.EventSeq.HasValue &&
+                    !staleReceipt.Resolution.CommittedAtMs.HasValue;
 
                 return new ReleaseEvidence
                 {
@@ -993,8 +1006,12 @@ namespace Mahjong.Unity.Tests.PlayMode
                     ReceiptReason = claimReceipt.Resolution.ReasonCode,
                     ExpectedStaleReason = "DECISION_MISMATCH",
                     StaleReason = staleReceipt.Resolution.ReasonCode,
+                    StaleEpoch = staleEpochSeed,
+                    CapturedDecisionEpoch = staleDecision.ControlEpoch,
+                    StaleRound = staleRoundSeed,
                     StaleCommandFrames = staleCommandFrames,
                     StalePendingAfter = stalePendingAfter,
+                    StaleNoCommitMetadata = staleNoCommitMetadata,
                     StaleDecisionRejected = staleRejected
                 };
             }
@@ -1295,8 +1312,12 @@ namespace Mahjong.Unity.Tests.PlayMode
             public string ReceiptReason = string.Empty;
             public string ExpectedStaleReason = string.Empty;
             public string StaleReason = string.Empty;
+            public ulong StaleEpoch;
+            public ulong CapturedDecisionEpoch;
+            public string StaleRound = string.Empty;
             public int StaleCommandFrames;
             public int StalePendingAfter;
+            public bool StaleNoCommitMetadata;
             public bool StaleDecisionRejected;
         }
 
@@ -1473,3 +1494,28 @@ namespace Mahjong.Unity.Tests.PlayMode
         }
     }
 }
+
+    public static class C04ControlContract
+    {
+        public static void Assert(
+            bool controlPresent,
+            bool epochAdvanced,
+            bool human,
+            string expectedStaleReason,
+            string actualStaleReason,
+            bool staleRejected,
+            int staleCommandFrames,
+            int stalePendingAfter,
+            bool staleNoCommitMetadata)
+        {
+            if (!controlPresent) throw new InvalidOperationException("control projection is null");
+            if (!epochAdvanced) throw new InvalidOperationException("control epoch did not advance");
+            if (!human) throw new InvalidOperationException("control is still automated");
+            if (!string.Equals(expectedStaleReason, actualStaleReason, StringComparison.Ordinal))
+                throw new InvalidOperationException($"stale reason {actualStaleReason} != expected {expectedStaleReason}");
+            if (!staleRejected) throw new InvalidOperationException("stale request was not rejected");
+            if (staleCommandFrames != 1) throw new InvalidOperationException($"stale request command frames {staleCommandFrames} != 1");
+            if (stalePendingAfter != 0) throw new InvalidOperationException("stale request left pending target command");
+            if (!staleNoCommitMetadata) throw new InvalidOperationException("stale rejection carried target commit metadata");
+        }
+    }
