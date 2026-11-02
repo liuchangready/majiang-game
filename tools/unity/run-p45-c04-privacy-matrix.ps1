@@ -995,6 +995,8 @@ function Invoke-C04RunnerMain {
     preflightOnly = [bool]$PreflightOnly
   }
   $failure = $null
+  $finalizationFailures = New-Object Collections.Generic.List[string]
+  do {
   try {
     Log "PRECHECK repo=$repo runRoot=$script:RunRoot dotnet=$DotnetPath unity=$UnityPath"
     $identity = Get-C04SourceIdentity -Repo $repo -ExpectedHead $ExpectedSourceHead
@@ -1016,7 +1018,7 @@ function Invoke-C04RunnerMain {
     if ($PreflightOnly) {
       $summary.status = 'PASS'
       Log 'PREFLIGHT_ONLY complete'
-      return
+      break
     }
 
     $staging = Join-Path $script:RunRoot 'staging-project'
@@ -1155,7 +1157,6 @@ exit `$LASTEXITCODE
   }
   finally {
     Log 'FINALLY_START'
-    $finalizationFailures = New-Object Collections.Generic.List[string]
     foreach ($process in $script:OwnedProcesses.ToArray()) {
       if ($process.aliveAfter) {
         try {
@@ -1254,6 +1255,7 @@ exit `$LASTEXITCODE
       } catch { }
     }
   }
+  } while ($false)
   if ($null -ne $failure) { throw $failure }
   if ($null -ne $finalizationFailures -and $finalizationFailures.Count -gt 0) {
     throw ('Runner finalization failed: ' + ($finalizationFailures -join '; '))
