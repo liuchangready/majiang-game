@@ -51,6 +51,65 @@
 | C04-G5-02 | BLOCKED | 没有从合法公共命令得到真实非空私有 fee/ledger 对照；不能以空字段、相等 scalar 或 verifier 自测替代。 |
 | C04-G5-03 | BLOCKED | role-switch/cache clearing 与 .NET 原始旧 wire rejection 有证据；Unity/Windows Player 的延迟旧真实 wire 投递负例未执行。 |
 
+> **R7 控制判据状态（2026-11-03，B）**：I2/I4/recovery 保持关闭；I3 控制断言补齐为 control 非空、epoch 增加、human=false 三者同时成立，并用捕获的真实旧 decision 构造合法 stale 请求。实际公共组件复现：client `ControlPresent=true`、epoch 1→1、human=false，receipt `Recorded/LOCAL_CONTROL`；stale 精确 `DECISION_MISMATCH`。reviewer 同时观测 actor epoch2/human，说明断点在 Client 控制投影/刷新边界，不是 A actor 未收回。D05 仍未最终 PASS。
+
+## R7 控制验收修复（I3）
+
+### 身份
+
+- 最终代码头 `bd75936ea241415cfc6a82120d0b61194e104cb3`；clean/diff-check0。
+- 仅改 B PlayMode test；未改 A/Luna/Client/actor。
+
+### 修复内容
+
+- `ReleaseEvidence` 增加并写出：
+  - `claimEpochBefore`、`claimEpoch`
+  - `claimEpochAdvanced`
+  - `controlPresent`
+  - `controlHuman`
+  - `receiptStatus`、`receiptReason`
+  - `staleReason`
+- 测试显式断言：
+  - `ControlPresent == true`
+  - `ClaimEpochAdvanced == true`
+  - `ControlHuman == true`（`Control != null && ControlledByComputer == false`）
+  - `StaleReason == "DECISION_MISMATCH"`
+  - `StaleDecisionRejected == true`
+- stale 请求不再硬编码 `Pass`/0/空 decision：
+  - 使用 release 前捕获的真实 `DecisionId`、`ControlEpoch`、action/tileIds；
+  - 命令 `decisionId` 使用同一真实 decision；
+  - 只接受精确 `DECISION_MISMATCH`，不接受任意 Rejected。
+- 失败证据在断言前写 JSON，失败也有 `controlPresent/epoch/human/receipt/stale` 原件。
+
+### 实际公共组件复现（control-helper 当前源码）
+
+- `Claimed=true`
+- `ReceiptStatus=Recorded`
+- `ReceiptReason=LOCAL_CONTROL`
+- `ClaimEpochBefore=1`
+- `ClaimEpoch=1`
+- `ClaimEpochAdvanced=False`
+- `ControlPresent=True`
+- `ControlHuman=False`
+- `StaleReason=DECISION_MISMATCH`
+- `StaleDecisionRejected=True`
+
+reviewer 同源码只读 actor 观察：`actorEpoch=2 actorAutomated=False`。因此 actor 已收回，client 投影仍 epoch1/AI；断点在 Client 控制投影/刷新/接收边界，不是 `ReclaimControlAsync` 失败。
+
+### 精确外部 owner 请求
+
+- 现象：`ClaimControl` receipt `Recorded/LOCAL_CONTROL`，actor epoch2/human，但同一 `TableSession.PlayerSnapshot.PrivateView.Control` 仍 epoch1、`ControlledByComputer=true`，且无后续 PlayerUpdate/Sync 让 client 追上。
+- 最小复现：`RunReleasedControlScenarioAsync`（release→spectator AI→新 player seat0→ClaimControl）。
+- 需 Client/A owner 修复：claim 后控制投影/推送/同步刷新；B 不用 actor 结果替代 client，也不改私有缓存。
+- B 侧断言已完整，达到条件才 PASS；当前真实 client 未达到，故相关行 FAIL/BLOCKED。
+
+### 状态
+
+- I2：闭合。
+- I4：闭合。
+- I3 recovery：闭合。
+- I3 control：B 判据闭合；真实 client 投影缺口未闭合，D05 未最终 PASS。旧 6/7、旧 7/7 均保留，不重写。
+
 > **R6 修正状态（2026-11-03，B）**：I2 已用 Unity `-buildPlayerPath` 保留实际 Test Player 包并通过包门禁；I4 改为严格稳定枚举、`upm-cache` 预裁剪、state 落 RunRoot；I3 恢复强断言后 recovery 真实 lookup 通过，但 ClaimControl 暴露 A 公共行为缺口（receipt Applied 后仍 `ControlledByComputer=true`、epoch 不前进）。旧 7/7 已标记为 false-positive，不用于最终验收。
 
 ## R6 修正（I2/I3/I4）
