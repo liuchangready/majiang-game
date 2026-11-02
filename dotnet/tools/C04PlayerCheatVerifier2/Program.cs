@@ -12,8 +12,22 @@ using Mahjong.Client;
 using Mahjong.Contracts;
 using Mahjong.Contracts.Wire;
 using Mahjong.LocalHost;
+using Mahjong.TableRuntime;
+using CheatState = Mahjong.Domain.Cheat.CheatState;
+using DomainBeamSwapCandidate = Mahjong.Domain.Cheat.BeamSwapCandidate;
+using DomainBeamSwapOffer = Mahjong.Domain.Cheat.BeamSwapOffer;
+using DomainBeamSwapSlotKind = Mahjong.Domain.Cheat.BeamSwapSlotKind;
+using DomainSleeveBloomOffer = Mahjong.Domain.Cheat.SleeveBloomOffer;
+using DomainSleeveBloomReservation = Mahjong.Domain.Cheat.SleeveBloomReservation;
+using DomainTileMarkGroup = Mahjong.Domain.Cheat.TileMarkGroup;
+using DomainCheatPrivateView = Mahjong.Domain.Cheat.CheatPrivateView;
 using WireReceipt = Mahjong.Contracts.Wire.Receipt;
 using WireReceiptStatus = Mahjong.Contracts.Wire.ReceiptStatus;
+using WireBeamSwapSlotKind = Mahjong.Contracts.Wire.BeamSwapSlotKind;
+using WireMarkedTileView = Mahjong.Contracts.Wire.MarkedTileView;
+using WireTileMarkGroupView = Mahjong.Contracts.Wire.TileMarkGroupView;
+using WireSleeveBloomReservationView = Mahjong.Contracts.Wire.SleeveBloomReservationView;
+using WireTileMarkView = Mahjong.Contracts.Wire.TileMarkView;
 using WireSleeveBloomView = Mahjong.Contracts.Wire.SleeveBloomView;
 using WireBeamSwapView = Mahjong.Contracts.Wire.BeamSwapView;
 using WireBeamSwapCandidateView = Mahjong.Contracts.Wire.BeamSwapCandidateView;
@@ -780,7 +794,7 @@ internal static class Program
             var priv = a[i].Publication!.PlayerUpdate.Snapshot.PrivateView;
             var cheat = priv.Cheat ?? throw new InvalidDataException(a[i].Id + ":PRIVATE_CHEAT_MISSING");
             if (cheat.CheatPoints != balances[i] || cheat.LedgerEntries.Count != ledgerEntries[i]) Fail(a[i].Id + ":PRIVATE_PUBLICATION_LEDGER");
-            VerifyPrivateProjection(a[i], ExactActionPhysicalMap(a[i]));
+            VerifyPrivateProjection(a[i], ExactActionPhysicalMap(a[i]), ReadCommittedCheatState(a[i].AfterCheat));
             VerifyPrivateLedgerProjection(a[i]);
             if (priv.Seat != 0 || a[i].Command.SeatId != 0) Fail(a[i].Id + ":AUTHORIZED_SEAT_NOT_DEALER");
             if (i == 0 && (cheat.LedgerEntries[0].Amount != -1 || cheat.LedgerEntries[0].ReasonCode != "TILE_MARK")) Fail("TILE_MARK_LEDGER_ENTRY");
@@ -923,9 +937,19 @@ internal static class Program
                 Fail(action + ":UNRELATED_PHYSICAL_ENTITY_MOVED:" + entry.Key.ToString(CultureInfo.InvariantCulture));
     }
 
-    private static void VerifyPrivateProjection(ActionCapture x, Dictionary<int, string> physical)
+    private static CheatState ReadCommittedCheatState(byte[] payload)
+    {
+        TableCheatLedgerCheckpoint checkpoint = TableCheatLedgerCheckpointCodec.Decode(payload);
+        CheatState state = checkpoint.RestoreCheatState();
+        if (checkpoint.TotalVersion != state.Version || checkpoint.Fingerprint != state.Fingerprint)
+            throw new InvalidDataException("RECOVERY_CHEAT_STATE_METADATA_MISMATCH");
+        return state;
+    }
+
+    private static void VerifyPrivateProjection(ActionCapture x, Dictionary<int, string> physical, CheatState committedCheat)
     {
         PlayerPrivateView view = x.Publication!.PlayerUpdate.Snapshot.PrivateView;
+        DomainCheatPrivateView cheatState = committedCheat.ViewFor(view.Seat);
         var hand = new HashSet<int>(view.ClosedTiles.Select(v => checked((int)v)));
         if (view.HasDrawnTileId && !hand.Add(checked((int)view.DrawnTileId))) Fail(x.Id + ":PRIVATE_HAND_DUPLICATE_DRAWN_TILE");
         int[] exactHand = physical.Where(kv => kv.Value.StartsWith("HAND|0|", StringComparison.Ordinal)).Select(kv => kv.Key).OrderBy(v => v).ToArray();
@@ -936,6 +960,98 @@ internal static class Program
         int[] privateMeld = view.OwnerMelds.SelectMany(m => m.TileIds).Select(v => checked((int)v)).OrderBy(v => v).ToArray();
         int[] exactMeld = physical.Where(kv => kv.Value.StartsWith("MELD|0|", StringComparison.Ordinal)).Select(kv => kv.Key).OrderBy(v => v).ToArray();
         if (!privateMeld.SequenceEqual(exactMeld)) Fail(x.Id + ":PRIVATE_MELDS_DO_NOT_MATCH_EXACT_RECOVERY");
+
+        VerifyPrivateMarkGroups(x.Id, cheatState.MarkGroups, view.Cheat.TileMark);
+        CommandType actionType = x.Command.Command.Type;
+        if (actionType == CommandType.SubmitSleeveBloom || actionType == CommandType.SubmitSleeveBloomChoice)
+        {
+            VerifySleeveOfferProjection(x.Id, "IMMEDIATE", cheatState.ImmediateOffer, view.Cheat.SleeveBloom);
+            VerifySleeveOfferProjection(x.Id, "OFF_TURN", cheatState.OffTurnOffer, view.Cheat.OffTurnSleeveBloom);
+            VerifySleeveReservationProjection(x.Id, cheatState.Reservation, view.Cheat.SleeveBloomReservation);
+            if (!Eq(cheatState.WindowId ?? string.Empty, view.Cheat.WindowId)) Fail(x.Id + ":PRIVATE_SLEEVE_WINDOW_MISMATCH");
+        }
+        if (actionType == CommandType.SubmitBeamSwap || actionType == CommandType.SubmitBeamSwapChoice)
+            VerifyBeamOfferProjection(x.Id, cheatState.BeamSwapOffer, view.Cheat.BeamSwap);
+
+        if (x.Command.Command.Type == CommandType.SubmitTileMark)
+        {
+            CheatState beforeCheat = ReadCommittedCheatState(x.BeforeCheat);
+            HashSet<string> priorIds = new HashSet<string>(beforeCheat.TileMarks.GroupsForSeat(x.Command.SeatId).Select(g => g.GroupId), StringComparer.Ordinal);
+            DomainTileMarkGroup[] added = cheatState.MarkGroups.Where(g => !priorIds.Contains(g.GroupId)).ToArray();
+            uint[] requested = CanonicalPayloadParser.Parse(x.Payload).RequireRepeatedUInt32(CommandPayloadFields.TileMarkTileIds, "tileIds").OrderBy(v => v).ToArray();
+            if (added.Length != 1 || added[0].OwnerSeat != x.Command.SeatId || added[0].CreatedRoundId != x.Command.Command.ExpectedRoundId ||
+                !added[0].TileIds.Select(t => checked((uint)t.Value)).OrderBy(v => v).SequenceEqual(requested))
+                Fail(x.Id + ":COMMITTED_MARK_GROUP_NOT_BOUND_TO_CANONICAL_REQUEST");
+        }
+    }
+
+    private static void VerifyPrivateMarkGroups(string id, IReadOnlyList<DomainTileMarkGroup> expected, WireTileMarkView actual)
+    {
+        if (expected.Count > 0 && actual == null) { Fail(id + ":PRIVATE_MARK_GROUP_SET_MISMATCH"); return; }
+        IReadOnlyList<WireTileMarkGroupView> actualGroups = actual.Groups;
+        if (actualGroups.Count != expected.Count) { Fail(id + ":PRIVATE_MARK_GROUP_SET_MISMATCH"); return; }
+        var actualById = new Dictionary<string, WireTileMarkGroupView>(StringComparer.Ordinal);
+        foreach (WireTileMarkGroupView group in actualGroups)
+            if (!actualById.TryAdd(group.GroupId, group)) Fail(id + ":PRIVATE_MARK_GROUP_SET_MISMATCH");
+        foreach (DomainTileMarkGroup group in expected)
+        {
+            if (!actualById.TryGetValue(group.GroupId, out WireTileMarkGroupView? projected))
+            {
+                Fail(id + ":PRIVATE_MARK_GROUP_SET_MISMATCH");
+                continue;
+            }
+            if (projected.CreatedRoundId != group.CreatedRoundId || projected.CreatedRoundOrdinal != group.CreatedRoundOrdinal ||
+                projected.ExpiresAfterRoundOrdinal != group.ExpiresAfterRoundOrdinal)
+                Fail(id + ":PRIVATE_MARK_GROUP_GENERATION_MISMATCH");
+            uint[] expectedTiles = group.TileIds.Select(t => checked((uint)t.Value)).ToArray();
+            if (!projected.Tiles.Select(t => t.TileId).SequenceEqual(expectedTiles))
+                Fail(id + ":PRIVATE_MARK_GROUP_ENTITY_SET_MISMATCH");
+            foreach (WireMarkedTileView tile in projected.Tiles)
+                if (tile.Area.Length != 0 || tile.Seat != ProtocolConstants.NoSeat || tile.RiverPosition != 0)
+                    Fail(id + ":PRIVATE_MARK_ENTITY_REDACTION_MISMATCH");
+        }
+    }
+
+    private static void VerifySleeveOfferProjection(string id, string mode, DomainSleeveBloomOffer? expected, WireSleeveBloomView? actual)
+    {
+        if ((expected == null) != (actual == null)) { Fail(id + ":PRIVATE_SLEEVE_" + mode + "_OFFER_PRESENCE_MISMATCH"); return; }
+        if (expected == null || actual == null) return;
+        bool hasDeadline = expected.DeadlineMillis > 0;
+        if (actual.OfferId != expected.OfferId || actual.Mode != mode || actual.FirstTileId != checked((uint)expected.FirstTile.Value) ||
+            actual.SecondTileId != checked((uint)expected.SecondTile.Value) || actual.CreatedTurnNumber != checked((uint)expected.CreatedTurnNumber) ||
+            !Eq(actual.WindowId, expected.WindowId ?? string.Empty) || actual.HasDeadline != hasDeadline ||
+            (hasDeadline ? actual.DeadlineRemainingMs < 0 || actual.DeadlineRemainingMs > expected.DeadlineMillis : actual.DeadlineRemainingMs != 0) ||
+            actual.DrawKind.ToString() != expected.DrawKind.ToString())
+            Fail(id + ":PRIVATE_SLEEVE_" + mode + "_OFFER_MISMATCH");
+    }
+
+    private static void VerifySleeveReservationProjection(string id, DomainSleeveBloomReservation? expected, WireSleeveBloomReservationView? actual)
+    {
+        if ((expected == null) != (actual == null)) { Fail(id + ":PRIVATE_SLEEVE_RESERVATION_PRESENCE_MISMATCH"); return; }
+        if (expected != null && actual != null && (actual.OfferId != expected.OfferId ||
+            actual.TileId != checked((uint)expected.Tile.Value) || !Eq(actual.WindowId, expected.WindowId ?? string.Empty)))
+            Fail(id + ":PRIVATE_SLEEVE_RESERVATION_MISMATCH");
+    }
+
+    private static void VerifyBeamOfferProjection(string id, DomainBeamSwapOffer? expected, WireBeamSwapView? actual)
+    {
+        if ((expected == null) != (actual == null)) { Fail(id + ":PRIVATE_BEAM_OFFER_PRESENCE_MISMATCH"); return; }
+        if (expected == null || actual == null) return;
+        if (actual.OfferId != expected.OfferId || actual.DrawnTileId != checked((uint)expected.DrawnTileId.Value) ||
+            actual.HasDeadline || actual.DeadlineRemainingMs != 0 ||
+            !actual.SelectableHandTileIds.SequenceEqual(expected.EligibleHandTileIds.Select(t => checked((uint)t.Value))))
+            Fail(id + ":PRIVATE_BEAM_OFFER_MISMATCH");
+        if (actual.Candidates.Count != expected.Candidates.Count) { Fail(id + ":PRIVATE_BEAM_CANDIDATE_SET_MISMATCH"); return; }
+        for (int i = 0; i < expected.Candidates.Count; i++)
+        {
+            DomainBeamSwapCandidate source = expected.Candidates[i];
+            WireBeamSwapCandidateView projected = actual.Candidates[i];
+            WireBeamSwapSlotKind kind = source.Slot.Kind == DomainBeamSwapSlotKind.WallSlot ? WireBeamSwapSlotKind.Wall :
+                source.Slot.Kind == DomainBeamSwapSlotKind.DeadWallSlot ? WireBeamSwapSlotKind.DeadWall : WireBeamSwapSlotKind.Replacement;
+            if (!projected.HasTileId || projected.TileId != checked((uint)source.Tile.Value) || projected.SlotIndex != checked((uint)source.Slot.Index) ||
+                projected.Slot != checked((uint)source.Slot.Index) || projected.SlotKind != kind)
+                Fail(id + ":PRIVATE_BEAM_CANDIDATE_SET_MISMATCH");
+        }
     }
 
     private static void VerifyPrivateLedgerProjection(ActionCapture x)
@@ -1049,6 +1165,15 @@ internal static class Program
             if (cursor == null || snapshotCursor == null || update.FromCursor == null ||
                 !cursor.Equals(frame.Cursor) || !cursor.Equals(snapshotCursor))
                 Fail("PLAYER_HISTORY_CURSOR_COPY_MISMATCH");
+            Mahjong.Contracts.Wire.StreamCursor expectedFrom = playerUpdates.Count == 0
+                ? new Mahjong.Contracts.Wire.StreamCursor
+                {
+                    StreamVersion = welcome.Baseline.Cursor.StreamVersion,
+                    ProjectionSeq = checked(welcome.Baseline.Cursor.ProjectionSeq + 1)
+                }
+                : playerUpdates[playerUpdates.Count - 1].PlayerUpdate.Cursor;
+            if (update.FromCursor != null && !update.FromCursor.Equals(expectedFrom))
+                Fail("PLAYER_HISTORY_FROM_CURSOR_PREDECESSOR_MISMATCH");
             if (cursor != null && update.FromCursor != null && cursor.StreamVersion < update.FromCursor.StreamVersion)
                 Fail("PLAYER_HISTORY_STREAM_VERSION_REGRESSED");
             if (cursor!.ProjectionSeq != checked(lastProjection + 1)) Fail("PLAYER_HISTORY_PROJECTION_SEQUENCE_GAP_OR_SHIFT");
