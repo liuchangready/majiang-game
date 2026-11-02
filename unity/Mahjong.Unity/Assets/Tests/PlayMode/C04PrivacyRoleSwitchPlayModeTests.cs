@@ -379,14 +379,19 @@ namespace Mahjong.Unity.Tests.PlayMode
                     recoveryOtherSessions[seat - 1] = new TableSession(recoveryOtherChannels[seat - 1], new InMemoryOutboxStore());
                     Task otherOpen = recoveryOtherSessions[seat - 1].OpenAsync(
                         new TableSessionOpenRequest(otherTicket!.SessionTicket, LocalTableChannelFactory.ClientBuild),
-                        CancellationToken.None);
+                        pumpCts.Token);
                     yield return WaitTask(() => otherOpen.IsCompleted, 30f, "recovery positive seat " + seat + " open");
                     Assert.IsFalse(otherOpen.IsFaulted, otherOpen.Exception?.ToString());
-                    yield return PumpUntilReady(recoveryOtherSessions[seat - 1], 30f, "recovery positive seat " + seat);
+                    recoveryOtherPumps.Add(PumpLoopAsync(recoveryOtherSessions[seat - 1], pumpCts.Token));
+                }
+                for (int seat = 1; seat < 4; seat++)
+                {
+                    Task otherReady = WaitReadyAsync(recoveryOtherSessions[seat - 1], pumpCts.Token);
+                    yield return WaitTask(() => otherReady.IsCompleted, 30f, "recovery positive seat " + seat);
+                    Assert.IsFalse(otherReady.IsFaulted, otherReady.Exception?.ToString());
                     for (int i = 0; i < 16 && recoveryOtherSessions[seat - 1].PlayerSnapshot == null; i++)
                     {
-                        Task pump = recoveryOtherSessions[seat - 1].PumpOnceAsync(CancellationToken.None);
-                        yield return WaitTask(() => pump.IsCompleted, 10f, "recovery positive seat " + seat + " snapshot");
+                        yield return null;
                     }
                     Assert.IsNotNull(recoveryOtherSessions[seat - 1].PlayerSnapshot);
                 }
@@ -411,6 +416,7 @@ namespace Mahjong.Unity.Tests.PlayMode
                 pumpCts.Cancel();
                 if (firstPump != null) { try { firstPump.GetAwaiter().GetResult(); } catch { } }
                 if (recoveredPump != null) { try { recoveredPump.GetAwaiter().GetResult(); } catch { } }
+                try { Task.WhenAll(recoveryOtherPumps).GetAwaiter().GetResult(); } catch { }
                 C04PrivacyProbe.ResetForTest();
                 for (int seat = 0; seat < 3; seat++)
                 {
