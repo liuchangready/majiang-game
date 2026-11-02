@@ -182,6 +182,46 @@ $check = Test-C04PackageSeal -PlayerPath $package.exe -ExpectedSourceHead $packa
 Assert-True $check.ok 'package-seal-good'
 $fakeHead = ('a' * 40)
 Assert-Match (Test-C04PackageSeal -PlayerPath $package.exe -ExpectedSourceHead $fakeHead -CurrentSourceIdentitySha256 $package.identity.identitySha256).errors 'PACKAGE_SEAL_(SOURCE|BUILD)_HEAD_NOT_IN_HISTORY|PACKAGE_SEAL_SOURCE_HEAD' 'package-fake-head'
+# Restored coverage: plugin closure identity negatives.
+$badPlugin = New-PluginFixture -Dir (Join-Path $testRoot 'bad-plugin')
+[System.IO.File]::WriteAllText((Join-Path $badPlugin.dir 'Mahjong.Domain.dll'), 'changed')
+Assert-Contains (Get-C04PluginClosure -ProvenancePath $badPlugin.provenance -PluginDir $badPlugin.dir).errors 'PLUGIN_HASH_MISMATCH:Mahjong.Domain.dll' 'plugin-hash-mismatch'
+Remove-Item (Join-Path $badPlugin.dir 'Mahjong.Ai.dll') -Force
+Assert-Contains (Get-C04PluginClosure -ProvenancePath $badPlugin.provenance -PluginDir $badPlugin.dir).errors 'PLUGIN_MISSING:Mahjong.Ai.dll' 'plugin-missing'
+[System.IO.File]::WriteAllText((Join-Path $badPlugin.dir 'unexpected.dll'), 'x')
+Assert-Contains (Get-C04PluginClosure -ProvenancePath $badPlugin.provenance -PluginDir $badPlugin.dir).errors 'PLUGIN_UNEXPECTED:unexpected.dll' 'plugin-unexpected'
+
+# Restored coverage: source identity/docs-only, package identity/commit, evidence extra/hash.
+$idBeforeDocs = Get-C04SourceIdentity $fixtureRepo
+[System.IO.File]::WriteAllText((Join-Path $fixtureRepo 'docs.md'), 'docs')
+& git -C $fixtureRepo -c user.name=Test -c user.email=test@example.invalid add docs.md
+& git -C $fixtureRepo -c user.name=Test -c user.email=test@example.invalid commit -q -m docs
+$idAfterDocs = Get-C04SourceIdentity $fixtureRepo
+Assert-Equal $idBeforeDocs.identitySha256 $idAfterDocs.identitySha256 'source-identity-docs-stable'
+Assert-Contains (Test-C04PackageSeal -PlayerPath $package.exe -ExpectedSourceHead $package.head -CurrentSourceIdentitySha256 ('e' * 64)).errors 'PACKAGE_SEAL_SOURCE_IDENTITY_MISMATCH' 'package-wrong-identity'
+Assert-Contains (Test-C04PackageSeal -PlayerPath $package.exe -ExpectedSourceHead $package.head -ExpectedBuildCommit ('f' * 40) -CurrentSourceIdentitySha256 $package.identity.identitySha256).errors 'PACKAGE_SEAL_BUILD_COMMIT_MISMATCH' 'package-wrong-commit'
+
+$evidenceExtra = Join-Path $testRoot 'evidence-extra'
+New-Item -ItemType Directory -Force -Path $evidenceExtra | Out-Null
+[System.IO.File]::WriteAllText((Join-Path $evidenceExtra 'a.txt'), 'a')
+$null = Write-C04EvidenceSeal -EvidenceRoot $evidenceExtra -Status 'FAIL' -SourceHead $package.head
+Assert-Equal (@(Test-C04EvidenceSeal $evidenceExtra)).Count 0 'evidence-extra-valid'
+[System.IO.File]::WriteAllText((Join-Path $evidenceExtra 'late.txt'), 'late')
+Assert-Contains (Test-C04EvidenceSeal $evidenceExtra) 'EVIDENCE_EXTRA:late.txt' 'evidence-extra-detected'
+Remove-Item (Join-Path $evidenceExtra 'late.txt') -Force
+[System.IO.File]::AppendAllText((Join-Path $evidenceExtra 'a.txt'), 'x')
+Assert-Contains (Test-C04EvidenceSeal $evidenceExtra) 'EVIDENCE_HASH:a.txt' 'evidence-hash-detected'
+
+# Restored coverage: quoted path and large dual-stream native process.
+$spaceDir = Join-Path $testRoot 'space dir'; New-Item -ItemType Directory -Force -Path $spaceDir | Out-Null
+$spacePath = Join-Path $spaceDir 'a file.txt'; [System.IO.File]::WriteAllText($spacePath, 'x')
+$echoScript = Join-Path $testRoot 'echo.ps1'; [System.IO.File]::WriteAllText($echoScript, 'param([string]$Value) Write-Output $Value')
+$echoOut = Join-Path $testRoot 'echo.out'
+$echo = Start-C04BoundedProcess -FilePath powershell.exe -Arguments @('-NoProfile','-ExecutionPolicy','Bypass','-File',$echoScript,'-Value',$spacePath) -TimeoutSeconds 30 -StdOutPath $echoOut -StdErrPath (Join-Path $testRoot 'echo.err') -Label 'quoted' -DrainGrace 3 -Heartbeat 0
+Assert-Equal ((Get-Content $echoOut -Raw).Trim()) $spacePath 'process-quoted-path'
+$bigOut = Join-Path $testRoot 'big.out'; $bigErr = Join-Path $testRoot 'big.err'
+$big = Start-C04BoundedProcess -FilePath powershell.exe -Arguments @('-NoProfile','-Command','[Console]::Out.Write(("x" * 500000)); [Console]::Error.Write(("y" * 500000)); exit 0') -TimeoutSeconds 60 -StdOutPath $bigOut -StdErrPath $bigErr -Label 'big' -DrainGrace 5 -Heartbeat 0
+Assert-True ($big.drainComplete -and (Get-Item $bigOut).Length -gt 400000 -and (Get-Item $bigErr).Length -gt 400000) 'process-big-dual-stream'
 [System.IO.File]::WriteAllText((Join-Path $package.dir 'late.dll'), 'late')
 Assert-Contains (Test-C04PackageSeal -PlayerPath $package.exe -ExpectedSourceHead $package.head -CurrentSourceIdentitySha256 $package.identity.identitySha256).errors 'PACKAGE_EXTRA_FILE:late.dll' 'package-extra'
 Remove-Item (Join-Path $package.dir 'late.dll') -Force
