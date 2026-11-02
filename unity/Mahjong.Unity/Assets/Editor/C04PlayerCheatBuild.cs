@@ -176,10 +176,12 @@ public static class C04PlayerCheatBuild
         WriteReport(reportFull, observation, finalPluginDir);
         Debug.Log("C04_BUILD_REPORT: " + reportFull);
 
-        // Keep the real BuildReport count and every step message. The runner is
-        // responsible for rejecting unknown error messages; this entry point
-        // only fails when Unity did not produce a successful output.
+        // Fail closed on any BuildReport error. The real count and every step
+        // message stay in the report; they are never filtered or renumbered.
         if (!string.Equals(observation.Result, "Succeeded", StringComparison.Ordinal) ||
+            observation.Errors.GetValueOrDefault() != 0 ||
+            observation.StepErrorCount != 0 ||
+            observation.StepExceptionCount != 0 ||
             !observation.OutputExists)
         {
             throw new InvalidOperationException(

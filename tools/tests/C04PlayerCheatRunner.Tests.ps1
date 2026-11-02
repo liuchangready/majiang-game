@@ -1,8 +1,8 @@
 <#
-    SCRIPT_TOOL_FIXTURE negative matrix for D04-C/R1-06 runner mechanisms.
-    These tests exercise real PowerShell/.NET processes, the package/evidence
-    sealing functions and BuildReport attribution. They do not run Unity, the
-    Player or a game.
+    SCRIPT_TOOL_FIXTURE negative matrix for D04-C/R1-06 rework.
+    Exercises real owned processes, durable writer cleanup, strict BuildReport
+    validation, source-input freeze, package receipt/closure validation, path
+    safety and partial-artifact sealing. No Unity/Player/GAME execution.
 #>
 $ErrorActionPreference = 'Stop'
 $runner = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'tools\unity\run-p45-c04-player-cheats.ps1'
@@ -10,97 +10,43 @@ $runner = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'too
 
 $passed = 0
 $failures = New-Object System.Collections.Generic.List[string]
-$testRoot = Join-Path $root ('build\tool-tests-' + [guid]::NewGuid().ToString('N'))
+$testRoot = Join-Path $root ('build\rework-tests-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $testRoot | Out-Null
-$powershell = (Get-Command powershell.exe).Source
 
-function Assert-Equal {
-    param($Actual, $Expected, [string]$Label)
-    if ($Actual -eq $Expected) { $script:passed++ }
-    else { $script:failures.Add("$Label expected=[$Expected] actual=[$Actual]") | Out-Null }
-}
-
-function Assert-True {
-    param($Condition, [string]$Label)
-    if ($Condition) { $script:passed++ }
-    else { $script:failures.Add("$Label condition was false") | Out-Null }
-}
-
-function Assert-Contains {
-    param([object[]]$Values, [string]$Expected, [string]$Label)
-    if (@($Values) -contains $Expected) { $script:passed++ }
-    else { $script:failures.Add("$Label expected=$Expected actual=$(@($Values) -join ',')") | Out-Null }
-}
-
-function Assert-Match {
-    param([object[]]$Values, [string]$Pattern, [string]$Label)
-    if (@($Values | Where-Object { [string]$_ -match $Pattern }).Count -gt 0) { $script:passed++ }
-    else { $script:failures.Add("$Label no value matched $Pattern actual=$(@($Values) -join ',')") | Out-Null }
-}
+function Assert-Equal { param($Actual, $Expected, [string]$Label) if ($Actual -eq $Expected) { $script:passed++ } else { $script:failures.Add("$Label expected=[$Expected] actual=[$Actual]") | Out-Null } }
+function Assert-True { param($Condition, [string]$Label) if ($Condition) { $script:passed++ } else { $script:failures.Add("$Label condition was false") | Out-Null } }
+function Assert-Contains { param([object[]]$Values, [string]$Expected, [string]$Label) if (@($Values) -contains $Expected) { $script:passed++ } else { $script:failures.Add("$Label expected=$Expected actual=$(@($Values) -join ',')") | Out-Null } }
+function Assert-Match { param([object[]]$Values, [string]$Pattern, [string]$Label) if (@($Values | Where-Object { [string]$_ -match $Pattern }).Count -gt 0) { $script:passed++ } else { $script:failures.Add("$Label no match $Pattern actual=$(@($Values) -join ',')") | Out-Null } }
 
 function New-FixtureReport {
-    param(
-        [string]$OutputPath,
-        [int]$Errors = 0,
-        [string]$Result = 'Succeeded',
-        [string[]]$StepMessages = @()
-    )
-    $steps = @([ordered]@{
-        name = 'Preprocess Player'
-        depth = 0
-        durationSeconds = 1.0
-        messages = @($StepMessages | ForEach-Object { [ordered]@{ type = 'Error'; content = $_ } })
-    })
-    if ($StepMessages.Count -eq 0) {
-        $steps[0].messages = @([ordered]@{ type = 'Log'; content = 'ok' })
-    }
+    param([string]$OutputPath, [int]$Errors = 0, [string]$Result = 'Succeeded', [string[]]$StepMessages = @(), [switch]$OmitBytesAndSha, [string]$Exception = '')
+    $steps = @([ordered]@{ name = 'Preprocess Player'; depth = 0; durationSeconds = 1.0; messages = @($StepMessages | ForEach-Object { [ordered]@{ type = 'Error'; content = $_ } }) })
+    if ($StepMessages.Count -eq 0) { $steps[0].messages = @([ordered]@{ type = 'Log'; content = 'ok' }) }
     $outputFull = Get-C04FullPath $OutputPath
     $bytes = (Get-Item -LiteralPath $outputFull).Length
-    return [ordered]@{
-        schema = 1
-        result = $Result
-        errors = $Errors
-        warnings = 0
-        target = 'StandaloneWindows64'
-        output = $outputFull
-        bytes = $bytes
-        outputSha256 = Get-C04Sha256 $outputFull
-        outputExists = $true
-        startedUtc = '2026-11-03T00:00:00.0000000Z'
-        finishedUtc = '2026-11-03T00:01:00.0000000Z'
-        durationSeconds = 60.0
-        unityVersion = '6000.3.27f1'
-        productName = 'Mahjong Cheater'
-        exception = ''
+    $report = [ordered]@{
+        schema = 1; result = $Result; errors = $Errors; warnings = 0; target = 'StandaloneWindows64'
+        output = $outputFull; bytes = $bytes; outputSha256 = Get-C04Sha256 $outputFull; outputExists = $true
+        startedUtc = '2026-11-03T00:00:00.0000000Z'; finishedUtc = '2026-11-03T00:01:00.0000000Z'; durationSeconds = 60.0
+        unityVersion = '6000.3.27f1'; productName = 'Mahjong Cheater'; exception = $Exception
         scenes = @('Assets/Scenes/Boot.unity','Assets/Scenes/Menu.unity','Assets/Scenes/Lobby.unity','Assets/Scenes/Table.unity','Assets/Scenes/Spectator.unity','Assets/Scenes/Settlement.unity')
-        plugins = @()
-        stepCount = 1
-        stepErrorCount = $StepMessages.Count
-        stepExceptionCount = 0
-        stepWarningCount = 0
-        stepDiagnostics = @($StepMessages)
-        steps = $steps
+        plugins = @([ordered]@{ name = 'Mahjong.Domain.dll'; bytes = 1; sha256 = ('a' * 64) })
+        stepCount = 1; stepErrorCount = $StepMessages.Count; stepExceptionCount = 0; stepWarningCount = 0; stepDiagnostics = @($StepMessages); steps = $steps
     }
+    if ($OmitBytesAndSha) { $report.Remove('bytes'); $report.Remove('outputSha256') }
+    return $report
 }
 
 function New-PluginFixture {
     param([string]$Dir)
     New-Item -ItemType Directory -Force -Path $Dir | Out-Null
-    $required = @('Mahjong.Domain.dll','Mahjong.Contracts.dll','Mahjong.Contracts.Wire.dll','Mahjong.TableRuntime.dll','Mahjong.Client.dll','Mahjong.LocalHost.dll','Mahjong.Ai.dll','Google.Protobuf.dll')
     $outputs = New-Object System.Collections.Generic.List[object]
-    foreach ($name in $required) {
+    foreach ($name in @('Mahjong.Domain.dll','Mahjong.Contracts.dll','Mahjong.Contracts.Wire.dll','Mahjong.TableRuntime.dll','Mahjong.Client.dll','Mahjong.LocalHost.dll','Mahjong.Ai.dll','Google.Protobuf.dll')) {
         $path = Join-Path $Dir $name
         [System.IO.File]::WriteAllText($path, "fixture-$name", (New-Object System.Text.UTF8Encoding($false)))
         $outputs.Add([ordered]@{ Name = $name; Length = (Get-Item -LiteralPath $path).Length; Sha256 = (Get-C04Sha256 $path); SourceKind = 'project'; SourcePath = 'fixture'; PluginPath = 'fixture'; Project = $name.Replace('.dll','') }) | Out-Null
     }
-    $provenance = [ordered]@{
-        schemaVersion = 2
-        kind = 'mahjong-unity-shared-plugin-provenance'
-        evidenceScope = 'scratch'
-        build = [ordered]@{ exitCode = 0 }
-        inputs = @()
-        outputs = $outputs.ToArray()
-    }
+    $provenance = [ordered]@{ schemaVersion = 2; kind = 'mahjong-unity-shared-plugin-provenance'; evidenceScope = 'scratch'; pluginDir = $Dir; build = [ordered]@{ exitCode = 0 }; inputs = @([ordered]@{ Path = 'fixture.cs'; Length = 1; Sha256 = ('b' * 64) }); outputs = $outputs.ToArray() }
     $provenancePath = Join-Path $Dir 'shared-plugin-provenance.json'
     Write-C04Json -Path $provenancePath -Object $provenance
     return [pscustomobject]@{ dir = $Dir; provenance = $provenancePath; outputs = $outputs.ToArray() }
@@ -110,244 +56,178 @@ function New-PackageFixture {
     param([string]$Dir)
     New-Item -ItemType Directory -Force -Path $Dir | Out-Null
     $exe = Join-Path $Dir 'Mahjong.exe'
-    [System.IO.File]::WriteAllText($exe, 'fixture-player', (New-Object System.Text.UTF8Encoding($false)))
-    $dataDir = Join-Path $Dir 'Mahjong_Data'
-    New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
-    [System.IO.File]::WriteAllText((Join-Path $dataDir 'globalgamemanagers'), 'fixture-data', (New-Object System.Text.UTF8Encoding($false)))
+    Copy-Item -LiteralPath (Get-Command powershell.exe).Source -Destination $exe -Force
     $plugin = New-PluginFixture -Dir (Join-Path $Dir 'plugins')
     $closure = Get-C04PluginClosure -ProvenancePath $plugin.provenance -PluginDir $plugin.dir
-    Assert-True $closure.ok 'package-fixture plugin closure'
+    Assert-True $closure.ok 'fixture plugin closure'
+    $closurePath = Join-Path $Dir 'c04-plugin-closure.csv'
+    $rows = @($closure.files | ForEach-Object { [pscustomobject]@{ path = $_.name; bytes = $_.bytes; sha256 = $_.sha256 } })
+    $null = Write-C04ManifestFile -Path $closurePath -Rows $rows -Kind 'plugin-closure'
     $provenanceCopy = Join-Path $Dir 'c04-plugin-provenance.json'
     Copy-Item -LiteralPath $plugin.provenance -Destination $provenanceCopy -Force
     $reportPath = Join-Path $Dir 'c04-build-report.json'
-    Write-C04Json -Path $reportPath -Object (New-FixtureReport -OutputPath $exe)
-    $seal = Write-C04PackageSeal -PackageRoot $Dir -PlayerPath $exe -ReportPath $reportPath -ProvenancePath $provenanceCopy -SourceHead ('a' * 40) -SourceIdentitySha256 ('b' * 64) -BuildCommit 'c' -PluginClosure $closure
-    return [pscustomobject]@{ dir = $Dir; exe = $exe; report = $reportPath; provenance = $provenanceCopy; seal = $seal; closure = $closure }
+    $report = New-FixtureReport -OutputPath $exe
+    $report.plugins = @($closure.files | Where-Object { $_.name.EndsWith('.dll') } | ForEach-Object { [ordered]@{ name = $_.name; bytes = $_.bytes; sha256 = $_.sha256 } })
+    Write-C04Json -Path $reportPath -Object $report
+    $head = ((git -C $root rev-parse HEAD) -join '').Trim()
+    $identity = Get-C04SourceIdentity
+    $seal = Write-C04PackageSeal -PackageRoot $Dir -PlayerPath $exe -ReportPath $reportPath -ProvenancePath $provenanceCopy -PluginClosurePath $closurePath -SourceHead $head -SourceIdentitySha256 $identity.identitySha256 -StagedInputManifestSha256 ('c' * 64) -BuildCommit $head -BuildId 'fixture-build' -SourceInputFileCount $identity.inputFileCount -SourceInputBytes $identity.inputBytes -StagedInputFileCount 1 -PluginClosure $closure
+    return [pscustomobject]@{ dir = $Dir; exe = $exe; report = $reportPath; provenance = $provenanceCopy; closure = $closure; closurePath = $closurePath; seal = $seal; head = $head; identity = $identity }
 }
 
-# 1. Windows command-line quoting
+# 1. Quoting and bounded process basics
 Assert-Equal (ConvertTo-C04QuotedArgument 'plain') 'plain' 'quote-plain'
-Assert-Equal (ConvertTo-C04QuotedArgument 'C:\a b\c') '"C:\a b\c"' 'quote-spaces'
+Assert-Equal (ConvertTo-C04QuotedArgument 'C:\a b\c') '"C:\a b\c"' 'quote-space'
 Assert-Equal (ConvertTo-C04QuotedArgument '') '""' 'quote-empty'
-Assert-Equal (ConvertTo-C04QuotedArgument 'a"b') '"a\"b"' 'quote-embedded-quote'
-Assert-Equal (ConvertTo-C04QuotedArgument 'a b\') '"a b\\"' 'quote-trailing-backslash'
+Assert-Equal (ConvertTo-C04QuotedArgument 'a"b') '"a\"b"' 'quote-quote'
+Assert-Equal (ConvertTo-C04QuotedArgument 'a b\') '"a b\\"' 'quote-tail'
 
-# 2. Owned bounded process: success, nonzero, dual stream drain
-$outPath = Join-Path $testRoot 'ok.out'
-$errPath = Join-Path $testRoot 'ok.err'
-$ok = Start-C04BoundedProcess -FilePath $powershell -Arguments @('-NoProfile', '-Command', 'Write-Output "OUT"; [Console]::Error.WriteLine("ERR"); exit 0') -TimeoutSeconds 30 -StdOutPath $outPath -StdErrPath $errPath -Label 'fixture-ok' -DrainGrace 5 -Heartbeat 0
-Assert-Equal $ok.exitCode 0 'process-success-exit'
-Assert-True $ok.exitCodeKnown 'process-success-known'
-Assert-True $ok.drainComplete 'process-success-drained'
-Assert-True ((Get-Content -LiteralPath $outPath -Raw) -match 'OUT') 'process-success-stdout'
-Assert-True ((Get-Content -LiteralPath $errPath -Raw) -match 'ERR') 'process-success-stderr'
+$out = Join-Path $testRoot 'ok.out'; $err = Join-Path $testRoot 'ok.err'
+$ok = Start-C04BoundedProcess -FilePath powershell.exe -Arguments @('-NoProfile','-Command','Write-Output ''OUT''; [Console]::Error.WriteLine(''ERR''); exit 0') -TimeoutSeconds 30 -StdOutPath $out -StdErrPath $err -Label 'ok' -DrainGrace 5 -Heartbeat 0
+Assert-Equal $ok.exitCode 0 'process-exit0'
+Assert-True $ok.drainComplete 'process-drain'
+Assert-True ($ok.ownedProcessesRemaining -eq 0 -and -not $ok.cleanupFailed) 'process-owned-clean'
+Assert-True ((Get-Content $out -Raw) -match 'OUT') 'process-stdout'
+$nz = Start-C04BoundedProcess -FilePath powershell.exe -Arguments @('-NoProfile','-Command','exit 7') -TimeoutSeconds 30 -StdOutPath (Join-Path $testRoot 'nz.out') -StdErrPath (Join-Path $testRoot 'nz.err') -Label 'nz' -DrainGrace 5 -Heartbeat 0
+Assert-Equal $nz.exitCode 7 'process-native7'
+$to = Start-C04BoundedProcess -FilePath powershell.exe -Arguments @('-NoProfile','-Command','Start-Sleep -Seconds 30') -TimeoutSeconds 1 -StdOutPath (Join-Path $testRoot 'to.out') -StdErrPath (Join-Path $testRoot 'to.err') -Label 'to' -DrainGrace 2 -Heartbeat 0
+Assert-True ($to.timedOut -and -not $to.exitCodeKnown) 'process-timeout'
+Assert-True ($null -eq (Get-Process -Id $to.pid -ErrorAction SilentlyContinue)) 'process-timeout-gone'
+$threw = $false
+try { Start-C04BoundedProcess -FilePath powershell.exe -Arguments @('-NoProfile','-Command','exit 0') -TimeoutSeconds 0 -Label 'zero' } catch { $threw = $_.Exception.Message -match 'timeout must be positive' }
+Assert-True $threw 'process-zero-timeout-rejected'
 
-$nonzero = Start-C04BoundedProcess -FilePath $powershell -Arguments @('-NoProfile', '-Command', 'exit 7') -TimeoutSeconds 30 -StdOutPath (Join-Path $testRoot 'nz.out') -StdErrPath (Join-Path $testRoot 'nz.err') -Label 'fixture-nonzero' -DrainGrace 5 -Heartbeat 0
-Assert-Equal $nonzero.exitCode 7 'process-nonzero-exit'
-Assert-True (-not $nonzero.timedOut) 'process-nonzero-not-timeout'
+# 2. Detached writer survives the parent; owned cleanup must stop it.
+$marker = Join-Path $testRoot 'writes.txt'
+$childScript = Join-Path $testRoot 'child.ps1'
+[System.IO.File]::WriteAllText($childScript, 'param([string]$Marker) for($i=0;$i -lt 100;$i++){ [System.IO.File]::AppendAllText($Marker,''x''); Start-Sleep -Milliseconds 100 }')
+$parentScript = Join-Path $testRoot 'parent.ps1'
+$parentText = 'param([string]$Child,[string]$Marker) $p=Start-Process powershell.exe -ArgumentList @(''-NoProfile'',''-File'',$Child,''-Marker'',$Marker) -PassThru -WindowStyle Hidden; Start-Sleep -Seconds 2; exit 0'
+[System.IO.File]::WriteAllText($parentScript, $parentText)
+$parent = Start-C04BoundedProcess -FilePath powershell.exe -Arguments @('-NoProfile','-File',$parentScript,'-Child',$childScript,'-Marker',$marker) -TimeoutSeconds 10 -StdOutPath (Join-Path $testRoot 'parent.out') -StdErrPath (Join-Path $testRoot 'parent.err') -Label 'detached' -DrainGrace 2 -Heartbeat 0
+$before = if (Test-Path $marker) { (Get-Item $marker).Length } else { 0 }
+Start-Sleep -Milliseconds 400
+$after = if (Test-Path $marker) { (Get-Item $marker).Length } else { 0 }
+Assert-True ($parent.drainComplete -and $parent.ownedProcessesRemaining -eq 0) 'detached-clean'
+Assert-Equal $before $after 'detached-no-writes-after-return'
 
-$bigOut = Join-Path $testRoot 'big.out'
-$bigErr = Join-Path $testRoot 'big.err'
-$big = Start-C04BoundedProcess -FilePath $powershell -Arguments @('-NoProfile', '-Command', '[Console]::Out.Write(("x" * 500000)); [Console]::Error.Write(("y" * 500000)); exit 0') -TimeoutSeconds 60 -StdOutPath $bigOut -StdErrPath $bigErr -Label 'fixture-big' -DrainGrace 10 -Heartbeat 0
-Assert-True $big.drainComplete 'process-big-drained'
-Assert-True ((Get-Item -LiteralPath $bigOut).Length -gt 400000) 'process-big-stdout'
-Assert-True ((Get-Item -LiteralPath $bigErr).Length -gt 400000) 'process-big-stderr'
+# 3. Strict BuildReport: no generic/summary/known bypass.
+$reportExe = Join-Path $testRoot 'fixture.exe'; [System.IO.File]::WriteAllText($reportExe, 'fixture')
+$goodPath = Join-Path $testRoot 'good.json'; Write-C04Json $goodPath (New-FixtureReport -OutputPath $reportExe)
+Assert-True (Test-C04BuildReport -Path $goodPath -ExpectedOutput $reportExe).ok 'report-good'
+$summaryOnly = Join-Path $testRoot 'summary-only.json'; Write-C04Json $summaryOnly (New-FixtureReport -OutputPath $reportExe -Errors 99 -StepMessages @('Error building Player: 99 errors'))
+$summaryCheck = Test-C04BuildReport -Path $summaryOnly -ExpectedOutput $reportExe
+Assert-True (-not $summaryCheck.ok) 'report-summary-only-rejected'
+Assert-Contains $summaryCheck.errors 'BUILD_REPORT_ERRORS:99' 'report-summary-count'
+$oneKnown = Join-Path $testRoot 'one-known.json'; Write-C04Json $oneKnown (New-FixtureReport -OutputPath $reportExe -Errors 99 -StepMessages @('Host type is not matching any asset type at Path Packages/x.urtshader.'))
+$oneCheck = Test-C04BuildReport -Path $oneKnown -ExpectedOutput $reportExe
+Assert-True (-not $oneCheck.ok) 'report-one-known-98-unattributed-rejected'
+Assert-Match $oneCheck.errors 'BUILD_REPORT_ATTRIBUTION_COUNT_MISMATCH:99!=' 'report-attribution-count'
+$missing = Join-Path $testRoot 'missing.json'; Write-C04Json $missing (New-FixtureReport -OutputPath $reportExe -OmitBytesAndSha -Exception 'boom')
+$missingCheck = Test-C04BuildReport -Path $missing -ExpectedOutput $reportExe
+Assert-True (-not $missingCheck.ok) 'report-missing-binding-rejected'
+Assert-Contains $missingCheck.errors 'BUILD_REPORT_BYTES_MISSING' 'report-missing-bytes'
+Assert-Contains $missingCheck.errors 'BUILD_REPORT_OUTPUT_SHA_MISSING' 'report-missing-sha'
+Assert-Contains $missingCheck.errors 'BUILD_REPORT_EXCEPTION_PRESENT' 'report-exception'
 
-# 3. Quoted path argument arrives byte-exact
-$spaceDir = Join-Path $testRoot 'c04 space dir'
-New-Item -ItemType Directory -Force -Path $spaceDir | Out-Null
-$spacePath = Join-Path $spaceDir 'a file.txt'
-[System.IO.File]::WriteAllText($spacePath, 'x')
-$echoScript = Join-Path $testRoot 'echo-arg.ps1'
-[System.IO.File]::WriteAllText($echoScript, 'param([string]$Value) Write-Output $Value', (New-Object System.Text.UTF8Encoding($false)))
-$echoOut = Join-Path $testRoot 'echo.out'
-$echo = Start-C04BoundedProcess -FilePath $powershell -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $echoScript, '-Value', $spacePath) -TimeoutSeconds 30 -StdOutPath $echoOut -StdErrPath (Join-Path $testRoot 'echo.err') -Label 'fixture-quoted' -DrainGrace 5 -Heartbeat 0
-Assert-Equal ((Get-Content -LiteralPath $echoOut -Raw).Trim()) $spacePath 'process-quoted-path'
+# 4. Source identity binds tracked tests and ignored Unity inputs.
+$fixtureRepo = Join-Path $testRoot 'source-fixture'
+foreach ($d in @('tools/unity','dotnet','tests','unity/Mahjong.Unity/Assets','unity/Mahjong.Unity/ProjectSettings')) { New-Item -ItemType Directory -Force -Path (Join-Path $fixtureRepo $d) | Out-Null }
+foreach ($f in @('build-shared.ps1','check-shared-plugins.ps1','shared-plugin-provenance-lib.ps1','run-p45-c04-player-cheats.ps1')) { [System.IO.File]::WriteAllText((Join-Path $fixtureRepo "tools/unity/$f"),'# fixture') }
+[System.IO.File]::WriteAllText((Join-Path $fixtureRepo '.gitignore'), '*.asset')
+[System.IO.File]::WriteAllText((Join-Path $fixtureRepo 'tests/Test.cs'), '// before')
+[System.IO.File]::WriteAllText((Join-Path $fixtureRepo 'unity/Mahjong.Unity/Assets/Code.cs'), '// code')
+[System.IO.File]::WriteAllText((Join-Path $fixtureRepo 'unity/Mahjong.Unity/ProjectSettings/ProjectSettings.asset'), 'settings')
+& git -C $fixtureRepo init -q
+& git -C $fixtureRepo -c user.name=Test -c user.email=test@example.invalid add .
+& git -C $fixtureRepo -c user.name=Test -c user.email=test@example.invalid commit -q -m fixture
+$id1 = Get-C04SourceIdentity $fixtureRepo
+[System.IO.File]::WriteAllText((Join-Path $fixtureRepo 'tests/Test.cs'), '// after')
+[System.IO.File]::WriteAllText((Join-Path $fixtureRepo 'unity/Mahjong.Unity/Assets/Extra.asset'), 'ignored input')
+$id2 = Get-C04SourceIdentity $fixtureRepo
+Assert-True ($id1.identitySha256 -ne $id2.identitySha256) 'source-identity-tests-and-ignored'
+$staged = New-C04StagedRepository -SourceRoot $fixtureRepo -StagingRepo (Join-Path $testRoot 'staged-fixture')
+Assert-True (Test-Path (Join-Path $staged.project 'Assets/Extra.asset')) 'staging-copies-ignored'
+$orig = Write-C04ManifestFile -Path (Join-Path $testRoot 'staged-original.csv') -Rows (Get-C04FileTable $staged.project)
+[System.IO.File]::AppendAllText((Join-Path $staged.project 'Assets/Extra.asset'), ' changed')
+$diff = @(Test-C04ManifestAgainstRoot -Root $staged.project -ManifestPath $orig.path)
+Assert-Match $diff 'STAGING_CHANGED:Assets/Extra.asset' 'staging-asset-mutation-detected'
 
-# 4. Bounded timeout kills only the owned root
-$timeout = Start-C04BoundedProcess -FilePath $powershell -Arguments @('-NoProfile', '-Command', 'Start-Sleep -Seconds 30') -TimeoutSeconds 1 -StdOutPath (Join-Path $testRoot 'to.out') -StdErrPath (Join-Path $testRoot 'to.err') -Label 'fixture-timeout' -DrainGrace 3 -Heartbeat 0
-Assert-True $timeout.timedOut 'process-timeout-flag'
-Assert-True (-not $timeout.exitCodeKnown) 'process-timeout-exit-unknown'
-Assert-True ($timeout.durationSeconds -lt 20) 'process-timeout-bounded'
-$remaining = Get-Process -Id $timeout.pid -ErrorAction SilentlyContinue
-Assert-True ($null -eq $remaining) 'process-timeout-root-gone'
-
-# 5. Parent exits while an inherited-pipe descendant is still alive
-$descendantScript = Join-Path $testRoot 'descendant-writer.ps1'
-$marker = Join-Path $testRoot 'descendant.pid'
-$descendantText = @'
-param([string]$MarkerPath)
-$child = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-Command','Start-Sleep -Seconds 30') -PassThru -NoNewWindow
-[System.IO.File]::WriteAllText($MarkerPath, [string]$child.Id)
-Write-Output "child=$($child.Id)"
-'@
-[System.IO.File]::WriteAllText($descendantScript, $descendantText, (New-Object System.Text.UTF8Encoding($false)))
-$descendant = Start-C04BoundedProcess -FilePath $powershell -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $descendantScript, '-MarkerPath', $marker) -TimeoutSeconds 45 -StdOutPath (Join-Path $testRoot 'desc.out') -StdErrPath (Join-Path $testRoot 'desc.err') -Label 'fixture-descendant' -DrainGrace 2 -Heartbeat 0
-Assert-True $descendant.descendantWriter 'process-descendant-detected'
-Assert-True $descendant.drainComplete 'process-descendant-drained'
-Assert-True ($descendant.ownedDescendantsStopped -ge 1) 'process-descendant-stopped'
-if (Test-Path -LiteralPath $marker) {
-    $childId = [int](Get-Content -LiteralPath $marker -Raw)
-    Assert-True ($null -eq (Get-Process -Id $childId -ErrorAction SilentlyContinue)) 'process-descendant-gone'
-}
-
-# 6. Cancellation and unrelated foreign process survival
-$sentinel = Start-Process -FilePath $powershell -ArgumentList @('-NoProfile', '-Command', 'Start-Sleep -Seconds 30') -PassThru -WindowStyle Hidden
-Start-Sleep -Milliseconds 300
-$cancelFile = Join-Path $testRoot 'cancel.flag'
-$cancelRunner = Start-Process -FilePath $powershell -ArgumentList @('-NoProfile', '-Command', "Start-Sleep -Milliseconds 800; [System.IO.File]::WriteAllText('$($cancelFile.Replace('\','\\'))','x')") -PassThru -WindowStyle Hidden
-$cancel = Start-C04BoundedProcess -FilePath $powershell -Arguments @('-NoProfile', '-Command', 'Start-Sleep -Seconds 30') -TimeoutSeconds 60 -CancelFilePath $cancelFile -StdOutPath (Join-Path $testRoot 'cancel.out') -StdErrPath (Join-Path $testRoot 'cancel.err') -Label 'fixture-cancel' -DrainGrace 3 -Heartbeat 0
-Assert-True $cancel.cancelled 'process-cancel-flag'
-Assert-True (-not $cancel.timedOut) 'process-cancel-not-timeout'
-Assert-True ($null -ne (Get-Process -Id $sentinel.Id -ErrorAction SilentlyContinue)) 'process-foreign-sentinel-survives'
-try { Stop-Process -Id $sentinel.Id -Force -ErrorAction SilentlyContinue } catch { }
-
-# 7. Evidence seal: success, extra file, changed file, missing file, manifest tamper
-function New-EvidenceFixture {
-    param([string]$Dir)
-    New-Item -ItemType Directory -Force -Path $Dir | Out-Null
-    [System.IO.File]::WriteAllText((Join-Path $Dir 'a.txt'), 'a')
-    [System.IO.File]::WriteAllText((Join-Path $Dir 'b.txt'), 'b')
-    return (Write-C04EvidenceSeal -EvidenceRoot $Dir -Status 'PASS' -SourceHead ('a' * 40))
-}
-$sealDir = Join-Path $testRoot 'seal'
-$null = New-EvidenceFixture -Dir $sealDir
-Assert-Equal (@(Test-C04EvidenceSeal -EvidenceRoot $sealDir)).Count 0 'seal-valid'
-[System.IO.File]::WriteAllText((Join-Path $sealDir 'late.txt'), 'late')
-Assert-Contains (Test-C04EvidenceSeal -EvidenceRoot $sealDir) 'EVIDENCE_EXTRA:late.txt' 'seal-extra-after-write'
-Remove-Item -LiteralPath (Join-Path $sealDir 'late.txt') -Force
-[System.IO.File]::WriteAllText((Join-Path $sealDir 'a.txt'), 'changed')
-Assert-Contains (Test-C04EvidenceSeal -EvidenceRoot $sealDir) 'EVIDENCE_HASH:a.txt' 'seal-hash-change'
-Remove-Item -LiteralPath (Join-Path $sealDir 'b.txt') -Force
-Assert-Contains (Test-C04EvidenceSeal -EvidenceRoot $sealDir) 'EVIDENCE_MISSING:b.txt' 'seal-missing'
-[System.IO.File]::WriteAllText((Join-Path $sealDir 'b.txt'), 'b')
-Add-Content -LiteralPath (Join-Path $sealDir 'manifest.csv') -Value 'tamper'
-Assert-Contains (Test-C04EvidenceSeal -EvidenceRoot $sealDir) 'EVIDENCE_SEAL_MANIFEST_HASH' 'seal-manifest-tamper'
-
-# 8. BuildReport attribution: real counts preserved, step errors surfaced
-$reportDir = Join-Path $testRoot 'report'
-New-Item -ItemType Directory -Force -Path $reportDir | Out-Null
-$reportExe = Join-Path $reportDir 'Mahjong.exe'
-[System.IO.File]::WriteAllText($reportExe, 'x')
-$goodReport = Join-Path $reportDir 'good.json'
-Write-C04Json -Path $goodReport -Object (New-FixtureReport -OutputPath $reportExe)
-$good = Test-C04BuildReport -Path $goodReport -ExpectedOutput $reportExe
-Assert-True $good.ok 'build-report-good'
-
-$errored = Join-Path $reportDir 'errors3.json'
-Write-C04Json -Path $errored -Object (New-FixtureReport -OutputPath $reportExe -Errors 3 -StepMessages @('boom-1','boom-2','boom-3'))
-$erroredCheck = Test-C04BuildReport -Path $errored -ExpectedOutput $reportExe
-Assert-Contains $erroredCheck.errors 'BUILD_REPORT_ERRORS:3' 'build-report-errors-count'
-Assert-Match $erroredCheck.errors 'BUILD_REPORT_STEP_ERROR:step=Preprocess Player type=Error message=boom-1' 'build-report-step-attribution'
-
-$unattributed = Join-Path $reportDir 'unattributed.json'
-Write-C04Json -Path $unattributed -Object (New-FixtureReport -OutputPath $reportExe -Errors 3)
-$unattributedCheck = Test-C04BuildReport -Path $unattributed -ExpectedOutput $reportExe
-Assert-Contains $unattributedCheck.errors 'BUILD_REPORT_UNATTRIBUTED_ERRORS' 'build-report-unattributed'
-
-$failedReport = Join-Path $reportDir 'failed.json'
-Write-C04Json -Path $failedReport -Object (New-FixtureReport -OutputPath $reportExe -Result 'Failed')
-Assert-Contains (Test-C04BuildReport -Path $failedReport -ExpectedOutput $reportExe).errors 'BUILD_REPORT_RESULT:Failed' 'build-report-failed-result'
-
-$knownReport = New-FixtureReport -OutputPath $reportExe -Errors 3 -StepMessages @(
-    'Host type is not matching any asset type at Path Packages/com.unity.render-pipelines.universal/Shaders/AutodeskInteractive/AutodeskInteractive.shadergraph.',
-    'Host type is not matching any asset type at Path Packages/com.unity.render-pipelines.core/Editor/Lighting/ProbeVolume/VirtualOffset/TraceVirtualOffset.urtshader.',
-    'Error building Player: 2 errors'
-)
-$knownPath = Join-Path $reportDir 'known-nonfatal.json'
-Write-C04Json -Path $knownPath -Object $knownReport
-$known = Test-C04BuildReport -Path $knownPath -ExpectedOutput $reportExe -AllowedNonFatalStepErrors $script:C04KnownNonFatalBuildErrors
-Assert-True $known.ok 'build-report-known-nonfatal-accepted'
-Assert-Equal ([int]$known.report.errors) 3 'build-report-known-count-preserved'
-Assert-Equal @($known.knownNonFatalStepErrors).Count 3 'build-report-known-attribution'
-
-$unknownKnownReport = New-FixtureReport -OutputPath $reportExe -Errors 2 -StepMessages @(
-    'Host type is not matching any asset type at Path Packages/com.unity.render-pipelines.universal/Shaders/AutodeskInteractive/AutodeskInteractive.shadergraph.',
-    'Unknown compiler failure'
-)
-$unknownKnownPath = Join-Path $reportDir 'known-plus-unknown.json'
-Write-C04Json -Path $unknownKnownPath -Object $unknownKnownReport
-$unknownKnown = Test-C04BuildReport -Path $unknownKnownPath -ExpectedOutput $reportExe -AllowedNonFatalStepErrors $script:C04KnownNonFatalBuildErrors
-Assert-True (-not $unknownKnown.ok) 'build-report-unknown-not-accepted'
-Assert-Match $unknownKnown.errors 'BUILD_REPORT_STEP_ERROR:.*Unknown compiler failure' 'build-report-unknown-attributed'
-
-# 9. Plugin closure negatives
-$pluginDir = Join-Path $testRoot 'plugins'
-$plugin = New-PluginFixture -Dir $pluginDir
-$closure = Get-C04PluginClosure -ProvenancePath $plugin.provenance -PluginDir $pluginDir
-Assert-True $closure.ok 'plugin-closure-good'
-[System.IO.File]::WriteAllText((Join-Path $pluginDir 'Mahjong.Domain.dll'), 'changed')
-Assert-Contains (Get-C04PluginClosure -ProvenancePath $plugin.provenance -PluginDir $pluginDir).errors 'PLUGIN_HASH_MISMATCH:Mahjong.Domain.dll' 'plugin-hash-mismatch'
-Remove-Item -LiteralPath (Join-Path $pluginDir 'Mahjong.Ai.dll') -Force
-Assert-Contains (Get-C04PluginClosure -ProvenancePath $plugin.provenance -PluginDir $pluginDir).errors 'PLUGIN_MISSING:Mahjong.Ai.dll' 'plugin-missing'
-[System.IO.File]::WriteAllText((Join-Path $pluginDir 'unexpected.dll'), 'x')
-Assert-Contains (Get-C04PluginClosure -ProvenancePath $plugin.provenance -PluginDir $pluginDir).errors 'PLUGIN_UNEXPECTED:unexpected.dll' 'plugin-unexpected'
-
-# 10. Complete package seal positives/negatives
-$packageDir = Join-Path $testRoot 'package'
-$package = New-PackageFixture -Dir $packageDir
-$head = ('a' * 40)
-$identity = ('b' * 64)
-$sealed = Test-C04PackageSeal -PlayerPath $package.exe -ExpectedSourceHead $head -ExpectedBuildCommit 'c' -CurrentSourceIdentitySha256 $identity
-Assert-True $sealed.ok 'package-seal-good'
-[System.IO.File]::WriteAllText((Join-Path $packageDir 'late.dll'), 'late')
-Assert-Contains (Test-C04PackageSeal -PlayerPath $package.exe -ExpectedSourceHead $head -ExpectedBuildCommit 'c' -CurrentSourceIdentitySha256 $identity).errors 'PACKAGE_EXTRA_FILE:late.dll' 'package-extra'
-Remove-Item -LiteralPath (Join-Path $packageDir 'late.dll') -Force
+# 5. Package seal requires real source/build/provenance/report/plugin relations.
+$package = New-PackageFixture -Dir (Join-Path $testRoot 'package')
+$check = Test-C04PackageSeal -PlayerPath $package.exe -ExpectedSourceHead $package.head -ExpectedBuildCommit $package.head -CurrentSourceIdentitySha256 $package.identity.identitySha256
+Assert-True $check.ok 'package-seal-good'
+$fakeHead = ('a' * 40)
+Assert-Match (Test-C04PackageSeal -PlayerPath $package.exe -ExpectedSourceHead $fakeHead -CurrentSourceIdentitySha256 $package.identity.identitySha256).errors 'PACKAGE_SEAL_(SOURCE|BUILD)_HEAD_NOT_IN_HISTORY|PACKAGE_SEAL_SOURCE_HEAD' 'package-fake-head'
+[System.IO.File]::WriteAllText((Join-Path $package.dir 'late.dll'), 'late')
+Assert-Contains (Test-C04PackageSeal -PlayerPath $package.exe -ExpectedSourceHead $package.head -CurrentSourceIdentitySha256 $package.identity.identitySha256).errors 'PACKAGE_EXTRA_FILE:late.dll' 'package-extra'
+Remove-Item (Join-Path $package.dir 'late.dll') -Force
 [System.IO.File]::AppendAllText($package.exe, 'tamper')
-Assert-Contains (Test-C04PackageSeal -PlayerPath $package.exe -ExpectedSourceHead $head -ExpectedBuildCommit 'c' -CurrentSourceIdentitySha256 $identity).errors 'PACKAGE_HASH_MISMATCH:Mahjong.exe' 'package-player-tamper'
-Assert-Contains (Test-C04PackageSeal -PlayerPath $package.exe -ExpectedSourceHead ('d' * 40) -ExpectedBuildCommit 'c' -CurrentSourceIdentitySha256 $identity).errors 'PACKAGE_SEAL_SOURCE_HEAD_MISMATCH' 'package-wrong-source'
-Assert-Contains (Test-C04PackageSeal -PlayerPath $package.exe -ExpectedSourceHead $head -ExpectedBuildCommit 'c' -CurrentSourceIdentitySha256 ('e' * 64)).errors 'PACKAGE_SEAL_SOURCE_IDENTITY_MISMATCH' 'package-wrong-identity'
-Assert-Contains (Test-C04PackageSeal -PlayerPath $package.exe -ExpectedSourceHead $head -ExpectedBuildCommit 'z' -CurrentSourceIdentitySha256 $identity).errors 'PACKAGE_SEAL_BUILD_COMMIT_MISMATCH' 'package-wrong-commit'
+Assert-Contains (Test-C04PackageSeal -PlayerPath $package.exe -ExpectedSourceHead $package.head -CurrentSourceIdentitySha256 $package.identity.identitySha256).errors 'PACKAGE_HASH_MISMATCH:Mahjong.exe' 'package-tamper'
+$synthetic = Join-Path $testRoot 'synthetic'
+New-Item -ItemType Directory -Force -Path $synthetic | Out-Null
+[System.IO.File]::WriteAllText((Join-Path $synthetic 'Mahjong.exe'), 'not a real binary')
+Assert-Contains (Test-C04PackageSeal -PlayerPath (Join-Path $synthetic 'Mahjong.exe') -ExpectedSourceHead $fakeHead).errors 'PACKAGE_SEAL_MISSING' 'synthetic-missing-seal'
 
-$missingSeal = Join-Path $testRoot 'missing-seal'
-New-Item -ItemType Directory -Force -Path $missingSeal | Out-Null
-[System.IO.File]::WriteAllText((Join-Path $missingSeal 'Mahjong.exe'), 'x')
-Assert-Contains (Test-C04PackageSeal -PlayerPath (Join-Path $missingSeal 'Mahjong.exe') -ExpectedSourceHead $head).errors 'PACKAGE_SEAL_MISSING' 'package-seal-missing'
+# 6. Evidence seal covers partial build artifacts.
+$failure = Join-Path $testRoot 'failure'
+New-Item -ItemType Directory -Force -Path (Join-Path $failure 'build/player') | Out-Null
+[System.IO.File]::WriteAllText((Join-Path $failure 'build/player/partial.dll'), 'partial')
+[System.IO.File]::WriteAllText((Join-Path $failure 'summary.json'), '{"status":"FAIL"}')
+$null = Write-C04EvidenceSeal -EvidenceRoot $failure -Status 'FAIL' -SourceHead ($package.head)
+Assert-Equal (@(Test-C04EvidenceSeal $failure)).Count 0 'evidence-failure-valid'
+[System.IO.File]::AppendAllText((Join-Path $failure 'build/player/partial.dll'), 'tampered')
+Assert-Match (Test-C04EvidenceSeal $failure) 'EVIDENCE_PARTIAL_(HASH|MISSING)' 'evidence-partial-tamper'
 
-# 11. Source identity is commit/working-tree bound
-$gitRoot = Join-Path $testRoot 'git-source'
-New-Item -ItemType Directory -Force -Path (Join-Path $gitRoot 'tools') | Out-Null
-& git -C $gitRoot init -q
-& git -C $gitRoot config user.email 'c04@example.invalid'
-& git -C $gitRoot config user.name 'C04 Test'
-[System.IO.File]::WriteAllText((Join-Path $gitRoot 'tools\a.txt'), 'one')
-& git -C $gitRoot add tools/a.txt
-& git -C $gitRoot commit -q -m initial
-$identity1 = Get-C04SourceIdentity -RepoRoot $gitRoot
-$identity2 = Get-C04SourceIdentity -RepoRoot $gitRoot
-Assert-Equal $identity1.identitySha256 $identity2.identitySha256 'source-identity-stable'
-[System.IO.File]::WriteAllText((Join-Path $gitRoot 'tools\a.txt'), 'two')
-$identity3 = Get-C04SourceIdentity -RepoRoot $gitRoot
-Assert-True ($identity1.identitySha256 -ne $identity3.identitySha256) 'source-identity-changes'
-[System.IO.File]::WriteAllText((Join-Path $gitRoot 'doc.txt'), 'docs only')
-& git -C $gitRoot add doc.txt
-& git -C $gitRoot commit -q -m docs
-$identity4 = Get-C04SourceIdentity -RepoRoot $gitRoot
-Assert-Equal $identity3.identitySha256 $identity4.identitySha256 'source-identity-docs-commit-stable'
+# 7. Path safety rejects an ancestor junction.
+$target = Join-Path $testRoot 'junction-target'; New-Item -ItemType Directory -Path $target | Out-Null
+$link = Join-Path $testRoot 'junction-link'; New-Item -ItemType Junction -Path $link -Value $target | Out-Null
+$threw = $false
+try { Assert-C04PathSafe -Path (Join-Path $link 'new-evidence') -Label 'junction' } catch { $threw = $true }
+Assert-True $threw 'path-ancestor-junction-rejected'
 
-# 11b. Exit classification separates control/resource/unknown/build failures.
-Assert-Equal (Get-C04ExitCodeForFailure 'MUTEX_TIMEOUT') 6 'exit-mutex'
-Assert-Equal (Get-C04ExitCodeForFailure 'UNKNOWN_EXIT') 7 'exit-unknown'
+# 8. Control categories and exit mapping.
+Assert-Equal (Get-C04ExitCodeForFailure 'UNITY_BUILD_TIMEOUT') 4 'exit-timeout'
 Assert-Equal (Get-C04ExitCodeForFailure 'CANCELLED') 5 'exit-cancel'
-Assert-Equal (Get-C04ExitCodeForFailure 'PLAYER_TIMEOUT') 4 'exit-timeout'
+Assert-Equal (Get-C04ExitCodeForFailure 'UNKNOWN_EXIT') 7 'exit-unknown'
+Assert-Equal (Get-C04ExitCodeForFailure 'MUTEX_TIMEOUT') 6 'exit-mutex'
 Assert-Equal (Get-C04ExitCodeForFailure 'BUILD_FAILED') 3 'exit-build'
-Assert-Equal (Get-C04ExitCodeForFailure 'SKIPBUILD_INVALID') 2 'exit-precondition'
-Assert-Equal (Get-C04ExitCodeForFailure 'CASE_FAILED') 1 'exit-evidence'
+Assert-Equal (Get-C04ExitCodeForFailure 'CASE_FAILED') 1 'exit-case'
 
-# 12. No retired local Strict verifier fallback
-Assert-True ($null -eq (Get-Command Assert-C04EvidenceStrict -ErrorAction SilentlyContinue)) 'no-local-strict-fallback'
-$caseDir = Join-Path $testRoot 'case'
-New-Item -ItemType Directory -Force -Path $caseDir | Out-Null
-Assert-Contains (Get-C04CaseStructureErrors -EvidenceJson (Join-Path $caseDir 'missing.json')) 'MISSING_EVIDENCE_JSON' 'case-missing'
-[System.IO.File]::WriteAllText((Join-Path $caseDir 'bad.json'), '{')
-Assert-Contains (Get-C04CaseStructureErrors -EvidenceJson (Join-Path $caseDir 'bad.json')) 'EVIDENCE_JSON_MALFORMED' 'case-malformed'
-[System.IO.File]::WriteAllText((Join-Path $caseDir 'good.json'), '{}')
-Assert-Equal (@(Get-C04CaseStructureErrors -EvidenceJson (Join-Path $caseDir 'good.json'))).Count 0 'case-structure-good'
+# 9. No retired local verifier fallback; fixed CLI.
+Assert-True ($null -eq (Get-Command Assert-C04EvidenceStrict -ErrorAction SilentlyContinue)) 'strict-removed'
+$args = Get-C04VerifierArguments -Verifier 'C:\v\C04PlayerCheatVerifier2.dll' -EvidenceJson 'C:\e\case.json' -CaseName 'negative' -ExpectedSourceHead $package.head -PackageManifest 'C:\p\manifest.csv'
+Assert-Equal ($args -join '|') ('C:\v\C04PlayerCheatVerifier2.dll|verify|--evidence|C:\e\case.json|--case|negative|--source-head|' + $package.head + '|--package-manifest|C:\p\manifest.csv') 'verifier-cli'
 
-# 13. Fixed A verifier CLI arguments
-$verifierArgs = Get-C04VerifierArguments -Verifier 'C:\v\C04PlayerCheatVerifier2.dll' -EvidenceJson 'C:\e\case.json' -CaseName 'negative' -ExpectedSourceHead $head -PackageManifest 'C:\p\manifest.csv'
-Assert-Equal ($verifierArgs -join '|') ('C:\v\C04PlayerCheatVerifier2.dll|verify|--evidence|C:\e\case.json|--case|negative|--source-head|' + $head + '|--package-manifest|C:\p\manifest.csv') 'verifier-cli-contract'
+# 10. Receipt/provenance/closure relations cannot be bypassed.
+$receipt = Join-Path $package.dir 'c04-build-receipt.json'
+$savedReceipt = [System.IO.File]::ReadAllText($receipt)
+[System.IO.File]::Delete($receipt)
+Assert-Contains (Test-C04PackageSeal -PlayerPath $package.exe -ExpectedSourceHead $package.head -CurrentSourceIdentitySha256 $package.identity.identitySha256).errors 'PACKAGE_RECEIPT_MISSING' 'package-receipt-missing'
+[System.IO.File]::WriteAllText($receipt, $savedReceipt)
+$provPath = Join-Path $package.dir 'c04-plugin-provenance.json'
+$savedProv = [System.IO.File]::ReadAllText($provPath)
+$prov = $savedProv | ConvertFrom-Json
+$prov.inputs = @()
+Write-C04Json -Path $provPath -Object $prov
+Assert-Match (Test-C04PackageSeal -PlayerPath $package.exe -ExpectedSourceHead $package.head -CurrentSourceIdentitySha256 $package.identity.identitySha256).errors 'PACKAGE_PROVENANCE_(INPUTS_EMPTY|HASH_MISMATCH)' 'package-provenance-empty-inputs'
+[System.IO.File]::WriteAllText($provPath, $savedProv)
 
+# 11. Main SkipBuild rejects a synthetic package instead of sealing PASS.
+$syntheticRoot = Join-Path $testRoot 'synthetic-main'
+New-Item -ItemType Directory -Force -Path $syntheticRoot | Out-Null
+[System.IO.File]::WriteAllText((Join-Path $syntheticRoot 'Mahjong.exe'), '14-byte-text')
+$skipEvidence = Join-Path $testRoot 'synthetic-skip-evidence'
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runner -Case build -SkipBuild -EvidenceRoot $skipEvidence -PlayerPath (Join-Path $syntheticRoot 'Mahjong.exe') -SourceHead $fakeHead -BuildCommit 'fabricated-build' -MutexWaitSeconds 5 *> (Join-Path $testRoot 'synthetic-skip.log')
+Assert-True ($LASTEXITCODE -ne 0) 'synthetic-skip-native-nonzero'
+Assert-True ((-not (Test-Path (Join-Path $skipEvidence 'seal.json'))) -or ((Get-Content (Join-Path $skipEvidence 'seal.json') -Raw | ConvertFrom-Json).status -ne 'PASS')) 'synthetic-skip-no-pass-seal'
+Assert-True ((Get-Content (Join-Path $testRoot 'synthetic-skip.log') -Raw) -match 'SKIPBUILD_INVALID|PACKAGE_SEAL|MUTEX') 'synthetic-skip-rejected'
+
+# 12. Unknown/native errors are still rejected after the strict gate.
+$unknownPath = Join-Path $testRoot 'unknown.json'; Write-C04Json $unknownPath (New-FixtureReport -OutputPath $reportExe -Errors 1 -StepMessages @('Unknown compiler failure'))
+$unknown = Test-C04BuildReport -Path $unknownPath -ExpectedOutput $reportExe
+Assert-True (-not $unknown.ok) 'report-unknown-rejected'
+Assert-Match $unknown.errors 'BUILD_REPORT_STEP_ERROR:.*Unknown compiler failure' 'report-unknown-attributed'
 Write-Host "C04PlayerCheatRunner.Tests passed=$passed failed=$($failures.Count)"
 foreach ($failure in $failures) { Write-Host "FAIL $failure" }
 if ($failures.Count -gt 0) { exit 1 }
