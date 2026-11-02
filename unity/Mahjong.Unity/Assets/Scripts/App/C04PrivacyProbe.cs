@@ -31,6 +31,9 @@ namespace Mahjong.Unity.App
             public int boundSeat = -1;
             public int seatId = -1;
             public ulong bindingEpoch;
+            public ulong cursorStreamVersion;
+            public ulong cursorProjectionSeq;
+            public int visibleEventCount;
             public ulong stateVersion;
             public ulong eventSeq;
             public string audience = string.Empty;
@@ -131,6 +134,8 @@ namespace Mahjong.Unity.App
                     roomId = envelope?.RoomId ?? string.Empty,
                     seatId = envelope?.SeatId ?? -1,
                     bindingEpoch = envelope?.BindingEpoch ?? 0UL,
+                    cursorStreamVersion = envelope?.Cursor?.StreamVersion ?? 0UL,
+                    cursorProjectionSeq = envelope?.Cursor?.ProjectionSeq ?? 0UL,
                     unknownFieldsZero = decoded.UnknownFieldCount == 0
                 };
                 if (envelope != null && Connections.TryGetValue(envelope.SessionId, out ConnectionFacts? connection))
@@ -164,6 +169,7 @@ namespace Mahjong.Unity.App
                 else if (envelope?.PlayerUpdate != null)
                 {
                     record.audience = "PlayerUpdate";
+                    record.visibleEventCount = envelope.PlayerUpdate.VisibleEvents.Count;
                     record.stateVersion = envelope.PlayerUpdate.Snapshot.StateVersion;
                     record.eventSeq = envelope.PlayerUpdate.Snapshot.EventSeq;
                     record.ownerSeat = envelope.PlayerUpdate.Snapshot.PrivateView.Seat;
@@ -173,6 +179,7 @@ namespace Mahjong.Unity.App
                 else if (envelope?.PublicUpdate != null)
                 {
                     record.audience = "PublicUpdate";
+                    record.visibleEventCount = envelope.PublicUpdate.VisibleEvents.Count;
                     record.stateVersion = envelope.PublicUpdate.Snapshot.StateVersion;
                     record.eventSeq = envelope.PublicUpdate.Snapshot.EventSeq;
                     record.hasPublicSnapshot = true;

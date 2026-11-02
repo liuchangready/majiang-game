@@ -21,7 +21,10 @@ if (args[0] == "self-test")
     Require(Verify(new[] { valid[0] with { ownerSeat = 1 } }).Count != 0, "wrong owner accepted");
     Require(Verify(new[] { valid[0] with { audience = "Public" } }).Count != 0, "private fields in public audience accepted");
     Require(Verify(new[] { valid[4] with { privateClosedTileCount = 2, ownerSeat = 2, hasPrivateCheatView = true } }).Count != 0, "spectator private payload accepted");
-    Require(Verify(new[] { valid[0] with { isFullSnapshot = false } }).Count != 0, "zero genesis accepted outside full snapshot");
+    Require(Verify(new[] { valid[0] with { isFullSnapshot = false } }).Count != 0, "zero version accepted without an emitted genesis cursor");
+    var noEventGenesisPush = valid[0] with { isFullSnapshot = false, cursorProjectionSeq = 2 };
+    Require(Verify(new[] { noEventGenesisPush, valid[1], valid[2], valid[3], valid[4] }).Count == 0,
+        "empty no-event genesis push with an emitted projection cursor was rejected");
     Require(Verify(new[] { valid[0] with { unknownFieldsZero = false } }).Count != 0, "unknown wire fields accepted");
     Console.WriteLine("SELF_TEST_PASS positive=1 negative=5");
     return 0;
@@ -77,8 +80,12 @@ static List<string> Verify(IEnumerable<Frame> frames)
         scopeSessions[row.scopeId] = row.sessionId;
         sessionScopes[row.sessionId] = row.scopeId;
         sessionBindings[row.sessionId] = binding;
-        if (row.stateVersion == 0 && !(row.isFullSnapshot && row.eventSeq == 0)) errors.Add($"frame[{row.ordinal}] zero state version is valid only for a full genesis snapshot");
-        if (row.eventSeq == 0 && !(row.isFullSnapshot && row.stateVersion == 0)) errors.Add($"frame[{row.ordinal}] zero event cursor is valid only for a full genesis snapshot");
+        bool fullGenesis = row.isFullSnapshot && row.stateVersion == 0 && row.eventSeq == 0;
+        bool emptyGenesisPush = !row.isFullSnapshot && row.stateVersion == 0 && row.eventSeq == 0 &&
+            row.cursorStreamVersion == 0 && row.cursorProjectionSeq > 0 && row.visibleEventCount == 0;
+        if (row.stateVersion == 0 && !(fullGenesis || emptyGenesisPush)) errors.Add($"frame[{row.ordinal}] zero state version lacks a full baseline or empty emitted genesis push");
+        if (row.eventSeq == 0 && !(fullGenesis || emptyGenesisPush)) errors.Add($"frame[{row.ordinal}] zero event cursor lacks a full baseline or empty emitted genesis push");
+        if (!row.isFullSnapshot && row.visibleEventCount > 0 && row.eventSeq == 0) errors.Add($"frame[{row.ordinal}] visible events have no event sequence");
         if (row.bindingEpoch == 0) errors.Add($"frame[{row.ordinal}] missing binding epoch");
         if (row.audience is "Player" or "PlayerUpdate")
         {
@@ -124,6 +131,9 @@ sealed record Frame
 {
     public int ordinal { get; init; }
     public bool isFullSnapshot { get; init; }
+    public ulong cursorStreamVersion { get; init; }
+    public ulong cursorProjectionSeq { get; init; }
+    public int visibleEventCount { get; init; }
     public string wireSha256 { get; init; } = "";
     public string rawBase64 { get; init; } = "";
     public string decodeStatus { get; init; } = "";
