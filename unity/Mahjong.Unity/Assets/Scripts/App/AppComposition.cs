@@ -239,7 +239,13 @@ namespace Mahjong.Unity.App
         {
             if (viewer == null) throw new ArgumentNullException(nameof(viewer));
             ShutdownResult result = await viewer.ShutdownAsync(reason).ConfigureAwait(false);
-            lock (_gate) _roomViewers.Remove(viewer);
+            // A quarantined/failed close did not release the viewer's channel, stream or
+            // dispatcher. Keep it registered so its resources stay owned (and visible to
+            // shutdown); only a verified Completed close may unregister it.
+            if (result.Outcome == ShutdownOutcome.Completed && !result.Quarantined && !viewer.IsQuarantined)
+            {
+                lock (_gate) _roomViewers.Remove(viewer);
+            }
             return result;
         }
 
@@ -523,9 +529,18 @@ namespace Mahjong.Unity.App
                 if (coordinator != null)
                 {
                     ShutdownResult result = await coordinator.ShutdownAsync(reason).ConfigureAwait(false);
-                    if (result.Outcome == ShutdownOutcome.Completed && isQuit &&
+                    if (result.Outcome == ShutdownOutcome.Completed &&
                         ChannelFactory is ILocalRoomViewerFactory roomFactoryWithPrimary)
-                        await roomFactoryWithPrimary.CloseRoomAsync(CancellationToken.None).ConfigureAwait(false);
+                    {
+                        // The default composition is a single viewer that owns the whole
+                        // table. Once that session closes and no explicit room viewer remains,
+                        // release the shared room's lease/driver instead of leaving it cached.
+                        // Explicit multi-viewer mode keeps the room while any viewer remains.
+                        bool viewersRemain;
+                        lock (_gate) viewersRemain = _roomViewers.Count != 0;
+                        if (!viewersRemain)
+                            await roomFactoryWithPrimary.CloseRoomAsync(CancellationToken.None).ConfigureAwait(false);
+                    }
                     lock (_gate)
                     {
                         if (result.Outcome == ShutdownOutcome.Completed)
