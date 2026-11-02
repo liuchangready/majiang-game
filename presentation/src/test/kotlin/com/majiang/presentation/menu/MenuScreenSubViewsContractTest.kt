@@ -43,6 +43,14 @@ class MenuScreenSubViewsContractTest : GdxHeadlessTestRunner() {
         screen.touchUp(point.x.toInt(), point.y.toInt(), 0, 0)
     }
 
+    /**
+     * 点击反馈位移期间该入口禁止再次激活（防止重复触发）。
+     * 这里把时间轴快进到位移结束，让“再次打开弹窗”的用例专注于输入持久化本身。
+     */
+    private fun settleClickFeedback(screen: MenuScreen) {
+        screen.mainMenuView.update(System.currentTimeMillis() + MainMenuButtonMotion.TOTAL_MS + 50L)
+    }
+
     @Test
     fun testSubViewsArePurePresentationComponentsWithoutSessionOrNavigation() {
         val subViewClasses = listOf(
@@ -121,6 +129,7 @@ class MenuScreenSubViewsContractTest : GdxHeadlessTestRunner() {
             assertEquals(MenuScreen.MenuState.MAIN, menu.currentState)
 
             // 再次打开 TCP 弹窗
+            settleClickFeedback(menu)
             tapMainItem(menu, MainMenuItemId.ONLINE)
             assertEquals(MenuScreen.MenuState.TCP_CONNECT_DIALOG, menu.currentState)
 

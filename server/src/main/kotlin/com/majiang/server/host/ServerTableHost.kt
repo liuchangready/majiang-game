@@ -27,6 +27,7 @@ import com.majiang.ai.BasicAiDecisionStrategy
 import com.majiang.ai.LegacyAiStrategyAdapter
 import com.majiang.ai.cheat.BeamSwapAiCapability
 import com.majiang.ai.cheat.AiCapabilityIds
+import com.majiang.ai.cheat.AiRequestId
 import com.majiang.ai.cheat.CheatAiCapability
 import com.majiang.ai.cheat.CheatAiRegistry
 import com.majiang.ai.cheat.ShufflePreparationAiCapability
@@ -51,6 +52,7 @@ import com.majiang.ai.TsumogiriAIStrategy
 import com.majiang.match.MatchConfig
 import com.majiang.session.SessionUpdate
 import com.majiang.stacking.ShufflePlanRequest
+import com.majiang.stacking.ShuffleSelection
 import com.majiang.state.ActionResult
 import com.majiang.state.GameAction
 import com.majiang.state.GameState
@@ -1778,13 +1780,51 @@ class ServerTableHost @JvmOverloads constructor(
             return
         }
         if (snapshot.stamp.deadlineMillis != null && now >= snapshot.stamp.deadlineMillis!!) return
-        // 准备阶段在策略禁用/预算为 0 时无需异步计算：权威截止兜底会默认跳过。
-        if (snapshot.phase == AiPhase.SHUFFLE_PREPARATION &&
-            snapshot.limits.enabledCapabilityIds.isEmpty()
-        ) {
-            return
+        if (snapshot.phase == AiPhase.SHUFFLE_PREPARATION) {
+            // 权威投影没有为该座位启用任何千术能力（策略关闭、预算 0、托管禁止花费或能力全关）：
+            // 此时唯一合法的准备动作就是零费用 skip。由权威立即按 AI 请求身份确认，
+            // 不允许把“电脑明确不出千”拖到 10/15 秒 deadline。只要仍启用任一能力
+            // （包括统一策略开启且有预算），仍走异步 AI 策略，可能合法施术。
+            if (snapshot.limits.enabledCapabilityIds.isEmpty()) {
+                submitAutomaticZeroCostPreparationSkip(snapshot, now)
+                return
+            }
         }
         scheduleAiTask(snapshot, strategy)
+    }
+
+    /**
+     * 在准备阶段为零费用 skip 生成确定性 AI 请求并交给既有权威入口。
+     *
+     * 只处理 [AiSeatSnapshot.limits] 中没有任何启用能力的自动化座位；真人席位不会进入本路径，
+     * 一个真人的 skip 也绝不会代替其他真人确认。请求沿用 [AiRequestId] 的 stamp 身份与
+     * [TableAuthority.submitShufflePlan] 的串行/代次/回执幂等校验，重复 tick 安全。
+     */
+    private fun submitAutomaticZeroCostPreparationSkip(snapshot: AiSeatSnapshot, now: Long) {
+        val roundId = snapshot.stamp.roundId ?: return
+        val request = ShufflePlanRequest(
+            requestId = AiRequestId.of(
+                AiCapabilityIds.SHUFFLE_PREPARATION,
+                snapshot.stamp,
+                "auto-zero-cost-skip"
+            ),
+            roundId = roundId,
+            controlEpoch = snapshot.stamp.controlEpoch,
+            selection = ShuffleSelection()
+        )
+        val mutation = try {
+            authority.submitShufflePlan(snapshot.seat, request, now)
+        } catch (_: Throwable) {
+            return
+        }
+        emitAiAudit(
+            snapshot,
+            null,
+            1,
+            mutation.receipt.status,
+            mutation.receipt.reason ?: "AUTO_ZERO_COST_SKIP",
+            safeFallback = true
+        )
     }
 
     private fun scheduleAiTask(

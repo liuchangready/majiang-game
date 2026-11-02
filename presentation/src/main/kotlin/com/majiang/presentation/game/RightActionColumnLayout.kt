@@ -3,30 +3,23 @@ package com.majiang.presentation.game
 import com.badlogic.gdx.math.Rectangle
 
 /**
- * 统一右侧操作列按钮布局 (RightActionColumnLayout)。
+ * 正式 APP 右侧操作列 (RightActionColumnLayout)。
  *
- * 冻结几何契约 (1280x720 逻辑坐标系，VISUAL-DESIGN.md)：
- * 统一宽 140、高 44、纵向间隔 6，x = 1080f：
- * 从下往上：
- * - 托管 (takeover): y = 6f
- * - 理牌 (sort): y = 56f
- * - 袖里藏花 (sleeveBloom): y = 106f
- * - 偷梁换柱 (beamSwap): y = 156f
- * - 落汗追踪 (tileMark): y = 206f
- *
- * 所有方法均返回防御性副本 (Rectangle)，防止外部调用方修改内部状态。
+ * 设计矩形来自 RESPONSIVE-DESIGN.md：x=1078、宽 174、高 46，首行 y=466（左上角），
+ * 行距 49。转换为 libGDX 左下角后为 208 / 159 / 110 / 61 / 12。
+ * 五个按钮都落在固定 stage 内，不贴物理窗口右沿。
  */
 object RightActionColumnLayout {
-    const val X = 1080f
-    const val WIDTH = 140f
-    const val HEIGHT = 44f
-    const val SPACING = 6f
+    const val X = 1078f
+    const val WIDTH = 174f
+    const val HEIGHT = 46f
+    const val SPACING = 3f
 
-    const val Y_TAKEOVER = 6f
-    const val Y_SORT = 56f
-    const val Y_SLEEVE_BLOOM = 106f
-    const val Y_BEAM_SWAP = 156f
-    const val Y_TILE_MARK = 206f
+    const val Y_TAKEOVER = 12f
+    const val Y_SORT = 61f
+    const val Y_SLEEVE_BLOOM = 110f
+    const val Y_BEAM_SWAP = 159f
+    const val Y_TILE_MARK = 208f
 
     fun takeoverRect(): Rectangle = Rectangle(X, Y_TAKEOVER, WIDTH, HEIGHT)
     fun sortRect(): Rectangle = Rectangle(X, Y_SORT, WIDTH, HEIGHT)

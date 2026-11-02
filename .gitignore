@@ -19,6 +19,9 @@ replay_pid*
 # Local
 local.properties
 
+# Browser / snapshot cache
+snapshot/*edge*/
+
 # OS
 Thumbs.db
 .DS_Store

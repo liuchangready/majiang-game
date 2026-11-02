@@ -1,0 +1,378 @@
+﻿{
+    "date":  "2026-10-22",
+    "purpose":  "Existing workspace and Codex design references before DeepSeek responsive UI continuation",
+    "sources":  [
+                    {
+                        "path":  "presentation/src/main/kotlin/com/majiang/presentation/common/UiAssets.kt",
+                        "sha256":  "396BFADC324D0FCD2038A5A7EE15EC982789F0A68E4385983AC36F5414CADA1B",
+                        "bytes":  17405
+                    },
+                    {
+                        "path":  "presentation/src/main/kotlin/com/majiang/presentation/common/render/TableStageLayout.kt",
+                        "sha256":  "7061F061AE88B8254C79F296CDDF6DC71291538F3E988DAD081B42B0C97F84FE",
+                        "bytes":  4059
+                    },
+                    {
+                        "path":  "presentation/src/main/kotlin/com/majiang/presentation/common/render/TableStageRenderer.kt",
+                        "sha256":  "BE8EB86C2CF95A780AB5CB7BEE5FCBD03B960DCDC0F1AF7A2943BAC5E559D053",
+                        "bytes":  18925
+                    },
+                    {
+                        "path":  "presentation/src/main/kotlin/com/majiang/presentation/common/render/TableVisualAssets.kt",
+                        "sha256":  "CCE55CB4B9A587B706AD7847BE90FED5CEB76786E3277F7A3DD8D980D8CC7C82",
+                        "bytes":  12116
+                    },
+                    {
+                        "path":  "presentation/src/main/kotlin/com/majiang/presentation/common/render/TableHudView.kt",
+                        "sha256":  "32C5263A3341F495875D470F561F2529DEE4280301398E3EC728CE11C23E7BBE",
+                        "bytes":  1938
+                    },
+                    {
+                        "path":  "presentation/src/main/kotlin/com/majiang/presentation/common/render/TableBoardRenderer.kt",
+                        "sha256":  "7FBD64CDFDA2087297018DF7D7F8D47D46EB539C00A9C84A9C5D5846F9F79C42",
+                        "bytes":  18779
+                    },
+                    {
+                        "path":  "presentation/src/main/kotlin/com/majiang/presentation/game/GameScreen.kt",
+                        "sha256":  "E140CA760BD59D4C140803730FFB49735A3E0903885E31428E2BCC2E90BFE29C",
+                        "bytes":  113898
+                    },
+                    {
+                        "path":  "presentation/src/main/kotlin/com/majiang/presentation/game/SpectatorScreen.kt",
+                        "sha256":  "E9F9760836E6AB0E53A5CFCE0CD2D9EE690468CF876209B679E776150D59F05E",
+                        "bytes":  26364
+                    },
+                    {
+                        "path":  "presentation/src/main/kotlin/com/majiang/presentation/game/ShufflePreparationPanel.kt",
+                        "sha256":  "7992317B2971A2ECFB3B1A3828C2532ECC7A96053533181F15A954559539B817",
+                        "bytes":  57259
+                    },
+                    {
+                        "path":  "presentation/src/main/kotlin/com/majiang/presentation/game/RoundPreparationLayout.kt",
+                        "sha256":  "2E8898C066B41E8451D5CA8A61AAD95426160F0DEEF234965FF7913B83F40E73",
+                        "bytes":  8284
+                    },
+                    {
+                        "path":  "presentation/src/main/kotlin/com/majiang/presentation/game/TileMarkPanel.kt",
+                        "sha256":  "DD348B8449559103DE26094C074280AA8F597D9C1E0C6615AF865AD2ED3C24EC",
+                        "bytes":  17023
+                    },
+                    {
+                        "path":  "presentation/src/main/kotlin/com/majiang/presentation/game/SleeveBloomPanel.kt",
+                        "sha256":  "CE59412F17258ED44A3A258362BF50FA66A3887E20AAEF878DB89663AC6AFBC7",
+                        "bytes":  15410
+                    },
+                    {
+                        "path":  "presentation/src/main/kotlin/com/majiang/presentation/game/BeamSwapPanel.kt",
+                        "sha256":  "67B7390F5D4DC661736B25F3C43FF976CD8313A32EBD8771F742536BE152950E",
+                        "bytes":  19203
+                    }
+                ],
+    "referenceFiles":  [
+                           {
+                               "path":  "assets/ui/table/animal-medallions.png",
+                               "sha256":  "C457E074BA4FB7431D75559DCAECBA471CFA516F99360427149A3FE36B1E9149",
+                               "bytes":  2553838
+                           },
+                           {
+                               "path":  "assets/ui/table/button-skins.png",
+                               "sha256":  "CE49322ED2B56449FCE48CF5F9FCE1DC833AD2FECF5583E21F31C4133B70653F",
+                               "bytes":  2691082
+                           },
+                           {
+                               "path":  "assets/ui/table/club-environment.png",
+                               "sha256":  "32F05E536B4CB79DA989811620242D242A5AFD1805EFFEBF122480F41400983F",
+                               "bytes":  2423022
+                           },
+                           {
+                               "path":  "assets/ui/table/jade-panel-skin.png",
+                               "sha256":  "4DDA0D8A74A46218039FBC7A62CACB49E38BA43C70501AD7DF3A9C158B09557B",
+                               "bytes":  2597863
+                           },
+                           {
+                               "path":  "assets/ui/table/jade-table-board.png",
+                               "sha256":  "610878722C40B31C50DD2CA27304980AC4787B74003C691FE27954A06061B42D",
+                               "bytes":  2728798
+                           },
+                           {
+                               "path":  "assets/ui/table/round-compass.png",
+                               "sha256":  "B34C8DB1BF00D0C6F687FFBBCD2BDCD3D8393CBE81F05B7D32C43546F656EA7F",
+                               "bytes":  2370465
+                           },
+                           {
+                               "path":  "assets/ui/table/target-card-scenes.png",
+                               "sha256":  "0000AAEC911E09C9ED4AEDC787DEEB382045A421B30DA09891AC1FBA69062C37",
+                               "bytes":  2915277
+                           },
+                           {
+                               "path":  "tools/ui-layout/build-review-gallery.cjs",
+                               "sha256":  "D50E5735991B9A0B5D9B508E79162F5AC96EFEA04DA4213A7F4DA7C1F696F538",
+                               "bytes":  10957
+                           },
+                           {
+                               "path":  "tools/ui-layout/README.md",
+                               "sha256":  "12051E7F8780EF2AB6D049A8D07A434760175E4D5FFC7BF3B71B32731ECB79CA",
+                               "bytes":  2577
+                           },
+                           {
+                               "path":  "tools/ui-layout/responsive-design.init.gradle",
+                               "sha256":  "3DE83E7FCBD863FD572D032671308DAF716C1351AF4728C3E4EFEDBEE0034B7C",
+                               "bytes":  1342
+                           },
+                           {
+                               "path":  "tools/ui-layout/ResponsiveTableDesignTest.java",
+                               "sha256":  "8492F04EF6D6C931993EDF1F2B8E72BA0D8DA7C4162CFEAC3B11BA2898FEC384",
+                               "bytes":  20518
+                           },
+                           {
+                               "path":  "tools/ui-layout/ResponsiveTableLayout.java",
+                               "sha256":  "24C150E1759A8E9A86108870C1A4FC636D15E0DD8B14D7C2665508DC15714A9D",
+                               "bytes":  7375
+                           },
+                           {
+                               "path":  "tools/ui-layout/ResponsiveTableRenderer.java",
+                               "sha256":  "6B738BE86C403A202EE608E7993EF2B519E3869BA0C54BB7810429F315FA52E5",
+                               "bytes":  18942
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/01-entry-1280x720.png",
+                               "sha256":  "1740F85B8B94135F62596D29A36F0C2C77CEE928193127E98472E0DA291FCFB4",
+                               "bytes":  1558699
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/02-drawer-1280x720-bounds.png",
+                               "sha256":  "3CF566B2F8938D83ACA68511CA538073EEB3235F83DD07306C1F96B50F21EA50",
+                               "bytes":  1677911
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/02-drawer-1280x720.png",
+                               "sha256":  "0CCD4DDFA4E5DC2BA5C463FF9ACC9C98E81DAF4B217C550557976CA3F846A352",
+                               "bytes":  1692098
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/02b-drawer-unselected-1280x720.png",
+                               "sha256":  "7136EB5D3626377F859AAA581C15A2C252F519CF1317DEF6F6F03BD1DC13F64B",
+                               "bytes":  1691032
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/03-receipt-1280x720.png",
+                               "sha256":  "7C9668D4EAD4E37C89598266B397D250F02EA0A769F7EE5435265264F1EC045D",
+                               "bytes":  1661166
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/04-playing-1280x720.png",
+                               "sha256":  "B227447727AF664113BB677E52490E2B7ACA1936B5CD5246316B13E2C8F9A0AE",
+                               "bytes":  1573844
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/alpha-bounds.csv",
+                               "sha256":  "1ABC0088FDBFE530E60F800202EBB053C03A00E514A6E5BF7763DBC9D6C8EAE5",
+                               "bytes":  1809
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/attempt-01-window-limit.txt",
+                               "sha256":  "5F9EBDC7E5469F9CD84782E9C05BF5DDE9A57A95A1164075600E522C874D1A6E",
+                               "bytes":  77
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/drawer-1024x768-bounds.png",
+                               "sha256":  "9BC90E635267BA26C05B391F09DDCDD11184A48628A212CF7A29B5389E4277E5",
+                               "bytes":  1423886
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/drawer-1024x768.png",
+                               "sha256":  "AB6138BADCDA54C03E0211EFF95A600436E38FCE5A72D932A4D6FFED3C6DF2BE",
+                               "bytes":  1436756
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/drawer-1280x720-fb1_5x.png",
+                               "sha256":  "72DCFFE94414F758C12452769EE28830C6990B0137E19318B2A10A6453F012FA",
+                               "bytes":  3657799
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/drawer-1280x800.png",
+                               "sha256":  "E41E8A6DE63101EBA223A48781F26A2BBF385C78F3505371F03695316D45484A",
+                               "bytes":  1871177
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/drawer-1600x600-bounds.png",
+                               "sha256":  "349C10E3AE5025F51B81995BE634DBABD3EA13A7CDFA3E4AEC429CCED454862E",
+                               "bytes":  1790113
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/drawer-1600x600.png",
+                               "sha256":  "40432450410F47E71FFFD94E4BAC38CACE5947B5B37EBE2010847B46BA567244",
+                               "bytes":  1800508
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/drawer-1920x1080.png",
+                               "sha256":  "C5E4AD9AEE173648124796387FD3EA0B27699FC40F9EEA298C09AC1C1E538E5C",
+                               "bytes":  3620553
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/drawer-2560x1080.png",
+                               "sha256":  "8C44A8AAF6A87B44C6C460C9692B9520841856012DBE6F5E34AABA146D685B73",
+                               "bytes":  4587602
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/drawer-3440x1440-offscreen.png",
+                               "sha256":  "5A5FCC24816641C0E7A4B6F00386CF28A87496850099CBC2249DB1598C770478",
+                               "bytes":  7359235
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/drawer-960x540-fb2x.png",
+                               "sha256":  "07A083FB4BBD11F2F286D3B00CB6CAA99B7CAC85F6D070D34AE042A9C568C4AF",
+                               "bytes":  3648856
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/drawer-960x540.png",
+                               "sha256":  "9E9290E22E805258FF54A991E61CE4CF712E743067FFFD9F191954A3CD7C6AD6",
+                               "bytes":  1003903
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/drawer-animation-1280x720.png",
+                               "sha256":  "96905C083B5649F19C4322CDED4C6A940876BD457B9E958BC7E6B13A0BCAB59D",
+                               "bytes":  1685008
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/drawer-animation-resized-1600x600.png",
+                               "sha256":  "BD3BC6D48D0B080B96C1B261BD26E7F692D6DE04367BA105A65C6BCA96AD5F74",
+                               "bytes":  1791459
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/drawer-animation-resized-960x540.png",
+                               "sha256":  "933734ACC004C140121B57BB3DCEBBC8819EA1E6A265B3721ABB566DE5D44ADD",
+                               "bytes":  1000724
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/entry-safe-insets-1280x720-bounds.png",
+                               "sha256":  "33C3C8F30627DCF85F1D0C32A822BA1EAE93424A936787FCB3F093A55EA69764",
+                               "bytes":  1563602
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/entry-safe-insets-1280x720.png",
+                               "sha256":  "FA6F2E6D3F04EF0A2CF3ACA6262F347A55B3C229A5119BE2D1E9D834340EB0F9",
+                               "bytes":  1572055
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/index.html",
+                               "sha256":  "3FDDD833E305BE990A9A474F9BFCD8C34EAC5C093D88873E8DC25610A6563270",
+                               "bytes":  13405
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/overview.html",
+                               "sha256":  "2F9F7867EDC85F118016CB298910BA853C571FA7EC315608D9CD9734BBDA9D34",
+                               "bytes":  4064
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/overview.png",
+                               "sha256":  "F6E5910D1CD657B1BF1A60FDD7145C57C73C121BD97390966A457AE16CA1351C",
+                               "bytes":  2119812
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/playing-1024x768.png",
+                               "sha256":  "267D5D103D96FC11B982108A6BB2E97DF9B6589CD6D25CA9BB6AAF8120115545",
+                               "bytes":  1387293
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/playing-1280x800.png",
+                               "sha256":  "6B04850B467F5CD68E37C0DCB7D6ACC6C6EEF1DD3C9F2A73162A4C90E4F7E698",
+                               "bytes":  1757249
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/playing-1600x600.png",
+                               "sha256":  "5B2B98BCF34D6952C2DC38188A3F42EC0B72893A8F7142705BDEE27E8A779A88",
+                               "bytes":  1749277
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/playing-1920x1080.png",
+                               "sha256":  "64AE8EBA5A06B999D941A5035ED2827F4C6AA7E4CA2422D7A3D3C41C12C47FE0",
+                               "bytes":  3498489
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/playing-2560x1080.png",
+                               "sha256":  "9014DFE6B86D21E542912160807D7A6A61AFEDFD134DF744D7879FC9F8C60FA8",
+                               "bytes":  4511694
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/playing-3440x1440-offscreen.png",
+                               "sha256":  "98AED2A33F0500F79211F864CE522D903EC1AE3A80113365ABB5BD14AD8860EF",
+                               "bytes":  7196233
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/playing-960x540.png",
+                               "sha256":  "3FB9D70C48772A392FD1F38E7002F1B4673EF94480EB841DF0407FA2B518E28B",
+                               "bytes":  948151
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/positions.csv",
+                               "sha256":  "F01CE36EE265A76B48A3DAC781B2A5213D0E4DC4DBCFA25639766BD2338B8BF9",
+                               "bytes":  36794
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/REPORT.md",
+                               "sha256":  "A7BFD5B913B8B1A07A9712A13C165B1B359DD09CEC6D81EDBF345500F6729D44",
+                               "bytes":  5850
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/resize-00-1280x720.png",
+                               "sha256":  "20CAB3B2FB9A4148A7D76661891F21C50F42D4A06A51E99A1B4D7AF30E4DD500",
+                               "bytes":  1692824
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/resize-01-1160x700.png",
+                               "sha256":  "88DEDA02DAC01AC68CFEBB11AAE426A396CA5200D87AF9AB67D9BACFB4406925",
+                               "bytes":  1504788
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/resize-02-1024x768.png",
+                               "sha256":  "AE9104F5BFAD334BB147FD79A1CC1473DCA8F5FEA1B2C77D30F807A2EF21534D",
+                               "bytes":  1436964
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/resize-03-960x540.png",
+                               "sha256":  "DB6297C6761E4A13CE77207522A8AD4A79FB7AD0E0F0597619A31A3E2CD6A49D",
+                               "bytes":  1004284
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/resize-04-1440x810.png",
+                               "sha256":  "6B701D851791BDC69AD086CF48B7CC5F181D5F46162431760C8C5163BF69E0EF",
+                               "bytes":  2130675
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/resize-05-1600x600.png",
+                               "sha256":  "F9459B06AD444EE15A9E4A0A00EB31AEB30184C63D5385B4A36E440232AE4154",
+                               "bytes":  1801689
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/resize-06-1280x720.png",
+                               "sha256":  "20CAB3B2FB9A4148A7D76661891F21C50F42D4A06A51E99A1B4D7AF30E4DD500",
+                               "bytes":  1692824
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/resize-07-confirmed.png",
+                               "sha256":  "05473C46C672365A49DA0E9614B88B22C79919E7D152B78A5B610473ACDE7AA8",
+                               "bytes":  1660840
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/responsive-spec.json",
+                               "sha256":  "0DB77A3CDA78657F3493F1DAA644A8B2AB936870CD667E430B650E1F1C433708",
+                               "bytes":  12737
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/robustness-800x450.png",
+                               "sha256":  "47C0F085791BDB8BB290365A345A2C7C49D9195D541DBB37551DDBAE8D50D0C2",
+                               "bytes":  718565
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/run-latest.log",
+                               "sha256":  "C1DC9C93C43525302A58825231CBA89F39539C3E975D6E6C6931E14EEF082E3F",
+                               "bytes":  15056
+                           },
+                           {
+                               "path":  "doc/ui/round-preparation/responsive-validation/validation.json",
+                               "sha256":  "2BC60B09C374AA782337F5DEC43D129E7DF76052D097BD1A00A8E7C6C6626A84",
+                               "bytes":  168277
+                           }
+                       ]
+}

@@ -1,0 +1,28 @@
+// 正式 APP 菜单点击滑入 + 单机准备早开局真实 GL 冒烟。
+// Usage:
+//   .\gradlew.bat -I tools/architecture/menu-click-preparation-smoke.init.gradle :lwjgl3:menuClickPreparationSmoke
+//
+// 仅编译 tools/architecture 下的冒烟类，不修改生产入口或 SnapshotLauncher。
+gradle.projectsEvaluated {
+    def p = gradle.rootProject.project(':lwjgl3')
+    def out = gradle.rootProject.layout.buildDirectory.dir('architecture-v2/menu-click-preparation-smoke-classes')
+    def compile = p.tasks.register('compileMenuClickPreparationSmoke', JavaCompile) {
+        dependsOn p.tasks.named('classes')
+        source gradle.rootProject.files('tools/architecture/MenuClickPreparationSmoke.java')
+        classpath = p.sourceSets.main.runtimeClasspath
+        destinationDirectory.set(out)
+        options.release = 17
+        options.encoding = 'UTF-8'
+    }
+    p.tasks.register('menuClickPreparationSmoke', JavaExec) {
+        group = 'verification'
+        description = 'Runs the real GL menu click + single-player preparation smoke'
+        dependsOn compile
+        classpath = p.files(out) + p.sourceSets.main.runtimeClasspath
+        mainClass = 'MenuClickPreparationSmoke'
+        workingDir = gradle.rootProject.file('assets')
+        systemProperty 'majiang.smoke.out',
+            gradle.rootProject.file('snapshot/menu-click-preparation-smoke').absolutePath
+        jvmArgs '--enable-native-access=ALL-UNNAMED'
+    }
+}

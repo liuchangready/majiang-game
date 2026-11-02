@@ -1,0 +1,118 @@
+create window=1280x720 fb=1280x720
+clicked real SOLO entry
+capture app-01-entry-1280x720 window=1280x720 fb=1280x720 stage=0.00,0.00,1280.00,720.00 scale=1.000000 prep:PANEL:target=null:cost=0:see=false
+capture app-02-drawer-mid-1280x720 window=1280x720 fb=1280x720 stage=0.00,0.00,1280.00,720.00 scale=1.000000 prep:DRAWER:target=null:cost=0:see=false
+capture app-03-drawer-unselected-1280x720 window=1280x720 fb=1280x720 stage=0.00,0.00,1280.00,720.00 scale=1.000000 prep:DRAWER:target=null:cost=0:see=false
+capture app-04-target-selected-1280x720 window=1280x720 fb=1280x720 stage=0.00,0.00,1280.00,720.00 scale=1.000000 prep:DRAWER:target=KOKUSHI:cost=30:see=false
+selected card pixel before=31,52,71 after=231,184,82
+capture app-05-cost40-1280x720 window=1280x720 fb=1280x720 stage=0.00,0.00,1280.00,720.00 scale=1.000000 prep:DRAWER:target=KOKUSHI:cost=40:see=true
+capture app-resize-00-1280x720 window=1280x720 fb=1280x720 stage=0.00,0.00,1280.00,720.00 scale=1.000000 prep:DRAWER:target=KOKUSHI:cost=40:see=true
+continuous begin index=0 page=DRAWER target=KOKUSHI cost=40
+request resize -> 1160x700 for continuous-resize
+continuous after release index=0 page=DRAWER target=KOKUSHI cost=40 submitting=false confirmed=false
+capture app-resize-01-1160x700 window=1160x700 fb=1160x700 stage=0.00,23.75,1160.00,652.50 scale=0.906250 prep:DRAWER:target=KOKUSHI:cost=40:see=true
+target click window=1160x700 card=708.00,192.00,252.00,114.00 screen=755.81,450.59 local=834.21,248.55 before=KOKUSHI drawerOffset=0.0 motion=false
+target click after first=null
+target click after second=KOKUSHI
+continuous begin index=1 page=DRAWER target=KOKUSHI cost=40
+request resize -> 1024x768 for continuous-resize
+continuous after release index=1 page=DRAWER target=KOKUSHI cost=40 submitting=false confirmed=false
+capture app-resize-02-1024x768 window=1024x768 fb=1024x768 stage=0.00,96.00,1024.00,576.00 scale=0.800000 prep:DRAWER:target=KOKUSHI:cost=40:see=true
+target click window=1024x768 card=708.00,192.00,252.00,114.00 screen=667.20,472.80 local=833.75,248.75 before=KOKUSHI drawerOffset=0.0 motion=false
+target click after first=null
+target click after second=KOKUSHI
+continuous begin index=2 page=DRAWER target=KOKUSHI cost=40
+request resize -> 960x540 for continuous-resize
+continuous after release index=2 page=DRAWER target=KOKUSHI cost=40 submitting=false confirmed=false
+capture app-resize-03-960x540 window=960x540 fb=960x540 stage=0.00,0.00,960.00,540.00 scale=0.750000 prep:DRAWER:target=KOKUSHI:cost=40:see=true
+target click window=960x540 card=708.00,192.00,252.00,114.00 screen=625.50,353.25 local=834.67,249.33 before=KOKUSHI drawerOffset=0.0 motion=false
+target click after first=null
+target click after second=KOKUSHI
+continuous begin index=3 page=DRAWER target=KOKUSHI cost=40
+request resize -> 1440x810 for continuous-resize
+continuous after release index=3 page=DRAWER target=KOKUSHI cost=40 submitting=false confirmed=false
+capture app-resize-04-1440x810 window=1440x810 fb=1440x810 stage=0.00,0.00,1440.00,810.00 scale=1.125000 prep:DRAWER:target=KOKUSHI:cost=40:see=true
+target click window=1440x810 card=708.00,192.00,252.00,114.00 screen=938.25,529.88 local=833.78,248.89 before=KOKUSHI drawerOffset=0.0 motion=false
+target click after first=null
+target click after second=KOKUSHI
+continuous begin index=4 page=DRAWER target=KOKUSHI cost=40
+request resize -> 1600x600 for continuous-resize
+continuous after release index=4 page=DRAWER target=KOKUSHI cost=40 submitting=false confirmed=false
+capture app-resize-05-1600x600 window=1600x600 fb=1600x600 stage=266.67,0.00,1066.67,600.00 scale=0.833333 prep:DRAWER:target=KOKUSHI:cost=40:see=true
+target click window=1600x600 card=708.00,192.00,252.00,114.00 screen=961.67,392.50 local=834.40,248.40 before=KOKUSHI drawerOffset=0.0 motion=false
+target click after first=null
+target click after second=KOKUSHI
+continuous begin index=5 page=DRAWER target=KOKUSHI cost=40
+request resize -> 1280x720 for continuous-resize
+continuous after release index=5 page=DRAWER target=KOKUSHI cost=40 submitting=false confirmed=false
+capture app-resize-06-1280x720 window=1280x720 fb=1280x720 stage=0.00,0.00,1280.00,720.00 scale=1.000000 prep:DRAWER:target=KOKUSHI:cost=40:see=true
+target click window=1280x720 card=708.00,192.00,252.00,114.00 screen=834.00,471.00 local=834.00,249.00 before=KOKUSHI drawerOffset=0.0 motion=false
+target click after first=null
+target click after second=KOKUSHI
+final confirm submitted once; modelSubmitting=true page=DRAWER
+capture app-10-receipt-1280x720 window=1280x720 fb=1280x720 stage=0.00,0.00,1280.00,720.00 scale=1.000000 prep:PANEL:target=KOKUSHI:cost=40:see=true
+dealt hands=53 wall=69 deadWall=14 cheat=[60, 100, 100, 100]
+capture app-11-dealt-1280x720 window=1280x720 fb=1280x720 stage=0.00,0.00,1280.00,720.00 scale=1.000000 playing:hand=53:wall=69
+capture app-12-playing-1280x720 window=1280x720 fb=1280x720 stage=0.00,0.00,1280.00,720.00 scale=1.000000 playing:hand=53:wall=69
+animation kickoff discard click=true
+capture app-13-animation-mid-1280x720 window=1280x720 fb=1280x720 stage=0.00,0.00,1280.00,720.00 scale=1.000000 playing
+capture app-14-river-hint-1280x720 window=1280x720 fb=1280x720 stage=0.00,0.00,1280.00,720.00 scale=1.000000 playing
+river hint pixel rgb=7,52,44
+clicked real SOLO entry
+request resize -> 960x540 for fresh-session-drawer
+capture app-06-drawer-960x540 window=960x540 fb=960x540 stage=0.00,0.00,960.00,540.00 scale=0.750000 prep:DRAWER:target=KOKUSHI:cost=40:see=true
+target click window=960x540 card=708.00,192.00,252.00,114.00 screen=625.50,353.25 local=834.67,249.33 before=KOKUSHI drawerOffset=0.0 motion=false
+target click after first=null
+target click after second=KOKUSHI
+capture app-12-playing-960x540 window=960x540 fb=960x540 stage=0.00,0.00,960.00,540.00 scale=0.750000 playing:hand=53:wall=69
+fresh session size=960x540 hands=53 wall=69
+clicked real SOLO entry
+request resize -> 1024x768 for fresh-session-drawer
+gutter rejected at window=1024x768 screen=512,48
+capture app-06-drawer-1024x768 window=1024x768 fb=1024x768 stage=0.00,96.00,1024.00,576.00 scale=0.800000 prep:DRAWER:target=KOKUSHI:cost=40:see=true
+target click window=1024x768 card=708.00,192.00,252.00,114.00 screen=667.20,472.80 local=833.75,248.75 before=KOKUSHI drawerOffset=0.0 motion=false
+target click after first=null
+target click after second=KOKUSHI
+capture app-12-playing-1024x768 window=1024x768 fb=1024x768 stage=0.00,96.00,1024.00,576.00 scale=0.800000 playing:hand=53:wall=69
+gutter rejected at window=1024x768 screen=512,48
+fresh session size=1024x768 hands=53 wall=69
+clicked real SOLO entry
+request resize -> 1280x800 for fresh-session-drawer
+gutter rejected at window=1280x800 screen=640,20
+capture app-06-drawer-1280x800 window=1280x800 fb=1280x800 stage=0.00,40.00,1280.00,720.00 scale=1.000000 prep:DRAWER:target=KOKUSHI:cost=40:see=true
+target click window=1280x800 card=708.00,192.00,252.00,114.00 screen=834.00,511.00 local=834.00,249.00 before=KOKUSHI drawerOffset=0.0 motion=false
+target click after first=null
+target click after second=KOKUSHI
+capture app-12-playing-1280x800 window=1280x800 fb=1280x800 stage=0.00,40.00,1280.00,720.00 scale=1.000000 playing:hand=53:wall=69
+gutter rejected at window=1280x800 screen=640,20
+fresh session size=1280x800 hands=53 wall=69
+clicked real SOLO entry
+request resize -> 1600x600 for fresh-session-drawer
+gutter rejected at window=1600x600 screen=133,300
+capture app-06-drawer-1600x600 window=1600x600 fb=1600x600 stage=266.67,0.00,1066.67,600.00 scale=0.833333 prep:DRAWER:target=KOKUSHI:cost=40:see=true
+target click window=1600x600 card=708.00,192.00,252.00,114.00 screen=961.67,392.50 local=834.40,248.40 before=KOKUSHI drawerOffset=0.0 motion=false
+target click after first=null
+target click after second=KOKUSHI
+capture app-12-playing-1600x600 window=1600x600 fb=1600x600 stage=266.67,0.00,1066.67,600.00 scale=0.833333 playing:hand=53:wall=69
+gutter rejected at window=1600x600 screen=133,300
+fresh session size=1600x600 hands=53 wall=69
+clicked real SOLO entry
+request resize -> 1920x1080 for fresh-session-drawer
+capture app-06-drawer-1920x1080 window=1920x1080 fb=1920x1080 stage=0.00,0.00,1920.00,1080.00 scale=1.500000 prep:DRAWER:target=KOKUSHI:cost=40:see=true
+target click window=1920x1080 card=708.00,192.00,252.00,114.00 screen=1251.00,706.50 local=834.00,248.67 before=KOKUSHI drawerOffset=0.0 motion=false
+target click after first=null
+target click after second=KOKUSHI
+capture app-12-playing-1920x1080 window=1920x1080 fb=1920x1080 stage=0.00,0.00,1920.00,1080.00 scale=1.500000 playing:hand=53:wall=69
+fresh session size=1920x1080 hands=53 wall=69
+clicked real SOLO entry
+request resize -> 2560x1080 for fresh-session-drawer
+gutter rejected at window=2560x1080 screen=160,540
+capture app-06-drawer-2560x1080 window=2560x1080 fb=2560x1080 stage=320.00,0.00,1920.00,1080.00 scale=1.500000 prep:DRAWER:target=KOKUSHI:cost=40:see=true
+target click window=2560x1080 card=708.00,192.00,252.00,114.00 screen=1571.00,706.50 local=834.00,248.67 before=KOKUSHI drawerOffset=0.0 motion=false
+target click after first=null
+target click after second=KOKUSHI
+capture app-12-playing-2560x1080 window=2560x1080 fb=2560x1080 stage=320.00,0.00,1920.00,1080.00 scale=1.500000 playing:hand=53:wall=69
+gutter rejected at window=2560x1080 screen=160,540
+fresh session size=2560x1080 hands=53 wall=69
+stageFontCacheSize=26 (bound=32)
+PASS responsive APP smoke; captures=29

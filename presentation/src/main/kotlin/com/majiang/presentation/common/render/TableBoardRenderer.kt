@@ -81,52 +81,122 @@ object TableBoardRenderer {
         chineseFont: BitmapFont?,
         tileSkin: TileSkin,
         tileDrawBuffer: TileDrawBuffer,
-        options: TableBoardRenderOptions = TableBoardRenderOptions()
+        options: TableBoardRenderOptions = TableBoardRenderOptions(),
+        stageFonts: TableStageFonts? = null
     ) {
-        batch.projectionMatrix = projectionMatrix
-        batch.begin()
         val textFont = chineseFont ?: font
         val origColor = Color(textFont.color)
         val origScaleX = textFont.data.scaleX
         val origScaleY = textFont.data.scaleY
+        val layout = com.badlogic.gdx.graphics.g2d.GlyphLayout()
+        val compassCenterX = 640f
 
+        batch.projectionMatrix = projectionMatrix
+        batch.begin()
         try {
-            textFont.data.setScale(1.1f)
-            textFont.color = Color(1.0f, 0.85f, 0.35f, 1f)
-
             val roundWindName = listOf("東", "南", "西", "北").getOrElse(model.roundWind - 1) { "東" }
-            val prefix = if (model.isSpectator) "【观战】 " else ""
-            val roundInfo = "$prefix$roundWindName${model.roundNumber + 1}局  本场:${model.honbaSticks}  供托:${model.riichiSticks}"
-            textFont.draw(batch, roundInfo, 540f, 400f)
+            val roundInfo = "$roundWindName${model.roundNumber + 1}局"
+            val extra = "本${model.honbaSticks}  供${model.riichiSticks}"
+            val wall = "牌山 ${model.wallRemaining}"
+            if (stageFonts != null) {
+                stageFonts.card.drawCentered(
+                    batch,
+                    roundInfo,
+                    compassCenterX,
+                    392f,
+                    Color(1.0f, 0.87f, 0.42f, 1f),
+                    embolden = true,
+                    outline = true
+                )
+                stageFonts.small.drawCentered(
+                    batch,
+                    extra,
+                    compassCenterX,
+                    368f,
+                    Color(0.94f, 0.95f, 0.88f, 1f)
+                )
+                stageFonts.small.drawCentered(
+                    batch,
+                    wall,
+                    compassCenterX,
+                    344f,
+                    Color(0.88f, 0.96f, 0.88f, 1f),
+                    outline = true
+                )
+                if (model.isSpectator) {
+                    stageFonts.small.drawCentered(
+                        batch,
+                        "观战",
+                        compassCenterX,
+                        442f,
+                        Color(0.95f, 0.82f, 0.45f, 1f),
+                        embolden = true
+                    )
+                }
+            } else {
+                textFont.data.setScale(1.2f, 1.2f)
+                textFont.color = Color(1.0f, 0.87f, 0.42f, 1f)
+                layout.setText(textFont, roundInfo)
+                textFont.draw(batch, roundInfo, compassCenterX - layout.width / 2f, 392f)
 
-            textFont.color = Color(0.9f, 0.9f, 0.9f, 1f)
-            textFont.draw(batch, "牌山剩余: ${model.wallRemaining}", 570f, 370f)
+                textFont.data.setScale(1f, 1f)
+                textFont.color = Color(0.94f, 0.95f, 0.88f, 1f)
+                layout.setText(textFont, extra)
+                textFont.draw(batch, extra, compassCenterX - layout.width / 2f, 368f)
 
-            textFont.color = Color(1.0f, 0.6f, 0.2f, 1f)
-            textFont.draw(batch, "宝牌指示牌:", 520f, 340f)
+                textFont.color = Color(0.88f, 0.96f, 0.88f, 1f)
+                layout.setText(textFont, wall)
+                textFont.draw(batch, wall, compassCenterX - layout.width / 2f, 344f)
+
+                if (model.isSpectator) {
+                    textFont.color = Color(0.95f, 0.82f, 0.45f, 1f)
+                    val tag = "观战"
+                    layout.setText(textFont, tag)
+                    textFont.draw(batch, tag, compassCenterX - layout.width / 2f, 442f)
+                }
+            }
+
+            val doras = model.doraIndicators
+            if (doras.isNotEmpty()) {
+                if (stageFonts != null) {
+                    stageFonts.small.drawCentered(
+                        batch,
+                        "宝牌",
+                        compassCenterX,
+                        322f,
+                        Color(0.92f, 0.72f, 0.34f, 1f),
+                        outline = true
+                    )
+                } else {
+                    textFont.color = Color(0.92f, 0.72f, 0.34f, 1f)
+                    layout.setText(textFont, "宝牌")
+                    textFont.draw(batch, "宝牌", compassCenterX - layout.width / 2f, 322f)
+                }
+
+                val total = doras.size * 30f - 2f
+                val startX = compassCenterX - total / 2f
+                for (i in doras.indices) {
+                    val tile = doras[i]
+                    val alpha = if (tile.tileId in model.markedDoraIndicatorIds) 0.55f else 1.0f
+                    tileSkin.appendTileDraw(
+                        buf = tileDrawBuffer,
+                        tile = tile,
+                        x = startX + i * 30f,
+                        y = 282f,
+                        width = 27f,
+                        height = 36f,
+                        isHover = false,
+                        isDrawn = false,
+                        alpha = alpha
+                    )
+                }
+            }
         } finally {
             textFont.data.setScale(origScaleX, origScaleY)
             textFont.color = origColor
         }
         batch.end()
 
-        // 渲染宝牌指示牌
-        val doras = model.doraIndicators
-        for (i in doras.indices) {
-            val tile = doras[i]
-            val alpha = if (tile.tileId in model.markedDoraIndicatorIds) 0.55f else 1.0f
-            tileSkin.appendTileDraw(
-                buf = tileDrawBuffer,
-                tile = tile,
-                x = 640f + i * 32f,
-                y = 315f,
-                width = 28f,
-                height = 38f,
-                isHover = false,
-                isDrawn = false,
-                alpha = alpha
-            )
-        }
         shape.projectionMatrix = projectionMatrix
         batch.projectionMatrix = projectionMatrix
         tileDrawBuffer.flush(batch, shape, font)

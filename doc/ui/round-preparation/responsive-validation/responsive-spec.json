@@ -1,0 +1,778 @@
+{
+  "version": 2,
+  "scope": "design reference, not production entry point",
+  "logicalSize": [
+    1280,
+    720
+  ],
+  "minimumRegularWindow": [
+    960,
+    540
+  ],
+  "fit": "scale=min((W-L-R)/1280,(H-T-B)/720)",
+  "stageOrigin": [
+    "L+(W-L-R-1280*scale)/2",
+    "T+(H-T-B-720*scale)/2"
+  ],
+  "input": "reject outside stage; inverse stage transform; cancel held press on resize",
+  "environment": "cover whole window",
+  "artFilter": "MipMapLinearLinear / Linear; original PNG unchanged; atlas padding retained",
+  "font": "rasterize round(logicalSize*stageScale*framebufferRatio); font scale 1/framebufferRatio; never stretch X/Y independently",
+  "layers": [
+    {
+      "z": 0,
+      "name": "environment",
+      "space": "window"
+    },
+    {
+      "z": 10,
+      "name": "table",
+      "space": "stage"
+    },
+    {
+      "z": 20,
+      "name": "compass and public seats",
+      "space": "stage"
+    },
+    {
+      "z": 30,
+      "name": "tiles after deal",
+      "space": "stage"
+    },
+    {
+      "z": 40,
+      "name": "dock / drawer / receipt",
+      "space": "stage, clipped"
+    },
+    {
+      "z": 50,
+      "name": "focus, selected border, text",
+      "space": "stage"
+    },
+    {
+      "z": 100,
+      "name": "system dialogs",
+      "space": "safe window"
+    }
+  ],
+  "fonts": {
+    "title": 34,
+    "drawer": 28,
+    "primary": 25,
+    "card": 21,
+    "score": 21,
+    "body": 19,
+    "small": 16,
+    "name": 17
+  },
+  "pages": {
+    "ENTRY": [
+      {
+        "id": "board",
+        "rect": [
+          32,
+          76,
+          1216,
+          620
+        ],
+        "interactive": false
+      },
+      {
+        "id": "compass",
+        "rect": [
+          328,
+          254,
+          204,
+          204
+        ],
+        "interactive": false
+      },
+      {
+        "id": "portrait-self",
+        "rect": [
+          16,
+          470,
+          144,
+          144
+        ],
+        "interactive": false
+      },
+      {
+        "id": "plate-self",
+        "rect": [
+          16,
+          622,
+          176,
+          60
+        ],
+        "interactive": false
+      },
+      {
+        "id": "portrait-left",
+        "rect": [
+          16,
+          184,
+          144,
+          144
+        ],
+        "interactive": false
+      },
+      {
+        "id": "plate-left",
+        "rect": [
+          16,
+          332,
+          176,
+          60
+        ],
+        "interactive": false
+      },
+      {
+        "id": "portrait-top",
+        "rect": [
+          368,
+          8,
+          120,
+          120
+        ],
+        "interactive": false
+      },
+      {
+        "id": "plate-top",
+        "rect": [
+          496,
+          30,
+          176,
+          60
+        ],
+        "interactive": false
+      },
+      {
+        "id": "portrait-right",
+        "rect": [
+          800,
+          178,
+          128,
+          128
+        ],
+        "interactive": false
+      },
+      {
+        "id": "plate-right",
+        "rect": [
+          796,
+          310,
+          140,
+          60
+        ],
+        "interactive": false
+      },
+      {
+        "id": "preparation-hint",
+        "rect": [
+          208,
+          626,
+          448,
+          50
+        ],
+        "interactive": false
+      },
+      {
+        "id": "dock",
+        "rect": [
+          936,
+          48,
+          312,
+          624
+        ],
+        "interactive": false
+      },
+      {
+        "id": "timer",
+        "rect": [
+          960,
+          124,
+          264,
+          40
+        ],
+        "interactive": false
+      },
+      {
+        "id": "open-target",
+        "rect": [
+          956,
+          188,
+          272,
+          156
+        ],
+        "interactive": true
+      },
+      {
+        "id": "look",
+        "rect": [
+          956,
+          360,
+          272,
+          64
+        ],
+        "interactive": true
+      },
+      {
+        "id": "summary",
+        "rect": [
+          956,
+          464,
+          272,
+          66
+        ],
+        "interactive": false
+      },
+      {
+        "id": "start",
+        "rect": [
+          956,
+          552,
+          272,
+          76
+        ],
+        "interactive": true
+      }
+    ],
+    "DRAWER": [
+      {
+        "id": "board",
+        "rect": [
+          32,
+          76,
+          1216,
+          620
+        ],
+        "interactive": false
+      },
+      {
+        "id": "compass",
+        "rect": [
+          328,
+          254,
+          204,
+          204
+        ],
+        "interactive": false
+      },
+      {
+        "id": "portrait-self",
+        "rect": [
+          16,
+          470,
+          144,
+          144
+        ],
+        "interactive": false
+      },
+      {
+        "id": "plate-self",
+        "rect": [
+          16,
+          622,
+          176,
+          60
+        ],
+        "interactive": false
+      },
+      {
+        "id": "portrait-left",
+        "rect": [
+          16,
+          184,
+          144,
+          144
+        ],
+        "interactive": false
+      },
+      {
+        "id": "plate-left",
+        "rect": [
+          16,
+          332,
+          176,
+          60
+        ],
+        "interactive": false
+      },
+      {
+        "id": "portrait-top",
+        "rect": [
+          368,
+          8,
+          120,
+          120
+        ],
+        "interactive": false
+      },
+      {
+        "id": "plate-top",
+        "rect": [
+          496,
+          30,
+          176,
+          60
+        ],
+        "interactive": false
+      },
+      {
+        "id": "portrait-right",
+        "rect": [
+          544,
+          160,
+          124,
+          124
+        ],
+        "interactive": false
+      },
+      {
+        "id": "plate-right",
+        "rect": [
+          536,
+          288,
+          140,
+          60
+        ],
+        "interactive": false
+      },
+      {
+        "id": "preparation-hint",
+        "rect": [
+          208,
+          626,
+          448,
+          50
+        ],
+        "interactive": false
+      },
+      {
+        "id": "drawer",
+        "rect": [
+          688,
+          40,
+          560,
+          640
+        ],
+        "interactive": false
+      },
+      {
+        "id": "back",
+        "rect": [
+          1132,
+          60,
+          96,
+          44
+        ],
+        "interactive": true
+      },
+      {
+        "id": "target-0",
+        "rect": [
+          708,
+          154,
+          252,
+          114
+        ],
+        "interactive": true
+      },
+      {
+        "id": "target-1",
+        "rect": [
+          976,
+          154,
+          252,
+          114
+        ],
+        "interactive": true
+      },
+      {
+        "id": "target-2",
+        "rect": [
+          708,
+          284,
+          252,
+          114
+        ],
+        "interactive": true
+      },
+      {
+        "id": "target-3",
+        "rect": [
+          976,
+          284,
+          252,
+          114
+        ],
+        "interactive": true
+      },
+      {
+        "id": "target-4",
+        "rect": [
+          708,
+          414,
+          252,
+          114
+        ],
+        "interactive": true
+      },
+      {
+        "id": "target-5",
+        "rect": [
+          976,
+          414,
+          252,
+          114
+        ],
+        "interactive": true
+      },
+      {
+        "id": "look",
+        "rect": [
+          708,
+          544,
+          252,
+          58
+        ],
+        "interactive": true
+      },
+      {
+        "id": "cost",
+        "rect": [
+          976,
+          544,
+          252,
+          58
+        ],
+        "interactive": false
+      },
+      {
+        "id": "skip",
+        "rect": [
+          708,
+          616,
+          252,
+          48
+        ],
+        "interactive": true
+      },
+      {
+        "id": "confirm",
+        "rect": [
+          976,
+          616,
+          252,
+          48
+        ],
+        "interactive": true
+      }
+    ],
+    "RECEIPT": [
+      {
+        "id": "board",
+        "rect": [
+          32,
+          76,
+          1216,
+          620
+        ],
+        "interactive": false
+      },
+      {
+        "id": "compass",
+        "rect": [
+          328,
+          254,
+          204,
+          204
+        ],
+        "interactive": false
+      },
+      {
+        "id": "portrait-self",
+        "rect": [
+          16,
+          470,
+          144,
+          144
+        ],
+        "interactive": false
+      },
+      {
+        "id": "plate-self",
+        "rect": [
+          16,
+          622,
+          176,
+          60
+        ],
+        "interactive": false
+      },
+      {
+        "id": "portrait-left",
+        "rect": [
+          16,
+          184,
+          144,
+          144
+        ],
+        "interactive": false
+      },
+      {
+        "id": "plate-left",
+        "rect": [
+          16,
+          332,
+          176,
+          60
+        ],
+        "interactive": false
+      },
+      {
+        "id": "portrait-top",
+        "rect": [
+          368,
+          8,
+          120,
+          120
+        ],
+        "interactive": false
+      },
+      {
+        "id": "plate-top",
+        "rect": [
+          496,
+          30,
+          176,
+          60
+        ],
+        "interactive": false
+      },
+      {
+        "id": "portrait-right",
+        "rect": [
+          800,
+          178,
+          128,
+          128
+        ],
+        "interactive": false
+      },
+      {
+        "id": "plate-right",
+        "rect": [
+          796,
+          310,
+          140,
+          60
+        ],
+        "interactive": false
+      },
+      {
+        "id": "preparation-hint",
+        "rect": [
+          208,
+          626,
+          448,
+          50
+        ],
+        "interactive": false
+      },
+      {
+        "id": "receipt",
+        "rect": [
+          944,
+          160,
+          304,
+          260
+        ],
+        "interactive": false
+      }
+    ],
+    "PLAYING": [
+      {
+        "id": "board",
+        "rect": [
+          32,
+          76,
+          1216,
+          620
+        ],
+        "interactive": false
+      },
+      {
+        "id": "compass",
+        "rect": [
+          546,
+          261,
+          188,
+          188
+        ],
+        "interactive": false
+      },
+      {
+        "id": "portrait-self",
+        "rect": [
+          16,
+          552,
+          112,
+          112
+        ],
+        "interactive": false
+      },
+      {
+        "id": "plate-self",
+        "rect": [
+          16,
+          664,
+          176,
+          52
+        ],
+        "interactive": false
+      },
+      {
+        "id": "portrait-left",
+        "rect": [
+          16,
+          228,
+          112,
+          112
+        ],
+        "interactive": false
+      },
+      {
+        "id": "plate-left",
+        "rect": [
+          12,
+          344,
+          176,
+          60
+        ],
+        "interactive": false
+      },
+      {
+        "id": "portrait-top",
+        "rect": [
+          308,
+          4,
+          112,
+          112
+        ],
+        "interactive": false
+      },
+      {
+        "id": "plate-top",
+        "rect": [
+          132,
+          22,
+          176,
+          60
+        ],
+        "interactive": false
+      },
+      {
+        "id": "portrait-right",
+        "rect": [
+          1148,
+          228,
+          112,
+          112
+        ],
+        "interactive": false
+      },
+      {
+        "id": "plate-right",
+        "rect": [
+          1084,
+          344,
+          184,
+          60
+        ],
+        "interactive": false
+      },
+      {
+        "id": "hand-tray",
+        "rect": [
+          208,
+          596,
+          852,
+          110
+        ],
+        "interactive": false
+      },
+      {
+        "id": "top-tray",
+        "rect": [
+          436,
+          8,
+          408,
+          54
+        ],
+        "interactive": false
+      },
+      {
+        "id": "river",
+        "rect": [
+          1098,
+          18,
+          154,
+          48
+        ],
+        "interactive": true
+      },
+      {
+        "id": "mark",
+        "rect": [
+          1078,
+          466,
+          174,
+          46
+        ],
+        "interactive": true
+      },
+      {
+        "id": "swap",
+        "rect": [
+          1078,
+          515,
+          174,
+          46
+        ],
+        "interactive": true
+      },
+      {
+        "id": "sleeve",
+        "rect": [
+          1078,
+          564,
+          174,
+          46
+        ],
+        "interactive": true
+      },
+      {
+        "id": "sort",
+        "rect": [
+          1078,
+          613,
+          174,
+          46
+        ],
+        "interactive": true
+      },
+      {
+        "id": "auto",
+        "rect": [
+          1078,
+          662,
+          174,
+          46
+        ],
+        "interactive": true
+      }
+    ]
+  }
+}
