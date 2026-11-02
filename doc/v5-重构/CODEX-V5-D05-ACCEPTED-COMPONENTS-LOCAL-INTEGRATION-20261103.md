@@ -1,0 +1,18 @@
+# D05 已接受组件本地集成与执行预约交接
+
+日期：2026-11-03，Asia/Shanghai。当前调用方核对，非全 D05/G2 验收、非远端发布。
+
+- 冷恢复组件已由原专属 reviewer 接受：4cde1db71f1330a49510c282e16ee8eb6b2a6ddd；隐私组件已由原专属 reviewer 接受：15981cccc58c486b421477cedb64f758586660ba。没有取用矩阵线程在途修改。
+- 独立本地树：E:/majiang-review/g2-d05-accepted-components-20261103-d04-resume。先从恢复头创建，再合并隐私头及fresh fetch确认的已发布PR20头125a0d6d，全部无冲突。合并代码头dccd7aa9d38fb7b7f6675e0860f583978af02818；origin/v5仍8fd7c6c。
+- 本轮fresh正常Release构建及执行：LocalHost167/167、TableRuntime483/483，native0、零失败/跳过；fresh隐私verifier构建native0，self-test17正例67负例/native0。真实命令、进程身份、起止时间、有限超时和原生退出见build/caller-integration/execution.json，SHA256 06FC4128238466F2D20F7C5E4788AECDF750E8FD88E41788183FF3D95EDFB330。
+- 14项稳定原件清单build/caller-integration/evidence-sha256.json，SHA256 0A5A7F879348CF4F2167AED92329CC814C9E546224992F721379EFCD71B23A98。LocalHost XML SHA0708FA64CF974F05EBA87075E7C75D6C4716C9D5CC2F28BBAAD08FF4DC3A1D07；Runtime XML SHA13A1F9D6D9CF37BDC0E3FF39BD0746C320F567E15097AA79191141099C5F16D5。
+- 首次启动因当前子进程执行策略未带既有ExecutionPolicy Bypass而拒绝载入脚本，未运行测试；随后仅在该子进程使用既有runner相同参数，未修改机器执行策略。没有把该次启动当作测试通过。
+- self-test实际按命令将夹具写入仓内unused.json目录；执行结束后核验路径及非reparse归属，将该目录完整保留到build/caller-integration/privacy-self-test-fixtures，另列self-test-fixtures-sha256.json。原14项manifest与日志保持不变，没有删除或改写首次执行原件，接收树tracked/untracked clean。
+
+两个已结束实现/验收的组件现已实际合入本地候选，原分支及所有证据保留。它们的实施预约结束；共同的最终矩阵/批次发布事项归并到既有D05矩阵线程thread_20261102_232828_d9f0及调用方统一候选交接，按同一批次计一次，不能为两个已完成且无后续开发轮次的组件重复占用worker。
+
+这不是取消源文件归属或删任务：未经同意仍不得改写原接收树/在途矩阵源码；bridge原MR failed记录继续保留直到真实统一发布，不能改成synced。远端PR20目前尚未包含本地新组件，不声称已推送、合并或G2通过。
+
+本地候选继承D05原输入，矩阵runner/producer剩余缺陷仍由原线程处理；未宣称整个候选已接受。下一步由原矩阵审查链读取此交接，在自身修复接受后集成并冻结最终同版本同包Unity/Windows验证。Unity/Player/Android/IL2CPP/设备本轮NOT_RUN。
+
+用户已明确解除D04旧人工停止并授权合理拆分继续执行；现有运行D05矩阵占一个DSH槽，释放后的Luna/DSH实施槽可用于独立D04任务，总计仍Luna≤1、DSH≤2、全局≤3。不为此push、改PR、merge v5、部署或改写旧审批/会话历史。

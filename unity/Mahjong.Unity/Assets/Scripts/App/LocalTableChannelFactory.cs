@@ -178,6 +178,13 @@ namespace Mahjong.Unity.App
         /// <summary>Absolute directory the pure .NET host owns; never the outbox.</summary>
         public string SaveDirectory => _saveDirectory;
 
+        /// <summary>
+        /// Diagnostic/read-only lifecycle probe: true while this factory still owns a cached
+        /// room (its lease, actor and driver). A single-viewer owner releases it on a clean
+        /// session shutdown; explicit multi-viewer rooms stay owned until every viewer leaves.
+        /// </summary>
+        public bool IsRoomOpen => Volatile.Read(ref _room) != null;
+
         public LocalMatchSnapshot? CurrentMatch
         {
             get

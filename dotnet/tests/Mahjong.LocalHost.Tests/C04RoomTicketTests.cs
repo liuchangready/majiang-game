@@ -8,6 +8,7 @@ using Google.Protobuf;
 using Mahjong.Client;
 using Mahjong.Contracts;
 using Mahjong.Contracts.Wire;
+using Mahjong.Domain;
 using Mahjong.TableRuntime;
 using Xunit;
 
@@ -451,6 +452,616 @@ namespace Mahjong.LocalHost.Tests
                 if (firstSession != null) try { await firstSession.CloseAsync("TEST_DONE", CancellationToken.None); } catch { }
                 if (firstChannel != null) try { await firstChannel.CloseAsync(new TableChannelCloseReason("TEST_DONE", true), CancellationToken.None); } catch { }
                 try { await room.DisposeAsync(); } catch { }
+            }
+        }
+
+        [Fact]
+        public async Task ColdRecoveryUsesPersistedAllAiControllersInsteadOfNewHumanSeatPlan()
+        {
+            await using var harness = new P41Harness();
+            harness.Options.AutoPlay = false;
+            harness.Options.SeatPlan = LocalTableSeatPlan.FromHumanSeats(Array.Empty<int>());
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            await using (LocalTableRoom initial = await LocalTableHost.OpenRoomAsync(harness.Options, ct))
+            {
+                Assert.True(initial.CanTickAuthority, "A fresh all-AI room must tick without a human binding.");
+            }
+
+            // The caller now asks for four human seats. The persisted all-AI controllers
+            // (and their epochs) must win; SeatPlan only initializes a fresh checkpoint.
+            harness.Options.SeatPlan = LocalTableSeatPlan.AllFourHumanSeats;
+            await using LocalTableRoom restored = await LocalTableHost.OpenRoomAsync(harness.Options, ct);
+            Assert.True(restored.CanTickAuthority, "The recovered all-AI room must tick without a human binding.");
+            await using RoomSession spectator = await RoomSession.OpenSpectatorAsync(restored, "recovered-all-ai", ct);
+            TableControlSnapshot control = await spectator.Runtime.ActorForTest.GetControlSnapshotAsync(ct);
+            Assert.All(control.Seats, seat =>
+            {
+                Assert.Equal(SeatControllerKind.Computer, seat.Kind);
+                Assert.True(seat.IsAutomated);
+            });
+            Assert.DoesNotContain(
+                restored.SeatPlan.HumanSeats,
+                seat => control.Seats[seat].Kind == SeatControllerKind.LocalHuman);
+        }
+
+        [Fact]
+        public async Task RecoveredReleasedSeatTicksWithoutHumanBindingAndKeepsEpoch()
+        {
+            await using var harness = new P41Harness();
+            harness.Options.AutoPlay = false;
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            await using (LocalTableRoom initial = await LocalTableHost.OpenRoomAsync(harness.Options, ct))
+            {
+                await using RoomSession releasedPlayer = await RoomSession.OpenPlayerAsync(initial, 0, "recover-release", ct);
+                TableReceiptResolvedEventArgs released = await releasedPlayer.SubmitControlAsync(
+                    CommandKind.ReleaseControl,
+                    0UL,
+                    "room-recover-release",
+                    ct);
+                Assert.Equal(OutboxDisposition.Recorded, released.Resolution.Disposition);
+                Assert.Equal("LOCAL_CONTROL", released.Resolution.ReasonCode);
+            }
+
+            await using LocalTableRoom restored = await LocalTableHost.OpenRoomAsync(harness.Options, ct);
+            Assert.True(restored.CanTickAuthority, "A recovered released/AI seat must not require a human binding.");
+            await using RoomSession spectator = await RoomSession.OpenSpectatorAsync(restored, "recover-release-spectator", ct);
+            TableControlSnapshot control = await spectator.Runtime.ActorForTest.GetControlSnapshotAsync(ct);
+            Assert.True(control.Seats[0].IsAutomated);
+            Assert.Equal(1L, control.Seats[0].ControlEpoch);
+            Assert.True(restored.CanTickAuthority, "Adding a spectator must not change the recovered authority.");
+
+            await using RoomSession player = await RoomSession.OpenPlayerAsync(restored, 0, "recover-release-claim", ct);
+            TableReceiptResolvedEventArgs stale = await player.SubmitControlAsync(
+                CommandKind.ClaimControl,
+                0UL,
+                "recover-release-old-epoch",
+                ct);
+            Assert.Equal(OutboxDisposition.Rejected, stale.Resolution.Disposition);
+            Assert.Equal(TableRuntimeReasonCode.StaleControlEpoch, stale.Resolution.ReasonCode);
+            TableReceiptResolvedEventArgs claim = await player.SubmitControlAsync(
+                CommandKind.ClaimControl,
+                1UL,
+                "recover-release-new-epoch",
+                ct);
+            Assert.Equal(OutboxDisposition.Recorded, claim.Resolution.Disposition);
+            TableControlSnapshot claimed = await player.Runtime.ActorForTest.GetControlSnapshotAsync(ct);
+            Assert.Equal(SeatControllerKind.LocalHuman, claimed.Seats[0].Kind);
+            Assert.Equal(2L, claimed.Seats[0].ControlEpoch);
+            Assert.True(restored.CanTickAuthority, "A recovered started room keeps ticking across a claim.");
+        }
+
+        [Fact]
+        public async Task RecoveredHumanControllerSurvivesASeatPlanThatDropsIt()
+        {
+            await using var harness = new P41Harness();
+            harness.Options.AutoPlay = false;
+            harness.Options.SeatPlan = LocalTableSeatPlan.SingleHumanSeatZero;
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            await using (LocalTableRoom initial = await LocalTableHost.OpenRoomAsync(harness.Options, ct))
+            {
+                Assert.False(initial.CanTickAuthority, "A fresh LocalHuman seat without a binding is still AwaitingSeats.");
+            }
+
+            // Four human seats are now requested. The recovered controller is LocalHuman
+            // for seat 0 and Computer for 1..3; the new plan must not turn 1..3 into humans.
+            harness.Options.SeatPlan = LocalTableSeatPlan.AllFourHumanSeats;
+            await using LocalTableRoom restored = await LocalTableHost.OpenRoomAsync(harness.Options, ct);
+            Assert.False(restored.CanTickAuthority, "The recovered LocalHuman seat still needs a live binding.");
+            await using RoomSession player = await RoomSession.OpenPlayerAsync(restored, 0, "recovered-human", ct);
+            Assert.True(restored.CanTickAuthority,
+                "Only recovered seat 0 is human; binding it must satisfy AwaitingSeats regardless of the four-seat plan.");
+            TableControlSnapshot control = await player.Runtime.ActorForTest.GetControlSnapshotAsync(ct);
+            Assert.Equal(SeatControllerKind.LocalHuman, control.Seats[0].Kind);
+            Assert.All(new[] { 1, 2, 3 }, seat => Assert.Equal(SeatControllerKind.Computer, control.Seats[seat].Kind));
+        }
+
+        [Fact]
+        public async Task FreshAllHumanRoomStartsOnlyAfterEveryInitialHumanBinds()
+        {
+            await using var harness = new P41Harness();
+            harness.Options.AutoPlay = false;
+            harness.Options.SeatPlan = LocalTableSeatPlan.AllFourHumanSeats;
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            await using LocalTableRoom room = await LocalTableHost.OpenRoomAsync(harness.Options, ct);
+            var players = new List<RoomSession>();
+            try
+            {
+                Assert.False(room.CanTickAuthority);
+                for (int seat = 0; seat < 4; seat++)
+                {
+                    players.Add(await RoomSession.OpenPlayerAsync(room, seat, "human-" + seat, ct));
+                    Assert.Equal(seat == 3, room.CanTickAuthority);
+                }
+
+                int retainedBefore = room.RetainedTicketCountForTest;
+                await players[1].DisposeAsync();
+                players.RemoveAt(1);
+                Assert.True(room.CanTickAuthority, "A started room must not fall back to AwaitingSeats after a detach.");
+                Assert.Equal(retainedBefore - 1, room.RetainedTicketCountForTest);
+            }
+            finally
+            {
+                for (int i = players.Count - 1; i >= 0; i--) await players[i].DisposeAsync();
+            }
+        }
+
+        [Fact]
+        public async Task RecoveredReleasedSeatActuallyAdvancesAsAiWithoutHumanBinding()
+        {
+            await using var harness = new P41Harness();
+            harness.Options.AutoPlay = true;
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            await using (LocalTableRoom initial = await LocalTableHost.OpenRoomAsync(harness.Options, ct))
+            {
+                await using RoomSession player = await RoomSession.OpenPlayerAsync(initial, 0, "released-ai-progress", ct);
+                await WaitUntilAsync(
+                    () => !string.IsNullOrEmpty(player.Runtime.ActorForTest.GetPendingDecisionId(0)),
+                    "the initial human decision",
+                    ct);
+                TableReceiptResolvedEventArgs released = await player.SubmitControlAsync(
+                    CommandKind.ReleaseControl,
+                    0UL,
+                    "released-ai-progress-release",
+                    ct);
+                Assert.Equal(OutboxDisposition.Recorded, released.Resolution.Disposition);
+                bool automated = false;
+                for (int i = 0; i < 500 && !automated; i++)
+                {
+                    TableControlSnapshot control = await player.Runtime.ActorForTest.GetControlSnapshotAsync(ct);
+                    automated = control.Seats[0].IsAutomated && control.Seats[0].ControlEpoch == 1L;
+                    if (!automated) await Task.Delay(10, ct);
+                }
+                Assert.True(automated, "The released seat must become an automated controller with epoch 1.");
+            }
+
+            await using LocalTableRoom restored = await LocalTableHost.OpenRoomAsync(harness.Options, ct);
+            Assert.True(restored.CanTickAuthority);
+            await using RoomSession spectator = await RoomSession.OpenSpectatorAsync(restored, "released-ai-progress-spectator", ct);
+            TableActor actor = spectator.Runtime.ActorForTest;
+            ulong startVersion = (await actor.GetSnapshotAsync(ct)).StateVersion.Value;
+            bool advanced = false;
+            TableSnapshot last = await actor.GetSnapshotAsync(ct);
+            for (int i = 0; i < 500 && !advanced; i++)
+            {
+                await Task.Delay(10, ct);
+                last = await actor.GetSnapshotAsync(ct);
+                advanced = last.StateVersion.Value > startVersion || last.IsFinished;
+            }
+            Assert.True(advanced,
+                "A recovered released AI seat must advance on its own without any human binding; start=" + startVersion +
+                "; state=" + last.StateVersion.Value + "; phase=" + last.Phase + "; finished=" + last.IsFinished +
+                "; pending0=" + (actor.GetPendingDecisionId(0) ?? "<none>") +
+                "; driver=" + spectator.Runtime.DriverForTest.DescribeDriverForTest());
+        }
+
+        [Fact]
+        public async Task AutoPlayDriverCannotLeaveAwaitingSeatsBeforeAControlSeedExists()
+        {
+            await using var harness = new P41Harness();
+            harness.Options.AutoPlay = true;
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            await using LocalTableRoom room = await LocalTableHost.OpenRoomAsync(harness.Options, ct);
+            // The actor starts its autonomous driver during construction, before the room
+            // has an authority. A default all-false seed must not make AwaitingSeats pass.
+            await Task.Delay(100, ct);
+            Assert.False(room.CanTickAuthority);
+            await using RoomSession spectator = await RoomSession.OpenSpectatorAsync(room, "startup-spectator", ct);
+            await Task.Delay(100, ct);
+            Assert.False(room.CanTickAuthority);
+            Assert.True(string.IsNullOrEmpty(spectator.Runtime.ActorForTest.GetPendingDecisionId(0)),
+                "The driver must not open a decision while the human seat is unbound.");
+        }
+
+        [Fact]
+        public async Task SpectatorCloseLeavesAuthorityAndSeatControlUnchanged()
+        {
+            await using var harness = new P41Harness();
+            harness.Options.AutoPlay = false;
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            await using LocalTableRoom room = await LocalTableHost.OpenRoomAsync(harness.Options, ct);
+            await using RoomSession spectator = await RoomSession.OpenSpectatorAsync(room, "spectator-authority", ct);
+            Assert.False(room.CanTickAuthority, "A spectator binding never counts toward AwaitingSeats.");
+            await using RoomSession player = await RoomSession.OpenPlayerAsync(room, 0, "spectator-authority-player", ct);
+            Assert.True(room.CanTickAuthority);
+            TableControlSnapshot before = await player.Runtime.ActorForTest.GetControlSnapshotAsync(ct);
+            await spectator.DisposeAsync();
+            Assert.True(room.CanTickAuthority);
+            Assert.Equal(TableConnectionState.Ready, player.Session.State);
+            TableControlSnapshot after = await player.Runtime.ActorForTest.GetControlSnapshotAsync(ct);
+            Assert.Equal(before.Seats[0].Kind, after.Seats[0].Kind);
+            Assert.Equal(before.Seats[0].ControlEpoch, after.Seats[0].ControlEpoch);
+        }
+
+        [Fact]
+        public async Task OpenDecisionDeadlineStillRunsAfterOwnerDetachWithoutOpeningANewOne()
+        {
+            await using var harness = new P41Harness();
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            await using LocalTableRoom room = await LocalTableHost.OpenRoomAsync(harness.Options, ct);
+            await using RoomSession spectator = await RoomSession.OpenSpectatorAsync(room, "deadline-spectator", ct);
+            RoomSession player = await RoomSession.OpenPlayerAsync(room, 0, "deadline-player", ct);
+            string decision;
+            try
+            {
+                await WaitUntilAsync(
+                    () => !string.IsNullOrEmpty(player.Runtime.ActorForTest.GetPendingDecisionId(0)),
+                    "an authoritative decision for the live human",
+                    ct);
+                decision = player.Runtime.ActorForTest.GetPendingDecisionId(0)!;
+                Assert.True(room.CanTickAuthority);
+                // Move five seconds into the already-open 23s deadline before detaching.
+                // A detach must neither reset nor extend it.
+                harness.Clock.MonotonicMillis += 5_000L;
+                harness.Clock.UtcNowMs += 5_000L;
+            }
+            finally
+            {
+                await player.DisposeAsync();
+            }
+
+            Assert.True(room.CanTickAuthority, "A started room keeps ticking after the owner detaches.");
+            TableActor actor = spectator.Runtime.ActorForTest;
+            // 19 more seconds crosses the original 23s deadline, but would not cross a
+            // deadline that had been silently re-armed at detach time (5s + 23s = 28s).
+            harness.Clock.MonotonicMillis += 19_000L;
+            harness.Clock.UtcNowMs += 19_000L;
+            await WaitUntilAsync(
+                () => !string.Equals(actor.GetPendingDecisionId(0), decision, StringComparison.Ordinal),
+                "the already-open deadline to retire the decision",
+                ct);
+            await Task.Delay(300, ct);
+            Assert.True(string.IsNullOrEmpty(actor.GetPendingDecisionId(0)),
+                "No new decision may be opened for a LocalHuman seat without a live binding.");
+            TableControlSnapshot control = await actor.GetControlSnapshotAsync(ct);
+            Assert.Equal(SeatControllerKind.LocalHuman, control.Seats[0].Kind);
+            Assert.Equal(0L, control.Seats[0].ControlEpoch);
+        }
+
+        [Fact]
+        public async Task RecoveredOpenHumanDecisionRetiresOnOriginalDeadlineWithoutBinding()
+        {
+            await using var harness = new P41Harness();
+            harness.Options.AutoPlay = true;
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            string decision;
+            await using (LocalTableRoom initial = await LocalTableHost.OpenRoomAsync(harness.Options, ct))
+            {
+                await using RoomSession player = await RoomSession.OpenPlayerAsync(initial, 0, "recover-deadline-initial", ct);
+                await WaitUntilAsync(
+                    () => !string.IsNullOrEmpty(player.Runtime.ActorForTest.GetPendingDecisionId(0)),
+                    "the initial open human decision",
+                    ct);
+                decision = player.Runtime.ActorForTest.GetPendingDecisionId(0)!;
+                Assert.Equal("local-human-initial", decision);
+            }
+
+            await using LocalTableRoom restored = await LocalTableHost.OpenRoomAsync(harness.Options, ct);
+            await using RoomSession spectator = await RoomSession.OpenSpectatorAsync(restored, "recover-deadline-spectator", ct);
+            TableActor actor = spectator.Runtime.ActorForTest;
+            Assert.Equal(decision, actor.GetPendingDecisionId(0));
+            Assert.True(restored.CanTickAuthority,
+                "A recovered room with an open decision is already Playing even without a human binding.");
+
+            TableTimingSnapshot before = await actor.GetTimingSnapshotAsync(ct);
+            DecisionTiming recoveredTiming = Assert.IsType<DecisionTiming>(before.Seats[0].Timing);
+            long deadline = recoveredTiming.DeadlineMillis;
+            long grace = recoveredTiming.RecoveryGraceMillis;
+            Assert.True(recoveredTiming.RecoveryGraceApplied);
+            Assert.True(deadline > harness.Clock.MonotonicMillis);
+
+            // Just before the persisted deadline: nothing may retire early and the
+            // recovered deadline/grace must not be re-armed by attaching a spectator.
+            AdvanceClockTo(harness, deadline - 500);
+            await Task.Delay(300, ct);
+            Assert.Equal(decision, actor.GetPendingDecisionId(0));
+            TableTimingSnapshot atBefore = await actor.GetTimingSnapshotAsync(ct);
+            Assert.Equal(deadline, atBefore.Seats[0].Timing!.DeadlineMillis);
+            Assert.Equal(grace, atBefore.Seats[0].Timing!.RecoveryGraceMillis);
+            Assert.True(atBefore.Seats[0].Timing!.RecoveryGraceApplied);
+
+            // Crossing the recovered deadline retires the old decision through the
+            // production driver. With no live player, no new human decision may open.
+            AdvanceClockTo(harness, deadline + 500);
+            await WaitUntilAsync(
+                () => !string.Equals(actor.GetPendingDecisionId(0), decision, StringComparison.Ordinal),
+                "the recovered open decision to retire at its persisted deadline",
+                ct);
+            await Task.Delay(300, ct);
+            Assert.True(string.IsNullOrEmpty(actor.GetPendingDecisionId(0)),
+                "No new decision may open for an unbound LocalHuman seat after the old deadline retires.");
+            TableTimingSnapshot after = await actor.GetTimingSnapshotAsync(ct);
+            Assert.Null(after.Seats[0].Timing);
+            Assert.Null(after.Seats[0].PendingKey);
+        }
+
+        [Fact]
+        public async Task RecoveredOpenHumanDecisionRetiresWithLiveBindingAndRejectsOldDecision()
+        {
+            await using var harness = new P41Harness();
+            harness.Options.AutoPlay = true;
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            string decision;
+            await using (LocalTableRoom initial = await LocalTableHost.OpenRoomAsync(harness.Options, ct))
+            {
+                await using RoomSession player = await RoomSession.OpenPlayerAsync(initial, 0, "recover-bound-initial", ct);
+                await WaitUntilAsync(
+                    () => !string.IsNullOrEmpty(player.Runtime.ActorForTest.GetPendingDecisionId(0)),
+                    "the initial open human decision",
+                    ct);
+                decision = player.Runtime.ActorForTest.GetPendingDecisionId(0)!;
+            }
+
+            await using LocalTableRoom restored = await LocalTableHost.OpenRoomAsync(harness.Options, ct);
+            await using RoomSession bound = await RoomSession.OpenPlayerAsync(restored, 0, "recover-bound-player", ct);
+            TableActor actor = bound.Runtime.ActorForTest;
+            Assert.Equal(decision, actor.GetPendingDecisionId(0));
+            Assert.True(restored.CanTickAuthority);
+
+            TableTimingSnapshot before = await actor.GetTimingSnapshotAsync(ct);
+            long deadline = Assert.IsType<DecisionTiming>(before.Seats[0].Timing).DeadlineMillis;
+            AdvanceClockTo(harness, deadline + 500);
+            await WaitUntilAsync(
+                () => !string.Equals(actor.GetPendingDecisionId(0), decision, StringComparison.Ordinal),
+                "the bound recovered decision to retire",
+                ct);
+
+            TableReceiptResolvedEventArgs stale = await bound.SubmitControlAsync(
+                CommandKind.ReleaseControl,
+                0UL,
+                "recover-bound-stale-decision",
+                ct,
+                new DecisionId(decision));
+            Assert.Equal(OutboxDisposition.Rejected, stale.Resolution.Disposition);
+            Assert.Equal(ProtocolErrorCode.DecisionMismatch, stale.Resolution.ReasonCode);
+            TableControlSnapshot control = await actor.GetControlSnapshotAsync(ct);
+            Assert.Equal(SeatControllerKind.LocalHuman, control.Seats[0].Kind);
+            Assert.Equal(0L, control.Seats[0].ControlEpoch);
+        }
+
+        [Fact]
+        public async Task RecoveredReleasedSeatClaimsControlAndOpensHumanDecision()
+        {
+            await using var harness = new P41Harness();
+            harness.Options.AutoPlay = true;
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            await using (LocalTableRoom initial = await LocalTableHost.OpenRoomAsync(harness.Options, ct))
+            {
+                await using RoomSession released = await RoomSession.OpenPlayerAsync(initial, 0, "recover-claim-initial", ct);
+                await WaitUntilAsync(
+                    () => !string.IsNullOrEmpty(released.Runtime.ActorForTest.GetPendingDecisionId(0)),
+                    "the initial decision before release",
+                    ct);
+                TableReceiptResolvedEventArgs release = await released.SubmitControlAsync(
+                    CommandKind.ReleaseControl,
+                    0UL,
+                    "recover-claim-release",
+                    ct);
+                Assert.Equal(OutboxDisposition.Recorded, release.Resolution.Disposition);
+                bool becameAutomated = false;
+                for (int i = 0; i < 500 && !becameAutomated; i++)
+                {
+                    TableControlSnapshot control = await released.Runtime.ActorForTest.GetControlSnapshotAsync(ct);
+                    becameAutomated = control.Seats[0].IsAutomated;
+                    if (!becameAutomated) await Task.Delay(10, ct);
+                }
+                Assert.True(becameAutomated, "The released seat must become automated before close.");
+            }
+
+            await using LocalTableRoom restored = await LocalTableHost.OpenRoomAsync(harness.Options, ct);
+            Assert.True(restored.CanTickAuthority);
+            await using RoomSession spectator = await RoomSession.OpenSpectatorAsync(restored, "recover-claim-spectator", ct);
+            await using RoomSession claimed = await RoomSession.OpenPlayerAsync(restored, 0, "recover-claim-player", ct);
+            TableControlSnapshot automated = await claimed.Runtime.ActorForTest.GetControlSnapshotAsync(ct);
+            Assert.True(automated.Seats[0].IsAutomated);
+            Assert.Equal(1L, automated.Seats[0].ControlEpoch);
+
+            TableReceiptResolvedEventArgs claim = await claimed.SubmitControlAsync(
+                CommandKind.ClaimControl,
+                1UL,
+                "recover-claim-control",
+                ct);
+            Assert.Equal(OutboxDisposition.Recorded, claim.Resolution.Disposition);
+            TableControlSnapshot claimedControl = await claimed.Runtime.ActorForTest.GetControlSnapshotAsync(ct);
+            Assert.Equal(SeatControllerKind.LocalHuman, claimedControl.Seats[0].Kind);
+            Assert.Equal(2L, claimedControl.Seats[0].ControlEpoch);
+            await WaitUntilAsync(
+                () => !string.IsNullOrEmpty(claimed.Runtime.ActorForTest.GetPendingDecisionId(0)),
+                "a human decision after the recovered seat is claimed",
+                ct);
+            Assert.True(restored.CanTickAuthority);
+        }
+
+        [Fact]
+        public async Task TicketRetirementIsBoundedAndDetachedTicketsCannotBeReplayed()
+        {
+            await using var harness = new P41Harness();
+            harness.Options.AutoPlay = false;
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            await using LocalTableRoom room = await LocalTableHost.OpenRoomAsync(harness.Options, ct);
+            var retired = new List<LocalTableConnectionTicket>();
+            const int cycles = 128;
+            for (int i = 0; i < cycles; i++)
+            {
+                LocalTableConnectionTicket ticket = room.CreatePlayerTicket(0);
+                ITableChannel channel = await room.ConnectAsync(ticket, ct);
+                await channel.OpenAsync(new TableChannelConnectRequest(ticket.Value, "ticket-cycle-" + i, null), ct);
+                Assert.Equal(1, room.RetainedTicketCountForTest);
+                Assert.Equal(i, room.RetiredTicketCountForTest);
+                await channel.CloseAsync(new TableChannelCloseReason("TICKET_CYCLE", true), CancellationToken.None);
+                Assert.Equal(0, room.RetainedTicketCountForTest);
+                Assert.Equal(i + 1, room.RetiredTicketCountForTest);
+                retired.Add(ticket);
+            }
+
+            Assert.Equal(cycles, room.RetiredTicketCountForTest);
+            Assert.Equal(0, room.RetainedTicketCountForTest);
+            foreach (LocalTableConnectionTicket ticket in retired)
+            {
+                await Assert.ThrowsAsync<LocalTableException>(async () =>
+                    await room.ConnectAsync(ticket, ct).AsTask());
+            }
+
+            LocalTableConnectionTicket replacement = room.CreatePlayerTicket(0);
+            Assert.Equal(1, room.RetainedTicketCountForTest);
+            Assert.NotSame(retired[^1], replacement);
+        }
+
+        [Fact]
+        public async Task ExpiredFailedDetachedAndConcurrentTicketsAreRejectedOnceAndReusableOnlyByANewTicket()
+        {
+            await using var harness = new P41Harness();
+            harness.Options.AutoPlay = false;
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            await using LocalTableRoom room = await LocalTableHost.OpenRoomAsync(harness.Options, ct);
+
+            // Concurrent reservation: the room lock must admit exactly one channel.
+            LocalTableConnectionTicket contended = room.CreatePlayerTicket(0);
+            Task<ITableChannel>[] attempts =
+            {
+                Task.Run(async () => await room.ConnectAsync(contended, ct)),
+                Task.Run(async () => await room.ConnectAsync(contended, ct))
+            };
+            var admitted = new List<ITableChannel>();
+            var rejected = new List<Exception>();
+            foreach (Task<ITableChannel> attempt in attempts)
+            {
+                try { admitted.Add(await attempt); }
+                catch (Exception exception) { rejected.Add(exception); }
+            }
+            Assert.Single(admitted);
+            Assert.Single(rejected);
+            Assert.IsType<LocalTableException>(rejected[0]);
+            await admitted[0].CloseAsync(new TableChannelCloseReason("CONCURRENT_DONE", true), CancellationToken.None);
+            await Assert.ThrowsAsync<LocalTableException>(async () => await room.ConnectAsync(contended, ct).AsTask());
+            LocalTableConnectionTicket afterContention = room.CreatePlayerTicket(0);
+            Assert.NotSame(contended, afterContention);
+
+            // Expired reservation: prune retires it and a replay buys a new reservation.
+            LocalTableConnectionTicket expiring = afterContention;
+            harness.Clock.UtcNowMs += 30_001L;
+            LocalTableConnectionTicket afterExpiry = room.CreatePlayerTicket(0);
+            Assert.NotSame(expiring, afterExpiry);
+            await Assert.ThrowsAsync<LocalTableException>(async () => await room.ConnectAsync(expiring, ct).AsTask());
+            ITableChannel expiringChannel = await room.ConnectAsync(afterExpiry, ct);
+            using (var cancelled = new CancellationTokenSource())
+            {
+                cancelled.Cancel();
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await expiringChannel.OpenAsync(
+                    new TableChannelConnectRequest(afterExpiry.Value, "cancelled-ticket", null), cancelled.Token));
+            }
+            await Assert.ThrowsAsync<LocalTableException>(async () => await room.ConnectAsync(afterExpiry, ct).AsTask());
+            await expiringChannel.CloseAsync(new TableChannelCloseReason("CANCEL_DONE", true), CancellationToken.None);
+            LocalTableConnectionTicket afterCancel = room.CreatePlayerTicket(0);
+            Assert.NotSame(afterExpiry, afterCancel);
+        }
+
+        private static async Task WaitUntilAsync(Func<bool> predicate, string description, CancellationToken ct)
+        {
+            for (int i = 0; i < 1000 && !predicate(); i++) await Task.Delay(10, ct);
+            Assert.True(predicate(), "Timed out waiting for " + description);
+        }
+
+        private static void AdvanceClockTo(P41Harness harness, long monotonicMillis)
+        {
+            long delta = monotonicMillis - harness.Clock.MonotonicMillis;
+            harness.Clock.MonotonicMillis = monotonicMillis;
+            harness.Clock.UtcNowMs += delta;
+        }
+
+        private sealed class RoomSession : IAsyncDisposable
+        {
+            private readonly ITableChannel _channel;
+
+            private RoomSession(ITableChannel channel, TableSession session)
+            {
+                _channel = channel;
+                Session = session;
+            }
+
+            public TableSession Session { get; }
+
+            public LocalTableRuntime Runtime => Assert.IsType<LocalTableChannel>(_channel).RuntimeForMatch!;
+
+            public static async Task<RoomSession> OpenPlayerAsync(
+                LocalTableRoom room,
+                int seat,
+                string label,
+                CancellationToken ct)
+            {
+                LocalTableConnectionTicket ticket = room.CreatePlayerTicket(seat);
+                ITableChannel channel = await room.ConnectAsync(ticket, ct);
+                var session = new TableSession(channel, new InMemoryOutboxStore());
+                await session.OpenAsync(new TableSessionOpenRequest(ticket.Value, label), ct);
+                await PumpUntilReadyAsync(session, ct);
+                return new RoomSession(channel, session);
+            }
+
+            public static async Task<RoomSession> OpenSpectatorAsync(
+                LocalTableRoom room,
+                string label,
+                CancellationToken ct)
+            {
+                LocalTableConnectionTicket ticket = room.CreateSpectatorTicket();
+                ITableChannel channel = await room.ConnectAsync(ticket, ct);
+                var session = new TableSession(channel, new InMemoryOutboxStore());
+                await session.OpenAsync(new TableSessionOpenRequest(ticket.Value, label), ct);
+                await PumpUntilReadyAsync(session, ct);
+                return new RoomSession(channel, session);
+            }
+
+            public async Task<TableReceiptResolvedEventArgs> SubmitControlAsync(
+                CommandKind kind,
+                ulong expectedEpoch,
+                string requestId,
+                CancellationToken ct,
+                DecisionId? decisionId = null)
+            {
+                PlayerSnapshot baseline = Session.PlayerSnapshot
+                    ?? throw new InvalidOperationException("A player session has no baseline snapshot.");
+                BusinessPayload payload = kind == CommandKind.ClaimControl
+                    ? CommandPayloadFactory.ClaimControl(baseline.RoundId, expectedEpoch)
+                    : CommandPayloadFactory.ReleaseControl(baseline.RoundId, expectedEpoch);
+                var command = new ProtocolCommand(
+                    kind,
+                    payload,
+                    new RequestId(requestId),
+                    Session.Binding!.Scope.ScopeId,
+                    new StateVersion(baseline.StateVersion),
+                    new RoundId(baseline.RoundId),
+                    decisionId: decisionId,
+                    controlEpoch: new ControlEpoch(expectedEpoch));
+                var completion = new TaskCompletionSource<TableReceiptResolvedEventArgs>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                EventHandler<TableReceiptResolvedEventArgs> handler = (_, args) =>
+                {
+                    if (string.Equals(args.Command.Key.RequestId.Value, requestId, StringComparison.Ordinal))
+                        completion.TrySetResult(args);
+                };
+                Session.ReceiptResolved += handler;
+                try
+                {
+                    CommandSubmission sent = await Session.SubmitAsync(command, ct);
+                    Assert.True(sent.Sent);
+                    for (int i = 0; i < 64 && !completion.Task.IsCompleted; i++)
+                        await Session.PumpOnceAsync(ct);
+                    return await completion.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+                }
+                finally
+                {
+                    Session.ReceiptResolved -= handler;
+                }
+            }
+
+            public async ValueTask DisposeAsync()
+            {
+                try { await Session.CloseAsync("ROOM_TEST_DONE", CancellationToken.None); } catch { }
+                try
+                {
+                    await _channel.CloseAsync(
+                        new TableChannelCloseReason("ROOM_TEST_DONE", true),
+                        CancellationToken.None);
+                }
+                catch { }
             }
         }
 

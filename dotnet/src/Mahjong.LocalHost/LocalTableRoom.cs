@@ -1,10 +1,10 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 using Mahjong.Client;
+using Mahjong.Domain;
 
 namespace Mahjong.LocalHost
 {
@@ -15,10 +15,15 @@ namespace Mahjong.LocalHost
         private readonly Dictionary<string, TicketEntry> _tickets = new Dictionary<string, TicketEntry>(StringComparer.Ordinal);
         private readonly HashSet<LocalTableRuntime> _connections = new HashSet<LocalTableRuntime>();
         private readonly HashSet<int> _reservedSeats = new HashSet<int>();
-        private readonly HashSet<int> _releasedSeats = new HashSet<int>();
+        // True while the current controller for a seat is a human kind. This is seeded
+        // from the fresh SeatPlan or, for a cold recovery, from the persisted control
+        // checkpoint. It is a runtime predicate only; SeatPlan itself never gates Tick.
+        private readonly bool[] _humanControlledSeats = new bool[4];
         private int _spectatorReservations;
         private int _spectatorSequence;
+        private int _retiredTicketCount;
         private bool _disposed;
+        private bool _controlInitialized;
         private bool _phaseStarted;
         private LocalTableRuntime? _authority;
 
@@ -109,7 +114,7 @@ namespace Mahjong.LocalHost
             }
         }
 
-        internal ValueTask<LocalTableRuntime> AttachAsync(LocalTableConnectionTicket ticket, CancellationToken cancellationToken)
+        internal async ValueTask<LocalTableRuntime> AttachAsync(LocalTableConnectionTicket ticket, CancellationToken cancellationToken)
         {
             LocalTableRuntime authority;
             TicketEntry entry;
@@ -119,8 +124,10 @@ namespace Mahjong.LocalHost
                 if (!_tickets.TryGetValue(ticket.Value, out entry!) || !ReferenceEquals(entry.Ticket, ticket) ||
                     entry.State != LocalTicketState.Reserved || entry.ExpiresAtMs <= NowMs())
                 {
-                    if (_tickets.TryGetValue(ticket.Value, out TicketEntry? expired) && expired.State == LocalTicketState.Reserved)
-                        FailTicket(expired, LocalTicketState.Expired);
+                    if (_tickets.TryGetValue(ticket.Value, out TicketEntry? expired) &&
+                        ReferenceEquals(expired.Ticket, ticket) &&
+                        expired.State == LocalTicketState.Reserved)
+                        RetireTicket(expired, LocalTicketState.Expired);
                     throw new LocalTableException(LocalTableErrorKind.Unavailable, "Ticket reservation is no longer valid.");
                 }
                 authority = _authority ?? throw new LocalTableException(LocalTableErrorKind.Unavailable, "Room authority is closed.");
@@ -128,18 +135,29 @@ namespace Mahjong.LocalHost
 
             cancellationToken.ThrowIfCancellationRequested();
             LocalTableRuntime connection = authority.CreateConnection(ticket, this);
+            bool failed;
             lock (_gate)
             {
-                if (_disposed || entry.State != LocalTicketState.Reserved)
+                failed = _disposed || entry.State != LocalTicketState.Reserved;
+                if (!failed)
                 {
-                    entry.State = LocalTicketState.Failed;
-                    ReleaseReservation(entry.Ticket);
-                    throw new LocalTableException(LocalTableErrorKind.Unavailable, "Ticket attach lost a concurrent close race.");
+                    entry.State = LocalTicketState.Attached;
+                    _connections.Add(connection);
                 }
-                entry.State = LocalTicketState.Attached;
-                _connections.Add(connection);
+                else if (entry.State == LocalTicketState.Reserved)
+                {
+                    // Another close/cancel already retired this reservation. Never turn the
+                    // successful winner's Attached state into Failed, and never resurrect a
+                    // retired ticket: the connection created above is discarded.
+                    RetireTicket(entry, LocalTicketState.Failed);
+                }
             }
-            return new ValueTask<LocalTableRuntime>(connection);
+            if (failed)
+            {
+                await connection.DisposeAsync().ConfigureAwait(false);
+                throw new LocalTableException(LocalTableErrorKind.Unavailable, "Ticket attach lost a concurrent close race.");
+            }
+            return connection;
         }
 
         internal void Detach(LocalTableRuntime connection)
@@ -147,16 +165,17 @@ namespace Mahjong.LocalHost
             lock (_gate)
             {
                 if (!_connections.Remove(connection)) return;
+                TicketEntry? detached = null;
                 foreach (TicketEntry entry in _tickets.Values)
                 {
                     if (entry.State == LocalTicketState.Attached &&
                         string.Equals(entry.Ticket.Value, connection.TicketValueForRoom, StringComparison.Ordinal))
                     {
-                        entry.State = LocalTicketState.Detached;
-                        ReleaseReservation(entry.Ticket);
+                        detached = entry;
                         break;
                     }
                 }
+                if (detached != null) RetireTicket(detached, LocalTicketState.Detached);
             }
         }
 
@@ -166,22 +185,53 @@ namespace Mahjong.LocalHost
             {
                 if (_tickets.TryGetValue(ticket.Value, out TicketEntry? entry) &&
                     ReferenceEquals(entry.Ticket, ticket) && entry.State == LocalTicketState.Reserved)
-                    FailTicket(entry, LocalTicketState.Failed);
+                    RetireTicket(entry, LocalTicketState.Failed);
             }
         }
 
         internal bool CanOpenHumanDecision(int seat)
         {
-            lock (_gate) return _connections.Any(connection => connection.RoleForRoom == LocalViewerRole.Player && connection.SeatIdForRoom == seat && connection.IsSessionOpenForRoom);
+            lock (_gate) return HasLivePlayer(seat);
+        }
+
+        /// <summary>
+        /// Seeds the per-seat human-controller predicate. Fresh rooms pass the SeatPlan
+        /// controllers; a recovered room passes the persisted checkpoint controllers so a
+        /// newer SeatPlan can never silently replace the recovered control state.
+        /// <paramref name="alreadyStarted"/> restores the persisted Playing phase so a
+        /// recovered open decision keeps its existing deadline even without a live player.
+        /// </summary>
+        internal void InitializeControl(IReadOnlyList<SeatControllerKind> controllers, bool alreadyStarted)
+        {
+            if (controllers == null) throw new ArgumentNullException(nameof(controllers));
+            if (controllers.Count != 4)
+                throw new LocalTableException(LocalTableErrorKind.InvalidOptions, "A room control seed must contain exactly four seats.");
+            lock (_gate)
+            {
+                for (int seat = 0; seat < 4; seat++)
+                    _humanControlledSeats[seat] = IsHumanKind(controllers[seat]);
+                _phaseStarted = alreadyStarted;
+                _controlInitialized = true;
+            }
         }
 
         internal void MarkControlChanged(int seat, bool released)
         {
+            if (seat < 0 || seat > 3) return;
             lock (_gate)
             {
-                if (released) _releasedSeats.Add(seat);
-                else _releasedSeats.Remove(seat);
+                _humanControlledSeats[seat] = !released;
             }
+        }
+
+        internal int RetainedTicketCountForTest
+        {
+            get { lock (_gate) return _tickets.Count; }
+        }
+
+        internal int RetiredTicketCountForTest
+        {
+            get { lock (_gate) return _retiredTicketCount; }
         }
 
         internal bool CanTickAuthority
@@ -190,27 +240,37 @@ namespace Mahjong.LocalHost
             {
                 lock (_gate)
                 {
-                    if (_disposed) return false;
-                    if (_phaseStarted) return _authority != null;
-                    foreach (int seat in _options.SeatPlan.HumanSeats)
+                    if (_disposed || !_controlInitialized) return false;
+                    if (!_phaseStarted)
                     {
-                        if (_releasedSeats.Contains(seat)) continue;
-                        bool live = false;
-                        foreach (LocalTableRuntime connection in _connections)
+                        // AwaitingSeats: every seat whose *current* controller is a human
+                        // kind needs a live player binding; released/automated seats do not.
+                        // Spectator bindings never count.
+                        for (int seat = 0; seat < 4; seat++)
                         {
-                            if (connection.RoleForRoom == LocalViewerRole.Player && connection.SeatIdForRoom == seat && connection.IsSessionOpenForRoom)
-                            {
-                                live = true;
-                                break;
-                            }
+                            if (_humanControlledSeats[seat] && !HasLivePlayer(seat)) return false;
                         }
-                        if (!live) return false;
+                        _phaseStarted = true;
                     }
-                    _phaseStarted = true;
                     return _authority != null;
                 }
             }
         }
+
+        private bool HasLivePlayer(int seat)
+        {
+            foreach (LocalTableRuntime connection in _connections)
+            {
+                if (connection.RoleForRoom == LocalViewerRole.Player &&
+                    connection.SeatIdForRoom == seat &&
+                    connection.IsSessionOpenForRoom)
+                    return true;
+            }
+            return false;
+        }
+
+        private static bool IsHumanKind(SeatControllerKind kind) =>
+            kind == SeatControllerKind.LocalHuman || kind == SeatControllerKind.RemoteHuman;
 
         public async ValueTask DisposeAsync()
         {
@@ -226,7 +286,10 @@ namespace Mahjong.LocalHost
                 authority = _authority;
                 _authority = null;
                 foreach (TicketEntry ticket in _tickets.Values)
-                    if (ticket.State == LocalTicketState.Issued || ticket.State == LocalTicketState.Reserved) ticket.State = LocalTicketState.Failed;
+                {
+                    ticket.State = LocalTicketState.Failed;
+                    ReleaseReservation(ticket.Ticket);
+                }
                 _tickets.Clear();
             }
             for (int i = 0; i < connections.Length; i++) await connections[i].DisposeAsync().ConfigureAwait(false);
@@ -248,13 +311,25 @@ namespace Mahjong.LocalHost
             var expired = new List<TicketEntry>();
             foreach (TicketEntry entry in _tickets.Values)
                 if ((entry.State == LocalTicketState.Issued || entry.State == LocalTicketState.Reserved) && entry.ExpiresAtMs <= now) expired.Add(entry);
-            for (int i = 0; i < expired.Count; i++) FailTicket(expired[i], LocalTicketState.Expired);
+            for (int i = 0; i < expired.Count; i++) RetireTicket(expired[i], LocalTicketState.Expired);
         }
 
-        private void FailTicket(TicketEntry entry, LocalTicketState state)
+        /// <summary>
+        /// Moves a ticket to a terminal state, releases its seat/spectator reservation and
+        /// removes it from the live registry. Retired ticket values are never retained and can
+        /// never be replayed: a later Connect/Attach sees an unknown ticket and is rejected.
+        /// This keeps repeated issue/attach/detach cycles memory-bounded.
+        /// </summary>
+        private void RetireTicket(TicketEntry entry, LocalTicketState state)
         {
+            if (entry.State == LocalTicketState.Detached ||
+                entry.State == LocalTicketState.Failed ||
+                entry.State == LocalTicketState.Expired)
+                return;
             entry.State = state;
             ReleaseReservation(entry.Ticket);
+            _tickets.Remove(entry.Ticket.Value);
+            if (_retiredTicketCount < int.MaxValue) _retiredTicketCount++;
         }
 
         private void ReleaseReservation(LocalTableConnectionTicket ticket)
