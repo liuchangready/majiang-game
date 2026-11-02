@@ -51,6 +51,75 @@
 | C04-G5-02 | BLOCKED | 没有从合法公共命令得到真实非空私有 fee/ledger 对照；不能以空字段、相等 scalar 或 verifier 自测替代。 |
 | C04-G5-03 | BLOCKED | role-switch/cache clearing 与 .NET 原始旧 wire rejection 有证据；Unity/Windows Player 的延迟旧真实 wire 投递负例未执行。 |
 
+> **R9 合同/范围状态（2026-11-03，B）**：stale 已改用 release 前捕获的配套 round/decision/epoch（实测 captured=0、supplied=0），目标拒绝回执断言无 CommandVersion/EventSeq/CommittedAtMs 提交元数据；共享合同新增 commit-metadata 负例，1 正 + 8 负全过。四个 B9 外 tracked 路径已撤销，控制判据合回既有 PlayMode 测试；相对 R7 仅测试+文档。Client 仍 epoch1/AI，外部缺口保留，D05 未最终 PASS。
+
+## R9 原请求配套与范围修复（I3）
+
+### 身份
+
+- 最终代码头 `251a4680f4a2edd1eacf8ff11a5bddde596f599b`；clean/diff-check0。
+- 相对 R7 `178c19f3` 仅：
+  - `unity/.../C04PrivacyRoleSwitchPlayModeTests.cs`
+  - 本报告
+- 已撤销 `.gitignore` 增量、独立 `C04ControlContract.cs`、`tools/tests/C04ControlContract` 两个文件；控制判据合回既有 PlayMode 测试。
+
+### 原请求配套
+
+- release 前捕获：
+  - `staleDecisionSeed`
+  - `staleEpochSeed`
+  - `staleRoundSeed`
+- stale payload/envelope 使用同一旧：
+  - round
+  - DecisionId
+  - epoch
+  - action/tileIds
+- 实测：
+  - `CapturedDecisionEpoch=0`
+  - `StaleEpoch=0`
+  - `StaleRound=reviewer-...-r1`（与捕获 round 相同）
+- 不再使用 claimBase 的 epoch1 冒称原 epoch。
+
+### 无业务提交
+
+- stale 回执断言：
+  - `ReceiptStatus=Rejected`
+  - `StaleReason=DECISION_MISMATCH`
+  - `CommandVersion == null`
+  - `EventSeq == null`
+  - `CommittedAtMs == null`
+  - `StaleNoCommitMetadata=true`
+- 客户端只发送一次（`StaleCommandFrames=1`）、无 pending（`StalePendingAfter=0`）只作为发送侧证据，不替代服务端提交元数据断言。
+
+### 合同矩阵
+
+共享 `C04ControlContract` 由测试和独立合同工具共同消费（工具放 ignored build）：
+- 合法正例 PASS
+- control null / epoch 不变 / 仍 AI / 错误 reason / 未拒绝 / 重复命令 / pending target / commit metadata → 全部 FAIL
+- `C04_CONTROL_CONTRACT_PASS`，log SHA `B896EDCA3A12D551E12802BF974A1F1D8A8C21F80DD01244AC64BA9864817E3C`
+
+### fresh helper 实际
+
+- `ClaimEpochAdvanced=False`
+- `ControlPresent=True`
+- `ControlHuman=False`
+- `ReceiptStatus=Recorded`
+- `ReceiptReason=LOCAL_CONTROL`
+- `CapturedDecisionEpoch=0`
+- `StaleEpoch=0`
+- `StaleRound=reviewer-...-r1`
+- `StaleCommandFrames=1`
+- `StalePendingAfter=0`
+- `StaleNoCommitMetadata=True`
+- `StaleDecisionRejected=True`
+- helper log SHA `0486E6C86DF4FE9EEEA2CA40A8AEE989BE2E69DFD4B0F2D22A8042507D0A9297`
+
+### 结论
+
+- I3 的 B 合同：原 round/decision/epoch 配套、精确 reason、无提交元数据、零重复/零 pending 均闭合。
+- Client 仍 epoch1/AI，actor 已 epoch2/human；外部投影/刷新缺口保留，B 不越界。
+- I2/I4/recovery 不重开；D05 仍未最终 PASS。
+
 > **R8 控制合同状态（2026-11-03，B）**：R7 的 reason 自相矛盾已修复：期望原因、生产 bool、外层断言统一使用 case 的 `DECISION_MISMATCH`；新增目标请求零重复/零 pending 断言；同一生产判据合同矩阵 1 个合法正例 PASS + 7 个错误输入 FAIL。fresh helper 实际 `StaleReason=DECISION_MISMATCH`、`StaleDecisionRejected=True`、commandFrames=1、pending=0；claim 仍 client epoch1/AI，外部投影缺口保留。D05 未最终 PASS。
 
 ## R8 控制合同修复（I3）
