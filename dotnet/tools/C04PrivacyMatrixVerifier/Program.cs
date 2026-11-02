@@ -46,6 +46,9 @@ if (args[0] == "self-test")
                      ("authorized-chankan-settlement", BuildChankanFixture(fixture, "settlement")),
                      ("authorized-chankan-player-update", BuildChankanFixture(fixture, "player-update")),
                      ("authorized-chankan-public-update", BuildChankanFixture(fixture, "public-update")),
+                     ("authorized-chankan-closed-target-settlement", BuildChankanClosedTargetFixture(fixture, "settlement")),
+                     ("authorized-chankan-closed-target-player-update", BuildChankanClosedTargetFixture(fixture, "player-update")),
+                     ("authorized-chankan-closed-target-public-update", BuildChankanClosedTargetFixture(fixture, "public-update")),
                      ("authorized-ordinary-ron-public-discard", BuildChankanFixture(fixture, "settlement", "ordinary")),
                      ("consistent-duplicate-owner-independent-cursor-control", BuildOwnerDuplicateFixture(BuildTsumoFixture(fixture, "player-update"), false, false)) })
         {
@@ -59,7 +62,7 @@ if (args[0] == "self-test")
             WriteFixture(casePath, item.Value);
             Require(Verify(ReadCapture(casePath).frames ?? []).Count != 0, $"self-test mutation was accepted: {item.Key}");
         }
-        Console.WriteLine($"SELF_TEST_PASS positive=14 negative={negative.Count} serializedFrames={capture.frames!.Length} source=WireCodec");
+        Console.WriteLine($"SELF_TEST_PASS positive=17 negative={negative.Count} serializedFrames={capture.frames!.Length} source=WireCodec");
         return 0;
     }
     catch (Exception exception)
@@ -189,7 +192,8 @@ static List<string> Verify(IEnumerable<Frame> frames)
             CompareSummary(row, facts);
             ValidateRedundantContract(envelope, facts);
             visibility.Add(new SnapshotVisibility(welcome.RoomId, facts.RoundId, facts.StateVersion, facts.EventSeq,
-                facts.OwnerSeat, facts.OwnedTileIds, facts.HiddenTileIds, facts.OwnerMeldFacts, facts.PonTypeIndices,
+                facts.OwnerSeat, facts.OwnedTileIds, facts.ClosedTileIds, facts.HiddenTileIds, facts.SleeveTileIds,
+                facts.OwnerMeldFacts, facts.PonTypeIndices,
                 facts.PublicTileIds, facts.PublicDiscardFacts, facts.PublicPhase, facts.DrawnTileId));
             publicEvents.AddRange(facts.PublicEvents);
             bool fullGenesis = facts.IsFull && facts.StateVersion == 0 && facts.EventSeq == 0;
@@ -247,7 +251,8 @@ static void ValidateHistoricalOwnerConsistency(List<SnapshotVisibility> snapshot
 }
 
 static bool SameOwnerFacts(SnapshotVisibility left, SnapshotVisibility right) =>
-    left.owned.SetEquals(right.owned) && left.hidden.SetEquals(right.hidden) &&
+    left.owned.SetEquals(right.owned) && left.closed.SetEquals(right.closed) && left.hidden.SetEquals(right.hidden) &&
+    left.sleeve.SetEquals(right.sleeve) &&
     left.ownerMeldFacts.SetEquals(right.ownerMeldFacts) && left.publicTiles.SetEquals(right.publicTiles) &&
     left.publicDiscardFacts.SetEquals(right.publicDiscardFacts) && left.publicPhase == right.publicPhase &&
     left.drawnTileId == right.drawnTileId;
@@ -348,7 +353,8 @@ static ProjectionFacts ReadProjection(Envelope envelope, string role, int welcom
             true, cheat.CheatPoints, cheat.LedgerEntries.Count, cheat.TileMark?.Groups.Count ?? 0,
             CountSleeveOffer(cheat.SleeveBloom), CountSleeveOffer(cheat.OffTurnSleeveBloom), cheat.SleeveBloomReservation == null ? 0 : 1,
             privateView.SleeveTiles.Count, privateView.OwnerMelds.Count, true, control.ControlEpoch,
-            control.ControlVersion, false, ownedIds, hiddenIds, ownerMeldFacts, ponTypeIndices, publicTiles, publicDiscards, playerPublicView.Board!.Phase,
+            control.ControlVersion, false, ownedIds, privateView.ClosedTiles.ToHashSet(), hiddenIds, privateView.SleeveTiles.ToHashSet(),
+            ownerMeldFacts, ponTypeIndices, publicTiles, publicDiscards, playerPublicView.Board!.Phase,
             privateView.HasDrawnTileId ? privateView.DrawnTileId : null, publicEvents);
     }
     PublicSnapshot actualPublic = publicSnapshot ?? throw new InvalidDataException("public projection is absent");
@@ -366,7 +372,7 @@ static ProjectionFacts ReadProjection(Envelope envelope, string role, int welcom
                 actualPublic.StateVersion, "PublicUpdate visible event"));
     return new ProjectionFacts(audience, full, actualPublic.Cursor?.StreamVersion ?? 0, actualPublic.Cursor?.ProjectionSeq ?? 0,
         visibleEvents, actualPublic.SessionId, actualPublic.RoundId, actualPublic.StateVersion, actualPublic.EventSeq, -1, -1, 0, false, 0, 0, 0, 0, 0, 0,
-        0, 0, false, 0, 0, true, new HashSet<uint>(), new HashSet<uint>(), new HashSet<string>(StringComparer.Ordinal),
+        0, 0, false, 0, 0, true, new HashSet<uint>(), new HashSet<uint>(), new HashSet<uint>(), new HashSet<uint>(), new HashSet<string>(StringComparer.Ordinal),
         new HashSet<uint>(), publicTileIds, publicDiscardFacts, publicView.Board!.Phase, null, publicEventFacts);
 }
 
@@ -650,9 +656,11 @@ static void ValidatePublicEventVisibility(List<PublicEventFact> events, List<Sna
                 chankanLoser = ownerRows.SingleOrDefault(s => s.owner == item.LoserSeat);
                 if (chankanLoser == null || chankanLoser.publicPhase is not (GamePhase.RoundEnd or GamePhase.MatchEnd) ||
                     !chankanLoser.owned.Contains(winTile) || !chankanLoser.hidden.Contains(winTile) ||
+                    !(chankanLoser.closed.Contains(winTile) || chankanLoser.drawnTileId == winTile) ||
+                    chankanLoser.sleeve.Contains(winTile) ||
                     !chankanLoser.ponTypeIndices.Contains(winTile >> 2))
                 {
-                    errors.Add($"{item.Label} chankan tile lacks a matching terminal loser-owned tile and pon");
+                    errors.Add($"{item.Label} chankan tile lacks a matching terminal loser hand-zone tile and pon");
                     continue;
                 }
             }
@@ -672,7 +680,9 @@ static void ValidatePublicEventVisibility(List<PublicEventFact> events, List<Sna
                 owner.publicPhase is GamePhase.RoundEnd or GamePhase.MatchEnd;
             bool authorizedChankanTile = item.EventType == EventType.RonWin && item.Visibility == EventVisibility.SettlementPublic &&
                 item.IsChankan == true && item.LoserSeat == owner.owner && item.WinTileId == tileId && chankanLoser?.owner == owner.owner &&
-                chankanLoser.owned.Contains(tileId) && chankanLoser.hidden.Contains(tileId) && chankanLoser.ponTypeIndices.Contains(tileId >> 2) &&
+                chankanLoser.owned.Contains(tileId) && chankanLoser.hidden.Contains(tileId) &&
+                (chankanLoser.closed.Contains(tileId) || chankanLoser.drawnTileId == tileId) && !chankanLoser.sleeve.Contains(tileId) &&
+                chankanLoser.ponTypeIndices.Contains(tileId >> 2) &&
                 chankanLoser.publicPhase is GamePhase.RoundEnd or GamePhase.MatchEnd;
             if (!authorizedWinningDraw && !authorizedChankanTile)
                 errors.Add($"{item.Label} at commandVersion {item.CommandVersion} publicly exposes tile {tileId} still hidden for seat {owner.owner}");
@@ -1005,6 +1015,59 @@ static FrameFile BuildChankanFixture(FrameFile source, string route, string inva
     return new FrameFile { schemaVersion = 2, frames = rows };
 }
 
+static FrameFile BuildChankanClosedTargetFixture(FrameFile source, string route) =>
+    MutateChankanTargetZone(BuildChankanFixture(source, route), handZone: true);
+
+static FrameFile BuildChankanSleeveTargetFixture(FrameFile source, string route) =>
+    MutateChankanTargetZone(BuildChankanFixture(source, route), handZone: false);
+
+static FrameFile MutateChankanTargetZone(FrameFile source, bool handZone)
+{
+    Frame[] rows = source.frames!.ToArray();
+    int ownerIndex = Array.FindIndex(rows, row => row.boundSeat == 1 && row.audience is "Player" or "PlayerUpdate");
+    Require(ownerIndex >= 0, "chankan target-zone fixture lacks loser seat 1 projection");
+    rows[ownerIndex] = MutateProjectionAndRefreshSummary(rows[ownerIndex], envelope =>
+    {
+        PlayerSnapshot snapshot = envelope.BodyCase == Envelope.BodyOneofCase.PlayerUpdate
+            ? envelope.PlayerUpdate.Snapshot : envelope.SyncResponse.Player;
+        PlayerPrivateView privateView = snapshot.PrivateView;
+        uint originalTarget = privateView.DrawnTileId;
+        if (handZone)
+        {
+            int lastClosed = privateView.ClosedTiles.Count - 1;
+            uint previousClosed = privateView.ClosedTiles[lastClosed];
+            privateView.ClosedTiles[lastClosed] = originalTarget;
+            privateView.DrawnTileId = previousClosed;
+        }
+        else
+        {
+            uint previousSleeve = privateView.SleeveTiles[0];
+            privateView.DrawnTileId = previousSleeve;
+            privateView.SleeveTiles[0] = originalTarget;
+        }
+    });
+    return new FrameFile { schemaVersion = 2, frames = rows };
+}
+
+static FrameFile BuildOwnerZoneConflictFixture(FrameFile source, bool placeFirst)
+{
+    Frame[] rows = BuildTsumoFixture(source, "player-update").frames!.ToArray();
+    int ownerIndex = Array.FindIndex(rows, row => row.boundSeat == 0 && row.audience is "Player" or "PlayerUpdate");
+    Require(ownerIndex >= 0, "owner-zone conflict fixture lacks seat 0 projection");
+    Frame conflicting = MutateProjectionAndRefreshSummary(rows[ownerIndex], envelope =>
+    {
+        PlayerSnapshot snapshot = envelope.BodyCase == Envelope.BodyOneofCase.PlayerUpdate
+            ? envelope.PlayerUpdate.Snapshot : envelope.SyncResponse.Player;
+        PlayerPrivateView privateView = snapshot.PrivateView;
+        uint closed = privateView.ClosedTiles[0];
+        privateView.ClosedTiles[0] = privateView.SleeveTiles[0];
+        privateView.SleeveTiles[0] = closed;
+    });
+    List<Frame> combined = rows.ToList();
+    if (placeFirst) combined.Insert(0, conflicting); else combined.Add(conflicting);
+    return new FrameFile { schemaVersion = 2, frames = combined.Select((row, index) => row with { ordinal = index }).ToArray() };
+}
+
 static PublicEventEnvelope ChankanPublicEvent(string invalid) => new()
 {
     EventSchemaVersion = ProtocolConstants.EventSchemaVersion, EventSeq = 1, CommandVersion = 1,
@@ -1157,6 +1220,11 @@ static Dictionary<string, FrameFile> BuildNegativeFixtures(FrameFile source)
     cases.Add("chankan-without-matching-pon", BuildChankanFixture(source, "settlement", "no-pon"));
     cases.Add("hidden-ron-forged-as-chankan", BuildChankanFixture(source, "public-update", "not-chankan"));
     cases.Add("ordinary-ron-meld-is-not-discard", BuildChankanFixture(source, "settlement", "ordinary-public-meld"));
+    cases.Add("conflicting-zone-owner-first", BuildOwnerZoneConflictFixture(source, true));
+    cases.Add("conflicting-zone-owner-last", BuildOwnerZoneConflictFixture(source, false));
+    cases.Add("invalid-sleeve-target-player-update", BuildChankanSleeveTargetFixture(source, "player-update"));
+    cases.Add("invalid-sleeve-target-public-update", BuildChankanSleeveTargetFixture(source, "public-update"));
+    cases.Add("invalid-sleeve-target-settlement", BuildChankanSleeveTargetFixture(source, "settlement"));
     One("unknown-field-summary-false", 0, rows[0] with { unknownFieldsZero = false });
     One("missing-welcome", 0, rows[0] with { welcomeRawBase64 = string.Empty, welcomeWireSha256 = string.Empty });
     One("welcome-record-is-not-projection", 0, rows[0] with { rawBase64 = rows[0].welcomeRawBase64, wireSha256 = rows[0].welcomeWireSha256 });
@@ -1428,12 +1496,14 @@ sealed record ProjectionFacts(string Audience, bool IsFull, ulong CursorStreamVe
     long PrivateCheatPoints, int PrivateLedgerEntryCount, int PrivateMarkedTileCount, int PrivateImmediateSleeveOfferTileCount,
     int PrivateOffTurnSleeveOfferTileCount, int PrivateSleeveReservationCount, int OwnerSleeveTileCount, int OwnerMeldCount,
     bool HasPrivateControlView, ulong ControlEpoch, ulong ControlVersion, bool HasPublicSnapshot, HashSet<uint> OwnedTileIds,
-    HashSet<uint> HiddenTileIds, HashSet<string> OwnerMeldFacts, HashSet<uint> PonTypeIndices, HashSet<uint> PublicTileIds,
+    HashSet<uint> ClosedTileIds, HashSet<uint> HiddenTileIds, HashSet<uint> SleeveTileIds,
+    HashSet<string> OwnerMeldFacts, HashSet<uint> PonTypeIndices, HashSet<uint> PublicTileIds,
     HashSet<ulong> PublicDiscardFacts,
     GamePhase PublicPhase, uint? DrawnTileId, List<PublicEventFact> PublicEvents);
 
 sealed record SnapshotVisibility(string room, string round, ulong version, ulong eventSeq, int owner,
-    HashSet<uint> owned, HashSet<uint> hidden, HashSet<string> ownerMeldFacts, HashSet<uint> ponTypeIndices,
+    HashSet<uint> owned, HashSet<uint> closed, HashSet<uint> hidden, HashSet<uint> sleeve,
+    HashSet<string> ownerMeldFacts, HashSet<uint> ponTypeIndices,
     HashSet<uint> publicTiles, HashSet<ulong> publicDiscardFacts, GamePhase publicPhase, uint? drawnTileId);
 
 sealed record EventTileContent(HashSet<uint> TileIds, int? ActorSeat, int? LoserSeat, uint? WinTileId, bool? IsChankan);

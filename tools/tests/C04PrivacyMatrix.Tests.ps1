@@ -140,7 +140,7 @@ $outcome='FAIL';$summaryPath=Join-Path $RunRoot 'summary.json'
 try{
     $fixtureRoot=Join-Path $RunRoot 'wirecodec-fixtures'
     $self=Invoke-BoundedProcess -Name 'self-test' -FilePath $DotnetPath -Arguments @($VerifierDll,'self-test',$fixtureRoot) -TimeoutMs $ProcessTimeoutMs -WorkingDirectory (Split-Path -Parent $VerifierDll)
-    if($self.State -ne 'EXITED' -or $self.NativeExit -ne 0 -or $self.Stdout -notmatch 'SELF_TEST_PASS positive=14 negative=62 serializedFrames=5 source=WireCodec'){throw "WireCodec self-test failed or did not run the fixed genuine mutation set. state=$($self.State) native=$($self.NativeExit) $($self.Stderr)"}
+    if($self.State -ne 'EXITED' -or $self.NativeExit -ne 0 -or $self.Stdout -notmatch 'SELF_TEST_PASS positive=17 negative=67 serializedFrames=5 source=WireCodec'){throw "WireCodec self-test failed or did not run the fixed genuine mutation set. state=$($self.State) native=$($self.NativeExit) $($self.Stderr)"}
 
     $validPath=Join-Path $fixtureRoot 'valid.json'
     $valid=Invoke-Verifier 'wirecodec-valid-positive' $validPath $true
@@ -160,7 +160,9 @@ try{
         'old-version-hidden-event-settlement-without-history','old-version-hidden-event-settlement-with-history',
         'tsumo-win-wrong-owner','tsumo-win-wrong-tile','tsumo-win-nonterminal','tsumo-win-wrong-event-version',
         'conflicting-owner-facts-frame-last','conflicting-owner-facts-frame-first','chankan-wrong-loser','chankan-wrong-tile',
-        'chankan-nonterminal','chankan-without-matching-pon','hidden-ron-forged-as-chankan','ordinary-ron-meld-is-not-discard')
+        'chankan-nonterminal','chankan-without-matching-pon','hidden-ron-forged-as-chankan','ordinary-ron-meld-is-not-discard',
+        'conflicting-zone-owner-first','conflicting-zone-owner-last','invalid-sleeve-target-player-update',
+        'invalid-sleeve-target-public-update','invalid-sleeve-target-settlement')
     foreach($caseName in $negativeNames){$casePath=Join-Path $fixtureRoot "$caseName.json";if(-not(Test-Path -LiteralPath $casePath -PathType Leaf)){throw "Required serialized negative fixture is missing: $caseName"};[void](Invoke-Verifier "negative-$caseName" $casePath $false)}
 
     $realFrameCount=0;$realCaptureSha256=$null;$tampered=$null
