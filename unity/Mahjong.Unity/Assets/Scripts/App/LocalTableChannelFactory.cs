@@ -40,6 +40,18 @@ namespace Mahjong.Unity.App
         string DescribeRuntimeForTest();
     }
 
+    public interface ILocalRoomViewerFactory
+    {
+        Task<ITableChannel> CreateRoomViewerAsync(LocalRoomViewerRole role, int seatId, CancellationToken cancellationToken);
+        Task CloseRoomAsync(CancellationToken cancellationToken);
+    }
+
+    public enum LocalRoomViewerRole : byte
+    {
+        Player = 0,
+        Spectator = 1
+    }
+
     /// <summary>
     /// Production local table composition root. It is the only place in the Unity
     /// project that calls the accepted pure .NET <see cref="LocalTableHost"/> facade.
@@ -66,12 +78,13 @@ namespace Mahjong.Unity.App
     /// host; the normal application never enables it.
     /// </para>
     /// </summary>
-    public sealed class LocalTableChannelFactory : ITableChannelFactory, ILocalMatchControl
+    public sealed class LocalTableChannelFactory : ITableChannelFactory, ILocalMatchControl, ILocalRoomViewerFactory
     {
         public const string DefaultRoomId = "local-main";
         public const string ClientBuild = "unity-p42b-localhost";
 
         private static int _matchModeEnabled;
+        private static int _privacyRoomModeEnabled;
         private static string? _playerActionScenario;
 
         private readonly string _roomId;
@@ -79,8 +92,10 @@ namespace Mahjong.Unity.App
         private readonly string _saveDirectory;
         private readonly TimeSpan _leaseDuration;
         private readonly SemaphoreSlim _matchGate = new SemaphoreSlim(1, 1);
+        private readonly SemaphoreSlim _roomGate = new SemaphoreSlim(1, 1);
 
         private LocalMatchCoordinator? _match;
+        private LocalTableRoom? _room;
 
         public LocalTableChannelFactory(
             AppConfig config,
@@ -144,6 +159,17 @@ namespace Mahjong.Unity.App
         public static void DisablePlayerActionScenarioForTest()
         {
             Interlocked.Exchange(ref _playerActionScenario, null);
+        }
+
+        public static void EnableC04PrivacyRoomMode()
+        {
+            if (MatchModeEnabled) throw new InvalidOperationException("C04 privacy room mode cannot be combined with full-match mode.");
+            Interlocked.Exchange(ref _privacyRoomModeEnabled, 1);
+        }
+
+        public static void DisableC04PrivacyRoomModeForTest()
+        {
+            Interlocked.Exchange(ref _privacyRoomModeEnabled, 0);
         }
 
         /// <summary>Stable room id used by the single local production table.</summary>
@@ -255,32 +281,62 @@ namespace Mahjong.Unity.App
 
         private async Task<ITableChannel> CreateCoreAsync(CancellationToken cancellationToken)
         {
-            var options = new LocalTableHostOptions
+            LocalTableRoom room = await GetOrOpenRoomAsync(cancellationToken).ConfigureAwait(false);
+            LocalTableConnectionTicket ticket = room.CreatePlayerTicket(0);
+            ITableChannel channel = await room.ConnectAsync(ticket, cancellationToken).ConfigureAwait(false);
+            return new LocalTableTicketChannel(channel, ticket.Value);
+        }
+
+        public async Task<ITableChannel> CreateRoomViewerAsync(
+            LocalRoomViewerRole role,
+            int seatId,
+            CancellationToken cancellationToken)
+        {
+            LocalTableRoom room = await GetOrOpenRoomAsync(cancellationToken).ConfigureAwait(false);
+            LocalTableConnectionTicket ticket = role == LocalRoomViewerRole.Spectator
+                ? room.CreateSpectatorTicket()
+                : room.CreatePlayerTicket(seatId);
+            ITableChannel channel = await room.ConnectAsync(ticket, cancellationToken).ConfigureAwait(false);
+            return new LocalTableTicketChannel(channel, ticket.Value);
+        }
+
+        public async Task CloseRoomAsync(CancellationToken cancellationToken)
+        {
+            await _roomGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
             {
-                SaveDirectory = _saveDirectory,
-                RoomId = _roomId,
-                RulesetVersion = 1,
-                OwnerInstanceId = _ownerInstanceId,
-                LeaseDuration = _leaseDuration,
-                AutoFlushInterval = TimeSpan.FromMilliseconds(500)
-            };
+                LocalTableRoom? room = _room;
+                _room = null;
+                if (room != null) await room.DisposeAsync().ConfigureAwait(false);
+            }
+            finally { _roomGate.Release(); }
+        }
 
-            string? scenario = Volatile.Read(ref _playerActionScenario);
-            if (!string.IsNullOrEmpty(scenario))
-                LocalPlayerActionScenario.ConfigureHostOptions(options, scenario!);
-
-            cancellationToken.ThrowIfCancellationRequested();
-
-            ITableChannel channel = await LocalTableHost
-                .CreateChannelAsync(options, cancellationToken)
-                .ConfigureAwait(false);
-
-            cancellationToken.ThrowIfCancellationRequested();
-
-            // One real one-use ticket per attempt. It is consumed by the host when
-            // HELLO arrives and expires unused after 30 seconds.
-            string ticket = LocalTableHost.IssueTicket(options);
-            return new LocalTableTicketChannel(channel, ticket);
+        private async Task<LocalTableRoom> GetOrOpenRoomAsync(CancellationToken cancellationToken)
+        {
+            await _roomGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                if (_room != null) return _room;
+                var options = new LocalTableHostOptions
+                {
+                    SaveDirectory = _saveDirectory,
+                    RoomId = _roomId,
+                    RulesetVersion = 1,
+                    OwnerInstanceId = _ownerInstanceId,
+                    LeaseDuration = _leaseDuration,
+                    AutoFlushInterval = TimeSpan.FromMilliseconds(500),
+                    SeatPlan = Volatile.Read(ref _privacyRoomModeEnabled) == 1
+                        ? LocalTableSeatPlan.AllFourHumanSeats
+                        : LocalTableSeatPlan.SingleHumanSeatZero
+                };
+                string? scenario = Volatile.Read(ref _playerActionScenario);
+                if (!string.IsNullOrEmpty(scenario)) LocalPlayerActionScenario.ConfigureHostOptions(options, scenario!);
+                cancellationToken.ThrowIfCancellationRequested();
+                _room = await LocalTableHost.OpenRoomAsync(options, cancellationToken).ConfigureAwait(false);
+                return _room;
+            }
+            finally { _roomGate.Release(); }
         }
 
         private sealed class LocalTableTicketChannel : ITableChannel, ILocalTableTicketSource
@@ -303,8 +359,12 @@ namespace Mahjong.Unity.App
             public Task SendAsync(ReadOnlyMemory<byte> wireEnvelope, CancellationToken cancellationToken) =>
                 _inner.SendAsync(wireEnvelope, cancellationToken);
 
-            public Task<ReadOnlyMemory<byte>> ReceiveAsync(CancellationToken cancellationToken) =>
-                _inner.ReceiveAsync(cancellationToken);
+            public async Task<ReadOnlyMemory<byte>> ReceiveAsync(CancellationToken cancellationToken)
+            {
+                ReadOnlyMemory<byte> wire = await _inner.ReceiveAsync(cancellationToken).ConfigureAwait(false);
+                C04PrivacyProbe.RecordInbound(wire);
+                return wire;
+            }
 
             public Task CloseAsync(TableChannelCloseReason reason, CancellationToken cancellationToken) =>
                 _inner.CloseAsync(reason, cancellationToken);

@@ -619,6 +619,24 @@ namespace Mahjong.Unity.App
             }
             _dispatcher.Overflowed -= OnDispatcherOverflowed;
             _currentGeneration++;
+            _dispatcher.CurrentGeneration = _currentGeneration;
+            lock (_stateGate)
+            {
+                _acceptedAuthority = null;
+                _currentViewState = new SessionViewState(
+                    _currentGeneration,
+                    TableConnectionState.Closed,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    isFullBaseline: false,
+                    cursor: null,
+                    visibleEventBatch: TableVisibleEventBatch.Empty,
+                    acceptanceSequence: Interlocked.Read(ref _acceptedSequence));
+            }
         }
 
         private void DisposeChannel()

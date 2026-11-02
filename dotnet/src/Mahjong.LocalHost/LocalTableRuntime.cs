@@ -40,6 +40,10 @@ namespace Mahjong.LocalHost
         private readonly TableActor _actor;
         private readonly LocalSnapshotFacts _facts;
         private readonly LocalTableDriver _driver;
+        private readonly LocalTableRoom? _room;
+        private readonly bool _ownsAuthority;
+        private readonly LocalTableConnectionTicket? _roomTicket;
+        private readonly LocalViewerRole _role;
         private readonly AsyncFrameQueue _outbound = new AsyncFrameQueue();
 
         // Diagnostic-only view of the already-committed actor aggregate. TableActor does not
@@ -70,7 +74,9 @@ namespace Mahjong.LocalHost
             LocalSnapshotFacts facts,
             bool[] temporaryFuriten,
             bool[] riichiFuriten,
-            bool deferDriver)
+            bool deferDriver,
+            LocalTableRoom? room = null,
+            bool ownsAuthority = true)
         {
             _options = options;
             _environment = environment;
@@ -79,6 +85,9 @@ namespace Mahjong.LocalHost
             _facts = facts;
             _temporaryFuriten = temporaryFuriten;
             _riichiFuriten = riichiFuriten;
+            _room = room;
+            _ownsAuthority = ownsAuthority;
+            _role = LocalViewerRole.Player;
 
             var scopes = new RequestScopeId[4];
             ulong now = (ulong)Math.Max(0L, environment.ResolveClock().UtcNowMs);
@@ -94,7 +103,11 @@ namespace Mahjong.LocalHost
                     environment.ResolveId()).ScopeId;
             }
 
-            _driver = new LocalTableDriver(actor, options, store, scopes, () => _sessionOpen, _temporaryFuriten, _riichiFuriten);
+            _driver = new LocalTableDriver(
+                actor, options, store, scopes,
+                () => room != null ? room.CanTickAuthority : _sessionOpen,
+                _temporaryFuriten, _riichiFuriten,
+                room != null ? new Func<int, bool>(room.CanOpenHumanDecision) : null);
             if (options.AutoPlay && !deferDriver)
             {
                 _driver.Start();
@@ -105,6 +118,22 @@ namespace Mahjong.LocalHost
 
         public static async ValueTask<LocalTableRuntime> OpenAsync(
             LocalTableHostOptions options,
+            CancellationToken cancellationToken)
+        {
+            return await OpenCoreAsync(options, null, cancellationToken).ConfigureAwait(false);
+        }
+
+        internal static async ValueTask<LocalTableRuntime> OpenRoomAuthorityAsync(
+            LocalTableHostOptions options,
+            LocalTableRoom room,
+            CancellationToken cancellationToken)
+        {
+            return await OpenCoreAsync(options, room, cancellationToken).ConfigureAwait(false);
+        }
+
+        private static async ValueTask<LocalTableRuntime> OpenCoreAsync(
+            LocalTableHostOptions options,
+            LocalTableRoom? room,
             CancellationToken cancellationToken)
         {
             LocalHostEnvironment environment = options.Environment ?? LocalHostEnvironment.System;
@@ -167,7 +196,9 @@ namespace Mahjong.LocalHost
                     facts,
                     temporaryFuriten,
                     riichiFuriten,
-                    pendingCapture);
+                    pendingCapture,
+                    room,
+                    ownsAuthority: true);
                 if (pendingCapture)
                 {
                     try
@@ -202,6 +233,32 @@ namespace Mahjong.LocalHost
                 throw;
             }
         }
+
+        private LocalTableRuntime(LocalTableRuntime authority, LocalTableConnectionTicket ticket, LocalTableRoom room)
+        {
+            _options = authority._options;
+            _environment = authority._environment;
+            _store = authority._store;
+            _actor = authority._actor;
+            _facts = authority._facts;
+            _driver = authority._driver;
+            _temporaryFuriten = authority._temporaryFuriten;
+            _riichiFuriten = authority._riichiFuriten;
+            _room = room;
+            _ownsAuthority = false;
+            _roomTicket = ticket;
+            _role = ticket.Role;
+            _seat = ticket.SeatId;
+            _connectionAccount = ticket.AccountId;
+        }
+
+        internal LocalTableRuntime CreateConnection(LocalTableConnectionTicket ticket, LocalTableRoom room) =>
+            new LocalTableRuntime(this, ticket, room);
+
+        internal int SeatIdForRoom => _seat;
+        internal LocalViewerRole RoleForRoom => _role;
+        internal string TicketValueForRoom => _roomTicket?.Value ?? string.Empty;
+        internal bool IsSessionOpenForRoom { get { lock (_gate) return _sessionOpen; } }
 
         private static RoundStateMachine RestoreRound(TableCheckpoint checkpoint)
         {
@@ -467,7 +524,7 @@ namespace Mahjong.LocalHost
                 return;
             }
 
-            if (!LocalTicketIssuer.TryConsume(hello.Ticket, _options.RoomId))
+            if (_roomTicket == null && !LocalTicketIssuer.TryConsume(hello.Ticket, _options.RoomId))
             {
                 Enqueue(ErrorEnvelope(
                     ProtocolErrorCode.Unauthenticated,
@@ -475,7 +532,20 @@ namespace Mahjong.LocalHost
                 return;
             }
 
-            string account = "local-" + _options.RoomId + "-seat0";
+            if (_roomTicket != null && !string.Equals(hello.Ticket, _roomTicket.Value, StringComparison.Ordinal))
+            {
+                Enqueue(ErrorEnvelope(ProtocolErrorCode.Unauthenticated, "The HELLO ticket does not match the attached room claim."));
+                return;
+            }
+
+            if (hello.ResumeRequested &&
+                (string.IsNullOrEmpty(_sessionId) || !string.Equals(hello.ResumeSessionId, _sessionId, StringComparison.Ordinal)))
+            {
+                Enqueue(ErrorEnvelope(ProtocolErrorCode.Unauthenticated, "A local connection may only resume its current session."));
+                return;
+            }
+
+            string account = _roomTicket?.AccountId ?? ("local-" + _options.RoomId + "-seat0");
             ulong now = (ulong)Math.Max(0L, _environment.ResolveClock().UtcNowMs);
             ulong expires = now + (ulong)TimeSpan.FromHours(24).TotalMilliseconds;
             string scopeId = _environment.ResolveId();
@@ -485,16 +555,20 @@ namespace Mahjong.LocalHost
             ulong bindingEpoch;
             lock (_gate)
             {
-                sessionId = !string.IsNullOrEmpty(hello.ResumeSessionId) && hello.ResumeRequested
-                    ? hello.ResumeSessionId!
-                    : _environment.ResolveId();
+                sessionId = hello.ResumeRequested ? hello.ResumeSessionId! : _environment.ResolveId();
                 _bindingEpoch = _bindingEpoch == 0UL ? 1UL : _bindingEpoch + 1UL;
                 bindingEpoch = _bindingEpoch;
                 _sessionId = sessionId;
-                _seat = 0;
+                if (_roomTicket == null) _seat = 0;
                 _connectionAccount = account;
                 _sessionOpen = true;
-                scope = _store.IssueScope(account, TableScopeRole.Player, _options.RoomId, now, expires, scopeId);
+                scope = _store.IssueScope(
+                    account,
+                    _role == LocalViewerRole.Spectator ? TableScopeRole.Spectator : TableScopeRole.Player,
+                    _options.RoomId,
+                    now,
+                    expires,
+                    scopeId);
                 _connectionScopeId = scope.ScopeId;
                 _outbound.Reset();
             }
@@ -527,7 +601,7 @@ namespace Mahjong.LocalHost
                     SessionId = sessionId,
                     RoomId = _options.RoomId,
                     TableId = _options.RoomId,
-                    Role = WireRole.Player,
+                    Role = _role == LocalViewerRole.Spectator ? WireRole.Spectator : WireRole.Player,
                     SeatId = _seat,
                     ConnectionEpoch = 1,
                     OwnerEpoch = _actorLeaseEpoch(),
@@ -546,7 +620,7 @@ namespace Mahjong.LocalHost
                     {
                         ScopeId = scope.ScopeId.Value,
                         AccountId = scope.AccountId,
-                        Role = WireRole.Player,
+                        Role = _role == LocalViewerRole.Spectator ? WireRole.Spectator : WireRole.Player,
                         RoomId = _options.RoomId,
                         IssuedAtMs = issuedAt,
                         ExpiresAtMs = expiresAt
@@ -582,7 +656,7 @@ namespace Mahjong.LocalHost
                 _syncEpoch++;
                 identity = new TableStreamIdentity(
                     new SessionId(_sessionId),
-                    TableStreamAudience.ForSeat(_seat),
+                    _role == LocalViewerRole.Spectator ? TableStreamAudience.Spectator : TableStreamAudience.ForSeat(_seat),
                     new BindingEpoch(_bindingEpoch),
                     new SyncEpoch((ulong)_syncEpoch));
                 sink = new TableStreamSink(this, _streamGeneration);
@@ -634,10 +708,13 @@ namespace Mahjong.LocalHost
         }
         private async Task EnsureInitialHumanDecisionAsync()
         {
-            if (_seat != 0 || _actor.GetPendingDecisionId(0) != null)
+            if (_role == LocalViewerRole.Spectator || !_options.SeatPlan.Contains(_seat) ||
+                _actor.GetPendingDecisionId(_seat) != null)
             {
                 return;
             }
+
+            if (_room != null && !_room.CanTickAuthority) return;
 
             RoundStateMachine round = _actor.GetRoundStateForHost();
             if (round.IsFinished)
@@ -648,14 +725,14 @@ namespace Mahjong.LocalHost
             TableSnapshot snapshot = await _actor.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
             if (snapshot.Phase == RoundPhase.CheatWindow || snapshot.Phase == RoundPhase.Discard)
             {
-                if (snapshot.CurrentSeat != 0)
+                if (snapshot.CurrentSeat != _seat)
                 {
                     return;
                 }
 
                 IReadOnlyList<LegalActionOption> candidates = LocalCandidateProvider.DeriveTurnCandidates(
                     round,
-                    0,
+                    _seat,
                     _temporaryFuriten,
                     _riichiFuriten);
                 if (candidates.Count == 0)
@@ -663,9 +740,9 @@ namespace Mahjong.LocalHost
                     return;
                 }
 
-                TileId? drawn = round.Tiles.DrawnTile?.Seat == 0 ? round.Tiles.DrawnTile?.Tile : null;
+                TileId? drawn = round.Tiles.DrawnTile?.Seat == _seat ? round.Tiles.DrawnTile?.Tile : null;
                 var pending = new PendingDecision(
-                    new DecisionKey(snapshot.RoundId, 0, "local-human-initial"),
+                    new DecisionKey(snapshot.RoundId, _seat, "local-human-initial"),
                     0L,
                     candidates,
                     drawn);
@@ -674,11 +751,11 @@ namespace Mahjong.LocalHost
             else if (snapshot.Phase == RoundPhase.ResponseWindow || snapshot.Phase == RoundPhase.ChankanWindow)
             {
                 RoundResponseWindow? window = round.Window;
-                if (window != null && window.EligibleSeats.Contains(0) && !window.HasResponded(0))
+                if (window != null && window.EligibleSeats.Contains(_seat) && !window.HasResponded(_seat))
                 {
                     IReadOnlyList<LegalActionOption> candidates = LocalCandidateProvider.DeriveResponseCandidates(
                         round,
-                        0,
+                        _seat,
                         window,
                         _temporaryFuriten,
                         _riichiFuriten);
@@ -688,7 +765,7 @@ namespace Mahjong.LocalHost
                     }
 
                     var pending = new PendingDecision(
-                        new DecisionKey(snapshot.RoundId, 0, "local-human-initial-response"),
+                        new DecisionKey(snapshot.RoundId, _seat, "local-human-initial-response"),
                         0L,
                         candidates,
                         null);
@@ -714,7 +791,7 @@ namespace Mahjong.LocalHost
                     return;
                 }
 
-                Envelope update = BuildPlayerUpdate(frame);
+                Envelope update = _role == LocalViewerRole.Spectator ? BuildPublicUpdate(frame) : BuildPlayerUpdate(frame);
                 Enqueue(update);
             }
         }
@@ -723,7 +800,16 @@ namespace Mahjong.LocalHost
         {
             TableStreamContractFrame contract = frame.Contract ??
                 throw new InvalidOperationException("The local loopback stream has no contract projection.");
-            PlayerSnapshot player = ProjectionWireMapper.MapPlayerSnapshot(contract.Player!);
+            bool spectator = _role == LocalViewerRole.Spectator;
+            var response = new SyncResponse
+            {
+                Target = spectator ? SyncTarget.PublicStream : SyncTarget.PlayerStream,
+                IsFullSnapshot = true,
+                StateVersion = contract.StateVersion.Value,
+                EventSeq = contract.EventSeq.Value
+            };
+            if (spectator) response.Public = ProjectionWireMapper.MapPublicSnapshot(contract.Public!);
+            else response.Player = ProjectionWireMapper.MapPlayerSnapshot(contract.Player!);
             return new Envelope
             {
                 ProtocolMajor = ProtocolConstants.Major,
@@ -733,18 +819,11 @@ namespace Mahjong.LocalHost
                 MessageType = MessageType.SyncResponse,
                 SessionId = contract.SessionId.Value,
                 RoomId = contract.RoomId,
-                SeatId = contract.Audience.Seat,
+                SeatId = spectator ? -1 : contract.Audience.Seat,
                 BindingEpoch = contract.BindingEpoch.Value,
                 CorrelationId = correlationId,
                 Cursor = ProjectionWireMapper.MapCursor(contract.Cursor),
-                SyncResponse = new SyncResponse
-                {
-                    Target = SyncTarget.PlayerStream,
-                    IsFullSnapshot = true,
-                    Player = player,
-                    StateVersion = contract.StateVersion.Value,
-                    EventSeq = contract.EventSeq.Value
-                }
+                SyncResponse = response
             };
         }
 
@@ -772,8 +851,35 @@ namespace Mahjong.LocalHost
             };
         }
 
+        private Envelope BuildPublicUpdate(TableStreamFrame frame)
+        {
+            TableStreamContractFrame contract = frame.Contract ??
+                throw new InvalidOperationException("The local loopback stream has no contract projection.");
+            return new Envelope
+            {
+                ProtocolMajor = ProtocolConstants.Major,
+                ProtocolMinor = ProtocolConstants.Minor,
+                RulesetVersion = ProtocolConstants.RulesetVersion,
+                ProjectionVersion = ProtocolConstants.ProjectionVersion,
+                MessageType = MessageType.PublicUpdate,
+                SessionId = contract.SessionId.Value,
+                RoomId = contract.RoomId,
+                SeatId = -1,
+                BindingEpoch = contract.BindingEpoch.Value,
+                Cursor = ProjectionWireMapper.MapCursor(contract.Cursor),
+                PublicUpdate = ProjectionWireMapper.MapPublicUpdate(
+                    contract.Public!, contract.Events, contract.FromCursor, contract.IsFullSnapshot)
+            };
+        }
+
         private async Task HandleCommandAsync(Envelope envelope, CancellationToken cancellationToken)
         {
+            if (_role == LocalViewerRole.Spectator)
+            {
+                Enqueue(ErrorEnvelope(ProtocolErrorCode.Unauthenticated, "SPECTATOR_READ_ONLY"));
+                return;
+            }
+
             if (!IsCurrentBinding(envelope) || envelope.Scope == null || envelope.Command == null)
             {
                 Enqueue(ErrorEnvelope(ProtocolErrorCode.MalformedMessage, "The command is missing its binding/scope/body."));
@@ -1626,6 +1732,7 @@ namespace Mahjong.LocalHost
                     }
 
                     durablyRecorded = true;
+                    _room?.MarkControlChanged(_seat, kind == CommandKind.ReleaseControl);
                     Enqueue(ReceiptEnvelope(
                         envelope,
                         requestId,
@@ -2495,6 +2602,24 @@ namespace Mahjong.LocalHost
             }
 
             _disposed = true;
+            if (!_ownsAuthority)
+            {
+                await CloseSessionAsync(CancellationToken.None).ConfigureAwait(false);
+                _room?.Detach(this);
+                return;
+            }
+
+            await DisposeAuthorityAsync().ConfigureAwait(false);
+        }
+
+        internal async ValueTask DisposeAuthorityAsync()
+        {
+            if (_disposed && !_ownsAuthority)
+            {
+                return;
+            }
+
+            _disposed = true;
             LocalTableDiagnosticRegistry.Unregister(DiagnosticSaveDirectory, this);
             await _driver.StopAsync().ConfigureAwait(false);
             await CloseSessionAsync(CancellationToken.None).ConfigureAwait(false);
@@ -2607,24 +2732,30 @@ namespace Mahjong.LocalHost
                     throw new ArgumentNullException(nameof(frame));
                 }
 
+                bool spectator = frame.Audience.IsSpectator;
                 Envelope envelope = new Envelope
                 {
                     ProtocolMajor = ProtocolConstants.Major,
                     ProtocolMinor = ProtocolConstants.Minor,
                     RulesetVersion = ProtocolConstants.RulesetVersion,
                     ProjectionVersion = ProtocolConstants.ProjectionVersion,
-                    MessageType = MessageType.PlayerUpdate,
+                    MessageType = spectator ? MessageType.PublicUpdate : MessageType.PlayerUpdate,
                     SessionId = frame.SessionId.Value,
                     RoomId = frame.RoomId,
                     SeatId = frame.Audience.Seat,
                     BindingEpoch = frame.BindingEpoch.Value,
                     Cursor = ProjectionWireMapper.MapCursor(frame.Cursor),
-                    PlayerUpdate = ProjectionWireMapper.MapPlayerUpdate(
-                        frame.Player!,
-                        frame.Events,
-                        frame.FromCursor,
-                        frame.IsFullSnapshot)
                 };
+                if (spectator)
+                {
+                    envelope.PublicUpdate = ProjectionWireMapper.MapPublicUpdate(
+                        frame.Public!, frame.Events, frame.FromCursor, frame.IsFullSnapshot);
+                }
+                else
+                {
+                    envelope.PlayerUpdate = ProjectionWireMapper.MapPlayerUpdate(
+                        frame.Player!, frame.Events, frame.FromCursor, frame.IsFullSnapshot);
+                }
                 WireCodec.EnsureStrict(envelope);
                 byte[] bytes = WireCodec.Encode(envelope);
                 WireDecodeResult decoded = WireCodec.Decode(bytes);

@@ -26,6 +26,8 @@ namespace Mahjong.LocalHost
     {
         private readonly object _gate = new object();
         private readonly LocalTableHostOptions _options;
+        private readonly LocalTableRoom? _room;
+        private readonly LocalTableConnectionTicket? _roomTicket;
         private readonly CancellationTokenSource _openCts = new CancellationTokenSource();
 
         private LocalChannelState _state = LocalChannelState.New;
@@ -42,6 +44,13 @@ namespace Mahjong.LocalHost
         public LocalTableChannel(LocalTableHostOptions options)
         {
             _options = options;
+        }
+
+        internal LocalTableChannel(LocalTableHostOptions options, LocalTableRoom room, LocalTableConnectionTicket ticket)
+        {
+            _options = options;
+            _room = room;
+            _roomTicket = ticket;
         }
 
         /// <summary>Test seam: lets a test hold a transient reopen open while it cancels waiters.</summary>
@@ -83,13 +92,17 @@ namespace Mahjong.LocalHost
 
             if (cancellationToken.IsCancellationRequested)
             {
+                bool cancelRoomReservation = false;
                 lock (_gate)
                 {
                     if (_state == LocalChannelState.New && _openTask == null)
                     {
                         _state = LocalChannelState.PermanentlyClosed;
+                        cancelRoomReservation = _room != null;
                     }
                 }
+
+                if (cancelRoomReservation) _room!.CancelReserved(_roomTicket!);
 
                 cancellationToken.ThrowIfCancellationRequested();
             }
@@ -199,12 +212,19 @@ namespace Mahjong.LocalHost
                         "A local connection ticket is required.");
                 }
 
+                if (_room != null && !string.Equals(request.Ticket, _roomTicket!.Value, StringComparison.Ordinal))
+                {
+                    throw new LocalTableException(LocalTableErrorKind.Unavailable, "The connect ticket does not match this reserved channel.");
+                }
+
                 if (OpenHookForTest != null)
                 {
                     await OpenHookForTest(cancellationToken).ConfigureAwait(false);
                 }
 
-                runtime = await LocalTableRuntime.OpenAsync(_options, cancellationToken).ConfigureAwait(false);
+                runtime = _room != null
+                    ? await _room.AttachAsync(_roomTicket!, cancellationToken).ConfigureAwait(false)
+                    : await LocalTableRuntime.OpenAsync(_options, cancellationToken).ConfigureAwait(false);
                 if (cancellationToken.IsCancellationRequested)
                 {
                     await runtime.DisposeAsync().ConfigureAwait(false);
@@ -235,6 +255,7 @@ namespace Mahjong.LocalHost
                 {
                     _state = LocalChannelState.PermanentlyClosed;
                 }
+                if (runtime == null && _room != null) _room.CancelReserved(_roomTicket!);
 
                 throw;
             }
@@ -249,6 +270,7 @@ namespace Mahjong.LocalHost
                 {
                     _state = LocalChannelState.PermanentlyClosed;
                 }
+                if (runtime == null && _room != null) _room.CancelReserved(_roomTicket!);
 
                 if (exception is LocalTableException)
                 {
@@ -578,6 +600,10 @@ namespace Mahjong.LocalHost
                 }
 
                 await runtime.DisposeAsync().ConfigureAwait(false);
+            }
+            else if (_room != null)
+            {
+                _room.CancelReserved(_roomTicket!);
             }
 
             lock (_gate)

@@ -113,13 +113,11 @@ namespace Mahjong.LocalHost
                 : 0UL;
             var initialStateVersion = new StateVersion(initialVersion);
             var initialEventSeq = new EventSeq(0);
-            var controllers = new Dictionary<int, SeatControllerKind>
-            {
-                { 0, SeatControllerKind.LocalHuman },
-                { 1, SeatControllerKind.Computer },
-                { 2, SeatControllerKind.Computer },
-                { 3, SeatControllerKind.Computer }
-            };
+            var controllers = new Dictionary<int, SeatControllerKind>();
+            for (int seat = 0; seat < 4; seat++)
+                controllers[seat] = options.SeatPlan.Contains(seat)
+                    ? SeatControllerKind.LocalHuman
+                    : SeatControllerKind.Computer;
             var registry = new ControlRegistry(new DisconnectPolicy(), controllers);
             var clock = new DecisionClock(new DecisionClockConfig(20_000L, 3_000L, ReserveScope.Round));
             clock.BeginRound(round.RoundId, 0L);

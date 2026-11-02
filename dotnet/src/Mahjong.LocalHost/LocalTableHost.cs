@@ -5,6 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Security.Cryptography;
 using Mahjong.Client;
 using Mahjong.TableRuntime;
 
@@ -54,6 +55,12 @@ namespace Mahjong.LocalHost
         /// </summary>
         public LocalHostEnvironment? Environment { get; set; }
 
+        public LocalTableSeatPlan SeatPlan { get; set; } = LocalTableSeatPlan.SingleHumanSeatZero;
+
+        public int MaxSpectators { get; set; } = 4;
+
+        public bool AllowSpectators { get; set; } = true;
+
         /// <summary>Optional pre-built initial round (match coordination).</summary>
         internal Mahjong.Domain.RoundStateMachine? InitialRound { get; set; }
 
@@ -101,6 +108,11 @@ namespace Mahjong.LocalHost
                 throw new LocalTableException(
                     LocalTableErrorKind.InvalidOptions,
                     "AutoFlushInterval must be between zero and one minute.");
+            }
+
+            if (SeatPlan == null || MaxSpectators < 0 || MaxSpectators > 64)
+            {
+                throw new LocalTableException(LocalTableErrorKind.InvalidOptions, "SeatPlan or spectator limit is invalid.");
             }
 
             LocalTableHostPaths.ResolveSaveDirectory(SaveDirectory);
@@ -309,6 +321,13 @@ namespace Mahjong.LocalHost
             }
 
             return runtime.CaptureRecoveryAsync(cancellationToken);
+        }
+
+        public static ValueTask<LocalTableRoom> OpenRoomAsync(
+            LocalTableHostOptions options,
+            CancellationToken cancellationToken = default)
+        {
+            return LocalTableRoom.OpenAsync(options, cancellationToken);
         }
 
         /// <summary>

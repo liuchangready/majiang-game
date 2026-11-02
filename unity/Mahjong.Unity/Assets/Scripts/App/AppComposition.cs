@@ -1,8 +1,11 @@
 #nullable enable
 using System;
+using System.Collections.Generic;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Mahjong.Client;
+using Mahjong.LocalHost;
 using Mahjong.Unity.Platform;
 using Mahjong.Unity.UI;
 using Mahjong.Unity.UI.Session;
@@ -19,6 +22,8 @@ namespace Mahjong.Unity.App
         public MainThreadDispatcher Dispatcher { get; }
 
         private readonly object _gate = new object();
+        private readonly Dictionary<SessionCoordinator, MainThreadDispatcher> _roomViewers =
+            new Dictionary<SessionCoordinator, MainThreadDispatcher>();
         private SessionCoordinator? _sessionCoordinator;
         private Task<SessionCoordinator>? _inFlightOpen;
         private CancellationTokenSource _sessionCts = new CancellationTokenSource();
@@ -181,6 +186,97 @@ namespace Mahjong.Unity.App
                 _inFlightOpen = OpenLocalSessionInternalAsync(cancellationToken);
                 return _inFlightOpen;
             }
+        }
+
+        public async Task<SessionCoordinator> OpenRoomViewerAsync(
+            LocalRoomViewerRole role,
+            int seatId,
+            CancellationToken cancellationToken)
+        {
+            ILocalRoomViewerFactory factory = ChannelFactory as ILocalRoomViewerFactory
+                ?? throw new InvalidOperationException("The configured channel factory does not expose local room viewers.");
+            cancellationToken.ThrowIfCancellationRequested();
+            ITableChannel channel = await factory.CreateRoomViewerAsync(role, seatId, cancellationToken).ConfigureAwait(false);
+            SessionCoordinator? coordinator = null;
+            try
+            {
+                ILocalTableTicketSource ticket = channel as ILocalTableTicketSource
+                    ?? throw new InvalidOperationException("A production local room viewer must supply its room ticket.");
+                string viewerOutbox = Path.Combine(Paths.OutboxDirectory, "viewer-" + Guid.NewGuid().ToString("N"));
+                Directory.CreateDirectory(viewerOutbox);
+                var session = new TableSession(channel, new FileOutboxStore(viewerOutbox), new TableSessionOptions());
+                var queue = new TableSessionOperationQueue(session);
+                long generation = Interlocked.Increment(ref _generationCounter);
+                var viewerDispatcher = new MainThreadDispatcher();
+                coordinator = new SessionCoordinator(session, queue, channel, viewerDispatcher, Config, generation);
+                await queue.OpenAsync(new TableSessionOpenRequest(ticket.SessionTicket, LocalTableChannelFactory.ClientBuild), cancellationToken)
+                    .ConfigureAwait(false);
+                Task pump = StartViewerPump(coordinator, queue);
+                coordinator.SetPumpTask(pump);
+                lock (_gate)
+                {
+                    if (_isAppQuitting || _isQuarantined)
+                        throw new OperationCanceledException("AppComposition is shutting down.");
+                    _roomViewers.Add(coordinator, viewerDispatcher);
+                }
+                return coordinator;
+            }
+            catch
+            {
+                if (coordinator != null)
+                {
+                    try { await coordinator.ShutdownAsync("ROOM_VIEWER_OPEN_FAILED").ConfigureAwait(false); } catch { }
+                }
+                else
+                {
+                    try { await channel.CloseAsync(new TableChannelCloseReason("ROOM_VIEWER_OPEN_FAILED", true), CancellationToken.None).ConfigureAwait(false); } catch { }
+                }
+                throw;
+            }
+        }
+
+        public async Task<ShutdownResult> CloseRoomViewerAsync(SessionCoordinator viewer, string reason = "VIEWER_CLOSED")
+        {
+            if (viewer == null) throw new ArgumentNullException(nameof(viewer));
+            ShutdownResult result = await viewer.ShutdownAsync(reason).ConfigureAwait(false);
+            lock (_gate) _roomViewers.Remove(viewer);
+            return result;
+        }
+
+        public void UpdateRoomViewers(int maxBatch = MainThreadDispatcher.MaxDispatchPerFrame,
+            float maxMs = MainThreadDispatcher.MaxDispatchMsPerFrame)
+        {
+            MainThreadDispatcher[] dispatchers;
+            lock (_gate)
+            {
+                dispatchers = new MainThreadDispatcher[_roomViewers.Count];
+                _roomViewers.Values.CopyTo(dispatchers, 0);
+            }
+            foreach (MainThreadDispatcher dispatcher in dispatchers) dispatcher.Update(maxBatch, maxMs);
+        }
+
+        public async Task CloseLocalRoomAsync(CancellationToken cancellationToken = default)
+        {
+            lock (_gate)
+            {
+                if (_sessionCoordinator != null || _roomViewers.Count != 0)
+                    throw new InvalidOperationException("The local room cannot close while a viewer is still attached.");
+            }
+            if (ChannelFactory is ILocalRoomViewerFactory factory)
+                await factory.CloseRoomAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        private static Task StartViewerPump(SessionCoordinator coordinator, TableSessionOperationQueue queue)
+        {
+            CancellationToken token = coordinator.RunToken;
+            return Task.Run(async () =>
+            {
+                try
+                {
+                    while (!token.IsCancellationRequested) await queue.PumpOnceAsync(token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) { }
+            }, token);
         }
 
         private async Task<SessionCoordinator> OpenLocalSessionInternalAsync(CancellationToken cancellationToken)
@@ -350,12 +446,15 @@ namespace Mahjong.Unity.App
                     return _activeShutdownTask;
                 }
 
-                if (_isAppQuitting && _sessionCoordinator == null && (_inFlightOpen == null || _inFlightOpen.IsCompleted))
+                if (_isAppQuitting && _sessionCoordinator == null && _roomViewers.Count == 0 &&
+                    (_inFlightOpen == null || _inFlightOpen.IsCompleted) && !(ChannelFactory is ILocalRoomViewerFactory))
                 {
                     return CachedCompletedTask;
                 }
 
-                if (_sessionCoordinator == null && (_inFlightOpen == null || _inFlightOpen.IsCompleted))
+                if (_sessionCoordinator == null && _roomViewers.Count == 0 &&
+                    (_inFlightOpen == null || _inFlightOpen.IsCompleted) &&
+                    (!isQuit || !(ChannelFactory is ILocalRoomViewerFactory)))
                 {
                     return CachedCompletedTask;
                 }
@@ -405,9 +504,28 @@ namespace Mahjong.Unity.App
                     coordinator = _sessionCoordinator;
                 }
 
+                if (isQuit)
+                {
+                    SessionCoordinator[] viewers;
+                    lock (_gate)
+                    {
+                        viewers = new SessionCoordinator[_roomViewers.Count];
+                        _roomViewers.Keys.CopyTo(viewers, 0);
+                    }
+                    foreach (SessionCoordinator viewer in viewers)
+                    {
+                        ShutdownResult viewerResult = await viewer.ShutdownAsync(reason).ConfigureAwait(false);
+                        if (viewerResult.Outcome != ShutdownOutcome.Completed) return viewerResult;
+                        lock (_gate) _roomViewers.Remove(viewer);
+                    }
+                }
+
                 if (coordinator != null)
                 {
                     ShutdownResult result = await coordinator.ShutdownAsync(reason).ConfigureAwait(false);
+                    if (result.Outcome == ShutdownOutcome.Completed && isQuit &&
+                        ChannelFactory is ILocalRoomViewerFactory roomFactoryWithPrimary)
+                        await roomFactoryWithPrimary.CloseRoomAsync(CancellationToken.None).ConfigureAwait(false);
                     lock (_gate)
                     {
                         if (result.Outcome == ShutdownOutcome.Completed)
@@ -432,6 +550,9 @@ namespace Mahjong.Unity.App
                     }
                     return result;
                 }
+
+                if (isQuit && ChannelFactory is ILocalRoomViewerFactory roomFactory)
+                    await roomFactory.CloseRoomAsync(CancellationToken.None).ConfigureAwait(false);
 
                 lock (_gate)
                 {
