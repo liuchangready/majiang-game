@@ -7,6 +7,26 @@ Workspace: `E:/majiang-review/g2-c04-d04-evidence-luna6-20261103`
 Rework base: candidate `3083048b9576fb0a09a5bbf4c958c14e0b9ecb17`
 Source head: `63206301378338d1360fce6d3a5783b121072051`
 
+## Independent component acceptance — 2026-11-03
+
+The dedicated caller/reviewer independently accepted D04-A at code commit `ca7d5c15f1eaf0dc80775402f23ed6cc40d4d63d`. The original MAJOR `C04-G3-R1-04 / D-A-R1-01` is closed for this tool/LocalHost component scope: no remaining BLOCKER or MAJOR was found. The seven-file allowlist includes the explicitly authorized read-only `LocalTableRecoveryExport.cs` extension; the old public constructor remains compatible.
+
+These are new reviewer executions in `E:/majiang-review/g2-c04-d04-evidence-luna6-20261103/build/reviewer-r4-1793646609438`, separate from the receiver's records and earlier failed review roots:
+
+| Independent check | Result |
+|---|---|
+| Fresh isolated verifier and LocalHost test builds | Both native 0; 0 warnings/errors |
+| Sealed R2 regression and R3 offer regression | 10/10 and 11/11; native 0, no skips |
+| Thin-wrapper suite and full typed CLI matrix | 16/16; matrix 52/52 (50 required rejects, 2 valid positives), no unexpected results or skips |
+| Existing xUnit `P45RecoveryExportTests` / `C04PlayerCheatChannelTests` via test DLL class filters | 7/7 and 4/4; native 0, errors/failed/skipped/not-run all 0 |
+| Direct real serialized LocalHost authorized / negative captures | Both native 0; five applied commands, three debits, 119/109/99 and 136 unique entities; two distinct actual business rejections with zero side effects |
+| Legacy Strict19 | Retained independent 19/19 from reviewer-r2; unchanged legacy inputs, not claimed rerun |
+
+Verifier DLL SHA-256: `52BE7BF15CE4C76E73CA33AC0E01025D8F4B8D505FD9EDA301C54C659830F71E`. Matrix log SHA-256: `C27D53C0B35287D2ADA14F692FA7A47C18114758CB94820CD065B3EB6F117E34`. Regression log SHA-256 values: `28DEA815F5ADEF5A94A9875D0A495505A090A4DD98F055FB008605836D288BF7` and `CEAE1B65C302FC0B6B660BF85E1444F8A206D6E0F49CBF1500428FF751870D66`. Fresh recovery/channel test log SHA-256 values: `62A6E211DA372508875524296651B52430AE742CD6D4C651D1F17D7B8E5FA238` and `150996902E2513A9E408C320972CE45A212AA1EA216BAB95162A18B698896383`. Full command/output identity is retained in the review root and its manifest.
+
+This acceptance does not certify the inherited unfinished D04 Player/runner candidate, D04-B/C, Unity, Windows Player, same-package six-row GAME evidence, or full D04/G2 completion. The existing unified Draft PR20 is the publication vehicle; no per-component MR or merge is authorized by this component result. Other task worktrees and in-flight changes were not imported. Earlier failed originals remain immutable.
+
+
 ## Result and scope
 
 R1 fixes remain closed. This receiver revision batch-fixed the two remaining same-MAJOR items reported in R3: durable rejection reason binding and all-stage private offer projection. Fresh verifier build, R2's 10-case replay, R3's 11-case offer replay, tracked 52-case matrix, and both affected xUnit classes pass with zero skips. This records A component evidence only; it is not Unity, Windows Player, GAME, same-package six-row, or full D04 acceptance. No reviewer or new task was started.
