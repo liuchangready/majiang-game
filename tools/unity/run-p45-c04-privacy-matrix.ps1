@@ -76,7 +76,7 @@ function Get-C04Sha256File([string]$Path) {
 function Get-C04FileManifest {
   param(
     [Parameter(Mandatory = $true)][string]$Root,
-    [string[]]$ExcludeDirectoryNames = @('.git', 'Library', 'Temp', 'obj', 'bin', 'Logs', 'UserSettings'),
+    [string[]]$ExcludeDirectoryNames = @('.git', 'Library', 'Temp', 'obj', 'bin', 'Logs', 'UserSettings', 'upm-cache'),
     [string[]]$ExcludeFileNames = @()
   )
   $rootFull = [IO.Path]::GetFullPath($Root)
@@ -97,6 +97,7 @@ function Get-C04FileManifest {
     }
     if ($skip) { continue }
     if ($excludedFiles.ContainsKey($parts[$parts.Length - 1].ToLowerInvariant())) { continue }
+    if (-not (Test-Path -LiteralPath $file.FullName -PathType Leaf)) { continue }
     $rows.Add([pscustomobject]@{
       path = ($relative -replace '\\', '/')
       length = [long]$file.Length

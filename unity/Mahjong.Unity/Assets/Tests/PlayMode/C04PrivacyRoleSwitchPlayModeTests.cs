@@ -40,7 +40,7 @@ namespace Mahjong.Unity.Tests.PlayMode
             AppRoot app = AppRoot.EnsureInitialized(
                 new AppConfig { pumpBarrierTimeoutMs = 5000, closeTimeoutMs = 5000, cancelObservationMs = 50 },
                 null,
-                Path.Combine(Application.temporaryCachePath, "c04-privacy-room-" + Guid.NewGuid().ToString("N")));
+                Path.Combine(Application.persistentDataPath, "c04-privacy-room-" + Guid.NewGuid().ToString("N")));
 
             Task<bool> lobby = app.Router.LoadAsync(SceneId.Lobby);
             yield return WaitTask(() => lobby.IsCompleted, 30f, "Lobby load");
@@ -152,7 +152,7 @@ namespace Mahjong.Unity.Tests.PlayMode
         public IEnumerator RealRoom_DelayedOldRawReceiveIsRejectedByNewBinding()
         {
             LocalTableChannelFactory.DisableC04PrivacyRoomModeForTest();
-            string root = Path.Combine(Application.temporaryCachePath, "c04-delayed-" + Guid.NewGuid().ToString("N"));
+            string root = Path.Combine(Application.persistentDataPath, "c04-delayed-" + Guid.NewGuid().ToString("N"));
             var paths = new UnityAppPaths(root);
             paths.EnsureDirectoriesCreated();
             Directory.CreateDirectory(paths.LocalSaveDirectory);
@@ -237,7 +237,7 @@ namespace Mahjong.Unity.Tests.PlayMode
         public IEnumerator RealRoom_ColdReopenReconcilesOriginalRequestWithoutDuplicate()
         {
             LocalTableChannelFactory.DisableC04PrivacyRoomModeForTest();
-            string root = Path.Combine(Application.temporaryCachePath, "c04-recovery-" + Guid.NewGuid().ToString("N"));
+            string root = Path.Combine(Application.persistentDataPath, "c04-recovery-" + Guid.NewGuid().ToString("N"));
             string roomId = "c04-recovery-" + Guid.NewGuid().ToString("N");
             var paths = new UnityAppPaths(root);
             paths.EnsureDirectoriesCreated();
@@ -405,7 +405,7 @@ namespace Mahjong.Unity.Tests.PlayMode
         [UnityTest]
         public IEnumerator RealRoom_ClosedPlayerToSpectatorToNewPlayerReceivePathRejectsOldRaw()
         {
-            string root = Path.Combine(Application.temporaryCachePath, "c04-closed-path-" + Guid.NewGuid().ToString("N"));
+            string root = Path.Combine(Application.persistentDataPath, "c04-closed-path-" + Guid.NewGuid().ToString("N"));
             string roomId = "c04-closed-path-" + Guid.NewGuid().ToString("N");
             try
             {
@@ -431,7 +431,7 @@ namespace Mahjong.Unity.Tests.PlayMode
         [UnityTest]
         public IEnumerator RealRoom_LegalSleeveAndFeeOwnershipAcrossFourSeatsAndSpectator()
         {
-            string root = Path.Combine(Application.temporaryCachePath, "c04-owner-" + Guid.NewGuid().ToString("N"));
+            string root = Path.Combine(Application.persistentDataPath, "c04-owner-" + Guid.NewGuid().ToString("N"));
             string roomId = "c04-owner-" + Guid.NewGuid().ToString("N");
             try
             {
@@ -478,7 +478,7 @@ namespace Mahjong.Unity.Tests.PlayMode
         [UnityTest]
         public IEnumerator RealRoom_OpenDecisionDeadlineContinuesAfterPlayerClose()
         {
-            string root = Path.Combine(Application.temporaryCachePath, "c04-deadline-" + Guid.NewGuid().ToString("N"));
+            string root = Path.Combine(Application.persistentDataPath, "c04-deadline-" + Guid.NewGuid().ToString("N"));
             string roomId = "c04-deadline-" + Guid.NewGuid().ToString("N");
             Task<ReleaseEvidence> task = Task.Run(() => RunOpenDeadlineScenarioAsync(root, roomId));
             yield return WaitTask(() => task.IsCompleted, 75f, "open deadline after player close");
@@ -492,7 +492,7 @@ namespace Mahjong.Unity.Tests.PlayMode
         [UnityTest]
         public IEnumerator RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly()
         {
-            string root = Path.Combine(Application.temporaryCachePath, "c04-release-" + Guid.NewGuid().ToString("N"));
+            string root = Path.Combine(Application.persistentDataPath, "c04-release-" + Guid.NewGuid().ToString("N"));
             string roomId = "c04-release-" + Guid.NewGuid().ToString("N");
             Task<ReleaseEvidence> task = Task.Run(() => RunReleasedControlScenarioAsync(root, roomId));
             yield return WaitTask(() => task.IsCompleted, 90f, "released-seat authority scenario");
@@ -1343,7 +1343,7 @@ namespace Mahjong.Unity.Tests.PlayMode
             if (index >= 0 && index + 1 < args.Length) return args[index + 1];
             string? environmentPath = Environment.GetEnvironmentVariable("MAHJONG_C04_PRIVACY_EVIDENCE");
             if (!string.IsNullOrWhiteSpace(environmentPath)) return environmentPath;
-            return Path.Combine(Application.temporaryCachePath, "c04-privacy-evidence-" + Guid.NewGuid().ToString("N"));
+            return Path.Combine(Application.persistentDataPath, "c04-privacy-evidence-" + Guid.NewGuid().ToString("N"));
         }
     }
 }
