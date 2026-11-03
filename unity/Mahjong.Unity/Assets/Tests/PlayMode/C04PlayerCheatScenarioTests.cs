@@ -35,6 +35,7 @@ namespace Mahjong.Unity.Tests.PlayMode
         private SessionCoordinator? _coordinator;
         private TablePresenter? _presenter;
         private C04PlayerCheatChannelFactory? _factory;
+        private C04RawFrameCapture? _capture;
         private DispatcherPump? _pump;
         private readonly List<Receipt> _receipts = new List<Receipt>();
         private bool _waitOk;
@@ -83,6 +84,7 @@ namespace Mahjong.Unity.Tests.PlayMode
             _coordinator = null;
             _composition = null;
             _factory = null;
+            _capture = null;
             _dispatcher = null;
 
             try
@@ -133,6 +135,82 @@ namespace Mahjong.Unity.Tests.PlayMode
             yield return WaitReceipt(CommandKind.SubmitTileMark, 15f);
             Assert.IsTrue(_waitOk, "TileMark receipt");
             Assert.AreEqual("APPLIED", _lastReceipt!.Status, _lastReceipt.Reason);
+            Assert.IsTrue(
+                C04PlayerCheatProbe.TryAssociateRaw(
+                    _capture!.SentFrom(0),
+                    _capture.ReceivedFrom(0),
+                    _lastReceipt.RequestId,
+                    _lastReceipt.CommandVersion,
+                    true,
+                    out byte[]? rawCommand,
+                    out byte[]? rawReceipt,
+                    out byte[]? rawPublication),
+                "B producer associates original command/receipt/publication");
+            Assert.IsNotNull(rawCommand);
+            Assert.IsNotNull(rawReceipt);
+            Assert.IsNotNull(rawPublication);
+            Assert.IsFalse(
+                C04PlayerCheatProbe.TryAssociateRaw(
+                    _capture.SentFrom(0),
+                    _capture.ReceivedFrom(0),
+                    "missing-request",
+                    0,
+                    true,
+                    out _,
+                    out _,
+                    out _),
+                "missing original request fails closed");
+            Assert.IsFalse(
+                C04PlayerCheatProbe.TryAssociateRaw(
+                    Array.Empty<byte[]>(),
+                    _capture.ReceivedFrom(0),
+                    _lastReceipt.RequestId,
+                    _lastReceipt.CommandVersion,
+                    true,
+                    out _,
+                    out _,
+                    out _),
+                "missing command fails closed");
+            Assert.IsFalse(
+                C04PlayerCheatProbe.TryAssociateRaw(
+                    _capture.SentFrom(0),
+                    Array.Empty<byte[]>(),
+                    _lastReceipt.RequestId,
+                    _lastReceipt.CommandVersion,
+                    true,
+                    out _,
+                    out _,
+                    out _),
+                "missing receipt fails closed");
+            byte[][] withoutPublication = _capture.ReceivedFrom(0).Where(frame =>
+            {
+                Mahjong.Contracts.Wire.WireDecodeResult decoded =
+                    Mahjong.Contracts.Wire.WireCodec.Decode(frame);
+                return !(decoded.IsOk && decoded.Envelope != null &&
+                         decoded.Envelope.MessageType == Mahjong.Contracts.Wire.MessageType.PlayerUpdate);
+            }).ToArray();
+            Assert.IsFalse(
+                C04PlayerCheatProbe.TryAssociateRaw(
+                    _capture.SentFrom(0),
+                    withoutPublication,
+                    _lastReceipt.RequestId,
+                    _lastReceipt.CommandVersion,
+                    true,
+                    out _,
+                    out _,
+                    out _),
+                "missing accepted publication fails closed");
+            Assert.IsFalse(
+                C04PlayerCheatProbe.TryAssociateRaw(
+                    _capture.SentFrom(0),
+                    _capture.ReceivedFrom(0),
+                    _lastReceipt.RequestId,
+                    _lastReceipt.CommandVersion + 9999UL,
+                    true,
+                    out _,
+                    out _,
+                    out _),
+                "wrong command version fails closed");
             yield return WaitView(
                 v => v.Own?.Cheat?.CheatPoints == 119 &&
                      v.Own.Cheat.Ledger.Count == 1 &&
@@ -201,6 +279,7 @@ namespace Mahjong.Unity.Tests.PlayMode
             Assert.AreEqual(2, _snapshot.ledgerEntryCount);
             Assert136(_snapshot.audit);
             Dictionary<uint, string> afterSecond = ParsePositions(_snapshot.audit);
+            AssertOnlyExchange(beforeSecond, afterSecond, drawnBefore, second);
             StringAssert.StartsWith("WALL|", afterSecond[drawnBefore]);
             StringAssert.StartsWith("HAND|0|", afterSecond[second]);
 
@@ -279,6 +358,7 @@ namespace Mahjong.Unity.Tests.PlayMode
             Assert.AreEqual(3, _snapshot.ledgerEntryCount);
             Assert136(_snapshot.audit);
             Dictionary<uint, string> afterSwap = ParsePositions(_snapshot.audit);
+            AssertOnlyExchange(beforeSwap, afterSwap, handTile, targetTile);
             StringAssert.StartsWith("HAND|0|", afterSwap[targetTile]);
             Assert.AreEqual(targetBefore, afterSwap[handTile], "hand entity moves to exact target slot");
         }
@@ -354,6 +434,11 @@ namespace Mahjong.Unity.Tests.PlayMode
                 decisionId: new DecisionId("c04-no-such-decision"),
                 controlEpoch: new ControlEpoch(before.Own.Decision.ControlEpoch));
 
+            yield return CaptureSnapshot();
+            Assert.IsTrue(_waitOk, "authority snapshot before unauthorized attempt");
+            C04PhysicalSnapshot beforeAuthority = _snapshot!;
+            Assert136(beforeAuthority.audit);
+
             var submission = new TaskCompletionSource<CommandSubmission>(
                 TaskCreationOptions.RunContinuationsAsynchronously);
             _ = SubmitAsync(command, submission);
@@ -363,12 +448,26 @@ namespace Mahjong.Unity.Tests.PlayMode
             Assert.IsTrue(_waitOk, "unauthorized receipt");
             Assert.AreEqual("REJECTED", _lastReceipt!.Status, _lastReceipt.Reason);
             Assert.AreEqual("DECISION_MISMATCH", _lastReceipt.Reason);
+            Assert.AreEqual(requestId, _lastReceipt.RequestId);
+            Assert.IsFalse(string.IsNullOrEmpty(_lastReceipt.PayloadSha256), "unauthorized original payload digest");
 
             yield return new WaitForSecondsRealtime(0.25f);
             PlayerTableViewState after = _presenter.LatestView!;
             Assert.AreEqual(version, after.Identity.StateVersion);
             Assert.AreEqual(points, after.Own!.Cheat!.CheatPoints);
             Assert.AreEqual(entries, after.Own.Cheat.Ledger.Count);
+
+            yield return CaptureSnapshot();
+            Assert.IsTrue(_waitOk, "authority snapshot after unauthorized rejection");
+            C04PhysicalSnapshot afterAuthority = _snapshot!;
+            Assert.AreEqual(beforeAuthority.stateVersion, afterAuthority.stateVersion);
+            Assert.AreEqual(beforeAuthority.eventSeq, afterAuthority.eventSeq);
+            Assert.AreEqual(beforeAuthority.cheatFingerprint, afterAuthority.cheatFingerprint);
+            Assert.AreEqual(beforeAuthority.tilesSha256, afterAuthority.tilesSha256);
+            Assert.AreEqual(beforeAuthority.audit, afterAuthority.audit);
+            Assert.AreEqual(beforeAuthority.ledgerEntryCount, afterAuthority.ledgerEntryCount);
+            Assert.AreEqual(beforeAuthority.balance, afterAuthority.balance);
+            Assert136(afterAuthority.audit);
         }
 
         [UnityTest]
@@ -469,7 +568,12 @@ namespace Mahjong.Unity.Tests.PlayMode
                 Guid.NewGuid().ToString("N")));
             Directory.CreateDirectory(_root);
             var paths = new UnityAppPaths(_root);
-            _factory = new C04PlayerCheatChannelFactory(paths, kind, "c04-playmode");
+            _capture = new C04RawFrameCapture();
+            _factory = new C04PlayerCheatChannelFactory(
+                paths,
+                kind,
+                "c04-playmode",
+                capture: _capture);
             _dispatcher = new MainThreadDispatcher(512);
             var pumpGo = new GameObject("C04PlayerCheatDispatcherPump");
             UnityEngine.Object.DontDestroyOnLoad(pumpGo);
@@ -541,7 +645,9 @@ namespace Mahjong.Unity.Tests.PlayMode
                 RequestId = args.Command.RequestId,
                 Kind = args.Command.Kind,
                 Status = args.Resolution.ReceiptStatus.ToString().ToUpperInvariant(),
-                Reason = args.Resolution.ReasonCode ?? string.Empty
+                Reason = args.Resolution.ReasonCode ?? string.Empty,
+                PayloadSha256 = args.Command.DigestSha256,
+                CommandVersion = args.Resolution.CommandVersion?.Value ?? 0
             });
         }
 
@@ -835,6 +941,27 @@ namespace Mahjong.Unity.Tests.PlayMode
             return result;
         }
 
+        private static void AssertOnlyExchange(
+            Dictionary<uint, string> before,
+            Dictionary<uint, string> after,
+            uint first,
+            uint second)
+        {
+            Assert.AreEqual(136, before.Count, "pre-exchange entity count");
+            Assert.AreEqual(136, after.Count, "post-exchange entity count");
+            Assert.AreEqual(before[second], after[first], "first entity takes second entity's exact slot");
+            Assert.AreEqual(before[first], after[second], "second entity takes first entity's exact slot");
+            foreach (KeyValuePair<uint, string> entry in before)
+            {
+                if (entry.Key == first || entry.Key == second)
+                {
+                    continue;
+                }
+
+                Assert.AreEqual(entry.Value, after[entry.Key], "unrelated entity " + entry.Key + " must not move");
+            }
+        }
+
         private static void Assert136(string audit)
         {
             Dictionary<uint, string> positions = ParsePositions(audit);
@@ -861,6 +988,8 @@ namespace Mahjong.Unity.Tests.PlayMode
             public CommandKind Kind;
             public string Status = string.Empty;
             public string Reason = string.Empty;
+            public string PayloadSha256 = string.Empty;
+            public ulong CommandVersion;
         }
     }
 }

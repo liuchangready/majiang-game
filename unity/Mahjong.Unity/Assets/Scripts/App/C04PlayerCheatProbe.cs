@@ -127,6 +127,75 @@ namespace Mahjong.Unity.App
             return null;
         }
 
+        /// <summary>
+        /// Exact raw association used by both the Player probe and its deterministic fixture.
+        /// It never decodes into a fabricated success: missing command, receipt or accepted
+        /// PlayerUpdate returns false, and the caller must abort the case.
+        /// </summary>
+        public static bool TryAssociateRaw(
+            byte[][] sentFrames,
+            byte[][] receivedFrames,
+            string requestId,
+            ulong commandVersion,
+            bool requirePublication,
+            out byte[]? command,
+            out byte[]? receipt,
+            out byte[]? publication)
+        {
+            command = null;
+            receipt = null;
+            publication = null;
+            if (sentFrames == null || receivedFrames == null || string.IsNullOrEmpty(requestId))
+            {
+                return false;
+            }
+
+            for (int i = 0; i < sentFrames.Length; i++)
+            {
+                WireDecodeResult decoded = WireCodec.Decode(sentFrames[i]);
+                if (decoded.IsOk && decoded.Envelope != null &&
+                    decoded.Envelope.MessageType == WireMessageType.Command &&
+                    string.Equals(decoded.Envelope.RequestId, requestId, StringComparison.Ordinal))
+                {
+                    command = sentFrames[i];
+                    break;
+                }
+            }
+
+            for (int i = 0; i < receivedFrames.Length; i++)
+            {
+                WireDecodeResult decoded = WireCodec.Decode(receivedFrames[i]);
+                if (decoded.IsOk && decoded.Envelope != null &&
+                    decoded.Envelope.MessageType == WireMessageType.Receipt &&
+                    string.Equals(decoded.Envelope.RequestId, requestId, StringComparison.Ordinal))
+                {
+                    receipt = receivedFrames[i];
+                    break;
+                }
+            }
+
+            if (requirePublication && commandVersion > 0)
+            {
+                for (int i = 0; i < receivedFrames.Length; i++)
+                {
+                    WireDecodeResult decoded = WireCodec.Decode(receivedFrames[i]);
+                    if (decoded.IsOk && decoded.Envelope != null &&
+                        decoded.Envelope.MessageType == WireMessageType.PlayerUpdate &&
+                        decoded.Envelope.PlayerUpdate != null &&
+                        decoded.Envelope.PlayerUpdate.VisibleEvents.Any(
+                            ev => ev.CommandVersion == commandVersion))
+                    {
+                        publication = receivedFrames[i];
+                        break;
+                    }
+                }
+            }
+
+            return command != null &&
+                   receipt != null &&
+                   (!requirePublication || publication != null);
+        }
+
         private void Initialize(string evidenceDir, string caseName, string[] args)
         {
             _evidenceDir = Path.GetFullPath(evidenceDir);
@@ -1299,8 +1368,7 @@ namespace Mahjong.Unity.App
             diagnostic.selectionReason = selectionReason;
             if (!selectedTile.HasValue)
             {
-                diagnostic.failure = "NO_CONFIRMED_IN_HAND_DISCARD_CANDIDATE";
-                AddDiscardDiagnostic(diagnostic);
+                FailDiscard(diagnostic, "NO_CONFIRMED_IN_HAND_DISCARD_CANDIDATE", selectionReason);
                 yield break;
             }
 
@@ -1319,8 +1387,7 @@ namespace Mahjong.Unity.App
             diagnostic.pendingRequestId = _presenter.InteractionState.Pending?.Intent.Command.RequestId.Value ?? string.Empty;
             if (!diagnostic.discardButtonActive || !diagnostic.discardButtonInteractable)
             {
-                diagnostic.failure = "DISCARD_BUTTON_NOT_ACTIONABLE";
-                AddDiscardDiagnostic(diagnostic);
+                FailDiscard(diagnostic, "DISCARD_BUTTON_NOT_ACTIONABLE", diagnostic.selectionKind + "/" + diagnostic.selectedAction);
                 yield break;
             }
 
@@ -1333,38 +1400,30 @@ namespace Mahjong.Unity.App
             if (!_waitOk || _lastReceipt == null ||
                 !string.Equals(_lastReceipt.Status, "APPLIED", StringComparison.Ordinal))
             {
-                diagnostic.failure = "DISCARD_NOT_APPLIED";
                 diagnostic.pendingRequestId = pendingAfterClick;
-                AddDiscardDiagnostic(diagnostic);
+                FailDiscard(diagnostic, "DISCARD_NOT_APPLIED", diagnostic.receiptStatus + "/" + diagnostic.receiptReason);
                 yield break;
             }
 
             C04ReceiptRecord receipt = _lastReceipt;
             diagnostic.requestId = receipt.RequestId;
-            diagnostic.pendingRequestId = string.IsNullOrEmpty(pendingAfterClick) ? receipt.RequestId : pendingAfterClick;
+            diagnostic.pendingRequestId = pendingAfterClick;
             diagnostic.commandVersion = receipt.CommandVersion;
-            byte[]? commandFrame = FindSentFrame(
-                sentStart,
-                e => e.MessageType == WireMessageType.Command &&
-                     string.Equals(e.RequestId, receipt.RequestId, StringComparison.Ordinal));
-            byte[]? receiptFrame = FindReceivedFrame(
-                receivedStart,
-                e => e.MessageType == WireMessageType.Receipt &&
-                     string.Equals(e.RequestId, receipt.RequestId, StringComparison.Ordinal));
+            byte[]? commandFrame = null;
+            byte[]? receiptFrame = null;
             byte[]? publicationFrame = null;
             float publicationDeadline = Time.realtimeSinceStartup + 5f;
             while (Time.realtimeSinceStartup < publicationDeadline)
             {
-                if (receipt.HasCommandVersion)
-                {
-                    publicationFrame = FindReceivedFrame(
-                        receivedStart,
-                        e => e.MessageType == WireMessageType.PlayerUpdate &&
-                             e.PlayerUpdate != null &&
-                             e.PlayerUpdate.VisibleEvents.Any(ev => ev.CommandVersion == receipt.CommandVersion));
-                }
-
-                if (publicationFrame != null)
+                if (TryAssociateRaw(
+                    _capture?.SentFrom(sentStart) ?? Array.Empty<byte[]>(),
+                    _capture?.ReceivedFrom(receivedStart) ?? Array.Empty<byte[]>(),
+                    receipt.RequestId,
+                    receipt.CommandVersion,
+                    true,
+                    out commandFrame,
+                    out receiptFrame,
+                    out publicationFrame))
                 {
                     break;
                 }
@@ -1374,8 +1433,11 @@ namespace Mahjong.Unity.App
 
             if (commandFrame == null || receiptFrame == null || publicationFrame == null)
             {
-                diagnostic.failure = "DISCARD_RAW_ASSOCIATION_MISSING";
-                AddDiscardDiagnostic(diagnostic);
+                FailDiscard(
+                    diagnostic,
+                    "DISCARD_RAW_ASSOCIATION_MISSING",
+                    "command=" + (commandFrame != null) + " receipt=" + (receiptFrame != null) +
+                    " publication=" + (publicationFrame != null));
                 yield break;
             }
 
@@ -1392,18 +1454,33 @@ namespace Mahjong.Unity.App
 
             yield return WaitView(v => v.Identity.StateVersion > before.Identity.StateVersion, 10f);
             diagnostic.stateVersionAfter = unchecked((long)(_presenter.LatestView?.Identity.StateVersion ?? 0));
-            diagnostic.waitOk = !string.IsNullOrEmpty(diagnostic.requestId) &&
-                                IsFrameStillInTranscript(publicationFrame) &&
-                                _waitOk;
-            if (!_waitOk)
+            bool viewAdvanced = _waitOk;
+            bool transcriptContainsPublication = IsFrameStillInTranscript(publicationFrame);
+            bool exactApplication = !string.IsNullOrEmpty(diagnostic.requestId) &&
+                                    receipt.HasCommandVersion &&
+                                    (ulong)diagnostic.stateVersionAfter >= receipt.CommandVersion &&
+                                    transcriptContainsPublication &&
+                                    viewAdvanced;
+            diagnostic.waitOk = exactApplication;
+            if (!viewAdvanced)
             {
-                diagnostic.failure = "DISCARD_VIEW_DID_NOT_ADVANCE";
-            }
-            else if (!IsFrameStillInTranscript(publicationFrame))
-            {
-                diagnostic.failure = "DISCARD_PUBLICATION_NOT_IN_TRANSCRIPT";
+                FailDiscard(diagnostic, "DISCARD_VIEW_DID_NOT_ADVANCE", diagnostic.stateVersionBefore + "->" + diagnostic.stateVersionAfter);
+                yield break;
             }
 
+            if (!transcriptContainsPublication)
+            {
+                FailDiscard(diagnostic, "DISCARD_PUBLICATION_NOT_IN_TRANSCRIPT", diagnostic.publicationPath);
+                yield break;
+            }
+
+            if (!exactApplication)
+            {
+                FailDiscard(diagnostic, "DISCARD_EXACT_APPLICATION_NOT_PROVEN", diagnostic.requestId);
+                yield break;
+            }
+
+            _waitOk = true;
             AddDiscardDiagnostic(diagnostic);
         }
 
@@ -1503,6 +1580,27 @@ namespace Mahjong.Unity.App
             }
 
             return string.Join(";", parts);
+        }
+
+        private void FailDiscard(C04DiscardDiagnostic diagnostic, string code, string detail)
+        {
+            diagnostic.failure = code;
+            diagnostic.waitOk = false;
+            _waitOk = false;
+            AddDiscardDiagnostic(diagnostic);
+            if (_evidence != null)
+            {
+                Check(
+                    _evidence,
+                    "G3-DISCARD-" + code,
+                    false,
+                    "discard command/receipt/publication and UI application proven",
+                    code + ":" + detail);
+            }
+            else
+            {
+                _caseFailed = true;
+            }
         }
 
         private void AddDiscardDiagnostic(C04DiscardDiagnostic diagnostic)
@@ -1949,22 +2047,24 @@ namespace Mahjong.Unity.App
             }
 
             byte[]? welcome = _welcomeFrame ?? FindReceivedFrame(0, e => e.MessageType == WireMessageType.Welcome);
-            byte[]? command = FindSentFrame(
-                sentStart,
-                e => e.MessageType == WireMessageType.Command &&
-                     string.Equals(e.RequestId, receipt.RequestId, StringComparison.Ordinal));
-            byte[]? receiptFrame = FindReceivedFrame(
-                receivedStart,
-                e => e.MessageType == WireMessageType.Receipt &&
-                     string.Equals(e.RequestId, receipt.RequestId, StringComparison.Ordinal));
-            if (welcome == null || command == null || receiptFrame == null)
+            bool associated = TryAssociateRaw(
+                _capture.SentFrom(sentStart),
+                _capture.ReceivedFrom(receivedStart),
+                receipt.RequestId,
+                receipt.CommandVersion,
+                requirePublication,
+                out byte[]? command,
+                out byte[]? receiptFrame,
+                out byte[]? publication);
+            if (welcome == null || !associated)
             {
                 Check(
                     evidence,
                     id + "-RAW",
                     false,
-                    "original welcome/command/receipt bytes captured from the real channel",
-                    "welcome=" + (welcome != null) + " command=" + (command != null) + " receipt=" + (receiptFrame != null) +
+                    "original welcome/command/receipt/publication bytes captured from the real channel",
+                    "welcome=" + (welcome != null) + " command=" + (command != null) +
+                    " receipt=" + (receiptFrame != null) + " publication=" + (publication != null) +
                     " request=" + receipt.RequestId);
                 return;
             }
@@ -1974,31 +2074,13 @@ namespace Mahjong.Unity.App
             {
                 id = id,
                 welcome = WriteRawRef(id + "-welcome.pb", welcome),
-                command = WriteRawRef(id + "-command.pb", command),
-                receipt = WriteRawRef(id + "-receipt.pb", receiptFrame)
+                command = WriteRawRef(id + "-command.pb", command!),
+                receipt = WriteRawRef(id + "-receipt.pb", receiptFrame!)
             };
 
             if (requirePublication)
             {
-                byte[]? publication = receipt.HasCommandVersion
-                    ? FindReceivedFrame(
-                        receivedStart,
-                        e => e.MessageType == WireMessageType.PlayerUpdate &&
-                             e.PlayerUpdate != null &&
-                             e.PlayerUpdate.VisibleEvents.Any(ev => ev.CommandVersion == receipt.CommandVersion))
-                    : null;
-                if (publication == null)
-                {
-                    Check(
-                        evidence,
-                        id + "-RAW-PUBLICATION",
-                        false,
-                        "exact accepted private publication for command version " + receipt.CommandVersion,
-                        "not found in received transcript");
-                    return;
-                }
-
-                action.acceptedPrivatePublication = WriteRawRef(id + "-private-update.pb", publication);
+                action.acceptedPrivatePublication = WriteRawRef(id + "-private-update.pb", publication!);
             }
 
             if (before == null || _lastCapture == null)
