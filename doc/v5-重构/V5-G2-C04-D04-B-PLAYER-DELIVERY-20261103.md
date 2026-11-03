@@ -12,12 +12,12 @@
 
 冻结 base：`a234432e57efa790c40987d9720091d93bd270a8`（既有 Draft PR20 头）
 
-代码提交：`60f43ad70a6ed09fefaa6a18cd4bd2bd5f77493a`
+代码提交：`5dc8534a30be1cd421dfc0a4ea88299949c7ab34`（首轮 `60f43ad7` 的 R1 增量）
 证据根：`build/6ea1d77e-57e2-4c7f-bca8-1d4ce9ca3d46/`（仓库 ignored，独占）
 
 ## 结论（组件与实际边界）
 
-本交付关闭的是 **B 自身可执行的确定性组件/意图/真实通道/PlayMode 部分**：定位并修复了“SleeveBloom SECOND 后第二 discard 失败”的真实产品原因，更新了过时的 110/100、隐藏入口断言，完整正流程在真实 `TablePresenter → TableIntent → TableSession → LocalHost` 链上实际跑到 120→119→109→99、3 笔私有 ledger、SECOND/SWAP 精确物理换位，PlayMode `2/2 PASS`。
+本交付关闭的是 **B 自身可执行的确定性组件/意图/真实通道/PlayMode 部分**：定位并修复了“SleeveBloom SECOND 后第二 discard 失败”的真实产品原因，更新了过时的 110/100、隐藏入口断言，完整正流程在真实 `TablePresenter → TableIntent → TableSession → LocalHost` 链上实际跑到 120→119→109→99、3 笔私有 ledger、SECOND/SWAP 精确物理换位。R1 复核后补齐了 raw 基线、discard 原始件关联、第三条 PlayMode 负例、136 物理审计和精确换位断言，最终 PlayMode `3/3 PASS`、LocalHost `179/179`。
 
 **整个 D04 仍不能 approve。** 同候选同包 Windows Player `-Case all`、A Verifier2 对 Player 原始件的最终验证、完整包 manifest/SHA、六行 GAME 证据均未在本轮执行；它们依赖 D04-C 的真实 `errors=0` 完整包（原线程 `thread_20261103_013102_3a7e` 仍在 R5 reworking，未见可消费的最终包）。本报告不把组件通过、PlayMode 通过或历史分 run 拼成最终 D04 PASS。
 
@@ -63,6 +63,31 @@ doc/v5-重构/V5-G2-C04-D04-B-PLAYER-DELIVERY-20261103.md
 
 SECOND 后权威未重新打开 decision（`LocalTableDriver` 只在 `GetPendingDecisionId(seat)==null` 时开新 decision），因此“换入的新摸牌实体”在本 decision 内仍不是可出牌候选。B 授权范围不含 TableActor/LocalTableDriver，本修复让真实 Player 只选择契约内合法候选并继续完整流程；没有改权威、没有造候选、没有绕过授权。若要求“换入实体本身可立即打出”，需要另立精确最小请求修改 `LocalTableDriver`/`TableActor` 的 cheat 后 decision 刷新，不能由 B 暗中越界完成。
 
+### 2.4 R1 复核 A：raw before 基线改为命令即时前态
+
+- 复核实际：`RunAuthorizedCaseV2` 在 mark 后 capture，随后两次合法 discard/advance 未更新 `_lastCapture`；`sleeve-bloom` 的 before 错误复用 mark post-state。A Verifier2 要求 `beforeFacts.StateVersion == command.ExpectedStateVersion` 且 accepted recovery 必须紧邻命令提交。复核把 `action[1].before = action[0].after` 后得到 native1：`sleeve-bloom:COMMAND_BASELINE_VERSION_MISMATCH`、`The accepted action command version does not immediately follow its baseline.`。
+- 修复：在 SleeveBloom 点击前、所有合法 turn 推进之后重新 `CaptureFacts()`，并以该 capture 作为 `bloomBefore`；其余行保持“上一动作 after = 下一动作 before”的即时关系。没有放宽 A、没有改 A/C 文件、没有拿 latest 代替。
+- 验证：新增 `AuthorizedSleeveBaselineIsImmediatePreCommandStateNotMarkPostState`（真实 LocalHost 通道）：mark post-state 与 bloom 命令 baseline 版本必须不同，baseline 版本等于当前 snapshot，ledger 119/1；bloom APPLIED 后版本前进。
+- 独立 producer/consumer 正负对照（A 工具，非 Unity/Player）：fresh A capture + verify **native 0 / PASS**；仅把 `sleeve-bloom.before` 替换为 `tile-mark.after` 后 **native 1**，错误与复核完全一致。证据：`r2-producer-capture.log`、`r2-producer-verify-positive.json`、`r2-producer-verify-stale.json`。
+
+### 2.5 R1 复核 B：discard 原始 intent/receipt/publication 关联
+
+- 复核实际：`DiscardEntity` 的 `sentStart/receivedStart` 未使用；诊断只有 `pendingRequestId`（提交前通常为空），APPLIED 后只等 `StateVersion` 增长，无法定位具体 discard command/receipt/accepted PlayerUpdate。
+- 修复：提交后记录实际 `requestId`、`commandVersion`；用捕获区间定位原始 command、typed receipt、按 `CommandVersion` 匹配的 accepted PlayerUpdate；写出 `raw/discard-NN-command.pb`、`-receipt.pb`、`-private-update.pb` 并把 path/SHA 写入 `C04DiscardDiagnostic`。任一原件缺失即 `DISCARD_RAW_ASSOCIATION_MISSING`，有界 5s 等待 publication；最终还校验 publication 仍在 received transcript 中，仍检查 `DiscardButton` 真实 active/interactable 与合法候选。
+- 验收：PlayMode 日志 `pending=none request=... commandVersion=... receipt=APPLIED`，诊断含三份原始件 SHA；不再用泛化 view version 代替目标提交。
+
+### 2.6 R1 复核 C：PlayMode 六行覆盖补齐
+
+- 新增 `InsufficientFundsIsRejectedByRealPresenterWithZeroAuthorityDelta`：真实 Presenter 连续 12 次合法 SleeveBloom 到 0，再发动一次得到 **REJECTED / CHEAT_INSUFFICIENT_FUNDS**；前后 authority `stateVersion/eventSeq/cheatFingerprint/tilesSha256/完整136 audit/ledger count/balance` 全部相等。
+- 新增 136 物理审计：通过只读 `C04PhysicalSnapshot`（App 薄封装 `LocalTableHost.CaptureRecoveryAsync` + `LocalPlayerActionScenario.ReadPhysicalAudit`），初始/每次关键提交/最终均断言 0..135 恰好一次共 136。
+- 精确 SECOND/SWAP：SECOND 断言 `drawnBefore` 从 `HAND|0|` 到 `WALL|`、`second` 从 `WALL|` 到 `HAND|0|`；SWAP 断言选中的 hand 实体从 `HAND|0|` 到目标槽位的精确位置、目标实体到 `HAND|0|`，不再只看 offer 消失或余额。
+- PlayMode 最终 **3/3 PASS**，skipped 0；仍是组件层，不是同包 Player 六行 GAME。
+
+### 2.7 R1 复核 MINOR：合法 discard 高亮
+
+- 修复：`RenderOwnHand` 的高亮从 `Selection.HandTileId` 改为 `SelectedHandEntity()`；Action/DiscardTile 选择取 `Action.TileIds[0]`，cheat 对话框仍用 `HandTileId`。
+- 验收：PlayMode `AssertSelectedDiscardHighlight` 对实际选中 closed/drawn 实体断言对应文本为 `Color.yellow`，并在每次 discard 前执行；Cancel 仍清空选择。
+
 ## 3. 原始通道采集（A 合同对齐）
 
 `C04PlayerCheatChannelFactory` 新增 `C04RawFrameCapture`：在真实 ticket channel 的 `SendAsync`/`ReceiveAsync` 处逐帧保存原始字节，不复制解码/判断逻辑，不合成帧。probe 使用捕获帧、receipt `CommandVersion` 和只读 `LocalTableHost.CaptureRecoveryAsync` 写出 A 合同要求的：
@@ -76,7 +101,7 @@ SECOND 后权威未重新打开 decision（`LocalTableDriver` 只在 `GetPending
 - `raw/index.json`（`schemaVersion=2`, `producer=LOCALHOST_CHANNEL`, `sourceHead`, `packageManifestSha256`, 五行动作，`sentFrames`/`receivedFrames` 全量原始帧）
 - case JSON 增加 `rawEvidenceIndex` / `rawEvidenceIndexSha256` / `packageManifestSha256`
 
-五行动作 id 固定为 `tile-mark`, `sleeve-bloom`, `sleeve-second`, `beam-swap`, `beam-swap-choice`；负例行固定为 `unauthorized`、`insufficient-funds`，不写 accepted publication。before 使用上一动作成功后的精确 capture，after 使用 receipt 后的 capture；不拿后台 latest 替代目标提交。Player 原始件本身本轮 **NOT_RUN**，最终仍须由冻结同包运行后交给 A Verifier2；不得把本段代码能力当成已通过原始件验证。
+五行动作 id 固定为 `tile-mark`, `sleeve-bloom`, `sleeve-second`, `beam-swap`, `beam-swap-choice`；负例行固定为 `unauthorized`、`insufficient-funds`，不写 accepted publication。每行 before 在命令点击前即时 capture，after 使用 receipt 后的 capture；SleeveBloom 行不再复用 mark post-state，也不拿后台 latest 替代目标提交。Player 原始件本身本轮 **NOT_RUN**，最终仍须由冻结同包运行后交给 A Verifier2；不得把本段代码能力当成已通过原始件验证。
 
 ## 4. 实际执行与计数
 
@@ -87,9 +112,9 @@ D:/Unity/dotnet/dotnet.exe build dotnet/tests/Mahjong.LocalHost.Tests/Mahjong.Lo
 D:/Unity/dotnet/dotnet.exe <...>/Mahjong.LocalHost.Tests.dll
 ```
 
-- 最终 native 0；**LocalHost Total 178 / Errors 0 / Failed 0 / Skipped 0 / Not Run 0**（24.941s）。
-- `C04PlayerCheatChannelTests` 定向 native 0；**4/4**。
-- 首次全量曾因 isolated artifacts 未生成 `Mahjong.TableRuntime.Tests/bin/Debug` 与 `Mahjong.LocalHost.CrashWorker/bin/Release` 出现 13 个 fixture 缺失失败；补齐这两个 helper 的默认输出后重跑得到 178/178。首次失败保留，不当作产品失败或最终通过。
+- R1 最终 native 0；**LocalHost Total 179 / Errors 0 / Failed 0 / Skipped 0 / Not Run 0**（26.542s）。
+- `C04PlayerCheatChannelTests` 定向 native 0；**5/5**（新增 raw 基线回归）。
+- 首轮全量曾因 isolated artifacts 未生成 `Mahjong.TableRuntime.Tests/bin/Debug` 与 `Mahjong.LocalHost.CrashWorker/bin/Release` 出现 13 个 fixture 缺失失败；补齐这两个 helper 的默认输出后重跑得到 178/178。R1 增加一个测试后为 179/179。首次失败保留，不当作产品失败或最终通过。
 
 ```text
 D:/Unity/dotnet/dotnet.exe build dotnet/tests/Mahjong.Unity.TableModel.Tests/Mahjong.Unity.TableModel.Tests.csproj --artifacts-path build/<GUID>/tablemodel-artifacts
@@ -105,13 +130,13 @@ D:/Unity/dotnet/dotnet.exe <...>/Mahjong.Unity.TableModel.Tests.dll
 D:/Unity/Hub/Editor/6000.3.27f1/Editor/Unity.exe -batchmode \
   -projectPath unity/Mahjong.Unity -runTests -testPlatform PlayMode \
   -testFilter Mahjong.Unity.Tests.PlayMode.C04PlayerCheatScenarioTests \
-  -testResults build/<GUID>/unity-playmode-original-gl3.xml \
-  -logFile build/<GUID>/unity-playmode-original-gl3.log
+  -testResults build/<GUID>/r2-unity-playmode.xml \
+  -logFile build/<GUID>/r2-unity-playmode.log
 ```
 
-- 最终 native 0（Unity log: `Test run completed. Exiting with code 0 (Ok)`）。
-- XML：`total=2 passed=2 failed=0 inconclusive=0 skipped=0`，`AuthorizedThreeCheatsThroughPresenterWithExactPrivateLedger` 与 `UnauthorizedDecisionReceiptIsRejectedWithoutVisibleDelta` 均 PASS。
-- 正流程实际：TileMark -1→119、SleeveBloom -10→109、SECOND 不重复扣费、第二 discard 使用确认候选 APPLIED、BeamSwap -10→99、SWAP 不重复扣费；`Unauthorized` 精确 `DECISION_MISMATCH`。
+- R1 最终 native 0（Unity log: `Test run completed. Exiting with code 0 (Ok)`）。
+- XML：`total=3 passed=3 failed=0 inconclusive=0 skipped=0`；`AuthorizedThreeCheatsThroughPresenterWithExactPrivateLedger`、`InsufficientFundsIsRejectedByRealPresenterWithZeroAuthorityDelta`、`UnauthorizedDecisionReceiptIsRejectedWithoutVisibleDelta` 均 PASS。
+- 正流程实际：TileMark -1→119、SleeveBloom -10→109、SECOND 不重复扣费、第二 discard 使用确认候选 APPLIED、BeamSwap -10→99、SWAP 不重复扣费；SECOND/SWAP 精确物理位置与 136 审计均实际断言；负例精确 `DECISION_MISMATCH` / `CHEAT_INSUFFICIENT_FUNDS`，后者 state/event/cheat/136/ledger 零变化。
 - 运行前为通过既有 shared-plugin provenance gate 执行了默认 `tools/unity/build-shared.ps1`（0 warning/0 error，19 files），随后已用 `git checkout` 还原 14 个 tracked plugin DLL/PDB；最终 tracked 状态只有允许路径。最终正式包必须重新构建并以包内 DLL 身份重跑，不能复用本次 transient 同步。
 
 Unity 版本/进程：`6000.3.27f1`；未改机器许可；未终止他人既有 Unity 进程。`-nographics` 首跑出现 `No graphic device is available to initialize the view`，属于环境限制，已保留并按桌面 GL 重跑。
@@ -134,11 +159,21 @@ Unity 版本/进程：`6000.3.27f1`；未改机器许可；未终止他人既有
 | `unity-playmode-original.log` | 1418197 | `EB48DB19A7BCAEB3105D08CF50E3679607B9AEF8C6D8624E9B3B2252078CDEAD` |
 | `build-shared-default.log` | 10470 | `E803A9C3103988BF50C801B05BD776C8317F5C9C643569231FEADCF3A2B8F99C` |
 | `build-shared.log`（scratch） | 15520 | `F087E649AB2197FFDB0201522D2E3196B4E46A2628FEEB888977FE22A81AB56E` |
+| `r2-c04-class.log`（5/5） | 872 | `D5FE227F14E6617EE0534911DB11B0868DAEA5B84182979B732D88664C06095B` |
+| `r2-localhost-full.log`（179/179） | 878 | `3F2AD13B0855B4B07B3142EEF0DA00F461878E2EAB2BB29EB3DAAFA66982E264` |
+| `r2-unity-playmode.xml`（3/3） | 10827 | `E27C5F8113E54C5C5491F67EF0C6972850C1B09880133E63C692F3EF7857038F` |
+| `r2-unity-playmode.log` | 371528 | `1F70D8D071269BB1F51F3B9F1FF9CA5595FC9CDB65A12FB5795AC6C0E62FC37E` |
+| `r2-verifier-build.log` | 5046 | `2CD165BD7973BEFBCE78553273567A50904E2292FFFA71595FC76E970C412725` |
+| `r2-producer-capture.log` | 588 | `E0248EEE0F4599A3778A204199DFED6E1562C888CB57552CC17F9BBF331B17CD` |
+| `r2-producer-verify-positive.json` | 6696 | `CBBF08E25C0BBB37D182ED5381AEC03F4CEA1C5358BA0C2AF56907CAF072DBF2` |
+| `r2-producer-verify-stale.json`（预期 negative） | 2406 | `48572200B67CF1EF9529F0A50BBA08B04F7ED9B1E31637210220BC16B5FB5421` |
+| `r2-build-shared-default.log` | 10470 | `50FCC58FCB7572708CC92EECB6CF666FF0F9185C09DB6C2215D2ABA154417C52` |
 
-首次失败顺序（全部保留，未覆盖）：无 GL 运行 → shared-plugin staging provenance 阻断 → GL 运行首 discard 按钮不可用 → 修复后 GL3 `2/2 PASS`。
+首次失败顺序（全部保留，未覆盖）：无 GL 运行 → shared-plugin staging provenance 阻断 → GL 运行首 discard 按钮不可用 → 修复后 GL3 `2/2 PASS` → R1 补测 raw 基线/负例/136 与精确换位 → 最终 `3/3 PASS`。
 
 ## 6. 未覆盖 / 依赖 / 精确检查点
 
+- R1 的三项 MAJOR 子项（raw 基线、discard 原始件关联、PlayMode 六行覆盖）与 MINOR 高亮已在 B 自身可执行范围批量修复；不要求 Actor/Domain decision-refresh 扩围。上面的 producer/consumer 正负对照使用未修改的 A Verifier2 和真实 LocalHost capture，不是 Unity/Player 原始件；最终 Player 原始件仍 NOT_RUN。
 - **NOT_RUN**：同冻结包的 Windows Player `-Case all`、Player 原始件 raw index 的 A Verifier2 校验、完整包 manifest/所有文件 SHA、六行 GAME、同包 Unity Player 退出码/XML/raw 分母。
 - **BLOCKED**：D04-C 原线程 `thread_20261103_013102_3a7e` 仍 R5 reworking；进程子项 01 已独立关闭，02/03/04（输入转换、真实 source→stage→package 来源、真实 BuildReport errors=6）仍开放，无 `errors=0` 完整包。未取 C 在途文件，未用旧 runner/坏包抢做昂贵构建。
 - 最终阶段不得另起重复验证任务：由 parent caller / 原 dedicated reviewer 在同一 B 线程接续，先集成已接受的 A + C 并冻结，再执行最终 PlayMode + Player Case all。若届时 C 仍未交付，应由 dedicated reviewer 以真实 `waitingForThreadId=thread_20261103_013102_3a7e` 挂起，而不是虚构依赖或把本报告当 D04 通过。
