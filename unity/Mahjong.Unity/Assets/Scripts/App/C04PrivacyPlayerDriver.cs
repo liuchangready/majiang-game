@@ -846,8 +846,8 @@ namespace Mahjong.Unity.App
                     ?? throw new InvalidOperationException("No deadline baseline.");
                 DecisionView decision = baseline.PrivateView.Decision
                     ?? throw new InvalidOperationException("The open-deadline scenario needs a live decision.");
-                ClockView? decisionClock = null;
-                foreach (ClockView clock in baseline.PublicView.Clocks)
+                Mahjong.Contracts.Wire.ClockView? decisionClock = null;
+                foreach (Mahjong.Contracts.Wire.ClockView clock in baseline.PublicView.Clocks)
                 {
                     if (clock.DecisionSeat == baseline.PrivateView.Seat) { decisionClock = clock; break; }
                 }
@@ -883,7 +883,7 @@ namespace Mahjong.Unity.App
                 if (spectatorBaseline.StateVersion != beforeVersion)
                     throw new InvalidOperationException("The spectator baseline was already advanced before deadline observation.");
                 ulong after = beforeVersion;
-                PublicSnapshot? afterSnapshot = spectatorBaseline;
+                PublicSnapshot afterSnapshot = spectatorBaseline;
                 for (int i = 0; i < 1200; i++)
                 {
                     afterSnapshot = spectator.PublicSnapshot ?? afterSnapshot;
@@ -891,7 +891,6 @@ namespace Mahjong.Unity.App
                     if (after > beforeVersion) break;
                     await Task.Delay(25, pumpCts.Token).ConfigureAwait(false);
                 }
-                if (afterSnapshot == null) throw new InvalidOperationException("No spectator snapshot after close.");
                 bool advanced = after > beforeVersion;
                 return new OpenDeadlineEvidence
                 {
@@ -907,7 +906,7 @@ namespace Mahjong.Unity.App
                     AuthoritativeDeadlineServerTimeMs = checked(decisionClock.ServerTimeMs + decisionClock.DeadlineRemainingMs),
                     PlayerSessionId = playerBinding.SessionId.Value,
                     PlayerScopeId = playerBinding.Scope.ScopeId.Value,
-                    PlayerRole = playerBinding.Role,
+                    PlayerRole = (int)playerBinding.Role,
                     PlayerSeat = playerBinding.SeatId,
                     PlayerBindingEpoch = playerBinding.BindingEpoch.Value,
                     ReleaseVersion = beforeVersion,
@@ -917,7 +916,7 @@ namespace Mahjong.Unity.App
                     CloseCompletedUtcMs = closeCompletedUtcMs,
                     PlayerBindingClosed = playerBindingClosed,
                     SpectatorSessionId = spectator.Binding?.SessionId.Value ?? string.Empty,
-                    SpectatorRole = spectator.Binding?.Role ?? 0,
+                    SpectatorRole = (int)(spectator.Binding?.Role ?? ProtocolRole.Unspecified),
                     SpectatorSeat = spectator.Binding?.SeatId ?? -2,
                     SpectatorBaselineVersion = spectatorBaseline.StateVersion,
                     SpectatorBaselineCursorStreamVersion = spectatorBaseline.Cursor.StreamVersion,
@@ -925,7 +924,7 @@ namespace Mahjong.Unity.App
                     AfterVersion = afterSnapshot.StateVersion,
                     AfterCursorStreamVersion = afterSnapshot.Cursor.StreamVersion,
                     AfterCursorProjectionSeq = afterSnapshot.Cursor.ProjectionSeq,
-                    AfterPhase = afterSnapshot.PublicView.Board?.Phase.ToString() ?? string.Empty,
+                    AfterPhase = afterSnapshot.Board?.Phase.ToString() ?? string.Empty,
                     AdvancedWithoutPlayerBinding = advanced && playerBindingClosed && session == null && channel == null
                 };
             }
