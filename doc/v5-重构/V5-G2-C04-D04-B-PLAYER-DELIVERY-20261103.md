@@ -207,3 +207,13 @@ Unity 版本/进程：`6000.3.27f1`；未改机器许可；未终止他人既有
 - **BLOCKED**：D04-C 原线程 `thread_20261103_013102_3a7e` 仍 R5 reworking；进程子项 01 已独立关闭，02/03/04（输入转换、真实 source→stage→package 来源、真实 BuildReport errors=6）仍开放，无 `errors=0` 完整包。未取 C 在途文件，未用旧 runner/坏包抢做昂贵构建。
 - 最终阶段不得另起重复验证任务：由 parent caller / 原 dedicated reviewer 在同一 B 线程接续，先集成已接受的 A + C 并冻结，再执行最终 PlayMode + Player Case all。若届时 C 仍未交付，应由 dedicated reviewer 以真实 `waitingForThreadId=thread_20261103_013102_3a7e` 挂起，而不是虚构依赖或把本报告当 D04 通过。
 - 本报告不改变 V4 生产、D04/C04/C05/C06 与 G2–G5 未批准状态；未生成 `complete.flag`。
+
+## 7. 调用方集成检查点（2026-11-03，最终执行前）
+
+D04-C 已在原线程 `thread_20261103_013102_3a7e` 第 13 轮完成独立组件验收，受审头 `f042fbf10cecac6d5d0a4f4df2777bfd7e220fb4`、代码 `69b9e669a3094ba00806b333730733d9ab12ebba`。上文 R5/R9 等为当时历史状态，当前依赖已解除。C 的 errors=0 与同包复用证据属于 C 自身候选，不作为本次 A+B+C 集成包已通过。
+
+调用方在 B 工作树以 `9243ad91` 无冲突合入已接受 C；随后预检发现 C 向 A 传 CSV，而 A 要求 JSON，且 Player 参数缺少 `-c04-package-manifest`。调用方提交 `97f9ba21b240f9a864bad00339180e3b326b28fb` 修复集成接口：先生成完整产物列表的 JSON 清单，再由既有 C CSV/封包门禁覆盖该 JSON 的 SHA；同一 JSON 路径传给 probe 与 A，保留原 C 封包、进程和失败控制，不修改 A 语义。
+
+实际验证：runner **82/82**、compat **20/20**，均 native 0；脚本解析 0 错误。独占组件夹具调用实际 A：JSON native 0，旧 CSV native 1；检查嵌套产物闭包、CSV 绑定 JSON 哈希、实际 Player argv 传入同一 JSON。原件与命令位于 `E:/majiang-review/g2-c04-d04-player-ds-20261103/build/i9fe8ca79`。首个调用方测试脚本误用了 dot-source 后带 ValidateSet 的 Case 变量，已在新夹具目录用专用变量修正，未改生产断言，原脚本保留。
+
+此处仅为最终执行前检查点：**集成候选 fresh Unity/Windows Player Case all、同包六行与完整 Probe 原件仍 NOT_RUN**。原 C 包与旧 B 组件原件不得冒作新包。按原合同由本 B 线程和原 receiver 会话继续，先填写新任务卡，冻结完整输入与 fresh DLL/包，再取得真实执行、原生退出、XML、五正两负 raw→A 和全包 SHA；完成前不批准完整 B/D04、不推送 MR、不合并。
