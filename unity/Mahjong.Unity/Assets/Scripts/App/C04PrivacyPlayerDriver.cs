@@ -365,10 +365,16 @@ namespace Mahjong.Unity.App
                 Assert.AreEqual(originalScope.Value, reconciled.Command.Key.ScopeId.Value);
                 Assert.AreEqual(requestId, reconciled.Command.Key.RequestId.Value);
                 Assert.AreEqual(originalDigest, reconciled.Resolution.CanonicalPayloadSha256);
+                Assert.AreEqual(afterSubmitVersion, reconciled.Resolution.CommandVersion?.Value,
+                    "Receipt lookup did not return the original request's committed command version.");
+                Assert.AreEqual(afterSubmitEventSeq, reconciled.Resolution.EventSeq?.Value,
+                    "Receipt lookup did not return the original request's committed event sequence.");
                 Assert.Greater(recoveredCapture.ReceiptQueryFrames, 0, "Recovery did not send a ReceiptQuery.");
                 Assert.AreEqual(0, recoveredCapture.CommandFrames);
-                Assert.AreEqual(afterSubmitVersion, recoveredSession.PlayerSnapshot!.StateVersion);
-                Assert.AreEqual(afterSubmitEventSeq, recoveredSession.PlayerSnapshot.EventSeq);
+                Assert.GreaterOrEqual(recoveredSession.PlayerSnapshot!.StateVersion, afterSubmitVersion,
+                    "Recovered snapshot is behind the original request's committed version.");
+                Assert.GreaterOrEqual(recoveredSession.PlayerSnapshot.EventSeq, afterSubmitEventSeq,
+                    "Recovered snapshot is behind the original request's committed event sequence.");
 
                 for (int seat = 1; seat < 4; seat++)
                 {
@@ -403,8 +409,14 @@ namespace Mahjong.Unity.App
                     "\",\"canonicalDigest\":\"" + originalDigest +
                     "\",\"stateVersion\":\"" + afterSubmitVersion +
                     "\",\"eventSeq\":\"" + afterSubmitEventSeq +
+                    "\",\"receiptStatus\":\"" + reconciled!.Resolution.ReceiptStatus +
+                    "\",\"receiptCommandVersion\":\"" + reconciled.Resolution.CommandVersion?.Value +
+                    "\",\"receiptEventSeq\":\"" + reconciled.Resolution.EventSeq?.Value +
                     "\",\"commandFrames\":0,\"receiptQueryFrames\":" + recoveredCapture.ReceiptQueryFrames +
-                    ",\"fromReceiptLookup\":" + (reconciled != null && reconciled.Resolution.FromReceiptLookup).ToString().ToLowerInvariant() + ",\"zeroDuplicateStateDelta\":true}", new UTF8Encoding(false));
+                    ",\"fromReceiptLookup\":" + reconciled.Resolution.FromReceiptLookup.ToString().ToLowerInvariant() +
+                    ",\"zeroDuplicateStateDelta\":" +
+                    (reconciled.Resolution.CommandVersion?.Value == afterSubmitVersion &&
+                     reconciled.Resolution.EventSeq?.Value == afterSubmitEventSeq && recoveredCapture.CommandFrames == 0).ToString().ToLowerInvariant() + "}", new UTF8Encoding(false));
                 Assert.Greater(C04PrivacyProbe.CapturedFrameCount, 0);
                 string rawSha = C04PrivacyProbe.Seal();
                 Assert.AreEqual(64, rawSha.Length);

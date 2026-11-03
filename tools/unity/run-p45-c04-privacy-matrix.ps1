@@ -1271,7 +1271,7 @@ function Assert-C04PlayerCaseEvidence([string]$CaseName, [string]$CaseRoot) {
     }
     'RealRoom_ColdReopenReconcilesOriginalRequestWithoutDuplicate' {
       $e = $artifacts['recovery-query/recovery-query.json']
-      if ([int]$e.schemaVersion -ne 1 -or [string]::IsNullOrWhiteSpace($e.requestId) -or [string]::IsNullOrWhiteSpace($e.scopeId) -or $e.canonicalDigest -notmatch '^[0-9a-fA-F]{64}$' -or [string]::IsNullOrWhiteSpace($e.stateVersion) -or [string]::IsNullOrWhiteSpace($e.eventSeq) -or [int]$e.commandFrames -ne 0 -or [int]$e.receiptQueryFrames -lt 1 -or $e.fromReceiptLookup -ne $true -or $e.zeroDuplicateStateDelta -ne $true) {
+      if ([int]$e.schemaVersion -ne 1 -or [string]::IsNullOrWhiteSpace($e.requestId) -or [string]::IsNullOrWhiteSpace($e.scopeId) -or $e.canonicalDigest -notmatch '^[0-9a-fA-F]{64}$' -or [string]::IsNullOrWhiteSpace($e.stateVersion) -or [string]::IsNullOrWhiteSpace($e.eventSeq) -or $e.receiptStatus -cne 'Applied' -or [string]$e.receiptCommandVersion -cne [string]$e.stateVersion -or [string]$e.receiptEventSeq -cne [string]$e.eventSeq -or [int]$e.commandFrames -ne 0 -or [int]$e.receiptQueryFrames -lt 1 -or $e.fromReceiptLookup -ne $true -or $e.zeroDuplicateStateDelta -ne $true) {
         throw 'Original-request recovery evidence failed its receipt lookup or zero-duplicate contract.'
       }
     }

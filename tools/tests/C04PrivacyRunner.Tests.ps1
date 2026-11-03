@@ -75,7 +75,7 @@ function New-CaseEvidenceFixture([string]$CaseName, [string]$Root) {
             Write-C04Json (Join-Path $Root 'delayed-old-raw/delayed-old-raw.json') $e
         }
         'RealRoom_ColdReopenReconcilesOriginalRequestWithoutDuplicate' {
-            $e = @{ fixtureOnly=$true; schemaVersion=1; requestId='fixture-request'; scopeId='fixture-scope'; canonicalDigest=('a' * 64); stateVersion='12'; eventSeq='7'; commandFrames=0; receiptQueryFrames=1; fromReceiptLookup=$true; zeroDuplicateStateDelta=$true }
+            $e = @{ fixtureOnly=$true; schemaVersion=1; requestId='fixture-request'; scopeId='fixture-scope'; canonicalDigest=('a' * 64); stateVersion='12'; eventSeq='7'; receiptStatus='Applied'; receiptCommandVersion='12'; receiptEventSeq='7'; commandFrames=0; receiptQueryFrames=1; fromReceiptLookup=$true; zeroDuplicateStateDelta=$true }
             Write-C04Json (Join-Path $Root 'recovery-query/recovery-query.json') $e
             Write-C04Utf8 (Join-Path $Root 'recovery-raw/raw-frames.json') $fixtureRaw
         }
@@ -553,6 +553,27 @@ Invoke-Case 'semantic Windows Player evidence accepts all seven fixture-only pro
         $accepted = Assert-C04PlayerCaseEvidence -CaseName $caseName -CaseRoot $caseRoot
         Assert-Equal $caseName $accepted.case "semantic evidence case $caseName"
         Assert-True ($accepted.artifacts.Count -gt 0) "semantic evidence did not return required case artifacts for $caseName"
+    }
+}
+
+Invoke-Case 'recovery receipt evidence rejects status or original commit metadata drift' {
+    $caseName = 'RealRoom_ColdReopenReconcilesOriginalRequestWithoutDuplicate'
+    foreach ($mutation in @(
+        @{ key='receiptStatus'; value='Rejected' },
+        @{ key='receiptCommandVersion'; value='13' },
+        @{ key='receiptEventSeq'; value='8' },
+        @{ key='commandFrames'; value=1 },
+        @{ key='receiptQueryFrames'; value=0 },
+        @{ key='fromReceiptLookup'; value=$false },
+        @{ key='zeroDuplicateStateDelta'; value=$false }
+    )) {
+        $caseRoot = New-CaseFixtureRoot $caseName
+        New-CaseEvidenceFixture $caseName $caseRoot
+        $path = Join-Path $caseRoot 'recovery-query/recovery-query.json'
+        $evidence = [IO.File]::ReadAllText($path,[Text.Encoding]::UTF8) | ConvertFrom-Json
+        $evidence.($mutation.key) = $mutation.value
+        Write-C04Json $path $evidence
+        Assert-Throws { Assert-C04PlayerCaseEvidence -CaseName $caseName -CaseRoot $caseRoot } 'Original-request recovery evidence failed'
     }
 }
 
