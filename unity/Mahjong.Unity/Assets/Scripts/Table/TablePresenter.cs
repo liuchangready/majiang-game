@@ -1068,6 +1068,7 @@ namespace Mahjong.Unity.Table
 
             var own = view.Own!;
             var closed = own.ClosedTiles;
+            uint? selectedTileId = SelectedHandEntity();
 
             for (int i = 0; i < _handTileButtons.Length; i++)
             {
@@ -1081,7 +1082,7 @@ namespace Mahjong.Unity.Table
                     if (btn != null) btn.gameObject.SetActive(true);
                     if (txt != null)
                     {
-                        bool isSelected = _interactionState.Selection.HandTileId.HasValue && _interactionState.Selection.HandTileId.Value == tileId;
+                        bool isSelected = selectedTileId.HasValue && selectedTileId.Value == tileId;
                         string markStr = (own.Cheat != null && TileTextHelper.IsTileMarked(own.Cheat.TileMark, tileId)) ? "★" : "";
                         txt.text = $"{markStr}{TileTextHelper.FormatTile(tileId)}";
                         txt.color = isSelected ? Color.yellow : Color.white;
@@ -1105,7 +1106,7 @@ namespace Mahjong.Unity.Table
                 {
                     _drawnTileButton.gameObject.SetActive(true);
                     uint tileId = own.DrawnTileId.Value;
-                    bool isSelected = _interactionState.Selection.HandTileId.HasValue && _interactionState.Selection.HandTileId.Value == tileId;
+                    bool isSelected = selectedTileId.HasValue && selectedTileId.Value == tileId;
                     bool isMarked = own.Cheat != null && TileTextHelper.IsTileMarked(own.Cheat.TileMark, tileId);
                     if (_drawnTileText != null)
                     {
@@ -1125,6 +1126,25 @@ namespace Mahjong.Unity.Table
                     if (_drawnTileMarkBadge != null) _drawnTileMarkBadge.SetActive(false);
                 }
             }
+        }
+
+        /// <summary>
+        /// The hand entity currently highlighted by the interaction state. A confirmed
+        /// discard is stored as an Action selection (no BeamSwap HandTileId), so its first
+        /// tile must be used; cheat dialogs keep using the explicit HandTileId selection.
+        /// </summary>
+        private uint? SelectedHandEntity()
+        {
+            TableSelection selection = _interactionState.Selection;
+            if (selection.Kind == TableSelectionKind.Action &&
+                selection.Action != null &&
+                selection.Action.Action == PlayerActionKind.DiscardTile &&
+                selection.Action.TileIds.Count > 0)
+            {
+                return selection.Action.TileIds[0];
+            }
+
+            return selection.HandTileId;
         }
 
         private void RenderActionButtons(PlayerTableViewState view)

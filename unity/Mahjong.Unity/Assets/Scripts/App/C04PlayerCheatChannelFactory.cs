@@ -75,6 +75,23 @@ namespace Mahjong.Unity.App
     }
 
     /// <summary>
+    /// Read-only physical/ledger projection of the exact persisted local authority envelope,
+    /// exposed to the presentation fixture without leaking Domain types or write access.
+    /// </summary>
+    public sealed class C04PhysicalSnapshot
+    {
+        public string stateVersion = string.Empty;
+        public string eventSeq = string.Empty;
+        public string cheatFingerprint = string.Empty;
+        public string tilesSha256 = string.Empty;
+        public string audit = string.Empty;
+        public int ledgerEntryCount;
+        public long balance;
+        public int tileCount;
+        public int uniqueCount;
+    }
+
+    /// <summary>
     /// App-level selector exposed to presentation tests. It deliberately has no Domain,
     /// round, tile, ledger or receipt member; the LocalHost assembly maps it to its one
     /// frozen controlled scenario.
@@ -144,6 +161,34 @@ namespace Mahjong.Unity.App
         public string SaveDirectory => _saveDirectory;
 
         public LocalPlayerCheatScenarioFacts Facts => LocalPlayerCheatScenario.GetFacts(_localScenario);
+
+        /// <summary>
+        /// Read-only capture of the committed local authority state. It never opens a host,
+        /// takes a lease or mutates the save; it is used only for fixture assertions.
+        /// </summary>
+        public async Task<C04PhysicalSnapshot> ReadPhysicalSnapshotAsync(
+            CancellationToken cancellationToken = default)
+        {
+            LocalTableRecoveryCapture capture = await LocalTableHost
+                .CaptureRecoveryAsync(_saveDirectory, cancellationToken)
+                .ConfigureAwait(false);
+            LocalTableRecoveryFacts facts = capture.Facts;
+            string audit = LocalPlayerActionScenario.ReadPhysicalAudit(
+                capture.AuthoritySaveBytes,
+                capture.CheatStatePayload);
+            return new C04PhysicalSnapshot
+            {
+                stateVersion = facts.StateVersion,
+                eventSeq = facts.EventSeq,
+                cheatFingerprint = facts.CheatFingerprint,
+                tilesSha256 = facts.Physical.TilesSha256,
+                audit = audit,
+                ledgerEntryCount = facts.Ledger.EntryCount,
+                balance = facts.Ledger.Balances[0],
+                tileCount = facts.Physical.TileCount,
+                uniqueCount = facts.Physical.UniqueCount
+            };
+        }
 
         public static uint[] ProposedTileMarkTiles(C04PlayerCheatScenario scenario)
         {

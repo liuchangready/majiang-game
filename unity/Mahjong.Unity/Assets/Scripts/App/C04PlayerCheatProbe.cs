@@ -555,6 +555,15 @@ namespace Mahjong.Unity.App
                     yield break;
                 }
 
+                // The legal turns above advanced the authority. Capture the exact command
+                // baseline now; reusing the mark post-state here produces a stale baseline.
+                yield return CaptureFacts();
+                if (!_waitOk || _lastCapture == null)
+                {
+                    Check(evidence, "G3-02-BASELINE", false, "authority capture at SleeveBloom command baseline", "capture failed");
+                    yield break;
+                }
+
                 PlayerTableViewState beforeBloom = _presenter.LatestView!;
                 uint drawnBefore = beforeBloom.Own!.DrawnTileId!.Value;
                 ulong bloomVersion = beforeBloom.Identity.StateVersion;
@@ -1317,6 +1326,7 @@ namespace Mahjong.Unity.App
 
             _receiptMark = _receipts.Count;
             ClickButton("DiscardButton");
+            string pendingAfterClick = _presenter.InteractionState.Pending?.Intent.Command.RequestId.Value ?? string.Empty;
             yield return WaitReceipt(CommandKind.SubmitAction, 15f);
             diagnostic.receiptStatus = _lastReceipt?.Status ?? string.Empty;
             diagnostic.receiptReason = _lastReceipt?.Reason ?? string.Empty;
@@ -1324,16 +1334,74 @@ namespace Mahjong.Unity.App
                 !string.Equals(_lastReceipt.Status, "APPLIED", StringComparison.Ordinal))
             {
                 diagnostic.failure = "DISCARD_NOT_APPLIED";
+                diagnostic.pendingRequestId = pendingAfterClick;
                 AddDiscardDiagnostic(diagnostic);
                 yield break;
             }
 
+            C04ReceiptRecord receipt = _lastReceipt;
+            diagnostic.requestId = receipt.RequestId;
+            diagnostic.pendingRequestId = string.IsNullOrEmpty(pendingAfterClick) ? receipt.RequestId : pendingAfterClick;
+            diagnostic.commandVersion = receipt.CommandVersion;
+            byte[]? commandFrame = FindSentFrame(
+                sentStart,
+                e => e.MessageType == WireMessageType.Command &&
+                     string.Equals(e.RequestId, receipt.RequestId, StringComparison.Ordinal));
+            byte[]? receiptFrame = FindReceivedFrame(
+                receivedStart,
+                e => e.MessageType == WireMessageType.Receipt &&
+                     string.Equals(e.RequestId, receipt.RequestId, StringComparison.Ordinal));
+            byte[]? publicationFrame = null;
+            float publicationDeadline = Time.realtimeSinceStartup + 5f;
+            while (Time.realtimeSinceStartup < publicationDeadline)
+            {
+                if (receipt.HasCommandVersion)
+                {
+                    publicationFrame = FindReceivedFrame(
+                        receivedStart,
+                        e => e.MessageType == WireMessageType.PlayerUpdate &&
+                             e.PlayerUpdate != null &&
+                             e.PlayerUpdate.VisibleEvents.Any(ev => ev.CommandVersion == receipt.CommandVersion));
+                }
+
+                if (publicationFrame != null)
+                {
+                    break;
+                }
+
+                yield return null;
+            }
+
+            if (commandFrame == null || receiptFrame == null || publicationFrame == null)
+            {
+                diagnostic.failure = "DISCARD_RAW_ASSOCIATION_MISSING";
+                AddDiscardDiagnostic(diagnostic);
+                yield break;
+            }
+
+            string rawPrefix = "discard-" + _evidence!.discards.Count.ToString("D2", CultureInfo.InvariantCulture);
+            C04RawRef commandRef = WriteRawRef(rawPrefix + "-command.pb", commandFrame);
+            C04RawRef receiptRef = WriteRawRef(rawPrefix + "-receipt.pb", receiptFrame);
+            C04RawRef publicationRef = WriteRawRef(rawPrefix + "-private-update.pb", publicationFrame);
+            diagnostic.commandPath = commandRef.path;
+            diagnostic.commandSha256 = commandRef.sha256;
+            diagnostic.receiptPath = receiptRef.path;
+            diagnostic.receiptSha256 = receiptRef.sha256;
+            diagnostic.publicationPath = publicationRef.path;
+            diagnostic.publicationSha256 = publicationRef.sha256;
+
             yield return WaitView(v => v.Identity.StateVersion > before.Identity.StateVersion, 10f);
             diagnostic.stateVersionAfter = unchecked((long)(_presenter.LatestView?.Identity.StateVersion ?? 0));
-            diagnostic.waitOk = _waitOk;
+            diagnostic.waitOk = !string.IsNullOrEmpty(diagnostic.requestId) &&
+                                IsFrameStillInTranscript(publicationFrame) &&
+                                _waitOk;
             if (!_waitOk)
             {
                 diagnostic.failure = "DISCARD_VIEW_DID_NOT_ADVANCE";
+            }
+            else if (!IsFrameStillInTranscript(publicationFrame))
+            {
+                diagnostic.failure = "DISCARD_PUBLICATION_NOT_IN_TRANSCRIPT";
             }
 
             AddDiscardDiagnostic(diagnostic);
@@ -1451,7 +1519,10 @@ namespace Mahjong.Unity.App
                 " selection=" + diagnostic.selectionKind + "/" + diagnostic.selectedAction +
                 " button=" + diagnostic.discardButtonActive + "/" + diagnostic.discardButtonInteractable +
                 " pending=" + diagnostic.pendingRequestId +
+                " request=" + diagnostic.requestId +
+                " commandVersion=" + diagnostic.commandVersion +
                 " receipt=" + diagnostic.receiptStatus + "/" + diagnostic.receiptReason +
+                " raw=" + diagnostic.commandSha256 + "/" + diagnostic.receiptSha256 + "/" + diagnostic.publicationSha256 +
                 " version=" + diagnostic.stateVersionBefore + "->" + diagnostic.stateVersionAfter +
                 " failure=" + diagnostic.failure);
         }
@@ -1995,6 +2066,25 @@ namespace Mahjong.Unity.App
             return null;
         }
 
+        private bool IsFrameStillInTranscript(byte[] frame)
+        {
+            if (_capture == null)
+            {
+                return false;
+            }
+
+            byte[][] received = _capture.ReceivedFrom(0);
+            for (int i = 0; i < received.Length; i++)
+            {
+                if (received[i].AsSpan().SequenceEqual(frame))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
         private C04RawRef WriteRawRef(string name, byte[] bytes)
         {
             string relative = "raw/" + name;
@@ -2148,6 +2238,14 @@ namespace Mahjong.Unity.App
         public bool discardButtonActive;
         public bool discardButtonInteractable;
         public string pendingRequestId = string.Empty;
+        public string requestId = string.Empty;
+        public ulong commandVersion;
+        public string commandPath = string.Empty;
+        public string commandSha256 = string.Empty;
+        public string receiptPath = string.Empty;
+        public string receiptSha256 = string.Empty;
+        public string publicationPath = string.Empty;
+        public string publicationSha256 = string.Empty;
         public string receiptStatus = string.Empty;
         public string receiptReason = string.Empty;
         public bool waitOk;

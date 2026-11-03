@@ -237,6 +237,71 @@ namespace Mahjong.LocalHost.Tests
         }
 
         [Fact]
+        public async Task AuthorizedSleeveBaselineIsImmediatePreCommandStateNotMarkPostState()
+        {
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            await using var harness = new C04ScenarioHarness(
+                LocalPlayerCheatScenarioKind.AuthorizedThreeCheats);
+            (ITableChannel channel, TableSession session) = await harness.OpenAsync(ct);
+            using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            pumpCts.CancelAfter(TimeSpan.FromSeconds(60));
+            Task pump = PumpAsync(session, pumpCts.Token);
+            try
+            {
+                PlayerSnapshot snapshot = await WaitForSeatZeroCheatWindowAsync(session, pumpCts.Token);
+                CheatReceipt mark = await harness.SubmitCheatAsync(
+                    session,
+                    snapshot,
+                    CommandKind.SubmitTileMark,
+                    CommandPayloadFactory.SubmitTileMark(
+                        snapshot.RoundId,
+                        snapshot.PrivateView.Decision.DecisionId,
+                        snapshot.PrivateView.Decision.ControlEpoch,
+                        LocalPlayerCheatScenario.ProposedTileMarkTileIds.ToArray()),
+                    "c04-baseline-mark",
+                    pumpCts.Token);
+                AssertApplied(mark);
+                snapshot = await WaitForCheatPointsAsync(session, 119, pumpCts.Token);
+                LocalTableRecoveryFacts markPost = await CaptureFactsAsync(harness, pumpCts.Token);
+
+                await DiscardAsync(session, snapshot, 120u, pumpCts.Token);
+                snapshot = await AdvanceToNextSeatZeroTurnAsync(session, snapshot.StateVersion, pumpCts.Token);
+                LocalTableRecoveryFacts commandBaseline = await CaptureFactsAsync(harness, pumpCts.Token);
+
+                // The real producer must re-capture after the intervening legal discards.
+                // Reusing the mark post-state would fail the unchanged A verifier's
+                // beforeFacts.StateVersion == command.ExpectedStateVersion check.
+                Assert.NotEqual(markPost.StateVersion, commandBaseline.StateVersion);
+                Assert.Equal(snapshot.StateVersion.ToString(), commandBaseline.StateVersion);
+                Assert.Equal(119, commandBaseline.Ledger.Balances[0]);
+                Assert.Equal(1, commandBaseline.Ledger.EntryCount);
+
+                CheatReceipt bloom = await harness.SubmitCheatAsync(
+                    session,
+                    snapshot,
+                    CommandKind.SubmitSleeveBloom,
+                    CommandPayloadFactory.SubmitSleeveBloom(
+                        snapshot.RoundId,
+                        snapshot.PrivateView.Decision.DecisionId,
+                        snapshot.PrivateView.Decision.ControlEpoch),
+                    "c04-baseline-bloom",
+                    pumpCts.Token);
+                AssertApplied(bloom);
+                PlayerSnapshot offered = await WaitForCheatPointsAsync(session, 109, pumpCts.Token);
+                Assert.NotNull(offered.PrivateView.Cheat.SleeveBloom);
+                LocalTableRecoveryFacts afterBloom = await CaptureFactsAsync(harness, pumpCts.Token);
+                Assert.True(ParseULong(afterBloom.StateVersion) > ParseULong(commandBaseline.StateVersion));
+
+                pumpCts.Cancel();
+                await pump;
+            }
+            finally
+            {
+                await harness.CloseAsync(session, channel);
+            }
+        }
+
+        [Fact]
         public async Task InsufficientBalanceIsRejectedByTheRealAuthorityWithZeroDelta()
         {
             CancellationToken ct = TestContext.Current.CancellationToken;

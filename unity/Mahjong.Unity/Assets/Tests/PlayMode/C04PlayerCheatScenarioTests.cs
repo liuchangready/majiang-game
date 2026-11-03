@@ -40,6 +40,7 @@ namespace Mahjong.Unity.Tests.PlayMode
         private bool _waitOk;
         private Receipt? _lastReceipt;
         private int _receiptMark;
+        private C04PhysicalSnapshot? _snapshot;
 
         [UnitySetUp]
         public IEnumerator SetUp()
@@ -110,6 +111,11 @@ namespace Mahjong.Unity.Tests.PlayMode
             PlayerTableViewState initial = _presenter!.LatestView!;
             Assert.AreEqual(120, initial.Own!.Cheat!.CheatPoints);
             Assert.AreEqual(0, initial.Own.Cheat.Ledger.Count);
+            yield return CaptureSnapshot();
+            Assert.IsTrue(_waitOk, "initial authority snapshot");
+            Assert.AreEqual(120, _snapshot!.balance);
+            Assert.AreEqual(0, _snapshot.ledgerEntryCount);
+            Assert136(_snapshot.audit);
 
             // G3-01 TileMark: 1 point, exactly one private ledger entry, 120 -> 119.
             uint[] markTiles = C04PlayerCheatChannelFactory
@@ -135,6 +141,11 @@ namespace Mahjong.Unity.Tests.PlayMode
             Assert.IsTrue(_waitOk, "TileMark projection");
             Assert.AreEqual(-1, _presenter.LatestView!.Own!.Cheat!.Ledger[0].Amount);
             Assert.AreEqual(119, _presenter.LatestView.Own.Cheat.Ledger[0].BalanceAfter);
+            yield return CaptureSnapshot();
+            Assert.IsTrue(_waitOk, "TileMark authority snapshot");
+            Assert.AreEqual(119, _snapshot!.balance);
+            Assert.AreEqual(1, _snapshot.ledgerEntryCount);
+            Assert136(_snapshot.audit);
 
             // Discard and advance to the second dealer turn.
             yield return DiscardEntity(120u);
@@ -161,6 +172,14 @@ namespace Mahjong.Unity.Tests.PlayMode
             Assert.AreNotEqual(drawnBefore, second);
             Assert.AreEqual(-10, _presenter.LatestView.Own.Cheat.Ledger[1].Amount);
             Assert.AreEqual(109, _presenter.LatestView.Own.Cheat.Ledger[1].BalanceAfter);
+            yield return CaptureSnapshot();
+            Assert.IsTrue(_waitOk, "SleeveBloom offer authority snapshot");
+            Assert.AreEqual(109, _snapshot!.balance);
+            Assert.AreEqual(2, _snapshot.ledgerEntryCount);
+            Assert136(_snapshot.audit);
+            Dictionary<uint, string> beforeSecond = ParsePositions(_snapshot.audit);
+            StringAssert.StartsWith("HAND|0|", beforeSecond[drawnBefore]);
+            StringAssert.StartsWith("WALL|", beforeSecond[second]);
 
             _receiptMark = _receipts.Count;
             Click("SleeveBloomButton");
@@ -176,6 +195,14 @@ namespace Mahjong.Unity.Tests.PlayMode
             Assert.AreEqual(second, bloomed.Own!.DrawnTileId);
             Assert.AreEqual(109, bloomed.Own.Cheat!.CheatPoints);
             Assert.AreEqual(2, bloomed.Own.Cheat.Ledger.Count, "choice must not charge again");
+            yield return CaptureSnapshot();
+            Assert.IsTrue(_waitOk, "SECOND authority snapshot");
+            Assert.AreEqual(109, _snapshot!.balance);
+            Assert.AreEqual(2, _snapshot.ledgerEntryCount);
+            Assert136(_snapshot.audit);
+            Dictionary<uint, string> afterSecond = ParsePositions(_snapshot.audit);
+            StringAssert.StartsWith("WALL|", afterSecond[drawnBefore]);
+            StringAssert.StartsWith("HAND|0|", afterSecond[second]);
 
             // The confirmed decision still carries the pre-swap candidate set. A real player
             // must discard one of those still-in-hand entities; the swapped-in drawn entity is
@@ -204,11 +231,33 @@ namespace Mahjong.Unity.Tests.PlayMode
             Assert.AreEqual(-10, _presenter.LatestView.Own.Cheat.Ledger[2].Amount);
             Assert.AreEqual(99, _presenter.LatestView.Own.Cheat.Ledger[2].BalanceAfter);
 
+            PlayerBeamSwapCandidateState targetCandidate = beam.Candidates.First(c => c.TileId.HasValue);
+            uint targetIndex = 0;
+            for (int i = 0; i < beam.Candidates.Count; i++)
+            {
+                if (ReferenceEquals(beam.Candidates[i], targetCandidate))
+                {
+                    targetIndex = (uint)i;
+                    break;
+                }
+            }
+
+            uint targetTile = targetCandidate.TileId!.Value;
             uint handTile = beam.SelectableHandTileIds[0];
+            Assert.AreNotEqual(handTile, targetTile);
+            yield return CaptureSnapshot();
+            Assert.IsTrue(_waitOk, "BeamSwap offer authority snapshot");
+            Assert.AreEqual(99, _snapshot!.balance);
+            Assert.AreEqual(3, _snapshot.ledgerEntryCount);
+            Assert136(_snapshot.audit);
+            Dictionary<uint, string> beforeSwap = ParsePositions(_snapshot.audit);
+            StringAssert.StartsWith("HAND|0|", beforeSwap[handTile]);
+            string targetBefore = beforeSwap[targetTile];
+
             _receiptMark = _receipts.Count;
             Click("BeamSwapButton");
             yield return null;
-            Click("BeamSlot_0");
+            Click("BeamSlot_" + targetIndex.ToString(System.Globalization.CultureInfo.InvariantCulture));
             yield return null;
             ClickHandEntity(handTile);
             yield return null;
@@ -223,6 +272,15 @@ namespace Mahjong.Unity.Tests.PlayMode
             Assert.AreEqual(99, final.Own!.Cheat!.CheatPoints);
             Assert.AreEqual(3, final.Own.Cheat.Ledger.Count);
             Assert.AreEqual(99, final.Own.Cheat.Ledger[2].BalanceAfter);
+
+            yield return CaptureSnapshot();
+            Assert.IsTrue(_waitOk, "SWAP final authority snapshot");
+            Assert.AreEqual(99, _snapshot!.balance);
+            Assert.AreEqual(3, _snapshot.ledgerEntryCount);
+            Assert136(_snapshot.audit);
+            Dictionary<uint, string> afterSwap = ParsePositions(_snapshot.audit);
+            StringAssert.StartsWith("HAND|0|", afterSwap[targetTile]);
+            Assert.AreEqual(targetBefore, afterSwap[handTile], "hand entity moves to exact target slot");
         }
 
         private static uint ConfirmedInHandDiscardCandidate(PlayerTableViewState view, uint preferred)
@@ -311,6 +369,92 @@ namespace Mahjong.Unity.Tests.PlayMode
             Assert.AreEqual(version, after.Identity.StateVersion);
             Assert.AreEqual(points, after.Own!.Cheat!.CheatPoints);
             Assert.AreEqual(entries, after.Own.Cheat.Ledger.Count);
+        }
+
+        [UnityTest]
+        public IEnumerator InsufficientFundsIsRejectedByRealPresenterWithZeroAuthorityDelta()
+        {
+            yield return OpenAsync(C04PlayerCheatScenario.InsufficientBalance);
+            yield return WaitView(
+                view => view.Identity.IsPrivateAuthorized &&
+                        view.Own?.Cheat != null &&
+                        view.Own.Decision != null,
+                30f);
+            Assert.IsTrue(_waitOk, "initial insufficient-funds scene view");
+            Assert.AreEqual(120, _presenter!.LatestView!.Own!.Cheat!.CheatPoints);
+
+            yield return DiscardEntity(120u);
+            Assert.IsTrue(_waitOk, "initial discard");
+            yield return AdvanceToNextDealerTurn();
+            Assert.IsTrue(_waitOk, "second dealer turn");
+
+            for (int turn = 0; turn < 12; turn++)
+            {
+                _receiptMark = _receipts.Count;
+                Click("SleeveBloomButton");
+                yield return WaitReceipt(CommandKind.SubmitSleeveBloom, 15f);
+                Assert.IsTrue(_waitOk, "SleeveBloom activation #" + turn);
+                Assert.AreEqual("APPLIED", _lastReceipt!.Status, _lastReceipt.Reason);
+                long expected = 120 - (10 * (turn + 1));
+                yield return WaitView(
+                    v => v.Own?.Cheat?.CheatPoints == expected &&
+                         v.Own.Cheat.ImmediateSleeveBloom != null,
+                    15f);
+                Assert.IsTrue(_waitOk, "SleeveBloom offer #" + turn);
+
+                _receiptMark = _receipts.Count;
+                Click("SleeveBloomButton");
+                yield return null;
+                _receiptMark = _receipts.Count;
+                Click("SleeveStoreButton");
+                yield return WaitReceipt(CommandKind.SubmitSleeveBloomChoice, 15f);
+                Assert.IsTrue(_waitOk, "SleeveBloom choice #" + turn);
+                Assert.AreEqual("APPLIED", _lastReceipt!.Status, _lastReceipt.Reason);
+                yield return WaitView(v => v.Own?.Cheat?.ImmediateSleeveBloom == null, 15f);
+                Assert.IsTrue(_waitOk, "SleeveBloom resolved #" + turn);
+
+                uint tile = _presenter.LatestView!.Own!.DrawnTileId ??
+                            _presenter.LatestView.Own.ClosedTiles[0];
+                yield return DiscardEntity(tile);
+                Assert.IsTrue(_waitOk, "discard #" + turn);
+                if (turn + 1 < 12)
+                {
+                    yield return AdvanceToNextDealerTurn();
+                    Assert.IsTrue(_waitOk, "next dealer turn #" + turn);
+                }
+            }
+
+            yield return WaitView(v => v.Own?.Cheat?.CheatPoints == 0, 15f);
+            Assert.IsTrue(_waitOk, "balance 0 after twelve legal activations");
+            yield return AdvanceToNextDealerTurn();
+            Assert.IsTrue(_waitOk, "underfunded dealer turn");
+
+            yield return CaptureSnapshot();
+            Assert.IsTrue(_waitOk, "authority snapshot before underfunded attempt");
+            C04PhysicalSnapshot before = _snapshot!;
+            Assert.AreEqual(0, before.balance);
+            Assert.AreEqual(12, before.ledgerEntryCount);
+            Assert136(before.audit);
+
+            _receiptMark = _receipts.Count;
+            Click("SleeveBloomButton");
+            yield return WaitReceipt(CommandKind.SubmitSleeveBloom, 15f);
+            Assert.IsTrue(_waitOk, "underfunded receipt");
+            Assert.AreEqual("REJECTED", _lastReceipt!.Status, _lastReceipt.Reason);
+            Assert.AreEqual("CHEAT_INSUFFICIENT_FUNDS", _lastReceipt.Reason);
+
+            yield return new WaitForSecondsRealtime(0.25f);
+            yield return CaptureSnapshot();
+            Assert.IsTrue(_waitOk, "authority snapshot after underfunded rejection");
+            C04PhysicalSnapshot after = _snapshot!;
+            Assert.AreEqual(before.stateVersion, after.stateVersion);
+            Assert.AreEqual(before.eventSeq, after.eventSeq);
+            Assert.AreEqual(before.cheatFingerprint, after.cheatFingerprint);
+            Assert.AreEqual(before.tilesSha256, after.tilesSha256);
+            Assert.AreEqual(before.audit, after.audit);
+            Assert.AreEqual(before.ledgerEntryCount, after.ledgerEntryCount);
+            Assert.AreEqual(before.balance, after.balance);
+            Assert136(after.audit);
         }
 
         // -------------------------------------------------------------- composition
@@ -467,6 +611,7 @@ namespace Mahjong.Unity.Tests.PlayMode
             ClickHandEntity(selected);
             yield return null;
             Button discard = FindButton("DiscardButton");
+            AssertSelectedDiscardHighlight(selected, before);
             Debug.Log("C04_TEST_DISCARD selection=" + _presenter!.InteractionState.Selection.Kind +
                       "/" + (_presenter.InteractionState.Selection.Action?.Action.ToString() ?? "none") +
                       " button=" + discard.gameObject.activeSelf + "/" + discard.interactable +
@@ -623,6 +768,80 @@ namespace Mahjong.Unity.Tests.PlayMode
             if (!_waitOk)
             {
                 Debug.LogWarning("C04_PLAYMODE_TASK_FAILED: " + (task.Exception?.ToString() ?? "timeout"));
+            }
+        }
+
+        private void AssertSelectedDiscardHighlight(uint tileId, PlayerTableViewState view)
+        {
+            string buttonName;
+            if (view.Own!.DrawnTileId == tileId)
+            {
+                buttonName = "DrawnTile";
+            }
+            else
+            {
+                int index = -1;
+                for (int i = 0; i < view.Own.ClosedTiles.Count; i++)
+                {
+                    if (view.Own.ClosedTiles[i] == tileId)
+                    {
+                        index = i;
+                        break;
+                    }
+                }
+
+                Assert.GreaterOrEqual(index, 0, "selected discard entity is in hand");
+                buttonName = "HandTile_" + index.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            }
+
+            TMPro.TextMeshProUGUI text = FindButton(buttonName)
+                .GetComponentInChildren<TMPro.TextMeshProUGUI>();
+            Assert.IsNotNull(text, "discard tile text for " + buttonName);
+            Assert.AreEqual(Color.yellow, text.color, "selected discard tile highlight");
+        }
+
+        private IEnumerator CaptureSnapshot()
+        {
+            _waitOk = false;
+            _snapshot = null;
+            Task<C04PhysicalSnapshot> task = _factory!.ReadPhysicalSnapshotAsync();
+            yield return WaitTask(task, 15f);
+            if (task.IsCompleted && !task.IsFaulted && !task.IsCanceled)
+            {
+                _snapshot = task.Result;
+            }
+        }
+
+        private static Dictionary<uint, string> ParsePositions(string audit)
+        {
+            var result = new Dictionary<uint, string>();
+            string[] lines = audit.Split('\n');
+            for (int i = 0; i < lines.Length; i++)
+            {
+                string line = lines[i].Trim();
+                if (line.Length == 0)
+                {
+                    continue;
+                }
+
+                string[] parts = line.Split('|');
+                Assert.AreEqual(5, parts.Length, "physical audit line shape: " + line);
+                Assert.AreEqual("tile", parts[0]);
+                uint id = uint.Parse(parts[1], System.Globalization.CultureInfo.InvariantCulture);
+                Assert.IsFalse(result.ContainsKey(id), "physical audit repeats entity " + id);
+                result.Add(id, parts[2] + "|" + parts[3] + "|" + parts[4]);
+            }
+
+            return result;
+        }
+
+        private static void Assert136(string audit)
+        {
+            Dictionary<uint, string> positions = ParsePositions(audit);
+            Assert.AreEqual(136, positions.Count, "physical audit entity count");
+            for (uint id = 0; id < 136; id++)
+            {
+                Assert.IsTrue(positions.ContainsKey(id), "physical audit is missing entity " + id);
             }
         }
 
