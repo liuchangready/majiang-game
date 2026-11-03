@@ -159,11 +159,19 @@ namespace Mahjong.LocalHost.Tests
                 AssertRequestApplied(afterBloomFacts, bloom.RequestId, bloom.RawPayloadSha256);
                 AssertRequestApplied(afterBloomFacts, bloomChoice.RequestId, bloomChoice.RawPayloadSha256);
 
-                // Discard the swapped draw and advance one more full turn to the dealer's
-                // third real draw, where BeamSwap is legal (one trick per turn).
-                uint discardTile = afterBloomChoice.PrivateView.HasDrawnTileId
-                    ? afterBloomChoice.PrivateView.DrawnTileId
-                    : afterBloomChoice.PrivateView.ClosedTiles[0];
+                // The confirmed decision was opened from the pre-swap hand, so the swapped-in
+                // drawn entity is NOT a confirmed discard candidate even though it is now the
+                // drawn tile. The real Player UI must therefore select an in-hand confirmed
+                // candidate; selecting the new drawn entity would be rejected by
+                // TableInteractionState.SelectDiscardTile before any command is sent.
+                var discardCandidates = afterBloomChoice.PrivateView.Decision.Actions
+                    .Where(a => a.ActionType == (uint)Mahjong.Contracts.ProtocolActionType.DiscardTile)
+                    .SelectMany(a => a.TileIds)
+                    .ToList();
+                Assert.DoesNotContain(second, discardCandidates);
+                uint discardTile = discardCandidates.First(tile =>
+                    tile == afterBloomChoice.PrivateView.DrawnTileId ||
+                    afterBloomChoice.PrivateView.ClosedTiles.Contains(tile));
                 await DiscardAsync(session, afterBloomChoice, discardTile, pumpCts.Token);
                 PlayerSnapshot secondTurn = await AdvanceToNextSeatZeroTurnAsync(
                     session,
@@ -218,6 +226,71 @@ namespace Mahjong.LocalHost.Tests
                 AssertRequestApplied(final, beam.RequestId, beam.RawPayloadSha256);
                 AssertRequestApplied(final, beamChoice.RequestId, beamChoice.RawPayloadSha256);
                 Assert.True(ParseULong(final.StateVersion) > ParseULong(afterBloomFacts.StateVersion));
+
+                pumpCts.Cancel();
+                await pump;
+            }
+            finally
+            {
+                await harness.CloseAsync(session, channel);
+            }
+        }
+
+        [Fact]
+        public async Task AuthorizedSleeveBaselineIsImmediatePreCommandStateNotMarkPostState()
+        {
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            await using var harness = new C04ScenarioHarness(
+                LocalPlayerCheatScenarioKind.AuthorizedThreeCheats);
+            (ITableChannel channel, TableSession session) = await harness.OpenAsync(ct);
+            using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            pumpCts.CancelAfter(TimeSpan.FromSeconds(60));
+            Task pump = PumpAsync(session, pumpCts.Token);
+            try
+            {
+                PlayerSnapshot snapshot = await WaitForSeatZeroCheatWindowAsync(session, pumpCts.Token);
+                CheatReceipt mark = await harness.SubmitCheatAsync(
+                    session,
+                    snapshot,
+                    CommandKind.SubmitTileMark,
+                    CommandPayloadFactory.SubmitTileMark(
+                        snapshot.RoundId,
+                        snapshot.PrivateView.Decision.DecisionId,
+                        snapshot.PrivateView.Decision.ControlEpoch,
+                        LocalPlayerCheatScenario.ProposedTileMarkTileIds.ToArray()),
+                    "c04-baseline-mark",
+                    pumpCts.Token);
+                AssertApplied(mark);
+                snapshot = await WaitForCheatPointsAsync(session, 119, pumpCts.Token);
+                LocalTableRecoveryFacts markPost = await CaptureFactsAsync(harness, pumpCts.Token);
+
+                await DiscardAsync(session, snapshot, 120u, pumpCts.Token);
+                snapshot = await AdvanceToNextSeatZeroTurnAsync(session, snapshot.StateVersion, pumpCts.Token);
+                LocalTableRecoveryFacts commandBaseline = await CaptureFactsAsync(harness, pumpCts.Token);
+
+                // The real producer must re-capture after the intervening legal discards.
+                // Reusing the mark post-state would fail the unchanged A verifier's
+                // beforeFacts.StateVersion == command.ExpectedStateVersion check.
+                Assert.NotEqual(markPost.StateVersion, commandBaseline.StateVersion);
+                Assert.Equal(snapshot.StateVersion.ToString(), commandBaseline.StateVersion);
+                Assert.Equal(119, commandBaseline.Ledger.Balances[0]);
+                Assert.Equal(1, commandBaseline.Ledger.EntryCount);
+
+                CheatReceipt bloom = await harness.SubmitCheatAsync(
+                    session,
+                    snapshot,
+                    CommandKind.SubmitSleeveBloom,
+                    CommandPayloadFactory.SubmitSleeveBloom(
+                        snapshot.RoundId,
+                        snapshot.PrivateView.Decision.DecisionId,
+                        snapshot.PrivateView.Decision.ControlEpoch),
+                    "c04-baseline-bloom",
+                    pumpCts.Token);
+                AssertApplied(bloom);
+                PlayerSnapshot offered = await WaitForCheatPointsAsync(session, 109, pumpCts.Token);
+                Assert.NotNull(offered.PrivateView.Cheat.SleeveBloom);
+                LocalTableRecoveryFacts afterBloom = await CaptureFactsAsync(harness, pumpCts.Token);
+                Assert.True(ParseULong(afterBloom.StateVersion) > ParseULong(commandBaseline.StateVersion));
 
                 pumpCts.Cancel();
                 await pump;
@@ -311,7 +384,7 @@ namespace Mahjong.LocalHost.Tests
                     "c04-g3-insufficient",
                     pumpCts.Token);
                 AssertRejected(rejected);
-                Assert.Contains("INSUFFICIENT", rejected.ReasonCode, StringComparison.OrdinalIgnoreCase);
+                Assert.Equal("CHEAT_INSUFFICIENT_FUNDS", rejected.ReasonCode);
 
                 await Task.Delay(150, pumpCts.Token);
                 LocalTableRecoveryFacts after = await CaptureFactsAsync(harness, pumpCts.Token);
@@ -370,6 +443,7 @@ namespace Mahjong.LocalHost.Tests
                     snapshot.PrivateView.Decision.ControlEpoch,
                     pumpCts.Token);
                 AssertRejected(receipt);
+                Assert.Equal("DECISION_MISMATCH", receipt.ReasonCode);
 
                 await Task.Delay(150, pumpCts.Token);
                 LocalTableRecoveryFacts after = await CaptureFactsAsync(harness, pumpCts.Token);
