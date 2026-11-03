@@ -1001,7 +1001,16 @@ namespace Mahjong.Unity.Tests.PlayMode
                 if (resumedBinding.SessionId.Value != oldResumeSessionId || resumedBinding.Scope.ScopeId.Value != oldResumeScopeId ||
                     resumedBinding.BindingEpoch.Value <= oldResumeBindingEpoch || resumedSnapshot.PrivateView.Control?.ControlEpoch != claimedEpoch ||
                     claimedCapture == null || !claimedCapture.IsOpen || claimed.PendingCommands.Count != 0)
-                    throw new InvalidOperationException("Formal control stream recovery did not preserve identity and produce a fresh Ready baseline.");
+                    throw new InvalidOperationException("Formal control stream recovery did not preserve identity and produce a fresh Ready baseline. " +
+                        "state=" + claimed.State +
+                        ",session=" + resumedBinding.SessionId.Value + "/" + oldResumeSessionId +
+                        ",scope=" + resumedBinding.Scope.ScopeId.Value + "/" + oldResumeScopeId +
+                        ",bindingEpoch=" + resumedBinding.BindingEpoch.Value + "/" + oldResumeBindingEpoch +
+                        ",snapshotControlEpoch=" + (resumedSnapshot.PrivateView.Control?.ControlEpoch ?? 0UL) + "/" + claimedEpoch +
+                        ",transportOpen=" + (claimedCapture != null && claimedCapture.IsOpen) +
+                        ",pending=" + claimed.PendingCommands.Count +
+                        ",lastError=" + (claimed.LastError ?? "<none>") +
+                        ",pumpError=" + (claimedPumpError ?? "<none>"));
                 File.WriteAllText(Path.Combine(EvidenceRoot(), "control-session-reconnect.json"),
                     "{\"schemaVersion\":1,\"case\":\"RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly\",\"recoveryBranchTaken\":true," +
                     "\"oldState\":\"Reconnecting\",\"newState\":\"" + claimed.State + "\",\"oldSessionId\":\"" + oldResumeSessionId +
