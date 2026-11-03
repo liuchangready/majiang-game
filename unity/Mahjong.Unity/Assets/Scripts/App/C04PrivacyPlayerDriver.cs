@@ -26,7 +26,7 @@ namespace Mahjong.Unity.App
 {
     public sealed class C04PrivacyPlayerCaseSuite
     {
-        
+
         public IEnumerator RealRoom_FourPlayersSpectatorAndRoleSwitchUseIndependentSessions()
         {
             AppRoot? previous = AppRoot.Instance;
@@ -146,7 +146,7 @@ namespace Mahjong.Unity.App
             UnityEngine.Object.DestroyImmediate(app.gameObject);
         }
 
-        
+
         public IEnumerator RealRoom_DelayedOldRawReceiveIsRejectedByNewBinding()
         {
             LocalTableChannelFactory.EnableC04PrivacyRoomMode();
@@ -243,7 +243,7 @@ namespace Mahjong.Unity.App
             }
         }
 
-        
+
         public IEnumerator RealRoom_ColdReopenReconcilesOriginalRequestWithoutDuplicate()
         {
             LocalTableChannelFactory.DisableC04PrivacyRoomModeForTest();
@@ -433,7 +433,7 @@ namespace Mahjong.Unity.App
             }
         }
 
-        
+
         public IEnumerator RealRoom_ClosedPlayerToSpectatorToNewPlayerReceivePathRejectsOldRaw()
         {
             string root = StateRoot("c04-closed-path");
@@ -459,7 +459,7 @@ namespace Mahjong.Unity.App
             }
         }
 
-        
+
         public IEnumerator RealRoom_LegalSleeveAndFeeOwnershipAcrossFourSeatsAndSpectator()
         {
             string root = StateRoot("c04-owner");
@@ -506,7 +506,7 @@ namespace Mahjong.Unity.App
             }
         }
 
-        
+
         public IEnumerator RealRoom_OpenDecisionDeadlineContinuesAfterPlayerClose()
         {
             string root = StateRoot("c04-deadline");
@@ -520,7 +520,7 @@ namespace Mahjong.Unity.App
             try { if (Directory.Exists(root)) Directory.Delete(root, true); } catch { }
         }
 
-        
+
         public IEnumerator RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly()
         {
             string root = StateRoot("c04-release");
