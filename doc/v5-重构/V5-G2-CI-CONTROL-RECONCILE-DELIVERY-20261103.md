@@ -1,8 +1,8 @@
 # G2 CI 控制回执对账/Ready 时序修复交付
 
-日期：2026-11-03  
-任务：`G2-CI-CONTROL-RECONCILE-01`（唯一 MAJOR：`D-1-01`）  
-工作树：`E:/majiang-review/g2-ci-control-reconcile-ds-20261103-1415`  
+日期：2026-11-03
+任务：`G2-CI-CONTROL-RECONCILE-01`（唯一 MAJOR：`D-1-01`）
+工作树：`E:/majiang-review/g2-ci-control-reconcile-ds-20261103-1415`
 冻结候选：`61ec1353fa7b548457b34187d5b89330d365db36`。这是 PR20 候选；`origin/v5` 仍是 `8fd7c6cb`，本文不将其称为已验收基线。
 
 ## 缺陷与修复
@@ -82,3 +82,11 @@ SDK：`D:/Unity/dotnet/dotnet.exe`，.NET SDK 8.0.426；原生 direct runner。�
 复核确认生产 diff 仅增加缓冲增量帧的旧 StreamVersion 丢弃条件，保留现有 Ready/binding/cursor/state/event floor 与幂等边界；测试使用真实 LocalTableHost 通道及显式注入/ReceiptQuery 同步，保留原 request/scope/kind/digest/claim/epoch/outbox 断言，无 skip 或随机 sleep。临时生产诊断代码已移除。三个 expectedFiles 范围符合，git diff --check 通过。
 
 按本任务自身范围验收，G2-CI-CONTROL-RECONCILE-01 / D-1-01 关闭；组件修复接受。前文开发方未自行标记整体 PASS 是其当时全量失败的真实记录，本节是调用方独立实测与验收结论。不宣称 G2–G5、远端 CI、PG/Runtime/Unity/Player/设备或最新统一发布头已通过。后续仅更新既有唯一 Draft PR20，集成头身份与批次门禁另行记录。
+
+## 统一 PR20 集成验证（调用方，2026-11-03）
+
+代码提交 c9125edd、独立验收文档提交 49cca1da，在本任务工作树与既有 PR20 已发布头 51b88b4a 正常合并，形成集成候选 c80cc5b7。保留同批已接受 B/C/D04-C 等既有内容；相比远端 PR20 只增加本任务三个 expectedFiles。调用方检查现有批次分支无额外未推送提交且工作树干净，未导入其他在途或未接受任务树。
+
+集成候选 fresh Release LocalHost 与 TableModel 构建均 native 0、0 warning/error。真实 direct runner 完整 LocalHost **179/179**（B 已接受增量增加一个用例）、TableModel **236/236**，native 均 0，原生 XML 逐 case、assembly、console 与数量一致，零 failed/errors/skipped/not-run。集成对 Client 生产源码无额外变更，其 DLL 哈希与独立通过的 182/182 输入一致。证据在本节引用的独立根中的 integrated-build-localhost.log、integrated-build-tablemodel.log、integrated-localhost.log/xml、integrated-tablemodel.log/xml、integrated-identity.json、integrated-xml-review.json、integration-manifest.json。
+
+此记录只证明列出的 .NET 组件与集成回归；原先 C04 首败保留，未改其测试同步逻辑。不将新的发布头称为历史 Windows/Unity 同包受测身份，也不宣称全量远端 CI 或 G2–G5 已通过。仅正常更新既有唯一 OPEN/Draft PR20，不新建 PR、不 force-push、不合并到 v5/main、不部署。最终文档规范化换行并移除尾随空白；对整个新增 diff 执行 git diff --check，而非只检查已 tracked 的未暂存内容。
