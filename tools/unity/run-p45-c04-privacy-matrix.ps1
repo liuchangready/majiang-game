@@ -1464,7 +1464,7 @@ function Invoke-C04RunnerMain {
   if (-not $script:RunRoot.StartsWith($allowed, [StringComparison]::OrdinalIgnoreCase)) { throw 'RunRoot must be a fresh child of repository build/.' }
   if ((Split-Path -Leaf $script:RunRoot) -notmatch '^[0-9a-fA-F]{32}$') { throw 'RunRoot must end in a GUID-N run id.' }
   if (Test-Path -LiteralPath $script:RunRoot) { throw 'RunRoot exists; refusing to overwrite evidence.' }
-  if (-not [string]::IsNullOrWhiteSpace($ReuseLibraryCacheFrom) -and -not $CompileOnly) { throw 'ReuseLibraryCacheFrom is permitted only for CompileOnly.' }
+  if (-not [string]::IsNullOrWhiteSpace($ReuseLibraryCacheFrom) -and $PreflightOnly) { throw 'ReuseLibraryCacheFrom requires a Unity execution mode; it cannot be used with PreflightOnly.' }
   if (-not (Test-Path -LiteralPath $UnityPath -PathType Leaf) -or -not (Test-Path -LiteralPath $DotnetPath -PathType Leaf)) {
     throw 'Pinned Unity or dotnet executable is missing.'
   }

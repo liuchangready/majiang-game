@@ -670,6 +670,7 @@ Invoke-Case 'Unity compile-only mode imports and compiles without claiming a Pla
     $text = [IO.File]::ReadAllText($runner,[Text.Encoding]::UTF8)
     Assert-True ($text.Contains('[switch]$CompileOnly') -and $text.Contains("'unity-compile-only'")) 'compile-only runner mode is missing'
     Assert-True ($text.Contains('unity-project-compile-only') -and $text.Contains('Mahjong.Unity.App.dll') -and $text.Contains('Script compilation failed')) 'compile-only mode does not require the compiled app assembly and fail on compiler diagnostics'
+    Assert-True ($text.Contains('ReuseLibraryCacheFrom requires a Unity execution mode') -and -not $text.Contains('ReuseLibraryCacheFrom is permitted only for CompileOnly.')) 'sealed Library reuse is incorrectly restricted to compile-only runs'
 }
 
 Invoke-Case 'reused Unity Library is an excluded sealed cache and fresh source is restaged' {
