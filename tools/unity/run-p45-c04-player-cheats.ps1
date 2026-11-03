@@ -1177,6 +1177,23 @@ function Get-C04PackageRows {
     return @(Get-C04FileTable -Root $PackageRoot -ExcludeRelativeFiles @('c04-package-manifest.csv', 'c04-package-seal.json', 'c04-build-receipt.json'))
 }
 
+# A consumes JSON while the package seal retains its complete CSV inventory.
+# Write this before that inventory so the sealed package binds the JSON bytes too.
+function Write-C04VerifierPackageManifest {
+    param([string]$PackageRoot, [string]$SourceHead)
+    $packageRootFull = Assert-C04PathSafe -Path $PackageRoot -Label 'verifier-package-root'
+    $path = Join-Path $packageRootFull 'c04-verifier-package-manifest.json'
+    if (Test-Path -LiteralPath $path) { throw 'C04FAIL:REFUSE_OVERWRITE:verifier package manifest already exists' }
+    $rows = @(Get-C04PackageRows -PackageRoot $packageRootFull)
+    if ($rows.Count -eq 0) { throw 'C04FAIL:PACKAGE_MANIFEST_EMPTY' }
+    Write-C04Json -Path $path -Object ([ordered]@{
+        kind = 'c04-player-package-manifest'
+        sourceHead = $SourceHead
+        files = @($rows | ForEach-Object { [ordered]@{ path = $_.path; bytes = [long]$_.bytes; sha256 = $_.sha256 } })
+    })
+    return $path
+}
+
 function Resolve-C04RelativeMember {
     param([string]$Root, [string]$Relative, [string]$Label)
     if ([string]::IsNullOrWhiteSpace($Relative)) { throw "C04FAIL:PACKAGE_MEMBER_PATH:$Label is empty" }
@@ -1262,6 +1279,7 @@ function Write-C04PackageSeal {
     if ($evidencePluginSet -ne $PluginClosure.pluginSetSha256) { throw 'C04FAIL:PACKAGE_PLUGIN_SET_MISMATCH' }
     $report = Read-C04Json -Path $reportFull
     if ($null -eq $report) { throw 'C04FAIL:PACKAGE_REPORT_MALFORMED' }
+    $null = Write-C04VerifierPackageManifest -PackageRoot $packageRootFull -SourceHead $SourceHead
     $manifest = Write-C04ManifestFile -Path $manifestPath -Rows (Get-C04PackageRows -PackageRoot $packageRootFull) -Kind 'c04-player-package'
     $manifestSha = Get-C04Sha256 $manifestPath
     $reportSha = Get-C04Sha256 $reportFull
@@ -2171,6 +2189,22 @@ function Invoke-C04UnityBuild {
     return [pscustomobject]@{ process = $result; reportCheck = $reportCheck; nativeFailed = ([int]$result.exitCode -ne 0) }
 }
 
+function Get-C04PlayerArguments {
+    param([string]$CaseName, [string]$CaseDirectory, [string]$PlayerPath,
+          [string]$ExpectedSourceHead, [string]$BuildCommit, [string]$PackageManifest, [string]$PlayerLog)
+    return @(
+        '-c04-player-cheats', $CaseDirectory,
+        '-c04-player-cheats-case', $CaseName,
+        '-c04-source-head', $ExpectedSourceHead,
+        '-c04-build-commit', $BuildCommit,
+        '-c04-player-path', $PlayerPath,
+        '-c04-package-manifest', $PackageManifest,
+        '-c04-unity-version', '6000.3.27f1',
+        '-screen-width', '1280', '-screen-height', '720',
+        '-logFile', $PlayerLog
+    )
+}
+
 function Invoke-C04CaseRun {
     param(
         [string]$CaseName,
@@ -2185,16 +2219,7 @@ function Invoke-C04CaseRun {
     $caseDir = Join-Path $EvidenceRoot $CaseName
     New-Item -ItemType Directory -Force -Path $caseDir | Out-Null
     $playerLog = Join-Path $caseDir 'player.log'
-    $playerArgs = @(
-        '-c04-player-cheats', $caseDir,
-        '-c04-player-cheats-case', $CaseName,
-        '-c04-source-head', $ExpectedSourceHead,
-        '-c04-build-commit', $BuildCommit,
-        '-c04-player-path', $PlayerPath,
-        '-c04-unity-version', '6000.3.27f1',
-        '-screen-width', '1280', '-screen-height', '720',
-        '-logFile', $playerLog
-    )
+    $playerArgs = Get-C04PlayerArguments -CaseName $CaseName -CaseDirectory $caseDir -PlayerPath $PlayerPath -ExpectedSourceHead $ExpectedSourceHead -BuildCommit $BuildCommit -PackageManifest $PackageManifest -PlayerLog $playerLog
     Write-C04Log "STAGE player case=$CaseName"
     $process = Start-C04BoundedProcess -FilePath $PlayerPath -Arguments $playerArgs -TimeoutSeconds $PlayerTimeoutSeconds -StdOutPath (Join-Path $caseDir 'player.stdout.log') -StdErrPath (Join-Path $caseDir 'player.stderr.log') -Label ("player-$CaseName") -DrainGrace $DrainGraceSeconds -Heartbeat $HeartbeatSeconds
 
@@ -2591,7 +2616,8 @@ try {
             Write-C04Log 'BLOCKED A verifier not integrated; Player cases were not run'
         }
         else {
-            $packageManifest = Join-Path (Split-Path -Parent (Get-C04FullPath $PlayerPath)) 'c04-package-manifest.csv'
+            $packageManifest = Join-Path (Split-Path -Parent (Get-C04FullPath $PlayerPath)) 'c04-verifier-package-manifest.json'
+            if (-not (Test-Path -LiteralPath $packageManifest -PathType Leaf)) { throw 'C04FAIL:A_VERIFIER_MANIFEST_MISSING:package predates the JSON verifier manifest; fresh integrated build required' }
             $cases = if ($Case -eq 'all') { @('authorized', 'negative') } else { @($Case) }
             foreach ($caseName in $cases) {
                 $caseResult = Invoke-C04CaseRun -CaseName $caseName -EvidenceRoot $EvidenceRoot -PlayerPath (Get-C04FullPath $PlayerPath) -ExpectedSourceHead $SourceHead -BuildCommit $BuildCommit -PackageManifest $packageManifest -Verifier $verifier -CurrentSourceIdentitySha256 $script:C04SourceBefore.identitySha256

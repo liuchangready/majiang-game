@@ -253,6 +253,17 @@ Assert-Equal (@(Get-C04PathBudgetErrors -EvidenceRoot $healthyRoot)).Count 0 'pa
 Assert-True (@(Get-C04PathBudgetErrors -EvidenceRoot $longRoot).Count -ge 1) 'path-budget-long'
 # 5. Package seal requires real source/build/provenance/report/plugin relations.
 $package = New-PackageFixture -Dir (Join-Path $testRoot 'package') -ValidEvidence -UnityArtifact
+$verifierManifestPath = Join-Path $package.dir 'c04-verifier-package-manifest.json'
+$verifierManifest = Read-C04Json $verifierManifestPath
+Assert-Equal $verifierManifest.kind 'c04-player-package-manifest' 'verifier-package-json-kind'
+Assert-Equal $verifierManifest.sourceHead $package.head 'verifier-package-json-source'
+Assert-True (@($verifierManifest.files | Where-Object { $_.path -eq 'Mahjong.exe' }).Count -eq 1) 'verifier-package-json-player'
+$jsonRow = @(Import-Csv (Join-Path $package.dir 'c04-package-manifest.csv') | Where-Object { $_.path -eq 'c04-verifier-package-manifest.json' })
+Assert-True ($jsonRow.Count -eq 1 -and $jsonRow[0].sha256 -eq (Get-C04Sha256 $verifierManifestPath)) 'package-csv-binds-verifier-json'
+$verifierManifestBytes = [System.IO.File]::ReadAllBytes($verifierManifestPath)
+[System.IO.File]::AppendAllText($verifierManifestPath, ' ')
+Assert-Contains (Test-C04PackageSeal -PlayerPath $package.exe -ExpectedSourceHead $package.head -CurrentSourceIdentitySha256 $package.identity.identitySha256).errors 'PACKAGE_HASH_MISMATCH:c04-verifier-package-manifest.json' 'package-rejects-verifier-json-tamper'
+[System.IO.File]::WriteAllBytes($verifierManifestPath, $verifierManifestBytes)
 $check = Test-C04PackageSeal -PlayerPath $package.exe -ExpectedSourceHead $package.head -ExpectedBuildCommit $package.head -CurrentSourceIdentitySha256 $package.identity.identitySha256
 Assert-True (-not $check.ok) 'package-seal-fake-rejected'
 Assert-Match $check.errors 'PLAYER_NOT_VALID_PE|PLAYER_MISSING_UNITYPLAYER_IMPORT|PACKAGE_EVIDENCE_STAGED_NOT_SOURCE' 'package-seal-fake-rejected'
@@ -337,6 +348,9 @@ Assert-Equal (Get-C04ExitCodeForFailure 'CASE_FAILED') 1 'exit-case'
 Assert-True ($null -eq (Get-Command Assert-C04EvidenceStrict -ErrorAction SilentlyContinue)) 'strict-removed'
 $args = Get-C04VerifierArguments -Verifier 'C:\v\C04PlayerCheatVerifier2.dll' -EvidenceJson 'C:\e\case.json' -CaseName 'negative' -ExpectedSourceHead $package.head -PackageManifest 'C:\p\manifest.csv'
 Assert-Equal ($args -join '|') ('C:\v\C04PlayerCheatVerifier2.dll|verify|--evidence|C:\e\case.json|--case|negative|--source-head|' + $package.head + '|--package-manifest|C:\p\manifest.csv') 'verifier-cli'
+$playerArguments = @(Get-C04PlayerArguments -CaseName 'authorized' -CaseDirectory 'C:\e dir' -PlayerPath 'C:\p\Mahjong.exe' -ExpectedSourceHead $package.head -BuildCommit $package.head -PackageManifest 'C:\p\manifest.json' -PlayerLog 'C:\e dir\player.log')
+$manifestArgumentIndex = [Array]::IndexOf($playerArguments, '-c04-package-manifest')
+Assert-True ($manifestArgumentIndex -ge 0 -and $playerArguments[$manifestArgumentIndex + 1] -eq 'C:\p\manifest.json') 'player-receives-exact-verifier-manifest'
 
 # 10. Receipt/provenance/closure relations cannot be bypassed.
 $receipt = Join-Path $package.dir 'c04-build-receipt.json'
