@@ -240,7 +240,7 @@ powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
   -DotnetPath D:/Unity/dotnet/dotnet.exe
 ```
 
-- 包 seal：**PASS**，`sourceHead=0dac2cef`，manifest SHA `be88ffb5daf8ba134b434efa3adc5f82e786c7cd6a14666872a065b6cd60916d`，**1612 files / 51,896,845 bytes**。
+- 证据根 seal：**PASS**，`sourceHead=0dac2cef`，证据 manifest SHA `be88ffb5daf8ba134b434efa3adc5f82e786c7cd6a14666872a065b6cd60916d`，**1612 files / 51,896,845 bytes**。Windows 包 CSV 覆盖 **210 files / 128,868,864 bytes**，包 manifest SHA 为下列 `13717361...`；包、证据根两种清单分别核验，不混用计数。
 - BuildReport：`Succeeded`，errors **0**、stepError **0**、stepException **0**、warnings 200；unity/build/shared/process 原生 exit 已知，drain 完成，owned remaining **0**。
 - Player authorized：native **0**；case PASS **29/29**；A Verifier2 native **0 / PASS**，五行动作位 `tile-mark/sleeve-bloom/sleeve-second/beam-swap/beam-swap-choice`，balance 119/109/99、3 private ledger、每态 136、SECOND/SWAP 双向精确实体与 canonical/receipt/publication/recovery 均通过。
 - Player negative：native **0**；case PASS **15/15**；A Verifier2 native **0 / PASS**；两条不同 request/payload：`DECISION_MISMATCH`、`CHEAT_INSUFFICIENT_FUNDS`，wire/durable reason 一致，state/event/ledger/physical 前后 SHA 全等。
@@ -270,3 +270,11 @@ XML：**total=3 passed=3 failed=0 inconclusive=0 skipped=0**；authorized/insuff
 ### 8.4 最终结论
 
 六行 required 均已实际通过，B 自身范围 **PASS（组件 + 同包 Windows Player GAME）**。工作树 clean；tracked diff 仍仅原 12 路径中的 6 个代码文件 + 本报告；`git diff --check` native 0。未 push/PR/MR/merge/deploy/approve，未改 scheduler/complete.flag/锁/许可/A/C 生产源。最终统一 Draft PR20 由 caller 处理。
+
+## 9. 调用方独立最终验收（2026-11-03）
+
+受测代码 `0dac2cefa8b943e91d50473910e81b88f0d3fd8b` 独立验收通过。本次实际新编译 A Verifier2（0 warnings/errors），以生产 runner `-Case all -SkipBuild` 运行同一 `c5a1b3` 封存 Windows 包，在全新独占输出生成另一套真实原件：authorized **29/29**、negative **15/15**，Player 与 A 两 case 均 native 0。A 验证五行动作、119/109/99、三笔私有账本、136 实体与精确换位；两个不同拒绝的准确原因及持久零副作用通过。出牌诊断分别 2/13 条，失败均 0。
+
+包 seal、原 `c5a1b3` evidence seal 与独立复跑 evidence seal 均 errors=[]。实际比对包和 PlayMode 复制项目八个共享 DLL 的 SHA 全等，Probe 源码在当前树、封存 staging、PlayMode 复制树三处 SHA 相同；原 PlayMode XML 3/3、零 skip 与日志哈希一致。本次是实际 Windows 同包复跑与 PlayMode 原件复核，未冒称独立重跑 Unity。原始错误包 `c5a1b2` 继续保留。首个只读 seal 探针因当前 PowerShell 执行策略未能 dot-source，失败记录保留；使用既有逐进程 `-ExecutionPolicy Bypass` 正常入口后的实际校验 native 0，没有修改机器策略。
+
+独立证据根：`build/final-review-1793687684698/`；实际新原件在其 `actual-same-package/`，命令和只读完整性检查在 `task-card.txt`、`actual-same-package.log`、`seal-check.ps1`、`seal-review2.json`。B 任务验收只绑定上述受测候选与包；后续发布到统一 PR20 时保留其他已接受任务，批次合入后的新头不能冒称此包的受测身份。完整 D05/C04/G2–G5、远端 CI、合并与部署门禁仍单独保留。
