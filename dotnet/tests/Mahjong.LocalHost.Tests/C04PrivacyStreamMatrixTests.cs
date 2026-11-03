@@ -281,7 +281,8 @@ namespace Mahjong.LocalHost.Tests
             timeout.CancelAfter(MatrixTimeout);
 
             LocalTableConnectionTicket playerTicket = room.CreatePlayerTicket(0);
-            ITableChannel playerChannel = await room.ConnectAsync(playerTicket, timeout.Token);
+            ITableChannel playerInner = await room.ConnectAsync(playerTicket, timeout.Token);
+            var playerChannel = new CaptureChannel(playerInner);
             var player = new TableSession(playerChannel, new InMemoryOutboxStore());
             LocalTableConnectionTicket slowTicket = room.CreateSpectatorTicket();
             ITableChannel slowChannel = await room.ConnectAsync(slowTicket, timeout.Token);
@@ -327,17 +328,26 @@ namespace Mahjong.LocalHost.Tests
                 Assert.NotNull(player.PlayerSnapshot);
 
                 PlayerSnapshot beforeLiveRequest = player.PlayerSnapshot!;
+                ulong beforeControlEpoch = beforeLiveRequest.PrivateView.Control?.ControlEpoch ?? 0UL;
+                ulong expectedControlEpoch = checked(beforeControlEpoch + 1);
+                Assert.False(
+                    beforeLiveRequest.PrivateView.Control?.ControlledByComputer ?? true,
+                    "The seat must be human-controlled before ReleaseControl.");
                 BusinessPayload releasePayload = CommandPayloadFactory.ReleaseControl(
                     beforeLiveRequest.RoundId,
-                    beforeLiveRequest.PrivateView.Control?.ControlEpoch ?? 0UL);
+                    beforeControlEpoch);
                 var liveRequest = new RequestId("slow-player-live-request");
-                var liveResolved = new TaskCompletionSource<TableReceiptResolvedEventArgs>(
-                    TaskCreationOptions.RunContinuationsAsynchronously);
-                EventHandler<TableReceiptResolvedEventArgs> liveHandler = (_, args) =>
-                {
-                    if (args.Command.Key.RequestId.Value == liveRequest.Value) liveResolved.TrySetResult(args);
-                };
-                player.ReceiptResolved += liveHandler;
+                // A control receipt is resolved before the client requests and applies
+                // the CONTROL_APPLIED full baseline. Waiting only for ReceiptResolved
+                // can therefore observe a transient Synchronizing state. Register both
+                // observations before submitting so neither ordering can be missed.
+                var controlBarrier = new ControlBaselineBarrier(
+                    liveRequest.Value,
+                    player.Binding!.SessionId.Value,
+                    expectedControlEpoch,
+                    expectedControlledByComputer: true);
+                player.ReceiptResolved += controlBarrier.OnReceipt;
+                player.SnapshotChanged += controlBarrier.OnSnapshot;
                 try
                 {
                     var liveCommand = new ProtocolCommand(
@@ -348,21 +358,44 @@ namespace Mahjong.LocalHost.Tests
                         new StateVersion(beforeLiveRequest.StateVersion),
                         new RoundId(beforeLiveRequest.RoundId),
                         decisionId: null,
-                        controlEpoch: new ControlEpoch(beforeLiveRequest.PrivateView.Control?.ControlEpoch ?? 0UL));
+                        controlEpoch: new ControlEpoch(beforeControlEpoch));
                     CommandSubmission liveSubmission = await player.SubmitAsync(liveCommand, timeout.Token);
                     Assert.True(liveSubmission.Sent);
-                    for (int i = 0; i < 500 && !liveResolved.Task.IsCompleted; i++)
-                        await Task.Delay(10, timeout.Token);
-                    Assert.True(liveResolved.Task.IsCompleted, "The original player request did not resolve.");
-                    TableReceiptResolvedEventArgs liveReceipt = await liveResolved.Task;
-                    Assert.True(
-                        liveReceipt.Resolution.ReceiptStatus == Mahjong.Contracts.ReceiptStatus.Recorded ||
-                        liveReceipt.Resolution.ReceiptStatus == Mahjong.Contracts.ReceiptStatus.Applied);
+                    Assert.False(liveSubmission.WasDuplicate);
+
+                    TableReceiptResolvedEventArgs liveReceipt = await LocalHostCommandTests.WithTimeoutAsync(
+                        controlBarrier.Receipt,
+                        timeout.Token);
+                    TableSnapshotChangedEventArgs controlBaseline = await LocalHostCommandTests.WithTimeoutAsync(
+                        controlBarrier.Baseline,
+                        timeout.Token);
+
+                    Assert.Equal(OutboxDisposition.Recorded, liveReceipt.Resolution.Disposition);
+                    Assert.Equal("LOCAL_CONTROL", liveReceipt.Resolution.ReasonCode);
+                    Assert.Equal(CommandKind.ReleaseControl, liveReceipt.Command.Kind);
+                    Assert.Equal(liveRequest.Value, liveReceipt.Command.Key.RequestId.Value);
+
+                    Assert.True(controlBaseline.IsFullBaseline);
+                    PlayerSnapshot released = Assert.IsType<PlayerSnapshot>(controlBaseline.PlayerSnapshot);
+                    Assert.Equal(player.Binding.SessionId.Value, released.SessionId);
+                    Assert.Equal(expectedControlEpoch, released.PrivateView.Control.ControlEpoch);
+                    Assert.True(released.PrivateView.Control.ControlledByComputer);
                     Assert.Equal(TableConnectionState.Ready, player.State);
+                    Assert.Empty(player.PendingCommands);
+                    Assert.Equal(1, playerChannel.CountCommandFrames(liveRequest.Value));
+
+                    LocalTableRecoveryCapture capture = await LocalTableHost.CaptureRecoveryAsync(
+                        harness.Options.SaveDirectory,
+                        timeout.Token);
+                    Assert.Equal((long)expectedControlEpoch, capture.Facts.ControlEpochs[0]);
+                    Assert.Single(
+                        capture.Facts.ControlRequests,
+                        fact => fact.RequestId == liveRequest.Value);
                 }
                 finally
                 {
-                    player.ReceiptResolved -= liveHandler;
+                    player.ReceiptResolved -= controlBarrier.OnReceipt;
+                    player.SnapshotChanged -= controlBarrier.OnSnapshot;
                 }
 
                 LocalTableConnectionTicket replacementTicket = room.CreateSpectatorTicket();
@@ -389,6 +422,65 @@ namespace Mahjong.LocalHost.Tests
                 try { await slow.CloseAsync("TEST_DONE", CancellationToken.None); } catch { }
                 try { await slowChannel.CloseAsync(new TableChannelCloseReason("TEST_DONE", true), CancellationToken.None); } catch { }
             }
+        }
+
+        [Fact]
+        public void Control_baseline_barrier_rejects_receipt_only_foreign_and_stale_baselines()
+        {
+            const string requestId = "barrier-request-a";
+            const string sessionId = "barrier-session-a";
+            var receiptOnly = new ControlBaselineBarrier(requestId, sessionId, 1UL, expectedControlledByComputer: true);
+
+            receiptOnly.OnReceipt(null, ControlReceiptEvent("barrier-other-request"));
+            Assert.False(receiptOnly.ReceiptObserved, "Another request must not satisfy the receipt half.");
+
+            // Receipt first must never unlock the barrier: the control baseline has
+            // not been requested or applied yet at that point.
+            receiptOnly.OnReceipt(null, ControlReceiptEvent(requestId));
+            Assert.True(receiptOnly.ReceiptObserved);
+            Assert.False(receiptOnly.IsSatisfied);
+
+            // A delayed frame from the previous binding, an unrelated control update,
+            // a claim-style update, and a non-baseline PUSH must all stay ignored.
+            receiptOnly.OnSnapshot(null, ControlSnapshotEvent(true, "barrier-old-session", 1UL, automated: true));
+            receiptOnly.OnSnapshot(null, ControlSnapshotEvent(true, sessionId, 0UL, automated: true));
+            receiptOnly.OnSnapshot(null, ControlSnapshotEvent(true, sessionId, 1UL, automated: false));
+            receiptOnly.OnSnapshot(null, ControlSnapshotEvent(false, sessionId, 1UL, automated: true));
+            Assert.False(receiptOnly.BaselineObserved);
+            Assert.Equal(4, receiptOnly.IgnoredBaselineCount);
+            Assert.False(receiptOnly.IsSatisfied);
+
+            receiptOnly.OnSnapshot(null, ControlSnapshotEvent(true, sessionId, 1UL, automated: true));
+            Assert.True(receiptOnly.BaselineObserved);
+            Assert.True(receiptOnly.IsSatisfied);
+
+            // The matching baseline alone is also insufficient; the request receipt
+            // is the other mandatory half of the synchronization point.
+            var baselineFirst = new ControlBaselineBarrier("barrier-request-b", "barrier-session-b", 2UL, expectedControlledByComputer: false);
+            baselineFirst.OnSnapshot(null, ControlSnapshotEvent(true, "barrier-session-b", 2UL, automated: false));
+            Assert.True(baselineFirst.BaselineObserved);
+            Assert.False(baselineFirst.IsSatisfied);
+            baselineFirst.OnReceipt(null, ControlReceiptEvent("barrier-request-b"));
+            Assert.True(baselineFirst.IsSatisfied);
+        }
+
+        [Fact]
+        public async Task Control_baseline_barrier_bounded_wait_times_out_without_matching_baseline()
+        {
+            var barrier = new ControlBaselineBarrier("barrier-request-c", "barrier-session-c", 1UL, expectedControlledByComputer: true);
+            barrier.OnReceipt(null, ControlReceiptEvent("barrier-request-c"));
+            using (var shortBound = new CancellationTokenSource(TimeSpan.FromMilliseconds(100)))
+            {
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                    () => barrier.WaitAsync(shortBound.Token));
+            }
+            Assert.True(barrier.ReceiptObserved);
+            Assert.False(barrier.BaselineObserved);
+            Assert.False(barrier.IsSatisfied);
+
+            barrier.OnSnapshot(null, ControlSnapshotEvent(true, "barrier-session-c", 1UL, automated: true));
+            await barrier.WaitAsync(TestContext.Current.CancellationToken);
+            Assert.True(barrier.IsSatisfied);
         }
 
         [Fact]
@@ -764,6 +856,133 @@ namespace Mahjong.LocalHost.Tests
             };
         }
 
+        private static TableReceiptResolvedEventArgs ControlReceiptEvent(string requestId)
+        {
+            var key = new IdempotencyKey(
+                "acct-barrier",
+                new RequestScopeId("scope-barrier"),
+                new RequestId(requestId));
+            var command = new PendingCommandSnapshot(
+                key,
+                CommandKind.ReleaseControl,
+                new string('a', 64),
+                payloadLength: 0,
+                handedToTransport: true,
+                deliveryUnknown: false,
+                needsReconciliation: false,
+                lastLookup: null,
+                lastReceipt: null,
+                queryInFlight: false);
+            return new TableReceiptResolvedEventArgs(
+                command,
+                OutboxResolution.ControlApplied(
+                    new StateVersion(1),
+                    new string('a', 64),
+                    fromLookup: false));
+        }
+
+        private static TableSnapshotChangedEventArgs ControlSnapshotEvent(
+            bool isFullBaseline,
+            string sessionId,
+            ulong controlEpoch,
+            bool automated)
+        {
+            var snapshot = new PlayerSnapshot
+            {
+                SessionId = sessionId,
+                PrivateView = new Mahjong.Contracts.Wire.PlayerPrivateView
+                {
+                    Control = new Mahjong.Contracts.Wire.PlayerControlView
+                    {
+                        ControlEpoch = controlEpoch,
+                        ControlledByComputer = automated
+                    }
+                }
+            };
+            return new TableSnapshotChangedEventArgs(
+                new Mahjong.Contracts.StreamCursor(
+                    new Mahjong.Contracts.StreamVersion(1),
+                    new Mahjong.Contracts.ProjectionSeq(0)),
+                isFullBaseline,
+                snapshot,
+                publicSnapshot: null,
+                roomSnapshot: null,
+                TableVisibleEventBatch.Empty);
+        }
+
+        /// <summary>
+        /// Synchronization point for a control command: the original request receipt
+        /// and the CONTROL_APPLIED full baseline for this exact request/binding/epoch
+        /// must both be observed. A receipt alone is intentionally insufficient
+        /// because the client requests its baseline only after resolving the receipt.
+        /// </summary>
+        private sealed class ControlBaselineBarrier
+        {
+            private readonly TaskCompletionSource<TableReceiptResolvedEventArgs> _receipt =
+                new TaskCompletionSource<TableReceiptResolvedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
+            private readonly TaskCompletionSource<TableSnapshotChangedEventArgs> _baseline =
+                new TaskCompletionSource<TableSnapshotChangedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
+            private readonly string _requestId;
+            private readonly string _sessionId;
+            private readonly ulong _expectedControlEpoch;
+            private readonly bool _expectedControlledByComputer;
+            private int _ignoredBaselineCount;
+
+            public ControlBaselineBarrier(
+                string requestId,
+                string sessionId,
+                ulong expectedControlEpoch,
+                bool expectedControlledByComputer)
+            {
+                _requestId = requestId ?? throw new ArgumentNullException(nameof(requestId));
+                _sessionId = sessionId ?? throw new ArgumentNullException(nameof(sessionId));
+                _expectedControlEpoch = expectedControlEpoch;
+                _expectedControlledByComputer = expectedControlledByComputer;
+            }
+
+            public Task<TableReceiptResolvedEventArgs> Receipt => _receipt.Task;
+
+            public Task<TableSnapshotChangedEventArgs> Baseline => _baseline.Task;
+
+            public bool ReceiptObserved => _receipt.Task.IsCompleted;
+
+            public bool BaselineObserved => _baseline.Task.IsCompleted;
+
+            public bool IsSatisfied => ReceiptObserved && BaselineObserved;
+
+            public int IgnoredBaselineCount => Volatile.Read(ref _ignoredBaselineCount);
+
+            public void OnReceipt(object? sender, TableReceiptResolvedEventArgs args)
+            {
+                if (string.Equals(args.Command.Key.RequestId.Value, _requestId, StringComparison.Ordinal))
+                {
+                    _receipt.TrySetResult(args);
+                }
+            }
+
+            public void OnSnapshot(object? sender, TableSnapshotChangedEventArgs args)
+            {
+                PlayerSnapshot? snapshot = args.PlayerSnapshot;
+                if (args.IsFullBaseline &&
+                    snapshot != null &&
+                    string.Equals(snapshot.SessionId, _sessionId, StringComparison.Ordinal) &&
+                    snapshot.PrivateView?.Control != null &&
+                    snapshot.PrivateView.Control.ControlEpoch == _expectedControlEpoch &&
+                    snapshot.PrivateView.Control.ControlledByComputer == _expectedControlledByComputer)
+                {
+                    _baseline.TrySetResult(args);
+                    return;
+                }
+
+                Interlocked.Increment(ref _ignoredBaselineCount);
+            }
+
+            public Task WaitAsync(CancellationToken cancellationToken)
+            {
+                return Task.WhenAll(new Task[] { _receipt.Task, _baseline.Task }).WaitAsync(cancellationToken);
+            }
+        }
+
         private sealed class CaptureChannel : ITableChannel
         {
             private readonly ITableChannel _inner;
@@ -771,10 +990,20 @@ namespace Mahjong.LocalHost.Tests
 
             public CaptureChannel(ITableChannel inner) => _inner = inner;
 
+            private readonly List<string> _commandRequestIds = new List<string>();
+
             public bool IsOpen => _inner.IsOpen;
             public byte[]? CapturedPlayerSnapshotFrame { get; private set; }
             public int CommandFrames { get; private set; }
             public int ReceiptQueryFrames { get; private set; }
+
+            public int CountCommandFrames(string requestId)
+            {
+                lock (_commandRequestIds)
+                {
+                    return _commandRequestIds.Count(id => string.Equals(id, requestId, StringComparison.Ordinal));
+                }
+            }
 
             public Task OpenAsync(TableChannelConnectRequest request, CancellationToken cancellationToken) =>
                 _inner.OpenAsync(request, cancellationToken);
@@ -784,7 +1013,15 @@ namespace Mahjong.LocalHost.Tests
                 WireDecodeResult decoded = WireCodec.Decode(wireEnvelope.ToArray());
                 if (decoded.IsOk && decoded.Envelope != null)
                 {
-                    if (decoded.Envelope.MessageType == MessageType.Command) CommandFrames++;
+                    if (decoded.Envelope.MessageType == MessageType.Command)
+                    {
+                        CommandFrames++;
+                        lock (_commandRequestIds)
+                        {
+                            if (!string.IsNullOrEmpty(decoded.Envelope.RequestId))
+                                _commandRequestIds.Add(decoded.Envelope.RequestId);
+                        }
+                    }
                     if (decoded.Envelope.MessageType == MessageType.ReceiptQuery) ReceiptQueryFrames++;
                 }
                 return _inner.SendAsync(wireEnvelope, cancellationToken);
