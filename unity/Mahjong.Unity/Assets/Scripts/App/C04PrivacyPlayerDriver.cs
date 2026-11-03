@@ -528,10 +528,15 @@ namespace Mahjong.Unity.App
             Assert.IsFalse(task.IsFaulted, task.Exception?.ToString());
             OpenDeadlineEvidence evidence = task.Result;
             Assert.IsTrue(evidence.AdvancedWithoutPlayerBinding, "Open decision deadline did not continue after player close.");
-            Assert.Greater(evidence.AfterVersion, evidence.ReleaseVersion);
-            Assert.Greater(evidence.SpectatorBaselineVersion, 0UL);
-            Assert.Greater(evidence.AfterVersion, evidence.SpectatorBaselineVersion);
-            Assert.Greater(evidence.AfterCursorStreamVersion, evidence.SpectatorBaselineCursorStreamVersion);
+            Debug.Log("C04_DEADLINE_FLOORS releaseVersion=" + evidence.ReleaseVersion + " spectatorBaselineVersion=" + evidence.SpectatorBaselineVersion +
+                " afterVersion=" + evidence.AfterVersion + " baselineCursor=" + evidence.SpectatorBaselineCursorStreamVersion + "/" + evidence.SpectatorBaselineCursorProjectionSeq +
+                " afterCursor=" + evidence.AfterCursorStreamVersion + "/" + evidence.AfterCursorProjectionSeq);
+            Assert.Greater(evidence.AfterVersion, evidence.ReleaseVersion, "Deadline stateVersion did not advance beyond the released player baseline.");
+            Assert.Greater(evidence.SpectatorBaselineVersion, 0UL, "Spectator baseline stateVersion must be nonzero.");
+            Assert.Greater(evidence.AfterVersion, evidence.SpectatorBaselineVersion, "Deadline progress did not exceed the spectator baseline stateVersion.");
+            Assert.Greater(evidence.AfterCursorStreamVersion, evidence.SpectatorBaselineCursorStreamVersion,
+                "Deadline cursor streamVersion did not advance: baseline=" + evidence.SpectatorBaselineCursorStreamVersion + " after=" + evidence.AfterCursorStreamVersion +
+                " projection=" + evidence.SpectatorBaselineCursorProjectionSeq + "->" + evidence.AfterCursorProjectionSeq);
             string evidencePath = Path.Combine(EvidenceRoot(), "deadline-evidence.json");
             File.WriteAllText(evidencePath,
                 "{\"schemaVersion\":1,\"case\":\"RealRoom_OpenDecisionDeadlineContinuesAfterPlayerClose\"" +
