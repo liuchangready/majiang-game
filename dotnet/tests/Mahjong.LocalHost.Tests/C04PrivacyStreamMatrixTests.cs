@@ -34,7 +34,7 @@ namespace Mahjong.LocalHost.Tests
             string? fixtureRoot = Environment.GetEnvironmentVariable("C04_RELEASED_CONTROL_FIXTURE_ROOT");
             if (string.IsNullOrWhiteSpace(rawPath))
             {
-                Assert.False(string.IsNullOrWhiteSpace(fixtureRoot), "Set a raw path or an exclusive WireCodec fixture root.");
+                if (string.IsNullOrWhiteSpace(fixtureRoot)) fixtureRoot = CreateDefaultWireControlFixtureRoot();
                 Directory.CreateDirectory(fixtureRoot!);
                 WireControlCapture fixture = BuildWireControlFixture();
                 string generatedRaw = Path.Combine(fixtureRoot!, "raw-frames.json");
@@ -45,7 +45,7 @@ namespace Mahjong.LocalHost.Tests
                 ValidateReleasedControlRaw(generatedRaw, Path.Combine(fixtureRoot!, "reconnect.json"),
                     Path.Combine(fixtureRoot!, "ready.json"), Path.Combine(fixtureRoot!, "release.json"));
                 AssertWireControlNegatives(fixtureRoot!, fixture);
-                Console.WriteLine("C04_CONTROL_WIRE_CONTRACT_PASS frames=" + fixture.Frames.Count + " negative=6 source=WireCodec fixtureOnly=true");
+                Console.WriteLine("C04_CONTROL_WIRE_CONTRACT_PASS frames=" + fixture.Frames.Count + " negative=13 source=WireCodec fixtureOnly=true");
                 return;
             }
 
@@ -60,7 +60,23 @@ namespace Mahjong.LocalHost.Tests
                 AssertCapturedControlNegatives(rawPath, reconnectPath, readyPath, releasePath, negativeRoot!, foreignRawPath);
             }
             Console.WriteLine("C04_CONTROL_WIRE_CAPTURE_PASS frames=" + ReadWireControlCapture(rawPath).Frames.Count +
-                " rawSha256=" + Sha256(File.ReadAllBytes(rawPath)) + " negative=" + (string.IsNullOrWhiteSpace(negativeRoot) ? 0 : (string.IsNullOrWhiteSpace(foreignRawPath) ? 3 : 4)) + " source=WireCodec");
+                " rawSha256=" + Sha256(File.ReadAllBytes(rawPath)) + " negative=" + (string.IsNullOrWhiteSpace(negativeRoot) ? 0 : (string.IsNullOrWhiteSpace(foreignRawPath) ? 10 : 11)) + " source=WireCodec");
+        }
+
+        private static string CreateDefaultWireControlFixtureRoot()
+        {
+            DirectoryInfo? directory = new DirectoryInfo(AppContext.BaseDirectory);
+            while (directory != null)
+            {
+                if (File.Exists(Path.Combine(directory.FullName, "AGENTS.md")) && Directory.Exists(Path.Combine(directory.FullName, "dotnet")))
+                {
+                    string buildRoot = Path.Combine(directory.FullName, "build");
+                    Directory.CreateDirectory(buildRoot);
+                    return Path.Combine(buildRoot, "c04-wire-default-" + Guid.NewGuid().ToString("N"));
+                }
+                directory = directory.Parent;
+            }
+            throw new DirectoryNotFoundException("Could not locate the repository root for an exclusive C04 WireCodec fixture.");
         }
 
         private static string RequiredEnvironmentPath(string name)
@@ -89,6 +105,10 @@ namespace Mahjong.LocalHost.Tests
             string readyScope = String(ready, "newScopeId");
             ulong readyBinding = Number(ready, "bindingEpoch");
             string expectedAccount = String(ready, "newWelcomeAccountId");
+            ulong readyControlEpoch = Number(ready, "controlEpochAfter");
+            if (!Boolean(ready, "controlHuman") || readyControlEpoch == 0 ||
+                readyControlEpoch != Number(reconnect, "newSnapshotControlEpoch"))
+                throw new InvalidDataException("Reconnect and Ready evidence disagree about the resumed human control epoch.");
             if (capture.SchemaVersion != 2 || capture.Frames.Count < 4 || mainSession != readySession || roomId != readyRoom ||
                 oldBinding == 0 || resumedBinding <= oldBinding || readyBinding < resumedBinding ||
                 oldScope == newScope || oldScope == readyScope ||
@@ -135,7 +155,9 @@ namespace Mahjong.LocalHost.Tests
                     (wire.BodyCase == Envelope.BodyOneofCase.SyncResponse && wire.MessageType != MessageType.SyncResponse) ||
                     (wire.BodyCase == Envelope.BodyOneofCase.PlayerUpdate && wire.MessageType != MessageType.PlayerUpdate) ||
                     wire.SessionId != frame.SessionId || wire.RoomId != frame.RoomId || wire.SeatId != frame.SeatId ||
-                    wire.BindingEpoch != frame.BindingEpoch || (wire.Scope != null && wire.Scope.ScopeId != frame.ScopeId) ||
+                    wire.BindingEpoch != frame.BindingEpoch || (wire.Scope != null &&
+                        (wire.Scope.ScopeId != frame.ScopeId || wire.Scope.AccountId != frame.AccountId ||
+                         wire.Scope.Role != Role.Player || wire.Scope.RoomId != frame.RoomId)) ||
                     wire.MessageType.ToString() != frame.MessageType)
                     throw new InvalidDataException("Decoded player envelope identity/body conflicts at frame " + frame.Ordinal +
                         ": type=" + wire.MessageType + "/" + frame.MessageType + " body=" + wire.BodyCase + " target=" + wire.SyncResponse?.Target +
@@ -144,10 +166,14 @@ namespace Mahjong.LocalHost.Tests
                         " binding=" + wire.BindingEpoch + "/" + frame.BindingEpoch + " scope=" + wire.Scope?.ScopeId + "/" + frame.ScopeId);
 
                 if (snapshot.PrivateView == null || snapshot.PrivateView.Seat != frame.OwnerSeat || frame.OwnerSeat != frame.SeatId ||
+                    snapshot.SessionId != wire.SessionId || snapshot.SessionId != frame.SessionId ||
+                    snapshot.StateVersion != frame.StateVersion ||
+                    (wire.BodyCase == Envelope.BodyOneofCase.SyncResponse && wire.SyncResponse.StateVersion != frame.StateVersion) ||
                     snapshot.PrivateView.ClosedTiles.Count == 0 || snapshot.PrivateView.ClosedTiles.Count != frame.PrivateClosedTileCount ||
                     snapshot.PrivateView.Cheat == null || snapshot.PrivateView.Cheat.CheatPoints != frame.PrivateCheatPoints ||
                     snapshot.PrivateView.Cheat.LedgerEntries.Count != frame.PrivateLedgerEntryCount ||
-                    (snapshot.PrivateView.Control?.ControlEpoch ?? 0UL) != frame.ControlEpoch)
+                    (snapshot.PrivateView.Control?.ControlEpoch ?? 0UL) != frame.ControlEpoch ||
+                    (snapshot.PrivateView.Control?.ControlVersion ?? 0UL) != frame.ControlVersion)
                     throw new InvalidDataException("Decoded player snapshot does not prove the recorded nonempty owner-private content at frame " + frame.Ordinal + ".");
 
                 byte[] welcomeBytes = Convert.FromBase64String(frame.WelcomeRawBase64);
@@ -159,9 +185,12 @@ namespace Mahjong.LocalHost.Tests
                 if (welcomeEnvelope.MessageType != MessageType.Welcome || welcomeEnvelope.BodyCase != Envelope.BodyOneofCase.Welcome)
                     throw new InvalidDataException("Typed WELCOME body is missing at frame " + frame.Ordinal + ".");
                 Welcome welcome = welcomeEnvelope.Welcome;
-                if (welcome.SessionId != frame.SessionId || welcome.RoomId != frame.RoomId || welcome.Role != Role.Player || welcome.SeatId != frame.SeatId ||
+                if (welcomeEnvelope.SessionId != welcome.SessionId || welcomeEnvelope.RoomId != welcome.RoomId || welcomeEnvelope.SeatId != welcome.SeatId ||
+                    welcomeEnvelope.BindingEpoch != welcome.BindingEpoch || welcome.SessionId != frame.SessionId || welcome.RoomId != frame.RoomId || welcome.Role != Role.Player || welcome.SeatId != frame.SeatId ||
                     welcome.BindingEpoch != frame.BindingEpoch || welcome.Scope == null || welcome.Scope.ScopeId != frame.ScopeId ||
                     welcome.Scope.AccountId != frame.AccountId || welcome.Scope.Role != Role.Player || welcome.Scope.RoomId != frame.RoomId ||
+                    (welcomeEnvelope.Scope != null && (welcomeEnvelope.Scope.ScopeId != welcome.Scope.ScopeId || welcomeEnvelope.Scope.AccountId != welcome.Scope.AccountId ||
+                        welcomeEnvelope.Scope.Role != welcome.Scope.Role || welcomeEnvelope.Scope.RoomId != welcome.Scope.RoomId)) ||
                     frame.ConnectionRole != "Player" || frame.BoundSeat != welcome.SeatId ||
                     frame.Audience != (wire.MessageType == MessageType.PlayerUpdate ? "PlayerUpdate" : "Player") || frame.OwnerSeat != welcome.SeatId)
                     throw new InvalidDataException("Decoded WELCOME identity conflicts at frame " + frame.Ordinal + ": session=" + welcome.SessionId + "/" + frame.SessionId +
@@ -193,6 +222,10 @@ namespace Mahjong.LocalHost.Tests
                         frame.BindingEpoch == readyBinding && readyBinding > resumedBinding ? readyScope : string.Empty;
                     if (string.IsNullOrEmpty(expectedScope) || frame.ScopeId != expectedScope || frame.BindingEpoch < previousMainBinding)
                         throw new InvalidDataException("Claimed session binding/scope timeline is missing, reordered, or foreign.");
+                    if (frame.BindingEpoch >= resumedBinding &&
+                        (snapshot.PrivateView.Control == null || snapshot.PrivateView.Control.ControlledByComputer ||
+                         snapshot.PrivateView.Control.ControlEpoch != Number(reconnect, "newSnapshotControlEpoch")))
+                        throw new InvalidDataException("Resumed/Ready player snapshot does not match the human control epoch recorded by formal recovery.");
                     previousMainBinding = frame.BindingEpoch;
                 }
                 else if (frame.RoomId != roomId || frame.AccountId != expectedAccount || frame.SeatId != 0 || frame.ConnectionRole != "Player")
@@ -208,8 +241,13 @@ namespace Mahjong.LocalHost.Tests
             if (!string.IsNullOrWhiteSpace(releasePath) && File.Exists(releasePath))
             {
                 using JsonDocument releaseDoc = JsonDocument.Parse(File.ReadAllText(releasePath));
-                if (String(releaseDoc.RootElement, "releasedPlayerSessionId") != initialSession)
+                JsonElement release = releaseDoc.RootElement;
+                if (String(release, "releasedPlayerSessionId") != initialSession)
                     throw new InvalidDataException("Decoded initial session does not match the release producer's captured player session.");
+                if (Boolean(release, "controlHuman") != true || Boolean(release, "claimEpochAdvanced") != true ||
+                    DecimalString(release, "claimEpoch") != Number(reconnect, "newSnapshotControlEpoch") ||
+                    DecimalString(release, "claimEpoch") <= DecimalString(release, "claimEpochBefore"))
+                    throw new InvalidDataException("Release/claim phase evidence does not establish the resumed human owner and epoch.");
             }
         }
 
@@ -236,6 +274,22 @@ namespace Mahjong.LocalHost.Tests
             return result;
         }
 
+        private static bool Boolean(JsonElement value, string name)
+        {
+            if (!value.TryGetProperty(name, out JsonElement property) ||
+                (property.ValueKind != JsonValueKind.True && property.ValueKind != JsonValueKind.False))
+                throw new InvalidDataException("Expected JSON boolean " + name + ".");
+            return property.GetBoolean();
+        }
+
+        private static ulong DecimalString(JsonElement value, string name)
+        {
+            string text = String(value, name);
+            if (!ulong.TryParse(text, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out ulong result))
+                throw new InvalidDataException("Expected unsigned decimal JSON string " + name + ".");
+            return result;
+        }
+
         private static string Sha256(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes));
 
         private static WireControlCapture BuildWireControlFixture()
@@ -244,13 +298,13 @@ namespace Mahjong.LocalHost.Tests
             string room = "fixture-room";
             string account = "fixture-account";
             capture.Frames.Add(BuildWireControlFrame(1, "release-session", room, account, 1, "release-scope", 0));
-            capture.Frames.Add(BuildWireControlFrame(2, "claim-session", room, account, 1, "old-claim-scope", 1));
+            capture.Frames.Add(BuildWireControlFrame(2, "claim-session", room, account, 1, "old-claim-scope", 1, computerControlled: true));
             capture.Frames.Add(BuildWireControlFrame(3, "claim-session", room, account, 2, "resumed-scope", 2));
             capture.Frames.Add(BuildWireControlFrame(4, "claim-session", room, account, 2, "resumed-scope", 2));
             return capture;
         }
 
-        private static WireControlFrame BuildWireControlFrame(int ordinal, string session, string room, string account, ulong binding, string scope, ulong controlEpoch, int seat = 0)
+        private static WireControlFrame BuildWireControlFrame(int ordinal, string session, string room, string account, ulong binding, string scope, ulong controlEpoch, int seat = 0, bool computerControlled = false)
         {
             var requestScope = new Mahjong.Contracts.Wire.RequestScope { ScopeId = scope, AccountId = account, Role = Role.Player, RoomId = room, IssuedAtMs = 1, ExpiresAtMs = 10_000 };
             var welcome = new Envelope
@@ -262,9 +316,9 @@ namespace Mahjong.LocalHost.Tests
                     Scope = requestScope.Clone(), ProtocolMajor = ProtocolConstants.Major, ProtocolMinor = ProtocolConstants.Minor,
                     RulesetVersion = ProtocolConstants.RulesetVersion, ProjectionVersion = ProtocolConstants.ProjectionVersion }
             };
-            var snapshot = new PlayerSnapshot { SessionId = session, RoundId = "fixture-round", PublicView = new Mahjong.Contracts.Wire.PublicMatchView(),
+            var snapshot = new PlayerSnapshot { SessionId = session, StateVersion = (ulong)ordinal, RoundId = "fixture-round", PublicView = new Mahjong.Contracts.Wire.PublicMatchView(),
                 PrivateView = new PlayerPrivateView { Seat = seat, Cheat = new PrivateCheatView { CheatPoints = 120 },
-                    Control = new Mahjong.Contracts.Wire.PlayerControlView { ControlEpoch = controlEpoch, ControlVersion = controlEpoch, ControlledByComputer = false } } };
+                    Control = new Mahjong.Contracts.Wire.PlayerControlView { ControlEpoch = controlEpoch, ControlVersion = controlEpoch, ControlledByComputer = computerControlled } } };
             for (uint tile = 0; tile < 13; tile++) snapshot.PrivateView.ClosedTiles.Add(tile);
             var player = new Envelope
             {
@@ -280,16 +334,17 @@ namespace Mahjong.LocalHost.Tests
                 WelcomeRawBase64 = Convert.ToBase64String(welcomeRaw), WelcomeWireSha256 = Sha256(welcomeRaw), DecodeStatus = "Ok",
                 MessageType = "SyncResponse", SessionId = session, RoomId = room, ScopeId = scope, AccountId = account,
                 ConnectionRole = "Player", Audience = "Player", BoundSeat = seat, SeatId = seat, OwnerSeat = seat, BindingEpoch = binding,
-                PrivateClosedTileCount = 13, PrivateCheatPoints = 120, PrivateLedgerEntryCount = 0, ControlEpoch = controlEpoch, UnknownFieldsZero = true };
+                PrivateClosedTileCount = 13, PrivateCheatPoints = 120, PrivateLedgerEntryCount = 0, ControlEpoch = controlEpoch,
+                ControlVersion = controlEpoch, StateVersion = (ulong)ordinal, UnknownFieldsZero = true };
         }
 
         private static void WriteWireControlFixture(string root, WireControlCapture capture)
         {
             var options = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, WriteIndented = false };
             File.WriteAllText(Path.Combine(root, "raw-frames.json"), JsonSerializer.Serialize(capture, options));
-            File.WriteAllText(Path.Combine(root, "reconnect.json"), JsonSerializer.Serialize(new { schemaVersion = 1, newSessionId = "claim-session", newRoomId = "fixture-room", oldScopeId = "old-claim-scope", newScopeId = "resumed-scope", oldBindingEpoch = 1UL, newBindingEpoch = 2UL }, options));
-            File.WriteAllText(Path.Combine(root, "ready.json"), JsonSerializer.Serialize(new { schemaVersion = 1, newSessionId = "claim-session", newRoomId = "fixture-room", newScopeId = "resumed-scope", bindingEpoch = 2UL, newWelcomeAccountId = "fixture-account" }, options));
-            File.WriteAllText(Path.Combine(root, "release.json"), JsonSerializer.Serialize(new { schemaVersion = 1, releasedPlayerSessionId = "release-session", releasedPlayerRoomId = "fixture-room", releasedPlayerAccountId = "fixture-account" }, options));
+            File.WriteAllText(Path.Combine(root, "reconnect.json"), JsonSerializer.Serialize(new { schemaVersion = 1, newSessionId = "claim-session", newRoomId = "fixture-room", oldScopeId = "old-claim-scope", newScopeId = "resumed-scope", oldBindingEpoch = 1UL, newBindingEpoch = 2UL, newSnapshotControlEpoch = 2UL }, options));
+            File.WriteAllText(Path.Combine(root, "ready.json"), JsonSerializer.Serialize(new { schemaVersion = 1, newSessionId = "claim-session", newRoomId = "fixture-room", newScopeId = "resumed-scope", bindingEpoch = 2UL, newWelcomeAccountId = "fixture-account", controlEpochAfter = 2UL, controlHuman = true }, options));
+            File.WriteAllText(Path.Combine(root, "release.json"), JsonSerializer.Serialize(new { schemaVersion = 1, releasedPlayerSessionId = "release-session", releasedPlayerRoomId = "fixture-room", releasedPlayerAccountId = "fixture-account", claimEpochBefore = "1", claimEpoch = "2", claimEpochAdvanced = true, controlHuman = true }, options));
         }
 
         private static void AssertWireControlNegatives(string root, WireControlCapture valid)
@@ -310,6 +365,91 @@ namespace Mahjong.LocalHost.Tests
             Reject("scope-metadata-conflict", copy => copy.Frames[0].ScopeId = "foreign-scope");
             Reject("unknown-session", copy => { WireControlFrame f = BuildWireControlFrame(1, "foreign-session", "fixture-room", "fixture-owner-seat0", 1, "release-scope", 0); copy.Frames[0].RawBase64 = f.RawBase64; copy.Frames[0].WireSha256 = f.WireSha256; copy.Frames[0].WelcomeRawBase64 = f.WelcomeRawBase64; copy.Frames[0].WelcomeWireSha256 = f.WelcomeWireSha256; copy.Frames[0].SessionId = "foreign-session"; });
             Reject("missing-recovery-phase", copy => { copy.Frames.RemoveAt(2); for (int i = 0; i < copy.Frames.Count; i++) copy.Frames[i].Ordinal = i + 1; });
+            AddTypedWireNegatives(Reject, "claim-session", 2);
+        }
+
+        private static void AddTypedWireNegatives(Action<string, Action<WireControlCapture>> reject, string resumedSession, ulong resumedBinding)
+        {
+            reject("inner-snapshot-session", copy =>
+            {
+                WireControlFrame frame = copy.Frames[0];
+                Envelope envelope = DecodeRawEnvelope(frame.RawBase64);
+                GetPlayerSnapshot(envelope).SessionId = "wrong-inner-snapshot-session";
+                ReplacePlayerEnvelope(frame, envelope);
+            });
+            reject("outer-welcome-session", copy =>
+            {
+                WireControlFrame frame = copy.Frames[0];
+                Envelope envelope = DecodeRawEnvelope(frame.WelcomeRawBase64);
+                envelope.SessionId = "wrong-welcome-envelope-session";
+                ReplaceWelcomeEnvelope(frame, envelope);
+            });
+            reject("wire-scope-account", copy => MutateScope(copy.Frames[0], scope => scope.AccountId = "wrong-wire-scope-account"));
+            reject("wire-scope-role", copy => MutateScope(copy.Frames[0], scope => scope.Role = Role.Spectator));
+            reject("wire-scope-room", copy => MutateScope(copy.Frames[0], scope => scope.RoomId = "wrong-wire-scope-room"));
+            reject("resumed-control-owner", copy =>
+            {
+                WireControlFrame frame = copy.Frames.FirstOrDefault(item => item.SessionId == resumedSession && item.BindingEpoch == resumedBinding)
+                    ?? throw new InvalidDataException("No resumed binding frame is available for the control-owner mutation.");
+                Envelope envelope = DecodeRawEnvelope(frame.RawBase64);
+                Mahjong.Contracts.Wire.PlayerControlView control = GetPlayerSnapshot(envelope).PrivateView.Control
+                    ?? throw new InvalidDataException("Resumed frame has no player control view.");
+                control.ControlledByComputer = true;
+                ReplacePlayerEnvelope(frame, envelope);
+            });
+            reject("recorded-state-version", copy =>
+            {
+                WireControlFrame frame = copy.Frames[0];
+                Envelope envelope = DecodeRawEnvelope(frame.RawBase64);
+                PlayerSnapshot snapshot = GetPlayerSnapshot(envelope);
+                snapshot.StateVersion += 100;
+                if (envelope.BodyCase == Envelope.BodyOneofCase.SyncResponse)
+                    envelope.SyncResponse.StateVersion = snapshot.StateVersion;
+                ReplacePlayerEnvelope(frame, envelope);
+            });
+        }
+
+        private static void MutateScope(WireControlFrame frame, Action<Mahjong.Contracts.Wire.RequestScope> mutate)
+        {
+            Envelope envelope = DecodeRawEnvelope(frame.RawBase64);
+            if (envelope.Scope == null)
+            {
+                Envelope welcome = DecodeRawEnvelope(frame.WelcomeRawBase64);
+                envelope.Scope = (welcome.Welcome?.Scope)
+                    ?? throw new InvalidDataException("WELCOME frame has no scope to use for the scope mutation.");
+                envelope.Scope = envelope.Scope.Clone();
+            }
+            mutate(envelope.Scope);
+            ReplacePlayerEnvelope(frame, envelope);
+        }
+
+        private static Envelope DecodeRawEnvelope(string base64)
+        {
+            WireDecodeResult decoded = WireCodec.Decode(Convert.FromBase64String(base64));
+            if (!decoded.IsOk || decoded.Envelope == null) throw new InvalidDataException("Cannot mutate an invalid WireCodec envelope.");
+            return decoded.Envelope;
+        }
+
+        private static PlayerSnapshot GetPlayerSnapshot(Envelope envelope)
+        {
+            if (envelope.BodyCase == Envelope.BodyOneofCase.SyncResponse && envelope.SyncResponse.BaselineCase == SyncResponse.BaselineOneofCase.Player)
+                return envelope.SyncResponse.Player;
+            if (envelope.BodyCase == Envelope.BodyOneofCase.PlayerUpdate) return envelope.PlayerUpdate.Snapshot;
+            throw new InvalidDataException("Player raw frame does not contain a player snapshot.");
+        }
+
+        private static void ReplacePlayerEnvelope(WireControlFrame frame, Envelope envelope)
+        {
+            byte[] bytes = WireCodec.Encode(envelope);
+            frame.RawBase64 = Convert.ToBase64String(bytes);
+            frame.WireSha256 = Sha256(bytes);
+        }
+
+        private static void ReplaceWelcomeEnvelope(WireControlFrame frame, Envelope envelope)
+        {
+            byte[] bytes = WireCodec.Encode(envelope);
+            frame.WelcomeRawBase64 = Convert.ToBase64String(bytes);
+            frame.WelcomeWireSha256 = Sha256(bytes);
         }
 
         private static void AssertCapturedControlNegatives(string rawPath, string reconnectPath, string readyPath, string? releasePath, string negativeRoot, string? foreignRawPath)
@@ -349,6 +489,8 @@ namespace Mahjong.LocalHost.Tests
                     copy.Frames[0].WireSha256 = frame.WireSha256;
                 });
             }
+            using JsonDocument reconnectDoc = JsonDocument.Parse(File.ReadAllText(reconnectPath));
+            AddTypedWireNegatives(Reject, String(reconnectDoc.RootElement, "newSessionId"), Number(reconnectDoc.RootElement, "newBindingEpoch"));
         }
 
         private sealed class WireControlCapture
@@ -381,6 +523,8 @@ namespace Mahjong.LocalHost.Tests
             public long PrivateCheatPoints { get; set; }
             public int PrivateLedgerEntryCount { get; set; }
             public ulong ControlEpoch { get; set; }
+            public ulong ControlVersion { get; set; }
+            public ulong StateVersion { get; set; }
             public bool UnknownFieldsZero { get; set; }
         }
 

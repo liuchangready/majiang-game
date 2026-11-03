@@ -1264,7 +1264,7 @@ function Invoke-C04ReleasedControlWireValidator([string]$RawPath, [string]$Recon
     }
     if ($result.timedOut -or $result.cancelled -or $result.exitCode -ne 0) { throw "Typed released-control WireCodec validation failed native=$($result.exitCode) timedOut=$($result.timedOut) stdout=$($result.stdoutPath) stderr=$($result.stderrPath)" }
     $validatorOutput = [IO.File]::ReadAllText($result.stdoutPath,[Text.Encoding]::UTF8)
-    $expectedNegativeCount = if ([string]::IsNullOrWhiteSpace($ForeignRawPath)) { 3 } else { 4 }
+    $expectedNegativeCount = if ([string]::IsNullOrWhiteSpace($ForeignRawPath)) { 10 } else { 11 }
     if ($validatorOutput -notmatch ('C04_CONTROL_WIRE_CAPTURE_PASS frames=[1-9][0-9]* .* negative=' + $expectedNegativeCount + ' source=WireCodec')) {
       throw "Typed control validator exited zero without the expected real-wire positive/negative marker (negative=$expectedNegativeCount): $($result.stdoutPath)"
     }
@@ -1750,11 +1750,11 @@ exit `$LASTEXITCODE
       $env:C04_RELEASED_CONTROL_FIXTURE_ROOT = $wireFixtureRoot
       $wireFixture = Start-C04Owned 'control-wire-contract-selftest' $DotnetPath @('exec',$script:C04WireValidatorDll,'-method','Mahjong.LocalHost.Tests.C04PrivacyStreamMatrixTests.Released_control_raw_is_decoded_and_bound_to_each_real_welcome') $repo 90
       Assert-C04NativeSuccess $wireFixture 'control-wire-contract-selftest'
-      if ([IO.File]::ReadAllText($wireFixture.stdoutPath,[Text.Encoding]::UTF8) -notmatch 'C04_CONTROL_WIRE_CONTRACT_PASS frames=4 negative=6 source=WireCodec fixtureOnly=true') {
-        throw 'WireCodec control validator did not execute its valid frame and six negative cases.'
+      if ([IO.File]::ReadAllText($wireFixture.stdoutPath,[Text.Encoding]::UTF8) -notmatch 'C04_CONTROL_WIRE_CONTRACT_PASS frames=4 negative=13 source=WireCodec fixtureOnly=true') {
+        throw 'WireCodec control validator did not execute its valid frame and thirteen negative cases.'
       }
     } finally { [Environment]::SetEnvironmentVariable('C04_RELEASED_CONTROL_FIXTURE_ROOT',$oldWireFixtureRoot,'Process') }
-    $summary.controlWireValidator = [ordered]@{ buildNativeExit=$controlBuild.exitCode; dll=$script:C04WireValidatorDll; dllBytes=(Get-Item -LiteralPath $script:C04WireValidatorDll).Length; dllSha256=Get-C04Sha256File $script:C04WireValidatorDll; fixtureNativeExit=$wireFixture.exitCode; fixtureStdout=$wireFixture.stdoutPath; fixtureNegativeCount=6 }
+    $summary.controlWireValidator = [ordered]@{ buildNativeExit=$controlBuild.exitCode; dll=$script:C04WireValidatorDll; dllBytes=(Get-Item -LiteralPath $script:C04WireValidatorDll).Length; dllSha256=Get-C04Sha256File $script:C04WireValidatorDll; fixtureNativeExit=$wireFixture.exitCode; fixtureStdout=$wireFixture.stdoutPath; fixtureNegativeCount=13 }
 
     $summary.mutex = [ordered]@{ name = $script:C04MutexName; acquired = $false; waitedSeconds = $null }
     $script:MutexHandle = Acquire-C04Mutex -Name $script:C04MutexName -TimeoutSeconds $MutexTimeoutSeconds -HeartbeatSeconds $MutexHeartbeatSeconds -CancelFile $MutexCancelFile
