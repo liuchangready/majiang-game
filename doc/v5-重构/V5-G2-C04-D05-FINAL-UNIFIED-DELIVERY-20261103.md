@@ -1,4 +1,155 @@
-# Round 2 authoritative status (2026-11-03)
+# Round 3 authoritative status (2026-11-03)
+
+**Final status: NOT ACCEPTED.** FU-03’s producer/consumer artifact mismatch now has structured case-specific evidence and 26/26 fixture contract checks. A real Unity run at the current code head compiled and executed the exact seven PlayMode cases: six passed, one failed because the reopened player channel entered `Reconnecting`/`LOCAL_CLOSED` before the required stale request could reach authority. A Windows package from an earlier source head exposed a 260-character save-path boundary; the authorized driver now shortens those temporary identifiers, but the final-source Windows build could not start because the shared Unity mutex remained held by another worktree for the full 600-second bound. FU-02 remains unproven. No production or out-of-allowlist file was changed.
+
+This section supersedes the Round 2 current-status paragraphs below. Round 1 and Round 2 sections remain unchanged as history; they are not evidence for the current source head.
+
+## Round 3 source identity and changes
+
+| Item | Value |
+|---|---|
+| Starting candidate | `603005a4cd87e889b3b13264df8c70660a54ae47` |
+| Current code head (docs-only report commit follows separately) | `86cb2c4623aa10d0a316d60a750c3dcb30b4a41d` |
+| Code commits in this continuation | `c1534016` semantic C04 evidence contract; `dcbb2f75` deadline wire types; `295230b4` spectator snapshot types; `f9e43b25` recovery/control evidence; `47e1fff3` pre-submit control capture; `a203596f` short Windows temp paths; `86cb2c46` reconnect diagnostics |
+| Tracked changed paths from the starting candidate | `tools/tests/C04PrivacyPlayer.Tests.ps1`; `tools/tests/C04PrivacyRunner.Tests.ps1`; `tools/unity/run-p45-c04-privacy-matrix.ps1`; `unity/Mahjong.Unity/Assets/Scripts/App/C04PrivacyPlayerDriver.cs`; its `.meta`; `unity/Mahjong.Unity/Assets/Tests/PlayMode/C04PrivacyRoleSwitchPlayModeTests.cs`; this delivery report |
+| Scope check | The six code paths above are within the original 11-path allowlist. The report is the only documentation path. No Client, Domain, Contracts, LocalHost authority, schema, asmdef, machine configuration, or out-of-list test was modified. |
+| Final Unity input closure | 540 files / 14,193,231 bytes / SHA-256 `ec943188a4adbbf4a55eee753b2dd315a763fa537aeae425ac2c5477d5074ddb`; final source-stage manifest in `build/e12f7d86bd4f4a47884676485145fb87/source-closure.sha256`. |
+| Final staged Unity inputs | 366 files / 33,505,854 bytes / SHA-256 `08a5afba59d9f8e5d84c6dd9680669e99826d212731a9279297ff6d1177cefc3`; `build/e12f7d86bd4f4a47884676485145fb87/staged-input.sha256`. |
+| Toolchain | Unity `6000.3.27f1` (`6000.3.27.6761814`), Unity dotnet `8.0.3226.50405`, SDK `8.0.426`. |
+| Code diff | `git diff --check 603005a4..86cb2c46` exit 0; the current tested code checkout was clean. The final ordinary Windows runner was later invoked at this exact expected source head. |
+
+The final Editor run necessarily compiled the final staged Unity source before executing PlayMode. Earlier standalone `CompileOnly` passes at `f9e43b25` and `47e1fff3` are retained, but they do not substitute for the current-head PlayMode compilation or a final Windows package build.
+
+## Round 3 stage results and evidence
+
+### A — identity, environment, and lock
+
+The exact final-source Windows command was:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-c04-privacy-matrix.ps1 -WindowsAppMatrix -ExpectedSourceHead 86cb2c4623aa10d0a316d60a750c3dcb30b4a41d -RunRoot build/46a30dd529924372b71f24d36825ab76 -TimeoutSeconds 1200
+```
+
+It passed source identity and clean-tree checks, built and self-tested the accepted verifier (`17 positive / 67 negative`), then waited on `Local\MahjongV5P45UnityValidation` for 600 seconds and exited 1 before shared-plugin build or Unity launch. The sealed summary is `build/46a30dd529924372b71f24d36825ab76/summary.json` (SHA-256 `F11283EA78536E7DCCB23961E9D3F0DF16E8BB78AC6D8724746AA3B2C8D674BB`); its seal manifest is `manifest.sha256` (SHA-256 `6C88468FAABB91CAEB80C0681D4B6D61F045EB7FCCE807E6062A14E19637DD88`). No Unity or player writer was started by this final attempt.
+
+Read-only process inspection identified PID `12824`, start time `2026-11-02 18:18:32`, running a PlayMode test in `E:\majiang-review\g2-c04-d05-luna6-20261102-c04d05a1\build\cf79eb99ea3d493b8411cf67457e86ae\staging-project`. It is not owned by this task and was not stopped or modified. No lock bypass or second unchanged expensive attempt was made. The exact recovery condition is that this Unity owner exits normally and releases the shared mutex; then rerun the final command above from a clean checkout of code head `86cb2c4623aa10d0a316d60a750c3dcb30b4a41d`. The report commit changes only docs and must not be passed as `ExpectedSourceHead`.
+
+### B/C — verifier and adapter contracts
+
+- The accepted verifier remained unchanged. On the final Windows-runner preflight it built with native exit 0, and `self-test` exited 0 with `positive=17 negative=67 serializedFrames=5 source=WireCodec`.
+- `tools/tests/C04PrivacyPlayer.Tests.ps1` at code head `86cb2c46` exited 0 with `24/24` source-contract checks. Evidence summary: `build/b57a3bf1e5fd4b8eb20a36b74682a961/summary.json`. It checks fixed seven-case dispatch, opt-in/no-allocation behavior, real app/session paths, deadline facts, control-session diagnostics, compact path components, package/restart wiring, and unique metadata GUID. These are source checks, not Player execution.
+- `tools/tests/C04PrivacyRunner.Tests.ps1` at the post-FU-03 runner revision exited 0 with `26/26` contract checks (`build/79c388706c4247a7a091adb7fb629066`). The added behavior fixtures invoke the actual semantic evidence assertion function; all are explicitly fixture-only and are not GAME evidence.
+- The unified negative contract matrix rejects: missing/duplicate/unknown opt-in arguments before driver/evidence allocation; wrong source or dirty checkout; malformed/zero/renamed seven-case XML; missing required case artifacts; empty, wrong-case, wrong-decision, wrong-epoch, wrong deadline, no progress, or meaningless extra files; invalid raw owner/audience/binding/scope/version/protobuf/hash through the accepted verifier; package mutation; P2 request/scope/digest substitution or duplicate command; native nonzero, timeout, cancellation, residual writer, and unstable seal. No verifier relaxation, skip, or empty denominator was introduced.
+
+### D — exact final-source PlayMode result
+
+Exact command:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-c04-privacy-matrix.ps1 -ExpectedSourceHead 86cb2c4623aa10d0a316d60a750c3dcb30b4a41d -RunRoot build/e12f7d86bd4f4a47884676485145fb87 -TimeoutSeconds 1200
+```
+
+Unity process `unity-playmode` PID `32356` exited native `2`, not timed out and not cancelled. XML has exactly 7 cases, 6 passed, 1 failed, 0 skipped. XML SHA-256 is `3C14BE9F565DAAFB40A10648EF1FD68C6F496362AD254C42A9B92CC43FDA4FFB`; stable seal manifest SHA-256 is `BB730EDFA1308F47872EF0CD05EF0C042E9D2C6B78B3A6E61DB5D14175252E8A`.
+
+| Exact case | Result |
+|---|---|
+| `RealRoom_FourPlayersSpectatorAndRoleSwitchUseIndependentSessions` | PASS |
+| `RealRoom_DelayedOldRawReceiveIsRejectedByNewBinding` | PASS |
+| `RealRoom_ColdReopenReconcilesOriginalRequestWithoutDuplicate` | PASS |
+| `RealRoom_LegalSleeveAndFeeOwnershipAcrossFourSeatsAndSpectator` | PASS |
+| `RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly` | FAIL |
+| `RealRoom_OpenDecisionDeadlineContinuesAfterPlayerClose` | PASS |
+| `RealRoom_ClosedPlayerToSpectatorToNewPlayerReceivePathRejectsOldRaw` | PASS |
+
+The failure is not a missing evidence artifact or a timeout. At the stale-command boundary the real `TableSession` was `Reconnecting`; its binding/scope and snapshot remained present, the control epoch snapshot was 1, the claim sent one command frame, but the underlying channel was closed. `LastError=LOCAL_CLOSED`, `transportOpen=false`, and the pump loop recorded no exception. The stale command was therefore never sent to authority and no authoritative `DECISION_MISMATCH` receipt was obtained. Original diagnostic JSON SHA-256 `136688BBE9573772B252147AD1BEE6853817C397C53753F2226C3A7FCD1B976B`; error text SHA-256 `EC55B11BE0D13FD93DBAC48DFDCA18DE3B9DC8837FF8357B4AA7C374C0C10115` under `build/e12f7d86bd4f4a47884676485145fb87/privacy-evidence/released-control/`.
+
+### Earlier single ordinary Windows package — supplemental, not final-head acceptance
+
+At code head `47e1fff355468fab5c47c5ce2eef412894ba559b`, one ordinary Windows package was built once at `build/2d9677e3d5db427d9fcdb7775959a40b/player/Mahjong.exe` (exe SHA-256 `f083b0e879a9298cdcf9933a8f3b4f2b013e13f7d3e51221fc0d756b79e28807`). This is a prior source-head package and cannot certify head `86cb2c46`.
+
+The canonical runner process executed argument-rejection controls (three native nonzero exits), then the first two real cases passed; recovery failed native 72 in `LocalTableStore.CreateRoomAsync` because the temporary save path did not exist. A failure-continuation diagnostic then ran the remaining four cases against the **same unchanged package**: four-owner privacy passed, while release-control, deadline, and closed-binding each failed native 72. Real raw captures from role-switch and four-owner passed the real verifier. A direct same-package P2 prepare/recover was also run as a separately labeled continuation: two distinct `Mahjong.exe` PIDs/start times, same original request `c04-player-c04-d05-final-unified-p2-discard`, same scope `42b2c75f6be742edb2549bc6a3b704f8`, same canonical digest `0769e5d8848626ca2af725d2813acced3aa6212ea3a2cee43cd45720c078efa6`, old-scope lookup count 1, original command resend count 0, zero delta on repeat query, `physical136Unique=true`. It is useful real evidence for that earlier package only; it is not a canonical successful final-head `WindowsAppMatrix` run.
+
+The package was 205 build-manifest files (the marker excludes the package-manifest file); the runner’s actual before/after walk counted 206 files including that manifest. Both walks were byte-for-byte equal at SHA-256 `f8772d4212e84bfa4e4d98a24959eb1df8703e75213bc0d9c33b1ed6d9b15b5f`. This comparison occurred after the diagnostic continuation; the runner’s own final `windows-app-package-after.sha256` was not produced because its first failed case stopped the canonical matrix. Eight shared DLL hashes are in `build/2d9677e3d5db427d9fcdb7775959a40b/player-build.json`; they are prior-head evidence, not a final-head closure comparison.
+
+## Round 3 issue ledger — complete known items
+
+### D05-FU-01 — BLOCKER — final-head ordinary Windows package and unified app matrix not established
+
+- **Location:** final `-WindowsAppMatrix` stage in `tools/unity/run-p45-c04-privacy-matrix.ps1`; final attempt root `build/46a30dd529924372b71f24d36825ab76`.
+- **Reproduction:** the exact command in Stage A above, with expected head `86cb2c46...`.
+- **Actual vs expected:** source identity and accepted verifier preflight passed, then shared mutex acquisition timed out at 600 seconds before shared DLL build, Unity build, `Mahjong.exe`, or final-head P1/P2. Expected one fresh immutable ordinary package, all seven app cases, raw verification, P2 restart, and exact before/after manifest comparison.
+- **Evidence:** summary and manifest hashes recorded above; external lock owner PID/start/worktree recorded in Stage A. Older package evidence at head `47e1fff3` is supplemental and explicitly not promoted.
+- **Required fix/next action:** no code change is implied by this environment timeout. After the identified owner exits and releases the mutex, rerun at a clean checkout of code head `86cb2c46`; do not kill or bypass the other writer. Keep all runner failures as failures and complete both app cases and P2 on one package.
+- **Acceptance:** native build succeeds; one package and all 7 cases execute; real raw verifier accepts legitimate captures and rejects all malformed classes; P2 uses the original scope/request/digest and proves zero duplicate effects; before/after every-file count/length/SHA and the 8 shared DLL set match.
+
+### D05-FU-02 — MAJOR — original LocalHost recovery follow-up failure remains undiagnosed
+
+- **Location:** out-of-allowlist read-only source `dotnet/tests/Mahjong.LocalHost.Tests/LocalHostRecoveryTests.cs:72,147–158,794–813`.
+- **Reproduction:** the preserved original full-suite command was `D:/Unity/dotnet/dotnet.exe exec dotnet/tests/Mahjong.LocalHost.Tests/bin/Release/net8.0/Mahjong.LocalHost.Tests.dll -noLogo -automated -parallelMode none -failSkips -result-xml <exclusive-root>/localhost.xml`.
+- **Actual vs expected:** preserved canonical result remains `179 total / 178 pass / 1 fail / 0 skip`; `ColdRestartBoundaryIsStableBeforeAndAfterAutomaticFollowUp` observed version 1 / discard 1 and returned before follow-up. An earlier isolated rerun was 1/1 but did not explain or replace the full-suite failure.
+- **New diagnostic:** a controlled ignored copy/harness at `build/294a1597af054779a41213056b11e2eb/` ran the production LocalHost/Client/TableSession channel path 1/1 with native exit 0. It showed release immediately at version 1/eventSeq 2 with no decision, AI follow-ups at versions 2–4, and a new human decision at version 4. It did **not** reproduce the original 1/1 observation order; therefore “stale decision” remains only a source-supported hypothesis, not a diagnosed cause. JSON SHA-256 `A4C588A9E4E80B2D88656B526B47FF27C5E50B9F970F288704CCF8FCC62D5240`.
+- **Evidence:** first full-suite XML and SHA from the prior report remain preserved at `build/5c4608d017774b4798a9a54ea174850a/localhost.xml` (SHA `4923FAF6980E86672C259505112C606733D2972891D9DDE3159F59F552C85EFD`); diagnostic summary/samples are in the R3 root above.
+- **Required fix/next action:** no out-of-list test or production edit is authorized. Caller/reviewer must identify the deterministic scheduling/decision boundary from the original failure before proposing a minimal patch. Preserve seat/decision/epoch/phase, durable state/events and actual follow-up commit in the reproduction; do not merely change `>=` to `>` or use sleeps.
+- **Acceptance:** deterministic repro explains the original failed order and proposed cause; after separately authorized repair, canonical LocalHost suite is 179/179, zero skip. No unchanged full-suite rerun was used here.
+
+### D05-FU-03 — MAJOR — deadline and all-case evidence contract (implementation fixed; real Windows acceptance pending FU-01)
+
+- **Original defect/reproduction:** `build/49f188d64fc4444a8fb053f5049ddeaf/repro-deadline-contract.ps1`; previously a successful deadline producer had only generic summary/log while the runner demanded at least three files, so it was rejected as incomplete.
+- **Actual vs expected before fix:** deadline scenario had no case-specific evidence; arbitrary file count was not semantic proof. Expected actual decision/deadline/binding/close/spectator/cursor/progress facts, with case identity and schema validation.
+- **Repair mapping:** `c1534016` replaced the arbitrary count with `Assert-C04PlayerCaseEvidence` contracts for all seven cases and added missing-artifact/semantics fixture checks; `dcbb2f75` and `295230b4` corrected actual deadline clock and spectator snapshot types. Deadline driver now writes `deadline-evidence.json` from live decision, clock, session/binding, close state, spectator baseline and later version/cursor/phase.
+- **Validation:** real runner contract tests `26/26`; deadline fixture positive plus wrong/missing identity, decision, epoch, deadline, no-progress, and meaningless-third-file negatives all pass as expected. Fixtures are explicitly not GAME. The final-current-head PlayMode deadline case passed `1/1`; however the current-head ordinary Windows case never ran due FU-01. The earlier Windows attempt at head `47e1` stopped on the path defect before its deadline evidence could be produced.
+- **Evidence/fix state:** implementation and fixture-consumer defect are repaired. Do not mark the end-to-end requirement complete until a final-head ordinary Windows deadline case emits and passes the semantic contract from real production traffic.
+- **Acceptance:** seven schemas are all validated semantically; no dummy file/count threshold; one immutable final-head package contains a successful deadline artifact with original decision/seat/epoch/deadline, real binding close, spectator baseline and actual cursor/version progress. Missing or contradictory fields are rejected.
+
+### D05-FU-04 — MAJOR — ordinary Player local-save paths reached Windows `MAX_PATH` (shortened; final-head runtime check pending)
+
+- **Location:** authorized driver `unity/Mahjong.Unity/Assets/Scripts/App/C04PrivacyPlayerDriver.cs`, `StateRoot` and per-scenario room IDs; the LocalHost writer itself was not changed.
+- **Reproduction:** on the prior ordinary Player package, run `RealRoom_ColdReopenReconcilesOriginalRequestWithoutDuplicate`, `RealRoom_OpenDecisionDeadlineContinuesAfterPlayerClose`, or `RealRoom_ClosedPlayerToSpectatorToNewPlayerReceivePathRejectsOldRaw` through `-WindowsAppMatrix`. Player log at `build/2d9677e3d5db427d9fcdb7775959a40b/windows-app-cases/RealRoom_ColdReopenReconcilesOriginalRequestWithoutDuplicate.unity-player.log` reports `Local temporary write failed` on a `.save.tmp.<guid>` path whose exact length is 260; related cases fail the same way. The shorter four-owner path passed in that same package.
+- **Actual vs expected:** app-created `local` directory was present when set up but the nested atomic temp-save path hit the legacy Windows path ceiling. Expected every authorized temporary state/save path to remain below the platform limit without changing production persistence.
+- **Repair mapping:** `a203596f` shortens temporary state-folder and room-id random components while retaining GUID uniqueness; no production source or `UnityAppPaths` was modified. Player source-contract check 24/24 verifies compact path components.
+- **Validation:** final-source Editor run compiles and passes 6/7, but Editor temp root is shorter and does not prove ordinary Windows paths. The final Windows attempt at head `86cb2c46` timed out waiting for the shared mutex before building, so the fix is implemented but not runtime accepted.
+- **Acceptance:** after FU-01 lock release, the final-head ordinary Windows package completes recovery, deadline, and closed-binding cases with durable files and no path errors; semantic outputs pass and package hashes stay unchanged.
+
+### D05-FU-05 — MAJOR (new) — released/claimed player connection closes before authoritative stale rejection
+
+- **Why new:** the previous review did not have a successful Unity compilation and a real final-source seven-case run. This first actual run after compiling the new app driver exposed the connection transition; source-string and fixture checks could not reveal it.
+- **Location:** allowed reproduction in `unity/Mahjong.Unity/Assets/Tests/PlayMode/C04PrivacyRoleSwitchPlayModeTests.cs:927–1027` and driver `unity/Mahjong.Unity/Assets/Scripts/App/C04PrivacyPlayerDriver.cs:960–1080`; command admission gate is read-only `dotnet/src/Mahjong.Client/TableSession.cs:355–357`. Likely close/lifecycle investigation requires out-of-allowlist `dotnet/src/Mahjong.LocalHost/LocalTableRuntime.cs`, `dotnet/src/Mahjong.LocalHost/LocalTableRoom.cs`, `dotnet/src/Mahjong.Client/TableSession.cs`, and the Unity `LocalTableChannelFactory`.
+- **Reproduction:** the final PlayMode command in Stage D; exact case `RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly` fails in XML. The scenario releases seat 0, closes that player, observes spectator-only AI progress, opens a real new player session and issues ClaimControl, then captures the pre-stale command state.
+- **Actual vs expected:** current snapshot shows control epoch 1 and the claim sent one real command frame, but the session is `Reconnecting`, binding remains present, `LastError=LOCAL_CLOSED`, transport `IsOpen=false`, pump exception `<none>`. The client gate rejects before sending the stale command. Expected a still-ready bound session that sends the original stale decision and receives exact authoritative `DECISION_MISMATCH`, with no commit metadata/effect.
+- **Evidence:** `build/e12f7d86bd4f4a47884676485145fb87/privacy-evidence/released-control/control-session-before-stale-submit.json` and `control-session-submit-error.txt` with hashes in Stage D; same failure reproduced on final-source runs at `a203596f` and `86cb2c46`. The new `LastError`/transport/pump capture is diagnostic and does not alter production behavior.
+- **Required fix/next action:** no production/client/LocalHost edit is authorized. Preserve this exact reproduction and ask the caller/reviewer to investigate the real transport/room close reason and minimum necessary production path. Do not reopen a session, suppress the failure, skip the authoritative stale query, or claim control rejection from a client-side submission exception.
+- **Acceptance:** a real Player and PlayMode run keeps the claimed session Ready long enough to send exactly one old-decision request through the real wire path, receives the required rejection reason, proves no metadata/pending command/side effect, and independently records current control owner/epoch/Ready.
+
+## Round 3 fixed matrix status
+
+Statuses below describe the final unified source-head requirement. Evidence from the earlier head-`47e1` Windows package is identified as supplemental only.
+
+| Row | Status | Current-source evidence / limit |
+|---|---|---|
+| N1 | BLOCKED | Four-seat/player/spectator role isolation passes in current PlayMode; final ordinary package not run. |
+| N2 | BLOCKED | Spectator/public role behavior passes in current PlayMode; final ordinary package not run. |
+| N3 | BLOCKED | Non-empty sleeve/fee owner evidence passes the current PlayMode case; final Windows raw-owner verification not run. |
+| N4 | BLOCKED | Current PlayMode real delayed-old-raw receive case passes; final ordinary package evidence unavailable. |
+| N5 | BLOCKED | No final-source app slow-consumer saturation/cursor/close-isolation execution. |
+| N6 | FAIL | Current-source release/claim path becomes `LOCAL_CLOSED` before stale authoritative receipt; open-deadline case itself passes. |
+| N7 | BLOCKED | Current PlayMode cold reopen passes; required final-head ordinary Windows original-outbox process restart was not run. Prior-head P2 continuation is supplemental. |
+| N8 | FAIL | Required release/claim/seat lifecycle proof is interrupted by the same client transport close; current-source case fails. |
+| U1 | FAIL | Exact seven current-source PlayMode names: 6/7 passed, 0 skipped, native Unity exit 2. |
+| U2 | BLOCKED | Current PlayMode role-switch, legal sleeve/fee, delayed raw, and closed-binding cases pass; ordinary Windows same-package confirmation missing. |
+| U3 | FAIL | Recovery and deadline cases pass in PlayMode; release/claim control case fails before authoritative stale rejection. |
+| P1 | BLOCKED | No final-head ordinary Windows `Mahjong.exe` matrix; prior-head package is not promoted. |
+| P2 | BLOCKED | Real two-process same-package P2 passed only on prior head `47e1fff3`; final-head P2 not run. |
+| C04-G5-01 | BLOCKED | Current PlayMode four-owner positive passes; final ordinary Windows owner/raw comparison missing. |
+| C04-G5-02 | BLOCKED | Current PlayMode non-empty private fee ownership passes; final ordinary Windows independent raw comparison missing. |
+| C04-G5-03 | BLOCKED | Current PlayMode old-raw receive path passes; final ordinary Windows path not run. |
+
+## Round 3 handoff
+
+All currently known findings are FU-01 through FU-05 above; no confirmed additional business defect was added. FU-03 consumer/producer contract work and FU-04 short-path implementation have explicit code/test mappings, but their real final-head Windows acceptance remains open. FU-02’s root cause remains a hypothesis after a non-reproducing controlled diagnostic. FU-05 requires caller/reviewer judgment because the likely production lifecycle files are outside the authorized list. The receiver does not approve, push, create/amend a PR, merge, deploy, change task/scheduler state, or alter the other Unity process. C04/G2/G5 is not released.
+
+The report’s docs-only commit changes the checkout HEAD after the final tested code head. To resume validation, use a clean checkout/worktree at `86cb2c4623aa10d0a316d60a750c3dcb30b4a41d`, then run the exact final-source command in Stage A with a fresh ignored GUID root after the external PID releases the mutex. Do not use the docs commit hash as the expected source hash.
+
+# Round 2 authoritative status (historical; superseded by Round 3 above)
 
 **Final status: NOT ACCEPTED; the same-package application matrix remains BLOCKED.** The authorized opt-in driver, runner path, and negative/source-contract adaptations are now implemented in the approved file list. Latest source-contract checks pass, but there is no successful Unity compile, no ordinary Windows application package, and no final PlayMode or same-package Windows run. The final Unity compile attempt exited 1 while resolving `com.unity.burst` with `TAR_ENTRY_ERROR: ENOSPC`; after that attempt E: had 789,540,864 bytes free. Stage D was not started. FU-02 is diagnosed as a LocalHost test wait/predicate defect outside the allowlist and is handed to the caller with the exact path and minimum repair proposal below.
 
