@@ -1020,8 +1020,14 @@ namespace Mahjong.Client
                         continue;
                     }
 
-                    if (bufferedCursor.ProjectionSeq.Value <= _confirmedCursor!.Value.ProjectionSeq.Value)
+                    if (bufferedCursor.StreamVersion.Value < _confirmedCursor!.Value.StreamVersion.Value ||
+                        bufferedCursor.ProjectionSeq.Value <= _confirmedCursor.Value.ProjectionSeq.Value)
                     {
+                        // Projection counters are scoped to a binding, but an
+                        // older table version can still carry a numerically
+                        // larger projection counter after reconnect. Such a
+                        // frame cannot follow this baseline and must not turn
+                        // stale buffered traffic into a new gap recovery.
                         _earlyBuffer.RemoveAt(i);
                     }
                 }

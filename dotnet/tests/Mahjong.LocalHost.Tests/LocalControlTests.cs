@@ -579,6 +579,7 @@ namespace Mahjong.LocalHost.Tests
             string outboxPath = System.IO.Path.Combine(harness.Root, "control-outbox-reconnect");
             var outbox = new FileOutboxStore(outboxPath);
             DropFirstControlReceiptChannel? dropper = null;
+            StaleIncrementalBeforeSyncResponseChannel? staleInjector = null;
             await using LiveSession live = await LiveSession.OpenAsync(
                 harness,
                 outbox,
@@ -586,7 +587,8 @@ namespace Mahjong.LocalHost.Tests
                 inner =>
                 {
                     dropper = new DropFirstControlReceiptChannel(inner, 1);
-                    return dropper;
+                    staleInjector = new StaleIncrementalBeforeSyncResponseChannel(dropper);
+                    return staleInjector;
                 });
 
             const string requestId = "reconnect-release";
@@ -644,7 +646,31 @@ namespace Mahjong.LocalHost.Tests
             TableReceiptResolvedEventArgs resolved;
             try
             {
+                staleInjector!.ArmNextSyncResponse(checked(live.Session.Binding!.BindingEpoch.Value + 1));
                 await live.DisconnectAndReopenAsync(harness, ct);
+                try
+                {
+                    await LocalHostCommandTests.WithTimeoutAsync(staleInjector.WaitForInjectionAsync(ct), ct);
+                    await LocalHostCommandTests.WithTimeoutAsync(staleInjector.WaitForReconciliationQueryAsync(ct), ct);
+                }
+                catch (TimeoutException ex)
+                {
+                    throw new XunitException(
+                        "The explicit stale-frame recovery barrier timed out; injected=" + staleInjector.InjectedCount +
+                        " oldCursor=" + staleInjector.InjectedStreamVersion + "/" + staleInjector.InjectedProjectionSeq +
+                        " baseline=" + staleInjector.BaselineStreamVersion + "/" + staleInjector.BaselineProjectionSeq +
+                        " gapRequests=" + staleInjector.EarlyBufferGapRequestCount +
+                        " state=" + live.Session.State +
+                        " binding=" + (live.Session.Binding == null ? "null" : live.Session.Binding.BindingEpoch.Value.ToString()) +
+                        " pending=" + live.Session.PendingCommands.Count +
+                        " sync=" + (typeof(TableSession)
+                            .GetProperty("SyncDiagnosticForTest", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                            ?.GetValue(live.Session) ?? "diagnostic-unavailable") +
+                        " inner=" + ex.Message);
+                }
+                Assert.Equal(1, staleInjector.InjectedCount);
+                Assert.True(staleInjector.InjectedStreamVersion < staleInjector.BaselineStreamVersion);
+                Assert.True(staleInjector.InjectedProjectionSeq > staleInjector.BaselineProjectionSeq);
 
                 resolved = await live.WaitResolutionAsync(
                     args => string.Equals(args.Command.RequestId, requestId, StringComparison.Ordinal),
@@ -659,6 +685,9 @@ namespace Mahjong.LocalHost.Tests
                 Assert.Equal(digest, resolved.Resolution.CanonicalPayloadSha256);
                 await LocalHostCommandTests.WithTimeoutAsync(reconciledBaseline.Task, ct);
                 await live.WaitReadyAsync(ct);
+                Assert.Equal(0, staleInjector.EarlyBufferGapRequestCount);
+                Assert.Equal(0, live.Session.EarlyBufferItemCount);
+                Assert.Equal(TableConnectionState.Ready, live.Session.State);
                 Assert.Empty(live.Session.PendingCommands);
             }
             finally
@@ -4047,6 +4076,196 @@ namespace Mahjong.LocalHost.Tests
 
                 return bytes;
             }
+        }
+
+        private sealed class StaleIncrementalBeforeSyncResponseChannel : ITableChannel
+        {
+            private readonly ITableChannel _inner;
+            private readonly object _gate = new object();
+            private TaskCompletionSource<bool> _reconciliationQuery = NewSignal();
+            private TaskCompletionSource<bool> _injection = NewSignal();
+            private ReadOnlyMemory<byte>? _heldSyncResponse;
+            private bool _armed;
+            private bool _watchingRecovery;
+            private ulong _expectedBindingEpoch;
+
+            public StaleIncrementalBeforeSyncResponseChannel(ITableChannel inner)
+            {
+                _inner = inner;
+            }
+
+            public bool IsOpen => _inner.IsOpen;
+
+            public int InjectedCount { get; private set; }
+
+            public ulong InjectedStreamVersion { get; private set; }
+
+            public ulong InjectedProjectionSeq { get; private set; }
+
+            public ulong BaselineStreamVersion { get; private set; }
+
+            public ulong BaselineProjectionSeq { get; private set; }
+
+            public int EarlyBufferGapRequestCount { get; private set; }
+
+            public void ArmNextSyncResponse(ulong bindingEpoch)
+            {
+                lock (_gate)
+                {
+                    _reconciliationQuery = NewSignal();
+                    _injection = NewSignal();
+                    _expectedBindingEpoch = bindingEpoch;
+                    _armed = false;
+                    _watchingRecovery = true;
+                    EarlyBufferGapRequestCount = 0;
+                }
+            }
+
+            public Task<bool> WaitForReconciliationQueryAsync(CancellationToken cancellationToken)
+            {
+                Task<bool> task;
+                lock (_gate) task = _reconciliationQuery.Task;
+                return task.WaitAsync(cancellationToken);
+            }
+
+            public Task<bool> WaitForInjectionAsync(CancellationToken cancellationToken)
+            {
+                Task<bool> task;
+                lock (_gate) task = _injection.Task;
+                return task.WaitAsync(cancellationToken);
+            }
+
+            public Task OpenAsync(TableChannelConnectRequest request, CancellationToken cancellationToken) =>
+                _inner.OpenAsync(request, cancellationToken);
+
+            public async Task SendAsync(ReadOnlyMemory<byte> wireEnvelope, CancellationToken cancellationToken)
+            {
+                WireEnvelope? envelope = WireCodec.Decode(wireEnvelope.Span).Envelope;
+                TaskCompletionSource<bool>? signal = null;
+                if (envelope != null)
+                {
+                    lock (_gate)
+                    {
+                        if (_watchingRecovery && envelope.SyncRequest != null && envelope.BindingEpoch == _expectedBindingEpoch)
+                        {
+                            _armed = true;
+                        }
+
+                        if (_watchingRecovery && envelope.SyncRequest != null &&
+                            string.Equals(envelope.SyncRequest.ReasonCode, "EARLY_BUFFER_GAP", StringComparison.Ordinal))
+                        {
+                            EarlyBufferGapRequestCount++;
+                        }
+
+                        if (_watchingRecovery && InjectedCount > 0 && envelope.ReceiptQuery != null)
+                        {
+                            _watchingRecovery = false;
+                            signal = _reconciliationQuery;
+                        }
+                    }
+                }
+
+                await _inner.SendAsync(wireEnvelope, cancellationToken).ConfigureAwait(false);
+                signal?.TrySetResult(true);
+            }
+
+            public async Task<ReadOnlyMemory<byte>> ReceiveAsync(CancellationToken cancellationToken)
+            {
+                ReadOnlyMemory<byte>? held;
+                lock (_gate)
+                {
+                    held = _heldSyncResponse;
+                    _heldSyncResponse = null;
+                }
+
+                if (held.HasValue)
+                {
+                    return held.Value;
+                }
+
+                ReadOnlyMemory<byte> frame = await _inner.ReceiveAsync(cancellationToken).ConfigureAwait(false);
+                WireEnvelope? envelope = WireCodec.Decode(frame.Span).Envelope;
+                WireEnvelope? stale = null;
+                TaskCompletionSource<bool>? injectionSignal = null;
+                lock (_gate)
+                {
+                    if (_armed && envelope?.SyncResponse?.Player != null && envelope.BindingEpoch == _expectedBindingEpoch)
+                    {
+                        _armed = false;
+                        stale = MakeStaleIncremental(envelope);
+                        _heldSyncResponse = frame.ToArray();
+                        InjectedCount++;
+                        InjectedStreamVersion = stale.PlayerUpdate.Cursor.StreamVersion;
+                        InjectedProjectionSeq = stale.PlayerUpdate.Cursor.ProjectionSeq;
+                        BaselineStreamVersion = envelope.SyncResponse.Player.Cursor.StreamVersion;
+                        BaselineProjectionSeq = envelope.SyncResponse.Player.Cursor.ProjectionSeq;
+                        injectionSignal = _injection;
+                    }
+                }
+
+                if (stale == null)
+                {
+                    return frame;
+                }
+
+                ReadOnlyMemory<byte> injected = WireCodec.Encode(stale);
+                injectionSignal?.TrySetResult(true);
+                return injected;
+            }
+
+            public Task CloseAsync(TableChannelCloseReason reason, CancellationToken cancellationToken) =>
+                _inner.CloseAsync(reason, cancellationToken);
+
+            private static WireEnvelope MakeStaleIncremental(WireEnvelope baselineEnvelope)
+            {
+                global::Mahjong.Contracts.Wire.SyncResponse response = baselineEnvelope.SyncResponse;
+                PlayerSnapshot baseline = response.Player;
+                global::Mahjong.Contracts.Wire.StreamCursor baselineCursor = baseline.Cursor;
+                if (baselineCursor.StreamVersion == 0 || baseline.EventSeq == 0 || baselineCursor.ProjectionSeq == ulong.MaxValue)
+                {
+                    throw new XunitException("The reconnect baseline cannot construct the old-stream positive-projection fixture.");
+                }
+
+                ulong oldStreamVersion = baselineCursor.StreamVersion - 1;
+                var staleCursor = new global::Mahjong.Contracts.Wire.StreamCursor
+                {
+                    StreamVersion = oldStreamVersion,
+                    ProjectionSeq = baselineCursor.ProjectionSeq + 1
+                };
+                var staleSnapshot = baseline.Clone();
+                staleSnapshot.Cursor = staleCursor.Clone();
+                staleSnapshot.StateVersion = oldStreamVersion;
+                staleSnapshot.EventSeq = baseline.EventSeq - 1;
+
+                return new WireEnvelope
+                {
+                    ProtocolMajor = baselineEnvelope.ProtocolMajor,
+                    ProtocolMinor = baselineEnvelope.ProtocolMinor,
+                    RulesetVersion = baselineEnvelope.RulesetVersion,
+                    ProjectionVersion = baselineEnvelope.ProjectionVersion,
+                    MessageType = WireMessageType.PlayerUpdate,
+                    RoomId = baselineEnvelope.RoomId,
+                    SessionId = baselineEnvelope.SessionId,
+                    SeatId = baselineEnvelope.SeatId,
+                    BindingEpoch = baselineEnvelope.BindingEpoch,
+                    Scope = baselineEnvelope.Scope?.Clone(),
+                    Cursor = staleCursor.Clone(),
+                    PlayerUpdate = new global::Mahjong.Contracts.Wire.PlayerUpdate
+                    {
+                        Snapshot = staleSnapshot,
+                        FromCursor = new global::Mahjong.Contracts.Wire.StreamCursor
+                        {
+                            StreamVersion = oldStreamVersion,
+                            ProjectionSeq = baselineCursor.ProjectionSeq
+                        },
+                        Cursor = staleCursor.Clone(),
+                        IsFullSnapshot = false
+                    }
+                };
+            }
+
+            private static TaskCompletionSource<bool> NewSignal() =>
+                new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         }
 
         private sealed class DelayNextSyncResponseChannel : ITableChannel
