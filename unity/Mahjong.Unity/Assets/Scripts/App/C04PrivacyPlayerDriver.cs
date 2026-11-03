@@ -1241,7 +1241,7 @@ namespace Mahjong.Unity.App
                     "\",\"oldWelcomeScopeId\":\"" + noChangeWelcomeBefore.Scope?.ScopeId + "\",\"newWelcomeScopeId\":\"" + noChangeWelcomeAfter.Scope?.ScopeId +
                     "\",\"oldWelcomeRole\":" + (int)noChangeWelcomeBefore.Role + ",\"newWelcomeRole\":" + (int)noChangeWelcomeAfter.Role +
                     ",\"oldWelcomeSeat\":" + noChangeWelcomeBefore.SeatId + ",\"newWelcomeSeat\":" + noChangeWelcomeAfter.SeatId +
-                    ",\"resumeTicketSha256Before\":\"" + noChangeResumeTicketHash + "\",\"resumeTicketSha256After\":\"" + Sha256Hex(Encoding.UTF8.GetBytes(claimedTicket.SessionTicket)) +
+                    ",\"resumeTicketSha256Before\":\"" + noChangeResumeTicketHash + "\",\"resumeTicketSha256After\":\"" + Sha256Hex(Encoding.UTF8.GetBytes(claimedTicket.SessionTicket)) + "\"" +
                     ",\"controlEpochBefore\":" + noChangeEpochBefore +
                     ",\"controlEpochAfter\":" + (noChangeAfter.PrivateView.Control?.ControlEpoch ?? 0UL) + ",\"controlHuman\":" +
                     (noChangeAfter.PrivateView.Control?.ControlledByComputer == false).ToString().ToLowerInvariant() + ",\"sessionId\":\"" + claimed.Binding!.SessionId.Value +
