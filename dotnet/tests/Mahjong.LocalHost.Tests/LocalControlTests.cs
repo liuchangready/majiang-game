@@ -128,6 +128,136 @@ namespace Mahjong.LocalHost.Tests
             File.WriteAllLines(Path.Combine(evidenceRoot, "control-projection.txt"), projectionLines);
         }
 
+        private static void SaveControlSyncDiagnostics(LiveSession live, string requestId)
+        {
+            string? evidenceRoot = Environment.GetEnvironmentVariable("G2_CONTROL_EVIDENCE_DIR");
+            RecordingTableChannel? capture = live.Recording;
+            if (string.IsNullOrWhiteSpace(evidenceRoot) || capture == null) return;
+            Directory.CreateDirectory(evidenceRoot);
+
+            var lines = new List<string>
+            {
+                "target-request=" + requestId,
+                "client-last-sync-guard=" + (typeof(TableSession)
+                    .GetProperty("SyncDiagnosticForTest", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                    ?.GetValue(live.Session) ?? "diagnostic-unavailable"),
+                "runtime-identity=session:" + live.Runtime.SessionIdForTest +
+                    ";binding:" + live.Runtime.BindingEpochForTest +
+                    ";role:" + live.Runtime.RoleForTest +
+                    ";seat:" + live.Runtime.SeatForTest +
+                    ";scope:" + live.Runtime.ScopeIdForTest,
+                "client-snapshot=" + live.Session.PlayerSnapshot?.PrivateView?.Control?.ControlEpoch +
+                    "/" + live.Session.PlayerSnapshot?.PrivateView?.Control?.ControlledByComputer +
+                    ";cursor=" + live.Session.ConfirmedCursor?.StreamVersion.Value +
+                    "/" + live.Session.ConfirmedCursor?.ProjectionSeq.Value
+            };
+
+            int syncRequestIndex = 0;
+            foreach (byte[] bytes in capture.SentFrames)
+            {
+                WireEnvelope envelope = WireEnvelope.Parser.ParseFrom(bytes);
+                string sha = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes));
+                if (envelope.RequestId == requestId && envelope.Command != null)
+                {
+                    File.WriteAllBytes(Path.Combine(evidenceRoot, "failed-control-request.bin"), bytes);
+                    lines.Add("CONTROL_REQUEST id=" + envelope.RequestId +
+                        ";kind=" + envelope.Command.Type +
+                        ";session=" + envelope.SessionId +
+                        ";binding=" + envelope.BindingEpoch +
+                        ";seat=" + envelope.SeatId +
+                        ";scope=" + envelope.Scope?.ScopeId +
+                        ";sha256=" + sha);
+                }
+
+                if (envelope.SyncRequest != null)
+                {
+                    string known = envelope.SyncRequest.KnownCursor == null
+                        ? "none"
+                        : envelope.SyncRequest.KnownCursor.StreamVersion + "/" + envelope.SyncRequest.KnownCursor.ProjectionSeq;
+                    lines.Add("SYNC_REQUEST index=" + syncRequestIndex +
+                        ";correlation=" + envelope.CorrelationId +
+                        ";reason=" + envelope.SyncRequest.ReasonCode +
+                        ";target=" + envelope.SyncRequest.Target +
+                        ";known=" + known +
+                        ";session=" + envelope.SessionId +
+                        ";binding=" + envelope.BindingEpoch +
+                        ";seat=" + envelope.SeatId +
+                        ";sha256=" + sha);
+                    File.WriteAllBytes(Path.Combine(evidenceRoot, "sync-request-" + syncRequestIndex++ + ".bin"), bytes);
+                }
+            }
+
+            int receivedIndex = 0;
+            foreach (byte[] bytes in capture.ReceivedFrames)
+            {
+                WireEnvelope envelope = WireEnvelope.Parser.ParseFrom(bytes);
+                string sha = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes));
+                if (envelope.Receipt != null && envelope.RequestId == requestId)
+                {
+                    File.WriteAllBytes(Path.Combine(evidenceRoot, "failed-control-receipt.bin"), bytes);
+                    lines.Add("CONTROL_RECEIPT id=" + envelope.RequestId +
+                        ";status=" + envelope.Receipt.Status +
+                        ";reason=" + envelope.Receipt.ReasonCode +
+                        ";digest=" + envelope.Receipt.CanonicalPayloadSha256 +
+                        ";sha256=" + sha);
+                }
+
+                if (envelope.SyncResponse != null)
+                {
+                    string cursor = envelope.Cursor == null
+                        ? "none"
+                        : envelope.Cursor.StreamVersion + "/" + envelope.Cursor.ProjectionSeq;
+                    string control = envelope.SyncResponse.Player?.PrivateView?.Control == null
+                        ? "none"
+                        : envelope.SyncResponse.Player.PrivateView.Control.ControlEpoch + "/" +
+                          envelope.SyncResponse.Player.PrivateView.Control.ControlledByComputer;
+                    lines.Add("SYNC_RESPONSE correlation=" + envelope.CorrelationId +
+                        ";session=" + envelope.SessionId +
+                        ";binding=" + envelope.BindingEpoch +
+                        ";seat=" + envelope.SeatId +
+                        ";target=" + envelope.SyncResponse.Target +
+                        ";full=" + envelope.SyncResponse.IsFullSnapshot +
+                        ";cursor=" + cursor +
+                        ";control=" + control +
+                        ";sha256=" + sha);
+                }
+                else if (envelope.PlayerUpdate != null || envelope.PublicUpdate != null)
+                {
+                    string cursor = envelope.Cursor == null
+                        ? "none"
+                        : envelope.Cursor.StreamVersion + "/" + envelope.Cursor.ProjectionSeq;
+                    string control = envelope.PlayerUpdate?.Snapshot?.PrivateView?.Control == null
+                        ? "none"
+                        : envelope.PlayerUpdate.Snapshot.PrivateView.Control.ControlEpoch + "/" +
+                          envelope.PlayerUpdate.Snapshot.PrivateView.Control.ControlledByComputer;
+                    lines.Add("PUSH type=" + envelope.MessageType +
+                        ";correlation=" + envelope.CorrelationId +
+                        ";session=" + envelope.SessionId +
+                        ";binding=" + envelope.BindingEpoch +
+                        ";seat=" + envelope.SeatId +
+                        ";full=" + (envelope.PlayerUpdate?.IsFullSnapshot ?? envelope.PublicUpdate?.IsFullSnapshot) +
+                        ";cursor=" + cursor +
+                        ";control=" + control +
+                        ";sha256=" + sha);
+                }
+                else if (envelope.Error != null)
+                {
+                    lines.Add("ERROR code=" + envelope.Error.Code +
+                        ";detail=" + envelope.Error.DetailCode +
+                        ";correlation=" + envelope.CorrelationId +
+                        ";sha256=" + sha);
+                }
+
+                receivedIndex++;
+            }
+
+            lines.Add("RUNTIME_STREAM_TRACE_BEGIN");
+            lines.AddRange(live.Runtime.StreamTraceForTest);
+            lines.Add("RUNTIME_STREAM_TRACE_END");
+            lines.Add("received-count=" + receivedIndex);
+            File.WriteAllLines(Path.Combine(evidenceRoot, "control-sync-diagnostic.txt"), lines);
+        }
+
         [Fact]
         public async Task ReviewerProbe_ControlReplaySurvivesDecisionRetirement()
         {
@@ -207,7 +337,8 @@ namespace Mahjong.LocalHost.Tests
             ITableChannel channel = await LocalTableHost.CreateChannelAsync(harness.Options, ct);
             string channelTicket = LocalTableHost.IssueTicket(harness.Options);
             await channel.OpenAsync(new TableChannelConnectRequest(channelTicket, "p41-test", null), ct);
-            var wireCapture = new RecordingTableChannel(channel);
+            var delayedSync = new DelayNextSyncResponseChannel(channel);
+            var wireCapture = new RecordingTableChannel(delayedSync);
             string outboxPath = System.IO.Path.Combine(harness.Root, "control-outbox");
             var session = new TableSession(wireCapture, new FileOutboxStore(outboxPath));
             string sessionTicket = LocalTableHost.IssueTicket(harness.Options);
@@ -220,6 +351,14 @@ namespace Mahjong.LocalHost.Tests
                 {
                     while (!pumpCts.IsCancellationRequested)
                     {
+                        if (session.State == TableConnectionState.Reconnecting)
+                        {
+                            await session.OpenAsync(
+                                new TableSessionOpenRequest(LocalTableHost.IssueTicket(harness.Options), "p41-test"),
+                                pumpCts.Token);
+                            continue;
+                        }
+
                         await session.PumpOnceAsync(pumpCts.Token);
                     }
                 }
@@ -239,6 +378,8 @@ namespace Mahjong.LocalHost.Tests
             {
                 await WaitReadyAsync(session, pumpCts.Token);
                 PlayerSnapshot baseline = session.PlayerSnapshot!;
+                TableStreamFrame oldSubscriptionFrame = ((LocalTableChannel)channel).RuntimeForMatch!.LastStreamFrameForTest!;
+                long oldSubscriptionGeneration = ((LocalTableChannel)channel).RuntimeForMatch!.StreamGenerationForTest;
                 ulong epoch = 0;
                 for (int i = 0; i < 3; i++)
                 {
@@ -280,6 +421,11 @@ namespace Mahjong.LocalHost.Tests
                     session.SnapshotChanged += snapshotHandler;
                     try
                     {
+                        if (i == 0)
+                        {
+                            delayedSync.ArmNextResponse();
+                        }
+
                         CommandSubmission submission = await session.SubmitAsync(command, pumpCts.Token);
                         Assert.True(submission.Sent);
                         TableReceiptResolvedEventArgs receipt = await LocalHostCommandTests.WithTimeoutAsync(
@@ -289,6 +435,18 @@ namespace Mahjong.LocalHost.Tests
                         Assert.Equal(ControlReason, receipt.Resolution.ReasonCode);
                         Assert.Equal(64, receipt.Resolution.CanonicalPayloadSha256.Length);
                         Assert.Equal(claim ? CommandKind.ClaimControl : CommandKind.ReleaseControl, receipt.Command.Kind);
+
+                        if (i == 0)
+                        {
+                            await delayedSync.WaitUntilHeldAsync().WaitAsync(pumpCts.Token);
+                            LocalTableRuntime runtime = ((LocalTableChannel)channel).RuntimeForMatch!;
+                            runtime.OnFrame(oldSubscriptionFrame, oldSubscriptionGeneration);
+                            Assert.Contains(
+                                runtime.StreamTraceForTest,
+                                line => line.Contains("FRAME_DROPPED generation=" + oldSubscriptionGeneration + "/", StringComparison.Ordinal) &&
+                                        line.Contains("activeIdentity=False", StringComparison.Ordinal));
+                            delayedSync.ReleaseHeldResponse();
+                        }
 
                         TableSnapshotChangedEventArgs baselineUpdate = await LocalHostCommandTests.WithTimeoutAsync(
                             projectedBaseline.Task,
@@ -315,6 +473,7 @@ namespace Mahjong.LocalHost.Tests
             }
             finally
             {
+                delayedSync.ReleaseHeldResponse();
                 pumpCts.Cancel();
                 await pump;
                 LocalTableRuntime? runtime = ((LocalTableChannel)channel).RuntimeForMatch;
@@ -985,7 +1144,8 @@ namespace Mahjong.LocalHost.Tests
             await using LiveSession live = await LiveSession.OpenAsync(
                 harness,
                 new InMemoryOutboxStore(),
-                ct);
+                ct,
+                inner => new RecordingTableChannel(inner));
 
             PlayerSnapshot snapshot = await live.WaitForDecisionAsync(ct);
             string decisionId = snapshot.PrivateView!.Decision.DecisionId;
@@ -3030,13 +3190,17 @@ namespace Mahjong.LocalHost.Tests
                 new List<TableReceiptResolvedEventArgs>();
             private readonly CancellationToken _lifetimeToken;
             private readonly ITableChannel _inner;
+            private readonly ITableChannel _transport;
+            private readonly Func<string> _reconnectTicket;
             private CancellationTokenSource? _pumpCts;
             private Task? _pumpTask;
             private bool _disposed;
 
-            private LiveSession(ITableChannel inner, TableSession session, CancellationToken ct)
+            private LiveSession(ITableChannel inner, ITableChannel transport, TableSession session, CancellationToken ct, Func<string> reconnectTicket)
             {
                 _inner = inner;
+                _transport = transport;
+                _reconnectTicket = reconnectTicket;
                 Session = session;
                 _lifetimeToken = ct;
             }
@@ -3089,6 +3253,8 @@ namespace Mahjong.LocalHost.Tests
 
             public TableSession Session { get; }
 
+            public RecordingTableChannel? Recording => _transport as RecordingTableChannel;
+
             public LocalTableRuntime Runtime =>
                 _inner is LocalTableChannel local && local.RuntimeForMatch != null
                     ? local.RuntimeForMatch
@@ -3107,7 +3273,7 @@ namespace Mahjong.LocalHost.Tests
                 await inner.OpenAsync(new TableChannelConnectRequest(channelTicket, "p41-test", null), ct);
                 ITableChannel channel = wrap == null ? inner : wrap(inner);
                 var session = new TableSession(channel, outbox);
-                var live = new LiveSession(inner, session, ct);
+                var live = new LiveSession(inner, channel, session, ct, () => LocalTableHost.IssueTicket(harness.Options));
                 session.ReceiptResolved += live.OnReceiptResolved;
                 string sessionTicket = LocalTableHost.IssueTicket(harness.Options);
                 await session.OpenAsync(new TableSessionOpenRequest(sessionTicket, "p41-test"), ct);
@@ -3263,6 +3429,7 @@ namespace Mahjong.LocalHost.Tests
                         }
                         catch (TimeoutException)
                         {
+                            SaveControlSyncDiagnostics(this, requestId);
                             throw new XunitException(
                                 "The recorded control receipt was not followed by a full baseline; state=" +
                                 Session.State + " last=" + Session.LastError +
@@ -3274,6 +3441,7 @@ namespace Mahjong.LocalHost.Tests
                         }
 
                         await WaitReadyAsync(ct);
+                        SaveControlSyncDiagnostics(this, requestId);
                     }
 
                     return resolution;
@@ -3321,6 +3489,28 @@ namespace Mahjong.LocalHost.Tests
             {
                 while (!token.IsCancellationRequested)
                 {
+                    if (Session.State == TableConnectionState.Reconnecting)
+                    {
+                        try
+                        {
+                            await Session.OpenAsync(
+                                new TableSessionOpenRequest(_reconnectTicket(), "p41-test"),
+                                token).ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            return;
+                        }
+                        catch (TableChannelClosedException)
+                        {
+                            await Task.Delay(10, token).ConfigureAwait(false);
+                        }
+                        catch (InvalidOperationException)
+                        {
+                            return;
+                        }
+                    }
+
                     try
                     {
                         await Session.PumpOnceAsync(token);
@@ -3857,6 +4047,76 @@ namespace Mahjong.LocalHost.Tests
 
                 return bytes;
             }
+        }
+
+        private sealed class DelayNextSyncResponseChannel : ITableChannel
+        {
+            private readonly ITableChannel _inner;
+            private readonly object _gate = new object();
+            private TaskCompletionSource<bool>? _held;
+            private TaskCompletionSource<bool>? _release;
+            private bool _armed;
+
+            public DelayNextSyncResponseChannel(ITableChannel inner) { _inner = inner; }
+
+            public bool IsOpen => _inner.IsOpen;
+
+            public void ArmNextResponse()
+            {
+                lock (_gate)
+                {
+                    _held = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    _release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    _armed = true;
+                }
+            }
+
+            public Task WaitUntilHeldAsync()
+            {
+                lock (_gate) return (_held ?? throw new InvalidOperationException("No sync-response gate is armed.")).Task;
+            }
+
+            public void ReleaseHeldResponse()
+            {
+                lock (_gate)
+                {
+                    _armed = false;
+                    _release?.TrySetResult(true);
+                }
+            }
+
+            public Task OpenAsync(TableChannelConnectRequest request, CancellationToken cancellationToken) =>
+                _inner.OpenAsync(request, cancellationToken);
+
+            public Task SendAsync(ReadOnlyMemory<byte> wireEnvelope, CancellationToken cancellationToken) =>
+                _inner.SendAsync(wireEnvelope, cancellationToken);
+
+            public async Task<ReadOnlyMemory<byte>> ReceiveAsync(CancellationToken cancellationToken)
+            {
+                ReadOnlyMemory<byte> frame = await _inner.ReceiveAsync(cancellationToken).ConfigureAwait(false);
+                TaskCompletionSource<bool>? held = null;
+                TaskCompletionSource<bool>? release = null;
+                lock (_gate)
+                {
+                    if (_armed && WireCodec.Decode(frame.Span).Envelope?.MessageType == WireMessageType.SyncResponse)
+                    {
+                        _armed = false;
+                        held = _held;
+                        release = _release;
+                    }
+                }
+
+                if (held != null && release != null)
+                {
+                    held.TrySetResult(true);
+                    await release.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+                }
+
+                return frame;
+            }
+
+            public Task CloseAsync(TableChannelCloseReason reason, CancellationToken cancellationToken) =>
+                _inner.CloseAsync(reason, cancellationToken);
         }
 
         private sealed class RecordingTableChannel : ITableChannel
