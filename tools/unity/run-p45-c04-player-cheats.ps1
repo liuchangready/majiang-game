@@ -800,12 +800,20 @@ function Get-C04SourceInputRows {
     return @($rows | Sort-Object -Property path)
 }
 
+function Get-C04EffectiveSourceRows {
+    param([string]$RepoRoot)
+    $rows = @(Get-C04SourceInputRows -RepoRoot $RepoRoot)
+    return @($rows | Where-Object {
+        $p = [string]$_.path
+        -not ($p -match '\.(csproj|slnx|pdb\.meta)$' -or $p -match '(^|/)\.vscode/')
+    })
+}
 function Get-C04SourceIdentity {
     param([string]$RepoRoot = $root)
     Assert-C04PathSafe -Path $RepoRoot -Label 'source-root'
     $head = ((& git -C $RepoRoot rev-parse HEAD) -join '').Trim()
     if ($LASTEXITCODE -ne 0) { throw 'C04FAIL:GIT:HEAD unreadable' }
-    $rows = @(Get-C04SourceInputRows -RepoRoot $RepoRoot)
+    $rows = @(Get-C04EffectiveSourceRows -RepoRoot $RepoRoot)
     if ($rows.Count -eq 0) { throw 'C04FAIL:SOURCE_EMPTY:no build input files found' }
     $canonical = New-Object System.Text.StringBuilder
     foreach ($row in $rows) {
@@ -862,8 +870,8 @@ function New-C04StagedRepository {
         if (Test-Path -LiteralPath $sourceFile -PathType Leaf) { Copy-Item -LiteralPath $sourceFile -Destination (Join-Path $StagingRepo $rootFile) -Force }
     }
     Assert-C04NoReparsePoint -Path $StagingRepo -Label 'staging-repository'
-    $sourceRows = @(Get-C04SourceInputRows -RepoRoot $SourceRoot)
-    $stagedRows = @(Get-C04SourceInputRows -RepoRoot $StagingRepo)
+    $sourceRows = @(Get-C04EffectiveSourceRows -RepoRoot $SourceRoot)
+    $stagedRows = @(Get-C04EffectiveSourceRows -RepoRoot $StagingRepo)
     $sourceMap = @{}
     foreach ($row in $sourceRows) { $sourceMap[[string]$row.path] = $row }
     $stagedMap = @{}
@@ -1534,9 +1542,13 @@ function Test-C04PackageSeal {
             if (Test-Path -LiteralPath $sourceManifest) {
                 if ((Get-C04Sha256 $sourceManifest) -ne [string]$seal.sourceManifestSha256) { $errors.Add('PACKAGE_EVIDENCE_SOURCE_HASH') | Out-Null }
                 $expectedSource = @{}
-                foreach ($row in @(Get-C04SourceInputRows -RepoRoot $root)) { $expectedSource[[string]$row.path] = $row }
+                foreach ($row in @(Get-C04EffectiveSourceRows -RepoRoot $root)) { $expectedSource[[string]$row.path] = $row }
                 $actualSource = @{}
-                foreach ($row in @(Import-Csv -LiteralPath $sourceManifest)) { $actualSource[[string]$row.path] = $row }
+                foreach ($row in @(Import-Csv -LiteralPath $sourceManifest)) {
+                    $spath = [string]$row.path
+                    if ($actualSource.ContainsKey($spath)) { $errors.Add('PACKAGE_EVIDENCE_SOURCE_DUPLICATE:' + $spath) | Out-Null }
+                    $actualSource[$spath] = $row
+                }
                 if ($expectedSource.Count -ne $actualSource.Count) { $errors.Add('PACKAGE_EVIDENCE_SOURCE_COUNT') | Out-Null }
                 foreach ($key in $expectedSource.Keys) {
                     if (-not $actualSource.ContainsKey($key)) { $errors.Add('PACKAGE_EVIDENCE_SOURCE_MISSING:' + $key) | Out-Null; continue }
@@ -1544,7 +1556,7 @@ function Test-C04PackageSeal {
                 }
             }
             $sourceByPath = @{}
-            foreach ($row in @(Get-C04SourceInputRows -RepoRoot $root)) { $sourceByPath[[string]$row.path] = $row }
+            foreach ($row in @(Get-C04EffectiveSourceRows -RepoRoot $root)) { $sourceByPath[[string]$row.path] = $row }
             $allowedChanged = @('ProjectSettings/ProjectSettings.asset','Assets/Art/UI/Fonts/NotoSansSC-Regular SDF.asset')
             $expectedProvenance = @()
             try { $expectedProvenance = @(Get-SharedPluginInputClosure -RepoRoot $root) } catch { $errors.Add('PACKAGE_EVIDENCE_PROVENANCE_CLOSURE:' + $_.Exception.Message) | Out-Null }
@@ -1558,7 +1570,13 @@ function Test-C04PackageSeal {
                 }
             }
             $stagedMap = @{}
-            if (Test-Path -LiteralPath $stagedManifest) { foreach ($row in @(Import-Csv -LiteralPath $stagedManifest)) { $stagedMap[[string]$row.path] = $row } }
+            if (Test-Path -LiteralPath $stagedManifest) {
+                foreach ($row in @(Import-Csv -LiteralPath $stagedManifest)) {
+                    $spath = [string]$row.path
+                    if ($stagedMap.ContainsKey($spath)) { $errors.Add('PACKAGE_EVIDENCE_STAGED_DUPLICATE:' + $spath) | Out-Null }
+                    $stagedMap[$spath] = $row
+                }
+            }
             $removedUnityFiles = @('Assets/Resources/PerformanceTestRunInfo.json','Assets/Resources/PerformanceTestRunInfo.json.meta','Assets/Resources/PerformanceTestRunSettings.json','Assets/Resources/PerformanceTestRunSettings.json.meta')
             foreach ($srcRow in @($sourceByPath.Values | Where-Object { [string]$_.path -like 'unity/Mahjong.Unity/*' })) {
                 $rel = ([string]$srcRow.path).Substring('unity/Mahjong.Unity/'.Length)
@@ -1573,7 +1591,11 @@ function Test-C04PackageSeal {
                     if ([long]$sourceByPath[$rel].bytes -ne [long]$row.bytes -or [string]$sourceByPath[$rel].sha256 -ne [string]$row.sha256) { $errors.Add('PACKAGE_EVIDENCE_CODE_SOURCE_MISMATCH:' + $rel) | Out-Null }
                 }
                 $codeMap = @{}
-                foreach ($row in @(Import-Csv -LiteralPath $stagedCodeManifest)) { $codeMap[[string]$row.path] = $row }
+                foreach ($row in @(Import-Csv -LiteralPath $stagedCodeManifest)) {
+                    $cpath = [string]$row.path
+                    if ($codeMap.ContainsKey($cpath)) { $errors.Add('PACKAGE_EVIDENCE_CODE_DUPLICATE:' + $cpath) | Out-Null }
+                    $codeMap[$cpath] = $row
+                }
                 foreach ($srcRow in @($sourceByPath.Values | Where-Object { [string]$_.path -notlike 'unity/*' })) {
                     if (-not $codeMap.ContainsKey([string]$srcRow.path)) { $errors.Add('PACKAGE_EVIDENCE_REQUIRED_CODE_MISSING:' + [string]$srcRow.path) | Out-Null }
                 }
@@ -1607,6 +1629,7 @@ function Test-C04PackageSeal {
                 if ((Get-C04Sha256 $evidenceClosure) -ne [string]$receipt.pluginClosureSha256) { $errors.Add('PACKAGE_EVIDENCE_CLOSURE_HASH') | Out-Null }
                 $rows = @(Import-Csv -LiteralPath $evidenceClosure | ForEach-Object { [pscustomobject]@{ name = $_.path; bytes = [long]$_.bytes; sha256 = [string]$_.sha256 } })
                 if ((Get-C04PluginSetSha $rows) -ne [string]$seal.pluginSetSha256) { $errors.Add('PACKAGE_EVIDENCE_PLUGIN_SET') | Out-Null }
+                foreach ($dup in @($rows | Group-Object -Property name | Where-Object { $_.Count -gt 1 })) { $errors.Add('PACKAGE_EVIDENCE_PLUGIN_DUPLICATE:' + [string]$dup.Name) | Out-Null }
                 $closureDir = Join-Path $evidenceFull 'staging\repo\unity\Mahjong.Unity\Assets\Plugins\Mahjong'
                 $managedDir = Join-Path $evidenceFull 'build\player\Mahjong_Data\Managed'
                 foreach ($row in $rows) {
@@ -2462,7 +2485,11 @@ try {
             unityLogSha256 = if (Test-Path -LiteralPath $unityLog) { Get-C04Sha256 $unityLog } else { '' }
             recordedAtUtc = [DateTime]::UtcNow.ToString('O')
         }
-        Write-C04Json -Path (Join-Path $EvidenceRoot 'build\player\c04-build-execution.json') -Object $executionRecord        $provenanceCopy = Join-Path $packageRoot 'c04-plugin-provenance.json'
+        $executionPath = Join-Path $EvidenceRoot 'build\player\c04-build-execution.json'
+        $playerRelative = $playerFull.Substring((Get-C04FullPath $packageRoot).Length).TrimStart('\', '/').Replace('\', '/')
+        $executionRecord.playerRelativePath = $playerRelative
+        Write-C04Json -Path (Join-Path $EvidenceRoot 'build\player\c04-build-execution.json') -Object $executionRecord -Verbose:([bool]($provenanceCopy = Join-Path $packageRoot 'c04-plugin-provenance.json'))
+        if ([string]::IsNullOrWhiteSpace($provenanceCopy) -or -not (Test-C04PathWithin (Get-C04FullPath $provenanceCopy) (Get-C04FullPath $packageRoot))) { throw 'C04FAIL:PACKAGE_PROVENANCE_PATH' }
         Copy-Item -LiteralPath $stagingBuild.provenancePath -Destination $provenanceCopy -Force
         $closureCopy = Join-Path $packageRoot 'c04-plugin-closure.csv'
         Copy-Item -LiteralPath (Join-Path $stagingRoot 'plugin-closure.csv') -Destination $closureCopy -Force

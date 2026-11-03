@@ -208,6 +208,38 @@ if (Test-Path -LiteralPath $realPlayer) {
     Assert-Equal (@(Test-C04UnityPlayerArtifact -PlayerPath $realPlayer)).Count 0 'real-unity-player-artifact'
     Assert-True (Test-C04PeImage $realPlayer) 'real-player-valid-pe'
 }
+# Producer-path positive: execute the actual Write-C04Json command and the next
+# actual Copy-Item statement, with an isolated CWD; no BUILD/GAME claim.
+$tok=$null;$parse=$null
+$ast=[System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'tools/unity/run-p45-c04-player-cheats.ps1'),[ref]$tok,[ref]$parse)
+$producerCmd=$ast.Find({param($n)$n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Write-C04Json' -and $n.Extent.Text.Contains('-Object $executionRecord')},$true)
+Assert-True ($null -ne $producerCmd) 'producer-command-found'
+$producerRoot=Join-Path $testRoot 'producer-positive'
+$EvidenceRoot=Join-Path $producerRoot 'evidence'
+$packageRoot=Join-Path $EvidenceRoot 'build/player'
+New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
+$executionRecord=[ordered]@{schemaVersion=1;kind='c04-build-execution';playerRelativePath='Mahjong.exe'}
+$provenanceCopy=$null
+$fixtureProvenance=Join-Path $producerRoot 'fixture-provenance.json'; [IO.File]::WriteAllText($fixtureProvenance,'{}')
+$stagingBuild=[pscustomobject]@{provenancePath=$fixtureProvenance}
+$isolatedCwd=Join-Path $producerRoot 'cwd'; New-Item -ItemType Directory -Force -Path $isolatedCwd | Out-Null
+Push-Location $isolatedCwd
+try {
+    Invoke-Expression $producerCmd.Extent.Text
+    Copy-Item -LiteralPath $stagingBuild.provenancePath -Destination $provenanceCopy -Force
+} finally { Pop-Location }
+Assert-True (Test-Path (Join-Path $packageRoot 'c04-build-execution.json')) 'producer-execution-record'
+Assert-True (-not [string]::IsNullOrWhiteSpace($provenanceCopy)) 'producer-provenance-assigned'
+Assert-True (Test-Path (Join-Path $packageRoot 'c04-plugin-provenance.json')) 'producer-provenance-package-member'
+Assert-True (-not (Test-Path (Join-Path $isolatedCwd 'fixture-provenance.json'))) 'producer-no-cwd-write'
+Assert-Equal (Get-C04Sha256 (Join-Path $packageRoot 'c04-plugin-provenance.json')) (Get-C04Sha256 $fixtureProvenance) 'producer-provenance-bytes'
+
+# Effective source policy must match producer IDE exclusions.
+$rawSource=@(Get-C04SourceInputRows -RepoRoot $root)
+$effectiveSource=@(Get-C04EffectiveSourceRows -RepoRoot $root)
+$slnx='unity/Mahjong.Unity/Mahjong.Unity.slnx'
+Assert-True (@($rawSource | Where-Object { [string]$_.path -eq $slnx }).Count -eq 1) 'source-policy-raw-slnx'
+Assert-True (@($effectiveSource | Where-Object { [string]$_.path -eq $slnx }).Count -eq 0) 'source-policy-excludes-slnx'
 # 5. Package seal requires real source/build/provenance/report/plugin relations.
 $package = New-PackageFixture -Dir (Join-Path $testRoot 'package') -ValidEvidence -UnityArtifact
 $check = Test-C04PackageSeal -PlayerPath $package.exe -ExpectedSourceHead $package.head -ExpectedBuildCommit $package.head -CurrentSourceIdentitySha256 $package.identity.identitySha256
