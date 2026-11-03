@@ -1035,6 +1035,11 @@ namespace Mahjong.Unity.App
                 await WaitReadyAsync(claimed, pumpCts.Token).ConfigureAwait(false);
                 PlayerSnapshot claimBase = claimed.PlayerSnapshot
                     ?? throw new InvalidOperationException("No claimed baseline.");
+                for (int i = 0; i < 300 && (claimed.PlayerSnapshot?.Cursor?.ProjectionSeq ?? 0UL) < 2UL; i++)
+                    await Task.Delay(10, pumpCts.Token).ConfigureAwait(false);
+                if ((claimed.PlayerSnapshot?.Cursor?.ProjectionSeq ?? 0UL) < 2UL)
+                    throw new InvalidOperationException("The real claimed-player cursor did not reach ProjectionSeq 2 before ClaimControl.");
+                claimBase = claimed.PlayerSnapshot ?? claimBase;
                 ulong claimEpoch = claimBase.PrivateView.Control?.ControlEpoch ?? 0UL;
                 var claimCommand = new ProtocolCommand(
                     CommandKind.ClaimControl,
@@ -1058,14 +1063,21 @@ namespace Mahjong.Unity.App
                         claimedSnapshot.PrivateView.Control?.ControlledByComputer != true) break;
                     await Task.Delay(20, pumpCts.Token).ConfigureAwait(false);
                 }
-                ulong claimedEpoch = claimedSnapshot.PrivateView.Control?.ControlEpoch ?? 0UL;
+                ulong preRecoveryCachedControlEpoch = claimedSnapshot.PrivateView.Control?.ControlEpoch ?? 0UL;
                 if (claimed.State != TableConnectionState.Reconnecting)
-                    throw new InvalidOperationException("The control cursor-floor recovery branch was not entered; state=" + claimed.State + ", epoch=" + claimedEpoch);
+                    throw new InvalidOperationException("The control cursor-floor recovery branch was not entered; state=" + claimed.State + ", epoch=" + preRecoveryCachedControlEpoch);
                 TableSessionBinding oldResumeBinding = claimed.Binding
                     ?? throw new InvalidOperationException("The reconnecting claimed player lost its original session binding.");
                 ulong oldResumeBindingEpoch = oldResumeBinding.BindingEpoch.Value;
                 string oldResumeSessionId = oldResumeBinding.SessionId.Value;
                 string oldResumeScopeId = oldResumeBinding.Scope.ScopeId.Value;
+                string oldResumeRoomId = oldResumeBinding.RoomId.Value;
+                ProtocolRole oldResumeRole = oldResumeBinding.Role;
+                int oldResumeSeat = oldResumeBinding.SeatId;
+                Welcome oldResumeWelcome = claimedCapture.CapturedWelcome
+                    ?? throw new InvalidOperationException("No original WELCOME frame was captured before control recovery.");
+                int oldWelcomeFrameCount = claimedCapture.WelcomeFrameCount;
+                string resumeTicketSha256 = Sha256Hex(Encoding.UTF8.GetBytes(claimedTicket.SessionTicket));
                 claimedPumpCts.Cancel();
                 if (claimedPump != null) await claimedPump.ConfigureAwait(false);
                 claimedPumpCts.Dispose();
@@ -1079,18 +1091,49 @@ namespace Mahjong.Unity.App
                     ?? throw new InvalidOperationException("The resumed claimed player has no baseline.");
                 TableSessionBinding resumedBinding = claimed.Binding
                     ?? throw new InvalidOperationException("The resumed claimed player has no binding.");
-                if (resumedBinding.SessionId.Value != oldResumeSessionId || resumedBinding.Scope.ScopeId.Value != oldResumeScopeId ||
-                    resumedBinding.BindingEpoch.Value <= oldResumeBindingEpoch || resumedSnapshot.PrivateView.Control?.ControlEpoch != claimedEpoch ||
-                    claimedCapture == null || !claimedCapture.IsOpen || claimed.PendingCommands.Count != 0)
-                    throw new InvalidOperationException("Formal control stream recovery did not preserve identity and produce a fresh Ready baseline.");
+                Welcome resumedWelcome = claimedCapture.CapturedWelcome
+                    ?? throw new InvalidOperationException("No resumed WELCOME frame was captured during control recovery.");
+                ulong claimedEpoch = resumedSnapshot.PrivateView.Control?.ControlEpoch ?? 0UL;
+                bool resumedIdentityValid = resumedBinding.SessionId.Value == oldResumeSessionId &&
+                    resumedBinding.RoomId.Value == oldResumeRoomId && resumedBinding.Role == oldResumeRole && resumedBinding.SeatId == oldResumeSeat &&
+                    resumedBinding.BindingEpoch.Value > oldResumeBindingEpoch && resumedSnapshot.PrivateView.Control?.ControlledByComputer == false &&
+                    claimedEpoch > claimEpoch && claimedCapture.IsOpen && claimed.PendingCommands.Count == 0;
+                bool welcomeBindingValid = claimedCapture.WelcomeFrameCount > oldWelcomeFrameCount &&
+                    resumedWelcome.SessionId == resumedBinding.SessionId.Value && resumedWelcome.RoomId == resumedBinding.RoomId.Value &&
+                    resumedWelcome.Scope?.ScopeId == resumedBinding.Scope.ScopeId.Value && (int)resumedWelcome.Role == (int)resumedBinding.Role &&
+                    resumedWelcome.SeatId == resumedBinding.SeatId && oldResumeWelcome.SessionId == oldResumeSessionId && oldResumeWelcome.RoomId == oldResumeRoomId &&
+                    oldResumeWelcome.Scope?.ScopeId == oldResumeScopeId && (int)oldResumeWelcome.Role == (int)oldResumeRole && oldResumeWelcome.SeatId == oldResumeSeat &&
+                    !string.Equals(oldResumeScopeId, resumedBinding.Scope.ScopeId.Value, StringComparison.Ordinal);
+                if (!resumedIdentityValid || !welcomeBindingValid)
+                    throw new InvalidOperationException("Formal control recovery failed same-account/session binding or WELCOME scope validation. " +
+                        "oldSession=" + oldResumeSessionId + ",newSession=" + resumedBinding.SessionId.Value +
+                        ",oldScope=" + oldResumeScopeId + ",newScope=" + resumedBinding.Scope.ScopeId.Value +
+                        ",oldBindingEpoch=" + oldResumeBindingEpoch + ",newBindingEpoch=" + resumedBinding.BindingEpoch.Value +
+                        ",preRecoveryCachedControlEpoch=" + preRecoveryCachedControlEpoch + ",claimBeforeEpoch=" + claimEpoch +
+                        ",newSnapshotControlEpoch=" + claimedEpoch + ",newWelcomeFrames=" + claimedCapture.WelcomeFrameCount +
+                        ",transportOpen=" + claimedCapture.IsOpen + ",pending=" + claimed.PendingCommands.Count);
                 string controlEvidenceDirectory = Path.Combine(EvidenceRoot(), "released-control");
                 Directory.CreateDirectory(controlEvidenceDirectory);
-                File.WriteAllText(Path.Combine(controlEvidenceDirectory, "control-session-reconnect.json"),
+                File.WriteAllText(Path.Combine(EvidenceRoot(), "control-session-reconnect.json"),
                     "{\"schemaVersion\":1,\"case\":\"RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly\",\"recoveryBranchTaken\":true," +
                     "\"oldState\":\"Reconnecting\",\"newState\":\"" + claimed.State + "\",\"oldSessionId\":\"" + oldResumeSessionId +
-                    "\",\"newSessionId\":\"" + resumedBinding.SessionId.Value + "\",\"oldScopeId\":\"" + oldResumeScopeId +
-                    "\",\"newScopeId\":\"" + resumedBinding.Scope.ScopeId.Value + "\",\"sameSessionIdentity\":true,\"sameScopeIdentity\":true," +
-                    "\"oldBindingEpoch\":" + oldResumeBindingEpoch + ",\"newBindingEpoch\":" + resumedBinding.BindingEpoch.Value +
+                    "\",\"newSessionId\":\"" + resumedBinding.SessionId.Value + "\",\"oldRoomId\":\"" + oldResumeRoomId +
+                    "\",\"newRoomId\":\"" + resumedBinding.RoomId.Value + "\",\"oldRole\":" + ((int)oldResumeRole).ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                    ",\"newRole\":" + ((int)resumedBinding.Role).ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                    ",\"oldSeat\":" + oldResumeSeat.ToString(System.Globalization.CultureInfo.InvariantCulture) + ",\"newSeat\":" + resumedBinding.SeatId.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                    ",\"oldScopeId\":\"" + oldResumeScopeId + "\",\"newScopeId\":\"" + resumedBinding.Scope.ScopeId.Value +
+                    "\",\"oldWelcomeSessionId\":\"" + oldResumeWelcome.SessionId + "\",\"oldWelcomeRoomId\":\"" + oldResumeWelcome.RoomId +
+                    "\",\"oldWelcomeScopeId\":\"" + oldResumeWelcome.Scope.ScopeId + "\",\"oldWelcomeRole\":" + ((int)oldResumeWelcome.Role).ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                    ",\"oldWelcomeSeat\":" + oldResumeWelcome.SeatId.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                    ",\"newWelcomeSessionId\":\"" + resumedWelcome.SessionId + "\",\"newWelcomeRoomId\":\"" + resumedWelcome.RoomId +
+                    "\",\"newWelcomeScopeId\":\"" + resumedWelcome.Scope.ScopeId + "\",\"newWelcomeRole\":" + ((int)resumedWelcome.Role).ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                    ",\"newWelcomeSeat\":" + resumedWelcome.SeatId.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                    ",\"welcomeFrameCountBefore\":" + oldWelcomeFrameCount.ToString(System.Globalization.CultureInfo.InvariantCulture) + ",\"welcomeFrameCountAfter\":" + claimedCapture.WelcomeFrameCount.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                    ",\"resumeTicketSha256Before\":\"" + resumeTicketSha256 + "\",\"resumeTicketSha256After\":\"" + Sha256Hex(Encoding.UTF8.GetBytes(claimedTicket.SessionTicket)) +
+                    "\",\"sameSessionIdentity\":" + (oldResumeSessionId == resumedBinding.SessionId.Value).ToString().ToLowerInvariant() +
+                    ",\"scopeRotated\":" + (oldResumeScopeId != resumedBinding.Scope.ScopeId.Value).ToString().ToLowerInvariant() +
+                    ",\"oldBindingEpoch\":" + oldResumeBindingEpoch + ",\"newBindingEpoch\":" + resumedBinding.BindingEpoch.Value +
+                    ",\"preRecoveryCachedControlEpoch\":" + preRecoveryCachedControlEpoch +
                     ",\"newSnapshotControlEpoch\":" + (resumedSnapshot.PrivateView.Control?.ControlEpoch ?? 0UL) +
                     ",\"transportOpen\":" + claimedCapture.IsOpen.ToString().ToLowerInvariant() + ",\"pendingCommands\":" + claimed.PendingCommands.Count + "}", new UTF8Encoding(false));
                 claimedSnapshot = resumedSnapshot;
@@ -1117,6 +1160,7 @@ namespace Mahjong.Unity.App
                     ",\"snapshotRoundId\":\"" + (staleSubmitSnapshot?.RoundId ?? string.Empty) + "\",\"snapshotPhase\":\"" + (staleSubmitSnapshot?.PublicView.Board?.Phase.ToString() ?? string.Empty) + "\"" +
                     ",\"snapshotCurrentSeat\":" + (staleSubmitSnapshot?.PublicView.Board?.CurrentSeat ?? -2).ToString(System.Globalization.CultureInfo.InvariantCulture) +
                     ",\"snapshotDecisionId\":\"" + (staleSubmitSnapshot?.PrivateView.Decision?.DecisionId ?? string.Empty) + "\",\"snapshotControlEpoch\":" + claimedEpoch.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                    ",\"capturedStaleDecisionId\":\"" + (staleDecisionSeed?.DecisionId ?? string.Empty) + "\",\"capturedStaleDecisionEpoch\":" + staleEpochSeed.ToString(System.Globalization.CultureInfo.InvariantCulture) +
                     ",\"pendingCommands\":" + claimed.PendingCommands.Count.ToString(System.Globalization.CultureInfo.InvariantCulture) +
                     ",\"transportOpen\":" + claimedCapture!.IsOpen.ToString().ToLowerInvariant() +
                     ",\"claimCommandFrames\":" + claimedCapture!.CommandFrames.ToString(System.Globalization.CultureInfo.InvariantCulture) + "}", new UTF8Encoding(false));
@@ -1159,6 +1203,46 @@ namespace Mahjong.Unity.App
                 bool staleNoCommitMetadata = !staleReceipt.Resolution.CommandVersion.HasValue &&
                     !staleReceipt.Resolution.EventSeq.HasValue &&
                     !staleReceipt.Resolution.CommittedAtMs.HasValue;
+
+                PlayerSnapshot noChangeBase = claimed.PlayerSnapshot
+                    ?? throw new InvalidOperationException("No snapshot for the normal Ready control positive control.");
+                ulong noChangeEpochBefore = noChangeBase.PrivateView.Control?.ControlEpoch ?? 0UL;
+                int noChangeFramesBefore = claimedCapture.CommandFrames;
+                var noChangeClaim = new ProtocolCommand(
+                    CommandKind.ClaimControl,
+                    CommandPayloadFactory.ClaimControl(noChangeBase.RoundId, noChangeEpochBefore),
+                    new RequestId("unity-nochange-claim-" + Guid.NewGuid().ToString("N")),
+                    claimed.Binding!.Scope.ScopeId,
+                    new StateVersion(noChangeBase.StateVersion),
+                    new RoundId(noChangeBase.RoundId),
+                    decisionId: null,
+                    controlEpoch: new ControlEpoch(noChangeEpochBefore));
+                TableReceiptResolvedEventArgs noChangeReceipt = await SubmitExpectReceiptAsync(claimed, noChangeClaim, pumpCts.Token).ConfigureAwait(false);
+                PlayerSnapshot noChangeAfter = noChangeBase;
+                for (int i = 0; i < 200; i++)
+                {
+                    noChangeAfter = claimed.PlayerSnapshot ?? noChangeAfter;
+                    if (claimed.State == TableConnectionState.Ready &&
+                        (noChangeAfter.PrivateView.Control?.ControlEpoch ?? 0UL) == noChangeEpochBefore &&
+                        noChangeAfter.PrivateView.Control?.ControlledByComputer == false && claimed.PendingCommands.Count == 0) break;
+                    await Task.Delay(10, pumpCts.Token).ConfigureAwait(false);
+                }
+                int noChangeFrames = claimedCapture.CommandFrames - noChangeFramesBefore;
+                bool noChangeReady = claimed.State == TableConnectionState.Ready &&
+                    (noChangeAfter.PrivateView.Control?.ControlEpoch ?? 0UL) == noChangeEpochBefore &&
+                    noChangeAfter.PrivateView.Control?.ControlledByComputer == false && claimed.PendingCommands.Count == 0 && noChangeFrames == 1 &&
+                    (noChangeReceipt.Resolution.ReceiptStatus == Mahjong.Contracts.ReceiptStatus.Applied ||
+                     noChangeReceipt.Resolution.ReceiptStatus == Mahjong.Contracts.ReceiptStatus.Recorded) &&
+                    string.Equals(noChangeReceipt.Resolution.ReasonCode, "LOCAL_CONTROL", StringComparison.Ordinal);
+                File.WriteAllText(Path.Combine(EvidenceRoot(), "control-session-ready-positive.json"),
+                    "{\"schemaVersion\":1,\"case\":\"RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly\",\"phase\":\"post-recovery-no-change-claim\",\"sessionState\":\"" + claimed.State +
+                    "\",\"requestId\":\"" + noChangeClaim.RequestId.Value + "\",\"receiptStatus\":\"" + noChangeReceipt.Resolution.ReceiptStatus +
+                    "\",\"receiptReason\":\"" + noChangeReceipt.Resolution.ReasonCode + "\",\"controlEpochBefore\":" + noChangeEpochBefore +
+                    ",\"controlEpochAfter\":" + (noChangeAfter.PrivateView.Control?.ControlEpoch ?? 0UL) + ",\"controlHuman\":" +
+                    (noChangeAfter.PrivateView.Control?.ControlledByComputer == false).ToString().ToLowerInvariant() + ",\"sessionId\":\"" + claimed.Binding!.SessionId.Value +
+                    "\",\"scopeId\":\"" + claimed.Binding.Scope.ScopeId.Value + "\",\"bindingEpoch\":" + claimed.Binding.BindingEpoch.Value +
+                    ",\"commandFrames\":" + noChangeFrames + ",\"pendingCommands\":" + claimed.PendingCommands.Count + "}", new UTF8Encoding(false));
+                if (!noChangeReady) throw new InvalidOperationException("The no-regression ClaimControl positive control did not remain Ready without changing owner or epoch.");
 
                 return new ReleaseEvidence
                 {
@@ -1619,6 +1703,8 @@ namespace Mahjong.Unity.App
 
             public bool IsOpen => _inner.IsOpen;
             public byte[]? CapturedPlayerSnapshotFrame { get; private set; }
+            public Welcome? CapturedWelcome { get; private set; }
+            public int WelcomeFrameCount { get; private set; }
             public int CommandFrames { get; private set; }
             public int ReceiptQueryFrames { get; private set; }
 
@@ -1644,6 +1730,11 @@ namespace Mahjong.Unity.App
                 {
                     ReadOnlyMemory<byte> frame = await _inner.ReceiveAsync(cancellationToken);
                     WireDecodeResult decoded = WireCodec.Decode(frame.ToArray());
+                    if (decoded.IsOk && decoded.Envelope?.Welcome != null)
+                    {
+                        CapturedWelcome = decoded.Envelope.Welcome;
+                        WelcomeFrameCount++;
+                    }
                     if (decoded.IsOk && decoded.Envelope != null &&
                         decoded.Envelope.MessageType == WireMessageType.Receipt &&
                         !string.IsNullOrEmpty(_dropReceiptRequestId) &&

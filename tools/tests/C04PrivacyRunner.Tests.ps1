@@ -85,12 +85,14 @@ function New-CaseEvidenceFixture([string]$CaseName, [string]$Root) {
             Write-C04Utf8 (Join-Path $Root 'four-owner-raw/raw-frames.json') $fixtureRaw
         }
         'RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly' {
-            $e = @{ fixtureOnly=$true; schemaVersion=1; releaseVersion='10'; afterVersion='11'; advancedWithoutPlayerBinding=$true; claimed=$true; claimEpochBefore=1; claimEpoch=2; claimEpochAdvanced=$true; controlPresent=$true; controlHuman=$true; claimRequestId='fixture-claim'; claimReceiptStatus='Recorded'; claimReceiptReason='LOCAL_CONTROL'; staleRequestId='fixture-stale'; staleDecisionId='fixture-decision'; staleSessionId='fixture-player-session'; staleScopeId='fixture-player-scope'; staleBindingEpoch=4; staleReceiptStatus='Rejected'; expectedStaleReason='DECISION_MISMATCH'; staleReason='DECISION_MISMATCH'; capturedDecisionEpoch=1; staleEpoch=1; staleRound='fixture-round'; staleCommandFrames=1; stalePendingAfter=0; staleNoCommitMetadata=$true; staleDecisionRejected=$true }
+            $e = @{ fixtureOnly=$true; schemaVersion=1; releaseVersion='10'; afterVersion='11'; advancedWithoutPlayerBinding=$true; claimed=$true; claimEpochBefore=1; claimEpoch=2; claimEpochAdvanced=$true; controlPresent=$true; controlHuman=$true; claimRequestId='fixture-claim'; claimReceiptStatus='Recorded'; claimReceiptReason='LOCAL_CONTROL'; staleRequestId='fixture-stale'; staleDecisionId='fixture-captured-decision'; staleSessionId='fixture-player-session'; staleScopeId='fixture-new-scope'; staleBindingEpoch=4; staleReceiptStatus='Rejected'; expectedStaleReason='DECISION_MISMATCH'; staleReason='DECISION_MISMATCH'; capturedDecisionEpoch=1; staleEpoch=1; staleRound='fixture-round'; staleCommandFrames=1; stalePendingAfter=0; staleNoCommitMetadata=$true; staleDecisionRejected=$true }
             Write-C04Json (Join-Path $Root 'released-control/released-control.json') $e
-            $session = @{ fixtureOnly=$true; schemaVersion=1; case=$CaseName; phase='before-stale-submit'; sessionState='Ready'; bindingPresent=$true; sessionId='fixture-player-session'; scopeId='fixture-player-scope'; role=1; seat=0; bindingEpoch=4; snapshotStateVersion=11; snapshotEventSeq=8; snapshotRoundId='fixture-round'; snapshotPhase='Discard'; snapshotCurrentSeat=0; snapshotDecisionId='fixture-decision'; snapshotControlEpoch=2; pendingCommands=0; claimCommandFrames=1 }
+            $session = @{ fixtureOnly=$true; schemaVersion=1; case=$CaseName; phase='before-stale-submit'; sessionState='Ready'; bindingPresent=$true; sessionId='fixture-player-session'; scopeId='fixture-new-scope'; role=1; seat=0; bindingEpoch=4; snapshotStateVersion=11; snapshotEventSeq=8; snapshotRoundId='fixture-round'; snapshotPhase='Discard'; snapshotCurrentSeat=0; snapshotDecisionId='fixture-current-decision'; capturedStaleDecisionId='fixture-captured-decision'; capturedStaleDecisionEpoch=1; snapshotControlEpoch=2; pendingCommands=0; claimCommandFrames=1 }
             Write-C04Json (Join-Path $Root 'control-session-before-stale-submit.json') $session
-            $reconnect = @{ fixtureOnly=$true; schemaVersion=1; case=$CaseName; recoveryBranchTaken=$true; oldState='Reconnecting'; newState='Ready'; oldSessionId='fixture-player-session'; newSessionId='fixture-player-session'; oldScopeId='fixture-player-scope'; newScopeId='fixture-player-scope'; sameSessionIdentity=$true; sameScopeIdentity=$true; oldBindingEpoch=3; newBindingEpoch=4; newSnapshotControlEpoch=2; transportOpen=$true; pendingCommands=0 }
+            $reconnect = @{ fixtureOnly=$true; schemaVersion=1; case=$CaseName; recoveryBranchTaken=$true; oldState='Reconnecting'; newState='Ready'; oldSessionId='fixture-player-session'; newSessionId='fixture-player-session'; oldRoomId='fixture-room'; newRoomId='fixture-room'; oldRole=1; newRole=1; oldSeat=0; newSeat=0; oldScopeId='fixture-old-scope'; newScopeId='fixture-new-scope'; oldWelcomeSessionId='fixture-player-session'; newWelcomeSessionId='fixture-player-session'; oldWelcomeRoomId='fixture-room'; newWelcomeRoomId='fixture-room'; oldWelcomeScopeId='fixture-old-scope'; newWelcomeScopeId='fixture-new-scope'; oldWelcomeRole=1; newWelcomeRole=1; oldWelcomeSeat=0; newWelcomeSeat=0; welcomeFrameCountBefore=1; welcomeFrameCountAfter=2; resumeTicketSha256Before=('a'*64); resumeTicketSha256After=('a'*64); sameSessionIdentity=$true; scopeRotated=$true; oldBindingEpoch=3; newBindingEpoch=4; preRecoveryCachedControlEpoch=1; newSnapshotControlEpoch=2; transportOpen=$true; pendingCommands=0 }
             Write-C04Json (Join-Path $Root 'control-session-reconnect.json') $reconnect
+            $ready = @{ fixtureOnly=$true; schemaVersion=1; case=$CaseName; phase='post-recovery-no-change-claim'; sessionState='Ready'; requestId='fixture-nochange'; receiptStatus='Recorded'; receiptReason='LOCAL_CONTROL'; controlEpochBefore=2; controlEpochAfter=2; controlHuman=$true; sessionId='fixture-player-session'; scopeId='fixture-new-scope'; bindingEpoch=4; commandFrames=1; pendingCommands=0 }
+            Write-C04Json (Join-Path $Root 'control-session-ready-positive.json') $ready
         }
         'RealRoom_OpenDecisionDeadlineContinuesAfterPlayerClose' {
             $e = @{ fixtureOnly=$true; schemaVersion=1; case=$CaseName; roomId='fixture-room'; roundId='fixture-round'; decisionId='fixture-decision'; decisionSeat=0; controlEpoch=2; decisionDeadlineRemainingMs=5000; clockDecisionSeat=0; clockServerTimeMs=10000; clockDeadlineRemainingMs=5000; authoritativeDeadlineServerTimeMs=15000; playerSessionId='fixture-player-session'; playerScopeId='fixture-player-scope'; playerRole=1; playerSeat=0; playerBindingEpoch=3; releaseVersion=9; releaseCursorStreamVersion=4; releaseCursorProjectionSeq=8; closeRequestedUtcMs=100; closeCompletedUtcMs=110; playerBindingClosed=$true; spectatorSessionId='fixture-spectator-session'; spectatorRole=2; spectatorSeat=-1; spectatorBaselineVersion=9; spectatorBaselineCursorStreamVersion=1; spectatorBaselineCursorProjectionSeq=2; afterVersion=10; afterCursorStreamVersion=2; afterCursorProjectionSeq=3; afterPhase='Discard'; advancedWithoutPlayerBinding=$true }
@@ -615,9 +617,22 @@ Invoke-Case 'released-control stale-command evidence requires a live ready bound
         @{ file='released-control/released-control.json'; key='staleRound'; value='different-round' },
         @{ file='control-session-before-stale-submit.json'; key='snapshotControlEpoch'; value=1 },
         @{ file='control-session-reconnect.json'; key='newSessionId'; value='different-session' },
+        @{ file='control-session-reconnect.json'; key='newWelcomeScopeId'; value='not-issued-by-welcome' },
+        @{ file='control-session-reconnect.json'; key='newWelcomeSessionId'; value='different-account-session' },
+        @{ file='control-session-reconnect.json'; key='newWelcomeRoomId'; value='different-room' },
+        @{ file='control-session-reconnect.json'; key='resumeTicketSha256After'; value=('b'*64) },
+        @{ file='control-session-reconnect.json'; key='newWelcomeRole'; value=2 },
+        @{ file='control-session-reconnect.json'; key='newWelcomeSeat'; value=1 },
+        @{ file='control-session-reconnect.json'; key='welcomeFrameCountAfter'; value=1 },
         @{ file='control-session-reconnect.json'; key='newBindingEpoch'; value=3 },
         @{ file='control-session-reconnect.json'; key='recoveryBranchTaken'; value=$false },
-        @{ file='control-session-reconnect.json'; key='newState'; value='Reconnecting' }
+        @{ file='control-session-reconnect.json'; key='newState'; value='Reconnecting' },
+        @{ file='control-session-before-stale-submit.json'; key='capturedStaleDecisionId'; value='different-original-decision' },
+        @{ file='control-session-reconnect.json'; key='newScopeId'; value='fixture-old-scope' },
+        @{ file='control-session-ready-positive.json'; key='sessionState'; value='Reconnecting' },
+        @{ file='control-session-ready-positive.json'; key='controlEpochAfter'; value=3 },
+        @{ file='control-session-ready-positive.json'; key='receiptReason'; value='DECISION_MISMATCH' },
+        @{ file='control-session-ready-positive.json'; key='pendingCommands'; value=1 }
     )) {
         $caseRoot = New-CaseFixtureRoot $caseName
         New-CaseEvidenceFixture $caseName $caseRoot

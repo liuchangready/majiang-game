@@ -1246,7 +1246,7 @@ function Assert-C04PlayerCaseEvidence([string]$CaseName, [string]$CaseRoot) {
     'RealRoom_DelayedOldRawReceiveIsRejectedByNewBinding' { @('delayed-old-raw/delayed-old-raw.json') }
     'RealRoom_ColdReopenReconcilesOriginalRequestWithoutDuplicate' { @('recovery-query/recovery-query.json','recovery-raw/raw-frames.json') }
     'RealRoom_LegalSleeveAndFeeOwnershipAcrossFourSeatsAndSpectator' { @('four-owner/four-owner.json','four-owner-raw/raw-frames.json') }
-    'RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly' { @('released-control/released-control.json','control-session-before-stale-submit.json','control-session-reconnect.json') }
+    'RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly' { @('released-control/released-control.json','control-session-before-stale-submit.json','control-session-reconnect.json','control-session-ready-positive.json') }
     'RealRoom_OpenDecisionDeadlineContinuesAfterPlayerClose' { @('deadline-evidence.json') }
     'RealRoom_ClosedPlayerToSpectatorToNewPlayerReceivePathRejectsOldRaw' { @('closed-binding-raw/raw-frames.json') }
     default { throw "Unknown Player case evidence contract: $CaseName" }
@@ -1285,14 +1285,62 @@ function Assert-C04PlayerCaseEvidence([string]$CaseName, [string]$CaseRoot) {
       $e = $artifacts['released-control/released-control.json']
       $session = $artifacts['control-session-before-stale-submit.json']
       $reconnect = $artifacts['control-session-reconnect.json']
-      if ([int]$e.schemaVersion -ne 1 -or [UInt64]$e.afterVersion -le [UInt64]$e.releaseVersion -or $e.advancedWithoutPlayerBinding -ne $true -or $e.claimed -ne $true -or $e.claimEpochAdvanced -ne $true -or [UInt64]$e.claimEpoch -le [UInt64]$e.claimEpochBefore -or $e.controlPresent -ne $true -or $e.controlHuman -ne $true -or $e.claimReceiptStatus -notin @('Applied','Recorded') -or $e.claimReceiptReason -cne 'LOCAL_CONTROL' -or $e.staleReceiptStatus -cne 'Rejected' -or $e.expectedStaleReason -cne 'DECISION_MISMATCH' -or $e.staleReason -cne 'DECISION_MISMATCH' -or [UInt64]$e.capturedDecisionEpoch -ne [UInt64]$e.staleEpoch -or [UInt64]$e.claimEpoch -le [UInt64]$e.staleEpoch -or [string]::IsNullOrWhiteSpace($e.claimRequestId) -or [string]::IsNullOrWhiteSpace($e.staleRequestId) -or $e.claimRequestId -ceq $e.staleRequestId -or [string]::IsNullOrWhiteSpace($e.staleDecisionId) -or [string]::IsNullOrWhiteSpace($e.staleRound) -or [int]$e.staleCommandFrames -ne 1 -or [int]$e.stalePendingAfter -ne 0 -or $e.staleNoCommitMetadata -ne $true -or $e.staleDecisionRejected -ne $true) {
+      $readyPositive = $artifacts['control-session-ready-positive.json']
+      $claimEvidenceValid = [int]$e.schemaVersion -eq 1 -and [UInt64]$e.afterVersion -gt [UInt64]$e.releaseVersion -and $e.advancedWithoutPlayerBinding -eq $true -and
+        $e.claimed -eq $true -and $e.claimEpochAdvanced -eq $true -and [UInt64]$e.claimEpoch -gt [UInt64]$e.claimEpochBefore -and
+        $e.controlPresent -eq $true -and $e.controlHuman -eq $true -and $e.claimReceiptStatus -in @('Applied','Recorded') -and $e.claimReceiptReason -ceq 'LOCAL_CONTROL' -and
+        $e.staleReceiptStatus -ceq 'Rejected' -and $e.expectedStaleReason -ceq 'DECISION_MISMATCH' -and $e.staleReason -ceq 'DECISION_MISMATCH' -and
+        [UInt64]$e.capturedDecisionEpoch -eq [UInt64]$e.staleEpoch -and [UInt64]$e.claimEpoch -gt [UInt64]$e.staleEpoch -and
+        -not [string]::IsNullOrWhiteSpace($e.claimRequestId) -and -not [string]::IsNullOrWhiteSpace($e.staleRequestId) -and $e.claimRequestId -cne $e.staleRequestId -and
+        -not [string]::IsNullOrWhiteSpace($e.staleDecisionId) -and -not [string]::IsNullOrWhiteSpace($e.staleRound) -and
+        [int]$e.staleCommandFrames -eq 1 -and [int]$e.stalePendingAfter -eq 0 -and $e.staleNoCommitMetadata -eq $true -and $e.staleDecisionRejected -eq $true
+      if (-not $claimEvidenceValid) {
         throw 'Released-control evidence failed its epoch, rejection, or no-side-effect contract.'
       }
-      if ([int]$session.schemaVersion -ne 1 -or $session.case -cne $CaseName -or $session.phase -cne 'before-stale-submit' -or $session.sessionState -cne 'Ready' -or $session.bindingPresent -ne $true -or [string]::IsNullOrWhiteSpace($session.sessionId) -or [string]::IsNullOrWhiteSpace($session.scopeId) -or [int]$session.role -ne 1 -or [int]$session.seat -ne 0 -or [UInt64]$session.bindingEpoch -eq 0 -or [UInt64]$session.snapshotStateVersion -eq 0 -or [string]::IsNullOrWhiteSpace($session.snapshotRoundId) -or [string]::IsNullOrWhiteSpace($session.snapshotPhase) -or [UInt64]$session.snapshotControlEpoch -ne [UInt64]$e.claimEpoch -or [int]$session.claimCommandFrames -lt 1 -or $e.staleSessionId -cne $session.sessionId -or $e.staleScopeId -cne $session.scopeId -or [UInt64]$e.staleBindingEpoch -ne [UInt64]$session.bindingEpoch -or $e.staleRound -cne $session.snapshotRoundId -or $e.staleDecisionId -cne $session.snapshotDecisionId -or [UInt64]$session.snapshotControlEpoch -le [UInt64]$e.staleEpoch) {
+      $sessionEvidenceValid = [int]$session.schemaVersion -eq 1 -and $session.case -ceq $CaseName -and $session.phase -ceq 'before-stale-submit' -and
+        $session.sessionState -ceq 'Ready' -and $session.bindingPresent -eq $true -and -not [string]::IsNullOrWhiteSpace($session.sessionId) -and
+        -not [string]::IsNullOrWhiteSpace($session.scopeId) -and [int]$session.role -eq 1 -and [int]$session.seat -eq 0 -and
+        [UInt64]$session.bindingEpoch -gt 0 -and [UInt64]$session.snapshotStateVersion -gt 0 -and -not [string]::IsNullOrWhiteSpace($session.snapshotRoundId) -and
+        -not [string]::IsNullOrWhiteSpace($session.snapshotPhase) -and [UInt64]$session.snapshotControlEpoch -eq [UInt64]$e.claimEpoch -and
+        [int]$session.claimCommandFrames -ge 1 -and $e.staleSessionId -ceq $session.sessionId -and $e.staleScopeId -ceq $session.scopeId -and
+        [UInt64]$e.staleBindingEpoch -eq [UInt64]$session.bindingEpoch -and $e.staleRound -ceq $session.snapshotRoundId -and
+        $session.capturedStaleDecisionId -ceq $e.staleDecisionId -and [UInt64]$session.capturedStaleDecisionEpoch -eq [UInt64]$e.capturedDecisionEpoch -and
+        [UInt64]$session.snapshotControlEpoch -gt [UInt64]$e.staleEpoch
+      if (-not $sessionEvidenceValid) {
         throw 'Released-control session evidence does not prove a ready, bound player at the stale-command submission point.'
       }
-      if ([int]$reconnect.schemaVersion -ne 1 -or $reconnect.case -cne $CaseName -or $reconnect.recoveryBranchTaken -ne $true -or $reconnect.oldState -cne 'Reconnecting' -or $reconnect.newState -cne 'Ready' -or $reconnect.sameSessionIdentity -ne $true -or $reconnect.sameScopeIdentity -ne $true -or [string]::IsNullOrWhiteSpace($reconnect.oldSessionId) -or $reconnect.oldSessionId -cne $reconnect.newSessionId -or [string]::IsNullOrWhiteSpace($reconnect.oldScopeId) -or $reconnect.oldScopeId -cne $reconnect.newScopeId -or [UInt64]$reconnect.newBindingEpoch -le [UInt64]$reconnect.oldBindingEpoch -or [UInt64]$reconnect.newSnapshotControlEpoch -ne [UInt64]$e.claimEpoch -or $reconnect.transportOpen -ne $true -or [int]$reconnect.pendingCommands -ne 0) {
+      $ticketHashPattern = '^[0-9a-fA-F]{64}$'
+      $reconnectEvidenceValid = [int]$reconnect.schemaVersion -eq 1 -and $reconnect.case -ceq $CaseName -and $reconnect.recoveryBranchTaken -eq $true -and
+        $reconnect.oldState -ceq 'Reconnecting' -and $reconnect.newState -ceq 'Ready' -and $reconnect.sameSessionIdentity -eq $true -and
+        -not [string]::IsNullOrWhiteSpace($reconnect.oldSessionId) -and $reconnect.oldSessionId -ceq $reconnect.newSessionId -and
+        -not [string]::IsNullOrWhiteSpace($reconnect.oldRoomId) -and $reconnect.oldRoomId -ceq $reconnect.newRoomId -and
+        [int]$reconnect.oldRole -eq 1 -and [int]$reconnect.newRole -eq 1 -and [int]$reconnect.oldSeat -eq 0 -and [int]$reconnect.newSeat -eq 0 -and
+        -not [string]::IsNullOrWhiteSpace($reconnect.oldScopeId) -and -not [string]::IsNullOrWhiteSpace($reconnect.newScopeId) -and
+        $reconnect.oldScopeId -cne $reconnect.newScopeId -and $reconnect.scopeRotated -eq $true -and
+        $reconnect.oldWelcomeSessionId -ceq $reconnect.oldSessionId -and $reconnect.newWelcomeSessionId -ceq $reconnect.newSessionId -and
+        $reconnect.oldWelcomeRoomId -ceq $reconnect.oldRoomId -and $reconnect.newWelcomeRoomId -ceq $reconnect.newRoomId -and
+        $reconnect.oldWelcomeScopeId -ceq $reconnect.oldScopeId -and $reconnect.newWelcomeScopeId -ceq $reconnect.newScopeId -and
+        [int]$reconnect.oldWelcomeRole -eq [int]$reconnect.oldRole -and [int]$reconnect.newWelcomeRole -eq [int]$reconnect.newRole -and
+        [int]$reconnect.oldWelcomeSeat -eq [int]$reconnect.oldSeat -and [int]$reconnect.newWelcomeSeat -eq [int]$reconnect.newSeat -and
+        [int]$reconnect.welcomeFrameCountBefore -ge 1 -and [int]$reconnect.welcomeFrameCountAfter -gt [int]$reconnect.welcomeFrameCountBefore -and
+        $reconnect.resumeTicketSha256Before -match $ticketHashPattern -and $reconnect.resumeTicketSha256Before -ceq $reconnect.resumeTicketSha256After -and
+        [UInt64]$reconnect.newBindingEpoch -gt [UInt64]$reconnect.oldBindingEpoch -and
+        [UInt64]$reconnect.preRecoveryCachedControlEpoch -lt [UInt64]$reconnect.newSnapshotControlEpoch -and
+        [UInt64]$reconnect.newSnapshotControlEpoch -eq [UInt64]$e.claimEpoch -and $reconnect.transportOpen -eq $true -and [int]$reconnect.pendingCommands -eq 0 -and
+        $reconnect.newSessionId -ceq $session.sessionId -and $reconnect.newScopeId -ceq $session.scopeId -and
+        [UInt64]$reconnect.newBindingEpoch -eq [UInt64]$session.bindingEpoch
+      if (-not $reconnectEvidenceValid) {
         throw 'Released-control evidence does not prove serialized same-identity recovery to a new Ready baseline.'
+      }
+      if ([int]$readyPositive.schemaVersion -ne 1 -or $readyPositive.case -cne $CaseName -or $readyPositive.phase -cne 'post-recovery-no-change-claim' -or
+        $readyPositive.sessionState -cne 'Ready' -or [string]::IsNullOrWhiteSpace($readyPositive.requestId) -or
+        $readyPositive.receiptStatus -notin @('Applied','Recorded') -or $readyPositive.receiptReason -cne 'LOCAL_CONTROL' -or
+        [UInt64]$readyPositive.controlEpochBefore -ne [UInt64]$readyPositive.controlEpochAfter -or
+        [UInt64]$readyPositive.controlEpochAfter -ne [UInt64]$e.claimEpoch -or $readyPositive.controlHuman -ne $true -or
+        $readyPositive.sessionId -cne $session.sessionId -or $readyPositive.scopeId -cne $session.scopeId -or
+        [UInt64]$readyPositive.bindingEpoch -ne [UInt64]$session.bindingEpoch -or [int]$readyPositive.commandFrames -ne 1 -or
+        [int]$readyPositive.pendingCommands -ne 0) {
+        throw 'Released-control no-regression Ready positive control did not preserve the current owner, epoch, and binding.'
       }
     }
     'RealRoom_OpenDecisionDeadlineContinuesAfterPlayerClose' {
