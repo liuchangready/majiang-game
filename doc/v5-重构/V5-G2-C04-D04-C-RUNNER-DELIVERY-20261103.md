@@ -1,102 +1,99 @@
-# G2-C04-D04-C 完整构建、包与进程工具返修交付（R1-06 Round 4）
+# G2-C04-D04-C 完整构建、包与进程工具返修交付（R1-06 Round 5）
 
-日期：2026-11-03，Asia/Shanghai。任务：D04-C，targetAgent=deepseek_harness，使用其配置默认模型。
+日期：2026-11-03，Asia/Shanghai。任务：D04-C，targetAgent=deepseek_harness。
 工作树：`E:/majiang-review/g2-c04-d04-runner-ds-20261103`；分支
-`wt/v5-g2-c04-d04-runner-ds-20261103`。R3 独立复核：
-`build/caller-c04c-r3-3155cc9e1cdd4c21bf0c832b26d1b162/REVIEW.md`
-（SHA-256 `1E76E5499D2B2A355C568DE348B3694A8B6A9CE6D428EC59ACFF259C7683BA1C`），
-probes/extra-probes/assignment-probe 已复现。旧 R8/R1/R2/R3 证据、历史 errors=3/6 原件只读保留。
+`wt/v5-g2-c04-d04-runner-ds-20261103`。R4 独立复核
+`build/caller-c04c-r4-4dc191082fc244fc9ce00206e843de55/REVIEW.md`
+（SHA-256 `384A9D6FEB3368D4C3F6B2750A94F5011512340ED4A72BDC0609F973A12DF504`）已全文读取；
+probes/extra-probes/assignment-probe/contract-probes 已用 reviewer 原件复现。旧证据只读。
 
-本轮仅修 C/R1-06 三组机制；R1-04 严格门禁保留，未获外部授权不改包/设置/allowlist，
-也没有为相同 errors6 重复昂贵 Unity 构建。C 仍不通过，无 approve/MR。
+本轮只修 R4 收窄的 02/03 两组；01 的 structured target-result、Job unknown、assign 清理
+保持不动；04 严格 BuildReport/external URP proposal 保持开放。未重复相同 errors6 的 Unity
+构建，未改包/设置/许可/asmdef，无 approve/MR。
 
 ## 1. 逐 ID 修复
 
-### C-R1-06-R1-01 — wrapper 启动/退出、Job 未知、assign 清理（已修）
+### C-R1-06-R1-02 — 重复 YAML key / 结构 / 残留调用（已修）
 
-- 生成的 launcher 现在输出**结构化 target-result**：
-  - 目标启动/等待在 `try/catch` 中，`ErrorActionPreference=Stop`；
-  - 成功写 `{status:EXITED, wrapperPid, targetPid, exitCode}`；
-  - 启动失败/loader 失败写 `{status:START_FAILED, targetPid:0, exitCode:null, error}` 并 exit90；
-  - 外层不再把 wrapper 的 0 当成 target 已启动；target-result 缺失/非 EXITED/无 exitCode
-    都使 `exitCodeKnown=false`、`targetStartFailed=true`。
-- 外层记录 wrapperPid/targetPid 区分身份；正常退出仍以 target exitCode 为准。
-- Job query `-1` 不再被 `>0` 吞掉：Stop-C04Job 在 query 未知时仍 Terminate/Close 并返回
-  remaining=-1；所有调用方以 `-ne 0` 传播 unknown，`cleanupFailed=true`、exitKnown=false。
-- assign 前即将 `ownershipKnown=true`；assign 失败/assign 前异常时，即使 wrapper 未入 Job，
-  finally 也用 exact PID+StartTime 停止仍等待 signal 的 wrapper，并确认 remaining=0 后再抛错。
-- 保留 peer 存活、无 CommandLine/path 扫描、两层后代 2/2。
+- `Test-C04AdditiveYamlTransition` 不再只数整行：
+  - 对每个 YAML key 统计 before/after 出现次数；任何 before 已存在的 key，after 次数不得增加
+    （`m_SubKind` 仅保留实际多值例外），因此
+    `additionalIl2CppArgs: --keep-existing-options` 被追加空值同名 key 时立即 fatal；
+  - 保留旧行/旧值、ProjectSettings 顺序子序列、Font 实际重排的既有检查；
+  - 新增只允许精确白名单 key 的空值，非空 compiler define/列表外 key/未知资产均 fatal。
+- 删除 `Split-C04StagingTransitions` 中两处已删除 `Test-C04GeneratedUnityFile` 的残留调用；
+  `STAGING_EXTRA:Assets/Unexpected.asset` 现在返回结构化 fatal，不再 CommandNotFound。
+- IDE 生成文件 `.csproj/.slnx/.vscode/*.pdb.meta` 继续按 manifest 排除策略处理，不再用
+  关键字当 derivation；真实 build 输入仍 fail-closed。
 
-实测（reviewer probes 新复制根）：
-- invalid PE：`exit=null, known=false, targetStartFailed=true`，无 wrapper 残留；
-- Job query 注入 -1：`exit=null, known=false, remaining=-1, cleanup=true`；
-- assign 注入失败：`ownedWrapperStillAlive=0`，异常 `OWNERSHIP_UNKNOWN`；
-- 正常 native0/7、timeout/cancel、quoted、大双流、detached writer 继续通过。
+实测 contract-probes：
+- duplicateExistingCompilerKey：`fatal=[STAGING_CHANGED:ProjectSettings/ProjectSettings.asset]`,
+  `allowed=0`；
+- unexpectedExtra：`throws=false`，无 CommandNotFound；
+- 真实 pinned ProjectSettings+Font before/after：`fatal=0/allowed=2`。
 
-### C-R1-06-R1-02 — 输入转换不再用 YAML superset（已修）
+### C-R1-06-R1-03 — fake Unity bytes / source linkage / pre-post manifest（已修）
 
-- 删除“保留所有旧行即合法”的宽松规则。`ProjectSettings.asset` 与 Font SDF 的 changed 转换：
-  - before 非空行必须原序/原值保留（ProjectSettings 要求子序列顺序；Font 允许实际重排但每行计数保留）；
-  - 只允许 **精确白名单 key 的空值新增**；ProjectSettings 白名单由本 pinned 输入实际 Unity
-    build 的 123 个字段生成，`m_SubKind` 最多 18 次，其余每 key 最多 1 次；
-  - 任何非空新增行（如 `Standalone: ARBITRARY_CODE_PATH`）、列表外 key、额外重复 key、
-    旧值/旧行删除/重排（ProjectSettings）均 fatal；
-  - before/after SHA 写入 transition 记录，final effective manifest 继续入 receipt。
-- 生成 IDE 文件（`.csproj`、`.slnx`、`.vscode/*`、`*.pdb.meta`）从 staged 输入闭包中**明确排除**，
-  不再用“XML/JSON 关键字”当作 derivation；可执行 build 输入不受此豁免。
-- copy→warmup、warmup→build 两个边界都使用同一 exact transition gate；build 后仍校验
-  staged-code-manifest 全代码闭包和 final manifest。
+- `Test-C04UnityPlayerArtifact` 改为结构/来源验证，不再只看 MZ/字符串/大小：
+  - exe 必须是可解析 PE（e_lfanew/PE 签名/COFF/optional/section table），且导入表确实导入
+    `UnityPlayer.dll`；
+  - `UnityPlayer.dll` 必须为有效 PE（>=1MiB）；
+  - `Mahjong_Data/globalgamemanagers` 必须在偏移 48 含 Unity 版本串
+    （`6000.3.27f1` 形态），不是任意文本；
+  - `Mahjong_Data/Managed/*.dll` 至少一个为有效 PE。
+- package/seal evidence 增加 source→staged 关系：
+  - staged Unity 输入行必须是 source manifest 的 `unity/Mahjong.Unity/<path>` 同字节；
+  - 仅 ProjectSettings/Font 的受控转换和 `Assets/Plugins/Mahjong/*` 生成闭包可豁免 source 同字节；
+  - staged-code 行、provenance `inputs.Path` 必须存在于 source manifest 且长度/SHA 一致；
+  - provenance `outputs.Name` 必须落在 staged plugin 目录且 SHA 一致。
+- 当前 tracked `New-PackageFixture -ValidEvidence -UnityArtifact`（MZ+字符串/零字节假 DLL/
+  g 文本 globalgamemanagers/文本 Managed DLL/fixture.cs）现在被生产 main 拒绝：
+  `syntheticGate.ok=false`（`PLAYER_NOT_VALID_PE`、`PLAYER_MISSING_UNITYPLAYER_IMPORT`、
+  `PLAYER_UNITY_DLL_NOT_PE`、`PLAYER_DATA_NOT_UNITY_SERIALIZED`、
+  `PACKAGE_EVIDENCE_STAGED_NOT_SOURCE` 等），`-SkipBuild -Case build` **exit2/FAIL**。
+- 预/后 manifest 分离：
+  - main 在 build 前把冻结 staged project 复制到 `staging/before-build/unity/Mahjong.Unity`；
+  - `Test-C04PackageSeal` 用 **before snapshot** 校验 staged-input manifest，用 **final tree**
+    校验 final manifest，再用 `Split-C04StagingTransitions(before→final)` 校验合法转换；
+  - 不再要求两个不同状态同时等于终态。
+- `buildEvidenceRelativePath`、provenance `input.Path`/`output.Name` 改为
+  `Resolve-C04RelativeMember`（绝对/`..`/越界/祖先 reparse 检查），不再直接 Join 后读取。
+- contract-probes 的合法空 key 转换：`transitionAllowed=1/fatal=[]`，reuse 不再报
+  `PACKAGE_EVIDENCE_STAGED_TREE`（仍因 fixture 假 artifact/linkage 而拒绝，这是预期的
+  fake 负例）。
+- 真实组件正例：历史 failed-build 的真实 Unity player 通过 `Test-C04UnityPlayerArtifact`
+  与 PE 检查（65/65 测试内 `real-unity-player-artifact`），仅证明 artifact/raw-closure 组件，
+  不声称 clean build/GAME/package PASS。
 
-实测：reviewer extra-probe 追加 `scriptingDefineSymbols/Standalone:ARBITRARY_CODE_PATH` 后
-`fatal` 非空、`allowed=0`；真实 pinned ProjectSettings/Font 转换在本地 before/after 文件上
-仍允许 2 项，证明不是“全拒绝”而是具体字段验证。
+### C-R1-06-R1-04 — 严格门禁/外部缺口（保持）
 
-### C-R1-06-R1-03 — 生产复用不再接受 fixture（已修）
-
-- `Test-C04PackageSeal` 除 receipt/closure/report 关系外，现要求实际 Unity Player 工件：
-  - `Mahjong.exe` 字节包含 `UnityPlayer.dll` 标记；
-  - 相邻 `UnityPlayer.dll` 为 PE/MZ 且 >=1MiB；
-  - `Mahjong_Data/globalgamemanagers` >=1KiB；
-  - `Mahjong_Data/Managed/*.dll` 非空。
-  因此系统 `powershell.exe`/文本 DLL/`fixture.cs` 的 `New-PackageFixture -ValidEvidence` 被拒绝，
-  不再依赖文件名黑名单或自报字段。
-- build evidence 还要求真实 `staged-project-input/final/code-manifest` 并逐项对 staged 树/代码树
-  重算（不是只 hash CSV）：缺失、额外、篡改条目 fatal。
-- provenance 每个 input 必须在 `staging/repo` 下存在且长度/SHA 匹配；outputs 在 staged plugin
-  目录存在且 SHA 匹配；source manifest 与当前 source labels 逐项比对。
-- 所有 evidence/provenance 相对成员、祖先 reparse、越界均用现有 safe member 检查。
-- 合成 `-ValidEvidence` 生产 main 实测：`syntheticGate.ok=false`（含
-  `PLAYER_NOT_UNITY_EXECUTABLE`/`PLAYER_UNITY_DLL_MISSING` 等），`-SkipBuild -Case build`
-  **exit2/FAIL**，无 PASS seal。
-
-### C-R1-06-R1-04 — 严格 BuildReport / errors6（保持开放）
-
-- 严格 errors=0/step/exception/output binding 门禁未改；allowlist 仅兼容参数，不参与放行。
-- 未重复相同 errors6 heavy build；保留 R3 的 6 条 URP step 原文与失败封存。
-- 外部 proposal 保留在 `build/r3-proposal-cfe026ce686d4e2388640ba25590eba1/`（未应用、未批准）。
-  版本升级仍是未验证假设；没有把它写成已修复或 external-only BLOCKED。
-- 因此无 errors0 完整包、无可信 SkipBuild 正例，C 仍未通过。
+- 严格 errors=0/step/exception/output 门禁未改；errors99 负例仍拒绝。
+- 未重复不变 Unity 构建；历史 errors6/native1/runner3 仅作失败历史，未作为新 runner 验证。
+- URP 17.3→17.4 proposal 仍未应用、未验证，不构成修复或 external-only BLOCKED。
+- 无 clean errors0 完整包，无可信 SkipBuild 正例；C 仍未通过。
 
 ## 2. 验证与证据
 
-- Runner tests：**62/62, native 0**；`build/r4-finaltests-8b68aa9410d343ea93cb68d26b634e53/runner.log`，
-  SHA `7A27C7D1C0492368B98558F6CDCF509428CBB48CAEAB38289C9708176A844959`。
-- Compatibility：**20/20, native 0**；同目录 `cheats.log`，SHA
-  `15B40D45D430574A5D2B9F8057F4F3FD2F697C1E273E073DE77F88CB55FAB8F4`。
-- Reviewer probes（新复制根，native0）：
-  `peerSentinelAlive=true/ownedStopped=0`；`descendantTraversal=2/2`；
-  `syntheticGate.ok=false`；`syntheticMain=exit2/FAIL`；
-  `inputMutation.fatal` 非空、`allowed=0`；`strictReport.ok=false`。
-  `probes.json` SHA `054CC4B1E7897A30C2267A63247ADD4C56BD131A30C30F339ACFD6AEAE678D86`。
-- extra-probes：invalid PE `known=false`；Job query `remaining=-1/cleanup=true`；
-  added compiler config fatal。
-- assignment-probe：`failure=OWNERSHIP_UNKNOWN`，`ownedWrapperStillAlive=0`。
-- 旧 failed fresh build 的 main evidence manifest 实际为 **38 entries**（R3 报告曾写 20，现更正），partial 为 **1091 entries**；两套原件的哈希/长度已由 reviewer 独立重算 0 错误。\n- 未运行 Unity/Player/PlayMode/GAME；未新增/覆盖旧构建证据。
+- Runner tests：**65/65, native 0**；`build/r5-finaltests-e31d6daf335d45589deb5e70913bdc7f/runner.log`
+  （最终提交测试日志；runner SHA `BBCDFC2B243795DB70617413772BD6D72D30FE874405A217673F00CF89D197C3`）。
+- Compatibility：**20/20, native 0**；`15B40D45D430574A5D2B9F8057F4F3FD2F697C1E273E073DE77F88CB55FAB8F4`。
+- Reviewer 四探针（新 GUID 根，native0）：
+  - probes：peer alive/ownedStopped0；traversal2/2；syntheticGate.ok=false；
+    syntheticMain exit2/FAIL；inputMutation fatal/allowed0；strict errors99 拒绝。
+  - extra-probes：invalid PE `known=false`；Job query `remaining=-1/cleanup=true`；
+    added compiler define fatal。
+  - assignment-probe：assign 失败 `ownedWrapperStillAlive=0`。
+  - contract-probes：duplicate fatal、unexpectedExtra 无异常、valid transition
+    `transitionAllowed=1/fatal=[]`，fake reuse 继续拒绝。
+- `probes.json` SHA `AE8D9163FDEBCDC42318882CC8BDEB336BE9476997549489DDA0DFDA2146CDDE`；
+  `extra-probes.json` SHA `982B00E9620CCC8CA3FB1F1F05CA194C194E4A6E12C8D1E5E73DE46270B028DD`；
+  `assignment-probe.json` SHA `46BED1A519E8069C0AED592AA2C4491BEBFDF1BB88801E1B317F0B19E62587B5`；
+  `contract-probes.json` SHA `E6AC66C89632E68E82750AE832A4C79B8EAA988C6FED2134BE271AD314F4DEB5`。
+- 历史 failed build main manifest 38、partial 1091，未重跑/未改。
 
-## 3. 提交与边界
+## 3. 提交/边界
 
-- 代码/测试提交：`7ec23a23ebb96b0249b3d303ae2f674ea8915b73`；最终 doc-only HEAD 以
-  `git log -1` 为准。
-- 改动仅 `run-p45-c04-player-cheats.ps1`、`C04PlayerCheatRunner.Tests.ps1` 与本报告（C# 沿用
-  R3 的严格门禁/URP import 诊断；`.meta` 未改）。`git status` clean、`diff-check` 0。
-- 全 D04 仍 0 BLOCKER / 3 原 MAJOR，未通过；A/B 未实现，未 push/PR/MR/merge/deploy/approve。
+- 代码/测试提交：`d97b301f04cfa68895c35bfdfa79d94c95855918`；最终 HEAD 以 `git log -1` 为准。
+- 本轮改动仅 runner、Runner tests、本报告；`.meta`/C#/A/B/GAME 未改。
+- `git status` clean、`diff-check` 0；未 push/PR/MR/merge/deploy/approve/另派。
+- 全 D04 仍 0 BLOCKER / 3 原 MAJOR，未通过；无 clean build/package/SkipBuild 正例。
