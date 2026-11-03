@@ -1327,8 +1327,9 @@ function Assert-C04PlayerCaseEvidence([string]$CaseName, [string]$CaseRoot) {
         [UInt64]$reconnect.newBindingEpoch -gt [UInt64]$reconnect.oldBindingEpoch -and
         [UInt64]$reconnect.preRecoveryCachedControlEpoch -lt [UInt64]$reconnect.newSnapshotControlEpoch -and
         [UInt64]$reconnect.newSnapshotControlEpoch -eq [UInt64]$e.claimEpoch -and $reconnect.transportOpen -eq $true -and [int]$reconnect.pendingCommands -eq 0 -and
-        $reconnect.newSessionId -ceq $session.sessionId -and $reconnect.newScopeId -ceq $session.scopeId -and
-        [UInt64]$reconnect.newBindingEpoch -eq [UInt64]$session.bindingEpoch
+        $reconnect.newSessionId -ceq $readyPositive.oldSessionId -and $reconnect.newRoomId -ceq $readyPositive.oldRoomId -and
+        $reconnect.newScopeId -ceq $readyPositive.oldScopeId -and [UInt64]$reconnect.newBindingEpoch -eq [UInt64]$readyPositive.oldBindingEpoch -and
+        [UInt64]$reconnect.newSnapshotControlEpoch -eq [UInt64]$readyPositive.controlEpochBefore
       if (-not $reconnectEvidenceValid) {
         throw 'Released-control evidence does not prove serialized same-identity recovery to a new Ready baseline.'
       }
