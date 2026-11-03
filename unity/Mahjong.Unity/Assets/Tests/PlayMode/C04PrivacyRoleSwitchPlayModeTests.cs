@@ -973,6 +973,24 @@ namespace Mahjong.Unity.Tests.PlayMode
                     if (staleAction == null) staleAction = action;
                 }
                 if (staleAction == null) throw new InvalidOperationException("The live decision has no action for a legal stale-epoch request.");
+                PlayerSnapshot? staleSubmitSnapshot = claimed.PlayerSnapshot;
+                var staleSubmitBinding = claimed.Binding;
+                string controlEvidenceDirectory = Path.Combine(EvidenceRoot(), "released-control");
+                Directory.CreateDirectory(controlEvidenceDirectory);
+                File.WriteAllText(Path.Combine(controlEvidenceDirectory, "control-session-before-stale-submit.json"),
+                    "{\"schemaVersion\":1,\"case\":\"RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly\",\"phase\":\"before-stale-submit\"" +
+                    ",\"sessionState\":\"" + claimed.State + "\",\"bindingPresent\":" + (staleSubmitBinding != null).ToString().ToLowerInvariant() +
+                    ",\"sessionId\":\"" + (staleSubmitBinding?.SessionId.Value ?? string.Empty) + "\",\"scopeId\":\"" + (staleSubmitBinding?.Scope.ScopeId.Value ?? string.Empty) + "\"" +
+                    ",\"role\":" + ((int)(staleSubmitBinding?.Role ?? ProtocolRole.Unspecified)).ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                    ",\"seat\":" + (staleSubmitBinding?.SeatId ?? -2).ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                    ",\"bindingEpoch\":" + (staleSubmitBinding?.BindingEpoch.Value ?? 0UL).ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                    ",\"snapshotStateVersion\":" + (staleSubmitSnapshot?.StateVersion ?? 0UL).ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                    ",\"snapshotEventSeq\":" + (staleSubmitSnapshot?.EventSeq ?? 0UL).ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                    ",\"snapshotRoundId\":\"" + (staleSubmitSnapshot?.RoundId ?? string.Empty) + "\",\"snapshotPhase\":\"" + (staleSubmitSnapshot?.PublicView.Board?.Phase.ToString() ?? string.Empty) + "\"" +
+                    ",\"snapshotCurrentSeat\":" + (staleSubmitSnapshot?.PublicView.Board?.CurrentSeat ?? -2).ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                    ",\"snapshotDecisionId\":\"" + (staleSubmitSnapshot?.PrivateView.Decision?.DecisionId ?? string.Empty) + "\",\"snapshotControlEpoch\":" + claimedEpoch.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                    ",\"pendingCommands\":" + claimed.PendingCommands.Count.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                    ",\"claimCommandFrames\":" + claimedCapture!.CommandFrames.ToString(System.Globalization.CultureInfo.InvariantCulture) + "}", new UTF8Encoding(false));
                 int staleCommandFramesBefore = claimedCapture!.CommandFrames;
                 var staleCommand = new ProtocolCommand(
                     CommandKind.SubmitAction,
@@ -988,7 +1006,21 @@ namespace Mahjong.Unity.Tests.PlayMode
                     new RoundId(staleRoundSeed),
                     decisionId: new DecisionId(staleDecision.DecisionId),
                     controlEpoch: new ControlEpoch(staleEpochSeed));
-                TableReceiptResolvedEventArgs staleReceipt = await SubmitExpectReceiptAsync(claimed, staleCommand, pumpCts.Token).ConfigureAwait(false);
+                TableReceiptResolvedEventArgs staleReceipt;
+                try
+                {
+                    staleReceipt = await SubmitExpectReceiptAsync(claimed, staleCommand, pumpCts.Token).ConfigureAwait(false);
+                }
+                catch (Exception submitError)
+                {
+                    File.WriteAllText(Path.Combine(controlEvidenceDirectory, "control-session-submit-error.txt"),
+                        "state=" + claimed.State + Environment.NewLine +
+                        "bindingPresent=" + (claimed.Binding != null) + Environment.NewLine +
+                        "pendingCommands=" + claimed.PendingCommands.Count + Environment.NewLine +
+                        "commandFrames=" + claimedCapture.CommandFrames + Environment.NewLine +
+                        "error=" + submitError, new UTF8Encoding(false));
+                    throw;
+                }
                 bool staleRejected = staleReceipt.Resolution.ReceiptStatus == Mahjong.Contracts.ReceiptStatus.Rejected &&
                     string.Equals(staleReceipt.Resolution.ReasonCode, "DECISION_MISMATCH", StringComparison.Ordinal);
                 int staleCommandFrames = claimedCapture.CommandFrames - staleCommandFramesBefore;
