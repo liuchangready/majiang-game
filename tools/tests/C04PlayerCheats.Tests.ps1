@@ -1,149 +1,119 @@
 <#
-    SCRIPT_TOOL_FIXTURE negative matrix for C04PlayerCheats. These tests
-    exercise the evidence verifier and overwrite guard only; they do not run
-    Unity, the Player or a game.
+    SCRIPT_TOOL_FIXTURE compatibility/fail-closed matrix for the C04 runner.
+    The old local Assert-C04Evidence/Strict semantic verifier is retired; these
+    tests verify the remaining cheap guards and the D04-A CLI handoff contract.
+    They do not run Unity, the Player or a game.
 #>
 $ErrorActionPreference = 'Stop'
 $runner = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'tools\unity\run-p45-c04-player-cheats.ps1'
 . $runner -SelfTest
 
-$failures = New-Object System.Collections.Generic.List[string]
 $passed = 0
+$failures = New-Object System.Collections.Generic.List[string]
+$testRoot = Join-Path $root ('build\c04-cheats-tests-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Force -Path $testRoot | Out-Null
 
-function Assert-ContainsError {
-    param([string[]]$Errors, [string]$Expected, [string]$Label)
-    if ($Errors -contains $Expected) {
-        $script:passed++
-    }
-    else {
-        $script:failures.Add("$Label expected=$Expected actual=$($Errors -join ',')") | Out-Null
-    }
+function Assert-Equal {
+    param($Actual, $Expected, [string]$Label)
+    if ($Actual -eq $Expected) { $script:passed++ }
+    else { $script:failures.Add("$Label expected=[$Expected] actual=[$Actual]") | Out-Null }
 }
 
-function New-Fixture {
-    $request = [pscustomobject]@{
-        requestId = ('a' * 32)
-        kind = 'SubmitBeamSwap'
-        status = 'APPLIED'
-        reason = ''
-        payloadSha256 = ('B' * 64)
-        rawPayloadSha256 = ('C' * 64)
-        roundId = 'c04-g3-r1'
-        seat = 0
-        decisionId = 'decision-1'
-        controlEpoch = 0
-        stateVersionBefore = 1
-        stateVersionAfter = 2
-        source = 'TablePresenter'
-    }
-    return [pscustomobject]@{
-        schemaVersion = 1
-        layer = 'WINDOWS_PLAYER'
-        scenarioVersion = 'c04-g3-player-cheats-v1'
-        caseName = 'authorized'
-        scenarioKind = 1
-        status = 'PASS'
-        sourceHead = 'f3ba015b7b54061a0b144ddf546cd6f8e37548ca'
-        unityVersion = '6000.3.27f1'
-        blockedRows = @('G3-01', 'G3-02')
-        assertions = @(
-            [pscustomobject]@{ id = 'G3-01-UI-ENTRY'; pass = $true; expected = 'x'; actual = 'y' },
-            [pscustomobject]@{ id = 'G3-02-UI-ENTRY'; pass = $true; expected = 'x'; actual = 'y' },
-            [pscustomobject]@{ id = 'G3-03-RECEIPT'; pass = $true; expected = 'x'; actual = 'y' },
-            [pscustomobject]@{ id = 'G3-04-BEAM-FEE'; pass = $true; expected = 'x'; actual = 'y' },
-            [pscustomobject]@{ id = 'G3-05-BEFORE'; pass = $true; expected = 'x'; actual = 'y' }
-        )
-        requests = @($request)
-    }
+function Assert-True {
+    param($Condition, [string]$Label)
+    if ($Condition) { $script:passed++ }
+    else { $script:failures.Add("$Label condition was false") | Out-Null }
 }
 
-$head = 'f3ba015b7b54061a0b144ddf546cd6f8e37548ca'
-$valid = New-Fixture
-$errors = Assert-C04Evidence -Evidence $valid -ExpectedCase 'authorized' -NativeExit 0 -ExpectedSourceHead $head
-if ($errors.Count -eq 0) { $passed++ } else { $failures.Add('valid fixture rejected: ' + ($errors -join ',')) | Out-Null }
-
-$wrongCase = New-Fixture
-$wrongCase.caseName = 'negative'
-Assert-ContainsError (Assert-C04Evidence -Evidence $wrongCase -ExpectedCase 'authorized' -NativeExit 0 -ExpectedSourceHead $head) 'CASE_NAME' 'wrong-case'
-
-$wrongHead = New-Fixture
-$wrongHead.sourceHead = 'deadbeef'
-Assert-ContainsError (Assert-C04Evidence -Evidence $wrongHead -ExpectedCase 'authorized' -NativeExit 0 -ExpectedSourceHead $head) 'SOURCE_HEAD' 'wrong-identity'
-
-$missingReceipt = New-Fixture
-$missingReceipt.requests = @()
-Assert-ContainsError (Assert-C04Evidence -Evidence $missingReceipt -ExpectedCase 'authorized' -NativeExit 0 -ExpectedSourceHead $head) 'NO_REQUESTS' 'missing-receipt'
-
-$missingStatus = New-Fixture
-$missingStatus.requests[0].status = ''
-Assert-ContainsError (Assert-C04Evidence -Evidence $missingStatus -ExpectedCase 'authorized' -NativeExit 0 -ExpectedSourceHead $head) 'MISSING_RECEIPT_STATUS' 'missing-status'
-
-$badHash = New-Fixture
-$badHash.requests[0].rawPayloadSha256 = 'not-a-hash'
-Assert-ContainsError (Assert-C04Evidence -Evidence $badHash -ExpectedCase 'authorized' -NativeExit 0 -ExpectedSourceHead $head) 'MISSING_RAW_HASH' 'hash-mismatch'
-
-$nonzero = New-Fixture
-Assert-ContainsError (Assert-C04Evidence -Evidence $nonzero -ExpectedCase 'authorized' -NativeExit 3 -ExpectedSourceHead $head) 'NATIVE_EXIT_3' 'nonzero-native'
-
-$timeout = New-Fixture
-Assert-ContainsError (Assert-C04Evidence -Evidence $timeout -ExpectedCase 'authorized' -NativeExit 124 -ExpectedSourceHead $head) 'NATIVE_EXIT_124' 'timeout-native'
-
-$noAssertions = New-Fixture
-$noAssertions.assertions = @()
-Assert-ContainsError (Assert-C04Evidence -Evidence $noAssertions -ExpectedCase 'authorized' -NativeExit 0 -ExpectedSourceHead $head) 'NO_ASSERTIONS' 'empty-assertions'
-
-$unknownBlocked = New-Fixture
-$unknownBlocked.blockedRows = @('G3-99')
-Assert-ContainsError (Assert-C04Evidence -Evidence $unknownBlocked -ExpectedCase 'authorized' -NativeExit 0 -ExpectedSourceHead $head) 'UNKNOWN_BLOCKED_ROW' 'unknown-blocked'
-
-# Strict production guard: a PASS evidence object must carry all six-row success
-# assertions, five unique APPLIED requests with raw hashes, and no blocked rows.
-$strictIds = @('G3-01-RECEIPT','G3-02-RECEIPT','G3-02-CHOICE-RECEIPT','G3-03-RECEIPT','G3-03-CHOICE-RECEIPT','G3-04-FINAL-LEDGER','G3-05-FINAL')
-$strictBase = New-Fixture
-$strictBase.blockedRows = @()
-$strictBase.assertions = @($strictIds | ForEach-Object { [pscustomobject]@{ id = $_; pass = $true; expected = 'expected-observation'; actual = 'actual-observation' } })
-$strictKinds = @('SubmitTileMark','SubmitSleeveBloom','SubmitSleeveBloomChoice','SubmitBeamSwap','SubmitBeamSwapChoice')
-$strictBase.requests = @(0..4 | ForEach-Object {
-    $r = $strictBase.requests[0].PSObject.Copy()
-    $r.requestId = ('{0:x32}' -f ($_ + 1))
-    $r.kind = $strictKinds[$_]
-    $r.status = 'APPLIED'
-    $r.roundId = 'c04-g3-r1'
-    $r.seat = 0
-    $r.decisionId = 'decision-' + $_
-    $r.controlEpoch = 0
-    $r
-})
-$strictErrors = Assert-C04EvidenceStrict -Evidence $strictBase -ExpectedCase 'authorized' -NativeExit 0 -ExpectedSourceHead $head
-if ($strictErrors.Count -eq 0) { $passed++ } else { $failures.Add('strict valid fixture rejected: ' + ($strictErrors -join ',')) | Out-Null }
-
-$variants = @(
-    @{ Name = 'status-fail'; Mutate = { param($e) $e.status = 'FAIL' } },
-    @{ Name = 'all-assertions-false'; Mutate = { param($e) foreach ($a in $e.assertions) { $a.pass = $false } } },
-    @{ Name = 'rejected-as-success'; Mutate = { param($e) $e.requests[0].status = 'REJECTED'; $e.requests[0].reason = 'MALFORMED_MESSAGE' } },
-    @{ Name = 'all-blocked'; Mutate = { param($e) $e.blockedRows = @('G3-01','G3-02') } },
-    @{ Name = 'foreign-identity'; Mutate = { param($e) $e.requests[0].seat = 99; $e.requests[0].decisionId = '' } },
-    @{ Name = 'bad-raw-hash'; Mutate = { param($e) $e.requests[0].rawPayloadSha256 = 'not-a-hash' } },
-    @{ Name = 'duplicate-request'; Mutate = { param($e) $e.requests[1].requestId = $e.requests[0].requestId } }
-)
-foreach ($variant in $variants) {
-    $copy = ($strictBase | ConvertTo-Json -Depth 8 | ConvertFrom-Json)
-    & $variant.Mutate $copy
-    $variantErrors = Assert-C04EvidenceStrict -Evidence $copy -ExpectedCase 'authorized' -NativeExit 0 -ExpectedSourceHead $head
-    if ($variantErrors.Count -gt 0) { $passed++ } else { $failures.Add('strict accepted invalid variant ' + $variant.Name) | Out-Null }
+function Assert-Contains {
+    param([object[]]$Values, [string]$Expected, [string]$Label)
+    if (@($Values) -contains $Expected) { $script:passed++ }
+    else { $script:failures.Add("$Label expected=$Expected actual=$(@($Values) -join ',')") | Out-Null }
 }
-# Overwrite refusal is a real runner guard, not a fabricated verifier result.
-$temp = Join-Path ([System.IO.Path]::GetTempPath()) ('c04-tool-' + [guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Force -Path $temp | Out-Null
-$threw = $false
-try {
-    & $runner -EvidenceRoot $temp -PlayerPath (Join-Path $temp 'missing.exe') -SourceHead $head -SkipBuild
+
+# 1. The retired local verifier must not exist as a formal PASS fallback.
+Assert-True ($null -eq (Get-Command Assert-C04EvidenceStrict -ErrorAction SilentlyContinue)) 'strict-removed'
+Assert-True ($null -eq (Get-Command Assert-C04Evidence -ErrorAction SilentlyContinue)) 'basic-verifier-removed'
+
+# 2. Fixed D04-A CLI contract.
+$head = '0123456789abcdef0123456789abcdef01234567'
+$verifierArguments = Get-C04VerifierArguments -Verifier 'C:\tools\C04PlayerCheatVerifier2.dll' -EvidenceJson 'C:\capture\case-authorized.json' -CaseName 'authorized' -ExpectedSourceHead $head -PackageManifest 'C:\pkg\c04-package-manifest.csv'
+Assert-Equal ($verifierArguments -join ' ') ('C:\tools\C04PlayerCheatVerifier2.dll verify --evidence C:\capture\case-authorized.json --case authorized --source-head ' + $head + ' --package-manifest C:\pkg\c04-package-manifest.csv') 'verifier-fixed-cli'
+
+# 3. Case JSON is only structurally checked here; semantics are delegated.
+$caseDir = Join-Path $testRoot 'case'
+New-Item -ItemType Directory -Force -Path $caseDir | Out-Null
+Assert-Contains (Get-C04CaseStructureErrors -EvidenceJson (Join-Path $caseDir 'none.json')) 'MISSING_EVIDENCE_JSON' 'case-missing'
+[System.IO.File]::WriteAllText((Join-Path $caseDir 'bad.json'), 'not-json')
+Assert-Contains (Get-C04CaseStructureErrors -EvidenceJson (Join-Path $caseDir 'bad.json')) 'EVIDENCE_JSON_MALFORMED' 'case-malformed'
+[System.IO.File]::WriteAllText((Join-Path $caseDir 'ok.json'), '{"schemaVersion":1}')
+$okCaseErrors = @(Get-C04CaseStructureErrors -EvidenceJson (Join-Path $caseDir 'ok.json'))
+Assert-Equal $okCaseErrors.Count 0 'case-structurally-ok'
+
+# 4. BuildReport errors=3 is preserved verbatim and attributed to steps.
+$exe = Join-Path $testRoot 'Mahjong.exe'
+[System.IO.File]::WriteAllText($exe, 'fixture')
+$report = [ordered]@{
+    schema = 1
+    result = 'Succeeded'
+    errors = 3
+    warnings = 200
+    output = (Get-C04FullPath $exe)
+    bytes = (Get-Item -LiteralPath $exe).Length
+    outputSha256 = Get-C04Sha256 $exe
+    startedUtc = '2026-11-01T10:17:15.0872355Z'
+    finishedUtc = '2026-11-01T10:19:17.4294166Z'
+    durationSeconds = 121.958
+    scenes = @('Assets/Scenes/Boot.unity','Assets/Scenes/Menu.unity','Assets/Scenes/Lobby.unity','Assets/Scenes/Table.unity','Assets/Scenes/Spectator.unity','Assets/Scenes/Settlement.unity')
+    plugins = @()
+    steps = @([ordered]@{ name = 'Preprocess Player'; depth = 0; durationSeconds = 1; messages = @(
+        [ordered]@{ type = 'Error'; content = 'historical-error-1' },
+        [ordered]@{ type = 'Exception'; content = 'historical-error-2' },
+        [ordered]@{ type = 'Error'; content = 'historical-error-3' }
+    ) })
 }
-catch {
-    $threw = $_.Exception.Message -match 'REFUSE_OVERWRITE'
-}
-if ($threw) { $passed++ } else { $failures.Add('overwrite-refusal did not throw REFUSE_OVERWRITE') | Out-Null }
-Remove-Item -LiteralPath $temp -Recurse -Force
+$reportPath = Join-Path $testRoot 'player-build.json'
+Write-C04Json -Path $reportPath -Object $report
+$check = Test-C04BuildReport -Path $reportPath -ExpectedOutput $exe
+Assert-Contains $check.errors 'BUILD_REPORT_ERRORS:3' 'buildreport-preserves-3'
+Assert-Contains $check.errors 'BUILD_REPORT_STEP_ERROR:step=Preprocess Player type=Error message=historical-error-1' 'buildreport-step-error'
+Assert-Contains $check.errors 'BUILD_REPORT_STEP_ERROR:step=Preprocess Player type=Exception message=historical-error-2' 'buildreport-step-exception'
+Assert-Equal ([int]$check.report.errors) 3 'buildreport-count-unchanged'
+
+# 5. A report with errors but no Error/Exception step messages is not accepted.
+$report.errors = 3
+$report.steps = @([ordered]@{ name = 'Preprocess Player'; depth = 0; durationSeconds = 1; messages = @([ordered]@{ type = 'Log'; content = 'ok' }) })
+$unattributedPath = Join-Path $testRoot 'unattributed.json'
+Write-C04Json -Path $unattributedPath -Object $report
+Assert-Contains (Test-C04BuildReport -Path $unattributedPath -ExpectedOutput $exe).errors 'BUILD_REPORT_UNATTRIBUTED_ERRORS' 'buildreport-unattributed'
+
+# 6. Evidence root overwrite and outside-build guards are real runner refusals.
+$existing = Join-Path $testRoot 'existing'
+New-Item -ItemType Directory -Force -Path $existing | Out-Null
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runner -SourceHead $head -EvidenceRoot $existing -PlayerPath (Join-Path $testRoot 'missing.exe') -SkipBuild *> (Join-Path $testRoot 'overwrite.log')
+Assert-Equal $LASTEXITCODE 2 'overwrite-exit-2'
+Assert-True ((Get-Content -LiteralPath (Join-Path $testRoot 'overwrite.log') -Raw) -match 'REFUSE_OVERWRITE|overwrite') 'overwrite-message'
+
+$outsideRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('c04-outside-' + [guid]::NewGuid().ToString('N'))
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runner -SourceHead $head -EvidenceRoot $outsideRoot -PlayerPath (Join-Path $testRoot 'missing.exe') -SkipBuild *> (Join-Path $testRoot 'outside.log')
+Assert-Equal $LASTEXITCODE 2 'outside-exit-2'
+Assert-True ((Get-Content -LiteralPath (Join-Path $testRoot 'outside.log') -Raw) -match 'EVIDENCE_ROOT_OUTSIDE_BUILD|outside') 'outside-message'
+
+# 7. Missing SourceHead fails before any evidence root is created.
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runner -EvidenceRoot (Join-Path $testRoot 'no-head') -PlayerPath (Join-Path $testRoot 'missing.exe') -SkipBuild *> (Join-Path $testRoot 'nohead.log')
+Assert-Equal $LASTEXITCODE 2 'no-head-exit-2'
+Assert-True (-not (Test-Path -LiteralPath (Join-Path $testRoot 'no-head'))) 'no-head-no-evidence-root'
+
+# 8. SkipBuild requires a sealed package, not just an existing exe.
+$unsealed = Join-Path $testRoot 'unsealed'
+New-Item -ItemType Directory -Force -Path $unsealed | Out-Null
+[System.IO.File]::WriteAllText((Join-Path $unsealed 'Mahjong.exe'), 'x')
+$skip = Test-C04PackageSeal -PlayerPath (Join-Path $unsealed 'Mahjong.exe') -ExpectedSourceHead $head
+Assert-Contains $skip.errors 'PACKAGE_SEAL_MISSING' 'skip-build-requires-seal'
+
+# 9. Quoting contract remains exact for space/quote paths.
+Assert-Equal (ConvertTo-C04QuotedArgument 'C:\Program Files\Unity\Unity.exe') '"C:\Program Files\Unity\Unity.exe"' 'quoting-space'
+Assert-Equal (ConvertTo-C04QuotedArgument 'a"b') '"a\"b"' 'quoting-quote'
 
 Write-Host "C04PlayerCheats.Tests passed=$passed failed=$($failures.Count)"
 foreach ($failure in $failures) { Write-Host "FAIL $failure" }
