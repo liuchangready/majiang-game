@@ -10,10 +10,12 @@ if (-not $root.StartsWith($allowed,[StringComparison]::OrdinalIgnoreCase)) { thr
 if ((Split-Path -Leaf $root) -notmatch '^[0-9a-fA-F]{32}$' -or (Test-Path -LiteralPath $root)) { throw 'RunRoot must be a fresh GUID-N directory.' }
 [IO.Directory]::CreateDirectory($root) | Out-Null
 $driverPath = Join-Path $repo 'unity/Mahjong.Unity/Assets/Scripts/App/C04PrivacyPlayerDriver.cs'
+$playModePath = Join-Path $repo 'unity/Mahjong.Unity/Assets/Tests/PlayMode/C04PrivacyRoleSwitchPlayModeTests.cs'
 $metaPath = $driverPath + '.meta'
 $runnerPath = Join-Path $repo 'tools/unity/run-p45-c04-privacy-matrix.ps1'
-foreach ($path in @($driverPath,$metaPath,$runnerPath)) { if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Required Player adapter input is missing: $path" } }
+foreach ($path in @($driverPath,$playModePath,$metaPath,$runnerPath)) { if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Required Player adapter input is missing: $path" } }
 $driver = [IO.File]::ReadAllText($driverPath,[Text.Encoding]::UTF8)
+$playMode = [IO.File]::ReadAllText($playModePath,[Text.Encoding]::UTF8)
 $runner = [IO.File]::ReadAllText($runnerPath,[Text.Encoding]::UTF8)
 $names = @(
   'RealRoom_FourPlayersSpectatorAndRoleSwitchUseIndependentSessions',
@@ -59,6 +61,8 @@ Check ($driver.Contains('claimedPumpError') -and $driver.Contains('onTransientEr
 Check ($driver.Contains('claimedPumpCts.Cancel()') -and $driver.Contains('await claimedPump.ConfigureAwait(false)') -and $driver.Contains('claimed.OpenAsync(new TableSessionOpenRequest(claimedTicket.SessionTicket') -and $driver.Contains('recoveryBranchTaken')) 'CONTROL_CURSOR_FLOOR_RECOVERY_IS_SERIALIZED_WITH_ORIGINAL_TICKET'
 Check ($driver.Contains('ClaimReceiptStatus = claimReceipt.Resolution.ReceiptStatus.ToString()') -and $driver.Contains('StaleReceiptStatus = staleReceipt.Resolution.ReceiptStatus.ToString()') -and $driver.Contains('ClaimReceiptReason = claimReceipt.Resolution.ReasonCode')) 'CLAIM_AND_STALE_RECEIPTS_HAVE_SEPARATE_PRODUCER_FIELDS'
 Check ($driver.Contains('StaleRequestId = staleCommand.RequestId.Value') -and $driver.Contains('StaleDecisionId = staleDecision.DecisionId') -and $driver.Contains('StaleBindingEpoch = claimed.Binding.BindingEpoch.Value')) 'STALE_RECEIPT_IS_BOUND_TO_ORIGINAL_DECISION_AND_RESUMED_BINDING'
+Check ($playMode.Contains('claimedPumpCts.Cancel()') -and $playMode.Contains('claimed.OpenAsync(new TableSessionOpenRequest(claimedTicket.SessionTicket') -and $playMode.Contains('control-session-reconnect.json')) 'PLAYMODE_USES_SERIALIZED_ORIGINAL_IDENTITY_RECOVERY'
+Check ($playMode.Contains('claimReceipt.Resolution.ReasonCode') -and $playMode.Contains('staleReceipt.Resolution.ReceiptStatus.ToString()') -and $playMode.Contains('StaleBindingEpoch = claimed.Binding.BindingEpoch.Value')) 'PLAYMODE_PRODUCES_SEPARATE_RECEIPTS_AND_RESUMED_BINDING_IDENTITY'
 Check ($runner.Contains('$e.claimReceiptReason -cne ''LOCAL_CONTROL''') -and $runner.Contains('$e.staleReason -cne ''DECISION_MISMATCH''') -and $runner.Contains('[UInt64]$e.capturedDecisionEpoch -ne [UInt64]$e.staleEpoch')) 'RUNNER_REQUIRES_EXACT_SEPARATE_CONTROL_RECEIPTS_AND_EPOCHS'
 Check ($runner.Contains("'control-session-before-stale-submit.json'") -and $runner.Contains("'control-session-reconnect.json'")) 'CONTROL_EVIDENCE_PATHS_FLATTENED_FOR_WINDOWS_BUDGET'
 Check ($runner.Contains('function Assert-C04PlayerCaseEvidence') -and $runner.Contains('Open-deadline evidence failed its real decision') -and -not $runner.Contains('$caseFiles.Count -lt 3')) 'RUNNER_SEMANTICALLY_ACCEPTS_CASE_ARTIFACTS'
@@ -67,7 +71,7 @@ $recoveryProbe = [IO.File]::ReadAllText((Join-Path $repo 'unity/Mahjong.Unity/As
 Check ($recoveryProbe.Contains('FileOutboxStore(arguments.OutboxDirectory)') -and $recoveryProbe.Contains('session.ReconcilePendingAsync') -and $recoveryProbe.Contains('noOriginalCommandResend')) 'P2_REAL_OUTBOX_RECONCILE_CONTRACT'
 $guid = [regex]::Match([IO.File]::ReadAllText($metaPath),'(?m)^guid: ([0-9a-f]{32})$').Groups[1].Value
 Check ($guid.Length -eq 32) 'UNIQUE_META_GUID'
-$result = [ordered]@{ schemaVersion=1; testKind='source-contract'; total=30; passed=(30-$failures.Count); failed=$failures.Count; failures=$failures.ToArray(); driverSha256=(Get-FileHash -Algorithm SHA256 $driverPath).Hash.ToLowerInvariant(); runnerSha256=(Get-FileHash -Algorithm SHA256 $runnerPath).Hash.ToLowerInvariant() }
+$result = [ordered]@{ schemaVersion=1; testKind='source-contract'; total=32; passed=(32-$failures.Count); failed=$failures.Count; failures=$failures.ToArray(); driverSha256=(Get-FileHash -Algorithm SHA256 $driverPath).Hash.ToLowerInvariant(); playModeSha256=(Get-FileHash -Algorithm SHA256 $playModePath).Hash.ToLowerInvariant(); runnerSha256=(Get-FileHash -Algorithm SHA256 $runnerPath).Hash.ToLowerInvariant() }
 $json = $result | ConvertTo-Json -Depth 5
 [IO.File]::WriteAllText((Join-Path $root 'summary.json'),$json + "`n",[Text.UTF8Encoding]::new($false))
 if ($failures.Count) { Write-Error ('C04_PRIVACY_PLAYER_TESTS_FAIL ' + ($failures -join ',')); exit 1 }
