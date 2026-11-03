@@ -1,73 +1,88 @@
-# G2-C04-D04-C 完整构建、包与进程工具返修交付（R1-06 Round 10）
+# G2-C04-D04-C 完整构建、包与进程工具返修交付（R1-06 Round 11）
 
 日期：2026-11-03，Asia/Shanghai。任务：D04-C，targetAgent=deepseek_harness。
-代码 HEAD：`2283adaf05b4f19fbe13aad69c98fc17cf2f9803`。R1-03 A/B 修复保留
-（tests 76/76、compat 20/20；dotnet csproj 34/34；provenance duplicate 明确报错）。
+代码 HEAD：`9d76dfc345b6b9902d674b46a9455e90c58c963c`（基于 118b2eec；R1-03 保持）。
 
-本轮按 R9 新类型依据继续路线 C 的**只读导入/类型诊断**；结论是不能用现有项目侧
-SerializedObject/fallback 修复，按停止规则回报。
+## 1. R1-06-R1-04：短路径导入对照与真实 errors0
 
-## 1. 实际诊断（新信息）
-
-对 staging 项目执行只读 Unity 诊断：
-`C04ShaderHostTypeFix.Diagnose`，日志
-`build/r10-diag2-c24e846b8b944d0ea8b099cfca2bb9b4.log`
-（SHA `8ECD5A1F599E6580D5CDBBA5B3CD8F6B53CFA49F2CEA010712F721BD16E0458A`）：
+选择路线 C 的路径假设验证；在**新独占短根** `build\c976fe390` 建全新 staging，
+复制真实 shared plugin 后仅做只读诊断：
 
 ```text
-C04DIAG allCount=1
-C04DIAG asset type=UnityEditor.AssetImporters.ImportLog name=Import Logs main=False
-C04DIAG settingsCount=1
+C04DIAG allCount=2 mainType=UnityEngine.ComputeShader
+C04DIAG asset type=UnityEngine.ComputeShader name=TraceVirtualOffset main=True
+  guid=ff2cbab5da58bf04d82c5f34037ed123 localId=-6772857160820960102
+C04DIAG asset type=UnityEngine.Rendering.RayTracingShader name=TraceVirtualOffset main=False
+  guid=ff2cbab5da58bf04d82c5f34037ed123 localId=-5126288278712620388
 ```
 
-即 `AssetDatabase.LoadAllAssetsAtPath(
-Packages/com.unity.render-pipelines.core/.../TraceVirtualOffset.urtshader)`
-只返回 **ImportLog**，没有 ComputeShader，也没有 RayTracingShader 子对象。该 `.urtshader`
-导入实际上是失败的，因此：
+同一 `.urtshader` 在旧 267 字符路径下仅返回 ImportLog；在短根下正确产生
+ComputeShader 与 RayTracingShader。诊断日志
+`build\c976fe390\diag2.log` SHA `3C697C0037E9B7202F19EA6375A76327D53F189CEBD0AB106C0372D7D99E0361`。
 
-- 无法通过 `LoadAllAssetsAtPath` 取得真实 ComputeShader/RayTracingShader 做字段绑定；
-- 之前把所有 null Shader 填 `Hidden/InternalErrorShader` 的路线 C 尝试不能保持语义，且不能
-  消除 TraceVirtualOffset 错误；
-- 正确修复必须修 **包导入器/包版本**，不是 global settings 字段或内存 SerializedObject。
+随后在短根 `build\bebfca180` 进行一次全新 fresh build：
 
-## 2. 已排除方案与证据
+- BuildReport：`result=Succeeded, errors=0, stepErrorCount=0, stepExceptionCount=0`；
+- native exit=0；summary PASS；无 FAIL；
+- player `Mahjong.exe` 667136 bytes，SHA
+  `F083B0E879A9298CDCF9933A8F3B4F2B013E13F7D3E51221FC0D756B79E28807`；
+- BuildReport SHA `FB7C9A696DD930F1A45198C99577FA07C3359FB5AC99123C8950D9AA22419BF4`；
+- package manifest SHA `1F78EC848145DB0096970BDFF77AE499009BC216F976EE94EBE13AD0AFA77930`；
+- package seal SHA `B1000A9C6D1FFD29D00CC96C0FE90E3767E604F3B1A1B01FC4ECF3251082D7CB`；
+- build receipt SHA `A60443B0BBE3E966A71B13B0EDA5B6CE32424EE6054460409BCF82B540372C72`；
+- build execution SHA `CA35EB1087EF01A4AC4D5D2F2FC06241C1D33094A6576DAFD4A2E1BCFE8F959D`；
+- source identity `dbebb4011743d56ed4dbea0cac1152015254dde3ff7a49077bef53c3183c50d6`。
 
-- 路线 C（项目侧 SerializedObject/fallback）：R9 两次实测仍 errors=3；
-  `build/r9-routeC2-b29144f9136943089bdba6c0452bcde9/build/player/c04-build-report.json`
-  SHA `78A6DBF1BC32B53DAFB79C3C3CFCBA3E790330CA5E8103D529DF0C14DA30B33D`。
-- 路线 A（同 6000.3 官方 core 包集合调整）：本机 URP/core 17.3.0 的 `package.json` 标注
-  `"unity": "6000.3"`，没有可验证的官方 6000.3 替代版本；不能引用 17.4→6000.3 未验证组合。
-- 路线 B（Editor 对齐）：本机仅有 6000.3.27f1，没有安装与目标 URP 配套的其它官方 Editor，
-  无法实测；需要明确官方版本/安装包后再授权。
+同一包真实 SkipBuild（`build\s8e7da647`）：
+`SKIPBUILD validate sealed package` → `BUILD_ONLY component PASS`，exit0；
+`Test-C04EvidenceSeal` errors=[]，`Test-C04PackageSeal.ok=true`。
 
-## 3. R1-04 验收状态
+E2：未修改 `manifest.json`/`packages-lock.json`/`ProjectVersion.txt`，版本 diff 为空；
+未改包源/Editor/global settings。短路径是新的构建根，不是版本变更。
+
+E3（同包六行 GAME）：**NOT_RUN**。仓库没有
+`dotnet/tools/C04PlayerCheatVerifier2`（Find-C04Verifier 两条候选均不存在），
+D04-A Verifier2 也未交付；不能用旧/伪造 evidence 替代。E3/E4 六行断言未通过，故 R1-04
+仍不能关闭。
+
+## 2. C-R10-EVIDENCE：旧封存根被改写事件
+
+诚实记录：R10 的 `C04ShaderHostTypeFix.Diagnose` 实际在旧
+`build/r9-routeC3-d2e9d3619dc743c1a6161ae9a8774c49/staging/repo/unity/Mahjong.Unity`
+上启动 Unity，并把诊断脚本写入旧 Assets。这是本轮新发生的违规执行事件，不是推测。
+
+- R9-C3 原 `partial-artifacts.csv` 记录该文件 2136 bytes / SHA
+  `02EDF1D45127DEBA34CB88BFDBE8E1266F4E4851DFF76704613BD6132D4E4D79`；
+- 当前旧文件 SHA `3917AE43728713DDEF9903D3365A657E4855807F61DA960E2FB49ACD2E74B9F4`；
+- 旧 R9-C3 `Test-C04EvidenceSeal` 现报
+  `EVIDENCE_PARTIAL_HASH:staging/repo/unity/Mahjong.Unity/Assets/Editor/C04ShaderHostTypeFix.cs`；
+- R9-C2 仍完整；R9 caller 原件只读保留。
+
+处理边界：**不恢复、不重封、不重算、不删除**旧 C3 原件；旧 C3 不再称为完整原件，
+其 BuildReport/errors3 仍作为失败历史有效；manifest/seal 保持当前损坏现场。后续实验只能
+新根，且本轮所有新 projectPath/output/log 均在 `build\c976fe390` / `build\bebfca180` 等
+新独占根。
+
+## 3. 验收对照
 
 | 断言 | 结果 |
 |---|---|
-| A9-1 errors=0 | **FAIL**：errors=3/stepErrors=3 |
-| A9-2 native0/无 FAIL | **FAIL**：C2 native1/exit3；C3 unknown/exit7；均无 seal |
-| A9-3 版本官方配套 | 未改版本；路线 C 无有效导入修复 |
-| A9-4 E3/E4 | **NOT_RUN**：无 clean package |
+| A9-1 errors=0 | **PASS**（bebfca180） |
+| A9-2 native0/无 FAIL | **PASS** |
+| A9-3 版本官方配套 | 无版本变更 |
+| A9-4 E3/E4 | E4 **PASS**；E3 **NOT_RUN**（缺 Verifier2） |
 | A9-5 E5 | runner 76/76、compat 20/20；baseline diff-check0 |
-| A9-6 范围 | 未改授权外 tracked；无 GAME 声明 |
+| A9-6 范围/声明 | 未改授权外 tracked；GAME NOT_RUN，未称 C/G2 通过 |
 
-## 4. 最小额外授权请求
+E5 证据：`build/r11-tests-01f450dd69814f0ea4d92850a499a601/runner.log`；
+compat SHA `15B40D45D430574A5D2B9F8057F4F3FD2F697C1E273E073DE77F88CB55FAB8F4`。
+`git diff --check 1bc348aa..HEAD` exit0；worktree clean。
 
-卡点已定位到包导入层：`com.unity.render-pipelines.core` 17.3.0 的
-`UnifiedRTShaderImporter` 对 `TraceVirtualOffset.urtshader` 未产生 ComputeShader/
-RayTracingShader，只产生 ImportLog。请授权以下任一具体动作：
+## 4. 仍需的最小条件
 
-1. 允许对 `com.unity.render-pipelines.core` 的 `UnifiedRTShaderImporter`/包源做最小修复，
-   使其正确生成 ComputeShader 与 RayTracingShader 子对象；或
-2. 提供/安装一个官方 6000.3-compatible URP/core 包版本（含官方 CHANGELOG/发布记录），
-   并允许更新 `manifest.json`/`packages-lock.json`；或
-3. 提供/安装与目标 URP 官方配套的 Editor 版本，并允许更新 `ProjectVersion.txt`。
+要完成 E3，只需提供/构建 D04-A 的 `C04PlayerCheatVerifier2`（官方路径
+`dotnet/tools/C04PlayerCheatVerifier2/bin/Release/net8.0/...dll`），或明确授权使用一个已有的
+六行合同 verifier；不需要新的包/Editor/global settings 授权。获得 verifier 后，使用本 same
+package `build\bebfca180\build\player` 做真实 SkipBuild + 六行断言，不再重跑 Unity。
 
-在这些授权前，不能用旧 errors6/3 产物、fallback shader、fixture 或摘要关闭 R1-04；C 仍未通过，
-无 approve/MR/push/merge/deploy。
-
-## 5. 保留项
-
-- R1-03 A/B：真实 dotnet csproj 34/34 保留；provenance duplicate 明确拒绝。
-- 01/02/strict99/FORMAT 及旧 subset 拒绝保持。
-- 本轮未保留 C 脚本（诊断后已回退），未改 packages/settings/asmdef/许可。
+E1/E2/E4 已达成，E3 未达成；C 仍未通过，无 approve/MR/push/merge/deploy。
