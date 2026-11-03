@@ -44,6 +44,48 @@ function New-TestDirectory([string]$Name) {
     [IO.Directory]::CreateDirectory($path) | Out-Null
     return $path
 }
+function New-CaseEvidenceFixture([string]$CaseName, [string]$Root) {
+    [IO.Directory]::CreateDirectory($Root) | Out-Null
+    Write-C04Json (Join-Path $Root 'summary.json') ([ordered]@{ fixtureOnly=$true; schemaVersion=1; case=$CaseName; exitCode=0; evidence='player-case.jsonl' })
+    $events = @(
+        (@{ fixtureOnly=$true; event='start'; case=$CaseName; pid=12345 } | ConvertTo-Json -Compress),
+        (@{ fixtureOnly=$true; event='case_complete'; case=$CaseName } | ConvertTo-Json -Compress)
+    )
+    Write-C04Utf8 (Join-Path $Root 'player-case.jsonl') (($events -join "`n") + "`n")
+    $fixtureRaw = '{"fixtureOnly":true,"wireFrames":[]}'
+    switch -CaseSensitive ($CaseName) {
+        'RealRoom_FourPlayersSpectatorAndRoleSwitchUseIndependentSessions' {
+            Write-C04Utf8 (Join-Path $Root 'role-switch-raw/raw-frames.json') $fixtureRaw
+        }
+        'RealRoom_DelayedOldRawReceiveIsRejectedByNewBinding' {
+            $bytes = [Text.Encoding]::UTF8.GetBytes('FIXTURE ONLY delayed old raw')
+            $e = @{ fixtureOnly=$true; schemaVersion=1; oldSessionId='old-session'; newSessionId='new-session'; oldSeat=0; newSeat=1; oldFrameSha256=(Get-C04Sha256Bytes $bytes); oldFrameBase64=[Convert]::ToBase64String($bytes); stateVersion='12'; tilesBefore='1,2,3'; tilesAfter='1,2,3'; accepted=$false }
+            Write-C04Json (Join-Path $Root 'delayed-old-raw/delayed-old-raw.json') $e
+        }
+        'RealRoom_ColdReopenReconcilesOriginalRequestWithoutDuplicate' {
+            $e = @{ fixtureOnly=$true; schemaVersion=1; requestId='fixture-request'; scopeId='fixture-scope'; canonicalDigest=('a' * 64); stateVersion='12'; eventSeq='7'; commandFrames=0; receiptQueryFrames=1; fromReceiptLookup=$true; zeroDuplicateStateDelta=$true }
+            Write-C04Json (Join-Path $Root 'recovery-query/recovery-query.json') $e
+            Write-C04Utf8 (Join-Path $Root 'recovery-raw/raw-frames.json') $fixtureRaw
+        }
+        'RealRoom_LegalSleeveAndFeeOwnershipAcrossFourSeatsAndSpectator' {
+            $e = @{ fixtureOnly=$true; schemaVersion=1; version='12'; seats=4; targetClosedTiles=13; targetLedgerEntries=1; targetCheatPoints=5; targetOfferId='fixture-offer'; spectatorVersion='12'; spectatorHasPublic=$true; spectatorHasPlayer=$false }
+            Write-C04Json (Join-Path $Root 'four-owner/four-owner.json') $e
+            Write-C04Utf8 (Join-Path $Root 'four-owner-raw/raw-frames.json') $fixtureRaw
+        }
+        'RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly' {
+            $e = @{ fixtureOnly=$true; schemaVersion=1; releaseVersion='10'; afterVersion='11'; advancedWithoutPlayerBinding=$true; claimed=$true; claimEpochAdvanced=$true; controlPresent=$true; controlHuman=$true; receiptStatus='Rejected'; receiptReason='stale'; expectedStaleReason='stale'; staleReason='stale'; capturedDecisionEpoch=1; staleEpoch=2; staleRound='fixture-round'; staleCommandFrames=1; stalePendingAfter=0; staleNoCommitMetadata=$true; staleDecisionRejected=$true }
+            Write-C04Json (Join-Path $Root 'released-control/released-control.json') $e
+        }
+        'RealRoom_OpenDecisionDeadlineContinuesAfterPlayerClose' {
+            $e = @{ fixtureOnly=$true; schemaVersion=1; case=$CaseName; roomId='fixture-room'; roundId='fixture-round'; decisionId='fixture-decision'; decisionSeat=0; controlEpoch=2; decisionDeadlineRemainingMs=5000; clockDecisionSeat=0; clockServerTimeMs=10000; clockDeadlineRemainingMs=5000; authoritativeDeadlineServerTimeMs=15000; playerSessionId='fixture-player-session'; playerScopeId='fixture-player-scope'; playerRole=1; playerSeat=0; playerBindingEpoch=3; releaseVersion=9; releaseCursorStreamVersion=4; releaseCursorProjectionSeq=8; closeRequestedUtcMs=100; closeCompletedUtcMs=110; playerBindingClosed=$true; spectatorSessionId='fixture-spectator-session'; spectatorRole=2; spectatorSeat=-1; spectatorBaselineVersion=9; spectatorBaselineCursorStreamVersion=1; spectatorBaselineCursorProjectionSeq=2; afterVersion=10; afterCursorStreamVersion=2; afterCursorProjectionSeq=3; afterPhase='Discard'; advancedWithoutPlayerBinding=$true }
+            Write-C04Json (Join-Path $Root 'deadline-evidence.json') $e
+        }
+        'RealRoom_ClosedPlayerToSpectatorToNewPlayerReceivePathRejectsOldRaw' {
+            Write-C04Utf8 (Join-Path $Root 'closed-binding-raw/raw-frames.json') $fixtureRaw
+        }
+        default { throw "Unknown fixture case $CaseName" }
+    }
+}
 function Invoke-Case([string]$Name, [scriptblock]$Body) {
     $script:Tests++
     $sw = [Diagnostics.Stopwatch]::StartNew()
@@ -483,6 +525,71 @@ Invoke-Case 'ordinary Windows app P2 launches separate processes and reconciles 
         'oldScopeQueryCount','prepareDoc.process.pid','recoverDoc.process.pid','canonicalDigest')) {
         Assert-True ($text.Contains($required)) "P2 runner contract is missing $required"
     }
+}
+
+Invoke-Case 'semantic Windows Player evidence accepts all seven fixture-only producer schemas' {
+    foreach ($testName in $script:C04ExpectedTests) {
+        $caseName = $testName.Substring($testName.LastIndexOf('.') + 1)
+        $caseRoot = Join-Path (New-TestDirectory ([guid]::NewGuid().ToString('N'))) $caseName
+        New-CaseEvidenceFixture $caseName $caseRoot
+        $accepted = Assert-C04PlayerCaseEvidence -CaseName $caseName -CaseRoot $caseRoot
+        Assert-Equal $caseName $accepted.case "semantic evidence case $caseName"
+        Assert-True ($accepted.artifacts.Count -gt 0) "semantic evidence did not return required case artifacts for $caseName"
+    }
+}
+
+Invoke-Case 'semantic Windows Player evidence rejects every missing required artifact' {
+    foreach ($testName in $script:C04ExpectedTests) {
+        $caseName = $testName.Substring($testName.LastIndexOf('.') + 1)
+        $caseRoot = Join-Path (New-TestDirectory ([guid]::NewGuid().ToString('N'))) $caseName
+        New-CaseEvidenceFixture $caseName $caseRoot
+        $required = @(Get-C04StableFiles -Root $caseRoot | Where-Object { $_.Name -notin @('summary.json','player-case.jsonl') })
+        foreach ($artifact in $required) {
+            Remove-Item -LiteralPath $artifact.FullName
+            Assert-Throws { Assert-C04PlayerCaseEvidence -CaseName $caseName -CaseRoot $caseRoot } 'Player case evidence is incomplete'
+            New-CaseEvidenceFixture $caseName $caseRoot
+        }
+    }
+}
+
+Invoke-Case 'deadline evidence rejects wrong identity, missing decision, epoch, deadline, or progress' {
+    $caseName = 'RealRoom_OpenDecisionDeadlineContinuesAfterPlayerClose'
+    $mutations = @(
+        @{ name='wrong-case'; key='case'; value='RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly' },
+        @{ name='empty-decision'; key='decisionId'; value='' },
+        @{ name='wrong-epoch'; key='controlEpoch'; value=0 },
+        @{ name='wrong-clock-seat'; key='clockDecisionSeat'; value=1 },
+        @{ name='deadline-mismatch'; key='authoritativeDeadlineServerTimeMs'; value=15001 },
+        @{ name='no-version-progress'; key='afterVersion'; value=9 },
+        @{ name='no-cursor-progress'; key='afterCursorStreamVersion'; value=1 },
+        @{ name='player-still-bound'; key='playerBindingClosed'; value=$false }
+    )
+    foreach ($mutation in $mutations) {
+        $caseRoot = Join-Path (New-TestDirectory ([guid]::NewGuid().ToString('N'))) $caseName
+        New-CaseEvidenceFixture $caseName $caseRoot
+        $path = Join-Path $caseRoot 'deadline-evidence.json'
+        $e = [IO.File]::ReadAllText($path) | ConvertFrom-Json
+        $e.($mutation.key) = $mutation.value
+        Write-C04Json $path $e
+        Assert-Throws { Assert-C04PlayerCaseEvidence -CaseName $caseName -CaseRoot $caseRoot } 'Open-deadline evidence failed'
+    }
+}
+
+Invoke-Case 'a meaningless third file cannot substitute for deadline evidence' {
+    $caseName = 'RealRoom_OpenDecisionDeadlineContinuesAfterPlayerClose'
+    $caseRoot = Join-Path (New-TestDirectory ([guid]::NewGuid().ToString('N'))) $caseName
+    New-CaseEvidenceFixture $caseName $caseRoot
+    Remove-Item -LiteralPath (Join-Path $caseRoot 'deadline-evidence.json')
+    Write-C04Utf8 (Join-Path $caseRoot 'meaningless-third-file.txt') 'FIXTURE ONLY'
+    Assert-Throws { Assert-C04PlayerCaseEvidence -CaseName $caseName -CaseRoot $caseRoot } 'Player case evidence is incomplete'
+}
+
+Invoke-Case 'case summary and JSONL event identity are required and nonempty' {
+    $caseName = 'RealRoom_OpenDecisionDeadlineContinuesAfterPlayerClose'
+    $caseRoot = Join-Path (New-TestDirectory ([guid]::NewGuid().ToString('N'))) $caseName
+    New-CaseEvidenceFixture $caseName $caseRoot
+    Write-C04Utf8 (Join-Path $caseRoot 'player-case.jsonl') "`n"
+    Assert-Throws { Assert-C04PlayerCaseEvidence -CaseName $caseName -CaseRoot $caseRoot } 'Player case terminal log'
 }
 
 Invoke-Case 'Unity compile-only mode imports and compiles without claiming a Player build' {

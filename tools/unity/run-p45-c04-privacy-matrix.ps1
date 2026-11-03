@@ -1189,8 +1189,6 @@ function Write-C04SealedEvidence {
 # ---------------------------------------------------------------------------
 # Main runner. Dot-sourcing with -LoadFunctionsOnly stops before this block.
 # ---------------------------------------------------------------------------
-if ($LoadFunctionsOnly) { return }
-
 $script:LogPath = ''
 $script:OwnedProcesses = New-Object Collections.Generic.List[object]
 $script:MutexHandle = $null
@@ -1222,6 +1220,82 @@ function Get-C04WindowsPlayerManifest([string]$Root) {
   }
   $canonical = ($rows -join "`n") + "`n"
   return [pscustomobject]@{ root = $rootFull; count = $files.Count; canonical = $canonical; sha256 = Get-C04Sha256Bytes ([Text.Encoding]::UTF8.GetBytes($canonical)) }
+}
+
+function Assert-C04PlayerCaseEvidence([string]$CaseName, [string]$CaseRoot) {
+  $summaryPath = Join-Path $CaseRoot 'summary.json'
+  $logPath = Join-Path $CaseRoot 'player-case.jsonl'
+  foreach ($required in @($summaryPath,$logPath)) {
+    if (-not (Test-Path -LiteralPath $required -PathType Leaf) -or (Get-Item -LiteralPath $required).Length -eq 0) {
+      throw "Player case evidence is incomplete: $CaseName missing or empty $([IO.Path]::GetFileName($required))"
+    }
+  }
+  $summary = [IO.File]::ReadAllText($summaryPath,[Text.Encoding]::UTF8) | ConvertFrom-Json
+  if ([int]$summary.schemaVersion -ne 1 -or $summary.case -cne $CaseName -or [int]$summary.exitCode -ne 0 -or $summary.evidence -cne 'player-case.jsonl') {
+    throw "Player case summary identity or result mismatch: $CaseName"
+  }
+  $events = @([IO.File]::ReadAllLines($logPath,[Text.Encoding]::UTF8) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_ | ConvertFrom-Json })
+  $starts = @($events | Where-Object { $_.event -ceq 'start' -and $_.case -ceq $CaseName })
+  $finishes = @($events | Where-Object { $_.event -ceq 'case_complete' -and $_.case -ceq $CaseName })
+  if ($starts.Count -ne 1 -or $finishes.Count -ne 1 -or @($events | Where-Object { $_.event -ceq 'case_failed' }).Count -ne 0) {
+    throw "Player case terminal log is incomplete or inconsistent: $CaseName"
+  }
+
+  $requiredRelative = switch -CaseSensitive ($CaseName) {
+    'RealRoom_FourPlayersSpectatorAndRoleSwitchUseIndependentSessions' { @('role-switch-raw/raw-frames.json') }
+    'RealRoom_DelayedOldRawReceiveIsRejectedByNewBinding' { @('delayed-old-raw/delayed-old-raw.json') }
+    'RealRoom_ColdReopenReconcilesOriginalRequestWithoutDuplicate' { @('recovery-query/recovery-query.json','recovery-raw/raw-frames.json') }
+    'RealRoom_LegalSleeveAndFeeOwnershipAcrossFourSeatsAndSpectator' { @('four-owner/four-owner.json','four-owner-raw/raw-frames.json') }
+    'RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly' { @('released-control/released-control.json') }
+    'RealRoom_OpenDecisionDeadlineContinuesAfterPlayerClose' { @('deadline-evidence.json') }
+    'RealRoom_ClosedPlayerToSpectatorToNewPlayerReceivePathRejectsOldRaw' { @('closed-binding-raw/raw-frames.json') }
+    default { throw "Unknown Player case evidence contract: $CaseName" }
+  }
+  $artifacts = @{}
+  foreach ($relative in $requiredRelative) {
+    $path = Join-Path $CaseRoot ($relative -replace '/', [IO.Path]::DirectorySeparatorChar)
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -LiteralPath $path).Length -eq 0) {
+      throw "Player case evidence is incomplete: $CaseName missing or empty $relative"
+    }
+    if ($path.EndsWith('.json',[StringComparison]::OrdinalIgnoreCase)) {
+      try { $artifacts[$relative] = [IO.File]::ReadAllText($path,[Text.Encoding]::UTF8) | ConvertFrom-Json }
+      catch { throw "Player case evidence is invalid JSON: $CaseName $relative" }
+    }
+  }
+  switch -CaseSensitive ($CaseName) {
+    'RealRoom_DelayedOldRawReceiveIsRejectedByNewBinding' {
+      $e = $artifacts['delayed-old-raw/delayed-old-raw.json']
+      if ([int]$e.schemaVersion -ne 1 -or [string]::IsNullOrWhiteSpace($e.oldSessionId) -or [string]::IsNullOrWhiteSpace($e.newSessionId) -or $e.oldSessionId -ceq $e.newSessionId -or [int]$e.oldSeat -ne 0 -or [int]$e.newSeat -ne 1 -or $e.accepted -ne $false -or [string]::IsNullOrWhiteSpace($e.oldFrameBase64) -or $e.oldFrameSha256 -notmatch '^[0-9a-fA-F]{64}$' -or (Get-C04Sha256Bytes ([Convert]::FromBase64String([string]$e.oldFrameBase64))) -cne ([string]$e.oldFrameSha256).ToLowerInvariant() -or $e.tilesBefore -cne $e.tilesAfter) {
+        throw 'Delayed-old-raw evidence failed its binding, hash, or unchanged-owner-state contract.'
+      }
+    }
+    'RealRoom_ColdReopenReconcilesOriginalRequestWithoutDuplicate' {
+      $e = $artifacts['recovery-query/recovery-query.json']
+      if ([int]$e.schemaVersion -ne 1 -or [string]::IsNullOrWhiteSpace($e.requestId) -or [string]::IsNullOrWhiteSpace($e.scopeId) -or $e.canonicalDigest -notmatch '^[0-9a-fA-F]{64}$' -or [string]::IsNullOrWhiteSpace($e.stateVersion) -or [string]::IsNullOrWhiteSpace($e.eventSeq) -or [int]$e.commandFrames -ne 0 -or [int]$e.receiptQueryFrames -lt 1 -or $e.fromReceiptLookup -ne $true -or $e.zeroDuplicateStateDelta -ne $true) {
+        throw 'Original-request recovery evidence failed its receipt lookup or zero-duplicate contract.'
+      }
+    }
+    'RealRoom_LegalSleeveAndFeeOwnershipAcrossFourSeatsAndSpectator' {
+      $e = $artifacts['four-owner/four-owner.json']
+      if ([int]$e.schemaVersion -ne 1 -or [int]$e.seats -ne 4 -or [string]::IsNullOrWhiteSpace($e.version) -or $e.version -cne $e.spectatorVersion -or [int]$e.targetClosedTiles -le 0 -or [int]$e.targetLedgerEntries -le 0 -or [long]$e.targetCheatPoints -ge 120 -or [string]::IsNullOrWhiteSpace($e.targetOfferId) -or $e.spectatorHasPublic -ne $true -or $e.spectatorHasPlayer -ne $false) {
+        throw 'Four-owner privacy evidence failed its owner, non-empty private payload, or spectator projection contract.'
+      }
+    }
+    'RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly' {
+      $e = $artifacts['released-control/released-control.json']
+      if ([int]$e.schemaVersion -ne 1 -or [UInt64]$e.afterVersion -le [UInt64]$e.releaseVersion -or $e.advancedWithoutPlayerBinding -ne $true -or $e.claimed -ne $true -or $e.claimEpochAdvanced -ne $true -or $e.controlPresent -ne $true -or $e.controlHuman -ne $true -or $e.receiptStatus -cne 'Rejected' -or [string]::IsNullOrWhiteSpace($e.expectedStaleReason) -or $e.staleReason -cne $e.expectedStaleReason -or [int]$e.staleCommandFrames -ne 1 -or [int]$e.stalePendingAfter -ne 0 -or $e.staleNoCommitMetadata -ne $true -or $e.staleDecisionRejected -ne $true) {
+        throw 'Released-control evidence failed its epoch, rejection, or no-side-effect contract.'
+      }
+    }
+    'RealRoom_OpenDecisionDeadlineContinuesAfterPlayerClose' {
+      $e = $artifacts['deadline-evidence.json']
+      $expectedDeadline = [long]$e.clockServerTimeMs + [long]$e.clockDeadlineRemainingMs
+      if ([int]$e.schemaVersion -ne 1 -or $e.case -cne $CaseName -or [string]::IsNullOrWhiteSpace($e.roomId) -or [string]::IsNullOrWhiteSpace($e.roundId) -or [string]::IsNullOrWhiteSpace($e.decisionId) -or [UInt64]$e.controlEpoch -eq 0 -or [int]$e.decisionSeat -lt 0 -or [int]$e.decisionSeat -gt 3 -or [int]$e.clockDecisionSeat -ne [int]$e.decisionSeat -or [long]$e.decisionDeadlineRemainingMs -le 0 -or [long]$e.clockDeadlineRemainingMs -le 0 -or [Math]::Abs([long]$e.decisionDeadlineRemainingMs - [long]$e.clockDeadlineRemainingMs) -gt 1000 -or [long]$e.authoritativeDeadlineServerTimeMs -ne $expectedDeadline -or [string]::IsNullOrWhiteSpace($e.playerSessionId) -or [string]::IsNullOrWhiteSpace($e.playerScopeId) -or [int]$e.playerRole -ne 1 -or [int]$e.playerSeat -ne [int]$e.decisionSeat -or [UInt64]$e.playerBindingEpoch -eq 0 -or [long]$e.closeRequestedUtcMs -le 0 -or [long]$e.closeCompletedUtcMs -lt [long]$e.closeRequestedUtcMs -or $e.playerBindingClosed -ne $true -or [string]::IsNullOrWhiteSpace($e.spectatorSessionId) -or $e.spectatorSessionId -ceq $e.playerSessionId -or [int]$e.spectatorRole -ne 2 -or [int]$e.spectatorSeat -ne -1 -or [UInt64]$e.releaseVersion -eq 0 -or [UInt64]$e.spectatorBaselineVersion -ne [UInt64]$e.releaseVersion -or [UInt64]$e.afterVersion -le [UInt64]$e.spectatorBaselineVersion -or [UInt64]$e.afterCursorStreamVersion -le [UInt64]$e.spectatorBaselineCursorStreamVersion -or [string]::IsNullOrWhiteSpace($e.afterPhase) -or $e.advancedWithoutPlayerBinding -ne $true) {
+        throw 'Open-deadline evidence failed its real decision, binding close, spectator baseline, or progress contract.'
+      }
+    }
+  }
+  return [pscustomobject]@{ case=$CaseName; summary=$summaryPath; log=$logPath; artifacts=@($requiredRelative | ForEach-Object { Join-Path $CaseRoot ($_ -replace '/', [IO.Path]::DirectorySeparatorChar) }); count=$requiredRelative.Count + 2 }
 }
 
 function Invoke-C04WindowsAppMatrix([string]$PlayerPath, [string]$CasesRoot, [int]$Timeout, $BuildMarker, [string]$SourceHead, [string]$DotnetPath, [string]$VerifierDll) {
@@ -1258,13 +1332,8 @@ function Invoke-C04WindowsAppMatrix([string]$PlayerPath, [string]$CasesRoot, [in
       '-logFile', (Join-Path $CasesRoot ($caseName + '.unity-player.log')))
     $record = Start-C04Owned ('windows-app-' + $caseName) $PlayerPath $args $packageRoot $Timeout
     Assert-C04NativeSuccess $record ('windows-app-' + $caseName)
-    $summaryPath = Join-Path $caseRoot 'summary.json'
-    if (-not (Test-Path -LiteralPath $summaryPath -PathType Leaf)) { throw "Player case did not publish a terminal summary: $caseName" }
-    $caseSummary = [IO.File]::ReadAllText($summaryPath,[Text.Encoding]::UTF8) | ConvertFrom-Json
-    if ($caseSummary.case -cne $caseName -or [int]$caseSummary.exitCode -ne 0) { throw "Player case identity or result mismatch: $caseName" }
-    $caseFiles = @(Get-C04StableFiles -Root $caseRoot)
-    if ($caseFiles.Count -lt 3) { throw "Player case evidence is incomplete: $caseName" }
-    $results.Add([pscustomobject]@{ testName = $testName; case = $caseName; pid = $record.pid; exitCode = $record.exitCode; timedOut = $record.timedOut; fileCount = $caseFiles.Count; summary = $summaryPath })
+    $caseEvidence = Assert-C04PlayerCaseEvidence -CaseName $caseName -CaseRoot $caseRoot
+    $results.Add([pscustomobject]@{ testName = $testName; case = $caseName; pid = $record.pid; exitCode = $record.exitCode; timedOut = $record.timedOut; requiredArtifactCount = $caseEvidence.count; artifacts = $caseEvidence.artifacts; summary = $caseEvidence.summary; log = $caseEvidence.log })
   }
   $rawFiles = @(Get-ChildItem -LiteralPath $CasesRoot -Recurse -File -Filter 'raw-frames.json' | Sort-Object FullName)
   if ($rawFiles.Count -lt 4) { throw "Ordinary Windows app cases produced too few real privacy raw captures: $($rawFiles.Count)" }
@@ -1709,4 +1778,5 @@ exit `$LASTEXITCODE
   }
 }
 
+if ($LoadFunctionsOnly) { return }
 Invoke-C04RunnerMain

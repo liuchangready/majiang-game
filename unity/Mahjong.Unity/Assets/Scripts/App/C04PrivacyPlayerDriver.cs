@@ -511,12 +511,46 @@ namespace Mahjong.Unity.App
         {
             string root = StateRoot("c04-deadline");
             string roomId = "c04-deadline-" + Guid.NewGuid().ToString("N");
-            Task<ReleaseEvidence> task = Task.Run(() => RunOpenDeadlineScenarioAsync(root, roomId));
+            Task<OpenDeadlineEvidence> task = Task.Run(() => RunOpenDeadlineScenarioAsync(root, roomId));
             yield return WaitTask(() => task.IsCompleted, 75f, "open deadline after player close");
             Assert.IsFalse(task.IsFaulted, task.Exception?.ToString());
-            ReleaseEvidence evidence = task.Result;
+            OpenDeadlineEvidence evidence = task.Result;
             Assert.IsTrue(evidence.AdvancedWithoutPlayerBinding, "Open decision deadline did not continue after player close.");
             Assert.Greater(evidence.AfterVersion, evidence.ReleaseVersion);
+            Assert.Greater(evidence.SpectatorBaselineVersion, 0UL);
+            Assert.Greater(evidence.AfterVersion, evidence.SpectatorBaselineVersion);
+            Assert.Greater(evidence.AfterCursorStreamVersion, evidence.SpectatorBaselineCursorStreamVersion);
+            string evidencePath = Path.Combine(EvidenceRoot(), "deadline-evidence.json");
+            File.WriteAllText(evidencePath,
+                "{\"schemaVersion\":1,\"case\":\"RealRoom_OpenDecisionDeadlineContinuesAfterPlayerClose\"" +
+                ",\"roomId\":\"" + evidence.RoomId + "\",\"roundId\":\"" + evidence.RoundId + "\"" +
+                ",\"decisionId\":\"" + evidence.DecisionId + "\",\"decisionSeat\":" + evidence.DecisionSeat.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                ",\"controlEpoch\":" + evidence.ControlEpoch.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                ",\"decisionDeadlineRemainingMs\":" + evidence.DecisionDeadlineRemainingMs.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                ",\"clockDecisionSeat\":" + evidence.ClockDecisionSeat.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                ",\"clockServerTimeMs\":" + evidence.ClockServerTimeMs.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                ",\"clockDeadlineRemainingMs\":" + evidence.ClockDeadlineRemainingMs.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                ",\"authoritativeDeadlineServerTimeMs\":" + evidence.AuthoritativeDeadlineServerTimeMs.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                ",\"playerSessionId\":\"" + evidence.PlayerSessionId + "\",\"playerScopeId\":\"" + evidence.PlayerScopeId + "\"" +
+                ",\"playerRole\":" + evidence.PlayerRole.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                ",\"playerSeat\":" + evidence.PlayerSeat.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                ",\"playerBindingEpoch\":" + evidence.PlayerBindingEpoch.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                ",\"releaseVersion\":" + evidence.ReleaseVersion.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                ",\"releaseCursorStreamVersion\":" + evidence.ReleaseCursorStreamVersion.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                ",\"releaseCursorProjectionSeq\":" + evidence.ReleaseCursorProjectionSeq.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                ",\"closeRequestedUtcMs\":" + evidence.CloseRequestedUtcMs.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                ",\"closeCompletedUtcMs\":" + evidence.CloseCompletedUtcMs.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                ",\"playerBindingClosed\":" + evidence.PlayerBindingClosed.ToString().ToLowerInvariant() +
+                ",\"spectatorSessionId\":\"" + evidence.SpectatorSessionId + "\",\"spectatorRole\":" + evidence.SpectatorRole.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                ",\"spectatorSeat\":" + evidence.SpectatorSeat.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                ",\"spectatorBaselineVersion\":" + evidence.SpectatorBaselineVersion.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                ",\"spectatorBaselineCursorStreamVersion\":" + evidence.SpectatorBaselineCursorStreamVersion.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                ",\"spectatorBaselineCursorProjectionSeq\":" + evidence.SpectatorBaselineCursorProjectionSeq.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                ",\"afterVersion\":" + evidence.AfterVersion.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                ",\"afterCursorStreamVersion\":" + evidence.AfterCursorStreamVersion.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                ",\"afterCursorProjectionSeq\":" + evidence.AfterCursorProjectionSeq.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                ",\"afterPhase\":\"" + evidence.AfterPhase + "\",\"advancedWithoutPlayerBinding\":" + evidence.AdvancedWithoutPlayerBinding.ToString().ToLowerInvariant() + "}",
+                new UTF8Encoding(false));
             try { if (Directory.Exists(root)) Directory.Delete(root, true); } catch { }
         }
 
@@ -784,7 +818,7 @@ namespace Mahjong.Unity.App
             }
         }
 
-        private static async Task<ReleaseEvidence> RunOpenDeadlineScenarioAsync(string root, string roomId)
+        private static async Task<OpenDeadlineEvidence> RunOpenDeadlineScenarioAsync(string root, string roomId)
         {
             LocalTableChannelFactory.DisableC04PrivacyRoomModeForTest();
             var paths = new UnityAppPaths(root);
@@ -810,13 +844,32 @@ namespace Mahjong.Unity.App
                 await WaitReadyAsync(session, pumpCts.Token).ConfigureAwait(false);
                 PlayerSnapshot baseline = session.PlayerSnapshot
                     ?? throw new InvalidOperationException("No deadline baseline.");
-                if (baseline.PrivateView.Decision == null) throw new InvalidOperationException("The open-deadline scenario needs a live decision.");
+                DecisionView decision = baseline.PrivateView.Decision
+                    ?? throw new InvalidOperationException("The open-deadline scenario needs a live decision.");
+                ClockView? decisionClock = null;
+                foreach (ClockView clock in baseline.PublicView.Clocks)
+                {
+                    if (clock.DecisionSeat == baseline.PrivateView.Seat) { decisionClock = clock; break; }
+                }
+                if (decisionClock == null) throw new InvalidOperationException("The open decision has no matching public authority clock.");
+                if (decision.DeadlineRemainingMs <= 0 || decisionClock.DeadlineRemainingMs <= 0)
+                    throw new InvalidOperationException("The open decision deadline is not active.");
+                if (Math.Abs(decision.DeadlineRemainingMs - decisionClock.DeadlineRemainingMs) > 1000)
+                    throw new InvalidOperationException("Private decision and public authority clock disagree on the deadline.");
+                var playerBinding = session.Binding
+                    ?? throw new InvalidOperationException("The deadline player binding is missing.");
                 ulong beforeVersion = baseline.StateVersion;
+                ulong releaseStreamVersion = baseline.Cursor.StreamVersion;
+                ulong releaseProjectionSeq = baseline.Cursor.ProjectionSeq;
+                long closeRequestedUtcMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
                 await session.CloseAsync("DEADLINE_CLOSE", CancellationToken.None).ConfigureAwait(false);
                 await channel.CloseAsync(new TableChannelCloseReason("DEADLINE_CLOSE", true), CancellationToken.None).ConfigureAwait(false);
+                bool playerBindingClosed = session.State == TableConnectionState.Closed;
+                if (!playerBindingClosed) throw new InvalidOperationException("The player session did not close before spectator recovery.");
                 session = null;
                 channel = null;
+                long closeCompletedUtcMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
                 spectatorChannel = await factory.CreateRoomViewerAsync(LocalRoomViewerRole.Spectator, -1, CancellationToken.None).ConfigureAwait(false);
                 var spectatorTicket = spectatorChannel as ILocalTableTicketSource
@@ -825,18 +878,55 @@ namespace Mahjong.Unity.App
                 await spectator.OpenAsync(new TableSessionOpenRequest(spectatorTicket.SessionTicket, LocalTableChannelFactory.ClientBuild), pumpCts.Token).ConfigureAwait(false);
                 spectatorPump = PumpLoopAsync(spectator, pumpCts.Token);
                 await WaitReadyAsync(spectator, pumpCts.Token).ConfigureAwait(false);
+                PlayerSnapshot spectatorBaseline = spectator.PublicSnapshot
+                    ?? throw new InvalidOperationException("No spectator baseline after player close.");
+                if (spectatorBaseline.StateVersion != beforeVersion)
+                    throw new InvalidOperationException("The spectator baseline was already advanced before deadline observation.");
                 ulong after = beforeVersion;
+                PublicSnapshot? afterSnapshot = spectatorBaseline;
                 for (int i = 0; i < 1200; i++)
                 {
-                    after = spectator.PublicSnapshot?.StateVersion ?? after;
+                    afterSnapshot = spectator.PublicSnapshot ?? afterSnapshot;
+                    after = afterSnapshot.StateVersion;
                     if (after > beforeVersion) break;
                     await Task.Delay(25, pumpCts.Token).ConfigureAwait(false);
                 }
-                return new ReleaseEvidence
+                if (afterSnapshot == null) throw new InvalidOperationException("No spectator snapshot after close.");
+                bool advanced = after > beforeVersion;
+                return new OpenDeadlineEvidence
                 {
+                    RoomId = roomId,
+                    RoundId = baseline.RoundId,
+                    DecisionId = decision.DecisionId,
+                    DecisionSeat = decisionClock.DecisionSeat,
+                    ControlEpoch = decision.ControlEpoch,
+                    DecisionDeadlineRemainingMs = decision.DeadlineRemainingMs,
+                    ClockDecisionSeat = decisionClock.DecisionSeat,
+                    ClockServerTimeMs = decisionClock.ServerTimeMs,
+                    ClockDeadlineRemainingMs = decisionClock.DeadlineRemainingMs,
+                    AuthoritativeDeadlineServerTimeMs = checked(decisionClock.ServerTimeMs + decisionClock.DeadlineRemainingMs),
+                    PlayerSessionId = playerBinding.SessionId.Value,
+                    PlayerScopeId = playerBinding.Scope.ScopeId.Value,
+                    PlayerRole = playerBinding.Role,
+                    PlayerSeat = playerBinding.SeatId,
+                    PlayerBindingEpoch = playerBinding.BindingEpoch.Value,
                     ReleaseVersion = beforeVersion,
-                    AfterVersion = after,
-                    AdvancedWithoutPlayerBinding = after > beforeVersion
+                    ReleaseCursorStreamVersion = releaseStreamVersion,
+                    ReleaseCursorProjectionSeq = releaseProjectionSeq,
+                    CloseRequestedUtcMs = closeRequestedUtcMs,
+                    CloseCompletedUtcMs = closeCompletedUtcMs,
+                    PlayerBindingClosed = playerBindingClosed,
+                    SpectatorSessionId = spectator.Binding?.SessionId.Value ?? string.Empty,
+                    SpectatorRole = spectator.Binding?.Role ?? 0,
+                    SpectatorSeat = spectator.Binding?.SeatId ?? -2,
+                    SpectatorBaselineVersion = spectatorBaseline.StateVersion,
+                    SpectatorBaselineCursorStreamVersion = spectatorBaseline.Cursor.StreamVersion,
+                    SpectatorBaselineCursorProjectionSeq = spectatorBaseline.Cursor.ProjectionSeq,
+                    AfterVersion = afterSnapshot.StateVersion,
+                    AfterCursorStreamVersion = afterSnapshot.Cursor.StreamVersion,
+                    AfterCursorProjectionSeq = afterSnapshot.Cursor.ProjectionSeq,
+                    AfterPhase = afterSnapshot.PublicView.Board?.Phase.ToString() ?? string.Empty,
+                    AdvancedWithoutPlayerBinding = advanced && playerBindingClosed && session == null && channel == null
                 };
             }
             finally
@@ -1293,6 +1383,42 @@ namespace Mahjong.Unity.App
             public ulong SpectatorVersion;
             public bool SpectatorHasPublic;
             public bool SpectatorHasPlayer;
+        }
+
+        private sealed class OpenDeadlineEvidence
+        {
+            public string RoomId = string.Empty;
+            public string RoundId = string.Empty;
+            public string DecisionId = string.Empty;
+            public int DecisionSeat;
+            public ulong ControlEpoch;
+            public long DecisionDeadlineRemainingMs;
+            public int ClockDecisionSeat;
+            public long ClockServerTimeMs;
+            public long ClockDeadlineRemainingMs;
+            public long AuthoritativeDeadlineServerTimeMs;
+            public string PlayerSessionId = string.Empty;
+            public string PlayerScopeId = string.Empty;
+            public int PlayerRole;
+            public int PlayerSeat;
+            public ulong PlayerBindingEpoch;
+            public ulong ReleaseVersion;
+            public ulong ReleaseCursorStreamVersion;
+            public ulong ReleaseCursorProjectionSeq;
+            public long CloseRequestedUtcMs;
+            public long CloseCompletedUtcMs;
+            public bool PlayerBindingClosed;
+            public string SpectatorSessionId = string.Empty;
+            public int SpectatorRole;
+            public int SpectatorSeat;
+            public ulong SpectatorBaselineVersion;
+            public ulong SpectatorBaselineCursorStreamVersion;
+            public ulong SpectatorBaselineCursorProjectionSeq;
+            public ulong AfterVersion;
+            public ulong AfterCursorStreamVersion;
+            public ulong AfterCursorProjectionSeq;
+            public string AfterPhase = string.Empty;
+            public bool AdvancedWithoutPlayerBinding;
         }
 
         private sealed class ReleaseEvidence
