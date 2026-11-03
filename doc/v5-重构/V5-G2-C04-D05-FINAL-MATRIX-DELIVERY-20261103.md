@@ -459,3 +459,38 @@ reviewer 复核组件关闭。D05-FINAL-SYNC-02/03/MATRIX-04 仍为范围外 MAJ
 继续。按复核指令未在裁决前重跑昂贵 Unity/Windows 矩阵；远端 PR20 现头
 `d8a7716b...` 为 caller 后续接受项，未拉入或归到本候选。本报告不 approve、
 不合并、不把 component PASS 升级为 D05/C04/G2 PASS。
+
+## 11. Codex 第 3 轮独立范围验收（2026-11-04）
+
+**仅接受本任务两文件内的 D05-FINAL-SYNC-01 / R1-01 同步修复与交付记录。**
+被审代码为 `26594b3b6179d3548c0ef44b7e4f20bd97f2211f`，接收方 docs head
+为 `c93a67b896101a36c78fee154bdafd55161302b5`；本节属于后续 docs-only 复核记录。
+范围检查：相对任务起点仅修改本测试文件与本报告；未修改生产、Unity、runner、
+verifier、许可或调度，未删除/弱化原断言。无新增范围内未关闭缺陷。
+
+本复核者在当前工作树实际执行（并非转述接收方）：
+
+- fresh Release LocalHost 构建：native 0，0 warning / 0 error；
+- 五个完整方法名各固定五次：25 份 XML 均 total=1/pass=1，全部 native 0，
+  fail/error/skip/notrun=0；
+- fresh 无 filter 完整 LocalHost：183/183，native 0，零 fail/error/skip/notrun；
+  XML SHA-256 `F68E13DEDF181212DCB659145B7D83664BF9EA28A0B55A91EEA22F7C6EB44A18`；
+- fresh Client 构建及完整运行：182/182，native 0，零 fail/error/skip/notrun；
+  XML SHA-256 `A5C5336D7D906362E4CC3C62D35F79A88BA015D50D9F3120EA83589DF9862712`；
+- 独立真实 TableSession/channel 诊断适配新的 typed callback：foreign 目标响应被
+  丢弃后，再应用无关 resync baseline，barrier 仍为 False、consumed=0，
+  `NEGATIVE_PASS` / native 0。正常关联应用由上述慢通道正例五次验证；
+  诊断日志 SHA-256 `3E9C721C81FF7FA9BE9A29EE57A9EDDC310CB6477F5FA0B66D5E8CFD137FE1C0`。
+
+独立证据根 `build/reviewer-r3-42a28a59503249839578f366274cf546/`，
+实际命令和退出码见 `commands.log`，各 XML、`probe/Program.cs`、`probe-negative.log`
+保留。本复核也逐份核对接收方本轮 25 份 XML 分母及完整 LocalHost/Client 原件 SHA。
+复核初次本地脚本因输出路径拼接错误未封存 build 退出，已修正后重新执行并单独
+记录；未将该未封存尝试计为构建通过，未改写任何旧证据。
+
+§5 的 SYNC-02/03/MATRIX-04 仍是本工作树历史候选范围外未关闭项；本次通过不抹除
+原 180/181 首败、原代码 `0832cf67` 的 PlayMode 6/7 和 Windows 5/7，也不作为
+D05/C04/G2 阶段批准。后续统一 D05 任务在既有 Draft PR20 已发布的其他候选与
+验收结论按其独立交付保留，不能用本树旧候选失败否定它们，也不能反向把其通过
+归给本树。出版合入时保留远端所有接受项；维持 PR20 OPEN/Draft，不 merge 至 v5，
+不部署。合入后的实际 .NET 验证另按合入候选记录，不冒充新的 Unity/Windows 执行。
