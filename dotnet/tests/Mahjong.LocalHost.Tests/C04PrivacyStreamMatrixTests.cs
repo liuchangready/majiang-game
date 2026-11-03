@@ -90,8 +90,10 @@ namespace Mahjong.LocalHost.Tests
             ulong readyBinding = Number(ready, "bindingEpoch");
             string expectedAccount = String(ready, "newWelcomeAccountId");
             if (capture.SchemaVersion != 2 || capture.Frames.Count < 4 || mainSession != readySession || roomId != readyRoom ||
-                oldBinding == 0 || resumedBinding <= oldBinding || readyBinding <= resumedBinding ||
-                oldScope == newScope || newScope == readyScope || oldScope == readyScope)
+                oldBinding == 0 || resumedBinding <= oldBinding || readyBinding < resumedBinding ||
+                oldScope == newScope || oldScope == readyScope ||
+                (readyBinding == resumedBinding && newScope != readyScope) ||
+                (readyBinding > resumedBinding && newScope == readyScope))
                 throw new InvalidDataException("Released-control expected WELCOME timeline is incomplete or contradictory.");
 
             if (!string.IsNullOrWhiteSpace(releasePath) && File.Exists(releasePath))
@@ -186,7 +188,9 @@ namespace Mahjong.LocalHost.Tests
                 {
                     if (frame.RoomId != roomId || frame.AccountId != expectedAccount || frame.SeatId != 0 || frame.ConnectionRole != "Player")
                         throw new InvalidDataException("Claimed session left the expected room/account/player seat.");
-                    string expectedScope = frame.BindingEpoch == oldBinding ? oldScope : frame.BindingEpoch == resumedBinding ? newScope : frame.BindingEpoch == readyBinding ? readyScope : string.Empty;
+                    string expectedScope = frame.BindingEpoch == oldBinding ? oldScope :
+                        frame.BindingEpoch == resumedBinding ? newScope :
+                        frame.BindingEpoch == readyBinding && readyBinding > resumedBinding ? readyScope : string.Empty;
                     if (string.IsNullOrEmpty(expectedScope) || frame.ScopeId != expectedScope || frame.BindingEpoch < previousMainBinding)
                         throw new InvalidDataException("Claimed session binding/scope timeline is missing, reordered, or foreign.");
                     previousMainBinding = frame.BindingEpoch;
@@ -196,9 +200,9 @@ namespace Mahjong.LocalHost.Tests
             }
 
             if (sessionOrder.Count != 2 || sessionOrder[0] != initialSession || sessionOrder[1] != mainSession ||
-                initialSession == mainSession || previousMainBinding != readyBinding ||
+                initialSession == mainSession || previousMainBinding != Math.Max(resumedBinding, readyBinding) ||
                 !bindings.ContainsKey(mainSession + "/" + oldBinding) || !bindings.ContainsKey(mainSession + "/" + resumedBinding) ||
-                !bindings.ContainsKey(mainSession + "/" + readyBinding))
+                (readyBinding > resumedBinding && !bindings.ContainsKey(mainSession + "/" + readyBinding)))
                 throw new InvalidDataException("Complete release/claim/reconnect/Ready session timeline is not present in the decoded raw frames.");
 
             if (!string.IsNullOrWhiteSpace(releasePath) && File.Exists(releasePath))
@@ -242,7 +246,7 @@ namespace Mahjong.LocalHost.Tests
             capture.Frames.Add(BuildWireControlFrame(1, "release-session", room, account, 1, "release-scope", 0));
             capture.Frames.Add(BuildWireControlFrame(2, "claim-session", room, account, 1, "old-claim-scope", 1));
             capture.Frames.Add(BuildWireControlFrame(3, "claim-session", room, account, 2, "resumed-scope", 2));
-            capture.Frames.Add(BuildWireControlFrame(4, "claim-session", room, account, 3, "ready-scope", 2));
+            capture.Frames.Add(BuildWireControlFrame(4, "claim-session", room, account, 2, "resumed-scope", 2));
             return capture;
         }
 
@@ -284,7 +288,7 @@ namespace Mahjong.LocalHost.Tests
             var options = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, WriteIndented = false };
             File.WriteAllText(Path.Combine(root, "raw-frames.json"), JsonSerializer.Serialize(capture, options));
             File.WriteAllText(Path.Combine(root, "reconnect.json"), JsonSerializer.Serialize(new { schemaVersion = 1, newSessionId = "claim-session", newRoomId = "fixture-room", oldScopeId = "old-claim-scope", newScopeId = "resumed-scope", oldBindingEpoch = 1UL, newBindingEpoch = 2UL }, options));
-            File.WriteAllText(Path.Combine(root, "ready.json"), JsonSerializer.Serialize(new { schemaVersion = 1, newSessionId = "claim-session", newRoomId = "fixture-room", newScopeId = "ready-scope", bindingEpoch = 3UL, newWelcomeAccountId = "fixture-account" }, options));
+            File.WriteAllText(Path.Combine(root, "ready.json"), JsonSerializer.Serialize(new { schemaVersion = 1, newSessionId = "claim-session", newRoomId = "fixture-room", newScopeId = "resumed-scope", bindingEpoch = 2UL, newWelcomeAccountId = "fixture-account" }, options));
             File.WriteAllText(Path.Combine(root, "release.json"), JsonSerializer.Serialize(new { schemaVersion = 1, releasedPlayerSessionId = "release-session", releasedPlayerRoomId = "fixture-room", releasedPlayerAccountId = "fixture-account" }, options));
         }
 
