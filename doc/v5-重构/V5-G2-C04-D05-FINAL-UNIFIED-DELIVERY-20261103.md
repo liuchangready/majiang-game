@@ -1,3 +1,106 @@
+# Round 4 authoritative status (2026-11-03)
+
+**Final status: NOT ACCEPTED.** R4 continued the same-source repair after the R3 independent review. The released-control producer/consumer identity contract and default runner path-boundary checks now pass their cheap behavior matrices, and the PlayMode producer has the same structured reconnect fields as the Windows driver. However, a real PlayMode run at code head `598ea2cdd9841658536c500281a6dc08674a97b1` still failed 6/7 at the released-control recovery assertion. A diagnostic-only follow-up at `6b4dc2436755382fa792cd9720a204a63fa9e16d` timed out during Unity project import before tests began, so it did not reveal which recovered field differed. No final ordinary Windows package/P1/P2 run was performed. FU-02 remains an unresolved out-of-allowlist diagnosis. The five groups are reported below; no production or out-of-allowlist file was changed.
+
+This section supersedes Round 3's current-status statements. The prior Round 3, Round 2, and Round 1 sections remain unchanged as history and are not evidence for the R4 code head.
+
+## Round 4 source identity and changes
+
+| Item | Value |
+|---|---|
+| Starting R4 code head | `86cb2c4623aa10d0a316d60a750c3dcb30b4a41d` |
+| R4 code commits | `fa0fcca7` released-control evidence and serialized recovery; `02e8e0e1` producer output scope correction; `598ea2cd` mirror reconnect evidence in PlayMode; `6b4dc243` include failed recovery field values in the assertion message |
+| Current code head | `6b4dc2436755382fa792cd9720a204a63fa9e16d` |
+| Current delivery report identity | This report is a docs-only change committed separately after code head `6b4dc243`; runner source identity must continue to use the code head, never the docs-only commit |
+| Changed code paths from the R3 code head | `tools/tests/C04PrivacyPlayer.Tests.ps1`; `tools/tests/C04PrivacyRunner.Tests.ps1`; `tools/unity/run-p45-c04-privacy-matrix.ps1`; `unity/Mahjong.Unity/Assets/Scripts/App/C04PrivacyPlayerDriver.cs`; `unity/Mahjong.Unity/Assets/Tests/PlayMode/C04PrivacyRoleSwitchPlayModeTests.cs` |
+| Scope | All five code paths are within the original 11-path allowlist. No production Client/Domain/Contracts/LocalHost authority, out-of-list test, schema, asmdef, machine configuration, or unrelated tracked path was changed. |
+| Unity source closure | 540 files / 14,195,023 bytes / SHA-256 `aa92a5cfe1939042375738a166e4aa33333619e6fa19d934efbca7154a4170b3` |
+| Latest staged Unity inputs | 366 files / SHA-256 `df4b32c74d91236ea4c45fe78c06524bc5cc425a547bc9cfe63a990b0f22ff21` (the timed-out run did not complete import/compile, so this is input identity, not a build result) |
+| Toolchain | Unity `6000.3.27f1` (`6000.3.27.6761814`), Unity dotnet `8.0.3226.50405`, SDK `8.0.426` |
+| Diff and tree | `git diff --check b92c7d01..6b4dc243` exit 0; source tree was clean before this docs-only change |
+
+## Round 4 stage evidence
+
+### B/C: producer/consumer contracts and negative matrices
+
+- `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/tests/C04PrivacyRunner.Tests.ps1` completed with native exit 0, **27/27**. Default output root: `build/runner-tests-3ae839c814724fd7a191659cbb68e684`. It exercises the actual semantic evidence assertion with fixture-only producer documents, including the positive seven-case schema, missing/empty/wrong-identity evidence, false deadline progress, meaningless extra file, and released-control receipt/epoch/session mutations. These fixtures are explicitly not GAME evidence.
+- `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/tests/C04PrivacyPlayer.Tests.ps1 -RunRoot build/854a85d6590d47e98f23ca18bdff5d1d` completed with native exit 0, **32/32 source-contract checks**. Summary SHA-256 `B76B7C838A345D3DED17F9F279BB901BF247E8769FF1C63AA6C1C1E5BE198F75`. This verifies source wiring only, not a Windows Player run.
+- R3 FU-03 was corrected by separating ClaimControl's `Recorded/LOCAL_CONTROL` receipt from the stale command's `Rejected/DECISION_MISMATCH` receipt and by binding the captured decision epoch, session/scope/binding, and single stale frame to the semantic consumer. The deadline artifact remains structured; the evidence-count threshold was not relaxed.
+- R3 FU-04's default fixture path failure was corrected by compact fixture directory names with a pre-write path-budget rejection. The default runner command above now passes. This does not establish that the real Windows save/outbox paths work in the ordinary Player package.
+- The negative matrix still rejects: receipt identity conflation; shared arbitrary wrong reason; captured/stale epoch mismatch; non-advancing claim epoch; snapshot owner/epoch mismatch; stale commit metadata; duplicate stale frames or pending commands; wrong scope/session/round/decision; missing/empty/invalid deadline progress; meaningless extra files; and over-budget output roots. Accepted verifier semantics were not changed.
+
+### D: current-source PlayMode attempts
+
+First current-source run command:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-c04-privacy-matrix.ps1 -ExpectedSourceHead 598ea2cdd9841658536c500281a6dc08674a97b1 -RunRoot build/aa99e58c0e6f4c2bab255f6d4d647920 -TimeoutSeconds 1200
+```
+
+It acquired the shared mutex after 513 seconds, fresh-built shared plugin provenance (native exit 0), and Unity exited native `2` after 346.889 seconds. The XML has the exact seven tests, **6 passed / 1 failed / 0 skipped**. The failure is `RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly`, at the formal reconnect identity/fresh-Ready-baseline assertion. XML SHA-256 `F59CE510FF800BD7CFEE839A36DBA39083BD6168120CBD01FD13A8F5A1694E8F`; runner summary SHA-256 `B658F6051E86BF31D4B71123A85A3C07D6E31D7F717BDF64D94C6E3443DE24E2`; stable run manifest SHA-256 `69D775CA036323767D38764A42675AC60CCFD183AA6EBF54E98B949D59F6CF6E` under `build/aa99e58c0e6f4c2bab255f6d4d647920/`.
+
+The failed condition includes resumed session ID, scope ID, binding epoch, snapshot control epoch, transport-open state, pending count, last error, and pump error. The original R4 failure only wrote the combined assertion, so the exact false field was not persisted. A diagnostic-only code change in `6b4dc243` added those values to the thrown message.
+
+Diagnostic follow-up command:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-c04-privacy-matrix.ps1 -ExpectedSourceHead 6b4dc2436755382fa792cd9720a204a63fa9e16d -RunRoot build/7f42c7d712d54f5cb8b6954cd39238b4 -TimeoutSeconds 1200
+```
+
+This attempt acquired the mutex immediately and completed verifier build/self-test and shared-plugin build with native exit 0, but Unity was stopped by the runner's owned-process timeout at elapsed 2709.788 seconds while importing the staged project. No PlayMode test XML or new application result was produced. `summary.json` SHA-256 is `46FD019B58BAE9DF4DFA769E7D175CDC0BE63089B1BCD42AB8FFD63805D9CDB3`; stable manifest SHA-256 `C8516C20FE46FCB91DB2E86CE53824A2F09E7F429BE262D13625945E196E23C8`. The runner recorded PID `13252`, exited/cleaned it, released the mutex and staging drive, and sealed the output. The timeout run is preserved; no unchanged Unity retry was made.
+
+### E: current status and fixed denominator
+
+No final ordinary `Mahjong.exe` build or Windows matrix was run because current-source PlayMode has a real failure and the diagnostic rerun did not reach tests. No Test Player XML is substituted. No current-source package manifest, eight-DLL comparison, P1, or P2 process-restart/outbox evidence exists. Therefore every final matrix row N1-N8, U1-U3, P1-P2, and C04-G5-01..03 remains **BLOCKED**; this does not change the original denominators or turn tool/fixture results into application PASS.
+
+## Round 4 consolidated findings and repair mapping
+
+### D05-FU-01 — BLOCKER — final unified same-source application matrix incomplete
+
+- **位置 / reproduction:** `tools/unity/run-p45-c04-privacy-matrix.ps1`; reproduce the first result with the exact `598ea2c` PlayMode command above. The exact `6b4dc243` diagnostic command above timed out before test execution.
+- **Actual vs expected:** one real PlayMode case fails (7 total / 6 pass / 1 fail / 0 skip); the current diagnostic run produced no XML; no final ordinary Windows package, P1, P2, eight-DLL comparison, or per-row final proof exists. Expected: final frozen source, seven exact PlayMode cases passing, and a single immutable ordinary `Mahjong.exe` package for all seven Windows cases plus P2 restart/query.
+- **Evidence:** `build/aa99e58c0e6f4c2bab255f6d4d647920/playmode-results.xml`, `summary.json`, `manifest.sha256`; `build/7f42c7d712d54f5cb8b6954cd39238b4/summary.json`, `manifest.sha256`.
+- **Repair required:** resolve and prove the released-control recovery failure in authorized glue; only then, from the new frozen clean code head, run the final seven-case PlayMode and one-build ordinary Windows matrix. Preserve package files and the eight shared DLL hashes before/after, and exercise P2 using the original request/scope/canonical payload/outbox query across real process restart.
+- **Acceptance assertions:** exact seven names 7/7 with zero skips; ordinary Windows same package for all scenarios; P2 original receipt and exactly-once side effect with before/after PID/start and package manifest; all N/U/P/G5 rows have source-bound independent evidence.
+
+### D05-FU-02 — MAJOR — original LocalHost recovery suite failure still lacks deterministic diagnosis
+
+- **位置 / reproduction:** read-only `dotnet/tests/Mahjong.LocalHost.Tests/LocalHostRecoveryTests.cs:72,147-158,794-813`. Preserve and refer to the original full-suite XML/first-failure command and hashes recorded in the Round 1/Round 3 sections; do not rerun the unchanged full suite to seek green.
+- **Actual vs expected:** canonical suite remains 178/179 with `version=1`, `discard=1`; the controlled-copy diagnostic previously observed `version=4` and AI commits at versions 2-4, so it did not reproduce the old failure. A non-empty decision at `StateVersion >= minimumVersion` is only a source-supported hypothesis, not a demonstrated root cause.
+- **Evidence:** original `localhost.xml` and `localhost-failures.xml` paths/hashes in the earlier sections; R3 controlled-copy JSON and reviewer root `build/87378b88821043b1817af86c14f7f863/diag`.
+- **Repair/triage required:** keep production and out-of-list test files read-only. Supply a deterministic minimal run preserving release-before/after decision, seat, epoch, phase, commit, and durable boundary, or accurately label the predicate theory unverified and give caller the exact out-of-scope change needed.
+- **Acceptance assertions:** explain the original ordering with runtime evidence; retain strict version advancement, durable events and physical conservation; after any separately authorized fix, canonical 179/179 with zero skip, retaining the original failure artifact.
+
+### D05-FU-03 — MAJOR — semantic artifact contract repaired in fixtures, real producer not yet accepted
+
+- **位置 / reproduction:** `C04PrivacyPlayerDriver.cs` released-control receipt serialization and `run-p45-c04-privacy-matrix.ps1` `Assert-C04PlayerCaseEvidence`; run `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/tests/C04PrivacyRunner.Tests.ps1`.
+- **Actual vs expected:** R3 defects A/B are corrected in producer, consumer and fixture schemas; default runner behavior tests pass 27/27. Actual Unity released-control producer still fails before writing reconnect evidence, so no real Windows producer artifact has passed the semantic consumer. Expected: true ClaimControl `Recorded/LOCAL_CONTROL` and stale `Rejected/DECISION_MISMATCH` represented separately and bound to the same original decision/session/scope with captured epoch equality and no side effect.
+- **Evidence:** `build/runner-tests-3ae839c814724fd7a191659cbb68e684`; real PlayMode failure XML and summary under `build/aa99e58c0e6f4c2bab255f6d4d647920`.
+- **Repair required:** keep the structured claim/stale schema and semantic checks; complete a real producer run and audit all seven case outputs against consumer assertions. Do not add empty files, lower artifact counts, or hand-edit producer fields.
+- **Acceptance assertions / negative matrix:** fixture positive is explicitly fixture-only; reject wrong shared reason, wrong captured/stale epoch, non-advanced claim epoch, owner/snapshot mismatch, stale commit metadata, duplicate stale sends, pending commands, wrong case/decision/session/scope/round, missing/empty deadline evidence, and meaningless extra files. The real Windows producer artifact must pass the same consumer.
+
+### D05-FU-04 — MAJOR — compact path contract passes cheap tests, Windows filesystem acceptance remains open
+
+- **位置 / reproduction:** runner fixture path construction in `tools/tests/C04PrivacyRunner.Tests.ps1` and Player state root construction in `C04PrivacyPlayerDriver.cs`; run the default runner test command above.
+- **Actual vs expected:** R3 default fixture MAX_PATH failures are fixed; default 27/27 and prior explicit short-root 27/27 pass, and over-budget roots are rejected before fixture writes. Current-source ordinary Windows driver/state/outbox execution has not run, so the original Windows `Mahjong.exe` path boundary is not yet accepted. Expected: all real case artifacts fit without machine long-path configuration and retain complete case identity.
+- **Evidence:** `build/runner-tests-3ae839c814724fd7a191659cbb68e684`; prior R3 Windows package path failure and its hash are preserved in the Round 3 section; no current P1 package exists.
+- **Repair required:** keep compact unique artifact path components and preflight length check; prove actual ordinary Windows output paths with all seven scenarios and P2. Do not shorten the seven semantic test names or change machine policy.
+- **Acceptance assertions:** default and supported explicit GUID roots pass with native exit 0; an over-budget root fails before writing; final Windows recovery/deadline/closed-binding cases persist valid evidence without path exceptions.
+
+### D05-FU-05 — MAJOR — same-identity control stream recovery assertion fails in real PlayMode
+
+- **位置 / reproduction:** `C04PrivacyRoleSwitchPlayModeTests.RunReleasedControlScenarioAsync` formal reconnect around lines 972-1027 and the equivalent authorized Windows driver path. Reproduce with the exact `598ea2c` PlayMode command above; it fails `RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly` at the identity/new-Ready assertion.
+- **Actual vs expected:** the claim is recorded, the cursor-floor branch reaches `Reconnecting`, the old pump is stopped, and same-session `OpenAsync` is attempted; the compound assertion then fails. Current preserved XML lacks the per-field message because it predates commit `6b4dc243`. The follow-up intended to expose those values timed out during Unity import before executing the test. Expected: formal recovery over original authenticated identity yields a fresh binding/Ready baseline without repeating claim or changing the stale request.
+- **Evidence:** `build/aa99e58c0e6f4c2bab255f6d4d647920/playmode-results.xml` (SHA above), its `unity-editor.log` and summary; `build/7f42c7d712d54f5cb8b6954cd39238b4` sealed timeout. The R3 reviewer diagnostic call chain remains preserved in the Round 3 section and establishes `CONTROL_APPLIED` cursor regression -> close -> `LOCAL_CLOSED`.
+- **Repair required:** use the newly added field-specific failure output on a completed controlled run to identify the exact failed identity/floor/readiness field; fix only allowed scenario glue using the existing serialized formal recovery path, same ticket/session identity, and one original stale action. No new claim, new decision, duplicate action, weakened cursor floor, Client/LocalHost edit, or unlimited wait.
+- **Acceptance assertions:** capture release/claim receipt, old and new binding/session/scope, snapshot owner/epoch/cursor, Ready, transport, pending, and raw frames; show recovery branch truly executed; submit original stale decision/epoch exactly once and receive authority `DECISION_MISMATCH` with no commit metadata, duplicate side effect, or pending request; then pass the same case in final PlayMode and ordinary Windows package.
+
+### Shared negative matrix for FU-03/FU-04/FU-05
+
+Use the actual runner assertion with fixture-only positive controls and mutations for each missing/empty artifact, wrong case/decision/request/round/session/scope/binding, wrong ClaimControl receipt status/reason, wrong stale status/reason, captured epoch unequal to stale epoch, non-advancing claim epoch, stale snapshot owner/epoch mismatch, stale commit metadata, duplicate stale frame, nonzero pending command, no spectator deadline progress, meaningless third file, long output path, nonzero native process exit, cancellation/timeout residual writer, and package file mutation. Every negative must reject with native nonzero; every positive fixture must remain labeled fixture-only. Final GAME evidence must be producer-generated raw/data from the actual application and pass this exact consumer.
+
+No final-source ordinary Windows package was built, so FU-01 remains a blocker. FU-02 and FU-05 remain unresolved major findings; FU-03 and FU-04 pass their cheap contract layers but remain open at real Player acceptance. The final matrix is not approved for handoff.
+
 # Round 3 authoritative status (2026-11-03)
 
 **Final status: NOT ACCEPTED.** FU-03’s producer/consumer artifact mismatch now has structured case-specific evidence and 26/26 fixture contract checks. A real Unity run at the current code head compiled and executed the exact seven PlayMode cases: six passed, one failed because the reopened player channel entered `Reconnecting`/`LOCAL_CLOSED` before the required stale request could reach authority. A Windows package from an earlier source head exposed a 260-character save-path boundary; the authorized driver now shortens those temporary identifiers, but the final-source Windows build could not start because the shared Unity mutex remained held by another worktree for the full 600-second bound. FU-02 remains unproven. No production or out-of-allowlist file was changed.
