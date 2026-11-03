@@ -1105,8 +1105,6 @@ namespace Mahjong.Unity.App
                 if (staleAction == null) throw new InvalidOperationException("The live decision has no action for a legal stale-epoch request.");
                 PlayerSnapshot? staleSubmitSnapshot = claimed.PlayerSnapshot;
                 var staleSubmitBinding = claimed.Binding;
-                string controlEvidenceDirectory = Path.Combine(EvidenceRoot(), "released-control");
-                Directory.CreateDirectory(controlEvidenceDirectory);
                 File.WriteAllText(Path.Combine(EvidenceRoot(), "control-session-before-stale-submit.json"),
                     "{\"schemaVersion\":1,\"case\":\"RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly\",\"phase\":\"before-stale-submit\"" +
                     ",\"sessionState\":\"" + claimed.State + "\",\"bindingPresent\":" + (staleSubmitBinding != null).ToString().ToLowerInvariant() +
