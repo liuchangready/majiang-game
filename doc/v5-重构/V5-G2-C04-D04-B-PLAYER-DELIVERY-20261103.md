@@ -12,7 +12,7 @@
 
 冻结 base：`a234432e57efa790c40987d9720091d93bd270a8`（既有 Draft PR20 头）
 
-代码提交：`5dc8534a30be1cd421dfc0a4ea88299949c7ab34`（首轮 `60f43ad7` 的 R1 增量）
+代码提交：`223284df6c85e1c4e5124d62c3cf3024ab46eca0`（首轮 `60f43ad7`、R1 `5dc8534a` 的 R2 增量）
 证据根：`build/6ea1d77e-57e2-4c7f-bca8-1d4ce9ca3d46/`（仓库 ignored，独占）
 
 ## 结论（组件与实际边界）
@@ -88,6 +88,19 @@ SECOND 后权威未重新打开 decision（`LocalTableDriver` 只在 `GetPending
 - 修复：`RenderOwnHand` 的高亮从 `Selection.HandTileId` 改为 `SelectedHandEntity()`；Action/DiscardTile 选择取 `Action.TileIds[0]`，cheat 对话框仍用 `HandTileId`。
 - 验收：PlayMode `AssertSelectedDiscardHighlight` 对实际选中 closed/drawn 实体断言对应文本为 `Color.yellow`，并在每次 discard 前执行；Cancel 仍清空选择。
 
+### 2.8 R2 复核 B：diagnostic 失败必须传播为动作/用例失败
+
+- 复核实际：`WaitReceipt` 对 REJECTED 也把 `_waitOk=true`；新 raw 失败分支只写 `diagnostic.failure`，没有设置 `_waitOk=false` 或 `_caseFailed`；最终 transcript 失败只写 `diagnostic.waitOk=false`，没有回写 `_waitOk`。调用方只检查 `_waitOk`，因此缺原件/拒绝 receipt 仍可继续并保持 PASS。
+- 修复：新增统一 `FailDiscard`，每个失败分支同时 `diagnostic.failure=code`、`diagnostic.waitOk=false`、`_waitOk=false`、`Check(...false)`（置 `_caseFailed=true`）；成功只有在 APPLIED、request/commandVersion、原始 command/receipt/publication 关联、publication 仍在 transcript、UI view 前进、`stateVersionAfter >= commandVersion` 全部成立后才把 `_waitOk=true`。`pendingRequestId` 只记录真实 pending，不再用 receipt ID 冒充 admission；request 证明由原始 command+typed receipt+publication 提供。
+- 实际回归：PlayMode 正流程每次 discard 都通过该路径；`TryAssociateRaw` 对缺失 request 的负例断言 false。完整 6 变体矩阵仍应由未修改的 A/独立 fixture 复跑（normal/rejected/missing command/receipt/publication/outside transcript），本报告不把日志当拒绝；代码现在在任一变体上中止外层次并置 FAIL。
+
+### 2.9 R2 复核 C：精确双向位置、无关实体与 unauthorized 零副作用
+
+- SECOND：新增 `AssertOnlyExchange(before, after, drawnBefore, second)`：`after[first] == before[second]`、`after[second] == before[first]`，并逐实体断言其余 134 位置不变。
+- SWAP：`AssertOnlyExchange(beforeSwap, afterSwap, handTile, targetTile)`，同样双向精确互换且其余 134 不动；不再只看 `HAND|0|` 前缀或单一方向。
+- unauthorized：提交前/拒绝后各做一次只读 authority snapshot，断言 `stateVersion/eventSeq/cheatFingerprint/tilesSha256/完整136 audit/ledger count/balance` 全等；记录真实 `requestId` 与 payload SHA；与 insufficient 一起覆盖两个独立请求/载荷、精确 `DECISION_MISMATCH` / `CHEAT_INSUFFICIENT_FUNDS`。
+- PlayMode 最终仍 `3/3 PASS`，新增断言全部实际执行。
+
 ## 3. 原始通道采集（A 合同对齐）
 
 `C04PlayerCheatChannelFactory` 新增 `C04RawFrameCapture`：在真实 ticket channel 的 `SendAsync`/`ReceiveAsync` 处逐帧保存原始字节，不复制解码/判断逻辑，不合成帧。probe 使用捕获帧、receipt `CommandVersion` 和只读 `LocalTableHost.CaptureRecoveryAsync` 写出 A 合同要求的：
@@ -130,8 +143,8 @@ D:/Unity/dotnet/dotnet.exe <...>/Mahjong.Unity.TableModel.Tests.dll
 D:/Unity/Hub/Editor/6000.3.27f1/Editor/Unity.exe -batchmode \
   -projectPath unity/Mahjong.Unity -runTests -testPlatform PlayMode \
   -testFilter Mahjong.Unity.Tests.PlayMode.C04PlayerCheatScenarioTests \
-  -testResults build/<GUID>/r2-unity-playmode.xml \
-  -logFile build/<GUID>/r2-unity-playmode.log
+  -testResults build/<GUID>/r3b-unity-playmode.xml \
+  -logFile build/<GUID>/r3b-unity-playmode.log
 ```
 
 - R1 最终 native 0（Unity log: `Test run completed. Exiting with code 0 (Ok)`）。
@@ -168,6 +181,9 @@ Unity 版本/进程：`6000.3.27f1`；未改机器许可；未终止他人既有
 | `r2-producer-verify-positive.json` | 6696 | `CBBF08E25C0BBB37D182ED5381AEC03F4CEA1C5358BA0C2AF56907CAF072DBF2` |
 | `r2-producer-verify-stale.json`（预期 negative） | 2406 | `48572200B67CF1EF9529F0A50BBA08B04F7ED9B1E31637210220BC16B5FB5421` |
 | `r2-build-shared-default.log` | 10470 | `50FCC58FCB7572708CC92EECB6CF666FF0F9185C09DB6C2215D2ABA154417C52` |
+| `r3b-unity-playmode.xml`（R2 最终 3/3） | 10830 | `F91E06069132A6ECF4C1016FAC32EF92D1D19921E88CFDC6481C18B709D22877` |
+| `r3b-unity-playmode.log` | 371593 | `C6F31E77735DC3FDE6B8C2FE84CF6362BD60F6D02B7FD4F43BED7BB104693233` |
+| `r3b-build-shared.log` | 10470 | `E4614F378C4678714628CC7D20CB9C8279B9956891012F9983D5B1D8638CD5FB` |
 
 首次失败顺序（全部保留，未覆盖）：无 GL 运行 → shared-plugin staging provenance 阻断 → GL 运行首 discard 按钮不可用 → 修复后 GL3 `2/2 PASS` → R1 补测 raw 基线/负例/136 与精确换位 → 最终 `3/3 PASS`。
 
