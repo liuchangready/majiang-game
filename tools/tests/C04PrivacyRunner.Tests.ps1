@@ -96,7 +96,7 @@ function New-CaseEvidenceFixture([string]$CaseName, [string]$Root) {
             Write-C04Utf8 (Join-Path $Root 'released-control-raw/raw-frames.json') $fixtureRaw
         }
         'RealRoom_OpenDecisionDeadlineContinuesAfterPlayerClose' {
-            $e = @{ fixtureOnly=$true; schemaVersion=1; case=$CaseName; roomId='fixture-room'; roundId='fixture-round'; decisionId='fixture-decision'; decisionSeat=0; controlEpoch=2; decisionDeadlineRemainingMs=5000; clockDecisionSeat=0; clockServerTimeMs=10000; clockDeadlineRemainingMs=5000; authoritativeDeadlineServerTimeMs=15000; playerSessionId='fixture-player-session'; playerScopeId='fixture-player-scope'; playerRole=1; playerSeat=0; playerBindingEpoch=3; releaseVersion=0; releaseCursorStreamVersion=0; releaseCursorProjectionSeq=0; closeRequestedUtcMs=100; closeCompletedUtcMs=110; playerBindingClosed=$true; spectatorSessionId='fixture-spectator-session'; spectatorRole=2; spectatorSeat=-1; spectatorBaselineVersion=0; spectatorBaselineCursorStreamVersion=0; spectatorBaselineCursorProjectionSeq=0; afterVersion=1; afterCursorStreamVersion=1; afterCursorProjectionSeq=1; afterPhase='Discard'; advancedWithoutPlayerBinding=$true }
+            $e = @{ fixtureOnly=$true; schemaVersion=1; case=$CaseName; roomId='fixture-room'; roundId='fixture-round'; decisionId='fixture-decision'; decisionSeat=0; controlEpoch=0; decisionDeadlineRemainingMs=5000; clockDecisionSeat=0; clockServerTimeMs=10000; clockDeadlineRemainingMs=5000; authoritativeDeadlineServerTimeMs=15000; playerSessionId='fixture-player-session'; playerScopeId='fixture-player-scope'; playerRole=1; playerSeat=0; playerBindingEpoch=3; releaseVersion=0; releaseCursorStreamVersion=0; releaseCursorProjectionSeq=0; closeRequestedUtcMs=100; closeCompletedUtcMs=110; playerBindingClosed=$true; spectatorSessionId='fixture-spectator-session'; spectatorRole=2; spectatorSeat=-1; spectatorBaselineVersion=0; spectatorBaselineCursorStreamVersion=0; spectatorBaselineCursorProjectionSeq=0; afterVersion=1; afterCursorStreamVersion=1; afterCursorProjectionSeq=1; afterPhase='Discard'; advancedWithoutPlayerBinding=$true }
             Write-C04Json (Join-Path $Root 'deadline-evidence.json') $e
         }
         'RealRoom_ClosedPlayerToSpectatorToNewPlayerReceivePathRejectsOldRaw' {
@@ -622,12 +622,11 @@ Invoke-Case 'semantic Windows Player evidence rejects every missing required art
     }
 }
 
-Invoke-Case 'deadline evidence rejects wrong identity, missing decision, epoch, deadline, or progress' {
+Invoke-Case 'deadline evidence rejects wrong identity, missing decision, deadline, or progress' {
     $caseName = 'RealRoom_OpenDecisionDeadlineContinuesAfterPlayerClose'
     $mutations = @(
         @{ name='wrong-case'; key='case'; value='RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly' },
         @{ name='empty-decision'; key='decisionId'; value='' },
-        @{ name='wrong-epoch'; key='controlEpoch'; value=0 },
         @{ name='wrong-clock-seat'; key='clockDecisionSeat'; value=1 },
         @{ name='deadline-mismatch'; key='authoritativeDeadlineServerTimeMs'; value=15001 },
         @{ name='baseline-version-mismatch'; key='spectatorBaselineVersion'; value=1 },
@@ -649,13 +648,15 @@ Invoke-Case 'deadline evidence rejects wrong identity, missing decision, epoch, 
 
 Invoke-Case 'deadline floor numeric fields must be present even when the real initial floor is zero' {
     $caseName = 'RealRoom_OpenDecisionDeadlineContinuesAfterPlayerClose'
-    $caseRoot = New-CaseFixtureRoot $caseName
-    New-CaseEvidenceFixture $caseName $caseRoot
-    $path = Join-Path $caseRoot 'deadline-evidence.json'
-    $e = [IO.File]::ReadAllText($path) | ConvertFrom-Json
-    $e.PSObject.Properties.Remove('releaseVersion')
-    Write-C04Json $path $e
-    Assert-Throws { Assert-C04PlayerCaseEvidence -CaseName $caseName -CaseRoot $caseRoot } 'Open-deadline evidence failed'
+    foreach ($missingField in @('controlEpoch','releaseVersion','spectatorBaselineVersion','afterVersion')) {
+        $caseRoot = New-CaseFixtureRoot $caseName
+        New-CaseEvidenceFixture $caseName $caseRoot
+        $path = Join-Path $caseRoot 'deadline-evidence.json'
+        $e = [IO.File]::ReadAllText($path) | ConvertFrom-Json
+        $e.PSObject.Properties.Remove($missingField)
+        Write-C04Json $path $e
+        Assert-Throws { Assert-C04PlayerCaseEvidence -CaseName $caseName -CaseRoot $caseRoot } 'Open-deadline evidence failed'
+    }
 }
 
 Invoke-Case 'released-control stale-command evidence requires a live ready bound player session' {
