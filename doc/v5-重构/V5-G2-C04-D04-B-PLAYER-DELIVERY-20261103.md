@@ -12,7 +12,7 @@
 
 冻结 base：`a234432e57efa790c40987d9720091d93bd270a8`（既有 Draft PR20 头）
 
-代码提交：`223284df6c85e1c4e5124d62c3cf3024ab46eca0`（首轮 `60f43ad7`、R1 `5dc8534a` 的 R2 增量）
+代码提交：`28bd63d0397d5f135d667523c048a1efa9e1850f`（首轮 `60f43ad7`、R1 `5dc8534a`、R2 `223284df` 的 R3 增量）
 证据根：`build/6ea1d77e-57e2-4c7f-bca8-1d4ce9ca3d46/`（仓库 ignored，独占）
 
 ## 结论（组件与实际边界）
@@ -101,6 +101,14 @@ SECOND 后权威未重新打开 decision（`LocalTableDriver` 只在 `GetPending
 - unauthorized：提交前/拒绝后各做一次只读 authority snapshot，断言 `stateVersion/eventSeq/cheatFingerprint/tilesSha256/完整136 audit/ledger count/balance` 全等；记录真实 `requestId` 与 payload SHA；与 insufficient 一起覆盖两个独立请求/载荷、精确 `DECISION_MISMATCH` / `CHEAT_INSUFFICIENT_FUNDS`。
 - PlayMode 最终仍 `3/3 PASS`，新增断言全部实际执行。
 
+### 2.10 R3 复核 B：TryAssociateRaw 精确绑定与 B producer→A smoke
+
+- 复核新信息：旧 `TryAssociateRaw` 只按 requestId 选 command/receipt、按调用方 version 独立选 publication，未比较 typed receipt 的 CommandVersion/status 与 zone/room/session/seat/private owner；因此“另一已存在版本”、伪造 REJECTED receipt、foreign session/room publication 都会被误接受。
+- 修复：association 现在以 command 的 scope/room/session/seat 为根，要求 typed receipt 同 scope/room/session/seat、canonical digest 一致；positive 必须 **APPLIED + HasCommandVersion/EventSeq + reason 为空 + caller version 与 receipt 版本一致**；negative 必须 **REJECTED + 无 command/event version + reason 非空**；publication 必须由 receipt 的 `CommandVersion` 匹配，并校验 envelope room/session/seat、snapshot session、private owner seat、optional scope，以及对应 cheat 事件类型/Private visibility。缺任一返回 false，probe 经 `FailDiscard` 中止。
+- PlayMode 负例矩阵：missing request/command/receipt/publication、wrong unknown version、**另一已存在版本**、typed receipt 改 REJECTED、publication 改 foreign session、foreign room 全部断言 false；正常 5 行仍 true。
+- B producer→unchanged A：PlayMode 用生产 `C04RawEvidenceExporter` 将真实通道/恢复原件写出 5 行 authorized index 和 2 行 negative index；未修改 A Verifier2 直接验证：**authorized native0 / PASS**、**negative native0 / PASS**，negative 精确 `DECISION_MISMATCH`、`CHEAT_INSUFFICIENT_FUNDS` 且 state/event/ledger/physical SHA 前后相等。
+- 这仍标注为组件/PlayMode 证据，不是 Windows Player 或最终同包 GAME。
+
 ## 3. 原始通道采集（A 合同对齐）
 
 `C04PlayerCheatChannelFactory` 新增 `C04RawFrameCapture`：在真实 ticket channel 的 `SendAsync`/`ReceiveAsync` 处逐帧保存原始字节，不复制解码/判断逻辑，不合成帧。probe 使用捕获帧、receipt `CommandVersion` 和只读 `LocalTableHost.CaptureRecoveryAsync` 写出 A 合同要求的：
@@ -143,8 +151,8 @@ D:/Unity/dotnet/dotnet.exe <...>/Mahjong.Unity.TableModel.Tests.dll
 D:/Unity/Hub/Editor/6000.3.27f1/Editor/Unity.exe -batchmode \
   -projectPath unity/Mahjong.Unity -runTests -testPlatform PlayMode \
   -testFilter Mahjong.Unity.Tests.PlayMode.C04PlayerCheatScenarioTests \
-  -testResults build/<GUID>/r3b-unity-playmode.xml \
-  -logFile build/<GUID>/r3b-unity-playmode.log
+  -testResults build/<GUID>/r7-unity-playmode-3.xml \
+  -logFile build/<GUID>/r7-unity-playmode-3.log
 ```
 
 - R1 最终 native 0（Unity log: `Test run completed. Exiting with code 0 (Ok)`）。
@@ -184,6 +192,11 @@ Unity 版本/进程：`6000.3.27f1`；未改机器许可；未终止他人既有
 | `r3b-unity-playmode.xml`（R2 最终 3/3） | 10830 | `F91E06069132A6ECF4C1016FAC32EF92D1D19921E88CFDC6481C18B709D22877` |
 | `r3b-unity-playmode.log` | 371593 | `C6F31E77735DC3FDE6B8C2FE84CF6362BD60F6D02B7FD4F43BED7BB104693233` |
 | `r3b-build-shared.log` | 10470 | `E4614F378C4678714628CC7D20CB9C8279B9956891012F9983D5B1D8638CD5FB` |
+| `r7-unity-playmode-3.xml`（最终 3/3） | 11489 | `DBC3EFF13DC0EEEECEE632581790D073D8586DDCF9A219BA14A50E70A84B8096` |
+| `r7-unity-playmode-3.log` | 131120 | `864A00F7E3518089B5DDFAC54DB2EEFA71BD0655E1250F51E2EC7B83BA0B92DE` |
+| `r7-b-positive-verify.json`（B index→A） | 6610 | `8D0CE49688E96186143B8B6937DD0D1BDDEF3F9394EBEBB87AB2408FFBB61EBA` |
+| `r7-b-negative-verify.json`（B index→A） | 3656 | `F52C41848077673954EA68E2992DCA4ED54A40CCDAFF457FA199DE8B28C6736C` |
+| `r5-build-shared.log` | 10470 | `F8FEB3FF081B94E0B83A4A0707AA7B8BE4D27D49C2C2E2E01EE2956E7475386E` |
 
 首次失败顺序（全部保留，未覆盖）：无 GL 运行 → shared-plugin staging provenance 阻断 → GL 运行首 discard 按钮不可用 → 修复后 GL3 `2/2 PASS` → R1 补测 raw 基线/负例/136 与精确换位 → 最终 `3/3 PASS`。
 
