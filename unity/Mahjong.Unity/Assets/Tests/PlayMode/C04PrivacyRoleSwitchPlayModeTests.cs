@@ -403,6 +403,18 @@ namespace Mahjong.Unity.Tests.PlayMode
                     Assert.IsNotNull(recoveryOtherSessions[seat - 1].PlayerSnapshot);
                 }
 
+                ulong ownerProjectionVersionFloor = recoveredSession.PlayerSnapshot!.StateVersion;
+                ulong ownerProjectionEventFloor = recoveredSession.PlayerSnapshot.EventSeq;
+                for (int seat = 1; seat < 4; seat++)
+                {
+                    PlayerSnapshot ownerSnapshot = recoveryOtherSessions[seat - 1].PlayerSnapshot!;
+                    ownerProjectionVersionFloor = Math.Max(ownerProjectionVersionFloor, ownerSnapshot.StateVersion);
+                    ownerProjectionEventFloor = Math.Max(ownerProjectionEventFloor, ownerSnapshot.EventSeq);
+                }
+                yield return WaitForSnapshotFloor(recoveredSession, ownerProjectionVersionFloor, ownerProjectionEventFloor, 30f, "recovery owner zero projection floor");
+                for (int seat = 1; seat < 4; seat++)
+                    yield return WaitForSnapshotFloor(recoveryOtherSessions[seat - 1], ownerProjectionVersionFloor, ownerProjectionEventFloor, 30f, "recovery owner " + seat + " projection floor");
+
                 string evidence = Path.Combine(EvidenceRoot(), "recovery-query");
                 Directory.CreateDirectory(evidence);
                 File.WriteAllText(Path.Combine(evidence, "recovery-query.json"),
@@ -1601,6 +1613,15 @@ namespace Mahjong.Unity.Tests.PlayMode
                 yield return WaitTask(() => pump.IsCompleted, 5f, label + " pump");
             }
             Assert.GreaterOrEqual(session.PlayerSnapshot!.StateVersion, version, label);
+        }
+
+        private static IEnumerator WaitForSnapshotFloor(TableSession session, ulong stateVersion, ulong eventSeq, float seconds, string label)
+        {
+            float deadline = Time.realtimeSinceStartup + seconds;
+            while (((session.PlayerSnapshot?.StateVersion ?? 0UL) < stateVersion || (session.PlayerSnapshot?.EventSeq ?? 0UL) < eventSeq) && Time.realtimeSinceStartup < deadline)
+                yield return null;
+            Assert.GreaterOrEqual(session.PlayerSnapshot!.StateVersion, stateVersion, label + " stateVersion");
+            Assert.GreaterOrEqual(session.PlayerSnapshot.EventSeq, eventSeq, label + " eventSeq");
         }
 
         private static void CloseBlocking(TableSession? session)
