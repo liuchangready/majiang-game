@@ -544,7 +544,7 @@ namespace Mahjong.Unity.App
                 " afterVersion=" + evidence.AfterVersion + " baselineCursor=" + evidence.SpectatorBaselineCursorStreamVersion + "/" + evidence.SpectatorBaselineCursorProjectionSeq +
                 " afterCursor=" + evidence.AfterCursorStreamVersion + "/" + evidence.AfterCursorProjectionSeq);
             Assert.Greater(evidence.AfterVersion, evidence.ReleaseVersion, "Deadline stateVersion did not advance beyond the released player baseline.");
-            Assert.Greater(evidence.SpectatorBaselineVersion, 0UL, "Spectator baseline stateVersion must be nonzero.");
+            Assert.AreEqual(evidence.ReleaseVersion, evidence.SpectatorBaselineVersion, "Spectator baseline stateVersion changed before deadline observation.");
             Assert.Greater(evidence.AfterVersion, evidence.SpectatorBaselineVersion, "Deadline progress did not exceed the spectator baseline stateVersion.");
             Assert.Greater(evidence.AfterCursorStreamVersion, evidence.SpectatorBaselineCursorStreamVersion,
                 "Deadline cursor streamVersion did not advance: baseline=" + evidence.SpectatorBaselineCursorStreamVersion + " after=" + evidence.AfterCursorStreamVersion +
