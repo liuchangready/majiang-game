@@ -1453,6 +1453,27 @@ function Assert-C04PlayerCaseEvidence([string]$CaseName, [string]$CaseRoot) {
   return [pscustomobject]@{ case=$CaseName; summary=$summaryPath; log=$logPath; artifacts=@($requiredRelative | ForEach-Object { Join-Path $CaseRoot ($_ -replace '/', [IO.Path]::DirectorySeparatorChar) }); count=$requiredRelative.Count + 2 }
 }
 
+function Assert-C04P2PrepareEvidence($PrepareDoc) {
+  $request = $PrepareDoc.request
+  $pre = $PrepareDoc.pre
+  $post = $PrepareDoc.post
+  $expectedRequest = 'c04-player-c04-d05-final-unified-p2-discard'
+  $isApplied = [string]::Equals([string]$request.status, 'APPLIED', [StringComparison]::OrdinalIgnoreCase)
+  if ($PrepareDoc.kind -cne 'c04-recovery-prepare' -or $PrepareDoc.caseId -cne 'c04-d05-final-unified-p2' -or
+      $PrepareDoc.fault -cne 'None' -or $PrepareDoc.expectedOutcome -cne 'RECOVERED' -or $PrepareDoc.api -cne 'SUBMIT_ACTION' -or
+      -not $isApplied -or [string]$request.requestId -cne $expectedRequest -or
+      [string]::IsNullOrWhiteSpace([string]$request.scopeId) -or [string]::IsNullOrWhiteSpace([string]$request.accountId) -or
+      [string]$request.payloadSha256 -notmatch '^[0-9a-fA-F]{64}$' -or [string]$PrepareDoc.canonicalDigest -notmatch '^[0-9a-fA-F]{64}$' -or
+      [string]::IsNullOrWhiteSpace([string]$request.commandVersion) -or [string]::IsNullOrWhiteSpace([string]$request.eventSeq) -or
+      [int]$PrepareDoc.outbox.unresolved -ne 1 -or [long]$pre.physicalCount -ne 136 -or [long]$pre.physicalUnique -ne 136 -or
+      [long]$post.physicalCount -ne 136 -or [long]$post.physicalUnique -ne 136 -or [long]$post.discardEvents -ne 1 -or
+      [long]$post.stateVersion -le [long]$pre.stateVersion -or [long]$post.handCount -ne ([long]$pre.handCount - 1) -or
+      [long]$post.riverCount -ne ([long]$pre.riverCount + 1) -or $post.tileInRiver -ne $true) {
+    throw 'P2 prepare did not prove the exact original Applied request, unresolved outbox, and one physical discard effect.'
+  }
+  return $PrepareDoc
+}
+
 function Invoke-C04WindowsAppMatrix([string]$PlayerPath, [string]$CasesRoot, [int]$Timeout, $BuildMarker, [string]$SourceHead, [string]$DotnetPath, [string]$VerifierDll) {
   if (-not (Test-Path -LiteralPath $PlayerPath -PathType Leaf)) { throw "Ordinary Windows application is missing: $PlayerPath" }
   $packageRoot = Split-Path -Parent $PlayerPath
@@ -1526,7 +1547,7 @@ function Invoke-C04WindowsAppMatrix([string]$PlayerPath, [string]$CasesRoot, [in
   $expectedPath = Join-Path $p2Root 'expected.txt'
   if (-not (Test-Path -LiteralPath $preparePath -PathType Leaf) -or -not (Test-Path -LiteralPath $expectedPath -PathType Leaf)) { throw 'P2 prepare did not preserve its original request identity and outbox facts.' }
   $prepareDoc = [IO.File]::ReadAllText($preparePath,[Text.Encoding]::UTF8) | ConvertFrom-Json
-  if ($prepareDoc.kind -cne 'c04-recovery-prepare' -or $prepareDoc.request.status -cne 'Applied' -or $prepareDoc.request.requestId -notmatch '^c04-player-c04-d05-final-unified-p2-discard$' -or [int]$prepareDoc.outbox.unresolved -ne 1) { throw 'P2 prepare has an unexpected receipt/request/outbox result.' }
+  $prepareDoc = Assert-C04P2PrepareEvidence $prepareDoc
   $recoverArgs = @('-batchmode','-nographics') + $common + @('-c04-recovery-mode','Recover','-logFile',(Join-Path $CasesRoot 'p2-recover.unity-player.log'))
   $recoverProcess = Start-C04Owned 'windows-app-p2-recover' $PlayerPath $recoverArgs $packageRoot $Timeout
   Assert-C04NativeSuccess $recoverProcess 'windows-app-p2-recover'

@@ -580,8 +580,41 @@ Invoke-Case 'ordinary Windows app P2 launches separate processes and reconciles 
     $text = [IO.File]::ReadAllText($runner,[Text.Encoding]::UTF8)
     foreach ($required in @('windows-app-p2-prepare','windows-app-p2-recover','-c04-recovery-mode','Prepare','Recover',
         'exactOriginalIdentity','foundFromRealLookup','zeroDeltaAfterReconcile','noOriginalCommandResend',
-        'oldScopeQueryCount','prepareDoc.process.pid','recoverDoc.process.pid','canonicalDigest')) {
+        'oldScopeQueryCount','prepareDoc.process.pid','recoverDoc.process.pid','canonicalDigest','Assert-C04P2PrepareEvidence')) {
         Assert-True ($text.Contains($required)) "P2 runner contract is missing $required"
+    }
+}
+
+Invoke-Case 'P2 prepare consumer accepts producer enum casing and rejects wrong receipt or effects' {
+    function New-P2PrepareFixture {
+        return [pscustomobject]@{
+            kind='c04-recovery-prepare'; caseId='c04-d05-final-unified-p2'; fault='None'; expectedOutcome='RECOVERED'; api='SUBMIT_ACTION'
+            request=[pscustomobject]@{ requestId='c04-player-c04-d05-final-unified-p2-discard'; scopeId='scope-one'; accountId='account-one'; status='APPLIED'; payloadSha256=('a'*64); commandVersion='1'; eventSeq='2' }
+            canonicalDigest=('b'*64); outbox=[pscustomobject]@{ unresolved=1 }
+            pre=[pscustomobject]@{ stateVersion=0; handCount=14; riverCount=0; physicalCount=136; physicalUnique=136 }
+            post=[pscustomobject]@{ stateVersion=1; handCount=13; riverCount=1; physicalCount=136; physicalUnique=136; discardEvents=1; tileInRiver=$true }
+        }
+    }
+    $producer = New-P2PrepareFixture
+    Assert-Equal $producer (Assert-C04P2PrepareEvidence $producer) 'P2 producer prepare evidence'
+    foreach ($mutation in @(
+        @{ field='status'; value='RECORDED' },
+        @{ field='requestId'; value='c04-player-c04-d05-final-unified-p2-new-request' },
+        @{ field='scopeId'; value='' },
+        @{ field='outbox'; value=0 },
+        @{ field='discardEvents'; value=2 },
+        @{ field='physicalUnique'; value=135 }
+    )) {
+        $bad = New-P2PrepareFixture
+        switch ($mutation.field) {
+            'status' { $bad.request.status=$mutation.value }
+            'requestId' { $bad.request.requestId=$mutation.value }
+            'scopeId' { $bad.request.scopeId=$mutation.value }
+            'outbox' { $bad.outbox.unresolved=$mutation.value }
+            'discardEvents' { $bad.post.discardEvents=$mutation.value }
+            'physicalUnique' { $bad.post.physicalUnique=$mutation.value }
+        }
+        Assert-Throws { Assert-C04P2PrepareEvidence $bad } 'P2 prepare did not prove'
     }
 }
 
