@@ -2,6 +2,24 @@
 
 日期：2026-11-03，Asia/Shanghai。用户明确要求将“C05 Android补验：核定设备环境，准备完整游戏构建、画面和输入验证”通过bridge下发DSH，并补充“先使用android虚拟机”。本卡采用最新模拟器优先指令，不能只等待真机。
 
+## 用户最新目录与接续检查点（覆盖原派单内旧目录/容量事实）
+
+用户随后明确给出以下环境变量并要求“继续”，优先于本卡后文历史发现和原bridge派单内E盘SDK/AVD隔离约定：
+```text
+ANDROID_HOME=D:\Android\Sdk
+ANDROID_SDK_ROOT=D:\Android\Sdk
+ANDROID_AVD_HOME=D:\Android\avd
+```
+接收方工具/启动器和Java、sdkmanager、emulator、adb子进程必须显式继承这三个值，不依赖旧bridge父进程缓存环境，不再误查C盘SDK或默认用户.android/avd。无需写系统级环境变量。
+
+caller本次实际只读核定：D:\Android\Sdk存在emulator/emulator.exe、platform-tools/adb.exe、system-images及cmdline-tools；D:\Android\avd存在medium_phone.ini和medium_phone.avd。使用上述环境执行emulator -list-avds得到medium_phone/native0；其配置为API36、x86_64、2GiB RAM、google_apis_playstore/x86_64，system image revision7已安装。**先复用这些工具和镜像，不下载第二套SDK/镜像，不清理或wipe现有AVD。** 使用现有AVD时采用可用read-only/no-snapshot-save方式，或在用户指定D:\Android\avd下新建本任务唯一实例/数据覆盖层；既有数据与其他实例保持不变。
+
+本次emulator -accel-check原生exit6，原文“Android Emulator hypervisor driver is not installed on this machine”。这只证明当前加速检查失败，不等于SDK/镜像缺失。先核现有可用加速后端或受支持软件模式，必要时做一次有界且有原始日志的自有实例启动诊断；不能无限冷启动或自动安装/启用系统驱动、Hyper-V/WHPX/BIOS或重启机器。若确需这类系统改动，给最小依赖，独立工具/可用ABI APK工作继续；实际运行/画面/输入准确BLOCKED，不假造模拟器通过。
+
+原派单16:12的E盘742694912字节ENOSPC事实已发生变化：caller新鲜查询D可用352082423808字节、E可用118378037248字节（R与E同卷）。原容量阻断与64MiB阶段上限作为历史保留，**不再是永久限制**；接收方应先再次测量并填写下载/解压/Library/IL2CPP/APK/证据峰值预算及余量，足够后按原卡继续昂贵阶段，不因旧快照只交轻量报告。源码、cache/TEMP/Library/staging/APK/证据仍在本任务E盘独占build；SDK和AVD按用户D盘路径使用，不将全部构建自动移到D盘或改共享资源。
+
+现有C05线程thread_20261103_161601_5877在第1轮审查bootstrap失败，错误为the reviewer turn ended without calling dispatch_task，未开始产品实现，HEAD此前cfcac1d1且clean。本次仅caller更新本任务卡和新检查点，生产/测试源码仍与原2c8238cd一致，七个expectedFiles和原receiver/worktree保持。普通retry应原round/session接续，不能复制线程、伪造reviewBootstrap/callerSessionId或把重试请求当执行已启动。失败启动历史保留，只有bridge真实返回才能判断是否恢复。
+
 ## 身份、候选与并行边界
 
 - 执行器deepseek_harness，使用其配置默认模型（查询为deepseek/deepseek-v4.1-flash），不擅自切换。当前调用方/专属reviewer独立验收。
@@ -22,11 +40,10 @@
 ## 环境已知事实与任务授权
 
 本caller仅做短只读发现，未启动/下载模拟器或构建：
-- 现有SDK在C:/Users/sncdc/AppData/Local/Android/Sdk，Unity AndroidPlayer/SDK为现有绑定路径；pinned adb存在。
-- 发现sdkmanager/avdmanager（含cmdline-tools/16.0及latest），未发现上述SDK中的emulator/emulator.exe、system-images，也未发现用户.android/avd中的AVD；ANDROID_AVD_HOME/ANDROID_SDK_ROOT/ANDROID_HOME未设置。接收方必须再次核定，不能直接写NO_DEVICE后停止。
+- 早期发现曾基于C盘SDK/默认用户AVD，未发现模拟器；这是历史。最新用户指定D盘SDK/AVD，且上述真实检查已找到medium_phone与API36 x86_64镜像，旧“无模拟器/未设环境”不能再作为当前结论。
 - 旧接受的私有Android toolchain manifest仍可按历史报告显式使用：D:/majiang-wt/android-toolchain-ds-20261027/build/android-toolchain/private/toolchain.json，历史SHA E4785B1BE9FD4CE158E6730C1F7E01C58A7C974D45A407EF7E9CC215F3BEE934。先核验真实文件/辅助程序/哈希，不伪造默认manifest、不把本树默认缺文件当SDK完全不可用。
-- 用户选择模拟器，本任务允许在**本任务独占E盘SDK/cache/AVD目录**用官方SDK管理工具准备必要emulator、platform-tools、一个匹配系统镜像和独立测试AVD；不修改共享SDK/现有AVD、用户系统环境或机器虚拟化配置。记录确切包ID、版本、下载来源/结果/空间、路径和现有许可状态；使用已有有效许可，不自动签署新条款、修改Unity许可或用户全局配置。若新许可、虚拟化硬条件或安装环境确实阻断，给最小准确依赖，继续工具/源码/APK等独立可做工作。
-- 优先复用已安装兼容镜像/工具；确实缺失才在独占目录准备，不反复下载或升级整套共享SDK。JDK/SDK/NDK/CMake/IL2CPP工具先核路径、版本和进程可用性，Android镜像许可与Unity许可分别记录。只需一台隔离模拟器，不自动启动多实例。
+- 用户选择模拟器并指定SDK/AVD在D盘；优先只读复用D:\Android\Sdk中已有emulator/platform-tools/镜像，以及D:\Android\avd的现有medium_phone或该目录下本任务独立实例。构建cache/TEMP/Library/APK/证据仍在E盘独占目录。不得为重复环境准备升级共享SDK、重下载已安装镜像或改现有AVD数据；仅确实缺少必要包时给具体版本/空间/许可依据再按明确授权处理，不自动签新条款或改系统虚拟化配置。其余独立工作继续。
+- JDK/SDK/NDK/CMake/IL2CPP先核实际路径、版本、manifest与进程环境，Android镜像和Unity许可分别记录。只启动一个本任务身份可核的测试实例，不启动多台来绕过失败。
 - 模拟器运行权限是本项目完整测试APK安装/启动/停止、截图/视频、受控tap/swipe/back和后台恢复；不操作其他用户设备/app或杀共享adb daemon。仅自己的独立AVD可改变测试显示配置，并记录/还原；不改变机器Hyper-V/WHPX/BIOS或重启系统。
 
 ## ABI与构建合同（先确认，不能安装后才发现不匹配）
@@ -78,7 +95,7 @@ doc/v5-重构/V5-G2-C05-ANDROID-EMULATOR-BINDING-20261103.json
 - D自有AVD冷启动最多600秒，应用每步30–180秒、每个显示/输入场景明确有界；允许不同AVD软件渲染模式尝试须有诊断和变化理由，不盲启动多个进程。
 - E所有自有writer/模拟器退出后封存，未知退出UNKNOWN，不伪装正常成功。
 
-Unity/共享插件构建与Luna D05共同遵守 **Local\MahjongV5P45UnityValidation**；不能改锁名/绕锁/双重持锁。默认总等待600秒，30秒心跳；资源忙记录RESOURCE_BUSY checkpoint，不当产品bug、不强杀他人。E盘独占SDK/AVD/cache/TEMP/Library/staging/output/evidence；不用固定S:覆盖他人映射。启动后台helper用Hidden/可用-no-window模式，除非确需用户可见交互且已说明；可实际screencap的软件/硬件renderer选择要记录，不以-no-window黑画面当有效渲染。
+Unity/共享插件构建与Luna D05共同遵守 **Local\MahjongV5P45UnityValidation**；不能改锁名/绕锁/双重持锁。默认总等待600秒，30秒心跳；资源忙记录RESOURCE_BUSY checkpoint，不当产品bug、不强杀他人。SDK/AVD按用户明确指定D盘根使用；cache/TEMP/Library/staging/output/evidence为E盘本任务独占；不用固定S:覆盖他人映射。启动后台helper用Hidden/可用-no-window模式，除非确需用户可见交互且已说明；可实际screencap的软件/硬件renderer选择要记录，不以-no-window黑画面当有效渲染。
 
 仅验证身份可核的自有PID/start/后代、模拟器serial/AVD目录；正常退出后确认writer/drain停止再释放资源及稳定封存。不用kill-server、不停他人模拟器、不清现有AVD/应用数据，独占测试AVD的日志与残留按阶段保存。不修改机器许可/全局环境/共享SDK或用户数据。
 
