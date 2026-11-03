@@ -6,9 +6,15 @@
 
 ## 0. 结论先行
 
-- 本任务唯一已知缺陷 **D05-FINAL-SYNC-01（MAJOR）已在允许范围内修复并通过
-  5 次目标/定向正负矩阵、完整 LocalHost 与 Client 回归**；代码提交
-  `0832cf67936251978c624dda49bfd17653c7bb36`。
+- 本任务唯一已知缺陷 **D05-FINAL-SYNC-01（MAJOR）已在允许范围内按第 2 轮复核要求
+  完成关联修复**：barrier 现在必须取得真实 outbound `CONTROL_APPLIED` SyncRequest
+  的 correlation、其匹配 inbound SyncResponse，并在该响应实际应用后才解锁；仅
+  full PUSH / 旧 correlation / receipt 不再满足。代码提交
+  `39d05a58980baa4ca1faba90eca7bf115179fb45`（第 1 轮为 `0832cf67`）。
+- 第 2 轮 5×4 定向矩阵全部 XML total=1/pass=1、native0；fresh 无 filter 完整
+  LocalHost **182/182**、Client **182/182**，均 0 fail/error/skip/notrun。
+- 按复核指令未在范围裁决前重跑昂贵 Unity/Windows 矩阵；平台结论仍沿用已独立核对
+  的同候选原件（6/7、5/7），不构成通过。
 - **最终 D05 同候选同包矩阵未闭合**：真实 PlayMode 7 案 **6/7**、真实 Windows
   Test Player 同包 7 案 **5/7**。失败均为 Unity 测试自身的同步/时序缺口，
   位于本任务明确排除的 `unity/.../C04PrivacyRoleSwitchPlayModeTests.cs`；
@@ -28,12 +34,13 @@
 | 工作树 | `E:/majiang-review/g2-d05-final-ds-20261103-1515` |
 | 分支 | `wt/v5-g2-d05-final-ds-20261103-1515` |
 | 起点 HEAD | `2c8238cd29386ab52994c8e3839dfdb85059660c`（clean） |
-| 代码提交 | `0832cf67936251978c624dda49bfd17653c7bb36` |
+| 代码提交（第 2 轮） | `39d05a58980baa4ca1faba90eca7bf115179fb45` |
+| 代码提交（第 1 轮） | `0832cf67936251978c624dda49bfd17653c7bb36` |
 | 本报告 | docs-only 提交（最终交接消息给出精确 docs head） |
 | `origin/v5` | `8fd7c6cb701dfbb41c28938de4186749bdd1d6c7` |
 | 允许 tracked 修改 | `dotnet/tests/Mahjong.LocalHost.Tests/C04PrivacyStreamMatrixTests.cs`、本报告 |
 | 实际 tracked 修改 | 同上 2 个；无生产/runner/verifier/Unity/asmdef/proto/ProjectSettings 改动 |
-| 本任务独占根 | `build/02f82a1c6144498ab2d7b709f6942517`（git ignored） |
+| 本任务独占根 | 第 2 轮 `build/12d656809f6e46df95e61d5c75c8262d`；第 1 轮 `build/02f82a1c6144498ab2d7b709f6942517`（均 git ignored） |
 | 共享锁 | `Local\MahjongV5P45UnityValidation`；PlayMode 等待 424 s，Windows 等待 0 s，均 ≤ 600 s |
 
 不重开：D05 B9 `thread_20261102_232828_d9f0`、隐私 `thread_20261102_224144_4290`、
@@ -55,33 +62,45 @@
 位置：`C04PrivacyStreamMatrixTests.Slow_real_channel_queue_saturates_without_stopping_room_or_other_bindings`。
 
 - 提交前同时注册 receipt 与 `SnapshotChanged` 观察点；
-- 新增 `ControlBaselineBarrier`：要求同一 `RequestId` 的 receipt **且**同一当前
-  binding/session、`IsFullBaseline`、控制 epoch = 原 epoch+1、
-  `ControlledByComputer=true` 的 CONTROL_APPLIED baseline 两者都到齐；
-- 两者到齐后断言：稳定 `Ready`、`PendingCommands` 为空、actor/client epoch 一致
+- **第 2 轮关联修复**：新增 `ControlCorrelatedChannel`，从真实 outbound 帧中记录
+  当前 binding/session/seat 的 `CONTROL_APPLIED` SyncRequest correlation，并仅在收到
+  同一 correlation、同一 binding 的 `SyncResponse(PlayerStream)` 后登记一次
+  “待应用响应”；`ControlBaselineBarrier.OnSnapshot` 必须消费该登记才可完成。
+  普通 full PlayerUpdate PUSH、伪造/旧 correlation、无响应均不能解锁；
+- 新增 `ControlPushInjectionChannel` 真实负例：在 receipt 之前先投递一个由真实
+  production snapshot 构造的 full PUSH 与一个 superseded SyncResponse，同时把
+  `CONTROL_APPLIED` SyncRequest 扣在 transport send 前；断言 receipt 已到、
+  forwarded=0、targetResponse=0、barrier 未满足、state=Synchronizing；
+- 到齐后断言：稳定 `Ready`、`PendingCommands` 为空、actor/client epoch 一致
   （`LocalTableHost.CaptureRecoveryAsync.Facts.ControlEpochs[0]` 与客户端 baseline
   都等于期望 epoch）、durable control request 恰好 1 条、该 request 的 command frame
-  恰好 1 次、receipt 为 `Recorded/LOCAL_CONTROL`；
+  恰好 1 次、control request/response/forwarded/applied 各 1 次、receipt 为
+  `Recorded/LOCAL_CONTROL`；
 - 保留原有慢消费者真实队列溢出（`accepted >= 257`、`TableChannelClosedException`）、
   room/其他 binding 继续 Ready、replacement viewer attach、原回执状态断言；
-- 新增确定性负例矩阵：receipt-only 不通过；旧 session/旧 binding baseline 不解锁；
-  旧 epoch、claim 形态、非 baseline PUSH 不解锁；matching baseline 单独不通过；
-  缺目标 baseline 的有界等待抛 `OperationCanceledException`；两者齐备通过。
+- 负例矩阵：receipt-only、matching predicate 但无 applied response、旧 session/
+  binding、旧 epoch、claim 形态、非 baseline PUSH、superseded correlation、缺目标
+  response 的有界等待均不解锁；正常 correlated response 应用后才通过。
 
-### 2.3 目标矩阵（固定 5 次）
+### 2.3 目标矩阵（第 2 轮固定 5 次 × 4 案）
 
-命令（每次 fresh 同一 Release DLL）：
+命令（完整方法名，XML 每份断言 total=1）：
 
 ```powershell
 D:/Unity/dotnet/dotnet.exe exec dotnet/tests/Mahjong.LocalHost.Tests/bin/Release/net8.0/Mahjong.LocalHost.Tests.dll `
-  -method <case> -noLogo -noColor -result-xml build/02f82a1c6144498ab2d7b709f6942517/target-<case>-<n>.xml
+  -method <full method name> -noLogo -noColor -result-xml build/12d656809f6e46df95e61d5c75c8262d/r2-target-<case>-<n>.xml
 ```
 
 | 用例 | 5 次结果 | 证据 |
 | --- | --- | --- |
-| `Slow_real_channel_queue_saturates_without_stopping_room_or_other_bindings` | 5/5 PASS，0 fail/skip/notrun | `target-Slow_real_channel_queue_saturates_without_stopping_room_or_other_bindings-1..5.xml` |
-| `Control_baseline_barrier_rejects_receipt_only_foreign_and_stale_baselines` | 5/5 PASS | `target-Control_baseline_barrier_rejects_receipt_only_foreign_and_stale_baselines-1..5.xml` |
-| `Control_baseline_barrier_bounded_wait_times_out_without_matching_baseline` | 5/5 PASS | `target-Control_baseline_barrier_bounded_wait_times_out_without_matching_baseline-1..5.xml` |
+| `Slow_real_channel_queue_saturates_without_stopping_room_or_other_bindings` | 5/5 PASS，total=1/pass=1，0 fail/skip/notrun | `r2-target-Slow...-1..5.xml` |
+| `Control_baseline_barrier_rejects_unrelated_full_push_and_missing_control_response` | 5/5 PASS | `r2-target-Control_baseline_barrier_rejects_unrelated_full_push_and_missing_control_response-1..5.xml` |
+| `Control_baseline_barrier_rejects_receipt_only_foreign_and_stale_baselines` | 5/5 PASS | `r2-target-...-1..5.xml` |
+| `Control_baseline_barrier_bounded_wait_times_out_without_matching_baseline` | 5/5 PASS | `r2-target-...-1..5.xml` |
+
+复核方 probe 重跑（own-root copy，不修改 reviewer 原件）结果为
+`controlSyncForwarded=0 receipt=True baseline=False barrierSatisfied=False
+state=Synchronizing`，原 `DEFECT_REPRODUCED` 路径不再出现。
 
 ### 2.4 已知缺陷首次失败的可复现性与修复对照
 
@@ -89,6 +108,19 @@ D:/Unity/dotnet/dotnet.exe exec dotnet/tests/Mahjong.LocalHost.Tests/bin/Release
 复现原缺陷：`Slow_real_channel... [FAIL]`（`baseline-full-5.xml`，179 total /
 178 pass / 1 fail / 0 skip / 0 error）。修改后该用例在 15 次定向运行与全部
 完整运行中 0 次失败。该对照直接证明原竞态真实存在且本次同步点覆盖它。
+
+### 2.5 第 2 轮 R1-01 逐项映射
+
+| R1-01 要求 | 本轮实现/证据 |
+| --- | --- |
+| 关联实际 CONTROL_APPLIED outbound SyncRequest correlation | `ControlCorrelatedChannel.SendAsync` 解码真实出站帧，记录当前 session/binding/seat 的 `CONTROL_APPLIED` correlation |
+| 关联匹配 inbound SyncResponse | `ReceiveAsync` 仅接受同 correlation、PlayerStream、同 binding 的 `SyncResponse`，登记待应用响应 |
+| 等待实际被 TableSession 应用 | 只有 `SnapshotChanged(IsFullBaseline)` 消费待应用响应才置 `BaselineObserved`；响应未应用/被 drop 时超时 |
+| full PUSH 不得误解锁 | 真实负例在 receipt 前投递 production snapshot 构造的 full PUSH；probe 重跑 `barrierSatisfied=False` |
+| 旧/替换 correlation 不得解锁 | 负例同时投递 superseded SyncResponse；`TargetResponseCount=0`，barrier 未满足 |
+| receipt-only / 缺 response 有界失败 | 负例扣住 target request，receipt=True、forwarded=0、state=Synchronizing；helper 用例有界 `OperationCanceledException` |
+| 保留 Ready/pending/epoch/单 command/单 durable 副作用/慢消费者/replacement | 目标测试原断言全部保留并新增 control request/response/forwarded/applied 各 1 次断言 |
+| 不以手工 helper 代替关键负例 | `Control_baseline_barrier_rejects_unrelated_full_push_and_missing_control_response` 使用真实 room/channel/TableSession |
 
 ## 3. 组件与工具回归
 
@@ -105,22 +137,23 @@ native exit 0，0 warning / 0 error（`build.log`）。
 
 ```powershell
 D:/Unity/dotnet/dotnet.exe exec dotnet/tests/Mahjong.LocalHost.Tests/bin/Release/net8.0/Mahjong.LocalHost.Tests.dll `
-  -noLogo -noColor -result-xml build/02f82a1c6144498ab2d7b709f6942517/<run>.xml
+  -noLogo -noColor -result-xml build/12d656809f6e46df95e61d5c75c8262d/localhost-full.xml
 ```
 
-- 修复后共 17 次完整运行：**15 次 181/181 PASS**，2 次 **180/181**，唯一失败为
+- **第 2 轮 fresh 无 filter 完整 LocalHost：182 total / 182 pass / 0 fail / 0 error /
+  0 skip / 0 notrun，native exit 0**；XML SHA-256
+  `57B14E5ECBB8D7B97B46F9C2C4513E07ED450DF1620C7EC983B0975BCE7DF2D8`，
+  log SHA-256 `4138148D3E48735DAEA7958D98608CAC79F429C8736A9AA55494D4DBA53C3579`。
+- 第 1 轮历史保留：17 次完整运行中 15 次 181/181、2 次 180/181，失败均为
   `LocalControlTests.DroppedControlReceiptIsReconciledFromPersistentOutboxOnReconnect`
-  `LocalControlTests.cs:690`，`Expected: Ready / Actual: Synchronizing`。
-- 首败保留：`localhost-full.xml`（181 total / 180 pass / 1 fail / 0 skip / 0 notrun /
-  0 error，SHA-256 `9DD43DBA9F22A6D50E0215C7A9C1F386D62D6D7917C67D76324C795DAE1D28CE`）。
-- 代表性绿色：`fixed-full-1.xml` 181/181，SHA-256
-  `229142424190EB1ED1E2D4788B8550E28CCC86F70AE06E6FB65F0CF9C3BAB3EF`。
-- 第二次失败：`fixed-full-4.xml` SHA-256
+  `LocalControlTests.cs:690`。首败 `localhost-full.xml` SHA-256
+  `9DD43DBA9F22A6D50E0215C7A9C1F386D62D6D7917C67D76324C795DAE1D28CE`；
+  第二次失败 `fixed-full-4.xml` SHA-256
   `9FE23807AA53B02E48EE24E8DD5F2971D3649E129CD40E9AAA10B464174EB1C0`。
-- 该失败只在完整并行套件出现，单跑 8/8 PASS；根因与 D05-FINAL-SYNC-01 同类：
-  该测试等的是“lookup resolution 之后的任意 full baseline”，而不是与
-  CONTROL_APPLIED/epoch 对应的目标 baseline，随后断言稳定 Ready。属于本任务
-  两文件外的测试同步缺口，见 §5。
+- 该外部失败只在完整并行套件出现，单跑 8/8 PASS；根因是等待“lookup resolution
+  之后的任意 full baseline”，而不是与 CONTROL_APPLIED/epoch 对应的目标 response。
+  本轮未获授权修改该文件，故仍保留为 D05-FINAL-SYNC-03，见 §5；不以本轮
+  182/182 单次绿色抹除它。
 
 ### 3.3 Client
 
@@ -130,7 +163,10 @@ D:/Unity/dotnet/dotnet.exe exec dotnet/tests/Mahjong.Client.Tests/bin/Release/ne
 ```
 
 native exit 0；**182/182 / 0 fail / 0 error / 0 skip / 0 notrun**；
-XML SHA-256 `7729DFBBEF5A5B8C25ECD56425A7552E638C2BFD0E1F0D7D34B81906F486E2D2`。
+第 2 轮 XML SHA-256
+`2569C98DCC1326E8F334AEA832F93E306335205381A77735C0EE286981BD0DAA`；
+第 1 轮 XML SHA-256
+`7729DFBBEF5A5B8C25ECD56425A7552E638C2BFD0E1F0D7D34B81906F486E2D2` 保留。
 
 ### 3.4 runner / verifier 工具
 
@@ -329,8 +365,9 @@ Windows Player 后才可观察；任务卡只列 D05-FINAL-SYNC-01。Unity relea
 
 | 项 | 状态 |
 | --- | --- |
-| D05-FINAL-SYNC-01 修复 | **PASS**（代码 + 5×目标 + 负例 + 完整回归） |
-| 完整 LocalHost 稳定性 | **FAIL**（15/17 次 181/181；2 次 180/181，D05-FINAL-SYNC-03） |
+| D05-FINAL-SYNC-01 修复 | **PASS（第 2 轮关联修复）**：5×4 定向 + 真实 PUSH/失联负例 + 182/182 |
+| 完整 LocalHost 本轮 | **PASS 182/182**（第 2 轮首次 fresh；仍保留 SYNC-03 外部风险） |
+| 完整 LocalHost 稳定性 | **FAIL/BLOCKED**（外部 SYNC-03：第 1 轮 15/17 次绿色；本轮未获授权修） |
 | Client 182 | **PASS** |
 | runner 16 / verifier 17+67 | **PASS** |
 | 真实 PlayMode 7 案 | **FAIL 6/7**（D05-FINAL-SYNC-02） |
@@ -342,7 +379,13 @@ Windows Player 后才可观察；任务卡只列 D05-FINAL-SYNC-01。Unity relea
 
 ## 8. 证据清单（本树 `build/`）
 
-- 组件根：`build/02f82a1c6144498ab2d7b709f6942517/`
+- 第 2 轮组件根：`build/12d656809f6e46df95e61d5c75c8262d/`
+  - `build.log` SHA `42A7821BA047C03EA52BF13844CA9BA4BDFD6AA215F11A50459619D539AC07AA`
+  - `localhost-full.xml` SHA `57B14E5ECBB8D7B97B46F9C2C4513E07ED450DF1620C7EC983B0975BCE7DF2D8`
+  - `client-full.xml` SHA `2569C98DCC1326E8F334AEA832F93E306335205381A77735C0EE286981BD0DAA`
+  - `r2-target-*-1..5.xml`（20 份，全部 total=1/pass=1）
+  - `probe-r2-defect.log` SHA `6826A55D804281946A1DD9CA9BD54BA2C700234E98B977DA6918BDA228BC14CE`
+- 第 1 轮组件根：`build/02f82a1c6144498ab2d7b709f6942517/`
   - `build.log` SHA `9D07EE71EA637EA15707953634D4D65E0FCF82DAB122BF4631A0AF1E7D3018A8`
   - `localhost-full.xml`（首败）SHA `9DD43D...1D28CE`
   - `fixed-full-1.xml`（181/181）SHA `229142...C3BAB3EF`
@@ -378,6 +421,9 @@ Windows Player 后才可观察；任务卡只列 D05-FINAL-SYNC-01。Unity relea
 
 ## 10. 交接结论
 
-D05-FINAL-SYNC-01 可以按组件范围交专属 reviewer 复核；最终 D05 矩阵与 G2 结论
-保持 **FAIL/BLOCKED**，等待 §5 两个最小 scope 裁决后在同一候选链上继续。
+D05-FINAL-SYNC-01 已按第 2 轮要求改为真实 request/response 关联，并取得 5×4
+定向、真实 full-PUSH 误解锁负例、182/182 LocalHost 与 182/182 Client 证据；
+可交专属 reviewer 复核组件关闭。D05-FINAL-SYNC-02/03/MATRIX-04 仍为范围外
+MAJOR，最终 D05 矩阵与 G2 结论保持 **FAIL/BLOCKED**，等待原下发方范围裁决后
+在同一候选链继续。按复核指令未在裁决前重跑昂贵 Unity/Windows 矩阵。
 本报告不 approve、不合并、不把 component PASS 升级为 D05/C04/G2 PASS。
