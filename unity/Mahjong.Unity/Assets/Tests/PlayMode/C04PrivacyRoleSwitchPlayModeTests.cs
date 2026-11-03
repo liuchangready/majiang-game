@@ -1054,6 +1054,50 @@ namespace Mahjong.Unity.Tests.PlayMode
                     ",\"newSnapshotControlEpoch\":" + (resumedSnapshot.PrivateView.Control?.ControlEpoch ?? 0UL) +
                     ",\"transportOpen\":" + claimedCapture.IsOpen.ToString().ToLowerInvariant() + ",\"pendingCommands\":" + claimed.PendingCommands.Count + "}", new UTF8Encoding(false));
                 claimedSnapshot = resumedSnapshot;
+                PlayerSnapshot noChangeBase = claimed.PlayerSnapshot
+                    ?? throw new InvalidOperationException("No snapshot for the normal Ready control positive control.");
+                ulong noChangeEpochBefore = noChangeBase.PrivateView.Control?.ControlEpoch ?? 0UL;
+                int noChangeFramesBefore = claimedCapture.CommandFrames;
+                var noChangeClaim = new ProtocolCommand(
+                    CommandKind.ClaimControl,
+                    CommandPayloadFactory.ClaimControl(noChangeBase.RoundId, noChangeEpochBefore),
+                    new RequestId("unity-nochange-claim-" + Guid.NewGuid().ToString("N")),
+                    claimed.Binding!.Scope.ScopeId,
+                    new StateVersion(noChangeBase.StateVersion),
+                    new RoundId(noChangeBase.RoundId),
+                    decisionId: null,
+                    controlEpoch: new ControlEpoch(noChangeEpochBefore));
+                TableReceiptResolvedEventArgs noChangeReceipt = await SubmitExpectReceiptAsync(claimed, noChangeClaim, pumpCts.Token).ConfigureAwait(false);
+                PlayerSnapshot noChangeAfter = noChangeBase;
+                for (int i = 0; i < 200; i++)
+                {
+                    noChangeAfter = claimed.PlayerSnapshot ?? noChangeAfter;
+                    if (claimed.State == TableConnectionState.Ready &&
+                        (noChangeAfter.PrivateView.Control?.ControlEpoch ?? 0UL) == noChangeEpochBefore &&
+                        noChangeAfter.PrivateView.Control?.ControlledByComputer == false && claimed.PendingCommands.Count == 0) break;
+                    await Task.Delay(10, pumpCts.Token).ConfigureAwait(false);
+                }
+                int noChangeFrames = claimedCapture.CommandFrames - noChangeFramesBefore;
+                bool noChangeReady = claimed.State == TableConnectionState.Ready &&
+                    (noChangeAfter.PrivateView.Control?.ControlEpoch ?? 0UL) == noChangeEpochBefore &&
+                    noChangeAfter.PrivateView.Control?.ControlledByComputer == false && claimed.PendingCommands.Count == 0 && noChangeFrames == 1 &&
+                    (noChangeReceipt.Resolution.ReceiptStatus == Mahjong.Contracts.ReceiptStatus.Applied ||
+                     noChangeReceipt.Resolution.ReceiptStatus == Mahjong.Contracts.ReceiptStatus.Recorded) &&
+                    string.Equals(noChangeReceipt.Resolution.ReasonCode, "LOCAL_CONTROL", StringComparison.Ordinal);
+                File.WriteAllText(Path.Combine(EvidenceRoot(), "control-session-ready-positive.json"),
+                    "{\"schemaVersion\":1,\"case\":\"RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly\",\"phase\":\"post-recovery-no-change-claim\",\"sessionState\":\"" + claimed.State +
+                    "\",\"requestId\":\"" + noChangeClaim.RequestId.Value + "\",\"receiptStatus\":\"" + noChangeReceipt.Resolution.ReceiptStatus +
+                    "\",\"receiptReason\":\"" + noChangeReceipt.Resolution.ReasonCode + "\",\"controlEpochBefore\":" + noChangeEpochBefore +
+                    ",\"controlEpochAfter\":" + (noChangeAfter.PrivateView.Control?.ControlEpoch ?? 0UL) + ",\"controlHuman\":" +
+                    (noChangeAfter.PrivateView.Control?.ControlledByComputer == false).ToString().ToLowerInvariant() + " ,\"sessionId\":\"" + claimed.Binding!.SessionId.Value +
+                    "\",\"scopeId\":\"" + claimed.Binding.Scope.ScopeId.Value + "\",\"bindingEpoch\":" + claimed.Binding.BindingEpoch.Value +
+                    ",\"commandFrames\":" + noChangeFrames + ",\"pendingCommands\":" + claimed.PendingCommands.Count + "}", new UTF8Encoding(false));
+                if (!noChangeReady) throw new InvalidOperationException("The no-regression ClaimControl positive control did not remain Ready without changing owner or epoch. state=" + claimed.State +
+                    ",epochBefore=" + noChangeEpochBefore + ",epochAfter=" + (noChangeAfter.PrivateView.Control?.ControlEpoch ?? 0UL) +
+                    ",human=" + (noChangeAfter.PrivateView.Control?.ControlledByComputer == false) + ",receipt=" + noChangeReceipt.Resolution.ReceiptStatus +
+                    ",reason=" + noChangeReceipt.Resolution.ReasonCode + ",frames=" + noChangeFrames + ",pending=" + claimed.PendingCommands.Count +
+                    ",transportOpen=" + claimedCapture.IsOpen + ",lastError=" + (claimed.LastError ?? "<none>") + ",pumpError=" + (claimedPumpError ?? "<none>"));
+                claimedSnapshot = claimed.PlayerSnapshot ?? noChangeAfter;
                 Mahjong.Contracts.Wire.DecisionView? staleDecision = staleDecisionSeed
                     ?? throw new InvalidOperationException("No captured decision is available for a legal stale-epoch request.");
                 Mahjong.Contracts.Wire.LegalActionView? staleAction = null;
@@ -1122,46 +1166,6 @@ namespace Mahjong.Unity.Tests.PlayMode
                 bool staleNoCommitMetadata = !staleReceipt.Resolution.CommandVersion.HasValue &&
                     !staleReceipt.Resolution.EventSeq.HasValue &&
                     !staleReceipt.Resolution.CommittedAtMs.HasValue;
-
-                PlayerSnapshot noChangeBase = claimed.PlayerSnapshot
-                    ?? throw new InvalidOperationException("No snapshot for the normal Ready control positive control.");
-                ulong noChangeEpochBefore = noChangeBase.PrivateView.Control?.ControlEpoch ?? 0UL;
-                int noChangeFramesBefore = claimedCapture.CommandFrames;
-                var noChangeClaim = new ProtocolCommand(
-                    CommandKind.ClaimControl,
-                    CommandPayloadFactory.ClaimControl(noChangeBase.RoundId, noChangeEpochBefore),
-                    new RequestId("unity-nochange-claim-" + Guid.NewGuid().ToString("N")),
-                    claimed.Binding!.Scope.ScopeId,
-                    new StateVersion(noChangeBase.StateVersion),
-                    new RoundId(noChangeBase.RoundId),
-                    decisionId: null,
-                    controlEpoch: new ControlEpoch(noChangeEpochBefore));
-                TableReceiptResolvedEventArgs noChangeReceipt = await SubmitExpectReceiptAsync(claimed, noChangeClaim, pumpCts.Token).ConfigureAwait(false);
-                PlayerSnapshot noChangeAfter = noChangeBase;
-                for (int i = 0; i < 200; i++)
-                {
-                    noChangeAfter = claimed.PlayerSnapshot ?? noChangeAfter;
-                    if (claimed.State == TableConnectionState.Ready &&
-                        (noChangeAfter.PrivateView.Control?.ControlEpoch ?? 0UL) == noChangeEpochBefore &&
-                        noChangeAfter.PrivateView.Control?.ControlledByComputer == false && claimed.PendingCommands.Count == 0) break;
-                    await Task.Delay(10, pumpCts.Token).ConfigureAwait(false);
-                }
-                int noChangeFrames = claimedCapture.CommandFrames - noChangeFramesBefore;
-                bool noChangeReady = claimed.State == TableConnectionState.Ready &&
-                    (noChangeAfter.PrivateView.Control?.ControlEpoch ?? 0UL) == noChangeEpochBefore &&
-                    noChangeAfter.PrivateView.Control?.ControlledByComputer == false && claimed.PendingCommands.Count == 0 && noChangeFrames == 1 &&
-                    (noChangeReceipt.Resolution.ReceiptStatus == Mahjong.Contracts.ReceiptStatus.Applied ||
-                     noChangeReceipt.Resolution.ReceiptStatus == Mahjong.Contracts.ReceiptStatus.Recorded) &&
-                    string.Equals(noChangeReceipt.Resolution.ReasonCode, "LOCAL_CONTROL", StringComparison.Ordinal);
-                File.WriteAllText(Path.Combine(EvidenceRoot(), "control-session-ready-positive.json"),
-                    "{\"schemaVersion\":1,\"case\":\"RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly\",\"phase\":\"post-recovery-no-change-claim\",\"sessionState\":\"" + claimed.State +
-                    "\",\"requestId\":\"" + noChangeClaim.RequestId.Value + "\",\"receiptStatus\":\"" + noChangeReceipt.Resolution.ReceiptStatus +
-                    "\",\"receiptReason\":\"" + noChangeReceipt.Resolution.ReasonCode + "\",\"controlEpochBefore\":" + noChangeEpochBefore +
-                    ",\"controlEpochAfter\":" + (noChangeAfter.PrivateView.Control?.ControlEpoch ?? 0UL) + ",\"controlHuman\":" +
-                    (noChangeAfter.PrivateView.Control?.ControlledByComputer == false).ToString().ToLowerInvariant() + ",\"sessionId\":\"" + claimed.Binding!.SessionId.Value +
-                    "\",\"scopeId\":\"" + claimed.Binding.Scope.ScopeId.Value + "\",\"bindingEpoch\":" + claimed.Binding.BindingEpoch.Value +
-                    ",\"commandFrames\":" + noChangeFrames + ",\"pendingCommands\":" + claimed.PendingCommands.Count + "}", new UTF8Encoding(false));
-                if (!noChangeReady) throw new InvalidOperationException("The no-regression ClaimControl positive control did not remain Ready without changing owner or epoch.");
 
                 return new ReleaseEvidence
                 {
