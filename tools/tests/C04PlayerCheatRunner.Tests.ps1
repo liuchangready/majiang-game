@@ -240,6 +240,11 @@ $effectiveSource=@(Get-C04EffectiveSourceRows -RepoRoot $root)
 $slnx='unity/Mahjong.Unity/Mahjong.Unity.slnx'
 Assert-True (@($rawSource | Where-Object { [string]$_.path -eq $slnx }).Count -eq 1) 'source-policy-raw-slnx'
 Assert-True (@($effectiveSource | Where-Object { [string]$_.path -eq $slnx }).Count -eq 0) 'source-policy-excludes-slnx'
+$rawProjects=@($rawSource | Where-Object { [string]$_.path -like 'dotnet/*.csproj' -or [string]$_.path -like 'dotnet/*/*.csproj' -or [string]$_.path -like 'dotnet/*/*/*.csproj' -or [string]$_.path -like 'dotnet/*/*/*/*.csproj' })
+$effectiveProjects=@($effectiveSource | Where-Object { [string]$_.path -like 'dotnet/*.csproj' -or [string]$_.path -like 'dotnet/*/*.csproj' -or [string]$_.path -like 'dotnet/*/*/*.csproj' -or [string]$_.path -like 'dotnet/*/*/*/*.csproj' })
+Assert-True ($rawProjects.Count -gt 0) 'source-policy-real-projects-present'
+Assert-Equal $rawProjects.Count $effectiveProjects.Count 'source-policy-real-projects-retained'
+Assert-True (@($effectiveProjects | Where-Object { [string]$_.path -eq 'dotnet/src/Mahjong.Domain/Mahjong.Domain.csproj' }).Count -eq 1) 'source-policy-domain-project'
 # 5. Package seal requires real source/build/provenance/report/plugin relations.
 $package = New-PackageFixture -Dir (Join-Path $testRoot 'package') -ValidEvidence -UnityArtifact
 $check = Test-C04PackageSeal -PlayerPath $package.exe -ExpectedSourceHead $package.head -ExpectedBuildCommit $package.head -CurrentSourceIdentitySha256 $package.identity.identitySha256

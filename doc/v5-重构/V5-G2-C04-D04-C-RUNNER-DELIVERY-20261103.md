@@ -1,72 +1,66 @@
-# G2-C04-D04-C 完整构建、包与进程工具返修交付（R1-06 Round 7）
+# G2-C04-D04-C 完整构建、包与进程工具返修交付（R1-06 Round 8）
 
 日期：2026-11-03，Asia/Shanghai。任务：D04-C，targetAgent=deepseek_harness。
-工作树：`E:/majiang-review/g2-c04-d04-runner-ds-20261103`。R6 独立复核
-`build/caller-c04c-r6-37ac0ff3c2fc4baf9724d16135f37084/REVIEW.md`
-（SHA-256 `02F864A7C08BA44BB1D00C62CE58C9F392DA04D929BA85C1D7055802FDEA9C77`）已全文读取；
-positive-run2 与 subset 原件已复现。01/02、strict99、旧 subset 拒绝、FORMAT 保留。
+工作树：`E:/majiang-review/g2-c04-d04-runner-ds-20261103`。R7 独立复核
+`build/caller-c04c-r7-2fa3596905e74fdf829767072706205b/REVIEW.md`
+（SHA-256 `CEE7AF920FFC6846DC62817137A9838649BA91215568B4E922F2F90E907455A8`）已全文读取；
+policy-probes / success-and-consumer 原件已复现。01/02、strict99、旧 subset 拒绝、FORMAT 保留。
 
-本轮只修 R6 新成功路径 A/B/C；未重复 Unity heavy build，未改 A/B/GAME/包设置/许可/asmdef，
-04 外部 errors6/URP 仍未授权、仍开放。
+本轮只修 03 的 A/B；未改 A/B/GAME/包设置/许可/asmdef，未重跑 errors6，04 外部 URP 仍开放。
 
 ## 1. C-R1-06-R1-03 修复映射
 
-### A. 成功路径 provenance 赋值/执行记录
+### A. Unity IDE 排除不得误删真实 .NET csproj
 
-- 原 `Write-C04Json ... -Object $executionRecord        $provenanceCopy = ...` 已消除；不再把赋值作为多余参数传给函数。
-- 现在 `Write-C04Json` 的实际命令在同一命令的布尔表达式里完成
-  `$provenanceCopy = Join-Path $packageRoot 'c04-plugin-provenance.json'`，命令文本仍可被
-  reviewer AST 定位/执行；随后独立校验：
-  - `$provenanceCopy` 非空；
-  - 绝对路径位于 package root 内；
-  - 再执行 Copy-Item。
-- `$playerRelative` 在 main 的 executionRecord 构造前由 `$playerFull`/package root 明确推导，
-  executionRecord 的 `playerRelativePath` 不再依赖函数局部名。
-- 失败路径不会把 null Destination 交给 Copy-Item/CWD。
+- `Get-C04EffectiveSourceRows` 现仅对 **`unity/Mahjong.Unity/*` 内**的
+  `.csproj`/`.slnx`/`.pdb.meta`/`.vscode` 派生文件排除；`dotnet/**` 的真实 MSBuild 项目定义
+  全部保留。
+- `Get-C04SourceIdentity`、source/staged copy、source manifest、consumer expected/sourceByPath、
+  code reverse/expected 继续共用该 helper。
+- 真实 `dotnet` csproj 恢复为 source/code/provenance 的必需输入；`.slnx` 仍按 Unity 派生排除。
+- policy-probes 实测：raw dotnet projects **34**，effective **34**；7 个 shared csproj 仍出现在
+  `Get-SharedPluginInputClosure`；临时 Git fixture 修改 `Example.csproj` 的
+  `DefineConstants` 后 identity 由
+  `6bd02d098868fd779cbbb4c2d6a28ff49512d8d4a2d4ff12ee372897c83471e0`
+  变为 `235a9768e901020bdfff17b2ef8f28a51d4e24b59f639e0077b6b5a015903117`。
+- success-and-consumer 的 real staged `Domain.csproj` consumer errors 为 `[]`。
 
-实际 positive-run2（复制到新根）：
-`executionRecordWritten=true`、`provenanceDestinationAssigned=true`、
-`requiredPackageProvenancePresent=true`、`misdirectedIntoCwd=false`、`error=''`。
+### B. provenance duplicate 明确拒绝
 
-### B. producer/consumer 统一排除策略
-
-- 新增 `Get-C04EffectiveSourceRows`，对 raw source 统一排除
-  `.csproj`/`.slnx`/`.pdb.meta`/`.vscode/`（IDE 派生，不作为冻结 build 输入）。
-- `Get-C04SourceIdentity`、source/staged copy、source manifest、consumer `expectedSource`/
-  `sourceByPath`、code reverse/expected 全部使用同一 effective helper。
-- 不再出现 `PACKAGE_EVIDENCE_REQUIRED_STAGED_MISSING:Mahjong.Unity.slnx`；真实
-  Domain/Client/Contracts/LocalHost/tools/tests/golden 仍全部为必需项。
-- 真实 source 策略测试：raw 含 `unity/Mahjong.Unity/Mahjong.Unity.slnx`，effective 不含；
-  producer/consumer 正例通过。
-
-### C. duplicate exact-set assertion
-
-- source manifest actual map、stagedMap、codeMap、provenance actualProvMap 均在赋值前检查重复，
-  发现重复添加 `*_DUPLICATE` 错误；closure rows 按 name 检查 `PACKAGE_EVIDENCE_PLUGIN_DUPLICATE`。
-- 保留 `Get-SharedPluginInputClosure` 权威 expected set，不降低完整集。
+- `actualProvMap` 建 map 前使用规范化（`/`→`\`、lowercase）路径；已存在时立即
+  `PACKAGE_EVIDENCE_PROVENANCE_DUPLICATE_INPUT`，不再静默覆盖。
+- 同时保留 source/staged/code/closure 的重复拒绝；expected 仍使用
+  `Get-SharedPluginInputClosure` 权威完整集，hash/length/双向成员检查未放宽。
+- policy-probes 的 otherwise-correct 单输入 + 重复项：`declaredEntries=2`、`uniqueEntries=1`、
+  `errors=[PACKAGE_EVIDENCE_PROVENANCE_DUPLICATE_INPUT:dotnet/Directory.Build.props]`。
 
 ## 2. 正/负矩阵
 
-- Positive producer：AST 提取真实 `Write-C04Json` 命令 + 后续 actual Copy-Item，在隔离 CWD
-  执行；execution record 写入、provenance 目标赋值/包内存在/字节等于 fixture、无 CWD 文件。
-- Positive source policy：raw 含 `.slnx`、effective 不含；所有真实非 IDE 输入仍必需。
-- Negative subset：840→1+10 旧 artifact 包仍 `gateOk=false/mainExit=2/FAIL`，错误含数百项
-  `REQUIRED_STAGED_MISSING`/`REQUIRED_CODE_MISSING`/`PROVENANCE_MISSING_INPUT`/
-  `BUILD_EXECUTION_MISSING`/`PLUGIN_NOT_PE`/`MANAGED_MISSING`，不再含 `.slnx` 假必需项。
-- 真实历史 8 个 shared DLL 与 Managed 对应 DLL 字节一致，保留校验；无放宽。
-- 未运行 Unity/Player/PlayMode/GAME，无 clean errors0 package；04 仍开放。
+- **Positive**：producer execution/provenance 真实命令通过（record true、destination true、
+  package true、CWD false）；真实 dotnet csproj 保留；Unity `.slnx` raw 有/effective 无；
+  真实 staged `Domain.csproj` consumer 无错误。
+- **Negative**：修改真实 csproj 的 DefineConstants/引用/编译输入改变 identity；缺失/篡改
+  任一真实输入失败；重复 provenance 明确失败；旧 840→1+10 subset 仍 main exit2/FAIL；
+  历史 8 个 shared DLL/Managed 字节校验保持。
+- 未运行 Unity/Player/PlayMode/GAME；无 errors0 clean package。
 
 ## 3. 验证/证据
 
-- Runner tests：**73/73, native 0**（`build/r7-finaltests-94e0da8acc9147cc9956d28a40d25b89/runner.log`，SHA `802CDA00DD349EF204B99B012598FD0576CAB3FF8234512FF94366EB4686B4F7`）；
-- Compatibility：**20/20, native 0**。
-- positive-run2：`build/r7-finalpositive-c9d98be1891c4020bc89d209b3f41a78/positive-path-probes.json`（SHA `D36B400413510983944837E5865F8F0EF6F558CA40AB10695D90920F27B72A0B`）。
-- subset：`build/r7-subset-528d969a25c34a4f9bf62b61df46aa32/subset-probe.json`（SHA `8FC00CBD7E661DCB3EACB110456D7FFD0A9D40333EEFE03B735E21BC9F383DD2`）
-  （gate false/main exit2/FAIL，无 `.slnx` 错误）。
-- reviewer probes/extra/assignment/contract 仍 native0；fake PE、重复 key、unknown extra、
-  合法 transition 结果保持。
-- 基线 `git diff --check 1bc348aaf78c7773af1495981efea7f93eb0a5c9..HEAD` exit0；
-  工作树 clean。
+| 项 | 结果 |
+|---|---|
+| Runner tests | **76/76, native 0** |
+| Compatibility | **20/20, native 0** |
+| policy-probes | raw/effective dotnet 34/34；identity 改变；duplicate 明确报错 |
+| success-and-consumer | producer 全 true；real Domain.csproj consumer errors `[]` |
+| subset | gate false / main exit2 / FAIL，含 `REQUIRED_CODE_MISSING:...Domain.csproj`，无 `.slnx` 假必需项 |
+| baseline diff-check | exit0；worktree clean |
+
+证据：
+
+- tests：`build/r8-tests-01da546fccf1460c842ccbe6c0d0ceed/runner.log`；
+- policy：`build/r8-policy-9142cb4bb1c4442c8b5c333cea07d986/policy-probes.json`；
+- success/consumer：`build/r8-success-4c3a612d7bbf44668c64f1d1b46fd990/success-and-consumer.json`；
+- subset：`build/r8-subset-a0ac656ca4d842179c4c1152fdd8cad4/subset-probe.json`。
 
 ## 4. 提交/边界
 

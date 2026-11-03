@@ -805,7 +805,8 @@ function Get-C04EffectiveSourceRows {
     $rows = @(Get-C04SourceInputRows -RepoRoot $RepoRoot)
     return @($rows | Where-Object {
         $p = [string]$_.path
-        -not ($p -match '\.(csproj|slnx|pdb\.meta)$' -or $p -match '(^|/)\.vscode/')
+        $unityIde = ($p -like 'unity/Mahjong.Unity/*') -and ($p -match '\.(csproj|slnx|pdb\.meta)$' -or $p -match '(^|/)\.vscode/')
+        -not $unityIde
     })
 }
 function Get-C04SourceIdentity {
@@ -1672,7 +1673,9 @@ function Test-C04PackageSeal {
                     $stagingRepo = Join-Path $evidenceFull 'staging\repo'
                     $actualProvMap = @{}
                     foreach ($input in @($provData.inputs)) {
-                        $actualProvMap[[string]$input.Path] = $input
+                        $ppath = ([string]$input.Path).Replace('/', '\').ToLowerInvariant()
+                        if ($actualProvMap.ContainsKey($ppath)) { $errors.Add('PACKAGE_EVIDENCE_PROVENANCE_DUPLICATE_INPUT:' + [string]$input.Path) | Out-Null }
+                        else { $actualProvMap[$ppath] = $input }
                         $inputPath = Join-Path $stagingRepo ([string]$input.Path).Replace('/', '\')
                         if (-not (Test-Path -LiteralPath $inputPath -PathType Leaf)) { $errors.Add('PACKAGE_EVIDENCE_INPUT_MISSING:' + [string]$input.Path) | Out-Null; continue }
                         if ([long]$input.Length -ne (Get-Item -LiteralPath $inputPath).Length -or [string]$input.Sha256 -ne (Get-C04Sha256 $inputPath)) { $errors.Add('PACKAGE_EVIDENCE_INPUT_MISMATCH:' + [string]$input.Path) | Out-Null }
@@ -1680,12 +1683,12 @@ function Test-C04PackageSeal {
                         elseif ([long]$sourceByPath[[string]$input.Path].bytes -ne [long]$input.Length -or [string]$sourceByPath[[string]$input.Path].sha256 -ne [string]$input.Sha256) { $errors.Add('PACKAGE_EVIDENCE_INPUT_SOURCE_MISMATCH:' + [string]$input.Path) | Out-Null }
                     }
                     foreach ($expectedInput in @($expectedProvenance)) {
-                        $pkey = [string]$expectedInput.Path
+                        $pkey = ([string]$expectedInput.Path).Replace('/', '\').ToLowerInvariant()
                         if (-not $actualProvMap.ContainsKey($pkey)) { $errors.Add('PACKAGE_EVIDENCE_PROVENANCE_MISSING_INPUT:' + $pkey) | Out-Null; continue }
                         if ([long]$actualProvMap[$pkey].Length -ne [long]$expectedInput.Length -or [string]$actualProvMap[$pkey].Sha256 -ne [string]$expectedInput.Sha256) { $errors.Add('PACKAGE_EVIDENCE_PROVENANCE_INPUT_CHANGED:' + $pkey) | Out-Null }
                     }
                     foreach ($actualKey in $actualProvMap.Keys) {
-                        if (@($expectedProvenance | Where-Object { [string]$_.Path -eq $actualKey }).Count -eq 0) { $errors.Add('PACKAGE_EVIDENCE_PROVENANCE_EXTRA_INPUT:' + $actualKey) | Out-Null }
+                        if (@($expectedProvenance | Where-Object { ([string]$_.Path).Replace('/', '\').ToLowerInvariant() -eq $actualKey }).Count -eq 0) { $errors.Add('PACKAGE_EVIDENCE_PROVENANCE_EXTRA_INPUT:' + $actualKey) | Out-Null }
                     }
                     $stagingPlugins = Join-Path $stagingRepo 'unity\Mahjong.Unity\Assets\Plugins\Mahjong'
                     foreach ($output in @($provData.outputs)) {
