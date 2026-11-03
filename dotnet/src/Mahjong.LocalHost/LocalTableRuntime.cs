@@ -62,7 +62,9 @@ namespace Mahjong.LocalHost
         private int _seat;
         private TableStreamHandle? _stream;
         private TableStreamSink? _sink;
+        private TableStreamIdentity? _activeStreamIdentity;
         private string? _pendingSyncCorrelation;
+        private readonly List<string> _streamTraceForTest = new List<string>();
         private bool _sessionOpen;
         private bool _disposed;
 
@@ -455,6 +457,23 @@ namespace Mahjong.LocalHost
 
         internal TableStreamFrame? LastStreamFrameForTest => _sink?.LastFrame;
 
+        internal string SessionIdForTest => _sessionId;
+
+        internal ulong BindingEpochForTest => _bindingEpoch;
+
+        internal long StreamGenerationForTest => _streamGeneration;
+
+        internal string RoleForTest => _role.ToString();
+
+        internal int SeatForTest => _seat;
+
+        internal string ScopeIdForTest => _connectionScopeId?.Value ?? "none";
+
+        internal string[] StreamTraceForTest
+        {
+            get { lock (_gate) return _streamTraceForTest.ToArray(); }
+        }
+
         internal bool DriverRunning => _driver.IsRunning;
 
         internal LocalTableDriver DriverForTest => _driver;
@@ -471,6 +490,7 @@ namespace Mahjong.LocalHost
                 _pendingSyncCorrelation = null;
                 _stream = null;
                 _sink = null;
+                _activeStreamIdentity = null;
             }
 
             if (previous != null)
@@ -496,6 +516,7 @@ namespace Mahjong.LocalHost
                 _pendingSyncCorrelation = null;
                 _stream = null;
                 _sink = null;
+                _activeStreamIdentity = null;
             }
         }
 
@@ -511,6 +532,7 @@ namespace Mahjong.LocalHost
                 stream = _stream;
                 _stream = null;
                 _sink = null;
+                _activeStreamIdentity = null;
             }
 
             if (stream != null)
@@ -738,6 +760,10 @@ namespace Mahjong.LocalHost
             lock (_gate)
             {
                 _syncEpoch++;
+                // A subscription owns its own callback generation. Frames already
+                // queued by an old sink must never consume the correlation for this
+                // request, even when session/binding/seat are otherwise identical.
+                _streamGeneration++;
                 identity = new TableStreamIdentity(
                     new SessionId(_sessionId),
                     _role == LocalViewerRole.Spectator ? TableStreamAudience.Spectator : TableStreamAudience.ForSeat(_seat),
@@ -745,7 +771,20 @@ namespace Mahjong.LocalHost
                     new SyncEpoch((ulong)_syncEpoch));
                 sink = new TableStreamSink(this, _streamGeneration);
                 _sink = sink;
+                _activeStreamIdentity = identity;
                 _pendingSyncCorrelation = envelope.CorrelationId;
+                TraceStreamForTestLocked(
+                    "SYNC_REQUEST correlation=" + envelope.CorrelationId +
+                    " session=" + _sessionId +
+                    " binding=" + _bindingEpoch +
+                    " role=" + _role +
+                    " seat=" + _seat +
+                    " scope=" + (_connectionScopeId?.Value ?? "none") +
+                    " generation=" + _streamGeneration +
+                    " syncEpoch=" + _syncEpoch +
+                    " knownCursor=" + (envelope.SyncRequest?.KnownCursor == null
+                        ? "none"
+                        : envelope.SyncRequest.KnownCursor.StreamVersion + "/" + envelope.SyncRequest.KnownCursor.ProjectionSeq));
             }
 
             var subscribe = new TableStreamSubscribeRequest(
@@ -759,6 +798,12 @@ namespace Mahjong.LocalHost
                 lock (_gate)
                 {
                     _pendingSyncCorrelation = null;
+                    TraceStreamForTestLocked(
+                        "SYNC_SUBSCRIBE_REJECTED correlation=" + envelope.CorrelationId +
+                        " generation=" + _streamGeneration +
+                        " status=" + result.Status +
+                        " reason=" + result.ReasonCode +
+                        " detail=" + result.Detail);
                 }
 
                 Enqueue(ErrorEnvelope(
@@ -770,23 +815,32 @@ namespace Mahjong.LocalHost
             lock (_gate)
             {
                 _stream = result.Handle;
+                TraceStreamForTestLocked(
+                    "SYNC_SUBSCRIBED correlation=" + envelope.CorrelationId +
+                    " generation=" + _streamGeneration +
+                    " identity=" + result.Handle.Identity +
+                    " token=" + result.Handle +
+                    " status=" + result.Status +
+                    " pending=" + (_pendingSyncCorrelation ?? "none") +
+                    " lastFrame=" + DescribeStreamFrameForTest(sink.LastFrame));
             }
 
             if (result.Status == TableStreamControlStatus.InSync)
             {
                 TableStreamFrame? last = sink.LastFrame;
-                if (last != null)
+                lock (_gate)
                 {
-                    Enqueue(BuildSyncResponse(last, envelope.CorrelationId));
-                }
-                else
-                {
-                    lock (_gate)
+                    if (last != null && _pendingSyncCorrelation == envelope.CorrelationId &&
+                        _activeStreamIdentity != null && SameStreamIdentity(last.Identity, _activeStreamIdentity))
                     {
                         _pendingSyncCorrelation = null;
+                        Enqueue(BuildSyncResponse(last, envelope.CorrelationId));
                     }
-
-                    Enqueue(ErrorEnvelope(ProtocolErrorCode.InternalError, "The local stream has no baseline."));
+                    else if (last == null && _pendingSyncCorrelation == envelope.CorrelationId)
+                    {
+                        _pendingSyncCorrelation = null;
+                        Enqueue(ErrorEnvelope(ProtocolErrorCode.InternalError, "The local stream has no baseline."));
+                    }
                 }
             }
         }
@@ -861,9 +915,23 @@ namespace Mahjong.LocalHost
         {
             lock (_gate)
             {
-                if (!_sessionOpen || generation != _streamGeneration ||
-                    frame.Identity.SessionId.Value != _sessionId)
+                string control = frame.Contract?.Player?.Private?.Control == null
+                    ? "none"
+                    : frame.Contract.Player.Private.Control.ControlEpoch.Value + "/" +
+                      frame.Contract.Player.Private.Control.ControlledByComputer;
+                bool activeIdentity = _activeStreamIdentity != null &&
+                                      SameStreamIdentity(frame.Identity, _activeStreamIdentity);
+                if (!_sessionOpen || generation != _streamGeneration || !activeIdentity)
                 {
+                    TraceStreamForTestLocked(
+                        "FRAME_DROPPED generation=" + generation + "/" + _streamGeneration +
+                        " identity=" + frame.Identity +
+                        " full=" + frame.IsFullSnapshot +
+                        " cursor=" + frame.Cursor.StreamVersion.Value + "/" + frame.Cursor.ProjectionSeq.Value +
+                        " control=" + control +
+                        " sessionOpen=" + _sessionOpen +
+                        " activeIdentity=" + activeIdentity +
+                        " pending=" + (_pendingSyncCorrelation ?? "none"));
                     return;
                 }
 
@@ -871,13 +939,59 @@ namespace Mahjong.LocalHost
                 {
                     string correlation = _pendingSyncCorrelation!;
                     _pendingSyncCorrelation = null;
+                    TraceStreamForTestLocked(
+                        "FRAME_CONSUMED_AS_SYNC_RESPONSE correlation=" + correlation +
+                        " generation=" + generation +
+                        " identity=" + frame.Identity +
+                        " full=true cursor=" + frame.Cursor.StreamVersion.Value + "/" + frame.Cursor.ProjectionSeq.Value +
+                        " state=" + frame.StateVersion.Value +
+                        " event=" + frame.EventSeq.Value +
+                        " control=" + control);
                     Enqueue(BuildSyncResponse(frame, correlation));
                     return;
                 }
 
+                TraceStreamForTestLocked(
+                    "FRAME_EMITTED_AS_PUSH generation=" + generation +
+                    " identity=" + frame.Identity +
+                    " full=" + frame.IsFullSnapshot +
+                    " cursor=" + frame.Cursor.StreamVersion.Value + "/" + frame.Cursor.ProjectionSeq.Value +
+                    " control=" + control +
+                    " pending=" + (_pendingSyncCorrelation ?? "none"));
                 Envelope update = _role == LocalViewerRole.Spectator ? BuildPublicUpdate(frame) : BuildPlayerUpdate(frame);
                 Enqueue(update);
             }
+        }
+
+        private static string DescribeStreamFrameForTest(TableStreamFrame? frame)
+        {
+            if (frame == null) return "none";
+            string control = frame.Contract?.Player?.Private?.Control == null
+                ? "none"
+                : frame.Contract.Player.Private.Control.ControlEpoch.Value + "/" +
+                  frame.Contract.Player.Private.Control.ControlledByComputer;
+            return frame.Identity + ";full=" + frame.IsFullSnapshot +
+                ";cursor=" + frame.Cursor.StreamVersion.Value + "/" + frame.Cursor.ProjectionSeq.Value +
+                ";state=" + frame.StateVersion.Value + ";event=" + frame.EventSeq.Value + ";control=" + control;
+        }
+
+        private void TraceStreamForTestLocked(string message)
+        {
+            if (_streamTraceForTest.Count >= 4096)
+            {
+                _streamTraceForTest.RemoveAt(0);
+            }
+
+            _streamTraceForTest.Add(message);
+        }
+
+        private static bool SameStreamIdentity(TableStreamIdentity left, TableStreamIdentity? right)
+        {
+            return right != null &&
+                   left.SessionId.Value == right.SessionId.Value &&
+                   left.Audience == right.Audience &&
+                   left.BindingEpoch.Value == right.BindingEpoch.Value &&
+                   left.SyncEpoch.Value == right.SyncEpoch.Value;
         }
 
         private Envelope BuildSyncResponse(TableStreamFrame frame, string correlationId)
