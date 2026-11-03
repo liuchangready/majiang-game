@@ -494,3 +494,29 @@ D05/C04/G2 阶段批准。后续统一 D05 任务在既有 Draft PR20 已发布�
 验收结论按其独立交付保留，不能用本树旧候选失败否定它们，也不能反向把其通过
 归给本树。出版合入时保留远端所有接受项；维持 PR20 OPEN/Draft，不 merge 至 v5，
 不部署。合入后的实际 .NET 验证另按合入候选记录，不冒充新的 Unity/Windows 执行。
+
+## 12. 既有 Draft PR20 统一出版复核（2026-11-04）
+
+调用者在独立 publication worktree 将本任务接受头 `5f5c5a1e` 与 PR20 原远端头
+`d8a7716bb8ba824a46cbc2634073dc738dd851a2` 正常合并。唯一内容冲突在本测试文件
+的 using 区：保留远端 IO/Cryptography/Json 和本任务 Reflection 四项；未覆盖任何
+远端 raw validator 或其他接受项。合入后相对原远端仍只变化本测试与本报告两个文件，
+`dotnet/src`、`tools`、`unity` 无变化，两个接受头均保留为祖先。复核新增记录的
+一处行尾 CR 已在 docs-only `b36d842a` 规范化，diff --check 通过。
+
+实际合入源码验证候选 `b36d842a6e81a725d16944592a06b0e2a7b4d849`：
+
+- fresh Release 构建 native 0，0 warning / 0 error；
+- 同五案各五次，25 份 XML 各 1/1，全部 native 0、无 skip/error/fail/notrun；
+- fresh 完整 LocalHost **184/184**、Client **182/182**，均 native 0、无 skip/error/fail/notrun；
+- LocalHost XML SHA-256 `604E3CCE87AE670C911E0C0CB64F0B40C7931E9D2D0D97E04C0D3FFD1122A5A0`；
+- Client XML SHA-256 `8B283C0C9220E7E57094843BEE12477E8FA0F8730FB9B9A816DD3150A3880CF6`。
+
+出版独立证据位于
+`E:/majiang-review/g2-d05-sync-publish-700da78bc14d466988a13be1e1872db3/build/publication-review/`，
+包括任务卡、实际命令/退出、25 份定向与两份完整 XML。此后仅本节 docs-only 更新，
+不重跑未变化的已通过输入。该 184 分母由原远端 180 项与本任务新增四项组成。
+未进行新的 Unity/Windows 或远端 CI 执行，原候选与后续统一交付的证据归属按 §11
+保持区分，外部历史失败没有被删除或写成已修复。仅正常推送至既有 PR20 源分支
+`feat/v5-post-g1-batch`，维持 OPEN/Draft，不新建 MR，不 force-push、不 merge 至 v5，
+不部署或更改调度。
