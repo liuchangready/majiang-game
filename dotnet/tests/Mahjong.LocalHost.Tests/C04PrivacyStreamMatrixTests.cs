@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.IO;
+using System.Security.Cryptography;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Mahjong.Client;
@@ -23,6 +26,359 @@ namespace Mahjong.LocalHost.Tests
     public sealed class C04PrivacyStreamMatrixTests
     {
         private static readonly TimeSpan MatrixTimeout = TimeSpan.FromSeconds(45);
+
+        [Fact]
+        public void Released_control_raw_is_decoded_and_bound_to_each_real_welcome()
+        {
+            string? rawPath = Environment.GetEnvironmentVariable("C04_RELEASED_CONTROL_RAW_PATH");
+            string? fixtureRoot = Environment.GetEnvironmentVariable("C04_RELEASED_CONTROL_FIXTURE_ROOT");
+            if (string.IsNullOrWhiteSpace(rawPath))
+            {
+                Assert.False(string.IsNullOrWhiteSpace(fixtureRoot), "Set a raw path or an exclusive WireCodec fixture root.");
+                Directory.CreateDirectory(fixtureRoot!);
+                WireControlCapture fixture = BuildWireControlFixture();
+                string generatedRaw = Path.Combine(fixtureRoot!, "raw-frames.json");
+                WriteWireControlFixture(fixtureRoot!, fixture);
+                WireControlCapture foreign = new WireControlCapture { FixtureOnly = true, SchemaVersion = 2 };
+                foreign.Frames.Add(BuildWireControlFrame(1, "foreign-owner-session", "fixture-room", "fixture-account-seat1", 1, "foreign-owner-scope", 2, 1));
+                File.WriteAllText(Path.Combine(fixtureRoot!, "foreign-raw.json"), JsonSerializer.Serialize(foreign, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
+                ValidateReleasedControlRaw(generatedRaw, Path.Combine(fixtureRoot!, "reconnect.json"),
+                    Path.Combine(fixtureRoot!, "ready.json"), Path.Combine(fixtureRoot!, "release.json"));
+                AssertWireControlNegatives(fixtureRoot!, fixture);
+                Console.WriteLine("C04_CONTROL_WIRE_CONTRACT_PASS frames=" + fixture.Frames.Count + " negative=6 source=WireCodec fixtureOnly=true");
+                return;
+            }
+
+            string reconnectPath = RequiredEnvironmentPath("C04_RELEASED_CONTROL_RECONNECT_PATH");
+            string readyPath = RequiredEnvironmentPath("C04_RELEASED_CONTROL_READY_PATH");
+            string? releasePath = Environment.GetEnvironmentVariable("C04_RELEASED_CONTROL_RELEASE_PATH");
+            ValidateReleasedControlRaw(rawPath, reconnectPath, readyPath, releasePath);
+            string? negativeRoot = Environment.GetEnvironmentVariable("C04_RELEASED_CONTROL_NEGATIVE_ROOT");
+            string? foreignRawPath = Environment.GetEnvironmentVariable("C04_RELEASED_CONTROL_FOREIGN_RAW_PATH");
+            if (!string.IsNullOrWhiteSpace(negativeRoot))
+            {
+                AssertCapturedControlNegatives(rawPath, reconnectPath, readyPath, releasePath, negativeRoot!, foreignRawPath);
+            }
+            Console.WriteLine("C04_CONTROL_WIRE_CAPTURE_PASS frames=" + ReadWireControlCapture(rawPath).Frames.Count +
+                " rawSha256=" + Sha256(File.ReadAllBytes(rawPath)) + " negative=" + (string.IsNullOrWhiteSpace(negativeRoot) ? 0 : (string.IsNullOrWhiteSpace(foreignRawPath) ? 3 : 4)) + " source=WireCodec");
+        }
+
+        private static string RequiredEnvironmentPath(string name)
+        {
+            string? value = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrWhiteSpace(value) || !File.Exists(value))
+                throw new InvalidDataException(name + " must name an existing evidence file.");
+            return value;
+        }
+
+        private static void ValidateReleasedControlRaw(string rawPath, string reconnectPath, string readyPath, string? releasePath)
+        {
+            WireControlCapture capture = ReadWireControlCapture(rawPath);
+            using JsonDocument reconnectDoc = JsonDocument.Parse(File.ReadAllText(reconnectPath));
+            using JsonDocument readyDoc = JsonDocument.Parse(File.ReadAllText(readyPath));
+            JsonElement reconnect = reconnectDoc.RootElement;
+            JsonElement ready = readyDoc.RootElement;
+            string mainSession = String(reconnect, "newSessionId");
+            string roomId = String(reconnect, "newRoomId");
+            string oldScope = String(reconnect, "oldScopeId");
+            string newScope = String(reconnect, "newScopeId");
+            ulong oldBinding = Number(reconnect, "oldBindingEpoch");
+            ulong resumedBinding = Number(reconnect, "newBindingEpoch");
+            string readySession = String(ready, "newSessionId");
+            string readyRoom = String(ready, "newRoomId");
+            string readyScope = String(ready, "newScopeId");
+            ulong readyBinding = Number(ready, "bindingEpoch");
+            string expectedAccount = String(ready, "newWelcomeAccountId");
+            if (capture.SchemaVersion != 2 || capture.Frames.Count < 4 || mainSession != readySession || roomId != readyRoom ||
+                oldBinding == 0 || resumedBinding <= oldBinding || readyBinding <= resumedBinding ||
+                oldScope == newScope || newScope == readyScope || oldScope == readyScope)
+                throw new InvalidDataException("Released-control expected WELCOME timeline is incomplete or contradictory.");
+
+            if (!string.IsNullOrWhiteSpace(releasePath) && File.Exists(releasePath))
+            {
+                using JsonDocument releaseDoc = JsonDocument.Parse(File.ReadAllText(releasePath));
+                JsonElement release = releaseDoc.RootElement;
+                string releaseSession = String(release, "releasedPlayerSessionId");
+                string releaseRoom = String(release, "releasedPlayerRoomId");
+                string releaseAccount = String(release, "releasedPlayerAccountId");
+                if (string.IsNullOrWhiteSpace(releaseSession) || releaseSession == mainSession || releaseRoom != roomId || releaseAccount != expectedAccount)
+                    throw new InvalidDataException("Released player identity does not bind the first control phase to the same room/account.");
+            }
+
+            var sessionOrder = new List<string>();
+            var bindings = new Dictionary<string, (string Scope, string Account, Role Role, int Seat)>();
+            bool enteredMain = false;
+            string initialSession = string.Empty;
+            ulong previousMainBinding = 0;
+            for (int index = 0; index < capture.Frames.Count; index++)
+            {
+                WireControlFrame frame = capture.Frames[index];
+                if (frame.Ordinal != index + 1 || frame.DecodeStatus != "Ok" || frame.UnknownFieldsZero != true ||
+                    frame.WireSha256 != Sha256(Convert.FromBase64String(frame.RawBase64)) ||
+                    frame.WelcomeWireSha256 != Sha256(Convert.FromBase64String(frame.WelcomeRawBase64)))
+                    throw new InvalidDataException("Raw frame ordinal, asserted decoder state, or hash is invalid at index " + index + ".");
+
+                byte[] wireBytes = Convert.FromBase64String(frame.RawBase64);
+                WireDecodeResult wireResult = WireCodec.Decode(wireBytes);
+                if (!wireResult.IsOk || wireResult.Envelope == null || wireResult.UnknownFieldCount != 0)
+                    throw new InvalidDataException("WireCodec rejected player raw frame " + frame.Ordinal + ": " + wireResult.ErrorCode);
+                Envelope wire = wireResult.Envelope;
+                WireCodec.EnsureStrict(wire);
+                PlayerSnapshot? snapshot = null;
+                bool playerStreamBody = wire.BodyCase == Envelope.BodyOneofCase.SyncResponse &&
+                    wire.SyncResponse.Target == SyncTarget.PlayerStream && wire.SyncResponse.BaselineCase == SyncResponse.BaselineOneofCase.Player;
+                if (playerStreamBody) snapshot = wire.SyncResponse.Player;
+                else if (wire.BodyCase == Envelope.BodyOneofCase.PlayerUpdate) snapshot = wire.PlayerUpdate.Snapshot;
+                if (snapshot == null || (wire.MessageType != MessageType.SyncResponse && wire.MessageType != MessageType.PlayerUpdate) ||
+                    (wire.BodyCase == Envelope.BodyOneofCase.SyncResponse && wire.MessageType != MessageType.SyncResponse) ||
+                    (wire.BodyCase == Envelope.BodyOneofCase.PlayerUpdate && wire.MessageType != MessageType.PlayerUpdate) ||
+                    wire.SessionId != frame.SessionId || wire.RoomId != frame.RoomId || wire.SeatId != frame.SeatId ||
+                    wire.BindingEpoch != frame.BindingEpoch || (wire.Scope != null && wire.Scope.ScopeId != frame.ScopeId) ||
+                    wire.MessageType.ToString() != frame.MessageType)
+                    throw new InvalidDataException("Decoded player envelope identity/body conflicts at frame " + frame.Ordinal +
+                        ": type=" + wire.MessageType + "/" + frame.MessageType + " body=" + wire.BodyCase + " target=" + wire.SyncResponse?.Target +
+                        " baseline=" + wire.SyncResponse?.BaselineCase + " session=" + wire.SessionId + "/" + frame.SessionId +
+                        " room=" + wire.RoomId + "/" + frame.RoomId + " seat=" + wire.SeatId + "/" + frame.SeatId +
+                        " binding=" + wire.BindingEpoch + "/" + frame.BindingEpoch + " scope=" + wire.Scope?.ScopeId + "/" + frame.ScopeId);
+
+                if (snapshot.PrivateView == null || snapshot.PrivateView.Seat != frame.OwnerSeat || frame.OwnerSeat != frame.SeatId ||
+                    snapshot.PrivateView.ClosedTiles.Count == 0 || snapshot.PrivateView.ClosedTiles.Count != frame.PrivateClosedTileCount ||
+                    snapshot.PrivateView.Cheat == null || snapshot.PrivateView.Cheat.CheatPoints != frame.PrivateCheatPoints ||
+                    snapshot.PrivateView.Cheat.LedgerEntries.Count != frame.PrivateLedgerEntryCount ||
+                    (snapshot.PrivateView.Control?.ControlEpoch ?? 0UL) != frame.ControlEpoch)
+                    throw new InvalidDataException("Decoded player snapshot does not prove the recorded nonempty owner-private content at frame " + frame.Ordinal + ".");
+
+                byte[] welcomeBytes = Convert.FromBase64String(frame.WelcomeRawBase64);
+                WireDecodeResult welcomeResult = WireCodec.Decode(welcomeBytes);
+                if (!welcomeResult.IsOk || welcomeResult.Envelope == null || welcomeResult.UnknownFieldCount != 0)
+                    throw new InvalidDataException("WireCodec rejected WELCOME raw at frame " + frame.Ordinal + ": " + welcomeResult.ErrorCode);
+                Envelope welcomeEnvelope = welcomeResult.Envelope;
+                WireCodec.EnsureStrict(welcomeEnvelope);
+                if (welcomeEnvelope.MessageType != MessageType.Welcome || welcomeEnvelope.BodyCase != Envelope.BodyOneofCase.Welcome)
+                    throw new InvalidDataException("Typed WELCOME body is missing at frame " + frame.Ordinal + ".");
+                Welcome welcome = welcomeEnvelope.Welcome;
+                if (welcome.SessionId != frame.SessionId || welcome.RoomId != frame.RoomId || welcome.Role != Role.Player || welcome.SeatId != frame.SeatId ||
+                    welcome.BindingEpoch != frame.BindingEpoch || welcome.Scope == null || welcome.Scope.ScopeId != frame.ScopeId ||
+                    welcome.Scope.AccountId != frame.AccountId || welcome.Scope.Role != Role.Player || welcome.Scope.RoomId != frame.RoomId ||
+                    frame.ConnectionRole != "Player" || frame.BoundSeat != welcome.SeatId ||
+                    frame.Audience != (wire.MessageType == MessageType.PlayerUpdate ? "PlayerUpdate" : "Player") || frame.OwnerSeat != welcome.SeatId)
+                    throw new InvalidDataException("Decoded WELCOME identity conflicts at frame " + frame.Ordinal + ": session=" + welcome.SessionId + "/" + frame.SessionId +
+                        " room=" + welcome.RoomId + "/" + frame.RoomId + " role=" + welcome.Role + " seat=" + welcome.SeatId + "/" + frame.SeatId +
+                        " binding=" + welcome.BindingEpoch + "/" + frame.BindingEpoch + " scope=" + welcome.Scope?.ScopeId + "/" + frame.ScopeId +
+                        " account=" + welcome.Scope?.AccountId + "/" + frame.AccountId + " scopeRole=" + welcome.Scope?.Role + " scopeRoom=" + welcome.Scope?.RoomId +
+                        " envelopeType=" + welcomeEnvelope.MessageType + " body=" + welcomeEnvelope.BodyCase + " connRole=" + frame.ConnectionRole +
+                        " boundSeat=" + frame.BoundSeat + " audience=" + frame.Audience + " owner=" + frame.OwnerSeat);
+
+                string identityKey = frame.SessionId + "/" + frame.BindingEpoch;
+                var identity = (frame.ScopeId, frame.AccountId, welcome.Role, welcome.SeatId);
+                if (bindings.TryGetValue(identityKey, out var existing) && existing != identity)
+                    throw new InvalidDataException("A session/binding epoch maps to conflicting decoded WELCOME identities.");
+                bindings[identityKey] = identity;
+
+                if (sessionOrder.Count == 0 || sessionOrder[sessionOrder.Count - 1] != frame.SessionId)
+                    sessionOrder.Add(frame.SessionId);
+                if (frame.SessionId == mainSession) enteredMain = true;
+                else if (enteredMain) throw new InvalidDataException("A foreign/old session appears after the active claim session began.");
+                else if (string.IsNullOrEmpty(initialSession)) initialSession = frame.SessionId;
+                else if (initialSession != frame.SessionId) throw new InvalidDataException("Unexpected extra session appears in the release phase.");
+
+                if (frame.SessionId == mainSession)
+                {
+                    if (frame.RoomId != roomId || frame.AccountId != expectedAccount || frame.SeatId != 0 || frame.ConnectionRole != "Player")
+                        throw new InvalidDataException("Claimed session left the expected room/account/player seat.");
+                    string expectedScope = frame.BindingEpoch == oldBinding ? oldScope : frame.BindingEpoch == resumedBinding ? newScope : frame.BindingEpoch == readyBinding ? readyScope : string.Empty;
+                    if (string.IsNullOrEmpty(expectedScope) || frame.ScopeId != expectedScope || frame.BindingEpoch < previousMainBinding)
+                        throw new InvalidDataException("Claimed session binding/scope timeline is missing, reordered, or foreign.");
+                    previousMainBinding = frame.BindingEpoch;
+                }
+                else if (frame.RoomId != roomId || frame.AccountId != expectedAccount || frame.SeatId != 0 || frame.ConnectionRole != "Player")
+                    throw new InvalidDataException("Initial release session is not the same real owner identity.");
+            }
+
+            if (sessionOrder.Count != 2 || sessionOrder[0] != initialSession || sessionOrder[1] != mainSession ||
+                initialSession == mainSession || previousMainBinding != readyBinding ||
+                !bindings.ContainsKey(mainSession + "/" + oldBinding) || !bindings.ContainsKey(mainSession + "/" + resumedBinding) ||
+                !bindings.ContainsKey(mainSession + "/" + readyBinding))
+                throw new InvalidDataException("Complete release/claim/reconnect/Ready session timeline is not present in the decoded raw frames.");
+
+            if (!string.IsNullOrWhiteSpace(releasePath) && File.Exists(releasePath))
+            {
+                using JsonDocument releaseDoc = JsonDocument.Parse(File.ReadAllText(releasePath));
+                if (String(releaseDoc.RootElement, "releasedPlayerSessionId") != initialSession)
+                    throw new InvalidDataException("Decoded initial session does not match the release producer's captured player session.");
+            }
+        }
+
+        private static WireControlCapture ReadWireControlCapture(string path)
+        {
+            if (!File.Exists(path)) throw new FileNotFoundException("Control raw capture is missing.", path);
+            WireControlCapture? capture = JsonSerializer.Deserialize<WireControlCapture>(File.ReadAllText(path), new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            return capture ?? throw new InvalidDataException("Control raw capture JSON is empty.");
+        }
+
+        private static string String(JsonElement value, string name)
+        {
+            if (!value.TryGetProperty(name, out JsonElement property) || property.ValueKind != JsonValueKind.String)
+                throw new InvalidDataException("Expected nonempty JSON string " + name + ".");
+            string result = property.GetString() ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(result)) throw new InvalidDataException("Expected nonempty JSON string " + name + ".");
+            return result;
+        }
+
+        private static ulong Number(JsonElement value, string name)
+        {
+            if (!value.TryGetProperty(name, out JsonElement property) || !property.TryGetUInt64(out ulong result))
+                throw new InvalidDataException("Expected unsigned JSON number " + name + ".");
+            return result;
+        }
+
+        private static string Sha256(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes));
+
+        private static WireControlCapture BuildWireControlFixture()
+        {
+            var capture = new WireControlCapture { FixtureOnly = true, SchemaVersion = 2 };
+            string room = "fixture-room";
+            string account = "fixture-account";
+            capture.Frames.Add(BuildWireControlFrame(1, "release-session", room, account, 1, "release-scope", 0));
+            capture.Frames.Add(BuildWireControlFrame(2, "claim-session", room, account, 1, "old-claim-scope", 1));
+            capture.Frames.Add(BuildWireControlFrame(3, "claim-session", room, account, 2, "resumed-scope", 2));
+            capture.Frames.Add(BuildWireControlFrame(4, "claim-session", room, account, 3, "ready-scope", 2));
+            return capture;
+        }
+
+        private static WireControlFrame BuildWireControlFrame(int ordinal, string session, string room, string account, ulong binding, string scope, ulong controlEpoch, int seat = 0)
+        {
+            var requestScope = new Mahjong.Contracts.Wire.RequestScope { ScopeId = scope, AccountId = account, Role = Role.Player, RoomId = room, IssuedAtMs = 1, ExpiresAtMs = 10_000 };
+            var welcome = new Envelope
+            {
+                ProtocolMajor = ProtocolConstants.Major, ProtocolMinor = ProtocolConstants.Minor,
+                RulesetVersion = ProtocolConstants.RulesetVersion, ProjectionVersion = ProtocolConstants.ProjectionVersion,
+                MessageType = MessageType.Welcome, SessionId = session, RoomId = room, SeatId = seat, BindingEpoch = binding,
+                Welcome = new Welcome { SessionId = session, RoomId = room, Role = Role.Player, SeatId = seat, BindingEpoch = binding,
+                    Scope = requestScope.Clone(), ProtocolMajor = ProtocolConstants.Major, ProtocolMinor = ProtocolConstants.Minor,
+                    RulesetVersion = ProtocolConstants.RulesetVersion, ProjectionVersion = ProtocolConstants.ProjectionVersion }
+            };
+            var snapshot = new PlayerSnapshot { SessionId = session, RoundId = "fixture-round", PublicView = new Mahjong.Contracts.Wire.PublicMatchView(),
+                PrivateView = new PlayerPrivateView { Seat = seat, Cheat = new PrivateCheatView { CheatPoints = 120 },
+                    Control = new Mahjong.Contracts.Wire.PlayerControlView { ControlEpoch = controlEpoch, ControlVersion = controlEpoch, ControlledByComputer = false } } };
+            for (uint tile = 0; tile < 13; tile++) snapshot.PrivateView.ClosedTiles.Add(tile);
+            var player = new Envelope
+            {
+                ProtocolMajor = ProtocolConstants.Major, ProtocolMinor = ProtocolConstants.Minor,
+                RulesetVersion = ProtocolConstants.RulesetVersion, ProjectionVersion = ProtocolConstants.ProjectionVersion,
+                MessageType = MessageType.SyncResponse, SessionId = session, RoomId = room, SeatId = seat, BindingEpoch = binding,
+                Scope = requestScope.Clone(), SyncResponse = new SyncResponse { Target = SyncTarget.PlayerStream, IsFullSnapshot = true,
+                    Player = snapshot, StateVersion = (ulong)ordinal, EventSeq = (ulong)ordinal }
+            };
+            byte[] raw = WireCodec.Encode(player);
+            byte[] welcomeRaw = WireCodec.Encode(welcome);
+            return new WireControlFrame { Ordinal = ordinal, RawBase64 = Convert.ToBase64String(raw), WireSha256 = Sha256(raw),
+                WelcomeRawBase64 = Convert.ToBase64String(welcomeRaw), WelcomeWireSha256 = Sha256(welcomeRaw), DecodeStatus = "Ok",
+                MessageType = "SyncResponse", SessionId = session, RoomId = room, ScopeId = scope, AccountId = account,
+                ConnectionRole = "Player", Audience = "Player", BoundSeat = seat, SeatId = seat, OwnerSeat = seat, BindingEpoch = binding,
+                PrivateClosedTileCount = 13, PrivateCheatPoints = 120, PrivateLedgerEntryCount = 0, ControlEpoch = controlEpoch, UnknownFieldsZero = true };
+        }
+
+        private static void WriteWireControlFixture(string root, WireControlCapture capture)
+        {
+            var options = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, WriteIndented = false };
+            File.WriteAllText(Path.Combine(root, "raw-frames.json"), JsonSerializer.Serialize(capture, options));
+            File.WriteAllText(Path.Combine(root, "reconnect.json"), JsonSerializer.Serialize(new { schemaVersion = 1, newSessionId = "claim-session", newRoomId = "fixture-room", oldScopeId = "old-claim-scope", newScopeId = "resumed-scope", oldBindingEpoch = 1UL, newBindingEpoch = 2UL }, options));
+            File.WriteAllText(Path.Combine(root, "ready.json"), JsonSerializer.Serialize(new { schemaVersion = 1, newSessionId = "claim-session", newRoomId = "fixture-room", newScopeId = "ready-scope", bindingEpoch = 3UL, newWelcomeAccountId = "fixture-account" }, options));
+            File.WriteAllText(Path.Combine(root, "release.json"), JsonSerializer.Serialize(new { schemaVersion = 1, releasedPlayerSessionId = "release-session", releasedPlayerRoomId = "fixture-room", releasedPlayerAccountId = "fixture-account" }, options));
+        }
+
+        private static void AssertWireControlNegatives(string root, WireControlCapture valid)
+        {
+            var options = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+            string reconnect = Path.Combine(root, "reconnect.json"), ready = Path.Combine(root, "ready.json"), release = Path.Combine(root, "release.json");
+            void Reject(string name, Action<WireControlCapture> mutate)
+            {
+                WireControlCapture copy = JsonSerializer.Deserialize<WireControlCapture>(JsonSerializer.Serialize(valid, options), new JsonSerializerOptions { PropertyNameCaseInsensitive = true })!;
+                mutate(copy);
+                string badPath = Path.Combine(root, name + ".json");
+                File.WriteAllText(badPath, JsonSerializer.Serialize(copy, options));
+                Assert.ThrowsAny<Exception>(() => ValidateReleasedControlRaw(badPath, reconnect, ready, release));
+            }
+            Reject("bad-wire", copy => { byte[] bad = System.Text.Encoding.ASCII.GetBytes("NOT A PROTOBUF ENVELOPE"); copy.Frames[0].RawBase64 = Convert.ToBase64String(bad); copy.Frames[0].WireSha256 = Sha256(bad); });
+            Reject("bad-welcome", copy => { byte[] bad = System.Text.Encoding.ASCII.GetBytes("NOT A PROTOBUF WELCOME"); copy.Frames[0].WelcomeRawBase64 = Convert.ToBase64String(bad); copy.Frames[0].WelcomeWireSha256 = Sha256(bad); });
+            Reject("foreign-owner-wire", copy => { WireControlFrame foreign = BuildWireControlFrame(1, "release-session", "fixture-room", "fixture-owner-seat1", 1, "release-scope", 0, 1); copy.Frames[0].RawBase64 = foreign.RawBase64; copy.Frames[0].WireSha256 = foreign.WireSha256; });
+            Reject("scope-metadata-conflict", copy => copy.Frames[0].ScopeId = "foreign-scope");
+            Reject("unknown-session", copy => { WireControlFrame f = BuildWireControlFrame(1, "foreign-session", "fixture-room", "fixture-owner-seat0", 1, "release-scope", 0); copy.Frames[0].RawBase64 = f.RawBase64; copy.Frames[0].WireSha256 = f.WireSha256; copy.Frames[0].WelcomeRawBase64 = f.WelcomeRawBase64; copy.Frames[0].WelcomeWireSha256 = f.WelcomeWireSha256; copy.Frames[0].SessionId = "foreign-session"; });
+            Reject("missing-recovery-phase", copy => { copy.Frames.RemoveAt(2); for (int i = 0; i < copy.Frames.Count; i++) copy.Frames[i].Ordinal = i + 1; });
+        }
+
+        private static void AssertCapturedControlNegatives(string rawPath, string reconnectPath, string readyPath, string? releasePath, string negativeRoot, string? foreignRawPath)
+        {
+            Directory.CreateDirectory(negativeRoot);
+            WireControlCapture valid = ReadWireControlCapture(rawPath);
+            void Reject(string name, Action<WireControlCapture> mutate)
+            {
+                WireControlCapture copy = JsonSerializer.Deserialize<WireControlCapture>(JsonSerializer.Serialize(valid), new JsonSerializerOptions { PropertyNameCaseInsensitive = true })!;
+                mutate(copy);
+                string path = Path.Combine(negativeRoot, name + ".json");
+                File.WriteAllText(path, JsonSerializer.Serialize(copy, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
+                Assert.ThrowsAny<Exception>(() => ValidateReleasedControlRaw(path, reconnectPath, readyPath, releasePath));
+            }
+
+            Reject("bad-wire-rehashed", copy =>
+            {
+                byte[] bad = System.Text.Encoding.ASCII.GetBytes("NOT A PROTOBUF ENVELOPE");
+                copy.Frames[0].RawBase64 = Convert.ToBase64String(bad);
+                copy.Frames[0].WireSha256 = Sha256(bad);
+            });
+            Reject("bad-welcome-rehashed", copy =>
+            {
+                byte[] bad = System.Text.Encoding.ASCII.GetBytes("NOT A PROTOBUF WELCOME");
+                copy.Frames[0].WelcomeRawBase64 = Convert.ToBase64String(bad);
+                copy.Frames[0].WelcomeWireSha256 = Sha256(bad);
+            });
+            Reject("typed-owner-metadata-conflict", copy => copy.Frames[0].OwnerSeat = 1);
+            if (!string.IsNullOrWhiteSpace(foreignRawPath))
+            {
+                WireControlCapture foreign = ReadWireControlCapture(foreignRawPath);
+                WireControlFrame frame = foreign.Frames.FirstOrDefault(f => f.OwnerSeat == 1 && f.SeatId == 1)
+                    ?? throw new InvalidDataException("Foreign raw capture has no actual seat-1 owner frame.");
+                Reject("real-foreign-owner-wire", copy =>
+                {
+                    copy.Frames[0].RawBase64 = frame.RawBase64;
+                    copy.Frames[0].WireSha256 = frame.WireSha256;
+                });
+            }
+        }
+
+        private sealed class WireControlCapture
+        {
+            public int SchemaVersion { get; set; }
+            public bool FixtureOnly { get; set; }
+            public List<WireControlFrame> Frames { get; set; } = new List<WireControlFrame>();
+        }
+
+        private sealed class WireControlFrame
+        {
+            public int Ordinal { get; set; }
+            public string WireSha256 { get; set; } = string.Empty;
+            public string RawBase64 { get; set; } = string.Empty;
+            public string WelcomeWireSha256 { get; set; } = string.Empty;
+            public string WelcomeRawBase64 { get; set; } = string.Empty;
+            public string DecodeStatus { get; set; } = string.Empty;
+            public string MessageType { get; set; } = string.Empty;
+            public string SessionId { get; set; } = string.Empty;
+            public string RoomId { get; set; } = string.Empty;
+            public string ScopeId { get; set; } = string.Empty;
+            public string AccountId { get; set; } = string.Empty;
+            public string ConnectionRole { get; set; } = string.Empty;
+            public string Audience { get; set; } = string.Empty;
+            public int BoundSeat { get; set; }
+            public int SeatId { get; set; }
+            public int OwnerSeat { get; set; }
+            public ulong BindingEpoch { get; set; }
+            public int PrivateClosedTileCount { get; set; }
+            public long PrivateCheatPoints { get; set; }
+            public int PrivateLedgerEntryCount { get; set; }
+            public ulong ControlEpoch { get; set; }
+            public bool UnknownFieldsZero { get; set; }
+        }
 
         [Fact]
         public async Task Public_and_player_snapshots_are_typed_and_seat_owned_on_real_channels()

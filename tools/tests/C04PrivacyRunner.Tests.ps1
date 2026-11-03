@@ -27,6 +27,23 @@ $env:TMP = $script:TestTemp
 
 . $runner -LoadFunctionsOnly
 
+$script:C04WireValidatorDotnet = 'D:\Unity\dotnet\dotnet.exe'
+$script:C04WireValidatorWorkingDirectory = $repo
+$controlProject = Join-Path $repo 'dotnet/tests/Mahjong.LocalHost.Tests/Mahjong.LocalHost.Tests.csproj'
+$controlBuildRegistry = New-Object Collections.Generic.List[object]
+$controlBuild = Invoke-C04OwnedProcess -Name 'wire-validator-build' -FileName $script:C04WireValidatorDotnet -Arguments @('build',$controlProject,'-c','Release','--nologo','-nr:false','--ignore-failed-sources') -WorkingDirectory $repo -TimeoutSeconds 600 -EvidenceDirectory $script:TestRoot -OwnedRegistry $controlBuildRegistry
+if ($controlBuild.exitCode -ne 0 -or $controlBuild.timedOut -or $controlBuild.cancelled) { throw "WireCodec validator build failed native=$($controlBuild.exitCode) stdout=$($controlBuild.stdoutPath) stderr=$($controlBuild.stderrPath)" }
+$script:C04WireValidatorDll = Join-Path $repo 'dotnet/tests/Mahjong.LocalHost.Tests/bin/Release/net8.0/Mahjong.LocalHost.Tests.dll'
+if (-not (Test-Path -LiteralPath $script:C04WireValidatorDll -PathType Leaf) -or (Get-Item -LiteralPath $script:C04WireValidatorDll).Length -le 0) { throw 'Fresh WireCodec validator test DLL is missing or empty.' }
+$script:WireFixtureRoot = Join-Path $script:TestRoot 'wire-fixture'
+$oldWireFixtureRoot = [Environment]::GetEnvironmentVariable('C04_RELEASED_CONTROL_FIXTURE_ROOT','Process')
+try {
+    $env:C04_RELEASED_CONTROL_FIXTURE_ROOT = $script:WireFixtureRoot
+    $fixtureRegistry = New-Object Collections.Generic.List[object]
+    $fixtureRun = Invoke-C04OwnedProcess -Name 'wire-validator-fixture-contract' -FileName $script:C04WireValidatorDotnet -Arguments @('exec',$script:C04WireValidatorDll,'-method','Mahjong.LocalHost.Tests.C04PrivacyStreamMatrixTests.Released_control_raw_is_decoded_and_bound_to_each_real_welcome') -WorkingDirectory $repo -TimeoutSeconds 90 -EvidenceDirectory $script:TestRoot -OwnedRegistry $fixtureRegistry
+    if ($fixtureRun.exitCode -ne 0 -or $fixtureRun.timedOut -or $fixtureRun.cancelled -or [IO.File]::ReadAllText($fixtureRun.stdoutPath,[Text.Encoding]::UTF8) -notmatch 'C04_CONTROL_WIRE_CONTRACT_PASS frames=4 negative=6 source=WireCodec fixtureOnly=true') { throw "WireCodec fixture contract failed native=$($fixtureRun.exitCode) stdout=$($fixtureRun.stdoutPath) stderr=$($fixtureRun.stderrPath)" }
+} finally { [Environment]::SetEnvironmentVariable('C04_RELEASED_CONTROL_FIXTURE_ROOT',$oldWireFixtureRoot,'Process') }
+
 $script:Tests = 0
 $script:Failures = New-Object Collections.Generic.List[string]
 $script:Results = New-Object Collections.Generic.List[object]
@@ -85,7 +102,7 @@ function New-CaseEvidenceFixture([string]$CaseName, [string]$Root) {
             Write-C04Utf8 (Join-Path $Root 'four-owner-raw/raw-frames.json') $fixtureRaw
         }
         'RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly' {
-            $e = @{ fixtureOnly=$true; schemaVersion=1; releaseVersion='10'; afterVersion='11'; advancedWithoutPlayerBinding=$true; claimed=$true; claimEpochBefore=1; claimEpoch=2; claimEpochAdvanced=$true; controlPresent=$true; controlHuman=$true; claimRequestId='fixture-claim'; claimReceiptStatus='Recorded'; claimReceiptReason='LOCAL_CONTROL'; staleRequestId='fixture-stale'; staleDecisionId='fixture-captured-decision'; staleSessionId='fixture-player-session'; staleScopeId='fixture-current-scope'; staleBindingEpoch=5; staleReceiptStatus='Rejected'; expectedStaleReason='DECISION_MISMATCH'; staleReason='DECISION_MISMATCH'; capturedDecisionEpoch=1; staleEpoch=1; staleRound='fixture-round'; staleCommandFrames=1; stalePendingAfter=0; staleNoCommitMetadata=$true; staleDecisionRejected=$true }
+            $e = @{ fixtureOnly=$true; schemaVersion=1; releasedPlayerSessionId='release-session'; releasedPlayerRoomId='fixture-room'; releasedPlayerAccountId='fixture-account'; releaseVersion='10'; afterVersion='11'; advancedWithoutPlayerBinding=$true; claimed=$true; claimEpochBefore=1; claimEpoch=2; claimEpochAdvanced=$true; controlPresent=$true; controlHuman=$true; claimRequestId='fixture-claim'; claimReceiptStatus='Recorded'; claimReceiptReason='LOCAL_CONTROL'; staleRequestId='fixture-stale'; staleDecisionId='fixture-captured-decision'; staleSessionId='fixture-player-session'; staleScopeId='fixture-current-scope'; staleBindingEpoch=5; staleReceiptStatus='Rejected'; expectedStaleReason='DECISION_MISMATCH'; staleReason='DECISION_MISMATCH'; capturedDecisionEpoch=1; staleEpoch=1; staleRound='fixture-round'; staleCommandFrames=1; stalePendingAfter=0; staleNoCommitMetadata=$true; staleDecisionRejected=$true }
             Write-C04Json (Join-Path $Root 'released-control/released-control.json') $e
             $session = @{ fixtureOnly=$true; schemaVersion=1; case=$CaseName; phase='before-stale-submit'; sessionState='Ready'; bindingPresent=$true; sessionId='fixture-player-session'; scopeId='fixture-current-scope'; role=1; seat=0; bindingEpoch=5; snapshotStateVersion=11; snapshotEventSeq=8; snapshotRoundId='fixture-round'; snapshotPhase='Discard'; snapshotCurrentSeat=0; snapshotDecisionId='fixture-current-decision'; capturedStaleDecisionId='fixture-captured-decision'; capturedStaleDecisionEpoch=1; snapshotControlEpoch=2; pendingCommands=0; claimCommandFrames=1 }
             Write-C04Json (Join-Path $Root 'control-session-before-stale-submit.json') $session
@@ -93,13 +110,9 @@ function New-CaseEvidenceFixture([string]$CaseName, [string]$Root) {
             Write-C04Json (Join-Path $Root 'control-session-reconnect.json') $reconnect
             $ready = @{ fixtureOnly=$true; schemaVersion=1; case=$CaseName; phase='post-recovery-no-change-claim'; sessionState='Ready'; requestId='fixture-nochange'; receiptStatus='Recorded'; receiptReason='LOCAL_CONTROL'; recoveryBranchTaken=$true; oldSessionId='fixture-player-session'; newSessionId='fixture-player-session'; oldRoomId='fixture-room'; newRoomId='fixture-room'; oldScopeId='fixture-middle-scope'; newScopeId='fixture-current-scope'; oldBindingEpoch=4; bindingEpoch=5; welcomeFrameCountBefore=2; welcomeFrameCountAfter=3; oldWelcomeAccountId='fixture-account'; newWelcomeAccountId='fixture-account'; oldWelcomeSessionId='fixture-player-session'; newWelcomeSessionId='fixture-player-session'; oldWelcomeRoomId='fixture-room'; newWelcomeRoomId='fixture-room'; oldWelcomeScopeId='fixture-middle-scope'; newWelcomeScopeId='fixture-current-scope'; oldWelcomeRole=1; newWelcomeRole=1; oldWelcomeSeat=0; newWelcomeSeat=0; resumeTicketSha256Before=('b'*64); resumeTicketSha256After=('b'*64); controlEpochBefore=2; controlEpochAfter=2; controlHuman=$true; sessionId='fixture-player-session'; scopeId='fixture-current-scope'; commandFrames=1; pendingCommands=0 }
             Write-C04Json (Join-Path $Root 'control-session-ready-positive.json') $ready
-            $rawFrames = New-Object Collections.Generic.List[object]
-            foreach ($identity in @(@{epoch=3;scope='fixture-old-scope'},@{epoch=4;scope='fixture-middle-scope'},@{epoch=5;scope='fixture-current-scope'})) {
-                $wireBytes = [Text.Encoding]::UTF8.GetBytes('FIXTURE ONLY player frame ' + $identity.epoch)
-                $welcomeBytes = [Text.Encoding]::UTF8.GetBytes('FIXTURE ONLY WELCOME ' + $identity.epoch + ' ' + $identity.scope)
-                $rawFrames.Add(@{ ordinal=$identity.epoch; rawBase64=[Convert]::ToBase64String($wireBytes); wireSha256=(Get-C04Sha256Bytes $wireBytes); welcomeRawBase64=[Convert]::ToBase64String($welcomeBytes); welcomeWireSha256=(Get-C04Sha256Bytes $welcomeBytes); decodeStatus='Ok'; sessionId='fixture-player-session'; roomId='fixture-room'; scopeId=$identity.scope; accountId='fixture-account'; connectionRole='Player'; boundSeat=0; seatId=0; bindingEpoch=$identity.epoch; ownerSeat=0; privateClosedTileCount=13 })
-            }
-            Write-C04Json (Join-Path $Root 'released-control-raw/raw-frames.json') @{ fixtureOnly=$true; schemaVersion=2; frames=$rawFrames.ToArray() }
+            $rawDirectory = Join-Path $Root 'released-control-raw'
+            [IO.Directory]::CreateDirectory($rawDirectory) | Out-Null
+            Copy-Item -LiteralPath (Join-Path $script:WireFixtureRoot 'raw-frames.json') -Destination (Join-Path $rawDirectory 'raw-frames.json')
         }
         'RealRoom_OpenDecisionDeadlineContinuesAfterPlayerClose' {
             $e = @{ fixtureOnly=$true; schemaVersion=1; case=$CaseName; roomId='fixture-room'; roundId='fixture-round'; decisionId='fixture-decision'; decisionSeat=0; controlEpoch=0; decisionDeadlineRemainingMs=5000; clockDecisionSeat=0; clockServerTimeMs=10000; clockDeadlineRemainingMs=5000; authoritativeDeadlineServerTimeMs=15000; playerSessionId='fixture-player-session'; playerScopeId='fixture-player-scope'; playerRole=1; playerSeat=0; playerBindingEpoch=3; releaseVersion=0; releaseCursorStreamVersion=0; releaseCursorProjectionSeq=0; closeRequestedUtcMs=100; closeCompletedUtcMs=110; playerBindingClosed=$true; spectatorSessionId='fixture-spectator-session'; spectatorRole=2; spectatorSeat=-1; spectatorBaselineVersion=0; spectatorBaselineCursorStreamVersion=0; spectatorBaselineCursorProjectionSeq=0; afterVersion=1; afterCursorStreamVersion=1; afterCursorProjectionSeq=1; afterPhase='Discard'; advancedWithoutPlayerBinding=$true }
@@ -609,7 +622,7 @@ Invoke-Case 'no-change Ready evidence rejects identity, WELCOME, epoch, and term
         $evidence = [IO.File]::ReadAllText($path,[Text.Encoding]::UTF8) | ConvertFrom-Json
         $evidence.($mutation.key) = $mutation.value
         Write-C04Json $path $evidence
-        Assert-Throws { Assert-C04PlayerCaseEvidence -CaseName $caseName -CaseRoot $caseRoot } 'Released-control no-regression Ready positive control'
+        Assert-Throws { Assert-C04PlayerCaseEvidence -CaseName $caseName -CaseRoot $caseRoot } 'Released-control'
     }
 }
 
@@ -748,15 +761,15 @@ Invoke-Case 'released-control raw verifies wire hashes and binds every WELCOME s
     $raw = [IO.File]::ReadAllText($rawPath) | ConvertFrom-Json
     $raw.frames[0].wireSha256 = ('0' * 64)
     Write-C04Json $rawPath $raw
-    Assert-Throws { Assert-C04PlayerCaseEvidence -CaseName $caseName -CaseRoot $caseRoot } 'Released-control raw frame failed'
+    Assert-Throws { Assert-C04PlayerCaseEvidence -CaseName $caseName -CaseRoot $caseRoot } 'Typed released-control WireCodec validation failed'
 
     $caseRoot = New-CaseFixtureRoot $caseName
     New-CaseEvidenceFixture $caseName $caseRoot
     $rawPath = Join-Path $caseRoot 'released-control-raw/raw-frames.json'
     $raw = [IO.File]::ReadAllText($rawPath) | ConvertFrom-Json
-    $raw.frames[1].bindingEpoch = $raw.frames[0].bindingEpoch
+    $raw.frames[2].bindingEpoch = $raw.frames[1].bindingEpoch
     Write-C04Json $rawPath $raw
-    Assert-Throws { Assert-C04PlayerCaseEvidence -CaseName $caseName -CaseRoot $caseRoot } 'binding epoch maps to conflicting WELCOME identity'
+    Assert-Throws { Assert-C04PlayerCaseEvidence -CaseName $caseName -CaseRoot $caseRoot } 'Typed released-control WireCodec validation failed'
 }
 
 Invoke-Case 'runner test root rejects over-budget paths before fixture creation' {

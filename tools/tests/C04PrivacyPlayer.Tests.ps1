@@ -17,6 +17,8 @@ foreach ($path in @($driverPath,$playModePath,$metaPath,$runnerPath)) { if (-not
 $driver = [IO.File]::ReadAllText($driverPath,[Text.Encoding]::UTF8)
 $playMode = [IO.File]::ReadAllText($playModePath,[Text.Encoding]::UTF8)
 $runner = [IO.File]::ReadAllText($runnerPath,[Text.Encoding]::UTF8)
+$wireValidatorPath = Join-Path $repo 'dotnet/tests/Mahjong.LocalHost.Tests/C04PrivacyStreamMatrixTests.cs'
+$wireValidator = [IO.File]::ReadAllText($wireValidatorPath,[Text.Encoding]::UTF8)
 $names = @(
   'RealRoom_FourPlayersSpectatorAndRoleSwitchUseIndependentSessions',
   'RealRoom_DelayedOldRawReceiveIsRejectedByNewBinding',
@@ -76,7 +78,7 @@ Check ($driver.Contains('WaitForSnapshotFloor(recoveredSession') -and $driver.Co
 Check ($driver.Contains('ProjectionSeq ?? 0UL) < 2UL') -and $playMode.Contains('ProjectionSeq ?? 0UL) < 2UL')) 'RECOVERY_CASE_WAITS_FOR_REAL_PROJECTION_CURSOR_FLOOR'
 Check ($runner.Contains('function Assert-C04PlayerCaseEvidence') -and $runner.Contains('Open-deadline evidence failed its real decision') -and -not $runner.Contains('$caseFiles.Count -lt 3')) 'RUNNER_SEMANTICALLY_ACCEPTS_CASE_ARTIFACTS'
 Check ($runner.Contains('raw-frames.json') -and $runner.Contains('zeroDuplicateStateDelta') -and $runner.Contains('staleNoCommitMetadata')) 'ALL_CASE_RAW_RECOVERY_AND_CONTROL_OUTPUTS_ARE_REQUIRED'
-Check ($runner.Contains('function Get-C04WindowsCanonicalRawVerifierFiles') -and $runner.Contains('released-control-raw/raw-frames.json') -and $runner.Contains('function Assert-C04ReleasedControlRaw') -and $runner.Contains('welcomeWireSha256') -and $runner.Contains('binding epoch maps to conflicting WELCOME identity')) 'WINDOWS_CANONICAL_RAW_SET_AND_SCOPE_ROTATED_CONTROL_RAW_ARE_SEPARATELY_VALIDATED'
+Check ($runner.Contains('function Get-C04WindowsCanonicalRawVerifierFiles') -and $runner.Contains('released-control-raw/raw-frames.json') -and $runner.Contains('function Invoke-C04ReleasedControlWireValidator') -and $runner.Contains('control-wire-validator-build') -and $wireValidator.Contains('WireCodec.Decode') -and $wireValidator.Contains('WireCodec.EnsureStrict') -and $wireValidator.Contains('bad-welcome-rehashed') -and $wireValidator.Contains('real-foreign-owner-wire')) 'WINDOWS_CANONICAL_RAW_SET_AND_CONTROL_RAW_USE_TYPED_WIRECODEC_VALIDATION'
 Check ($driver.Contains('reconciled.Resolution.CommandVersion?.Value') -and $driver.Contains('reconciled.Resolution.EventSeq?.Value')) 'RECOVERY_MATCHES_ORIGINAL_COMMIT_METADATA'
 Check ($driver.Contains('Assert.GreaterOrEqual(recoveredSession.PlayerSnapshot!.StateVersion, afterSubmitVersion') -and $driver.Contains('Assert.GreaterOrEqual(recoveredSession.PlayerSnapshot.EventSeq, afterSubmitEventSeq') -and -not $driver.Contains('Assert.AreEqual(afterSubmitEventSeq, recoveredSession.PlayerSnapshot.EventSeq)')) 'RECOVERY_ALLOWS_VALID_PROGRESS_WITHOUT_DUPLICATE_COMMAND'
 $driverNoChange = $driver.IndexOf('PlayerSnapshot noChangeBase', [StringComparison]::Ordinal)

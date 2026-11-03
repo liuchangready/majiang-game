@@ -1240,40 +1240,43 @@ function Get-C04WindowsPlayerManifest([string]$Root) {
   return [pscustomobject]@{ root = $rootFull; count = $files.Count; canonical = $canonical; sha256 = Get-C04Sha256Bytes ([Text.Encoding]::UTF8.GetBytes($canonical)) }
 }
 
-function Assert-C04ReleasedControlRaw($Raw, $Reconnect, $ReadyPositive) {
-  if ([int]$Raw.schemaVersion -ne 2 -or @($Raw.frames).Count -lt 1) { throw 'Released-control raw evidence is empty or has an unsupported schema.' }
-  $bindings = @{}
-  foreach ($frame in @($Raw.frames)) {
-    try {
-      $wire = [Convert]::FromBase64String([string]$frame.rawBase64)
-      $welcome = [Convert]::FromBase64String([string]$frame.welcomeRawBase64)
-    } catch { throw 'Released-control raw frame or WELCOME is not valid base64.' }
-    if ($frame.decodeStatus -cne 'Ok' -or $frame.wireSha256 -notmatch '^[0-9a-fA-F]{64}$' -or
-      (Get-C04Sha256Bytes $wire) -cne ([string]$frame.wireSha256).ToLowerInvariant() -or
-      $frame.welcomeWireSha256 -notmatch '^[0-9a-fA-F]{64}$' -or
-      (Get-C04Sha256Bytes $welcome) -cne ([string]$frame.welcomeWireSha256).ToLowerInvariant() -or
-      $frame.sessionId -cne $Reconnect.newSessionId -or $frame.roomId -cne $Reconnect.newRoomId -or
-      $frame.connectionRole -cne 'Player' -or [int]$frame.boundSeat -ne 0 -or [int]$frame.seatId -ne 0 -or
-      $frame.accountId -cne $ReadyPositive.newWelcomeAccountId -or [int]$frame.ownerSeat -ne 0 -or [int]$frame.privateClosedTileCount -le 0) {
-      throw 'Released-control raw frame failed its decoded owner, identity, or wire-hash checks.'
-    }
-    $key = ([string]$frame.sessionId) + '/' + [string]$frame.bindingEpoch
-    if ($bindings.ContainsKey($key) -and ($bindings[$key].scopeId -cne $frame.scopeId -or $bindings[$key].accountId -cne $frame.accountId -or $bindings[$key].role -cne $frame.connectionRole -or $bindings[$key].seat -ne [int]$frame.seatId)) {
-      throw 'Released-control raw binding epoch maps to conflicting WELCOME identity.'
-    }
-    $bindings[$key] = [pscustomobject]@{scopeId=[string]$frame.scopeId;accountId=[string]$frame.accountId;role=[string]$frame.connectionRole;seat=[int]$frame.seatId}
+function Invoke-C04ReleasedControlWireValidator([string]$RawPath, [string]$ReconnectPath, [string]$ReadyPath, [string]$ReleasePath, [string]$ForeignRawPath, [string]$EvidenceRoot) {
+  if ([string]::IsNullOrWhiteSpace($script:C04WireValidatorDll) -or -not (Test-Path -LiteralPath $script:C04WireValidatorDll -PathType Leaf)) {
+    throw 'Fresh C04 WireCodec validator DLL is unavailable; raw metadata cannot substitute for typed decoding.'
   }
-  foreach ($identity in @(
-    @{scope=[string]$Reconnect.oldScopeId;epoch=[UInt64]$Reconnect.oldBindingEpoch},
-    @{scope=[string]$Reconnect.newScopeId;epoch=[UInt64]$Reconnect.newBindingEpoch},
-    @{scope=[string]$ReadyPositive.newScopeId;epoch=[UInt64]$ReadyPositive.bindingEpoch}
-  )) {
-    $key = ([string]$Reconnect.newSessionId) + '/' + [string]$identity.epoch
-    if (-not $bindings.ContainsKey($key) -or $bindings[$key].scopeId -cne $identity.scope) {
-      throw 'Released-control raw does not bind every observed scope rotation to its actual session and binding epoch.'
+  $old = @{}; foreach ($key in @('C04_RELEASED_CONTROL_RAW_PATH','C04_RELEASED_CONTROL_RECONNECT_PATH','C04_RELEASED_CONTROL_READY_PATH','C04_RELEASED_CONTROL_RELEASE_PATH','C04_RELEASED_CONTROL_FOREIGN_RAW_PATH','C04_RELEASED_CONTROL_NEGATIVE_ROOT')) { $old[$key] = [Environment]::GetEnvironmentVariable($key,'Process') }
+  try {
+    $env:C04_RELEASED_CONTROL_RAW_PATH = [IO.Path]::GetFullPath($RawPath)
+    $env:C04_RELEASED_CONTROL_RECONNECT_PATH = [IO.Path]::GetFullPath($ReconnectPath)
+    $env:C04_RELEASED_CONTROL_READY_PATH = [IO.Path]::GetFullPath($ReadyPath)
+    if (-not [string]::IsNullOrWhiteSpace($ReleasePath)) { $env:C04_RELEASED_CONTROL_RELEASE_PATH = [IO.Path]::GetFullPath($ReleasePath) } else { Remove-Item Env:C04_RELEASED_CONTROL_RELEASE_PATH -ErrorAction SilentlyContinue }
+    if (-not [string]::IsNullOrWhiteSpace($ForeignRawPath)) { $env:C04_RELEASED_CONTROL_FOREIGN_RAW_PATH = [IO.Path]::GetFullPath($ForeignRawPath) } else { Remove-Item Env:C04_RELEASED_CONTROL_FOREIGN_RAW_PATH -ErrorAction SilentlyContinue }
+    $env:C04_RELEASED_CONTROL_NEGATIVE_ROOT = [IO.Path]::GetFullPath((Join-Path $EvidenceRoot 'wire-negative'))
+    [IO.Directory]::CreateDirectory($EvidenceRoot) | Out-Null
+    $name = 'wire-control-' + [guid]::NewGuid().ToString('N')
+    $arguments = @('exec',$script:C04WireValidatorDll,'-method','Mahjong.LocalHost.Tests.C04PrivacyStreamMatrixTests.Released_control_raw_is_decoded_and_bound_to_each_real_welcome')
+    if ($script:C04WireValidatorUseOwned -eq $true) {
+      $result = Start-C04Owned $name $script:C04WireValidatorDotnet $arguments $script:C04WireValidatorWorkingDirectory 90
+    } else {
+      $registry = New-Object Collections.Generic.List[object]
+      $result = Invoke-C04OwnedProcess -Name $name -FileName $script:C04WireValidatorDotnet -Arguments $arguments `
+        -WorkingDirectory $script:C04WireValidatorWorkingDirectory -TimeoutSeconds 90 -EvidenceDirectory $EvidenceRoot -OwnedRegistry $registry
     }
+    if ($result.timedOut -or $result.cancelled -or $result.exitCode -ne 0) { throw "Typed released-control WireCodec validation failed native=$($result.exitCode) timedOut=$($result.timedOut) stdout=$($result.stdoutPath) stderr=$($result.stderrPath)" }
+    $validatorOutput = [IO.File]::ReadAllText($result.stdoutPath,[Text.Encoding]::UTF8)
+    $expectedNegativeCount = if ([string]::IsNullOrWhiteSpace($ForeignRawPath)) { 3 } else { 4 }
+    if ($validatorOutput -notmatch ('C04_CONTROL_WIRE_CAPTURE_PASS frames=[1-9][0-9]* .* negative=' + $expectedNegativeCount + ' source=WireCodec')) {
+      throw "Typed control validator exited zero without the expected real-wire positive/negative marker (negative=$expectedNegativeCount): $($result.stdoutPath)"
+    }
+    return [pscustomobject]@{ nativeExit=$result.exitCode; stdout=$result.stdoutPath; stderr=$result.stderrPath; pid=$result.pid; evidenceRoot=$EvidenceRoot }
+  } finally {
+    foreach ($key in $old.Keys) { [Environment]::SetEnvironmentVariable($key,$old[$key],'Process') }
   }
-  return $true
+}
+
+function Assert-C04ReleasedControlRaw([string]$RawPath, [string]$ReconnectPath, [string]$ReadyPath, [string]$ReleasePath, [string]$ForeignRawPath, [string]$EvidenceRoot) {
+  $validation = Invoke-C04ReleasedControlWireValidator $RawPath $ReconnectPath $ReadyPath $ReleasePath $ForeignRawPath $EvidenceRoot
+  return $validation
 }
 
 function Assert-C04PlayerCaseEvidence([string]$CaseName, [string]$CaseRoot) {
@@ -1348,7 +1351,10 @@ function Assert-C04PlayerCaseEvidence([string]$CaseName, [string]$CaseRoot) {
         -not [string]::IsNullOrWhiteSpace($e.claimRequestId) -and -not [string]::IsNullOrWhiteSpace($e.staleRequestId) -and $e.claimRequestId -cne $e.staleRequestId -and
         -not [string]::IsNullOrWhiteSpace($e.staleDecisionId) -and -not [string]::IsNullOrWhiteSpace($e.staleRound) -and
         [int]$e.staleCommandFrames -eq 1 -and [int]$e.stalePendingAfter -eq 0 -and $e.staleNoCommitMetadata -eq $true -and $e.staleDecisionRejected -eq $true
-      if (-not $claimEvidenceValid) {
+      if (-not $claimEvidenceValid -or [string]::IsNullOrWhiteSpace($e.releasedPlayerSessionId) -or
+        [string]::IsNullOrWhiteSpace($e.releasedPlayerRoomId) -or [string]::IsNullOrWhiteSpace($e.releasedPlayerAccountId) -or
+        $e.releasedPlayerSessionId -ceq $reconnect.newSessionId -or $e.releasedPlayerRoomId -cne $reconnect.newRoomId -or
+        $e.releasedPlayerAccountId -cne $readyPositive.newWelcomeAccountId) {
         throw 'Released-control evidence failed its epoch, rejection, or no-side-effect contract.'
       }
       $sessionEvidenceValid = [int]$session.schemaVersion -eq 1 -and $session.case -ceq $CaseName -and $session.phase -ceq 'before-stale-submit' -and
@@ -1418,9 +1424,20 @@ function Assert-C04PlayerCaseEvidence([string]$CaseName, [string]$CaseRoot) {
         [int]$readyPositive.pendingCommands -ne 0) {
         throw 'Released-control no-regression Ready positive control did not preserve the current owner, epoch, and binding.'
       }
-      if (-not (Assert-C04ReleasedControlRaw $artifacts['released-control-raw/raw-frames.json'] $reconnect $readyPositive)) {
-        throw 'Released-control raw evidence did not preserve the real WELCOME-bound owner frames.'
+      $releaseFile = Join-Path $CaseRoot 'released-control/released-control.json'
+      $wireRaw = Join-Path $CaseRoot 'released-control-raw/raw-frames.json'
+      $wireReconnect = Join-Path $CaseRoot 'control-session-reconnect.json'
+      $wireReady = Join-Path $CaseRoot 'control-session-ready-positive.json'
+      $foreignRaw = [string]$script:C04ForeignOwnerRawPath
+      if ($artifacts['released-control-raw/raw-frames.json'].fixtureOnly -eq $true) {
+        $wireReconnect = Join-Path $script:WireFixtureRoot 'reconnect.json'
+        $wireReady = Join-Path $script:WireFixtureRoot 'ready.json'
+        $foreignRaw = Join-Path $script:WireFixtureRoot 'foreign-raw.json'
+      } elseif ([string]::IsNullOrWhiteSpace($foreignRaw) -or -not (Test-Path -LiteralPath $foreignRaw -PathType Leaf)) {
+        throw 'Actual four-owner raw is required as the foreign-owner rejection control.'
       }
+      $wireAudit = Invoke-C04ReleasedControlWireValidator $wireRaw $wireReconnect $wireReady $releaseFile $foreignRaw (Join-Path $CaseRoot 'wire-validation')
+      $script:C04LastReleasedControlWireAudit = $wireAudit
     }
     'RealRoom_OpenDecisionDeadlineContinuesAfterPlayerClose' {
       $e = $artifacts['deadline-evidence.json']
@@ -1470,8 +1487,13 @@ function Invoke-C04WindowsAppMatrix([string]$PlayerPath, [string]$CasesRoot, [in
       '-logFile', (Join-Path $CasesRoot ($caseName + '.unity-player.log')))
     $record = Start-C04Owned ('windows-app-' + $caseName) $PlayerPath $args $packageRoot $Timeout
     Assert-C04NativeSuccess $record ('windows-app-' + $caseName)
+    $script:C04LastReleasedControlWireAudit = $null
     $caseEvidence = Assert-C04PlayerCaseEvidence -CaseName $caseName -CaseRoot $caseRoot
-    $results.Add([pscustomobject]@{ testName = $testName; case = $caseName; pid = $record.pid; exitCode = $record.exitCode; timedOut = $record.timedOut; requiredArtifactCount = $caseEvidence.count; artifacts = $caseEvidence.artifacts; summary = $caseEvidence.summary; log = $caseEvidence.log })
+    if ($caseName -ceq 'RealRoom_LegalSleeveAndFeeOwnershipAcrossFourSeatsAndSpectator') {
+      $script:C04ForeignOwnerRawPath = Join-Path $caseRoot 'four-owner-raw/raw-frames.json'
+      if (-not (Test-Path -LiteralPath $script:C04ForeignOwnerRawPath -PathType Leaf)) { throw 'Four-owner producer raw is missing before released-control owner-wire validation.' }
+    }
+    $results.Add([pscustomobject]@{ testName = $testName; case = $caseName; pid = $record.pid; exitCode = $record.exitCode; timedOut = $record.timedOut; requiredArtifactCount = $caseEvidence.count; artifacts = $caseEvidence.artifacts; summary = $caseEvidence.summary; log = $caseEvidence.log; releasedControlWireAudit = $script:C04LastReleasedControlWireAudit })
   }
   $rawFiles = @(Get-C04WindowsCanonicalRawVerifierFiles $CasesRoot)
   $rawVerifications = New-Object Collections.Generic.List[object]
@@ -1690,6 +1712,28 @@ exit `$LASTEXITCODE
     $verifierDll = Join-Path $repo 'dotnet/tools/C04PrivacyMatrixVerifier/bin/Release/net8.0/C04PrivacyMatrixVerifier.dll'
     $selfResult = Start-C04Owned 'privacy-verifier-selftest' $DotnetPath @($verifierDll, 'self-test', (Join-Path $script:RunRoot 'verifier-selftest')) $repo 60
     Assert-C04NativeSuccess $selfResult 'privacy-verifier-selftest'
+
+    $controlProject = Join-Path $repo 'dotnet/tests/Mahjong.LocalHost.Tests/Mahjong.LocalHost.Tests.csproj'
+    $controlBuild = Start-C04Owned 'control-wire-validator-build' $DotnetPath @('build',$controlProject,'-c','Release','--nologo','-nr:false','--ignore-failed-sources') $repo 600
+    Assert-C04NativeSuccess $controlBuild 'control-wire-validator-build'
+    $script:C04WireValidatorDll = Join-Path $repo 'dotnet/tests/Mahjong.LocalHost.Tests/bin/Release/net8.0/Mahjong.LocalHost.Tests.dll'
+    $script:C04WireValidatorDotnet = $DotnetPath
+    $script:C04WireValidatorWorkingDirectory = $repo
+    $script:C04WireValidatorUseOwned = $true
+    if (-not (Test-Path -LiteralPath $script:C04WireValidatorDll -PathType Leaf) -or (Get-Item -LiteralPath $script:C04WireValidatorDll).Length -le 0) {
+      throw 'Fresh compiled C04 WireCodec validator DLL is missing or empty.'
+    }
+    $wireFixtureRoot = Join-Path $script:RunRoot 'control-wire-fixture'
+    $oldWireFixtureRoot = [Environment]::GetEnvironmentVariable('C04_RELEASED_CONTROL_FIXTURE_ROOT','Process')
+    try {
+      $env:C04_RELEASED_CONTROL_FIXTURE_ROOT = $wireFixtureRoot
+      $wireFixture = Start-C04Owned 'control-wire-contract-selftest' $DotnetPath @('exec',$script:C04WireValidatorDll,'-method','Mahjong.LocalHost.Tests.C04PrivacyStreamMatrixTests.Released_control_raw_is_decoded_and_bound_to_each_real_welcome') $repo 90
+      Assert-C04NativeSuccess $wireFixture 'control-wire-contract-selftest'
+      if ([IO.File]::ReadAllText($wireFixture.stdoutPath,[Text.Encoding]::UTF8) -notmatch 'C04_CONTROL_WIRE_CONTRACT_PASS frames=4 negative=6 source=WireCodec fixtureOnly=true') {
+        throw 'WireCodec control validator did not execute its valid frame and six negative cases.'
+      }
+    } finally { [Environment]::SetEnvironmentVariable('C04_RELEASED_CONTROL_FIXTURE_ROOT',$oldWireFixtureRoot,'Process') }
+    $summary.controlWireValidator = [ordered]@{ buildNativeExit=$controlBuild.exitCode; dll=$script:C04WireValidatorDll; dllBytes=(Get-Item -LiteralPath $script:C04WireValidatorDll).Length; dllSha256=Get-C04Sha256File $script:C04WireValidatorDll; fixtureNativeExit=$wireFixture.exitCode; fixtureStdout=$wireFixture.stdoutPath; fixtureNegativeCount=6 }
 
     $summary.mutex = [ordered]@{ name = $script:C04MutexName; acquired = $false; waitedSeconds = $null }
     $script:MutexHandle = Acquire-C04Mutex -Name $script:C04MutexName -TimeoutSeconds $MutexTimeoutSeconds -HeartbeatSeconds $MutexHeartbeatSeconds -CancelFile $MutexCancelFile

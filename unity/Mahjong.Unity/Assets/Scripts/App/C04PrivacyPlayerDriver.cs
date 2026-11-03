@@ -595,7 +595,10 @@ namespace Mahjong.Unity.App
             string directory = Path.Combine(EvidenceRoot(), "released-control");
             Directory.CreateDirectory(directory);
             File.WriteAllText(Path.Combine(directory, "released-control.json"),
-                "{\"schemaVersion\":1,\"releaseVersion\":\"" + evidence.ReleaseVersion +
+                "{\"schemaVersion\":1,\"releasedPlayerSessionId\":\"" + evidence.ReleasedPlayerSessionId +
+                "\",\"releasedPlayerRoomId\":\"" + evidence.ReleasedPlayerRoomId +
+                "\",\"releasedPlayerAccountId\":\"" + evidence.ReleasedPlayerAccountId +
+                "\",\"releaseVersion\":\"" + evidence.ReleaseVersion +
                 "\",\"afterVersion\":\"" + evidence.AfterVersion +
                 "\",\"claimEpochBefore\":\"" + evidence.ClaimEpochBefore +
                 "\",\"claimEpoch\":\"" + evidence.ClaimEpoch +
@@ -1005,6 +1008,8 @@ namespace Mahjong.Unity.App
             Mahjong.Contracts.Wire.DecisionView? staleDecisionSeed = null;
             ulong staleEpochSeed = 0UL;
             string staleRoundSeed = string.Empty;
+            string releasedPlayerSessionId = string.Empty;
+            string releasedPlayerAccountId = string.Empty;
             try
             {
                 channel = await factory.CreateRoomViewerAsync(LocalRoomViewerRole.Player, 0, CancellationToken.None).ConfigureAwait(false);
@@ -1016,6 +1021,8 @@ namespace Mahjong.Unity.App
                 await WaitReadyAsync(session, pumpCts.Token).ConfigureAwait(false);
                 PlayerSnapshot before = session.PlayerSnapshot
                     ?? throw new InvalidOperationException("No baseline player snapshot.");
+                releasedPlayerSessionId = session.Binding!.SessionId.Value;
+                releasedPlayerAccountId = session.Binding.Scope.AccountId;
                 staleDecisionSeed = before.PrivateView.Decision;
                 staleEpochSeed = before.PrivateView.Control?.ControlEpoch ?? 0UL;
                 staleRoundSeed = before.RoundId;
@@ -1343,6 +1350,9 @@ namespace Mahjong.Unity.App
                 Debug.Log("C04_PRIVACY_RAW scene=released-control frames=" + C04PrivacyProbe.CapturedFrameCount + " sha256=" + releasedRawHash);
                 return new ReleaseEvidence
                 {
+                    ReleasedPlayerSessionId = releasedPlayerSessionId,
+                    ReleasedPlayerRoomId = roomId,
+                    ReleasedPlayerAccountId = releasedPlayerAccountId,
                     ReleaseVersion = releaseVersion,
                     AfterVersion = after,
                     AdvancedWithoutPlayerBinding = after > releaseVersion,
@@ -1695,6 +1705,9 @@ namespace Mahjong.Unity.App
 
         private sealed class ReleaseEvidence
         {
+            public string ReleasedPlayerSessionId = string.Empty;
+            public string ReleasedPlayerRoomId = string.Empty;
+            public string ReleasedPlayerAccountId = string.Empty;
             public ulong ReleaseVersion;
             public ulong AfterVersion;
             public bool AdvancedWithoutPlayerBinding;
