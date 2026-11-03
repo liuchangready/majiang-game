@@ -546,3 +546,125 @@ These two items are the complete known blockers from this run. The absent driver
 Evidence root: `build/5c4608d017774b4798a9a54ea174850a/` (ignored build output). It contains the stage card, fresh component XMLs/build log, retained first failure, isolated repro, verifier self-test, 67 negative verifier case logs/summary, and 16 runner test logs. A stable manifest was written after all owned writers stopped: 274 pre-seal evidence files, manifest SHA-256 `178d92967300caa4f3ae9e0f43a21ac1c5d0c3653572c0e5bb4ad1b9b4d4e736`, recorded in `final-evidence-seal.txt`. Preflight source seal: `build/911f82c6a5544ec58a3430127214ad77/`. No raw frames, Unity test XML, Player package, eight-DLL comparison, or Windows process records were generated.
 
 Final tracked source remains at `603005a4cd87e889b3b13264df8c70660a54ae47`; `git diff --check` was clean before this report was added. Report-vs-code identity is deliberately separate. No push, PR operation, merge, deployment, scheduler/complete-flag change, or old-task status change was performed. Dedicated reviewer/caller retains independent acceptance authority.
+
+---
+
+# Round 5 continuation: R4 repair mapping and final candidate evidence
+
+**Current executor result: NOT ACCEPTED / FINAL WINDOWS MATRIX BLOCKED.** All R4-authorized glue defects that could be corrected within the original 11 paths were corrected together, and the frozen code head passed the exact seven-case PlayMode suite. The final ordinary Windows matrix could not acquire the shared Unity mutex within 600 seconds, so it produced no ordinary `Mahjong.exe`, P1/P2 run, eight-DLL/package comparison, or final Windows raw artifacts. The mutex was held by Unity work in other worktrees; those processes were left untouched. FU-02 remains an unresolved diagnosis in read-only code. This report does not request or imply independent acceptance.
+
+## R5 identity, scope, and retained checks
+
+| Item | Value |
+|---|---|
+| Code head | `054efd5d15e90c3cdbd821231d6c10482f7c9e72` |
+| R5 code changes since R4 code head `6b4dc2436755382fa792cd9720a204a63fa9e16d` | `f45d24cd`, `07928474`, `82ab4650`, `338b9350`, `0878137c`, `d936bedf`, `8aad62c9`, `dee2c7ec`, `f00caa62`, `db6c1f44`, `054efd5d` |
+| Current code worktree | clean before this docs-only update; final `git diff --check 603005a4..054efd5d` exit 0 |
+| Changed tracked code paths | `tools/tests/C04PrivacyPlayer.Tests.ps1`, `tools/tests/C04PrivacyRunner.Tests.ps1`, `tools/unity/run-p45-c04-privacy-matrix.ps1`, `unity/Mahjong.Unity/Assets/Scripts/App/C04PrivacyPlayerDriver.cs`, `unity/Mahjong.Unity/Assets/Scripts/App/C04PrivacyProbe.cs`, `unity/Mahjong.Unity/Assets/Tests/PlayMode/C04PrivacyRoleSwitchPlayModeTests.cs`; all within the original allowlist |
+| Unity / dotnet | Unity `6000.3.27f1` (`6000.3.27.6761814`); Unity dotnet host `8.0.3226.50405`, SDK `8.0.426` |
+| Final PlayMode source closure | 540 files / 14,205,136 bytes; SHA-256 `1cf801265dcbee2c826c79c4d0f59eddc8a10bb4a5ebdd108a49e2319b7dad97`; staged inputs 366 files / 33,559,963 bytes; SHA-256 `2bb491798fd990d63318d0a4a1c2554a41bf2454083d73ece608e7c15c247961` |
+| Runner behavior tests | `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/tests/C04PrivacyRunner.Tests.ps1 -TestRunRoot build/runner-r5-canonical-raw-1ef95dca5b3a44a59d1ec0e89fdf2b95`; native exit 0, 32/32, zero failures; `runner-tests.json` SHA-256 `89ec10fa14c1f8b12f255f8d938cffcae45d50d7b948d5d327c21d0440221ae` |
+| Player source-contract tests | `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/tests/C04PrivacyPlayer.Tests.ps1 -RunRoot build/4f07e35713094ba5be6752cf4f88b71d`; native exit 0, 47/47, zero failures; summary SHA-256 `b013fedce608d5e4162cef8e600c5c690eae688a0a9ddcb2d0dd455b670555ac` |
+
+The fixture-only runner tests execute the actual semantic consumer and retain positive and negative controls. They reject wrong original/current decision relationships, unauthorized scope/binding/account/role changes, malformed or missing deadline/reconnect evidence, stale command mutation, stale commit metadata, duplicate command evidence, pending commands, invalid raw hashes or binding mappings, meaningless extra files, and over-budget fixture roots. Fixture results remain tool evidence, not GAME or Player evidence. The accepted `C04PrivacyMatrixVerifier` was not modified or relaxed.
+
+## D: final frozen PlayMode result
+
+Exact command:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-c04-privacy-matrix.ps1 -ExpectedSourceHead 054efd5d15e90c3cdbd821231d6c10482f7c9e72 -RunRoot build/4c0b6ab4ddcc4e8aaf19bd31a5089717 -TimeoutSeconds 1200 -MutexTimeoutSeconds 600 -MutexHeartbeatSeconds 30
+```
+
+Runner summary is `build/4c0b6ab4ddcc4e8aaf19bd31a5089717/summary.json` (SHA-256 `d037c0aa6f982f4727a0d6acc9d70c2c312d1b6d8a802337f059278f4ce2cc9f`); exact XML is `playmode-results.xml` (7 total / 7 passed / 0 failed / 0 skipped; SHA-256 `3eb9285b0f4757a167b064dd03be63a58422b83b0c7e5dedfa3f9a8a2b058b30`). The stable run manifest is `manifest.sha256`, SHA-256 `7eac44bc1091f5e95c340f92c78dd6cfa6335fedf18ec6ef1521d1c979211498`. Unity exited native 0 after 140.373 seconds. The XML contains all seven required full test names, with no filter mismatch or skipped case. The verifier build, verifier self-test (`positive=17`, `negative=67`, `serializedFrames=5`), shared-plugin provenance, and all four real PlayMode raw verifier steps exited native 0. This proves the PlayMode candidate only; it does not claim the Editor binary and Windows Player binary are identical.
+
+| Real PlayMode raw | Frames | SHA-256 | Verifier process |
+|---|---:|---|---|
+| role-switch | 11 | `179a5bf4d9f391e0b1ac5743118186d2c98d15a326f0b791cee9f7456cc1844a` | native 0 |
+| four-owner | 54 | `b605c9755ab52deadc22cd5e5dd4e496579614286c29d1ac55272bb11665ac69` | native 0 |
+| closed-binding | 6 | `6eeb014844468d21a1e125d570176d01e1d009fea0b9470778fd51b33e4cb15e` | native 0 |
+| recovery | 8 | `9e88c12beb8657c0f7794acda2e576e427db2b63e4527ac254265110773dd953` | native 0 |
+
+The R5 recovery capture waits, within a finite bound, for the actual four TableSessions to reach the observed state-version/event-sequence floor before sealing raw; this preserves the verifier's historical owner-projection checks. The prior raw missing-owner-projection failure remains preserved under the earlier run root and was not overwritten. The released-control raw is retained as required case evidence and checked by its dedicated binding/hash consumer; it is not incorrectly routed through the canonical four-owner verifier, whose single-scope/four-seat contract is not applicable across formal WELCOME scope rotations.
+
+## E: final ordinary Windows run and resource boundary
+
+Stage card: `build/r5-stage-5f909f64e2f8446e9da27b5e5d603a51/stage-card.txt`.
+
+Exact command:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-c04-privacy-matrix.ps1 -WindowsAppMatrix -ExpectedSourceHead 054efd5d15e90c3cdbd821231d6c10482f7c9e72 -RunRoot build/6b35f4d0a1114ee38fdd5a9c0301cf73 -TimeoutSeconds 1200 -MutexTimeoutSeconds 600 -MutexHeartbeatSeconds 30
+```
+
+The runner verified clean code head `054efd5d...`, the same 540-file source closure, and 366 freshly staged inputs. Its verifier build and self-test exited native 0. It then waited for `Local\MahjongV5P45UnityValidation` for the full 600-second limit, emitting 30-second heartbeats, and exited nonzero with `Unity mutex wait exceeded the configured bound of 600 seconds.` Summary `build/6b35f4d0a1114ee38fdd5a9c0301cf73/summary.json` records `status=FAIL`, `acquired=false`, source clean, and no Unity process; SHA-256 `f1f80ef7004c96cc0cc1d168841cb2bb7f9aea96724a694bfc1dd8927fc319d`. Stable seal `manifest.sha256` SHA-256 `e955c6e4237a8286c0d8a9428cbab4d1094d5a809017be6cad37ee8c5bdd557e`, 700 entries. No ordinary Player package or Windows scenario started.
+
+At the precheck, E: had 311,700,496,384 free bytes. Another worktree had Unity PID 12824 running its PlayMode test, and a separate worktree had Unity PID 31500 building its C05 Android package. Neither was owned by this task; both were left untouched. Because those writers remained active after the bounded wait, the shared-resource condition had not changed and no immediate identical retry was made. The prior final Windows attempts and their failures remain separately sealed; none are substituted for the current code head.
+
+## R5 complete known finding list and mapping
+
+The five existing findings remain the complete set. R5 adds no confirmed production-business defect. The R4-specific glue defects are repaired within scope; where final Windows evidence is still needed, the finding remains open with that evidence boundary stated explicitly.
+
+### D05-FU-01 — BLOCKER — final unified ordinary Windows/P1/P2 matrix is still not executed
+
+- **Location:** final frozen Windows route in `tools/unity/run-p45-c04-privacy-matrix.ps1`; report Stages D/E.
+- **Reproduction:** run the exact Windows command in the preceding section. It reaches the shared mutex gate and fails after 600 seconds before Unity starts. The current PlayMode command above independently runs the seven exact tests.
+- **Actual vs expected:** current code has final PlayMode 7/7, zero skips, four verified real raw sets. The ordinary Windows run has no package, no case execution, no eight-shared-DLL comparison, and no process-restart/outbox P2 proof because the runner could not acquire the shared mutex. Expected: one ordinary `Mahjong.exe` package covering the seven case flows plus original-request P2 restart/reconcile, with before/after package file identity unchanged.
+- **Evidence:** `build/4c0b6ab4ddcc4e8aaf19bd31a5089717/summary.json`, XML and raw artifacts; `build/6b35f4d0a1114ee38fdd5a9c0301cf73/summary.json`, `runner.log`, and `manifest.sha256`.
+- **Repair/next action:** no code repair is currently indicated by this lock failure. Resume only after the external Unity writer releases the mutex; then run the same frozen code head through the one-build Windows matrix. Do not bypass the lock or use the Test Player as a substitute.
+- **Acceptance assertion:** one immutable ordinary Windows package supplies all seven cases and P2; exact original scope/request/canonical/outbox query yields the original receipt and exactly-once side effect across real process restart; package file lengths/SHA and eight shared DLLs match before/after; full raw, N/U/P/G5 evidence is independently reviewable.
+
+### D05-FU-02 — MAJOR — LocalHost recovery historical first failure remains unproven
+
+- **Location:** read-only `dotnet/tests/Mahjong.LocalHost.Tests/LocalHostRecoveryTests.cs:72,147–158,794–813`.
+- **Reproduction:** preserve the original full-suite command and XML from `build/5c4608d017774b4798a9a54ea174850a/localhost.xml`; do not rerun the unchanged full suite merely to seek a green result. The same command is recorded in Round 1 Stage B above.
+- **Actual vs expected:** the retained full suite was 178/179 with `version=1`, `discard=1`; an isolated rerun passed 1/1, and the later controlled positive order observed version 4 with AI commits at versions 2–4 rather than reproducing the failure. No causal reproduction of the original order exists. A source predicate allowing any nonempty decision at `StateVersion >= minimumVersion` remains a hypothesis, not a diagnosis.
+- **Evidence:** original `localhost.xml` and `localhost-failures.xml` plus hashes in Round 1; R3 diagnostic materials under `build/87378b88821043b1817af86c14f7f863/diag`.
+- **Repair/triage required:** retain the out-of-allowlist test and production files as read-only. A diagnostic-only controlled copy must capture decision/seat/epoch/phase, release ordering, actual commit and durable boundary at the original version-1 observation. If a real fix requires out-of-scope files, provide exact minimal repro and path to caller for a separate scope decision.
+- **Acceptance assertion:** deterministic runtime evidence explains the historical failure while retaining strict version, durable event and 136-entity assertions; later canonical 179/179 zero-skip evidence must follow an authorized relevant fix or reviewer determination that the failure is unrelated.
+
+### D05-FU-03 — MAJOR — semantic producer/consumer contract repaired; final ordinary Player artifact still pending
+
+- **Location:** `Assert-C04PlayerCaseEvidence` and raw-scene routing in `tools/unity/run-p45-c04-privacy-matrix.ps1`; reconnect/deadline/control output in `C04PrivacyPlayerDriver.cs` and `C04PrivacyRoleSwitchPlayModeTests.cs`.
+- **Reproduction:** fixture behavior matrix: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/tests/C04PrivacyRunner.Tests.ps1 -TestRunRoot build/runner-r5-canonical-raw-1ef95dca5b3a44a59d1ec0e89fdf2b95` (32/32 native 0). Real producer test path: final PlayMode command above, 7/7 native 0; Windows producer command is listed under FU-01 and was blocked before launch.
+- **Actual vs expected:** R4 had (a) claim and stale receipt fields conflated, (b) equality demanded between the original stale decision and current live decision, (c) same scope demanded across formal WELCOME rebinding, and (d) reconnect JSON producer/consumer directory mismatch. R5 corrected those relationships and output paths. A newly exposed boundary was also corrected: multi-seat canonical raw verification is restricted to its four designated scenes, while the released-control stream is retained and checked for wire hashes and `(session,bindingEpoch)` scope identity; verifier semantics remain unchanged. Fixture suite and current seven-case PlayMode pass. No final ordinary Windows producer artifact has yet been consumed because of FU-01.
+- **Evidence:** R4 fixture repro `build/d663bf9d34924f1ea3419d69e6313915/recovery-consumer-contract.log`; reviewer real component recovery trace `build/d663bf9d34924f1ea3419d69e6313915/control-epoch-recovery.log`; current `build/runner-r5-canonical-raw-1ef95dca5b3a44a59d1ec0e89fdf2b95/runner-tests.json` and PlayMode evidence root `build/4c0b6ab4ddcc4e8aaf19bd31a5089717/`.
+- **Repair mapping:** R5 commits through `054efd5d` preserve distinct `Recorded/LOCAL_CONTROL` claim and `Rejected/DECISION_MISMATCH` stale receipts, the original captured decision/action/epoch, and actual old/new WELCOME identities. Consumer checks account/role/room/session, current binding, scope issuance and mapping instead of stale/live decision equality or unchanging active scope. The raw validator selects only the four canonical multi-owner scenes and applies a control-specific verified consumer to released-control raw. No empty file, lowered artifact count, fixture-only state or verifier relaxation was used.
+- **Unified negative assertions:** reject wrong account/role/room/session; scope not issued by WELCOME; command scope mismatched to current binding; mutation of captured or stale decision/epoch/action; identical arbitrary wrong reasons; claim epoch not advancing; snapshot owner/epoch mismatch; stale commit metadata; duplicate sends; nonzero pending; malformed/missing wire/hash; wrong binding-scope map; missing/empty deadline or reconnect evidence; false progress; and meaningless extra files. Correct distinct current/stale decisions and legitimate WELCOME scope rotation must be accepted.
+- **Acceptance assertion:** the current producer's real ordinary Windows evidence must pass the same semantic consumer, with original stale request rejected exactly once and no commit metadata/pending side effect. This final Windows assertion remains BLOCKED solely because the matrix did not get the shared mutex.
+
+### D05-FU-04 — MAJOR — default fixture path defect closed; final Windows filesystem paths unverified
+
+- **Location:** default roots and semantic evidence fixture layout in `tools/tests/C04PrivacyRunner.Tests.ps1`; real case state/evidence paths in `C04PrivacyPlayerDriver.cs`.
+- **Reproduction:** default runner command as recorded in R4, and current explicit-root command listed under FU-03. R4's failing default fixture root and successful short-root retry are both preserved in its evidence section; current R5 behavior matrix includes over-budget pre-write rejection.
+- **Actual vs expected:** default path bug is fixed and retained; current runner behavior matrix passes 32/32. The real Windows package never launched in the current candidate, so no claim is made that Player save/outbox/recovery/deadline/control paths fit the actual Windows path boundary. Expected: supported default and GUID roots work without changing machine long-path policy, and every final Windows case artifact is persisted and consumed.
+- **Evidence:** current `runner-tests.json`; historical default-root failure and short-root pass under R3/R4 evidence; current Windows lock failure in `build/6b35f4d0a1114ee38fdd5a9c0301cf73/summary.json`.
+- **Repair mapping:** compact fixture path names and pre-write budget validation are retained; reconnect evidence path now matches the consumer. No machine setting or seven-case name was changed.
+- **Acceptance assertion:** after the shared lock is available, the same Windows package must complete recovery, deadline, closed-binding and control artifacts without path exceptions; all evidence must pass the same consumer and package file identity must remain unchanged.
+
+### D05-FU-05 — MAJOR — formal control recovery assertions corrected and PlayMode verified
+
+- **Location:** `RunReleasedControlScenarioAsync` in `C04PrivacyPlayerDriver.cs` and the matching PlayMode control scenario.
+- **Reproduction:** current exact seven-case PlayMode command under Stage D; specifically `RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly`. Independent real-component diagnostic command and trace are recorded in R4/R3 reviewer evidence.
+- **Actual vs expected:** reviewer real-channel evidence showed cursor-floor regression correctly closes the old binding, then formal recovery over the original session/ticket returns Ready with same session, newly issued scope, binding `1→2`, authoritative control epoch `2`/human, transport open and pending zero; the original stale command is rejected once with `DECISION_MISMATCH` and no command/event commit metadata. R4 glue incorrectly reused cached epoch 1 as the resumed authority and required the active scope to remain unchanged. R5 now distinguishes pre-claim cached epoch from post-WELCOME authoritative epoch, preserves original stale seeds, validates the new formal binding/scope, and uses an explicit serialized recovery order. The exact seven-case PlayMode passes 7/7; no final ordinary Windows run exists.
+- **Evidence:** `build/d663bf9d34924f1ea3419d69e6313915/control-epoch-recovery.log` SHA-256 `d1831c4cc4c6822e1e2d1f4b6ad504a25218ada5ebb38a249198d85ed398133e`; current `playmode-results.xml` and recovery raw in `build/4c0b6ab4ddcc4e8aaf19bd31a5089717/`.
+- **Repair mapping:** R5 code keeps the old captured claim epoch, claim-before epoch, and resumed authoritative epoch as distinct values; verifies same authentication session/ticket/account/role/seat/room, real WELCOME scope rotation, higher authoritative epoch, new binding, cursor floors, Ready and current owner. It does not resend claim, change the stale decision/action/epoch, lower floors, or submit from a reconnecting state. A normal no-regression Ready positive control remains separate from the forced cursor-floor recovery path.
+- **Acceptance assertion:** PlayMode recovery is verified; repeat the same assertions in the final Windows package, including one send of the original stale request, exact `DECISION_MISMATCH`, zero metadata/side effect/pending, and package hash stability. Windows portion remains blocked under FU-01.
+
+## Fixed matrix state at R5
+
+| Row(s) | R5 state | Evidence boundary |
+|---|---|---|
+| N1–N8 | BLOCKED | Current PlayMode contributes overlapping real application evidence, but the required final unified ordinary Windows matrix was not executed. |
+| U1 | PASS | Exact seven PlayMode tests 7/7, zero skips, native Unity exit 0. |
+| U2 | PASS | Role switch, delayed old raw, legal nonempty sleeve/fee owner checks and cache/rebind paths are in the exact seven-case PlayMode XML and real raw evidence. |
+| U3 | PASS | Control, formal recovery, deadline continuity, closed binding and cold reopen are in the exact seven-case PlayMode XML; final Windows parity remains blocked. |
+| P1 | BLOCKED | No ordinary Windows `Mahjong.exe` package was built on code head `054efd5d`. |
+| P2 | BLOCKED | No current-head Windows process restart, original outbox query/reconcile, or before/after process/package proof. The earlier package P2 remains supplementary only. |
+| C04-G5-01..03 | BLOCKED for final unified matrix; PlayMode evidence retained | Four-owner nonempty private-content/fee and delayed-old-raw PlayMode evidence exists, but no same-candidate ordinary Windows matrix completed. |
+
+The R4 PlayMode 6/7 failure, prior raw owner-projection failure, earlier Unity ENOSPC/import failures, the R5 canonical-raw consumer failure on the prior code head, and the current 600-second Windows mutex failure are all retained as separate immutable run roots. The current head has no final Windows product result; components, fixtures, PlayMode, Test Player and older ordinary packages are not substituted for it.
+
+## R5 tracked state and handoff
+
+R5 code head is `054efd5d15e90c3cdbd821231d6c10482f7c9e72`; this R5 report is a separate docs-only commit and must not be supplied as `-ExpectedSourceHead`. The code and report identities are reported separately. No push, PR operation, approval, merge, deployment, scheduler/complete-flag change, or out-of-scope file edit was performed. Dedicated reviewer/caller retains D05 acceptance authority.
