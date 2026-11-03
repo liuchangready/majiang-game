@@ -4,6 +4,7 @@ using System.Linq;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using Mahjong.Client;
@@ -785,8 +786,10 @@ namespace Mahjong.LocalHost.Tests
             timeout.CancelAfter(MatrixTimeout);
 
             LocalTableConnectionTicket playerTicket = room.CreatePlayerTicket(0);
-            ITableChannel playerChannel = await room.ConnectAsync(playerTicket, timeout.Token);
-            var player = new TableSession(playerChannel, new InMemoryOutboxStore());
+            ITableChannel playerInner = await room.ConnectAsync(playerTicket, timeout.Token);
+            var playerChannel = new CaptureChannel(playerInner);
+            var controlChannel = new ControlCorrelatedChannel(playerChannel);
+            var player = new TableSession(controlChannel, new InMemoryOutboxStore());
             LocalTableConnectionTicket slowTicket = room.CreateSpectatorTicket();
             ITableChannel slowChannel = await room.ConnectAsync(slowTicket, timeout.Token);
             var slow = new TableSession(slowChannel, new InMemoryOutboxStore());
@@ -796,6 +799,10 @@ namespace Mahjong.LocalHost.Tests
             {
                 await player.OpenAsync(new TableSessionOpenRequest(playerTicket.Value, "slow-player"), timeout.Token);
                 await PumpUntilReadyAsync(player, timeout.Token);
+                controlChannel.Expect(
+                    player.Binding!.SessionId.Value,
+                    player.Binding.BindingEpoch.Value,
+                    player.Binding.SeatId);
                 playerPump = PumpAsync(player, playerPumpCts.Token);
 
                 await slow.OpenAsync(new TableSessionOpenRequest(slowTicket.Value, "slow-spectator"), timeout.Token);
@@ -831,17 +838,27 @@ namespace Mahjong.LocalHost.Tests
                 Assert.NotNull(player.PlayerSnapshot);
 
                 PlayerSnapshot beforeLiveRequest = player.PlayerSnapshot!;
+                ulong beforeControlEpoch = beforeLiveRequest.PrivateView.Control?.ControlEpoch ?? 0UL;
+                ulong expectedControlEpoch = checked(beforeControlEpoch + 1);
+                Assert.False(
+                    beforeLiveRequest.PrivateView.Control?.ControlledByComputer ?? true,
+                    "The seat must be human-controlled before ReleaseControl.");
                 BusinessPayload releasePayload = CommandPayloadFactory.ReleaseControl(
                     beforeLiveRequest.RoundId,
-                    beforeLiveRequest.PrivateView.Control?.ControlEpoch ?? 0UL);
+                    beforeControlEpoch);
                 var liveRequest = new RequestId("slow-player-live-request");
-                var liveResolved = new TaskCompletionSource<TableReceiptResolvedEventArgs>(
-                    TaskCreationOptions.RunContinuationsAsynchronously);
-                EventHandler<TableReceiptResolvedEventArgs> liveHandler = (_, args) =>
-                {
-                    if (args.Command.Key.RequestId.Value == liveRequest.Value) liveResolved.TrySetResult(args);
-                };
-                player.ReceiptResolved += liveHandler;
+                // A control receipt is resolved before the client requests and applies
+                // the CONTROL_APPLIED full baseline. Waiting only for ReceiptResolved
+                // can therefore observe a transient Synchronizing state. Register both
+                // observations before submitting so neither ordering can be missed.
+                var controlBarrier = new ControlBaselineBarrier(
+                    liveRequest.Value,
+                    player.Binding!.SessionId.Value,
+                    expectedControlEpoch,
+                    expectedControlledByComputer: true,
+                    controlChannel.TryConsumeAppliedResponse);
+                player.ReceiptResolved += controlBarrier.OnReceipt;
+                player.SnapshotChanged += controlBarrier.OnSnapshot;
                 try
                 {
                     var liveCommand = new ProtocolCommand(
@@ -852,21 +869,48 @@ namespace Mahjong.LocalHost.Tests
                         new StateVersion(beforeLiveRequest.StateVersion),
                         new RoundId(beforeLiveRequest.RoundId),
                         decisionId: null,
-                        controlEpoch: new ControlEpoch(beforeLiveRequest.PrivateView.Control?.ControlEpoch ?? 0UL));
+                        controlEpoch: new ControlEpoch(beforeControlEpoch));
                     CommandSubmission liveSubmission = await player.SubmitAsync(liveCommand, timeout.Token);
                     Assert.True(liveSubmission.Sent);
-                    for (int i = 0; i < 500 && !liveResolved.Task.IsCompleted; i++)
-                        await Task.Delay(10, timeout.Token);
-                    Assert.True(liveResolved.Task.IsCompleted, "The original player request did not resolve.");
-                    TableReceiptResolvedEventArgs liveReceipt = await liveResolved.Task;
-                    Assert.True(
-                        liveReceipt.Resolution.ReceiptStatus == Mahjong.Contracts.ReceiptStatus.Recorded ||
-                        liveReceipt.Resolution.ReceiptStatus == Mahjong.Contracts.ReceiptStatus.Applied);
+                    Assert.False(liveSubmission.WasDuplicate);
+
+                    TableReceiptResolvedEventArgs liveReceipt = await LocalHostCommandTests.WithTimeoutAsync(
+                        controlBarrier.Receipt,
+                        timeout.Token);
+                    TableSnapshotChangedEventArgs controlBaseline = await LocalHostCommandTests.WithTimeoutAsync(
+                        controlBarrier.Baseline,
+                        timeout.Token);
+
+                    Assert.Equal(OutboxDisposition.Recorded, liveReceipt.Resolution.Disposition);
+                    Assert.Equal("LOCAL_CONTROL", liveReceipt.Resolution.ReasonCode);
+                    Assert.Equal(CommandKind.ReleaseControl, liveReceipt.Command.Kind);
+                    Assert.Equal(liveRequest.Value, liveReceipt.Command.Key.RequestId.Value);
+
+                    Assert.True(controlBaseline.IsFullBaseline);
+                    PlayerSnapshot released = Assert.IsType<PlayerSnapshot>(controlBaseline.PlayerSnapshot);
+                    Assert.Equal(player.Binding.SessionId.Value, released.SessionId);
+                    Assert.Equal(expectedControlEpoch, released.PrivateView.Control.ControlEpoch);
+                    Assert.True(released.PrivateView.Control.ControlledByComputer);
                     Assert.Equal(TableConnectionState.Ready, player.State);
+                    Assert.Empty(player.PendingCommands);
+                    Assert.Equal(1, playerChannel.CountCommandFrames(liveRequest.Value));
+                    Assert.Equal(1, controlChannel.ControlRequestCount);
+                    Assert.Equal(1, controlChannel.TargetResponseCount);
+                    Assert.Equal(1, controlChannel.ForwardedControlRequests);
+                    Assert.Equal(1, controlChannel.AppliedResponseConsumedCount);
+
+                    LocalTableRecoveryCapture capture = await LocalTableHost.CaptureRecoveryAsync(
+                        harness.Options.SaveDirectory,
+                        timeout.Token);
+                    Assert.Equal((long)expectedControlEpoch, capture.Facts.ControlEpochs[0]);
+                    Assert.Single(
+                        capture.Facts.ControlRequests,
+                        fact => fact.RequestId == liveRequest.Value);
                 }
                 finally
                 {
-                    player.ReceiptResolved -= liveHandler;
+                    player.ReceiptResolved -= controlBarrier.OnReceipt;
+                    player.SnapshotChanged -= controlBarrier.OnSnapshot;
                 }
 
                 LocalTableConnectionTicket replacementTicket = room.CreateSpectatorTicket();
@@ -892,6 +936,265 @@ namespace Mahjong.LocalHost.Tests
                 try { await playerChannel.CloseAsync(new TableChannelCloseReason("TEST_DONE", true), CancellationToken.None); } catch { }
                 try { await slow.CloseAsync("TEST_DONE", CancellationToken.None); } catch { }
                 try { await slowChannel.CloseAsync(new TableChannelCloseReason("TEST_DONE", true), CancellationToken.None); } catch { }
+            }
+        }
+
+        [Fact]
+        public void Control_baseline_barrier_rejects_receipt_only_foreign_and_stale_baselines()
+        {
+            const string requestId = "barrier-request-a";
+            const string sessionId = "barrier-session-a";
+            var responseGate = new AppliedResponseGate();
+            var receiptOnly = new ControlBaselineBarrier(
+                requestId, sessionId, 1UL, expectedControlledByComputer: true, responseGate.TryConsume);
+
+            receiptOnly.OnReceipt(null, ControlReceiptEvent("barrier-other-request"));
+            Assert.False(receiptOnly.ReceiptObserved, "Another request must not satisfy the receipt half.");
+
+            // Receipt first must never unlock the barrier: the CONTROL_APPLIED
+            // response has not been requested, received or applied yet.
+            receiptOnly.OnReceipt(null, ControlReceiptEvent(requestId));
+            Assert.True(receiptOnly.ReceiptObserved);
+            Assert.False(receiptOnly.IsSatisfied);
+
+            // A delayed frame from the previous binding, an unrelated control update,
+            // a claim-style update, and a non-baseline PUSH must all stay ignored.
+            receiptOnly.OnSnapshot(null, ControlSnapshotEvent(true, "barrier-old-session", 1UL, automated: true));
+            receiptOnly.OnSnapshot(null, ControlSnapshotEvent(true, sessionId, 0UL, automated: true));
+            receiptOnly.OnSnapshot(null, ControlSnapshotEvent(true, sessionId, 1UL, automated: false));
+            receiptOnly.OnSnapshot(null, ControlSnapshotEvent(false, sessionId, 1UL, automated: true));
+            Assert.False(receiptOnly.BaselineObserved);
+            Assert.Equal(4, receiptOnly.IgnoredBaselineCount);
+            Assert.False(receiptOnly.IsSatisfied);
+
+            // The predicate alone is deliberately insufficient: even a perfectly
+            // matching full snapshot cannot unlock until the correlated
+            // CONTROL_APPLIED response has actually been consumed.
+            receiptOnly.OnSnapshot(null, ControlSnapshotEvent(true, sessionId, 1UL, automated: true));
+            Assert.False(receiptOnly.BaselineObserved);
+            Assert.False(receiptOnly.IsSatisfied);
+
+            responseGate.Arm();
+            receiptOnly.OnSnapshot(null, ControlSnapshotEvent(true, sessionId, 1UL, automated: true));
+            Assert.True(receiptOnly.BaselineObserved);
+            Assert.True(receiptOnly.IsSatisfied);
+
+            // The correlated response alone is also insufficient; the request receipt
+            // is the other mandatory half of the synchronization point.
+            var baselineFirstGate = new AppliedResponseGate();
+            baselineFirstGate.Arm();
+            var baselineFirst = new ControlBaselineBarrier(
+                "barrier-request-b", "barrier-session-b", 2UL, expectedControlledByComputer: false, baselineFirstGate.TryConsume);
+            baselineFirst.OnSnapshot(null, ControlSnapshotEvent(true, "barrier-session-b", 2UL, automated: false));
+            Assert.True(baselineFirst.BaselineObserved);
+            Assert.False(baselineFirst.IsSatisfied);
+            baselineFirst.OnReceipt(null, ControlReceiptEvent("barrier-request-b"));
+            Assert.True(baselineFirst.IsSatisfied);
+        }
+
+        [Fact]
+        public async Task Control_baseline_barrier_bounded_wait_times_out_without_matching_baseline()
+        {
+            var responseGate = new AppliedResponseGate();
+            var barrier = new ControlBaselineBarrier(
+                "barrier-request-c", "barrier-session-c", 1UL, expectedControlledByComputer: true, responseGate.TryConsume);
+            barrier.OnReceipt(null, ControlReceiptEvent("barrier-request-c"));
+            using (var shortBound = new CancellationTokenSource(TimeSpan.FromMilliseconds(100)))
+            {
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                    () => barrier.WaitAsync(shortBound.Token));
+            }
+            Assert.True(barrier.ReceiptObserved);
+            Assert.False(barrier.BaselineObserved);
+            Assert.False(barrier.IsSatisfied);
+
+            responseGate.Arm();
+            barrier.OnSnapshot(null, ControlSnapshotEvent(true, "barrier-session-c", 1UL, automated: true));
+            await barrier.WaitAsync(TestContext.Current.CancellationToken);
+            Assert.True(barrier.IsSatisfied);
+        }
+
+        [Fact]
+        public async Task Control_baseline_barrier_rejects_unrelated_full_push_and_missing_control_response()
+        {
+            await using var harness = new P41Harness();
+            harness.Options.AutoPlay = false;
+            await using LocalTableRoom room = await LocalTableHost.OpenRoomAsync(
+                harness.Options,
+                TestContext.Current.CancellationToken);
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+            timeout.CancelAfter(MatrixTimeout);
+
+            LocalTableConnectionTicket ticket = room.CreatePlayerTicket(0);
+            ITableChannel inner = await room.ConnectAsync(ticket, timeout.Token);
+            var observed = new ControlCorrelatedChannel(inner);
+            var injection = new ControlPushInjectionChannel(observed);
+            var player = new TableSession(injection, new InMemoryOutboxStore());
+            using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token);
+            ControlBaselineBarrier? barrier = null;
+            Task? pump = null;
+            try
+            {
+                await player.OpenAsync(
+                    new TableSessionOpenRequest(ticket.Value, "sync-negative"),
+                    timeout.Token);
+                await PumpUntilReadyAsync(player, timeout.Token);
+                observed.Expect(
+                    player.Binding!.SessionId.Value,
+                    player.Binding.BindingEpoch.Value,
+                    player.Binding.SeatId);
+                observed.HoldNextControlRequest();
+
+                PlayerSnapshot before = player.PlayerSnapshot!;
+                ulong beforeEpoch = before.PrivateView.Control?.ControlEpoch ?? 0UL;
+                var releaseRequest = new RequestId("sync-negative-release");
+                barrier = new ControlBaselineBarrier(
+                    releaseRequest.Value,
+                    player.Binding.SessionId.Value,
+                    checked(beforeEpoch + 1),
+                    expectedControlledByComputer: true,
+                    observed.TryConsumeAppliedResponse);
+                player.ReceiptResolved += barrier.OnReceipt;
+                player.SnapshotChanged += barrier.OnSnapshot;
+                injection.Arm(player.Binding, releaseRequest.Value, before);
+                pump = PumpAsync(player, pumpCts.Token);
+
+                var command = new ProtocolCommand(
+                    CommandKind.ReleaseControl,
+                    CommandPayloadFactory.ReleaseControl(before.RoundId, beforeEpoch),
+                    releaseRequest,
+                    player.Binding.Scope.ScopeId,
+                    new StateVersion(before.StateVersion),
+                    new RoundId(before.RoundId),
+                    decisionId: null,
+                    controlEpoch: new ControlEpoch(beforeEpoch));
+                CommandSubmission submission = await player.SubmitAsync(command, timeout.Token);
+                Assert.True(submission.Sent);
+
+                await LocalHostCommandTests.WithTimeoutAsync(observed.ControlRequestObserved, timeout.Token);
+
+                // The unrelated full PUSH and the superseded SyncResponse were both
+                // delivered before the receipt. The target CONTROL_APPLIED request
+                // is held before transport send, so its response does not exist.
+                Assert.True(barrier.ReceiptObserved);
+                Assert.Equal(1, injection.InjectedFullPushCount);
+                Assert.Equal(1, injection.InjectedSupersededResponseCount);
+                Assert.Equal(0, observed.TargetResponseCount);
+                Assert.Equal(0, observed.ForwardedControlRequests);
+                Assert.False(barrier.BaselineObserved);
+                Assert.False(barrier.IsSatisfied);
+                Assert.True(barrier.IgnoredBaselineCount >= 1, "The unrelated full PUSH was not observed.");
+                Assert.Equal(TableConnectionState.Synchronizing, player.State);
+                Assert.Equal(0, observed.AppliedResponseConsumedCount);
+            }
+            finally
+            {
+                observed.ReleaseHeldControlRequest();
+                pumpCts.Cancel();
+                if (pump != null) { try { await pump; } catch { } }
+                if (barrier != null)
+                {
+                    player.ReceiptResolved -= barrier.OnReceipt;
+                    player.SnapshotChanged -= barrier.OnSnapshot;
+                }
+                try { await player.CloseAsync("TEST_DONE", CancellationToken.None); } catch { }
+                try { await inner.CloseAsync(new TableChannelCloseReason("TEST_DONE", true), CancellationToken.None); } catch { }
+            }
+        }
+
+        [Fact]
+        public async Task Control_baseline_barrier_rejects_dropped_target_response_credit_after_supersession()
+        {
+            await using var harness = new P41Harness();
+            harness.Options.AutoPlay = false;
+            await using LocalTableRoom room = await LocalTableHost.OpenRoomAsync(
+                harness.Options,
+                TestContext.Current.CancellationToken);
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+            timeout.CancelAfter(MatrixTimeout);
+
+            LocalTableConnectionTicket ticket = room.CreatePlayerTicket(0);
+            ITableChannel inner = await room.ConnectAsync(ticket, timeout.Token);
+            var observed = new ControlCorrelatedChannel(inner);
+            var rejector = new RejectOneTargetResponseChannel(observed);
+            var player = new TableSession(rejector, new InMemoryOutboxStore());
+            using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token);
+            ControlBaselineBarrier? barrier = null;
+            Task? pump = null;
+            try
+            {
+                await player.OpenAsync(
+                    new TableSessionOpenRequest(ticket.Value, "sync-drop-replace"),
+                    timeout.Token);
+                await PumpUntilReadyAsync(player, timeout.Token);
+                observed.Expect(
+                    player.Binding!.SessionId.Value,
+                    player.Binding.BindingEpoch.Value,
+                    player.Binding.SeatId);
+
+                PlayerSnapshot before = player.PlayerSnapshot!;
+                ulong beforeEpoch = before.PrivateView.Control?.ControlEpoch ?? 0UL;
+                var releaseRequest = new RequestId("sync-drop-release");
+                barrier = new ControlBaselineBarrier(
+                    releaseRequest.Value,
+                    player.Binding.SessionId.Value,
+                    checked(beforeEpoch + 1),
+                    expectedControlledByComputer: true,
+                    observed.TryConsumeAppliedResponse);
+                player.ReceiptResolved += barrier.OnReceipt;
+                player.SnapshotChanged += barrier.OnSnapshot;
+                pump = PumpAsync(player, pumpCts.Token);
+
+                var command = new ProtocolCommand(
+                    CommandKind.ReleaseControl,
+                    CommandPayloadFactory.ReleaseControl(before.RoundId, beforeEpoch),
+                    releaseRequest,
+                    player.Binding.Scope.ScopeId,
+                    new StateVersion(before.StateVersion),
+                    new RoundId(before.RoundId),
+                    decisionId: null,
+                    controlEpoch: new ControlEpoch(beforeEpoch));
+                CommandSubmission submission = await player.SubmitAsync(command, timeout.Token);
+                Assert.True(submission.Sent);
+
+                await LocalHostCommandTests.WithTimeoutAsync(rejector.RejectedDelivered, timeout.Token);
+                Assert.True(barrier.ReceiptObserved);
+                Assert.Equal(1, observed.TargetResponseCount);
+                Assert.Equal(0, observed.AppliedResponseConsumedCount);
+                Assert.False(barrier.BaselineObserved);
+                Assert.False(barrier.IsSatisfied);
+                Assert.Equal(TableConnectionState.Synchronizing, player.State);
+
+                // Supersede the in-flight control sync through the existing
+                // production request path. Its genuinely applied response must not
+                // inherit credit from the rejected target response.
+                MethodInfo requestBaseline = typeof(TableSession).GetMethod(
+                    "RequestFullBaselineAsync",
+                    BindingFlags.Instance | BindingFlags.NonPublic)
+                    ?? throw new InvalidOperationException("RequestFullBaselineAsync was not found.");
+                var superseding = (Task)requestBaseline.Invoke(
+                    player,
+                    new object[] { "TEST_UNRELATED_RESYNC", true, timeout.Token })!;
+                await superseding.WaitAsync(timeout.Token);
+                for (int i = 0; i < 200 && player.State != TableConnectionState.Ready; i++)
+                    await Task.Delay(10, timeout.Token);
+                Assert.Equal(TableConnectionState.Ready, player.State);
+                Assert.Equal("TEST_UNRELATED_RESYNC", rejector.LastSyncReason);
+                Assert.False(barrier.BaselineObserved);
+                Assert.False(barrier.IsSatisfied);
+                Assert.Equal(0, observed.AppliedResponseConsumedCount);
+            }
+            finally
+            {
+                pumpCts.Cancel();
+                if (pump != null) { try { await pump; } catch { } }
+                if (barrier != null)
+                {
+                    player.ReceiptResolved -= barrier.OnReceipt;
+                    player.SnapshotChanged -= barrier.OnSnapshot;
+                }
+                try { await player.CloseAsync("TEST_DONE", CancellationToken.None); } catch { }
+                try { await inner.CloseAsync(new TableChannelCloseReason("TEST_DONE", true), CancellationToken.None); } catch { }
             }
         }
 
@@ -1268,6 +1571,551 @@ namespace Mahjong.LocalHost.Tests
             };
         }
 
+        private static TableReceiptResolvedEventArgs ControlReceiptEvent(string requestId)
+        {
+            var key = new IdempotencyKey(
+                "acct-barrier",
+                new RequestScopeId("scope-barrier"),
+                new RequestId(requestId));
+            var command = new PendingCommandSnapshot(
+                key,
+                CommandKind.ReleaseControl,
+                new string('a', 64),
+                payloadLength: 0,
+                handedToTransport: true,
+                deliveryUnknown: false,
+                needsReconciliation: false,
+                lastLookup: null,
+                lastReceipt: null,
+                queryInFlight: false);
+            return new TableReceiptResolvedEventArgs(
+                command,
+                OutboxResolution.ControlApplied(
+                    new StateVersion(1),
+                    new string('a', 64),
+                    fromLookup: false));
+        }
+
+        private static TableSnapshotChangedEventArgs ControlSnapshotEvent(
+            bool isFullBaseline,
+            string sessionId,
+            ulong controlEpoch,
+            bool automated)
+        {
+            var snapshot = new PlayerSnapshot
+            {
+                SessionId = sessionId,
+                PrivateView = new Mahjong.Contracts.Wire.PlayerPrivateView
+                {
+                    Control = new Mahjong.Contracts.Wire.PlayerControlView
+                    {
+                        ControlEpoch = controlEpoch,
+                        ControlledByComputer = automated
+                    }
+                }
+            };
+            return new TableSnapshotChangedEventArgs(
+                new Mahjong.Contracts.StreamCursor(
+                    new Mahjong.Contracts.StreamVersion(1),
+                    new Mahjong.Contracts.ProjectionSeq(0)),
+                isFullBaseline,
+                snapshot,
+                publicSnapshot: null,
+                roomSnapshot: null,
+                TableVisibleEventBatch.Empty);
+        }
+
+        /// <summary>
+        /// Synchronization point for a control command: the original request receipt
+        /// and the CONTROL_APPLIED full baseline for this exact request/binding/epoch
+        /// must both be observed. A receipt alone is intentionally insufficient
+        /// because the client requests its baseline only after resolving the receipt.
+        /// </summary>
+        private sealed class ControlBaselineBarrier
+        {
+            private readonly TaskCompletionSource<TableReceiptResolvedEventArgs> _receipt =
+                new TaskCompletionSource<TableReceiptResolvedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
+            private readonly TaskCompletionSource<TableSnapshotChangedEventArgs> _baseline =
+                new TaskCompletionSource<TableSnapshotChangedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
+            private readonly string _requestId;
+            private readonly string _sessionId;
+            private readonly ulong _expectedControlEpoch;
+            private readonly bool _expectedControlledByComputer;
+            private readonly Func<TableSnapshotChangedEventArgs, bool> _tryConsumeAppliedResponse;
+            private int _ignoredBaselineCount;
+
+            public ControlBaselineBarrier(
+                string requestId,
+                string sessionId,
+                ulong expectedControlEpoch,
+                bool expectedControlledByComputer,
+                Func<TableSnapshotChangedEventArgs, bool> tryConsumeAppliedResponse)
+            {
+                _requestId = requestId ?? throw new ArgumentNullException(nameof(requestId));
+                _sessionId = sessionId ?? throw new ArgumentNullException(nameof(sessionId));
+                _expectedControlEpoch = expectedControlEpoch;
+                _expectedControlledByComputer = expectedControlledByComputer;
+                _tryConsumeAppliedResponse = tryConsumeAppliedResponse;
+            }
+
+            public Task<TableReceiptResolvedEventArgs> Receipt => _receipt.Task;
+
+            public Task<TableSnapshotChangedEventArgs> Baseline => _baseline.Task;
+
+            public bool ReceiptObserved => _receipt.Task.IsCompleted;
+
+            public bool BaselineObserved => _baseline.Task.IsCompleted;
+
+            public bool IsSatisfied => ReceiptObserved && BaselineObserved;
+
+            public int IgnoredBaselineCount => Volatile.Read(ref _ignoredBaselineCount);
+
+            public void OnReceipt(object? sender, TableReceiptResolvedEventArgs args)
+            {
+                if (string.Equals(args.Command.Key.RequestId.Value, _requestId, StringComparison.Ordinal))
+                {
+                    _receipt.TrySetResult(args);
+                }
+            }
+
+            public void OnSnapshot(object? sender, TableSnapshotChangedEventArgs args)
+            {
+                PlayerSnapshot? snapshot = args.PlayerSnapshot;
+                if (args.IsFullBaseline &&
+                    snapshot != null &&
+                    string.Equals(snapshot.SessionId, _sessionId, StringComparison.Ordinal) &&
+                    snapshot.PrivateView?.Control != null &&
+                    snapshot.PrivateView.Control.ControlEpoch == _expectedControlEpoch &&
+                    snapshot.PrivateView.Control.ControlledByComputer == _expectedControlledByComputer &&
+                    // A full PUSH also raises IsFullBaseline. Only the application
+                    // callback for the exact CONTROL_APPLIED response may supply
+                    // the applied-baseline half of the barrier.
+                    _tryConsumeAppliedResponse(args))
+                {
+                    _baseline.TrySetResult(args);
+                    return;
+                }
+
+                Interlocked.Increment(ref _ignoredBaselineCount);
+            }
+
+            public Task WaitAsync(CancellationToken cancellationToken)
+            {
+                return Task.WhenAll(new Task[] { _receipt.Task, _baseline.Task }).WaitAsync(cancellationToken);
+            }
+        }
+
+        private sealed class AppliedResponseGate
+        {
+            private int _armed;
+
+            public void Arm() => Volatile.Write(ref _armed, 1);
+
+            public bool TryConsume(TableSnapshotChangedEventArgs args)
+            {
+                return Interlocked.CompareExchange(ref _armed, 0, 1) == 1;
+            }
+        }
+
+        private sealed class PendingApplication
+        {
+            public string CorrelationId { get; set; } = string.Empty;
+            public string SessionId { get; set; } = string.Empty;
+            public ulong StreamVersion { get; set; }
+            public ulong ProjectionSeq { get; set; }
+            public ulong StateVersion { get; set; }
+            public ulong EventSeq { get; set; }
+            public ulong ControlEpoch { get; set; }
+            public bool ControlledByComputer { get; set; }
+        }
+
+        /// <summary>
+        /// Observes the real outbound CONTROL_APPLIED SyncRequest and its inbound
+        /// matching SyncResponse on the same binding, so a full PlayerUpdate PUSH
+        /// (which also raises SnapshotChanged(IsFullBaseline=true)) can never be
+        /// mistaken for the applied control baseline. A response's application
+        /// credit is valid for one frame boundary only and is cleared on
+        /// supersession, rejection or the next inbound frame.
+        /// </summary>
+        private sealed class ControlCorrelatedChannel : ITableChannel
+        {
+            private readonly ITableChannel _inner;
+            private readonly object _gate = new object();
+            private readonly List<string> _requestCorrelations = new List<string>();
+            private readonly List<string> _responseCorrelations = new List<string>();
+            private readonly TaskCompletionSource<bool> _controlRequestObserved =
+                new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            private readonly TaskCompletionSource<bool> _releaseHeldControlRequest =
+                new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            private string? _sessionId;
+            private ulong? _bindingEpoch;
+            private int? _seatId;
+            private bool _holdNextControlRequest;
+            private bool _holding;
+            private PendingApplication? _pendingApplication;
+            private int _forwardedControlRequests;
+            private int _appliedResponsesConsumed;
+
+            public ControlCorrelatedChannel(ITableChannel inner) => _inner = inner;
+
+            public bool IsOpen => _inner.IsOpen;
+
+            public int ControlRequestCount { get { lock (_gate) return _requestCorrelations.Count; } }
+
+            public int TargetResponseCount { get { lock (_gate) return _responseCorrelations.Count; } }
+
+            public int ForwardedControlRequests => Volatile.Read(ref _forwardedControlRequests);
+
+            public int AppliedResponseConsumedCount => Volatile.Read(ref _appliedResponsesConsumed);
+
+            public Task<bool> ControlRequestObserved => _controlRequestObserved.Task;
+
+            public void Expect(string sessionId, ulong bindingEpoch, int seatId)
+            {
+                lock (_gate)
+                {
+                    _sessionId = sessionId;
+                    _bindingEpoch = bindingEpoch;
+                    _seatId = seatId;
+                }
+            }
+
+            public void HoldNextControlRequest() => _holdNextControlRequest = true;
+
+            public void ReleaseHeldControlRequest() => _releaseHeldControlRequest.TrySetResult(true);
+
+            public bool TryConsumeAppliedResponse(TableSnapshotChangedEventArgs args)
+            {
+                lock (_gate)
+                {
+                    PendingApplication? pending = _pendingApplication;
+                    if (pending == null) return false;
+                    // One response can back at most the very next callback. A
+                    // dropped/superseded response leaves no credit behind.
+                    _pendingApplication = null;
+                    PlayerSnapshot? snapshot = args.PlayerSnapshot;
+                    if (!args.IsFullBaseline ||
+                        snapshot == null ||
+                        !string.Equals(snapshot.SessionId, _sessionId, StringComparison.Ordinal) ||
+                        !string.Equals(snapshot.SessionId, pending.SessionId, StringComparison.Ordinal) ||
+                        snapshot.Cursor == null ||
+                        snapshot.Cursor.StreamVersion != pending.StreamVersion ||
+                        snapshot.Cursor.ProjectionSeq != pending.ProjectionSeq ||
+                        args.Cursor.StreamVersion.Value != pending.StreamVersion ||
+                        args.Cursor.ProjectionSeq.Value != pending.ProjectionSeq ||
+                        snapshot.StateVersion != pending.StateVersion ||
+                        snapshot.EventSeq != pending.EventSeq ||
+                        snapshot.PrivateView?.Control == null ||
+                        snapshot.PrivateView.Control.ControlEpoch != pending.ControlEpoch ||
+                        snapshot.PrivateView.Control.ControlledByComputer != pending.ControlledByComputer)
+                    {
+                        return false;
+                    }
+
+                    _appliedResponsesConsumed++;
+                    return true;
+                }
+            }
+
+            private bool Matches(Envelope envelope)
+            {
+                lock (_gate)
+                {
+                    return _sessionId != null &&
+                        string.Equals(envelope.SessionId, _sessionId, StringComparison.Ordinal) &&
+                        envelope.BindingEpoch == _bindingEpoch &&
+                        envelope.SeatId == _seatId;
+                }
+            }
+
+            public async Task SendAsync(ReadOnlyMemory<byte> wireEnvelope, CancellationToken cancellationToken)
+            {
+                WireDecodeResult decoded = WireCodec.Decode(wireEnvelope.ToArray());
+                Envelope? envelope = decoded.IsOk ? decoded.Envelope : null;
+                if (envelope?.MessageType == MessageType.SyncRequest)
+                {
+                    // Any newer sync request supersedes an older response's
+                    // application credit, including non-control resyncs.
+                    lock (_gate) _pendingApplication = null;
+                }
+                bool isControlSync = envelope != null &&
+                    envelope.MessageType == MessageType.SyncRequest &&
+                    string.Equals(envelope.SyncRequest?.ReasonCode, "CONTROL_APPLIED", StringComparison.Ordinal) &&
+                    !string.IsNullOrEmpty(envelope.CorrelationId) &&
+                    Matches(envelope);
+                if (isControlSync)
+                {
+                    lock (_gate)
+                    {
+                        _requestCorrelations.Add(envelope!.CorrelationId);
+                    }
+                    _controlRequestObserved.TrySetResult(true);
+                    if (_holdNextControlRequest && !_holding)
+                    {
+                        _holding = true;
+                        await _releaseHeldControlRequest.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    }
+                }
+
+                await _inner.SendAsync(wireEnvelope, cancellationToken).ConfigureAwait(false);
+                if (isControlSync) Interlocked.Increment(ref _forwardedControlRequests);
+            }
+
+            public async Task<ReadOnlyMemory<byte>> ReceiveAsync(CancellationToken cancellationToken)
+            {
+                // A response gets exactly one frame boundary in which to produce
+                // its application callback. Entering the next receive means the
+                // previous frame was dropped, superseded or otherwise did not
+                // apply; it must never leave reusable credit behind.
+                lock (_gate) _pendingApplication = null;
+                ReadOnlyMemory<byte> frame = await _inner.ReceiveAsync(cancellationToken).ConfigureAwait(false);
+                WireDecodeResult decoded = WireCodec.Decode(frame.ToArray());
+                Envelope? envelope = decoded.IsOk ? decoded.Envelope : null;
+                if (envelope != null)
+                {
+                    if (envelope.MessageType == MessageType.PlayerUpdate &&
+                        envelope.PlayerUpdate?.IsFullSnapshot == true)
+                    {
+                        lock (_gate) _pendingApplication = null;
+                    }
+                    else if (envelope.MessageType == MessageType.SyncResponse &&
+                        envelope.SyncResponse?.Target == SyncTarget.PlayerStream &&
+                        !string.IsNullOrEmpty(envelope.CorrelationId) &&
+                        Matches(envelope))
+                    {
+                        PlayerSnapshot? responsePlayer = envelope.SyncResponse.Player;
+                        if (responsePlayer?.Cursor != null)
+                        {
+                            lock (_gate)
+                            {
+                                if (_requestCorrelations.Contains(envelope.CorrelationId))
+                                {
+                                    _responseCorrelations.Add(envelope.CorrelationId);
+                                    _pendingApplication = new PendingApplication
+                                    {
+                                        CorrelationId = envelope.CorrelationId,
+                                        SessionId = responsePlayer.SessionId,
+                                        StreamVersion = responsePlayer.Cursor.StreamVersion,
+                                        ProjectionSeq = responsePlayer.Cursor.ProjectionSeq,
+                                        StateVersion = responsePlayer.StateVersion,
+                                        EventSeq = responsePlayer.EventSeq,
+                                        ControlEpoch = responsePlayer.PrivateView?.Control?.ControlEpoch ?? 0UL,
+                                        ControlledByComputer = responsePlayer.PrivateView?.Control?.ControlledByComputer ?? false
+                                    };
+                                }
+                            }
+                        }
+                    }
+                }
+
+                return frame;
+            }
+
+            public Task OpenAsync(TableChannelConnectRequest request, CancellationToken cancellationToken) =>
+                _inner.OpenAsync(request, cancellationToken);
+
+            public Task CloseAsync(TableChannelCloseReason reason, CancellationToken cancellationToken) =>
+                _inner.CloseAsync(reason, cancellationToken);
+        }
+
+        /// <summary>
+        /// Deterministic real-channel negative: apply an unrelated full PlayerUpdate
+        /// PUSH and a superseded SyncResponse before delivering the control receipt,
+        /// while holding the CONTROL_APPLIED SyncRequest before transport send. No
+        /// target SyncResponse exists, so the barrier must remain unsatisfied.
+        /// </summary>
+        private sealed class ControlPushInjectionChannel : ITableChannel
+        {
+            private readonly ControlCorrelatedChannel _inner;
+            private readonly Queue<byte[]> _pendingFrames = new Queue<byte[]>();
+            private TableSessionBinding? _binding;
+            private PlayerSnapshot? _before;
+            private string? _requestId;
+            private byte[]? _pendingReceipt;
+            private bool _armed;
+            private bool _injected;
+            private int _injectedFullPushCount;
+            private int _injectedSupersededResponseCount;
+
+            public ControlPushInjectionChannel(ControlCorrelatedChannel inner) => _inner = inner;
+
+            public bool IsOpen => _inner.IsOpen;
+
+            public int InjectedFullPushCount => Volatile.Read(ref _injectedFullPushCount);
+
+            public int InjectedSupersededResponseCount => Volatile.Read(ref _injectedSupersededResponseCount);
+
+            public void Arm(TableSessionBinding binding, string requestId, PlayerSnapshot before)
+            {
+                _binding = binding;
+                _requestId = requestId;
+                _before = before;
+                _armed = true;
+            }
+
+            public Task OpenAsync(TableChannelConnectRequest request, CancellationToken cancellationToken) =>
+                _inner.OpenAsync(request, cancellationToken);
+
+            public Task SendAsync(ReadOnlyMemory<byte> wireEnvelope, CancellationToken cancellationToken) =>
+                _inner.SendAsync(wireEnvelope, cancellationToken);
+
+            public async Task<ReadOnlyMemory<byte>> ReceiveAsync(CancellationToken cancellationToken)
+            {
+                if (_pendingFrames.Count > 0)
+                {
+                    return new ReadOnlyMemory<byte>(_pendingFrames.Dequeue());
+                }
+
+                if (_pendingReceipt != null)
+                {
+                    byte[] receipt = _pendingReceipt;
+                    _pendingReceipt = null;
+                    return new ReadOnlyMemory<byte>(receipt);
+                }
+
+                ReadOnlyMemory<byte> frame = await _inner.ReceiveAsync(cancellationToken).ConfigureAwait(false);
+                WireDecodeResult decoded = WireCodec.Decode(frame.ToArray());
+                Envelope? envelope = decoded.IsOk ? decoded.Envelope : null;
+                if (!_armed || _injected || envelope == null ||
+                    envelope.MessageType != MessageType.Receipt ||
+                    !string.Equals(envelope.Receipt?.ReasonCode, "LOCAL_CONTROL", StringComparison.Ordinal) ||
+                    !string.Equals(envelope.RequestId, _requestId, StringComparison.Ordinal))
+                {
+                    return frame;
+                }
+
+                _injected = true;
+                _pendingReceipt = frame.ToArray();
+                await BuildInjectedFramesAsync(cancellationToken).ConfigureAwait(false);
+                return new ReadOnlyMemory<byte>(_pendingFrames.Dequeue());
+            }
+
+            private async Task BuildInjectedFramesAsync(CancellationToken cancellationToken)
+            {
+                TableSessionBinding binding = _binding
+                    ?? throw new InvalidOperationException("Injection channel is not armed with a binding.");
+                PlayerSnapshot before = _before
+                    ?? throw new InvalidOperationException("Injection channel has no baseline snapshot.");
+                var aux = new Envelope
+                {
+                    ProtocolMajor = Mahjong.Contracts.ProtocolConstants.Major,
+                    ProtocolMinor = Mahjong.Contracts.ProtocolConstants.Minor,
+                    RulesetVersion = Mahjong.Contracts.ProtocolConstants.RulesetVersion,
+                    ProjectionVersion = Mahjong.Contracts.ProtocolConstants.ProjectionVersion,
+                    MessageType = MessageType.SyncRequest,
+                    SessionId = binding.SessionId.Value,
+                    RoomId = binding.RoomId.Value,
+                    SeatId = binding.SeatId,
+                    BindingEpoch = binding.BindingEpoch.Value,
+                    CorrelationId = "test-unrelated-full-" + Guid.NewGuid().ToString("N"),
+                    SyncRequest = new SyncRequest
+                    {
+                        Target = SyncTarget.PlayerStream,
+                        KnownCursor = before.Cursor.Clone(),
+                        ReasonCode = "TEST_UNRELATED_FULL",
+                        RequestFullBaseline = true
+                    }
+                };
+                await _inner.SendAsync(WireCodec.Encode(aux), cancellationToken).ConfigureAwait(false);
+
+                Envelope? response = null;
+                for (int i = 0; i < 8 && response?.SyncResponse?.Player == null; i++)
+                {
+                    ReadOnlyMemory<byte> responseFrame = await _inner.ReceiveAsync(cancellationToken).ConfigureAwait(false);
+                    response = WireCodec.Decode(responseFrame.ToArray()).Envelope;
+                }
+
+                PlayerSnapshot player = response?.SyncResponse?.Player
+                    ?? throw new InvalidOperationException("The auxiliary full sync did not return a player snapshot.");
+                player = player.Clone();
+                player.Cursor.ProjectionSeq = checked(player.Cursor.ProjectionSeq + 1);
+
+                Envelope superseded = response!.Clone();
+                superseded.CorrelationId = "test-superseded-" + Guid.NewGuid().ToString("N");
+                _pendingFrames.Enqueue(WireCodec.Encode(superseded));
+                Interlocked.Increment(ref _injectedSupersededResponseCount);
+
+                Envelope push = response.Clone();
+                push.MessageType = MessageType.PlayerUpdate;
+                push.CorrelationId = string.Empty;
+                push.Cursor = player.Cursor.Clone();
+                push.PlayerUpdate = new PlayerUpdate
+                {
+                    Snapshot = player,
+                    Cursor = player.Cursor.Clone(),
+                    FromCursor = before.Cursor.Clone(),
+                    IsFullSnapshot = true
+                };
+                _pendingFrames.Enqueue(WireCodec.Encode(push));
+                Interlocked.Increment(ref _injectedFullPushCount);
+            }
+
+            public Task CloseAsync(TableChannelCloseReason reason, CancellationToken cancellationToken) =>
+                _inner.CloseAsync(reason, cancellationToken);
+        }
+
+        /// <summary>
+        /// Delivers the correlated control response once with a foreign snapshot
+        /// identity. The production TableSession rejects it before application;
+        /// the test observer must not retain application credit for it.
+        /// </summary>
+        private sealed class RejectOneTargetResponseChannel : ITableChannel
+        {
+            private readonly ITableChannel _inner;
+            private readonly TaskCompletionSource<bool> _rejectedDelivered =
+                new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            private string? _controlCorrelation;
+            private bool _rejected;
+
+            public RejectOneTargetResponseChannel(ITableChannel inner) => _inner = inner;
+
+            public bool IsOpen => _inner.IsOpen;
+
+            public Task<bool> RejectedDelivered => _rejectedDelivered.Task;
+
+            public string? LastSyncReason { get; private set; }
+
+            public Task OpenAsync(TableChannelConnectRequest request, CancellationToken cancellationToken) =>
+                _inner.OpenAsync(request, cancellationToken);
+
+            public async Task SendAsync(ReadOnlyMemory<byte> wireEnvelope, CancellationToken cancellationToken)
+            {
+                WireDecodeResult decoded = WireCodec.Decode(wireEnvelope.ToArray());
+                Envelope? envelope = decoded.IsOk ? decoded.Envelope : null;
+                if (envelope?.MessageType == MessageType.SyncRequest)
+                {
+                    LastSyncReason = envelope.SyncRequest?.ReasonCode;
+                    if (string.Equals(LastSyncReason, "CONTROL_APPLIED", StringComparison.Ordinal))
+                        _controlCorrelation = envelope.CorrelationId;
+                }
+
+                await _inner.SendAsync(wireEnvelope, cancellationToken).ConfigureAwait(false);
+            }
+
+            public async Task<ReadOnlyMemory<byte>> ReceiveAsync(CancellationToken cancellationToken)
+            {
+                ReadOnlyMemory<byte> frame = await _inner.ReceiveAsync(cancellationToken).ConfigureAwait(false);
+                WireDecodeResult decoded = WireCodec.Decode(frame.ToArray());
+                Envelope? envelope = decoded.IsOk ? decoded.Envelope : null;
+                if (!_rejected &&
+                    _controlCorrelation != null &&
+                    envelope?.MessageType == MessageType.SyncResponse &&
+                    envelope.SyncResponse?.Player != null &&
+                    string.Equals(envelope.CorrelationId, _controlCorrelation, StringComparison.Ordinal))
+                {
+                    _rejected = true;
+                    envelope.SyncResponse.Player.SessionId = "foreign-dropped-session";
+                    _rejectedDelivered.TrySetResult(true);
+                    return WireCodec.Encode(envelope);
+                }
+
+                return frame;
+            }
+
+            public Task CloseAsync(TableChannelCloseReason reason, CancellationToken cancellationToken) =>
+                _inner.CloseAsync(reason, cancellationToken);
+        }
+
         private sealed class CaptureChannel : ITableChannel
         {
             private readonly ITableChannel _inner;
@@ -1275,10 +2123,20 @@ namespace Mahjong.LocalHost.Tests
 
             public CaptureChannel(ITableChannel inner) => _inner = inner;
 
+            private readonly List<string> _commandRequestIds = new List<string>();
+
             public bool IsOpen => _inner.IsOpen;
             public byte[]? CapturedPlayerSnapshotFrame { get; private set; }
             public int CommandFrames { get; private set; }
             public int ReceiptQueryFrames { get; private set; }
+
+            public int CountCommandFrames(string requestId)
+            {
+                lock (_commandRequestIds)
+                {
+                    return _commandRequestIds.Count(id => string.Equals(id, requestId, StringComparison.Ordinal));
+                }
+            }
 
             public Task OpenAsync(TableChannelConnectRequest request, CancellationToken cancellationToken) =>
                 _inner.OpenAsync(request, cancellationToken);
@@ -1288,7 +2146,15 @@ namespace Mahjong.LocalHost.Tests
                 WireDecodeResult decoded = WireCodec.Decode(wireEnvelope.ToArray());
                 if (decoded.IsOk && decoded.Envelope != null)
                 {
-                    if (decoded.Envelope.MessageType == MessageType.Command) CommandFrames++;
+                    if (decoded.Envelope.MessageType == MessageType.Command)
+                    {
+                        CommandFrames++;
+                        lock (_commandRequestIds)
+                        {
+                            if (!string.IsNullOrEmpty(decoded.Envelope.RequestId))
+                                _commandRequestIds.Add(decoded.Envelope.RequestId);
+                        }
+                    }
                     if (decoded.Envelope.MessageType == MessageType.ReceiptQuery) ReceiptQueryFrames++;
                 }
                 return _inner.SendAsync(wireEnvelope, cancellationToken);
