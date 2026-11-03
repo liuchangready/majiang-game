@@ -212,6 +212,18 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 - 该包不能标记为“已接受同包矩阵”：2 案失败。未把它降级成独立 exe 结果，也未用
   PlayMode 的 6/7 抵销。
 
+逐案结果（同一 `testFilter`，PlayMode 与 Windows Test Player 各一次真实执行）：
+
+| # | 固定用例 | PlayMode | Windows Test Player |
+| --- | --- | --- | --- |
+| 1 | `RealRoom_FourPlayersSpectatorAndRoleSwitchUseIndependentSessions` | PASS | PASS |
+| 2 | `RealRoom_DelayedOldRawReceiveIsRejectedByNewBinding` | PASS | PASS |
+| 3 | `RealRoom_ColdReopenReconcilesOriginalRequestWithoutDuplicate` | PASS | **FAIL**（StateVersion 1→2） |
+| 4 | `RealRoom_LegalSleeveAndFeeOwnershipAcrossFourSeatsAndSpectator` | PASS | PASS |
+| 5 | `RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly` | **FAIL**（submit not Ready） | **FAIL**（submit not Ready） |
+| 6 | `RealRoom_OpenDecisionDeadlineContinuesAfterPlayerClose` | PASS | PASS |
+| 7 | `RealRoom_ClosedPlayerToSpectatorToNewPlayerReceivePathRejectsOldRaw` | PASS | PASS |
+
 ### 4.3 raw / typed verifier（补充证据，不作为失败案通过）
 
 对两次 run 已封存的真实 raw 帧，用未修改的 `tools/tests/C04PrivacyMatrix.Tests.ps1`
