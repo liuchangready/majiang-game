@@ -1,5 +1,6 @@
 #nullable enable
 using System;
+using Google.Protobuf;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
@@ -42,6 +43,8 @@ namespace Mahjong.Unity.Tests.PlayMode
         private Receipt? _lastReceipt;
         private int _receiptMark;
         private C04PhysicalSnapshot? _snapshot;
+        private readonly List<C04RawExportAction> _rawActions = new List<C04RawExportAction>();
+        private string _producerSmokeRoot = string.Empty;
 
         [UnitySetUp]
         public IEnumerator SetUp()
@@ -118,6 +121,7 @@ namespace Mahjong.Unity.Tests.PlayMode
             Assert.AreEqual(120, _snapshot!.balance);
             Assert.AreEqual(0, _snapshot.ledgerEntryCount);
             Assert136(_snapshot.audit);
+            C04PhysicalSnapshot rawBefore = _snapshot;
 
             // G3-01 TileMark: 1 point, exactly one private ledger entry, 120 -> 119.
             uint[] markTiles = C04PlayerCheatChannelFactory
@@ -135,6 +139,7 @@ namespace Mahjong.Unity.Tests.PlayMode
             yield return WaitReceipt(CommandKind.SubmitTileMark, 15f);
             Assert.IsTrue(_waitOk, "TileMark receipt");
             Assert.AreEqual("APPLIED", _lastReceipt!.Status, _lastReceipt.Reason);
+            AssertRawAssociation("tile-mark", _lastReceipt, true);
             Assert.IsTrue(
                 C04PlayerCheatProbe.TryAssociateRaw(
                     _capture!.SentFrom(0),
@@ -224,12 +229,17 @@ namespace Mahjong.Unity.Tests.PlayMode
             Assert.AreEqual(119, _snapshot!.balance);
             Assert.AreEqual(1, _snapshot.ledgerEntryCount);
             Assert136(_snapshot.audit);
+            AddRawAction("tile-mark", _lastReceipt, rawBefore, _snapshot, true);
+            rawBefore = _snapshot;
 
             // Discard and advance to the second dealer turn.
             yield return DiscardEntity(120u);
             Assert.IsTrue(_waitOk, "first discard");
             yield return AdvanceToNextDealerTurn();
             Assert.IsTrue(_waitOk, "second dealer turn");
+            yield return CaptureSnapshot();
+            Assert.IsTrue(_waitOk, "SleeveBloom command baseline snapshot");
+            rawBefore = _snapshot!;
 
             // SleeveBloom activation (10) and a real SECOND swap.
             uint drawnBefore = _presenter.LatestView!.Own!.DrawnTileId!.Value;
@@ -238,6 +248,7 @@ namespace Mahjong.Unity.Tests.PlayMode
             yield return WaitReceipt(CommandKind.SubmitSleeveBloom, 15f);
             Assert.IsTrue(_waitOk, "SleeveBloom receipt missing; window=" + _presenter.LatestView!.Own!.Cheat!.WindowId + " offer=" + (_presenter.LatestView.Own.Cheat.ImmediateSleeveBloom != null) + " pending=" + (_presenter.InteractionState.Pending?.Intent.Kind.ToString() ?? "null") + " points=" + _presenter.LatestView.Own.Cheat.CheatPoints);
             Assert.AreEqual("APPLIED", _lastReceipt!.Status, _lastReceipt.Reason);
+            AssertRawAssociation("sleeve-bloom", _lastReceipt, true);
             yield return WaitView(
                 v => v.Own?.Cheat?.CheatPoints == 109 &&
                      v.Own.Cheat.Ledger.Count == 2 &&
@@ -255,6 +266,8 @@ namespace Mahjong.Unity.Tests.PlayMode
             Assert.AreEqual(109, _snapshot!.balance);
             Assert.AreEqual(2, _snapshot.ledgerEntryCount);
             Assert136(_snapshot.audit);
+            AddRawAction("sleeve-bloom", _lastReceipt, rawBefore, _snapshot, true);
+            rawBefore = _snapshot;
             Dictionary<uint, string> beforeSecond = ParsePositions(_snapshot.audit);
             StringAssert.StartsWith("HAND|0|", beforeSecond[drawnBefore]);
             StringAssert.StartsWith("WALL|", beforeSecond[second]);
@@ -267,6 +280,7 @@ namespace Mahjong.Unity.Tests.PlayMode
             yield return WaitReceipt(CommandKind.SubmitSleeveBloomChoice, 15f);
             Assert.IsTrue(_waitOk, "SleeveBloom choice receipt");
             Assert.AreEqual("APPLIED", _lastReceipt!.Status, _lastReceipt.Reason);
+            AssertRawAssociation("sleeve-second", _lastReceipt, true);
             yield return WaitView(v => v.Own?.Cheat?.ImmediateSleeveBloom == null, 15f);
             Assert.IsTrue(_waitOk, "SleeveBloom resolved");
             PlayerTableViewState bloomed = _presenter.LatestView!;
@@ -278,6 +292,8 @@ namespace Mahjong.Unity.Tests.PlayMode
             Assert.AreEqual(109, _snapshot!.balance);
             Assert.AreEqual(2, _snapshot.ledgerEntryCount);
             Assert136(_snapshot.audit);
+            AddRawAction("sleeve-second", _lastReceipt, rawBefore, _snapshot, true);
+            rawBefore = _snapshot;
             Dictionary<uint, string> afterSecond = ParsePositions(_snapshot.audit);
             AssertOnlyExchange(beforeSecond, afterSecond, drawnBefore, second);
             StringAssert.StartsWith("WALL|", afterSecond[drawnBefore]);
@@ -291,6 +307,9 @@ namespace Mahjong.Unity.Tests.PlayMode
             Assert.IsTrue(_waitOk, "second discard through a confirmed candidate");
             yield return AdvanceToNextDealerTurn();
             Assert.IsTrue(_waitOk, "third dealer turn");
+            yield return CaptureSnapshot();
+            Assert.IsTrue(_waitOk, "BeamSwap command baseline snapshot");
+            rawBefore = _snapshot!;
 
             // BeamSwap activation (10) and a real SWAP.
             _receiptMark = _receipts.Count;
@@ -298,6 +317,7 @@ namespace Mahjong.Unity.Tests.PlayMode
             yield return WaitReceipt(CommandKind.SubmitBeamSwap, 15f);
             Assert.IsTrue(_waitOk, "BeamSwap receipt");
             Assert.AreEqual("APPLIED", _lastReceipt!.Status, _lastReceipt.Reason);
+            AssertRawAssociation("beam-swap", _lastReceipt, true);
             yield return WaitView(
                 v => v.Own?.Cheat?.CheatPoints == 99 &&
                      v.Own.Cheat.Ledger.Count == 3 &&
@@ -329,6 +349,8 @@ namespace Mahjong.Unity.Tests.PlayMode
             Assert.AreEqual(99, _snapshot!.balance);
             Assert.AreEqual(3, _snapshot.ledgerEntryCount);
             Assert136(_snapshot.audit);
+            AddRawAction("beam-swap", _lastReceipt, rawBefore, _snapshot, true);
+            rawBefore = _snapshot;
             Dictionary<uint, string> beforeSwap = ParsePositions(_snapshot.audit);
             StringAssert.StartsWith("HAND|0|", beforeSwap[handTile]);
             string targetBefore = beforeSwap[targetTile];
@@ -345,6 +367,7 @@ namespace Mahjong.Unity.Tests.PlayMode
             yield return WaitReceipt(CommandKind.SubmitBeamSwapChoice, 15f);
             Assert.IsTrue(_waitOk, "BeamSwap choice receipt");
             Assert.AreEqual("APPLIED", _lastReceipt!.Status, _lastReceipt.Reason);
+            AssertRawAssociation("beam-swap-choice", _lastReceipt, true);
             yield return WaitView(v => v.Own?.Cheat?.BeamSwap == null, 15f);
             Assert.IsTrue(_waitOk, "BeamSwap resolved");
             PlayerTableViewState final = _presenter.LatestView!;
@@ -357,6 +380,9 @@ namespace Mahjong.Unity.Tests.PlayMode
             Assert.AreEqual(99, _snapshot!.balance);
             Assert.AreEqual(3, _snapshot.ledgerEntryCount);
             Assert136(_snapshot.audit);
+            AddRawAction("beam-swap-choice", _lastReceipt, rawBefore, _snapshot, true);
+            AssertAssociationRejections();
+            ExportProducerSmoke(true);
             Dictionary<uint, string> afterSwap = ParsePositions(_snapshot.audit);
             AssertOnlyExchange(beforeSwap, afterSwap, handTile, targetTile);
             StringAssert.StartsWith("HAND|0|", afterSwap[targetTile]);
@@ -449,6 +475,7 @@ namespace Mahjong.Unity.Tests.PlayMode
             Assert.AreEqual("REJECTED", _lastReceipt!.Status, _lastReceipt.Reason);
             Assert.AreEqual("DECISION_MISMATCH", _lastReceipt.Reason);
             Assert.AreEqual(requestId, _lastReceipt.RequestId);
+            AssertRawAssociation("unauthorized", _lastReceipt, false);
             Assert.IsFalse(string.IsNullOrEmpty(_lastReceipt.PayloadSha256), "unauthorized original payload digest");
 
             yield return new WaitForSecondsRealtime(0.25f);
@@ -481,6 +508,48 @@ namespace Mahjong.Unity.Tests.PlayMode
                 30f);
             Assert.IsTrue(_waitOk, "initial insufficient-funds scene view");
             Assert.AreEqual(120, _presenter!.LatestView!.Own!.Cheat!.CheatPoints);
+
+            PlayerTableViewState negativeInitial = _presenter.LatestView!;
+            yield return CaptureSnapshot();
+            Assert.IsTrue(_waitOk, "negative initial authority snapshot");
+            C04PhysicalSnapshot negativeBefore = _snapshot!;
+            string unauthorizedId = "c04-playmode-negative-unauthorized-" + Guid.NewGuid().ToString("N");
+            BusinessPayload unauthorizedPayload = CommandPayloadFactory.SubmitTileMark(
+                negativeInitial.Identity.RoundId,
+                "c04-no-such-decision",
+                negativeInitial.Own!.Decision!.ControlEpoch,
+                C04PlayerCheatChannelFactory.ProposedTileMarkTiles(
+                    C04PlayerCheatScenario.InsufficientBalance));
+            var unauthorizedCommand = new ProtocolCommand(
+                CommandKind.SubmitTileMark,
+                unauthorizedPayload,
+                new RequestId(unauthorizedId),
+                new RequestScopeId(negativeInitial.Identity.ScopeId),
+                new StateVersion(negativeInitial.Identity.StateVersion),
+                new RoundId(negativeInitial.Identity.RoundId),
+                decisionId: new DecisionId("c04-no-such-decision"),
+                controlEpoch: new ControlEpoch(negativeInitial.Own.Decision.ControlEpoch));
+            var unauthorizedSubmission = new TaskCompletionSource<CommandSubmission>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            _ = SubmitAsync(unauthorizedCommand, unauthorizedSubmission);
+            yield return WaitTask(unauthorizedSubmission.Task, 15f);
+            Assert.IsTrue(_waitOk, "negative unauthorized submission");
+            yield return WaitReceiptById(unauthorizedId, 15f);
+            Assert.IsTrue(_waitOk, "negative unauthorized receipt");
+            Assert.AreEqual("REJECTED", _lastReceipt!.Status, _lastReceipt.Reason);
+            Assert.AreEqual("DECISION_MISMATCH", _lastReceipt.Reason);
+            yield return new WaitForSecondsRealtime(0.25f);
+            yield return CaptureSnapshot();
+            Assert.IsTrue(_waitOk, "negative unauthorized authority snapshot");
+            C04PhysicalSnapshot negativeAfter = _snapshot!;
+            Assert.AreEqual(negativeBefore.stateVersion, negativeAfter.stateVersion);
+            Assert.AreEqual(negativeBefore.eventSeq, negativeAfter.eventSeq);
+            Assert.AreEqual(negativeBefore.cheatFingerprint, negativeAfter.cheatFingerprint);
+            Assert.AreEqual(negativeBefore.tilesSha256, negativeAfter.tilesSha256);
+            Assert.AreEqual(negativeBefore.audit, negativeAfter.audit);
+            Assert.AreEqual(negativeBefore.ledgerEntryCount, negativeAfter.ledgerEntryCount);
+            Assert.AreEqual(negativeBefore.balance, negativeAfter.balance);
+            AddRawAction("unauthorized", _lastReceipt, negativeBefore, negativeAfter, false);
 
             yield return DiscardEntity(120u);
             Assert.IsTrue(_waitOk, "initial discard");
@@ -541,6 +610,7 @@ namespace Mahjong.Unity.Tests.PlayMode
             Assert.IsTrue(_waitOk, "underfunded receipt");
             Assert.AreEqual("REJECTED", _lastReceipt!.Status, _lastReceipt.Reason);
             Assert.AreEqual("CHEAT_INSUFFICIENT_FUNDS", _lastReceipt.Reason);
+            AssertRawAssociation("insufficient-funds", _lastReceipt, false);
 
             yield return new WaitForSecondsRealtime(0.25f);
             yield return CaptureSnapshot();
@@ -554,12 +624,22 @@ namespace Mahjong.Unity.Tests.PlayMode
             Assert.AreEqual(before.ledgerEntryCount, after.ledgerEntryCount);
             Assert.AreEqual(before.balance, after.balance);
             Assert136(after.audit);
+            AddRawAction("insufficient-funds", _lastReceipt, before, after, false);
+            ExportProducerSmoke(false);
         }
 
         // -------------------------------------------------------------- composition
 
         private IEnumerator OpenAsync(C04PlayerCheatScenario kind)
         {
+            _rawActions.Clear();
+            _producerSmokeRoot = Path.GetFullPath(Path.Combine(
+                Application.dataPath,
+                "..",
+                "build",
+                "c04-b-producer-smoke",
+                Guid.NewGuid().ToString("N")));
+            Directory.CreateDirectory(_producerSmokeRoot);
             _root = Path.GetFullPath(Path.Combine(
                 Application.dataPath,
                 "..",
@@ -874,6 +954,200 @@ namespace Mahjong.Unity.Tests.PlayMode
             if (!_waitOk)
             {
                 Debug.LogWarning("C04_PLAYMODE_TASK_FAILED: " + (task.Exception?.ToString() ?? "timeout"));
+            }
+        }
+
+        private void AssertAssociationRejections()
+        {
+            Receipt mark = _receipts.First(r => r.Kind == CommandKind.SubmitTileMark);
+            Receipt sleeve = _receipts.First(r => r.Kind == CommandKind.SubmitSleeveBloom);
+            byte[][] sent = _capture!.SentFrom(0);
+            byte[][] received = _capture.ReceivedFrom(0);
+
+            Assert.IsFalse(
+                C04PlayerCheatProbe.TryAssociateRaw(
+                    sent, received, mark.RequestId, sleeve.CommandVersion, true, out _, out _, out _),
+                "another existing accepted version must not bind the mark request");
+
+            byte[][] rejectedReceipt = CloneFrames(received);
+            bool mutatedReceipt = false;
+            for (int i = 0; i < rejectedReceipt.Length; i++)
+            {
+                Mahjong.Contracts.Wire.WireDecodeResult decoded =
+                    Mahjong.Contracts.Wire.WireCodec.Decode(rejectedReceipt[i]);
+                if (decoded.IsOk && decoded.Envelope != null &&
+                    decoded.Envelope.MessageType == Mahjong.Contracts.Wire.MessageType.Receipt &&
+                    string.Equals(decoded.Envelope.RequestId, mark.RequestId, StringComparison.Ordinal))
+                {
+                    Mahjong.Contracts.Wire.Envelope envelope =
+                        Mahjong.Contracts.Wire.Envelope.Parser.ParseFrom(rejectedReceipt[i]);
+                    envelope.Receipt.Status = Mahjong.Contracts.Wire.ReceiptStatus.Rejected;
+                    rejectedReceipt[i] = envelope.ToByteArray();
+                    mutatedReceipt = true;
+                    break;
+                }
+            }
+
+            Assert.IsTrue(mutatedReceipt, "mark receipt mutated for negative control");
+            Assert.IsFalse(
+                C04PlayerCheatProbe.TryAssociateRaw(
+                    sent, rejectedReceipt, mark.RequestId, mark.CommandVersion, true, out _, out _, out _),
+                "positive association must reject a typed REJECTED receipt");
+
+            AssertForeignPublication(sent, received, mark, "session");
+            AssertForeignPublication(sent, received, mark, "room");
+        }
+
+        private void AssertForeignPublication(byte[][] sent, byte[][] received, Receipt mark, string field)
+        {
+            byte[][] mutated = CloneFrames(received);
+            bool changed = false;
+            for (int i = 0; i < mutated.Length; i++)
+            {
+                Mahjong.Contracts.Wire.WireDecodeResult decoded =
+                    Mahjong.Contracts.Wire.WireCodec.Decode(mutated[i]);
+                if (!decoded.IsOk || decoded.Envelope == null ||
+                    decoded.Envelope.MessageType != Mahjong.Contracts.Wire.MessageType.PlayerUpdate ||
+                    decoded.Envelope.PlayerUpdate == null ||
+                    !decoded.Envelope.PlayerUpdate.VisibleEvents.Any(
+                        ev => ev.CommandVersion == mark.CommandVersion))
+                {
+                    continue;
+                }
+
+                Mahjong.Contracts.Wire.Envelope envelope =
+                    Mahjong.Contracts.Wire.Envelope.Parser.ParseFrom(mutated[i]);
+                if (field == "session")
+                {
+                    envelope.SessionId = "foreign-session";
+                }
+                else
+                {
+                    envelope.RoomId = "foreign-room";
+                }
+
+                mutated[i] = envelope.ToByteArray();
+                changed = true;
+                break;
+            }
+
+            Assert.IsTrue(changed, "publication mutated for " + field);
+            Assert.IsFalse(
+                C04PlayerCheatProbe.TryAssociateRaw(
+                    sent, mutated, mark.RequestId, mark.CommandVersion, true, out _, out _, out _),
+                "foreign publication " + field + " must not associate");
+        }
+
+        private static byte[][] CloneFrames(byte[][] frames)
+        {
+            var copy = new byte[frames.Length][];
+            for (int i = 0; i < frames.Length; i++)
+            {
+                copy[i] = (byte[])frames[i].Clone();
+            }
+
+            return copy;
+        }
+
+        private void AddRawAction(
+            string id,
+            Receipt receipt,
+            C04PhysicalSnapshot before,
+            C04PhysicalSnapshot after,
+            bool requirePublication)
+        {
+            Assert.IsTrue(
+                C04PlayerCheatProbe.TryAssociateRaw(
+                    _capture!.SentFrom(0),
+                    _capture.ReceivedFrom(0),
+                    receipt.RequestId,
+                    receipt.CommandVersion,
+                    requirePublication,
+                    out byte[]? command,
+                    out byte[]? typedReceipt,
+                    out byte[]? publication),
+                id + " producer association");
+            _rawActions.Add(new C04RawExportAction
+            {
+                id = id,
+                command = command!,
+                receipt = typedReceipt!,
+                publication = requirePublication ? publication : null,
+                beforeSave = before.authoritySave,
+                beforeCheat = before.cheatState,
+                afterSave = after.authoritySave,
+                afterCheat = after.cheatState
+            });
+        }
+
+        private void ExportProducerSmoke(bool authorized)
+        {
+            byte[][] received = _capture!.ReceivedFrom(0);
+            byte[]? welcome = null;
+            for (int i = 0; i < received.Length; i++)
+            {
+                Mahjong.Contracts.Wire.WireDecodeResult decoded =
+                    Mahjong.Contracts.Wire.WireCodec.Decode(received[i]);
+                if (decoded.IsOk && decoded.Envelope != null &&
+                    decoded.Envelope.MessageType == Mahjong.Contracts.Wire.MessageType.Welcome)
+                {
+                    welcome = received[i];
+                    break;
+                }
+            }
+
+            Assert.IsNotNull(welcome, "producer welcome frame");
+            string packageFile = Path.Combine(
+                Application.dataPath,
+                "Plugins",
+                "Mahjong",
+                "Mahjong.LocalHost.dll");
+            Assert.IsTrue(File.Exists(packageFile), "producer package file");
+            string manifest = C04RawEvidenceExporter.WritePackageManifest(
+                _producerSmokeRoot,
+                "a234432e57efa790c40987d9720091d93bd270a8",
+                packageFile);
+            string manifestSha;
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+            {
+                manifestSha = BitConverter
+                    .ToString(sha.ComputeHash(File.ReadAllBytes(manifest)))
+                    .Replace("-", string.Empty);
+            }
+            string casePath = C04RawEvidenceExporter.Export(
+                _producerSmokeRoot,
+                "a234432e57efa790c40987d9720091d93bd270a8",
+                manifestSha,
+                welcome!,
+                _capture.SentFrom(0),
+                received,
+                _rawActions,
+                authorized);
+            Debug.Log("C04_B_PRODUCER_SMOKE: " + casePath + " manifest=" + manifest);
+        }
+
+        private void AssertRawAssociation(string id, Receipt receipt, bool requirePublication)
+        {
+            Assert.IsTrue(
+                C04PlayerCheatProbe.TryAssociateRaw(
+                    _capture!.SentFrom(0),
+                    _capture.ReceivedFrom(0),
+                    receipt.RequestId,
+                    receipt.CommandVersion,
+                    requirePublication,
+                    out byte[]? command,
+                    out byte[]? typedReceipt,
+                    out byte[]? publication),
+                id + " exact raw association");
+            Assert.IsNotNull(command, id + " command");
+            Assert.IsNotNull(typedReceipt, id + " receipt");
+            if (requirePublication)
+            {
+                Assert.IsNotNull(publication, id + " publication");
+            }
+            else
+            {
+                Assert.IsNull(publication, id + " negative must not claim publication");
             }
         }
 

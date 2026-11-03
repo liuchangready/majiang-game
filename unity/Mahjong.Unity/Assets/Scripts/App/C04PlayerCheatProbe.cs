@@ -20,7 +20,10 @@ using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 using WireCodec = Mahjong.Contracts.Wire.WireCodec;
 using WireEnvelope = Mahjong.Contracts.Wire.Envelope;
+using WireEventType = Mahjong.Contracts.Wire.EventType;
 using WireMessageType = Mahjong.Contracts.Wire.MessageType;
+using WireReceipt = Mahjong.Contracts.Wire.Receipt;
+using WireReceiptStatus = Mahjong.Contracts.Wire.ReceiptStatus;
 
 namespace Mahjong.Unity.App
 {
@@ -150,50 +153,165 @@ namespace Mahjong.Unity.App
                 return false;
             }
 
+            WireEnvelope? commandEnvelope = null;
             for (int i = 0; i < sentFrames.Length; i++)
             {
                 WireDecodeResult decoded = WireCodec.Decode(sentFrames[i]);
                 if (decoded.IsOk && decoded.Envelope != null &&
                     decoded.Envelope.MessageType == WireMessageType.Command &&
+                    decoded.Envelope.Command != null &&
                     string.Equals(decoded.Envelope.RequestId, requestId, StringComparison.Ordinal))
                 {
                     command = sentFrames[i];
+                    commandEnvelope = decoded.Envelope;
                     break;
                 }
             }
 
+            WireEnvelope? receiptEnvelope = null;
             for (int i = 0; i < receivedFrames.Length; i++)
             {
                 WireDecodeResult decoded = WireCodec.Decode(receivedFrames[i]);
                 if (decoded.IsOk && decoded.Envelope != null &&
                     decoded.Envelope.MessageType == WireMessageType.Receipt &&
+                    decoded.Envelope.Receipt != null &&
                     string.Equals(decoded.Envelope.RequestId, requestId, StringComparison.Ordinal))
                 {
                     receipt = receivedFrames[i];
+                    receiptEnvelope = decoded.Envelope;
                     break;
                 }
             }
 
-            if (requirePublication && commandVersion > 0)
+            if (commandEnvelope == null || receiptEnvelope == null)
             {
-                for (int i = 0; i < receivedFrames.Length; i++)
+                return false;
+            }
+
+            if (commandEnvelope.Scope == null || receiptEnvelope.Scope == null ||
+                !SameScope(commandEnvelope.Scope, receiptEnvelope.Scope) ||
+                !string.Equals(commandEnvelope.RoomId, receiptEnvelope.RoomId, StringComparison.Ordinal) ||
+                !string.Equals(commandEnvelope.SessionId, receiptEnvelope.SessionId, StringComparison.Ordinal) ||
+                commandEnvelope.SeatId != receiptEnvelope.SeatId)
+            {
+                return false;
+            }
+
+            WireReceipt typedReceipt = receiptEnvelope.Receipt;
+            string canonical = CanonicalPayloadDigest
+                .Compute(commandEnvelope.Command.CanonicalPayload.ToByteArray())
+                .ToHex();
+            if (!string.Equals(typedReceipt.CanonicalPayloadSha256, canonical, StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            ulong receiptVersion;
+            if (requirePublication)
+            {
+                if (typedReceipt.Status != WireReceiptStatus.Applied ||
+                    !typedReceipt.HasCommandVersion ||
+                    !typedReceipt.HasEventSeq ||
+                    !string.IsNullOrEmpty(typedReceipt.ReasonCode))
                 {
-                    WireDecodeResult decoded = WireCodec.Decode(receivedFrames[i]);
-                    if (decoded.IsOk && decoded.Envelope != null &&
-                        decoded.Envelope.MessageType == WireMessageType.PlayerUpdate &&
-                        decoded.Envelope.PlayerUpdate != null &&
-                        decoded.Envelope.PlayerUpdate.VisibleEvents.Any(
-                            ev => ev.CommandVersion == commandVersion))
+                    return false;
+                }
+
+                receiptVersion = typedReceipt.CommandVersion;
+                if (commandVersion != 0 && receiptVersion != commandVersion)
+                {
+                    return false;
+                }
+            }
+            else
+            {
+                if (typedReceipt.Status != WireReceiptStatus.Rejected ||
+                    typedReceipt.HasCommandVersion ||
+                    typedReceipt.HasEventSeq ||
+                    string.IsNullOrEmpty(typedReceipt.ReasonCode))
+                {
+                    return false;
+                }
+
+                return true;
+            }
+
+            WireEventType expectedEvent = ExpectedEvent(commandEnvelope.Command.Type);
+            for (int i = 0; i < receivedFrames.Length; i++)
+            {
+                WireDecodeResult decoded = WireCodec.Decode(receivedFrames[i]);
+                if (!decoded.IsOk || decoded.Envelope == null)
+                {
+                    continue;
+                }
+
+                WireEnvelope candidate = decoded.Envelope;
+                if (candidate.MessageType != WireMessageType.PlayerUpdate ||
+                    candidate.PlayerUpdate == null ||
+                    candidate.PlayerUpdate.Snapshot == null ||
+                    candidate.PlayerUpdate.Snapshot.PrivateView == null ||
+                    candidate.SeatId != commandEnvelope.SeatId ||
+                    !string.Equals(candidate.RoomId, commandEnvelope.RoomId, StringComparison.Ordinal) ||
+                    !string.Equals(candidate.SessionId, commandEnvelope.SessionId, StringComparison.Ordinal) ||
+                    !string.Equals(candidate.PlayerUpdate.Snapshot.SessionId, commandEnvelope.SessionId, StringComparison.Ordinal) ||
+                    candidate.PlayerUpdate.Snapshot.PrivateView.Seat != commandEnvelope.SeatId)
+                {
+                    continue;
+                }
+
+                if (candidate.Scope != null && !SameScope(candidate.Scope, commandEnvelope.Scope))
+                {
+                    continue;
+                }
+
+                bool expected = candidate.PlayerUpdate.VisibleEvents.Any(ev =>
+                {
+                    if (ev.CommandVersion != receiptVersion || ev.EventType == WireEventType.Unspecified)
                     {
-                        publication = receivedFrames[i];
-                        break;
+                        return false;
                     }
+
+                    if (expectedEvent == WireEventType.Unspecified)
+                    {
+                        return true;
+                    }
+
+                    return ev.EventType == expectedEvent &&
+                           ev.Visibility == EventVisibility.Private;
+                });
+                if (expected)
+                {
+                    publication = receivedFrames[i];
+                    break;
                 }
             }
 
-            return command != null &&
-                   receipt != null &&
-                   (!requirePublication || publication != null);
+            return publication != null;
+        }
+
+        private static bool SameScope(Mahjong.Contracts.Wire.RequestScope left, Mahjong.Contracts.Wire.RequestScope right)
+        {
+            return string.Equals(left.ScopeId, right.ScopeId, StringComparison.Ordinal) &&
+                   string.Equals(left.AccountId, right.AccountId, StringComparison.Ordinal) &&
+                   string.Equals(left.RoomId, right.RoomId, StringComparison.Ordinal) &&
+                   left.Role == right.Role;
+        }
+
+        private static WireEventType ExpectedEvent(CommandType type)
+        {
+            switch (type)
+            {
+                case CommandType.SubmitTileMark:
+                case CommandType.SubmitSleeveBloom:
+                case CommandType.SubmitBeamSwap:
+                    return WireEventType.CheatPointsChanged;
+                case CommandType.SubmitSleeveBloomChoice:
+                    return WireEventType.SleeveBloomResolved;
+                case CommandType.SubmitBeamSwapChoice:
+                    return WireEventType.BeamSwapResolved;
+                default:
+                    return WireEventType.Unspecified;
+            }
         }
 
         private void Initialize(string evidenceDir, string caseName, string[] args)

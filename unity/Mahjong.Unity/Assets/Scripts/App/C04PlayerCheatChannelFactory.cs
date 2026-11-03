@@ -1,6 +1,7 @@
 #nullable enable
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -89,6 +90,8 @@ namespace Mahjong.Unity.App
         public long balance;
         public int tileCount;
         public int uniqueCount;
+        public byte[] authoritySave = Array.Empty<byte>();
+        public byte[] cheatState = Array.Empty<byte>();
     }
 
     /// <summary>
@@ -186,7 +189,9 @@ namespace Mahjong.Unity.App
                 ledgerEntryCount = facts.Ledger.EntryCount,
                 balance = facts.Ledger.Balances[0],
                 tileCount = facts.Physical.TileCount,
-                uniqueCount = facts.Physical.UniqueCount
+                uniqueCount = facts.Physical.UniqueCount,
+                authoritySave = capture.AuthoritySaveBytes,
+                cheatState = capture.CheatStatePayload
             };
         }
 
@@ -280,5 +285,185 @@ namespace Mahjong.Unity.App
             public Task CloseAsync(TableChannelCloseReason reason, CancellationToken cancellationToken) =>
                 _inner.CloseAsync(reason, cancellationToken);
         }
+    }
+
+    /// <summary>One captured action passed to the deterministic B raw-index exporter.</summary>
+    public sealed class C04RawExportAction
+    {
+        public string id = string.Empty;
+        public byte[] command = Array.Empty<byte>();
+        public byte[] receipt = Array.Empty<byte>();
+        public byte[]? publication;
+        public byte[] beforeSave = Array.Empty<byte>();
+        public byte[] beforeCheat = Array.Empty<byte>();
+        public byte[] afterSave = Array.Empty<byte>();
+        public byte[] afterCheat = Array.Empty<byte>();
+    }
+
+    [Serializable]
+    public sealed class C04RawCaseMetadata
+    {
+        public int schemaVersion = 1;
+        public string sourceHead = string.Empty;
+        public string rawEvidenceIndex = "raw/index.json";
+        public string rawEvidenceIndexSha256 = string.Empty;
+        public string packageManifestSha256 = string.Empty;
+    }
+
+    /// <summary>
+    /// Deterministic producer used by the Player probe and its component smoke. It writes the
+    /// exact A-contract sidecars from original channel/recovery bytes; it does not decode,
+    /// rewrite or synthesize an action.
+    /// </summary>
+    public static class C04RawEvidenceExporter
+    {
+        public static string Export(
+            string outputRoot,
+            string sourceHead,
+            string packageManifestSha256,
+            byte[] welcome,
+            byte[][] sentFrames,
+            byte[][] receivedFrames,
+            IReadOnlyList<C04RawExportAction> actions,
+            bool authorized)
+        {
+            string rawRoot = Path.Combine(outputRoot, "raw");
+            Directory.CreateDirectory(rawRoot);
+            var rawActions = new C04RawAction[actions.Count];
+            for (int i = 0; i < actions.Count; i++)
+            {
+                C04RawExportAction source = actions[i];
+                var action = new C04RawAction
+                {
+                    id = source.id,
+                    welcome = WriteRaw(rawRoot, source.id + "-welcome.pb", welcome),
+                    command = WriteRaw(rawRoot, source.id + "-command.pb", source.command),
+                    receipt = WriteRaw(rawRoot, source.id + "-receipt.pb", source.receipt),
+                    before = new C04RawPair
+                    {
+                        authoritySave = WriteRaw(rawRoot, source.id + "-before.save", source.beforeSave),
+                        cheatState = WriteRaw(rawRoot, source.id + "-before-cheat.bin", source.beforeCheat)
+                    },
+                    after = new C04RawPair
+                    {
+                        authoritySave = WriteRaw(rawRoot, source.id + "-after.save", source.afterSave),
+                        cheatState = WriteRaw(rawRoot, source.id + "-after-cheat.bin", source.afterCheat)
+                    }
+                };
+                if (authorized && source.publication != null)
+                {
+                    action.acceptedPrivatePublication =
+                        WriteRaw(rawRoot, source.id + "-private-update.pb", source.publication);
+                }
+
+                rawActions[i] = action;
+            }
+
+            var index = new C04RawIndex
+            {
+                schemaVersion = 2,
+                producer = "LOCALHOST_CHANNEL",
+                sourceHead = sourceHead,
+                packageManifestSha256 = packageManifestSha256,
+                actions = rawActions,
+                sentFrames = WriteFrames(rawRoot, "sent", sentFrames),
+                receivedFrames = WriteFrames(rawRoot, "received", receivedFrames)
+            };
+            byte[] indexBytes = new System.Text.UTF8Encoding(false)
+                .GetBytes(UnityEngine.JsonUtility.ToJson(index, true));
+            File.WriteAllBytes(Path.Combine(rawRoot, "index.json"), indexBytes);
+            var metadata = new C04RawCaseMetadata
+            {
+                schemaVersion = 1,
+                sourceHead = sourceHead,
+                rawEvidenceIndex = "raw/index.json",
+                rawEvidenceIndexSha256 = Sha256(indexBytes),
+                packageManifestSha256 = packageManifestSha256
+            };
+            string casePath = Path.Combine(outputRoot, authorized ? "case-authorized.json" : "case-negative.json");
+            File.WriteAllText(
+                casePath,
+                UnityEngine.JsonUtility.ToJson(metadata, true),
+                new System.Text.UTF8Encoding(false));
+            return casePath;
+        }
+
+        public static string WritePackageManifest(string outputRoot, string sourceHead, string packageFile)
+        {
+            string packageRoot = Path.Combine(outputRoot, "package");
+            Directory.CreateDirectory(packageRoot);
+            string name = Path.GetFileName(packageFile);
+            string copy = Path.Combine(packageRoot, name);
+            File.Copy(packageFile, copy, true);
+            byte[] bytes = File.ReadAllBytes(copy);
+            var manifest = new C04RawPackageManifest
+            {
+                kind = "c04-player-package-manifest",
+                sourceHead = sourceHead,
+                files = new[]
+                {
+                    new C04RawPackageFile
+                    {
+                        path = name,
+                        bytes = bytes.Length,
+                        sha256 = Sha256(bytes)
+                    }
+                }
+            };
+            string path = Path.Combine(packageRoot, "manifest.json");
+            File.WriteAllText(path, UnityEngine.JsonUtility.ToJson(manifest, true), new System.Text.UTF8Encoding(false));
+            return path;
+        }
+
+        private static C04RawRef[] WriteFrames(string rawRoot, string prefix, byte[][] frames)
+        {
+            var refs = new C04RawRef[frames.Length];
+            for (int i = 0; i < frames.Length; i++)
+            {
+                refs[i] = WriteRaw(
+                    rawRoot,
+                    prefix + "-" + i.ToString("D5", System.Globalization.CultureInfo.InvariantCulture) + ".pb",
+                    frames[i]);
+            }
+
+            return refs;
+        }
+
+        private static C04RawRef WriteRaw(string rawRoot, string name, byte[] bytes)
+        {
+            File.WriteAllBytes(Path.Combine(rawRoot, name), bytes);
+            return new C04RawRef { path = "raw/" + name, sha256 = Sha256(bytes) };
+        }
+
+        private static string Sha256(byte[] bytes)
+        {
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+            {
+                byte[] hash = sha.ComputeHash(bytes);
+                var text = new System.Text.StringBuilder(hash.Length * 2);
+                for (int i = 0; i < hash.Length; i++)
+                {
+                    text.Append(hash[i].ToString("X2", System.Globalization.CultureInfo.InvariantCulture));
+                }
+
+                return text.ToString();
+            }
+        }
+    }
+
+    [Serializable]
+    public sealed class C04RawPackageManifest
+    {
+        public string kind = "c04-player-package-manifest";
+        public string sourceHead = string.Empty;
+        public C04RawPackageFile[] files = Array.Empty<C04RawPackageFile>();
+    }
+
+    [Serializable]
+    public sealed class C04RawPackageFile
+    {
+        public string path = string.Empty;
+        public int bytes;
+        public string sha256 = string.Empty;
     }
 }
