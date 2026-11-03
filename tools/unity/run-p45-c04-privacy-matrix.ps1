@@ -12,8 +12,10 @@ param(
   [string]$ExpectedSourceHead = '',
   [string]$PlayerBuildMarker = '',
   [switch]$PreflightOnly,
+  [switch]$CompileOnly,
   [switch]$BuildPlayer,
   [switch]$WindowsPlayerTests,
+  [switch]$WindowsAppMatrix,
   [switch]$LoadFunctionsOnly
 )
 
@@ -1208,8 +1210,127 @@ function Start-C04Owned([string]$Name, [string]$Exe, [string[]]$Arguments, [stri
   return $result
 }
 
+function Get-C04WindowsPlayerManifest([string]$Root) {
+  $rootFull = [IO.Path]::GetFullPath($Root)
+  $rows = New-Object Collections.Generic.List[string]
+  $files = @(Get-C04StableFiles -Root $rootFull | Sort-Object { $_.FullName.Substring($rootFull.Length).ToLowerInvariant() })
+  if ($files.Count -eq 0) { throw "Windows application package is empty: $rootFull" }
+  foreach ($file in $files) {
+    $relative = $file.FullName.Substring($rootFull.Length).TrimStart('\', '/') -replace '\\', '/'
+    $rows.Add((Get-C04Sha256File $file.FullName) + ' ' + $file.Length + ' ' + $relative)
+  }
+  $canonical = ($rows -join "`n") + "`n"
+  return [pscustomobject]@{ root = $rootFull; count = $files.Count; canonical = $canonical; sha256 = Get-C04Sha256Bytes ([Text.Encoding]::UTF8.GetBytes($canonical)) }
+}
+
+function Invoke-C04WindowsAppMatrix([string]$PlayerPath, [string]$CasesRoot, [int]$Timeout, $BuildMarker, [string]$SourceHead, [string]$DotnetPath, [string]$VerifierDll) {
+  if (-not (Test-Path -LiteralPath $PlayerPath -PathType Leaf)) { throw "Ordinary Windows application is missing: $PlayerPath" }
+  $packageRoot = Split-Path -Parent $PlayerPath
+  $before = Get-C04WindowsPlayerManifest $packageRoot
+  Write-C04Utf8 (Join-Path $script:RunRoot 'windows-app-package-before.sha256') $before.canonical
+  $negativeRoot = Join-Path $CasesRoot 'argument-negative-controls'
+  [IO.Directory]::CreateDirectory($negativeRoot) | Out-Null
+  $negativeResults = New-Object Collections.Generic.List[object]
+  $negativeCases = @(
+    @{ name='missing-required-values'; args=@('-c04PrivacyPlayerDriver','-c04PrivacyPlayerEvidence',(Join-Path $negativeRoot 'missing-root')) },
+    @{ name='unknown-case'; args=@('-c04PrivacyPlayerDriver','-c04PrivacyPlayerCase','RealRoom_Unknown','-c04PrivacyPlayerEvidence',(Join-Path $negativeRoot 'unknown-root')) },
+    @{ name='duplicate-enable'; args=@('-c04PrivacyPlayerDriver','-c04PrivacyPlayerDriver','-c04PrivacyPlayerCase',$script:C04ExpectedTests[0].Substring($script:C04ExpectedTests[0].LastIndexOf('.')+1),'-c04PrivacyPlayerEvidence',(Join-Path $negativeRoot 'duplicate-root')) }
+  )
+  foreach ($negative in $negativeCases) {
+    $log = Join-Path $negativeRoot ($negative.name + '.unity-player.log')
+    $record = Start-C04Owned ('windows-app-arg-reject-' + $negative.name) $PlayerPath (@('-batchmode','-nographics') + $negative.args + @('-logFile',$log)) $packageRoot 30
+    if ($record.timedOut -or $record.cancelled -or $record.exitCode -eq 0) { throw "Invalid Player arguments were not rejected with a native nonzero exit: $($negative.name)" }
+    if (-not (Test-Path -LiteralPath $log -PathType Leaf)) { throw "Rejected Player process did not create its log: $($negative.name)" }
+    $capture = [IO.File]::ReadAllText($log,[Text.Encoding]::UTF8)
+    if ($capture -notmatch 'C04_PRIVACY_PLAYER_ARGS_REJECTED') { throw "Invalid Player arguments lack the driver's rejection marker: $($negative.name)" }
+    $evidenceArg = $negative.args[([array]::IndexOf($negative.args,'-c04PrivacyPlayerEvidence') + 1)]
+    if (Test-Path -LiteralPath $evidenceArg) { throw "Rejected Player arguments created evidence/host path: $($negative.name)" }
+    $negativeResults.Add([pscustomobject]@{ name=$negative.name; pid=$record.pid; exitCode=$record.exitCode; timedOut=$false; evidencePath=$evidenceArg; marker='C04_PRIVACY_PLAYER_ARGS_REJECTED' })
+  }
+  $results = New-Object Collections.Generic.List[object]
+  foreach ($testName in $script:C04ExpectedTests) {
+    $caseName = $testName.Substring($testName.LastIndexOf('.') + 1)
+    $caseRoot = Join-Path $CasesRoot $caseName
+    if (Test-Path -LiteralPath $caseRoot) { throw "Case evidence root already exists: $caseRoot" }
+    $args = @('-batchmode', '-nographics', '-c04PrivacyPlayerDriver', '-c04PrivacyPlayerCase', $caseName,
+      '-c04PrivacyPlayerEvidence', $caseRoot, '-c04PrivacyEvidence', $caseRoot,
+      '-logFile', (Join-Path $CasesRoot ($caseName + '.unity-player.log')))
+    $record = Start-C04Owned ('windows-app-' + $caseName) $PlayerPath $args $packageRoot $Timeout
+    Assert-C04NativeSuccess $record ('windows-app-' + $caseName)
+    $summaryPath = Join-Path $caseRoot 'summary.json'
+    if (-not (Test-Path -LiteralPath $summaryPath -PathType Leaf)) { throw "Player case did not publish a terminal summary: $caseName" }
+    $caseSummary = [IO.File]::ReadAllText($summaryPath,[Text.Encoding]::UTF8) | ConvertFrom-Json
+    if ($caseSummary.case -cne $caseName -or [int]$caseSummary.exitCode -ne 0) { throw "Player case identity or result mismatch: $caseName" }
+    $caseFiles = @(Get-C04StableFiles -Root $caseRoot)
+    if ($caseFiles.Count -lt 3) { throw "Player case evidence is incomplete: $caseName" }
+    $results.Add([pscustomobject]@{ testName = $testName; case = $caseName; pid = $record.pid; exitCode = $record.exitCode; timedOut = $record.timedOut; fileCount = $caseFiles.Count; summary = $summaryPath })
+  }
+  $rawFiles = @(Get-ChildItem -LiteralPath $CasesRoot -Recurse -File -Filter 'raw-frames.json' | Sort-Object FullName)
+  if ($rawFiles.Count -lt 4) { throw "Ordinary Windows app cases produced too few real privacy raw captures: $($rawFiles.Count)" }
+  $rawVerifications = New-Object Collections.Generic.List[object]
+  $matrixTests = Join-Path $repo 'tools/tests/C04PrivacyMatrix.Tests.ps1'
+  foreach ($rawFile in $rawFiles) {
+    $sceneName = [IO.Path]::GetFileName([IO.Path]::GetDirectoryName($rawFile.FullName))
+    $verifyRoot = Join-Path $script:RunRoot ('windows-app-verifier/' + $sceneName)
+    $verify = Start-C04Owned ('windows-app-raw-verify-' + $sceneName) 'powershell.exe' @('-NoProfile','-ExecutionPolicy','Bypass','-File',$matrixTests,
+      '-DotnetPath',$DotnetPath,'-VerifierDll',$VerifierDll,'-RawFramesPath',$rawFile.FullName,'-RunRoot',$verifyRoot) $repo 240
+    Assert-C04NativeSuccess $verify ('windows-app-raw-verify-' + $sceneName)
+    $rawVerifications.Add([pscustomobject]@{ scene=$sceneName; path=$rawFile.FullName; sha256=Get-C04Sha256File $rawFile.FullName; verifierRoot=$verifyRoot; nativeExit=$verify.exitCode })
+  }
+
+  # The accepted recovery probe performs the real original-outbox receipt lookup.
+  # PREPARE and RECOVER are separate invocations of this exact ordinary package.
+  $p2Root = Join-Path $CasesRoot 'P2-original-outbox-process-restart'
+  [IO.Directory]::CreateDirectory($p2Root) | Out-Null
+  $caseId = 'c04-d05-final-unified-p2'
+  $common = @('-c04-recovery', $p2Root, '-c04-recovery-case', $caseId,
+    '-c04-recovery-fault', 'None', '-c04-recovery-outcome', 'RECOVERED',
+    '-c04-recovery-player-sha', [string]$BuildMarker.playerSha256,
+    '-c04-recovery-package-sha', [string]$BuildMarker.packageManifestSha256,
+    '-c04-recovery-package-count', [string]$BuildMarker.packageFileCount,
+    '-c04-recovery-source-head', $SourceHead, '-c04-recovery-build-commit', $SourceHead,
+    '-c04-recovery-ruleset', '1')
+  $prepareArgs = @('-batchmode','-nographics') + $common + @('-c04-recovery-mode','Prepare','-logFile',(Join-Path $CasesRoot 'p2-prepare.unity-player.log'))
+  $prepareProcess = Start-C04Owned 'windows-app-p2-prepare' $PlayerPath $prepareArgs $packageRoot $Timeout
+  Assert-C04NativeSuccess $prepareProcess 'windows-app-p2-prepare'
+  $preparePath = Join-Path $p2Root 'prepare.json'
+  $expectedPath = Join-Path $p2Root 'expected.txt'
+  if (-not (Test-Path -LiteralPath $preparePath -PathType Leaf) -or -not (Test-Path -LiteralPath $expectedPath -PathType Leaf)) { throw 'P2 prepare did not preserve its original request identity and outbox facts.' }
+  $prepareDoc = [IO.File]::ReadAllText($preparePath,[Text.Encoding]::UTF8) | ConvertFrom-Json
+  if ($prepareDoc.kind -cne 'c04-recovery-prepare' -or $prepareDoc.request.status -cne 'Applied' -or $prepareDoc.request.requestId -notmatch '^c04-player-c04-d05-final-unified-p2-discard$' -or [int]$prepareDoc.outbox.unresolved -ne 1) { throw 'P2 prepare has an unexpected receipt/request/outbox result.' }
+  $recoverArgs = @('-batchmode','-nographics') + $common + @('-c04-recovery-mode','Recover','-logFile',(Join-Path $CasesRoot 'p2-recover.unity-player.log'))
+  $recoverProcess = Start-C04Owned 'windows-app-p2-recover' $PlayerPath $recoverArgs $packageRoot $Timeout
+  Assert-C04NativeSuccess $recoverProcess 'windows-app-p2-recover'
+  $recoverPath = Join-Path $p2Root 'result.json'
+  if (-not (Test-Path -LiteralPath $recoverPath -PathType Leaf)) { throw 'P2 recover did not publish its reconciliation evidence.' }
+  $recoverDoc = [IO.File]::ReadAllText($recoverPath,[Text.Encoding]::UTF8) | ConvertFrom-Json
+  $checks = $recoverDoc.checks
+  foreach ($checkName in @('exactOriginalIdentity','foundFromRealLookup','appliedOnceEffectVector','zeroDeltaAfterReconcile','repeatQuerySentNothing','noOriginalCommandResend','physical136Unique')) {
+    if ($checks.$checkName -ne $true) { throw "P2 original-request reconciliation assertion failed: $checkName" }
+  }
+  if ([int]$checks.oldScopeQueryCount -lt 1 -or $recoverDoc.request.requestId -cne $prepareDoc.request.requestId -or $recoverDoc.request.scopeId -cne $prepareDoc.request.scopeId -or $recoverDoc.canonicalDigest -cne $prepareDoc.canonicalDigest) { throw 'P2 recovery changed the original scope/request/canonical payload or did not query the old scope.' }
+  if ([int]$prepareDoc.process.pid -eq [int]$recoverDoc.process.pid -or $prepareDoc.process.startUtc -ceq $recoverDoc.process.startUtc -or $prepareDoc.process.path -cne [IO.Path]::GetFullPath($PlayerPath) -or $recoverDoc.process.path -cne [IO.Path]::GetFullPath($PlayerPath)) { throw 'P2 did not prove two distinct processes running the same ordinary package executable.' }
+  $p2 = [pscustomobject]@{ status='PASS'; caseId=$caseId; requestId=$prepareDoc.request.requestId; scopeId=$prepareDoc.request.scopeId; canonicalDigest=$prepareDoc.canonicalDigest; preparePid=$prepareDoc.process.pid; prepareStartUtc=$prepareDoc.process.startUtc; recoverPid=$recoverDoc.process.pid; recoverStartUtc=$recoverDoc.process.startUtc; queries=$checks.oldScopeQueryCount; duplicateCommands=$recoverDoc.state.oldRequestCommands; result=$recoverPath; prepare=$preparePath }
+
+  $after = Get-C04WindowsPlayerManifest $packageRoot
+  if ($before.sha256 -cne $after.sha256 -or $before.count -ne $after.count -or $before.canonical -cne $after.canonical) {
+    throw 'Windows application package changed during its seven-case matrix.'
+  }
+  Write-C04Utf8 (Join-Path $script:RunRoot 'windows-app-package-after.sha256') $after.canonical
+  $matrix = [ordered]@{ schemaVersion = 1; executable = [IO.Path]::GetFullPath($PlayerPath); packageRoot = $packageRoot; caseCount = $results.Count; argumentNegativeControls = $negativeResults.ToArray(); rawFrames = $rawVerifications.ToArray(); packageFilesBefore = $before.count; packageSha256Before = $before.sha256; packageFilesAfter = $after.count; packageSha256After = $after.sha256; cases = $results.ToArray(); p2ProcessRestart = $p2 }
+  Write-C04Json (Join-Path $script:RunRoot 'windows-app-matrix.json') $matrix
+  return $matrix
+}
+
 function Invoke-C04RunnerMain {
-  if ($BuildPlayer -and $WindowsPlayerTests) { throw 'Choose either the standalone Player build or Windows Player test run.' }
+  $selectedModes = New-Object Collections.Generic.List[string]
+  if ($PreflightOnly) { $selectedModes.Add('PreflightOnly') }
+  if ($CompileOnly) { $selectedModes.Add('CompileOnly') }
+  if ($BuildPlayer) { $selectedModes.Add('BuildPlayer') }
+  if ($WindowsPlayerTests) { $selectedModes.Add('WindowsPlayerTests') }
+  if ($WindowsAppMatrix) { $selectedModes.Add('WindowsAppMatrix') }
+  $modeCount = $selectedModes.Count
+  if ($modeCount -gt 1) { throw 'Choose one runner mode; WindowsAppMatrix builds one ordinary app package and runs its seven cases.' }
   if ([string]::IsNullOrWhiteSpace($RunRoot)) { throw 'RunRoot is required.' }
   $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
   $script:RunRoot = [IO.Path]::GetFullPath($RunRoot)
@@ -1243,7 +1364,7 @@ function Invoke-C04RunnerMain {
     schemaVersion = 1
     runner = 'run-p45-c04-privacy-matrix.ps1'
     status = 'FAIL'
-    mode = $(if ($BuildPlayer) { 'player-build' } elseif ($WindowsPlayerTests) { 'windows-player-tests' } else { 'playmode' })
+    mode = $(if ($BuildPlayer) { 'player-build' } elseif ($WindowsPlayerTests) { 'windows-player-tests' } elseif ($WindowsAppMatrix) { 'windows-ordinary-app-matrix' } elseif ($CompileOnly) { 'unity-compile-only' } else { 'playmode' })
     startedUtc = [DateTimeOffset]::UtcNow.ToString('o')
     finishedUtc = $null
     runRoot = $script:RunRoot
@@ -1357,13 +1478,29 @@ exit `$LASTEXITCODE
     $player = Join-Path $script:RunRoot 'player/Mahjong.exe'
     $buildLog = Join-Path $script:RunRoot 'player-build.log'
     [IO.Directory]::CreateDirectory((Split-Path -Parent $player)) | Out-Null
-    if ($BuildPlayer) {
+    if ($CompileOnly) {
+      $compileLog = Join-Path $script:RunRoot 'unity-compile.log'
+      $compileArgs = @('-batchmode','-quit','-projectPath',$unityProject,'-logFile',$compileLog,'-upmCachePath',$upm)
+      $compileResult = Start-C04Owned 'unity-project-compile-only' $UnityPath $compileArgs $unityProject $TimeoutSeconds
+      Assert-C04NativeSuccess $compileResult 'unity-project-compile-only'
+      if (-not (Test-Path -LiteralPath $compileLog -PathType Leaf)) { throw 'Unity compile log is missing.' }
+      $compileText = [IO.File]::ReadAllText($compileLog,[Text.Encoding]::UTF8)
+      if ($compileText -match '(?m)error CS\d+|Script compilation failed|Compilation failed') { throw 'Unity reported C# script compilation failure; inspect unity-compile.log.' }
+      $appAssembly = Join-Path $unityProject 'Library/ScriptAssemblies/Mahjong.Unity.App.dll'
+      if (-not (Test-Path -LiteralPath $appAssembly -PathType Leaf)) { throw 'Unity did not produce Mahjong.Unity.App.dll during compile-only validation.' }
+      $summary.compile = [ordered]@{ log = $compileLog; logSha256 = Get-C04Sha256File $compileLog; appAssembly = $appAssembly; appAssemblyBytes = (Get-Item -LiteralPath $appAssembly).Length; appAssemblySha256 = Get-C04Sha256File $appAssembly }
+    } elseif ($BuildPlayer -or $WindowsAppMatrix) {
       $unityArgs = @('-batchmode', '-quit', '-projectPath', $unityProject, '-executeMethod', 'C04PrivacyBuild.Build', '-logFile', $unityLog,
         '-c04PrivacyOutput', $player, '-c04PrivacyMarker', $marker, '-c04PrivacyBuildLog', $buildLog,
         '-c04PrivacySourceHead', $identity.head, '-c04PrivacyBuildCommit', $identity.head, '-upmCachePath', $upm)
       $unityResult = Start-C04Owned 'unity-player-build' $UnityPath $unityArgs $unityProject $TimeoutSeconds
       Assert-C04NativeSuccess $unityResult 'unity-player-build'
       $summary.marker = Assert-C04BuildMarker -MarkerPath $marker -ExpectedSourceHead $identity.head -ExpectedBuildCommit $identity.head
+      if ($WindowsAppMatrix) {
+        $appCasesRoot = Join-Path $script:RunRoot 'windows-app-cases'
+        [IO.Directory]::CreateDirectory($appCasesRoot) | Out-Null
+        $summary.windowsAppMatrix = Invoke-C04WindowsAppMatrix -PlayerPath $player -CasesRoot $appCasesRoot -Timeout 180 -BuildMarker $summary.marker -SourceHead $identity.head -DotnetPath $DotnetPath -VerifierDll $verifierDll
+      }
     } else {
       if ($WindowsPlayerTests) { $testXml = Join-Path $script:RunRoot 'windows-player-results.xml' }
       if (-not [string]::IsNullOrWhiteSpace($PlayerBuildMarker)) {

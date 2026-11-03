@@ -464,6 +464,33 @@ try {
     Assert-True (($stdout + $stderr) -match 'SEAL_FAILED|INJECTED_MAIN_SEAL_FAILURE|Runner finalization failed') 'actual Main did not report the seal failure'
 }
 
+Invoke-Case 'ordinary Windows app matrix uses the built Mahjong.exe and exact seven names' {
+    $text = [IO.File]::ReadAllText($runner,[Text.Encoding]::UTF8)
+    Assert-True ($text.Contains('[switch]$WindowsAppMatrix') -and $text.Contains('Invoke-C04WindowsAppMatrix')) 'ordinary app mode is missing'
+    foreach ($testName in $script:C04ExpectedTests) { Assert-True ($text.Contains($testName)) "ordinary app mode lost fixed case $testName" }
+    $start = $text.IndexOf('function Invoke-C04WindowsAppMatrix', [StringComparison]::Ordinal)
+    $end = $text.IndexOf('function Invoke-C04RunnerMain', $start, [StringComparison]::Ordinal)
+    Assert-True ($start -ge 0 -and $end -gt $start) 'ordinary app matrix function boundary is missing'
+    $body = $text.Substring($start,$end-$start)
+    Assert-True ($body.Contains('$PlayerPath') -and $body.Contains('Start-C04Owned') -and $body.Contains('windows-app-package-before.sha256') -and $body.Contains('windows-app-package-after.sha256')) 'matrix is not bound to one built application/package manifest'
+    Assert-True (-not $body.Contains('-testPlatform') -and -not $body.Contains('test-player')) 'ordinary app path uses the Test Player route'
+}
+
+Invoke-Case 'ordinary Windows app P2 launches separate processes and reconciles original receipt' {
+    $text = [IO.File]::ReadAllText($runner,[Text.Encoding]::UTF8)
+    foreach ($required in @('windows-app-p2-prepare','windows-app-p2-recover','-c04-recovery-mode','Prepare','Recover',
+        'exactOriginalIdentity','foundFromRealLookup','zeroDeltaAfterReconcile','noOriginalCommandResend',
+        'oldScopeQueryCount','prepareDoc.process.pid','recoverDoc.process.pid','canonicalDigest')) {
+        Assert-True ($text.Contains($required)) "P2 runner contract is missing $required"
+    }
+}
+
+Invoke-Case 'Unity compile-only mode imports and compiles without claiming a Player build' {
+    $text = [IO.File]::ReadAllText($runner,[Text.Encoding]::UTF8)
+    Assert-True ($text.Contains('[switch]$CompileOnly') -and $text.Contains("'unity-compile-only'")) 'compile-only runner mode is missing'
+    Assert-True ($text.Contains('unity-project-compile-only') -and $text.Contains('Mahjong.Unity.App.dll') -and $text.Contains('Script compilation failed')) 'compile-only mode does not require the compiled app assembly and fail on compiler diagnostics'
+}
+
 $summary = [ordered]@{
     schemaVersion = 1
     kind = 'c04-privacy-runner-tests'
