@@ -9,6 +9,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Mahjong.Client;
 using Mahjong.Contracts;
+using Mahjong.Contracts.Wire;
 using Mahjong.LocalHost;
 using Mahjong.Unity.Platform;
 using Mahjong.Unity.Table;
@@ -17,6 +18,9 @@ using Mahjong.Unity.UI.Session;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
+using WireCodec = Mahjong.Contracts.Wire.WireCodec;
+using WireEnvelope = Mahjong.Contracts.Wire.Envelope;
+using WireMessageType = Mahjong.Contracts.Wire.MessageType;
 
 namespace Mahjong.Unity.App
 {
@@ -43,6 +47,7 @@ namespace Mahjong.Unity.App
         private const string BuildCommitArg = "-c04-build-commit";
         private const string PlayerPathArg = "-c04-player-path";
         private const string UnityVersionArg = "-c04-unity-version";
+        private const string PackageManifestArg = "-c04-package-manifest";
 
         private string _evidenceDir = string.Empty;
         private string _caseName = string.Empty;
@@ -50,19 +55,24 @@ namespace Mahjong.Unity.App
         private string _buildCommit = string.Empty;
         private string _playerPath = string.Empty;
         private string _unityVersion = string.Empty;
+        private string _packageManifestSha256 = string.Empty;
 
         private MainThreadDispatcher? _dispatcher;
         private AppComposition? _composition;
         private SessionCoordinator? _coordinator;
         private TablePresenter? _presenter;
         private C04PlayerCheatChannelFactory? _factory;
+        private C04RawFrameCapture? _capture;
         private string _saveDirectory = string.Empty;
 
         private readonly List<C04ReceiptRecord> _receipts = new List<C04ReceiptRecord>();
+        private readonly List<C04RawAction> _rawActions = new List<C04RawAction>();
         private bool _waitOk;
         private C04ReceiptRecord? _lastReceipt;
         private int _receiptMark;
         private LocalTableRecoveryFacts? _taskFacts;
+        private LocalTableRecoveryCapture? _lastCapture;
+        private byte[]? _welcomeFrame;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
         private static void Bootstrap()
@@ -125,7 +135,14 @@ namespace Mahjong.Unity.App
             _buildCommit = ReadOptionalArg(args, BuildCommitArg) ?? string.Empty;
             _playerPath = ReadOptionalArg(args, PlayerPathArg) ?? string.Empty;
             _unityVersion = ReadOptionalArg(args, UnityVersionArg) ?? Application.unityVersion;
+            string? packageManifest = ReadOptionalArg(args, PackageManifestArg);
+            if (!string.IsNullOrWhiteSpace(packageManifest) && File.Exists(packageManifest))
+            {
+                _packageManifestSha256 = Sha256(File.ReadAllBytes(packageManifest));
+            }
+
             Directory.CreateDirectory(_evidenceDir);
+            Directory.CreateDirectory(Path.Combine(_evidenceDir, "raw"));
         }
 
         private void Start()
@@ -466,6 +483,9 @@ namespace Mahjong.Unity.App
 
                 uint[] markTiles = facts.ProposedTileMarkTileIds.ToArray();
                 ulong markVersion = _presenter.LatestView!.Identity.StateVersion;
+                int markSentStart = _capture?.SentCount ?? 0;
+                int markReceivedStart = _capture?.ReceivedCount ?? 0;
+                LocalTableRecoveryCapture? markBefore = _lastCapture;
                 _receiptMark = _receipts.Count;
                 ClickButton("TileMarkButton");
                 yield return null;
@@ -519,6 +539,7 @@ namespace Mahjong.Unity.App
                 LocalTableRecoveryFacts afterMark = _taskFacts;
                 evidence.afterMark = C04AuthorityFacts.From(afterMark);
                 CheckPhysical(evidence, "G3-05-AFTER-MARK", afterMark);
+                RecordRawAction("tile-mark", mark, markSentStart, markReceivedStart, markBefore, true);
 
                 yield return DiscardEntity(120u);
                 if (!_waitOk)
@@ -537,6 +558,9 @@ namespace Mahjong.Unity.App
                 PlayerTableViewState beforeBloom = _presenter.LatestView!;
                 uint drawnBefore = beforeBloom.Own!.DrawnTileId!.Value;
                 ulong bloomVersion = beforeBloom.Identity.StateVersion;
+                int bloomSentStart = _capture?.SentCount ?? 0;
+                int bloomReceivedStart = _capture?.ReceivedCount ?? 0;
+                LocalTableRecoveryCapture? bloomBefore = _lastCapture;
                 _receiptMark = _receipts.Count;
                 ClickButton("SleeveBloomButton");
                 yield return WaitReceipt(CommandKind.SubmitSleeveBloom, 15f);
@@ -563,6 +587,17 @@ namespace Mahjong.Unity.App
                 PlayerSleeveBloomState offer = offered.Own!.Cheat.ImmediateSleeveBloom!;
                 uint second = offer.SecondTileId!.Value;
                 ulong bloomChoiceVersion = offered.Identity.StateVersion;
+                yield return CaptureFacts();
+                if (!_waitOk || _lastCapture == null)
+                {
+                    Check(evidence, "G3-02-AUTHORITY", false, "authority capture after SleeveBloom activation", "capture failed");
+                    yield break;
+                }
+
+                RecordRawAction("sleeve-bloom", bloom, bloomSentStart, bloomReceivedStart, bloomBefore, true);
+                LocalTableRecoveryCapture? bloomChoiceBefore = _lastCapture;
+                int bloomChoiceSentStart = _capture?.SentCount ?? 0;
+                int bloomChoiceReceivedStart = _capture?.ReceivedCount ?? 0;
                 _receiptMark = _receipts.Count;
                 ClickButton("SleeveBloomButton");
                 yield return null;
@@ -610,6 +645,13 @@ namespace Mahjong.Unity.App
                     !string.Equals(afterMark.Physical.TilesSha256, afterBloom.Physical.TilesSha256, StringComparison.Ordinal),
                     "physical hand/wall swap",
                     afterMark.Physical.TilesSha256 + " vs " + afterBloom.Physical.TilesSha256);
+                RecordRawAction(
+                    "sleeve-second",
+                    bloomChoice,
+                    bloomChoiceSentStart,
+                    bloomChoiceReceivedStart,
+                    bloomChoiceBefore,
+                    true);
 
                 uint discardTile = bloomed.Own.DrawnTileId ?? bloomed.Own.ClosedTiles[0];
                 yield return DiscardEntity(discardTile);
@@ -626,8 +668,18 @@ namespace Mahjong.Unity.App
                     yield break;
                 }
 
+                yield return CaptureFacts();
+                if (!_waitOk || _lastCapture == null)
+                {
+                    Check(evidence, "G3-03-AUTHORITY", false, "authority capture before BeamSwap", "capture failed");
+                    yield break;
+                }
+
                 PlayerTableViewState beforeBeam = _presenter.LatestView!;
                 ulong beamVersion = beforeBeam.Identity.StateVersion;
+                int beamSentStart = _capture?.SentCount ?? 0;
+                int beamReceivedStart = _capture?.ReceivedCount ?? 0;
+                LocalTableRecoveryCapture? beamBefore = _lastCapture;
                 _receiptMark = _receipts.Count;
                 ClickButton("BeamSwapButton");
                 yield return WaitReceipt(CommandKind.SubmitBeamSwap, 15f);
@@ -654,6 +706,17 @@ namespace Mahjong.Unity.App
                 PlayerBeamSwapState beamOffer = beamOffered.Own!.Cheat.BeamSwap!;
                 uint handTile = beamOffer.SelectableHandTileIds[0];
                 ulong beamChoiceVersion = beamOffered.Identity.StateVersion;
+                yield return CaptureFacts();
+                if (!_waitOk || _lastCapture == null)
+                {
+                    Check(evidence, "G3-03-AUTHORITY", false, "authority capture after BeamSwap activation", "capture failed");
+                    yield break;
+                }
+
+                RecordRawAction("beam-swap", beam, beamSentStart, beamReceivedStart, beamBefore, true);
+                LocalTableRecoveryCapture? beamChoiceBefore = _lastCapture;
+                int beamChoiceSentStart = _capture?.SentCount ?? 0;
+                int beamChoiceReceivedStart = _capture?.ReceivedCount ?? 0;
                 _receiptMark = _receipts.Count;
                 ClickButton("BeamSwapButton");
                 yield return null;
@@ -697,6 +760,13 @@ namespace Mahjong.Unity.App
                 LocalTableRecoveryFacts final = _taskFacts;
                 evidence.afterFinal = C04AuthorityFacts.From(final);
                 CheckPhysical(evidence, "G3-05-FINAL", final);
+                RecordRawAction(
+                    "beam-swap-choice",
+                    beamChoice,
+                    beamChoiceSentStart,
+                    beamChoiceReceivedStart,
+                    beamChoiceBefore,
+                    true);
                 Check(evidence, "G3-03-PHYSICAL-MOVED",
                     !string.Equals(afterBloom.Physical.TilesSha256, final.Physical.TilesSha256, StringComparison.Ordinal),
                     "physical hand/wall swap",
@@ -780,6 +850,9 @@ namespace Mahjong.Unity.App
                     new RoundId(_presenter.LatestView.Identity.RoundId),
                     decisionId: new DecisionId("c04-no-such-decision"),
                     controlEpoch: new ControlEpoch(_presenter.LatestView.Own.Decision.ControlEpoch));
+                int unauthorizedSentStart = _capture?.SentCount ?? 0;
+                int unauthorizedReceivedStart = _capture?.ReceivedCount ?? 0;
+                LocalTableRecoveryCapture? unauthorizedBefore = _lastCapture;
                 var unauthorizedCompletion = new TaskCompletionSource<CommandSubmission>(
                     TaskCreationOptions.RunContinuationsAsynchronously);
                 _ = SubmitAsync(unauthorizedCommand, unauthorizedCompletion);
@@ -822,6 +895,13 @@ namespace Mahjong.Unity.App
                 CheckPhysical(evidence, "G3-06-UNAUTHORIZED-136", afterUnauthorized);
                 CheckZeroDelta(evidence, "G3-06-UNAUTHORIZED-ZERO", beforeUnauthorized, afterUnauthorized);
                 CheckRequestRejected(evidence, "G3-06-UNAUTHORIZED-REQUEST", afterUnauthorized, unauthorizedReceipt);
+                RecordRawAction(
+                    "unauthorized",
+                    unauthorizedReceipt,
+                    unauthorizedSentStart,
+                    unauthorizedReceivedStart,
+                    unauthorizedBefore,
+                    false);
 
                 // ---- Legal positive controls: twelve real SleeveBloom activations (10 each)
                 // bring the balance from 120 to 0, so the same rule with a sufficient balance
@@ -937,6 +1017,9 @@ namespace Mahjong.Unity.App
 
                 PlayerTableViewState underfunded = _presenter.LatestView!;
                 ulong underfundedVersion = underfunded.Identity.StateVersion;
+                int insufficientSentStart = _capture?.SentCount ?? 0;
+                int insufficientReceivedStart = _capture?.ReceivedCount ?? 0;
+                LocalTableRecoveryCapture? insufficientBefore = _lastCapture;
                 _receiptMark = _receipts.Count;
                 ClickButton("SleeveBloomButton");
                 yield return WaitReceipt(CommandKind.SubmitSleeveBloom, 15f);
@@ -967,6 +1050,13 @@ namespace Mahjong.Unity.App
                 CheckPhysical(evidence, "G3-06-INSUFFICIENT-136", afterInsufficient);
                 CheckZeroDelta(evidence, "G3-06-INSUFFICIENT-ZERO", beforeInsufficient, afterInsufficient);
                 CheckRequestRejected(evidence, "G3-06-INSUFFICIENT-REQUEST", afterInsufficient, rejected);
+                RecordRawAction(
+                    "insufficient-funds",
+                    rejected,
+                    insufficientSentStart,
+                    insufficientReceivedStart,
+                    insufficientBefore,
+                    false);
                 Check(evidence, "G3-06-DISTINCT-REQUESTS",
                     !string.Equals(unauthorizedId, rejected.RequestId, StringComparison.Ordinal) &&
                     !string.Equals(unauthorizedReceipt.PayloadSha256, rejected.PayloadSha256, StringComparison.Ordinal),
@@ -1001,7 +1091,12 @@ namespace Mahjong.Unity.App
             Directory.CreateDirectory(caseRoot);
             UiInputLifecycle.ResetForTest();
             var paths = new UnityAppPaths(caseRoot);
-            _factory = new C04PlayerCheatChannelFactory(paths, kind, "c04-probe-" + _caseName);
+            _capture = new C04RawFrameCapture();
+            _factory = new C04PlayerCheatChannelFactory(
+                paths,
+                kind,
+                "c04-probe-" + _caseName,
+                capture: _capture);
             _saveDirectory = _factory.SaveDirectory;
             _dispatcher = new MainThreadDispatcher(512);
             _composition = new AppComposition(
@@ -1114,7 +1209,10 @@ namespace Mahjong.Unity.App
                 DecisionId = _presenter?.LatestView?.Own?.Decision?.DecisionId ?? string.Empty,
                 ControlEpoch = _presenter?.LatestView?.Own?.Decision?.ControlEpoch ?? 0,
                 Seat = _presenter?.LatestView?.Identity.Seat ?? 0,
-                RoundId = _presenter?.LatestView?.Identity.RoundId ?? string.Empty
+                RoundId = _presenter?.LatestView?.Identity.RoundId ?? string.Empty,
+                HasCommandVersion = args.Resolution.CommandVersion.HasValue,
+                CommandVersion = args.Resolution.CommandVersion?.Value ?? 0,
+                EventSeq = args.Resolution.EventSeq?.Value ?? 0
             });
         }
 
@@ -1169,20 +1267,193 @@ namespace Mahjong.Unity.App
             }
         }
 
-        private IEnumerator DiscardEntity(uint tileId)
+        private IEnumerator DiscardEntity(uint requestedTileId)
         {
             _waitOk = false;
             PlayerTableViewState? before = _presenter?.LatestView;
-            if (before == null)
+            if (before?.Own?.Decision == null)
             {
                 yield break;
             }
 
-            ClickHandEntity(tileId);
+            var diagnostic = new C04DiscardDiagnostic
+            {
+                requestedTileId = requestedTileId,
+                decisionId = before.Own.Decision.DecisionId,
+                stateVersionBefore = unchecked((long)before.Identity.StateVersion),
+                drawnTileId = before.Own.DrawnTileId ?? 0,
+                hasDrawnTile = before.Own.DrawnTileId.HasValue,
+                closedTiles = string.Join(",", before.Own.ClosedTiles),
+                candidateTiles = DescribeDiscardCandidates(before)
+            };
+            uint? selectedTile = PickConfirmedDiscardCandidate(before, requestedTileId, out string selectionReason);
+            diagnostic.selectionReason = selectionReason;
+            if (!selectedTile.HasValue)
+            {
+                diagnostic.failure = "NO_CONFIRMED_IN_HAND_DISCARD_CANDIDATE";
+                AddDiscardDiagnostic(diagnostic);
+                yield break;
+            }
+
+            diagnostic.selectedTileId = selectedTile.Value;
+            int sentStart = _capture?.SentCount ?? 0;
+            int receivedStart = _capture?.ReceivedCount ?? 0;
+            ClickHandEntity(selectedTile.Value);
             yield return null;
+
+            TableSelection selection = _presenter!.InteractionState.Selection;
+            diagnostic.selectionKind = selection.Kind.ToString();
+            diagnostic.selectedAction = selection.Action?.Action.ToString() ?? string.Empty;
+            Button discardButton = FindButton("DiscardButton");
+            diagnostic.discardButtonActive = discardButton.gameObject.activeSelf;
+            diagnostic.discardButtonInteractable = discardButton.interactable;
+            diagnostic.pendingRequestId = _presenter.InteractionState.Pending?.Intent.Command.RequestId.Value ?? string.Empty;
+            if (!diagnostic.discardButtonActive || !diagnostic.discardButtonInteractable)
+            {
+                diagnostic.failure = "DISCARD_BUTTON_NOT_ACTIONABLE";
+                AddDiscardDiagnostic(diagnostic);
+                yield break;
+            }
+
+            _receiptMark = _receipts.Count;
             ClickButton("DiscardButton");
-            ulong version = before.Identity.StateVersion;
-            yield return WaitView(v => v.Identity.StateVersion > version, 15f);
+            yield return WaitReceipt(CommandKind.SubmitAction, 15f);
+            diagnostic.receiptStatus = _lastReceipt?.Status ?? string.Empty;
+            diagnostic.receiptReason = _lastReceipt?.Reason ?? string.Empty;
+            if (!_waitOk || _lastReceipt == null ||
+                !string.Equals(_lastReceipt.Status, "APPLIED", StringComparison.Ordinal))
+            {
+                diagnostic.failure = "DISCARD_NOT_APPLIED";
+                AddDiscardDiagnostic(diagnostic);
+                yield break;
+            }
+
+            yield return WaitView(v => v.Identity.StateVersion > before.Identity.StateVersion, 10f);
+            diagnostic.stateVersionAfter = unchecked((long)(_presenter.LatestView?.Identity.StateVersion ?? 0));
+            diagnostic.waitOk = _waitOk;
+            if (!_waitOk)
+            {
+                diagnostic.failure = "DISCARD_VIEW_DID_NOT_ADVANCE";
+            }
+
+            AddDiscardDiagnostic(diagnostic);
+        }
+
+        private uint? PickConfirmedDiscardCandidate(
+            PlayerTableViewState view,
+            uint requestedTileId,
+            out string reason)
+        {
+            PlayerDecisionState? decision = view.Own?.Decision;
+            if (decision == null)
+            {
+                reason = "NO_DECISION";
+                return null;
+            }
+
+            bool InHand(uint tile)
+            {
+                if (view.Own!.DrawnTileId == tile)
+                {
+                    return true;
+                }
+
+                IReadOnlyList<uint> closed = view.Own.ClosedTiles;
+                for (int i = 0; i < closed.Count; i++)
+                {
+                    if (closed[i] == tile)
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+
+            bool requestedIsCandidate = false;
+            uint? fallback = null;
+            for (int i = 0; i < decision.Candidates.Count; i++)
+            {
+                PlayerLegalActionState candidate = decision.Candidates[i];
+                if (candidate.Action != PlayerActionKind.DiscardTile)
+                {
+                    continue;
+                }
+
+                for (int t = 0; t < candidate.TileIds.Count; t++)
+                {
+                    uint tile = candidate.TileIds[t];
+                    if (!InHand(tile))
+                    {
+                        continue;
+                    }
+
+                    if (tile == requestedTileId)
+                    {
+                        requestedIsCandidate = true;
+                    }
+
+                    if (!fallback.HasValue)
+                    {
+                        fallback = tile;
+                    }
+                }
+            }
+
+            if (requestedIsCandidate)
+            {
+                reason = "REQUESTED_TILE_IS_CONFIRMED_CANDIDATE";
+                return requestedTileId;
+            }
+
+            if (fallback.HasValue)
+            {
+                reason = "REQUESTED_TILE_NOT_IN_CONFIRMED_CANDIDATES; SELECTED_IN_HAND_CANDIDATE";
+                return fallback.Value;
+            }
+
+            reason = "NO_CONFIRMED_CANDIDATE_STILL_IN_HAND";
+            return null;
+        }
+
+        private static string DescribeDiscardCandidates(PlayerTableViewState view)
+        {
+            PlayerDecisionState? decision = view.Own?.Decision;
+            if (decision == null)
+            {
+                return string.Empty;
+            }
+
+            var parts = new List<string>();
+            for (int i = 0; i < decision.Candidates.Count; i++)
+            {
+                PlayerLegalActionState candidate = decision.Candidates[i];
+                if (candidate.Action == PlayerActionKind.DiscardTile)
+                {
+                    parts.Add(string.Join("|", candidate.TileIds));
+                }
+            }
+
+            return string.Join(";", parts);
+        }
+
+        private void AddDiscardDiagnostic(C04DiscardDiagnostic diagnostic)
+        {
+            if (_evidence != null)
+            {
+                _evidence.discards.Add(diagnostic);
+            }
+
+            Debug.Log(
+                "C04_PROBE_DISCARD: requested=" + diagnostic.requestedTileId +
+                " selected=" + diagnostic.selectedTileId +
+                " reason=" + diagnostic.selectionReason +
+                " selection=" + diagnostic.selectionKind + "/" + diagnostic.selectedAction +
+                " button=" + diagnostic.discardButtonActive + "/" + diagnostic.discardButtonInteractable +
+                " pending=" + diagnostic.pendingRequestId +
+                " receipt=" + diagnostic.receiptStatus + "/" + diagnostic.receiptReason +
+                " version=" + diagnostic.stateVersionBefore + "->" + diagnostic.stateVersionAfter +
+                " failure=" + diagnostic.failure);
         }
 
         private IEnumerator AdvanceToNextDealerTurn()
@@ -1209,9 +1480,23 @@ namespace Mahjong.Unity.App
                             (view.Board.Phase == PlayerGamePhase.CheatWindow ||
                              view.Board.Phase == PlayerGamePhase.Discard))
                         {
-                            uint tile = view.Own.DrawnTileId ?? view.Own.ClosedTiles[0];
-                            ClickHandEntity(tile);
+                            uint requested = view.Own.DrawnTileId ?? view.Own.ClosedTiles[0];
+                            uint? tile = PickConfirmedDiscardCandidate(view, requested, out _);
+                            if (!tile.HasValue)
+                            {
+                                _waitOk = false;
+                                yield break;
+                            }
+
+                            ClickHandEntity(tile.Value);
                             yield return null;
+                            Button discard = FindButton("DiscardButton");
+                            if (!discard.gameObject.activeSelf || !discard.interactable)
+                            {
+                                _waitOk = false;
+                                yield break;
+                            }
+
                             ClickButton("DiscardButton");
                             version = view.Identity.StateVersion;
                             yield return null;
@@ -1363,6 +1648,7 @@ namespace Mahjong.Unity.App
 
             if (task.IsCompleted && !task.IsFaulted && !task.IsCanceled)
             {
+                _lastCapture = task.Result;
                 _taskFacts = task.Result.Facts;
                 _waitOk = true;
             }
@@ -1561,12 +1847,209 @@ namespace Mahjong.Unity.App
             evidence.buildCommit = _buildCommit;
             evidence.playerPath = _playerPath;
             evidence.unityVersion = _unityVersion;
+            evidence.packageManifestSha256 = _packageManifestSha256;
+            if (_capture != null && _rawActions.Count > 0)
+            {
+                WriteRawIndex(evidence);
+            }
+
             evidence.assertionCount = evidence.assertions.Count;
             evidence.passedAssertionCount = evidence.assertions.Count(a => a.pass);
             evidence.failedAssertionCount = evidence.assertions.Count(a => !a.pass);
             string path = Path.Combine(_evidenceDir, "case-" + _caseName + ".json");
             File.WriteAllText(path, JsonUtility.ToJson(evidence, true), new System.Text.UTF8Encoding(false));
             Debug.Log("C04_PROBE_EVIDENCE: " + path);
+        }
+
+        // ---------------------------------------------------------------- raw original capture
+
+        private void RecordRawAction(
+            string id,
+            C04ReceiptRecord receipt,
+            int sentStart,
+            int receivedStart,
+            LocalTableRecoveryCapture? before,
+            bool requirePublication)
+        {
+            C04Evidence? evidence = _evidence;
+            if (evidence == null || _capture == null)
+            {
+                return;
+            }
+
+            byte[]? welcome = _welcomeFrame ?? FindReceivedFrame(0, e => e.MessageType == WireMessageType.Welcome);
+            byte[]? command = FindSentFrame(
+                sentStart,
+                e => e.MessageType == WireMessageType.Command &&
+                     string.Equals(e.RequestId, receipt.RequestId, StringComparison.Ordinal));
+            byte[]? receiptFrame = FindReceivedFrame(
+                receivedStart,
+                e => e.MessageType == WireMessageType.Receipt &&
+                     string.Equals(e.RequestId, receipt.RequestId, StringComparison.Ordinal));
+            if (welcome == null || command == null || receiptFrame == null)
+            {
+                Check(
+                    evidence,
+                    id + "-RAW",
+                    false,
+                    "original welcome/command/receipt bytes captured from the real channel",
+                    "welcome=" + (welcome != null) + " command=" + (command != null) + " receipt=" + (receiptFrame != null) +
+                    " request=" + receipt.RequestId);
+                return;
+            }
+
+            _welcomeFrame = welcome;
+            var action = new C04RawAction
+            {
+                id = id,
+                welcome = WriteRawRef(id + "-welcome.pb", welcome),
+                command = WriteRawRef(id + "-command.pb", command),
+                receipt = WriteRawRef(id + "-receipt.pb", receiptFrame)
+            };
+
+            if (requirePublication)
+            {
+                byte[]? publication = receipt.HasCommandVersion
+                    ? FindReceivedFrame(
+                        receivedStart,
+                        e => e.MessageType == WireMessageType.PlayerUpdate &&
+                             e.PlayerUpdate != null &&
+                             e.PlayerUpdate.VisibleEvents.Any(ev => ev.CommandVersion == receipt.CommandVersion))
+                    : null;
+                if (publication == null)
+                {
+                    Check(
+                        evidence,
+                        id + "-RAW-PUBLICATION",
+                        false,
+                        "exact accepted private publication for command version " + receipt.CommandVersion,
+                        "not found in received transcript");
+                    return;
+                }
+
+                action.acceptedPrivatePublication = WriteRawRef(id + "-private-update.pb", publication);
+            }
+
+            if (before == null || _lastCapture == null)
+            {
+                Check(evidence, id + "-RAW-RECOVERY", false, "before/after authority save and cheat state", "capture missing");
+                return;
+            }
+
+            action.before = new C04RawPair
+            {
+                authoritySave = WriteRawRef(id + "-before.save", before.AuthoritySaveBytes),
+                cheatState = WriteRawRef(id + "-before-cheat.bin", before.CheatStatePayload)
+            };
+            action.after = new C04RawPair
+            {
+                authoritySave = WriteRawRef(id + "-after.save", _lastCapture.AuthoritySaveBytes),
+                cheatState = WriteRawRef(id + "-after-cheat.bin", _lastCapture.CheatStatePayload)
+            };
+            _rawActions.Add(action);
+            Check(
+                evidence,
+                id + "-RAW",
+                true,
+                "original channel/recovery bytes captured",
+                "request=" + receipt.RequestId + " commandVersion=" + receipt.CommandVersion);
+        }
+
+        private byte[]? FindSentFrame(int start, Func<WireEnvelope, bool> predicate)
+        {
+            if (_capture == null)
+            {
+                return null;
+            }
+
+            byte[][] frames = _capture.SentFrom(start);
+            for (int i = 0; i < frames.Length; i++)
+            {
+                WireDecodeResult decoded = WireCodec.Decode(frames[i]);
+                if (decoded.IsOk && decoded.Envelope != null && predicate(decoded.Envelope))
+                {
+                    return frames[i];
+                }
+            }
+
+            return null;
+        }
+
+        private byte[]? FindReceivedFrame(int start, Func<WireEnvelope, bool> predicate)
+        {
+            if (_capture == null)
+            {
+                return null;
+            }
+
+            byte[][] frames = _capture.ReceivedFrom(start);
+            for (int i = 0; i < frames.Length; i++)
+            {
+                WireDecodeResult decoded = WireCodec.Decode(frames[i]);
+                if (decoded.IsOk && decoded.Envelope != null && predicate(decoded.Envelope))
+                {
+                    return frames[i];
+                }
+            }
+
+            return null;
+        }
+
+        private C04RawRef WriteRawRef(string name, byte[] bytes)
+        {
+            string relative = "raw/" + name;
+            File.WriteAllBytes(Path.Combine(_evidenceDir, "raw", name), bytes);
+            return new C04RawRef { path = relative, sha256 = Sha256(bytes) };
+        }
+
+        private void WriteRawIndex(C04Evidence evidence)
+        {
+            if (_capture == null)
+            {
+                return;
+            }
+
+            var index = new C04RawIndex
+            {
+                schemaVersion = 2,
+                producer = "LOCALHOST_CHANNEL",
+                sourceHead = _sourceHead,
+                packageManifestSha256 = _packageManifestSha256,
+                actions = _rawActions.ToArray(),
+                sentFrames = WriteFrameSet("sent", _capture.SentFrom(0)),
+                receivedFrames = WriteFrameSet("received", _capture.ReceivedFrom(0))
+            };
+            byte[] bytes = new System.Text.UTF8Encoding(false).GetBytes(JsonUtility.ToJson(index, true));
+            string indexFile = Path.Combine(_evidenceDir, "raw", "index.json");
+            File.WriteAllBytes(indexFile, bytes);
+            evidence.rawEvidenceIndex = "raw/index.json";
+            evidence.rawEvidenceIndexSha256 = Sha256(bytes);
+        }
+
+        private C04RawRef[] WriteFrameSet(string prefix, byte[][] frames)
+        {
+            var refs = new C04RawRef[frames.Length];
+            for (int i = 0; i < frames.Length; i++)
+            {
+                refs[i] = WriteRawRef(prefix + "-" + i.ToString("D5", CultureInfo.InvariantCulture) + ".pb", frames[i]);
+            }
+
+            return refs;
+        }
+
+        private static string Sha256(byte[] bytes)
+        {
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+            {
+                byte[] hash = sha.ComputeHash(bytes);
+                var text = new System.Text.StringBuilder(hash.Length * 2);
+                for (int i = 0; i < hash.Length; i++)
+                {
+                    text.Append(hash[i].ToString("X2", CultureInfo.InvariantCulture));
+                }
+
+                return text.ToString();
+            }
         }
     }
 
@@ -1587,6 +2070,9 @@ namespace Mahjong.Unity.App
         public string buildCommit = string.Empty;
         public string playerPath = string.Empty;
         public string unityVersion = string.Empty;
+        public string packageManifestSha256 = string.Empty;
+        public string rawEvidenceIndex = string.Empty;
+        public string rawEvidenceIndexSha256 = string.Empty;
         public int assertionCount;
         public int passedAssertionCount;
         public int failedAssertionCount;
@@ -1594,6 +2080,7 @@ namespace Mahjong.Unity.App
         public List<C04Assertion> assertions = new List<C04Assertion>();
         public List<C04RequestRecord> requests = new List<C04RequestRecord>();
         public List<C04Observation> observations = new List<C04Observation>();
+        public List<C04DiscardDiagnostic> discards = new List<C04DiscardDiagnostic>();
         public C04AuthorityFacts? before;
         public C04AuthorityFacts? afterMark;
         public C04AuthorityFacts? afterBloom;
@@ -1641,6 +2128,68 @@ namespace Mahjong.Unity.App
         public long stateVersionBefore;
         public long stateVersionAfter;
         public string source = "TablePresenter";
+    }
+
+    [Serializable]
+    public sealed class C04DiscardDiagnostic
+    {
+        public uint requestedTileId;
+        public uint selectedTileId;
+        public string decisionId = string.Empty;
+        public long stateVersionBefore;
+        public long stateVersionAfter;
+        public uint drawnTileId;
+        public bool hasDrawnTile;
+        public string closedTiles = string.Empty;
+        public string candidateTiles = string.Empty;
+        public string selectionReason = string.Empty;
+        public string selectionKind = string.Empty;
+        public string selectedAction = string.Empty;
+        public bool discardButtonActive;
+        public bool discardButtonInteractable;
+        public string pendingRequestId = string.Empty;
+        public string receiptStatus = string.Empty;
+        public string receiptReason = string.Empty;
+        public bool waitOk;
+        public string failure = string.Empty;
+    }
+
+    [Serializable]
+    public sealed class C04RawRef
+    {
+        public string path = string.Empty;
+        public string sha256 = string.Empty;
+    }
+
+    [Serializable]
+    public sealed class C04RawPair
+    {
+        public C04RawRef? authoritySave;
+        public C04RawRef? cheatState;
+    }
+
+    [Serializable]
+    public sealed class C04RawAction
+    {
+        public string id = string.Empty;
+        public C04RawRef? welcome;
+        public C04RawRef? command;
+        public C04RawRef? receipt;
+        public C04RawRef? acceptedPrivatePublication;
+        public C04RawPair? before;
+        public C04RawPair? after;
+    }
+
+    [Serializable]
+    public sealed class C04RawIndex
+    {
+        public int schemaVersion = 2;
+        public string producer = "LOCALHOST_CHANNEL";
+        public string sourceHead = string.Empty;
+        public string packageManifestSha256 = string.Empty;
+        public C04RawAction[] actions = Array.Empty<C04RawAction>();
+        public C04RawRef[] sentFrames = Array.Empty<C04RawRef>();
+        public C04RawRef[] receivedFrames = Array.Empty<C04RawRef>();
     }
 
     [Serializable]
@@ -1697,6 +2246,9 @@ namespace Mahjong.Unity.App
         public ulong ControlEpoch;
         public int Seat;
         public string RoundId = string.Empty;
+        public bool HasCommandVersion;
+        public ulong CommandVersion;
+        public ulong EventSeq;
 
         public C04RequestRecord ToRecord(ulong stateVersionBefore, ulong stateVersionAfter)
         {

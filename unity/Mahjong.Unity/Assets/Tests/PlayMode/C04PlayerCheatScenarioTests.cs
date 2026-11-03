@@ -111,10 +111,30 @@ namespace Mahjong.Unity.Tests.PlayMode
             Assert.AreEqual(120, initial.Own!.Cheat!.CheatPoints);
             Assert.AreEqual(0, initial.Own.Cheat.Ledger.Count);
 
-            // G3-01 is BLOCKED at the accepted Player UI entry: the first mark has no
-            // PrivateCheatView.TileMark projection and TableCommandIntentFactory rejects it.
-            Assert.IsNull(initial.Own.Cheat.TileMark, "first TileMark must be absent before a group");
-            Assert.IsFalse(FindButton("TileMarkButton").gameObject.activeSelf, "TileMark control must be hidden");
+            // G3-01 TileMark: 1 point, exactly one private ledger entry, 120 -> 119.
+            uint[] markTiles = C04PlayerCheatChannelFactory
+                .ProposedTileMarkTiles(C04PlayerCheatScenario.AuthorizedThreeCheats);
+            _receiptMark = _receipts.Count;
+            Click("TileMarkButton");
+            yield return null;
+            for (int i = 0; i < markTiles.Length; i++)
+            {
+                ClickHandEntity(markTiles[i]);
+                yield return null;
+            }
+
+            Click("ConfirmTileMarkButton");
+            yield return WaitReceipt(CommandKind.SubmitTileMark, 15f);
+            Assert.IsTrue(_waitOk, "TileMark receipt");
+            Assert.AreEqual("APPLIED", _lastReceipt!.Status, _lastReceipt.Reason);
+            yield return WaitView(
+                v => v.Own?.Cheat?.CheatPoints == 119 &&
+                     v.Own.Cheat.Ledger.Count == 1 &&
+                     v.Own.Cheat.TileMark != null,
+                15f);
+            Assert.IsTrue(_waitOk, "TileMark projection");
+            Assert.AreEqual(-1, _presenter.LatestView!.Own!.Cheat!.Ledger[0].Amount);
+            Assert.AreEqual(119, _presenter.LatestView.Own.Cheat.Ledger[0].BalanceAfter);
 
             // Discard and advance to the second dealer turn.
             yield return DiscardEntity(120u);
@@ -130,8 +150,8 @@ namespace Mahjong.Unity.Tests.PlayMode
             Assert.IsTrue(_waitOk, "SleeveBloom receipt missing; window=" + _presenter.LatestView!.Own!.Cheat!.WindowId + " offer=" + (_presenter.LatestView.Own.Cheat.ImmediateSleeveBloom != null) + " pending=" + (_presenter.InteractionState.Pending?.Intent.Kind.ToString() ?? "null") + " points=" + _presenter.LatestView.Own.Cheat.CheatPoints);
             Assert.AreEqual("APPLIED", _lastReceipt!.Status, _lastReceipt.Reason);
             yield return WaitView(
-                v => v.Own?.Cheat?.CheatPoints == 110 &&
-                     v.Own.Cheat.Ledger.Count == 1 &&
+                v => v.Own?.Cheat?.CheatPoints == 109 &&
+                     v.Own.Cheat.Ledger.Count == 2 &&
                      v.Own.Cheat.ImmediateSleeveBloom != null,
                 15f);
             Assert.IsTrue(_waitOk, "SleeveBloom offer");
@@ -139,8 +159,8 @@ namespace Mahjong.Unity.Tests.PlayMode
             uint second = offer.SecondTileId!.Value;
             Assert.AreEqual(drawnBefore, offer.FirstTileId);
             Assert.AreNotEqual(drawnBefore, second);
-            Assert.AreEqual(-10, _presenter.LatestView.Own.Cheat.Ledger[0].Amount);
-            Assert.AreEqual(110, _presenter.LatestView.Own.Cheat.Ledger[0].BalanceAfter);
+            Assert.AreEqual(-10, _presenter.LatestView.Own.Cheat.Ledger[1].Amount);
+            Assert.AreEqual(109, _presenter.LatestView.Own.Cheat.Ledger[1].BalanceAfter);
 
             _receiptMark = _receipts.Count;
             Click("SleeveBloomButton");
@@ -154,12 +174,15 @@ namespace Mahjong.Unity.Tests.PlayMode
             Assert.IsTrue(_waitOk, "SleeveBloom resolved");
             PlayerTableViewState bloomed = _presenter.LatestView!;
             Assert.AreEqual(second, bloomed.Own!.DrawnTileId);
-            Assert.AreEqual(110, bloomed.Own.Cheat!.CheatPoints);
-            Assert.AreEqual(1, bloomed.Own.Cheat.Ledger.Count, "choice must not charge again");
+            Assert.AreEqual(109, bloomed.Own.Cheat!.CheatPoints);
+            Assert.AreEqual(2, bloomed.Own.Cheat.Ledger.Count, "choice must not charge again");
 
-            uint discardTile = bloomed.Own.DrawnTileId ?? bloomed.Own.ClosedTiles[0];
+            // The confirmed decision still carries the pre-swap candidate set. A real player
+            // must discard one of those still-in-hand entities; the swapped-in drawn entity is
+            // not a legal candidate for this decision.
+            uint discardTile = ConfirmedInHandDiscardCandidate(bloomed, second);
             yield return DiscardEntity(discardTile);
-            Assert.IsTrue(_waitOk, "second discard");
+            Assert.IsTrue(_waitOk, "second discard through a confirmed candidate");
             yield return AdvanceToNextDealerTurn();
             Assert.IsTrue(_waitOk, "third dealer turn");
 
@@ -170,16 +193,16 @@ namespace Mahjong.Unity.Tests.PlayMode
             Assert.IsTrue(_waitOk, "BeamSwap receipt");
             Assert.AreEqual("APPLIED", _lastReceipt!.Status, _lastReceipt.Reason);
             yield return WaitView(
-                v => v.Own?.Cheat?.CheatPoints == 100 &&
-                     v.Own.Cheat.Ledger.Count == 2 &&
+                v => v.Own?.Cheat?.CheatPoints == 99 &&
+                     v.Own.Cheat.Ledger.Count == 3 &&
                      v.Own.Cheat.BeamSwap != null,
                 15f);
             Assert.IsTrue(_waitOk, "BeamSwap offer");
             PlayerBeamSwapState beam = _presenter.LatestView!.Own!.Cheat.BeamSwap!;
             Assert.Greater(beam.Candidates.Count, 0);
             Assert.Greater(beam.SelectableHandTileIds.Count, 0);
-            Assert.AreEqual(-10, _presenter.LatestView.Own.Cheat.Ledger[1].Amount);
-            Assert.AreEqual(100, _presenter.LatestView.Own.Cheat.Ledger[1].BalanceAfter);
+            Assert.AreEqual(-10, _presenter.LatestView.Own.Cheat.Ledger[2].Amount);
+            Assert.AreEqual(99, _presenter.LatestView.Own.Cheat.Ledger[2].BalanceAfter);
 
             uint handTile = beam.SelectableHandTileIds[0];
             _receiptMark = _receipts.Count;
@@ -197,9 +220,48 @@ namespace Mahjong.Unity.Tests.PlayMode
             yield return WaitView(v => v.Own?.Cheat?.BeamSwap == null, 15f);
             Assert.IsTrue(_waitOk, "BeamSwap resolved");
             PlayerTableViewState final = _presenter.LatestView!;
-            Assert.AreEqual(100, final.Own!.Cheat!.CheatPoints);
-            Assert.AreEqual(2, final.Own.Cheat.Ledger.Count);
-            Assert.AreEqual(100, final.Own.Cheat.Ledger[1].BalanceAfter);
+            Assert.AreEqual(99, final.Own!.Cheat!.CheatPoints);
+            Assert.AreEqual(3, final.Own.Cheat.Ledger.Count);
+            Assert.AreEqual(99, final.Own.Cheat.Ledger[2].BalanceAfter);
+        }
+
+        private static uint ConfirmedInHandDiscardCandidate(PlayerTableViewState view, uint preferred)
+        {
+            PlayerDecisionState decision = view.Own!.Decision!;
+            uint fallback = uint.MaxValue;
+            bool foundFallback = false;
+            for (int i = 0; i < decision.Candidates.Count; i++)
+            {
+                PlayerLegalActionState candidate = decision.Candidates[i];
+                if (candidate.Action != PlayerActionKind.DiscardTile)
+                {
+                    continue;
+                }
+
+                for (int t = 0; t < candidate.TileIds.Count; t++)
+                {
+                    uint tile = candidate.TileIds[t];
+                    bool inHand = view.Own.DrawnTileId == tile || view.Own.ClosedTiles.Contains(tile);
+                    if (!inHand)
+                    {
+                        continue;
+                    }
+
+                    if (tile == preferred)
+                    {
+                        return tile;
+                    }
+
+                    if (!foundFallback)
+                    {
+                        fallback = tile;
+                        foundFallback = true;
+                    }
+                }
+            }
+
+            Assert.IsTrue(foundFallback, "confirmed decision exposes an in-hand discard candidate");
+            return fallback;
         }
 
         [UnityTest]
@@ -242,6 +304,7 @@ namespace Mahjong.Unity.Tests.PlayMode
             yield return WaitReceiptById(requestId, 15f);
             Assert.IsTrue(_waitOk, "unauthorized receipt");
             Assert.AreEqual("REJECTED", _lastReceipt!.Status, _lastReceipt.Reason);
+            Assert.AreEqual("DECISION_MISMATCH", _lastReceipt.Reason);
 
             yield return new WaitForSecondsRealtime(0.25f);
             PlayerTableViewState after = _presenter.LatestView!;
@@ -388,15 +451,43 @@ namespace Mahjong.Unity.Tests.PlayMode
         {
             _waitOk = false;
             PlayerTableViewState? before = _presenter?.LatestView;
-            if (before == null)
+            if (before?.Own?.Decision == null)
             {
                 yield break;
             }
 
-            ClickHandEntity(tileId);
+            uint selected = ConfirmedInHandDiscardCandidate(before, tileId);
+            Debug.Log("C04_TEST_DISCARD requested=" + tileId + " selected=" + selected +
+                      " decision=" + before.Own.Decision.DecisionId +
+                      " closed=" + string.Join(",", before.Own.ClosedTiles) +
+                      " drawn=" + (before.Own.DrawnTileId?.ToString() ?? "none") +
+                      " candidates=" + string.Join(";", before.Own.Decision.Candidates
+                          .Where(c => c.Action == PlayerActionKind.DiscardTile)
+                          .Select(c => string.Join("|", c.TileIds))));
+            ClickHandEntity(selected);
             yield return null;
+            Button discard = FindButton("DiscardButton");
+            Debug.Log("C04_TEST_DISCARD selection=" + _presenter!.InteractionState.Selection.Kind +
+                      "/" + (_presenter.InteractionState.Selection.Action?.Action.ToString() ?? "none") +
+                      " button=" + discard.gameObject.activeSelf + "/" + discard.interactable +
+                      " pending=" + (_presenter.InteractionState.Pending?.Intent.Command.RequestId.Value ?? "none"));
+            if (!discard.gameObject.activeSelf || !discard.interactable)
+            {
+                yield break;
+            }
+
+            _receiptMark = _receipts.Count;
             Click("DiscardButton");
             ulong version = before.Identity.StateVersion;
+            yield return WaitReceipt(CommandKind.SubmitAction, 15f);
+            Debug.Log("C04_TEST_DISCARD receipt=" + (_lastReceipt?.Status ?? "none") +
+                      "/" + (_lastReceipt?.Reason ?? "none") + " wait=" + _waitOk);
+            if (!_waitOk || _lastReceipt == null ||
+                !string.Equals(_lastReceipt.Status, "APPLIED", StringComparison.Ordinal))
+            {
+                yield break;
+            }
+
             yield return WaitView(v => v.Identity.StateVersion > version, 15f);
         }
 
@@ -424,9 +515,17 @@ namespace Mahjong.Unity.Tests.PlayMode
                             (view.Board.Phase == PlayerGamePhase.CheatWindow ||
                              view.Board.Phase == PlayerGamePhase.Discard))
                         {
-                            uint tile = view.Own.DrawnTileId ?? view.Own.ClosedTiles[0];
+                            uint requested = view.Own.DrawnTileId ?? view.Own.ClosedTiles[0];
+                            uint tile = ConfirmedInHandDiscardCandidate(view, requested);
                             ClickHandEntity(tile);
                             yield return null;
+                            Button discard = FindButton("DiscardButton");
+                            if (!discard.gameObject.activeSelf || !discard.interactable)
+                            {
+                                _waitOk = false;
+                                yield break;
+                            }
+
                             Click("DiscardButton");
                             version = view.Identity.StateVersion;
                             yield return null;

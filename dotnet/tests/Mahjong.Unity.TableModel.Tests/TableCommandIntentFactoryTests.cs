@@ -57,6 +57,41 @@ namespace Mahjong.Unity.TableModel.Tests
         }
 
         [Fact]
+        public void DiscardSelectionRejectsSwappedInDrawAndUsesOnlyConfirmedInHandCandidates()
+        {
+            var clock = new ManualTableClock();
+            PlayerSnapshot raw = P43TestData.PlayerSnapshot();
+            raw.PrivateView.DrawnTileId = 14;
+            raw.PrivateView.Decision.Actions.Clear();
+            raw.PrivateView.Decision.Actions.Add(new Mahjong.Contracts.Wire.LegalActionView
+            {
+                ActionType = (uint)ProtocolActionType.DiscardTile,
+                OptionId = "discard-0",
+                TileIds = { 0 }
+            });
+            PlayerTableViewState view = View(clock, raw);
+
+            var factory = new TableCommandIntentFactory(clock);
+            var state = new TableInteractionState(factory);
+            Assert.True(state.ApplyConfirmedView(view).Accepted);
+
+            TableInteractionOutcome swappedInDraw = state.SelectDiscardTile(14);
+            Assert.False(swappedInDraw.Accepted);
+            Assert.Equal(TableInteractionCodes.NotACandidate, swappedInDraw.Code);
+            Assert.Null(state.Selection.Action);
+
+            TableInteractionOutcome confirmed = state.SelectDiscardTile(0);
+            Assert.True(confirmed.Accepted);
+            Assert.Equal(TableSelectionKind.Action, state.Selection.Kind);
+            Assert.Equal(0u, state.Selection.Action!.TileIds[0]);
+
+            TableCommandIntent intent = factory.CreateSubmitAction(view, state.Selection.Action, Owner());
+            TestPayload document = Payload(intent);
+            Assert.Equal(CommandKind.SubmitAction, intent.Kind);
+            Assert.Equal(new uint[] { 0 }, document.RequireRepeatedUInt32(CommandPayloadFields.TileIds, "tileIds"));
+        }
+
+        [Fact]
         public void SleeveChoiceUsesOfferIdAndNeverFabricatesRoundId()
         {
             var clock = new ManualTableClock();

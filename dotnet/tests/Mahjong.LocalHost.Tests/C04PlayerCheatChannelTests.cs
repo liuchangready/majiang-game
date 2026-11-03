@@ -159,11 +159,19 @@ namespace Mahjong.LocalHost.Tests
                 AssertRequestApplied(afterBloomFacts, bloom.RequestId, bloom.RawPayloadSha256);
                 AssertRequestApplied(afterBloomFacts, bloomChoice.RequestId, bloomChoice.RawPayloadSha256);
 
-                // Discard the swapped draw and advance one more full turn to the dealer's
-                // third real draw, where BeamSwap is legal (one trick per turn).
-                uint discardTile = afterBloomChoice.PrivateView.HasDrawnTileId
-                    ? afterBloomChoice.PrivateView.DrawnTileId
-                    : afterBloomChoice.PrivateView.ClosedTiles[0];
+                // The confirmed decision was opened from the pre-swap hand, so the swapped-in
+                // drawn entity is NOT a confirmed discard candidate even though it is now the
+                // drawn tile. The real Player UI must therefore select an in-hand confirmed
+                // candidate; selecting the new drawn entity would be rejected by
+                // TableInteractionState.SelectDiscardTile before any command is sent.
+                var discardCandidates = afterBloomChoice.PrivateView.Decision.Actions
+                    .Where(a => a.ActionType == (uint)Mahjong.Contracts.ProtocolActionType.DiscardTile)
+                    .SelectMany(a => a.TileIds)
+                    .ToList();
+                Assert.DoesNotContain(second, discardCandidates);
+                uint discardTile = discardCandidates.First(tile =>
+                    tile == afterBloomChoice.PrivateView.DrawnTileId ||
+                    afterBloomChoice.PrivateView.ClosedTiles.Contains(tile));
                 await DiscardAsync(session, afterBloomChoice, discardTile, pumpCts.Token);
                 PlayerSnapshot secondTurn = await AdvanceToNextSeatZeroTurnAsync(
                     session,
@@ -311,7 +319,7 @@ namespace Mahjong.LocalHost.Tests
                     "c04-g3-insufficient",
                     pumpCts.Token);
                 AssertRejected(rejected);
-                Assert.Contains("INSUFFICIENT", rejected.ReasonCode, StringComparison.OrdinalIgnoreCase);
+                Assert.Equal("CHEAT_INSUFFICIENT_FUNDS", rejected.ReasonCode);
 
                 await Task.Delay(150, pumpCts.Token);
                 LocalTableRecoveryFacts after = await CaptureFactsAsync(harness, pumpCts.Token);
@@ -370,6 +378,7 @@ namespace Mahjong.LocalHost.Tests
                     snapshot.PrivateView.Decision.ControlEpoch,
                     pumpCts.Token);
                 AssertRejected(receipt);
+                Assert.Equal("DECISION_MISMATCH", receipt.ReasonCode);
 
                 await Task.Delay(150, pumpCts.Token);
                 LocalTableRecoveryFacts after = await CaptureFactsAsync(harness, pumpCts.Token);

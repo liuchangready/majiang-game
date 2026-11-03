@@ -1180,7 +1180,12 @@ namespace Mahjong.Unity.Table
                 }
             }
 
-            SetButtonActive(_discardButton, canDiscard && _interactionState.Selection.HandTileId.HasValue);
+            // A confirmed discard selection is an Action-kind selection (SelectDiscardTile
+            // delegates to SelectAction); it deliberately carries no BeamSwap HandTileId.
+            bool discardSelected = _interactionState.Selection.Kind == TableSelectionKind.Action &&
+                                   _interactionState.Selection.Action != null &&
+                                   _interactionState.Selection.Action.Action == PlayerActionKind.DiscardTile;
+            SetButtonActive(_discardButton, canDiscard && discardSelected);
             SetButtonActive(_chiButton, canChi);
             SetButtonActive(_ponButton, canPon);
             SetButtonActive(_kanButton, canKan);
@@ -1188,7 +1193,7 @@ namespace Mahjong.Unity.Table
             SetButtonActive(_tsumoButton, canTsumo);
             SetButtonActive(_ronButton, canRon);
             SetButtonActive(_passButton, canPass);
-            SetButtonActive(_cancelSelectionButton, _interactionState.Selection.HandTileId.HasValue);
+            SetButtonActive(_cancelSelectionButton, _interactionState.Selection.HasSelection);
         }
 
         private bool HasPendingControl()
@@ -1533,10 +1538,66 @@ namespace Mahjong.Unity.Table
             if (index < _latestView.Own.ClosedTiles.Count)
             {
                 uint tileId = _latestView.Own.ClosedTiles[index];
-                _interactionState.SelectDiscardTile(tileId);
-                RenderOwnHand(_latestView);
-                RenderActionButtons(_latestView);
+                if (TrySelectConfirmedDiscardTile(tileId))
+                {
+                    RenderOwnHand(_latestView);
+                    RenderActionButtons(_latestView);
+                }
             }
+        }
+
+        /// <summary>
+        /// True only when the entity is one of the authority-confirmed discard candidates in
+        /// the current private decision. The hand can legitimately change under an already
+        /// confirmed decision (for example SleeveBloom SECOND swaps the drawn entity), so a
+        /// rendered hand/drawn tile is not automatically selectable.
+        /// </summary>
+        private bool IsConfirmedDiscardCandidate(uint tileId)
+        {
+            PlayerDecisionState? decision = _latestView?.Own?.Decision;
+            if (decision == null)
+            {
+                return false;
+            }
+
+            IReadOnlyList<PlayerLegalActionState> candidates = decision.Candidates;
+            for (int i = 0; i < candidates.Count; i++)
+            {
+                PlayerLegalActionState candidate = candidates[i];
+                if (candidate.Action != PlayerActionKind.DiscardTile)
+                {
+                    continue;
+                }
+
+                IReadOnlyList<uint> tiles = candidate.TileIds;
+                for (int t = 0; t < tiles.Count; t++)
+                {
+                    if (tiles[t] == tileId)
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        private bool TrySelectConfirmedDiscardTile(uint tileId)
+        {
+            if (!IsConfirmedDiscardCandidate(tileId))
+            {
+                UpdateStatusText("该牌不在当前合法出牌候选中，请选择已确认的手牌");
+                return false;
+            }
+
+            TableInteractionOutcome outcome = _interactionState.SelectDiscardTile(tileId);
+            if (!outcome.Accepted)
+            {
+                UpdateStatusText($"出牌选择失败: {FormatRejection(outcome.Code)}");
+                return false;
+            }
+
+            return true;
         }
 
         public void OnDrawnTileClicked()
@@ -1562,9 +1623,11 @@ namespace Mahjong.Unity.Table
                 return;
             }
 
-            _interactionState.SelectDiscardTile(tileId);
-            RenderOwnHand(_latestView);
-            RenderActionButtons(_latestView);
+            if (TrySelectConfirmedDiscardTile(tileId))
+            {
+                RenderOwnHand(_latestView);
+                RenderActionButtons(_latestView);
+            }
         }
 
         public void OnCancelSelectionClicked()

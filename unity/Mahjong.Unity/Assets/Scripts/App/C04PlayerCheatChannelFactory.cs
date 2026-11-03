@@ -1,5 +1,6 @@
 #nullable enable
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -9,6 +10,70 @@ using Mahjong.Unity.Platform;
 
 namespace Mahjong.Unity.App
 {
+    /// <summary>
+    /// Thread-safe capture of the exact serialized frames that cross the real production
+    /// channel. It never decodes, rewrites or synthesizes a frame; the probe only assigns
+    /// captured request ids/versions to the bytes the channel actually sent or received.
+    /// </summary>
+    public sealed class C04RawFrameCapture
+    {
+        private readonly object _gate = new object();
+        private readonly List<byte[]> _sent = new List<byte[]>();
+        private readonly List<byte[]> _received = new List<byte[]>();
+
+        public int SentCount
+        {
+            get { lock (_gate) { return _sent.Count; } }
+        }
+
+        public int ReceivedCount
+        {
+            get { lock (_gate) { return _received.Count; } }
+        }
+
+        public void RecordSent(ReadOnlyMemory<byte> frame)
+        {
+            byte[] copy = frame.ToArray();
+            lock (_gate) { _sent.Add(copy); }
+        }
+
+        public void RecordReceived(ReadOnlyMemory<byte> frame)
+        {
+            byte[] copy = frame.ToArray();
+            lock (_gate) { _received.Add(copy); }
+        }
+
+        public byte[][] SentFrom(int start)
+        {
+            lock (_gate)
+            {
+                int from = Math.Max(0, Math.Min(start, _sent.Count));
+                var result = new byte[_sent.Count - from][];
+                for (int i = from; i < _sent.Count; i++)
+                {
+                    result[i - from] = _sent[i];
+                }
+
+                return result;
+            }
+        }
+
+        public byte[][] ReceivedFrom(int start)
+        {
+            lock (_gate)
+            {
+                int from = Math.Max(0, Math.Min(start, _received.Count));
+                var result = new byte[_received.Count - from][];
+                for (int i = from; i < _received.Count; i++)
+                {
+                    result[i - from] = _received[i];
+                }
+
+                return result;
+            }
+        }
+    }
+
     /// <summary>
     /// App-level selector exposed to presentation tests. It deliberately has no Domain,
     /// round, tile, ledger or receipt member; the LocalHost assembly maps it to its one
@@ -43,12 +108,14 @@ namespace Mahjong.Unity.App
         private readonly C04PlayerCheatScenario _scenario;
         private readonly LocalPlayerCheatScenarioKind _localScenario;
         private readonly TimeSpan _leaseDuration;
+        private readonly C04RawFrameCapture? _capture;
 
         public C04PlayerCheatChannelFactory(
             UnityAppPaths paths,
             C04PlayerCheatScenario scenario,
             string? ownerInstanceId = null,
-            TimeSpan? leaseDuration = null)
+            TimeSpan? leaseDuration = null,
+            C04RawFrameCapture? capture = null)
         {
             if (paths == null) throw new ArgumentNullException(nameof(paths));
             if (!Enum.IsDefined(typeof(C04PlayerCheatScenario), scenario))
@@ -64,9 +131,13 @@ namespace Mahjong.Unity.App
             _scenario = scenario;
             _localScenario = (LocalPlayerCheatScenarioKind)(int)scenario;
             _leaseDuration = leaseDuration ?? TimeSpan.FromMinutes(10);
+            _capture = capture;
         }
 
         public C04PlayerCheatScenario Scenario => _scenario;
+
+        /// <summary>Exact channel transcript sink; null for ordinary component fixtures.</summary>
+        public C04RawFrameCapture? Capture => _capture;
 
         public string RoomId => _roomId;
 
@@ -123,17 +194,22 @@ namespace Mahjong.Unity.App
 
             cancellationToken.ThrowIfCancellationRequested();
             string ticket = LocalTableHost.IssueTicket(options);
-            return new C04PlayerCheatTicketChannel(channel, ticket);
+            return new C04PlayerCheatTicketChannel(channel, ticket, _capture);
         }
 
         private sealed class C04PlayerCheatTicketChannel : ITableChannel, ILocalTableTicketSource
         {
             private readonly ITableChannel _inner;
+            private readonly C04RawFrameCapture? _capture;
 
-            public C04PlayerCheatTicketChannel(ITableChannel inner, string sessionTicket)
+            public C04PlayerCheatTicketChannel(
+                ITableChannel inner,
+                string sessionTicket,
+                C04RawFrameCapture? capture)
             {
                 _inner = inner ?? throw new ArgumentNullException(nameof(inner));
                 SessionTicket = sessionTicket ?? throw new ArgumentNullException(nameof(sessionTicket));
+                _capture = capture;
             }
 
             public string SessionTicket { get; }
@@ -143,11 +219,18 @@ namespace Mahjong.Unity.App
             public Task OpenAsync(TableChannelConnectRequest request, CancellationToken cancellationToken) =>
                 _inner.OpenAsync(request, cancellationToken);
 
-            public Task SendAsync(ReadOnlyMemory<byte> wireEnvelope, CancellationToken cancellationToken) =>
-                _inner.SendAsync(wireEnvelope, cancellationToken);
+            public Task SendAsync(ReadOnlyMemory<byte> wireEnvelope, CancellationToken cancellationToken)
+            {
+                _capture?.RecordSent(wireEnvelope);
+                return _inner.SendAsync(wireEnvelope, cancellationToken);
+            }
 
-            public Task<ReadOnlyMemory<byte>> ReceiveAsync(CancellationToken cancellationToken) =>
-                _inner.ReceiveAsync(cancellationToken);
+            public async Task<ReadOnlyMemory<byte>> ReceiveAsync(CancellationToken cancellationToken)
+            {
+                ReadOnlyMemory<byte> frame = await _inner.ReceiveAsync(cancellationToken).ConfigureAwait(false);
+                _capture?.RecordReceived(frame);
+                return frame;
+            }
 
             public Task CloseAsync(TableChannelCloseReason reason, CancellationToken cancellationToken) =>
                 _inner.CloseAsync(reason, cancellationToken);
