@@ -491,6 +491,13 @@ Invoke-Case 'Unity compile-only mode imports and compiles without claiming a Pla
     Assert-True ($text.Contains('unity-project-compile-only') -and $text.Contains('Mahjong.Unity.App.dll') -and $text.Contains('Script compilation failed')) 'compile-only mode does not require the compiled app assembly and fail on compiler diagnostics'
 }
 
+Invoke-Case 'reused Unity Library is an excluded sealed cache and fresh source is restaged' {
+    $text = [IO.File]::ReadAllText($runner,[Text.Encoding]::UTF8)
+    Assert-True ($text.Contains('[string]$ReuseLibraryCacheFrom') -and $text.Contains('excludedFromPriorSeal = $true')) 'cache reuse is not recorded as an excluded cache'
+    Assert-True ($text.Contains('Reusable Library is not a sealed, excluded cache') -and $text.Contains('Move-Item -LiteralPath $sourceResolved -Destination $destinationLibrary')) 'cache reuse lacks prior-seal/path guards'
+    Assert-True ($text.Contains('$copied = Copy-C04UnityInputs -Repo $repo -Destination $staging')) 'fresh source closure is not copied before cache reuse'
+}
+
 $summary = [ordered]@{
     schemaVersion = 1
     kind = 'c04-privacy-runner-tests'

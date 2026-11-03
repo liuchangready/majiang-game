@@ -44,15 +44,17 @@ if ($bootstrapStart -ge 0 -and $bootstrapEnd -gt $bootstrapStart) {
   Check ($bootstrap.Contains('Required(args, CaseArgument)') -and $bootstrap.Contains('Required(args, EvidenceArgument)')) 'REQUIRED_ARGUMENTS_VALIDATED'
 }
 Check ($driver.Contains('AppRoot.EnsureInitialized') -and $driver.Contains('.Composition') -and $driver.Contains('new TableSession') -and $driver.Contains('CreateRoomViewerAsync')) 'REAL_APP_AND_SESSION_PATHS'
+Check ([regex]::IsMatch($driver,'private static string Json\(string value\).*Replace\("\\r", "\\\\r"\).*Replace\("\\n", "\\\\n"\);')) 'DRIVER_JSON_ESCAPE_IS_SINGLE_LINE'
 Check ($runner.Contains('[switch]$WindowsAppMatrix') -and $runner.Contains('Invoke-C04WindowsAppMatrix') -and $runner.Contains('windows-app-package-before.sha256') -and $runner.Contains('windows-app-package-after.sha256')) 'ORDINARY_PLAYER_PACKAGE_MATRIX_PATH'
 Check ($runner.Contains('windows-app-p2-prepare') -and $runner.Contains('windows-app-p2-recover') -and $runner.Contains('oldScopeQueryCount') -and $runner.Contains('prepareDoc.process.pid') -and $runner.Contains('recoverDoc.process.pid')) 'P2_PROCESS_RESTART_AND_ORIGINAL_QUERY'
 Check ($runner.Contains('windows-app-arg-reject-') -and $runner.Contains('unknown-case') -and $runner.Contains('duplicate-enable') -and $runner.Contains('C04_PRIVACY_PLAYER_ARGS_REJECTED')) 'PLAYER_ARGUMENT_NEGATIVE_MATRIX'
 Check ($runner.Contains('[switch]$CompileOnly') -and $runner.Contains('unity-project-compile-only') -and $runner.Contains('Mahjong.Unity.App.dll')) 'CHEAP_UNITY_SCRIPT_COMPILE_MODE'
+Check ($runner.Contains('[string]$ReuseLibraryCacheFrom') -and $runner.Contains('excludedFromPriorSeal = $true') -and $runner.Contains('Fresh staging project')) 'SEALED_EXCLUDED_CACHE_REUSE_GUARD'
 $recoveryProbe = [IO.File]::ReadAllText((Join-Path $repo 'unity/Mahjong.Unity/Assets/Scripts/App/C04RecoveryReconciliationProbe.cs'),[Text.Encoding]::UTF8)
 Check ($recoveryProbe.Contains('FileOutboxStore(arguments.OutboxDirectory)') -and $recoveryProbe.Contains('session.ReconcilePendingAsync') -and $recoveryProbe.Contains('noOriginalCommandResend')) 'P2_REAL_OUTBOX_RECONCILE_CONTRACT'
 $guid = [regex]::Match([IO.File]::ReadAllText($metaPath),'(?m)^guid: ([0-9a-f]{32})$').Groups[1].Value
 Check ($guid.Length -eq 32) 'UNIQUE_META_GUID'
-$result = [ordered]@{ schemaVersion=1; testKind='source-contract'; total=14; passed=(14-$failures.Count); failed=$failures.Count; failures=$failures.ToArray(); driverSha256=(Get-FileHash -Algorithm SHA256 $driverPath).Hash.ToLowerInvariant(); runnerSha256=(Get-FileHash -Algorithm SHA256 $runnerPath).Hash.ToLowerInvariant() }
+$result = [ordered]@{ schemaVersion=1; testKind='source-contract'; total=16; passed=(16-$failures.Count); failed=$failures.Count; failures=$failures.ToArray(); driverSha256=(Get-FileHash -Algorithm SHA256 $driverPath).Hash.ToLowerInvariant(); runnerSha256=(Get-FileHash -Algorithm SHA256 $runnerPath).Hash.ToLowerInvariant() }
 $json = $result | ConvertTo-Json -Depth 5
 [IO.File]::WriteAllText((Join-Path $root 'summary.json'),$json + "`n",[Text.UTF8Encoding]::new($false))
 if ($failures.Count) { Write-Error ('C04_PRIVACY_PLAYER_TESTS_FAIL ' + ($failures -join ',')); exit 1 }

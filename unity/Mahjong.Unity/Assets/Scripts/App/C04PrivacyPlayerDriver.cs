@@ -1636,8 +1636,6 @@ namespace Mahjong.Unity.App
 
         private static int Count(string[] args, string key) { int count = 0; foreach (string arg in args) if (string.Equals(arg,key,StringComparison.Ordinal)) count++; return count; }
         private static string Required(string[] args, string key) { int index = Array.IndexOf(args,key); if (index < 0 || index + 1 >= args.Length || args[index+1].StartsWith("-",StringComparison.Ordinal)) throw new ArgumentException("Missing value for " + key); if (Array.LastIndexOf(args,key) != index) throw new ArgumentException("Duplicate argument " + key); return args[index+1]; }
-        private static string Json(string value) => value.Replace("\\","\\\\").Replace("\"","\\\"").Replace("","\").Replace("
-","\
-");
+        private static string Json(string value) => value.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "\\r").Replace("\n", "\\n");
     }
 }

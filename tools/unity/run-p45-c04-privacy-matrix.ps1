@@ -11,6 +11,7 @@ param(
   [string]$MutexCancelFile = '',
   [string]$ExpectedSourceHead = '',
   [string]$PlayerBuildMarker = '',
+  [string]$ReuseLibraryCacheFrom = '',
   [switch]$PreflightOnly,
   [switch]$CompileOnly,
   [switch]$BuildPlayer,
@@ -1338,6 +1339,7 @@ function Invoke-C04RunnerMain {
   if (-not $script:RunRoot.StartsWith($allowed, [StringComparison]::OrdinalIgnoreCase)) { throw 'RunRoot must be a fresh child of repository build/.' }
   if ((Split-Path -Leaf $script:RunRoot) -notmatch '^[0-9a-fA-F]{32}$') { throw 'RunRoot must end in a GUID-N run id.' }
   if (Test-Path -LiteralPath $script:RunRoot) { throw 'RunRoot exists; refusing to overwrite evidence.' }
+  if (-not [string]::IsNullOrWhiteSpace($ReuseLibraryCacheFrom) -and -not $CompileOnly) { throw 'ReuseLibraryCacheFrom is permitted only for CompileOnly.' }
   if (-not (Test-Path -LiteralPath $UnityPath -PathType Leaf) -or -not (Test-Path -LiteralPath $DotnetPath -PathType Leaf)) {
     throw 'Pinned Unity or dotnet executable is missing.'
   }
@@ -1412,6 +1414,30 @@ function Invoke-C04RunnerMain {
 
     $staging = Join-Path $script:RunRoot 'staging-project'
     $copied = Copy-C04UnityInputs -Repo $repo -Destination $staging
+    if (-not [string]::IsNullOrWhiteSpace($ReuseLibraryCacheFrom)) {
+      $cachePath = [IO.Path]::GetFullPath($ReuseLibraryCacheFrom)
+      $buildRoot = [IO.Path]::GetFullPath((Join-Path $repo 'build')) + [IO.Path]::DirectorySeparatorChar
+      if (-not $cachePath.StartsWith($buildRoot,[StringComparison]::OrdinalIgnoreCase) -or
+          [IO.Path]::GetFileName($cachePath) -cne 'Library' -or
+          [IO.Path]::GetFileName([IO.Path]::GetDirectoryName($cachePath)) -cne 'staging-project' -or
+          -not (Test-Path -LiteralPath $cachePath -PathType Container)) {
+        throw 'Reusable Unity Library cache must be an existing build/<GUID>/staging-project/Library directory.'
+      }
+      $cacheManifest = Join-Path (Split-Path -Parent (Split-Path -Parent $cachePath)) 'manifest.sha256'
+      $cacheSeal = Join-Path (Split-Path -Parent (Split-Path -Parent $cachePath)) 'seal.json'
+      if (-not (Test-Path -LiteralPath $cacheManifest -PathType Leaf) -or -not (Test-Path -LiteralPath $cacheSeal -PathType Leaf) -or
+          (Select-String -LiteralPath $cacheManifest -Pattern 'staging-project/Library/' -Quiet)) {
+        throw 'Reusable Library is not a sealed, excluded cache from a completed prior run.'
+      }
+      $destinationLibrary = Join-Path $staging 'Library'
+      if (Test-Path -LiteralPath $destinationLibrary) { throw 'Fresh staging project unexpectedly already has Library.' }
+      $sourceResolved = (Resolve-Path -LiteralPath $cachePath).Path
+      $stagingResolved = (Resolve-Path -LiteralPath $staging).Path
+      if (-not $sourceResolved.StartsWith($buildRoot,[StringComparison]::OrdinalIgnoreCase) -or
+          -not $stagingResolved.StartsWith($buildRoot,[StringComparison]::OrdinalIgnoreCase)) { throw 'Library cache move escaped the isolated build workspace.' }
+      Move-Item -LiteralPath $sourceResolved -Destination $destinationLibrary
+      $summary.reusedLibraryCache = [ordered]@{ sourceRun = (Split-Path -Parent (Split-Path -Parent $cachePath)); destination = $destinationLibrary; excludedFromPriorSeal = $true; purpose = 'incremental Unity import cache only; staged source input is freshly copied and revalidated' }
+    }
     $stagedClosurePath = Join-Path $script:RunRoot 'staged-input.sha256'
     Write-C04Utf8 $stagedClosurePath $copied.staged.canonical
     $summary.stagedInput = [ordered]@{
