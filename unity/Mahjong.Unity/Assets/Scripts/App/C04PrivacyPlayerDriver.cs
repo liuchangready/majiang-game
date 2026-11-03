@@ -878,7 +878,7 @@ namespace Mahjong.Unity.App
                 await spectator.OpenAsync(new TableSessionOpenRequest(spectatorTicket.SessionTicket, LocalTableChannelFactory.ClientBuild), pumpCts.Token).ConfigureAwait(false);
                 spectatorPump = PumpLoopAsync(spectator, pumpCts.Token);
                 await WaitReadyAsync(spectator, pumpCts.Token).ConfigureAwait(false);
-                PlayerSnapshot spectatorBaseline = spectator.PublicSnapshot
+                PublicSnapshot spectatorBaseline = spectator.PublicSnapshot
                     ?? throw new InvalidOperationException("No spectator baseline after player close.");
                 if (spectatorBaseline.StateVersion != beforeVersion)
                     throw new InvalidOperationException("The spectator baseline was already advanced before deadline observation.");
@@ -924,7 +924,7 @@ namespace Mahjong.Unity.App
                     AfterVersion = afterSnapshot.StateVersion,
                     AfterCursorStreamVersion = afterSnapshot.Cursor.StreamVersion,
                     AfterCursorProjectionSeq = afterSnapshot.Cursor.ProjectionSeq,
-                    AfterPhase = afterSnapshot.Board?.Phase.ToString() ?? string.Empty,
+                    AfterPhase = afterSnapshot.View?.Board?.Phase.ToString() ?? string.Empty,
                     AdvancedWithoutPlayerBinding = advanced && playerBindingClosed && session == null && channel == null
                 };
             }
