@@ -1746,60 +1746,65 @@ namespace Mahjong.Unity.App
         private IEnumerator AdvanceToNextDealerTurn()
         {
             _waitOk = false;
-            ulong version = _presenter?.LatestView?.Identity.StateVersion ?? 0;
+            ulong actedAt = ulong.MaxValue;
             float deadline = Time.realtimeSinceStartup + 90f;
             while (Time.realtimeSinceStartup < deadline)
             {
                 PlayerTableViewState? view = _presenter?.LatestView;
-                if (view != null && view.Identity.StateVersion > version)
+                if (view == null)
                 {
-                    if (view.Board.Phase == PlayerGamePhase.CheatWindow &&
-                        view.Board.CurrentSeat == 0 &&
-                        view.Own?.Decision != null)
-                    {
-                        _waitOk = true;
-                        yield break;
-                    }
+                    yield return null;
+                    continue;
+                }
 
-                    if (view.Own?.Decision != null)
+                bool fresh = view.Identity.StateVersion != actedAt;
+                if (fresh &&
+                    view.Board.Phase == PlayerGamePhase.CheatWindow &&
+                    view.Board.CurrentSeat == 0 &&
+                    view.Own?.Decision != null)
+                {
+                    _waitOk = true;
+                    yield break;
+                }
+
+                if (fresh && view.Own?.Decision != null)
+                {
+                    if (view.Board.CurrentSeat == 0 &&
+                        (view.Board.Phase == PlayerGamePhase.CheatWindow ||
+                         view.Board.Phase == PlayerGamePhase.Discard))
                     {
-                        if (view.Board.CurrentSeat == 0 &&
-                            (view.Board.Phase == PlayerGamePhase.CheatWindow ||
-                             view.Board.Phase == PlayerGamePhase.Discard))
+                        uint requested = view.Own.DrawnTileId ?? view.Own.ClosedTiles[0];
+                        uint? tile = PickConfirmedDiscardCandidate(view, requested, out _);
+                        if (!tile.HasValue)
                         {
-                            uint requested = view.Own.DrawnTileId ?? view.Own.ClosedTiles[0];
-                            uint? tile = PickConfirmedDiscardCandidate(view, requested, out _);
-                            if (!tile.HasValue)
-                            {
-                                _waitOk = false;
-                                yield break;
-                            }
-
-                            ClickHandEntity(tile.Value);
-                            yield return null;
-                            Button discard = FindButton("DiscardButton");
-                            if (!discard.gameObject.activeSelf || !discard.interactable)
-                            {
-                                _waitOk = false;
-                                yield break;
-                            }
-
-                            ClickButton("DiscardButton");
-                            version = view.Identity.StateVersion;
-                            yield return null;
-                            continue;
+                            _waitOk = false;
+                            yield break;
                         }
 
-                        if (view.Board.Phase == PlayerGamePhase.ResponseWindow ||
-                            view.Board.Phase == PlayerGamePhase.ChankanWindow)
+                        ClickHandEntity(tile.Value);
+                        yield return null;
+                        Button discard = FindButton("DiscardButton");
+                        if (!discard.gameObject.activeSelf || !discard.interactable)
                         {
-                            if (view.Own.Decision.Candidates.Any(a => a.Action == PlayerActionKind.Pass))
-                            {
-                                ClickButton("PassButton");
-                                version = view.Identity.StateVersion;
-                                yield return null;
-                                continue;
-                            }
+                            _waitOk = false;
+                            yield break;
+                        }
+
+                        ClickButton("DiscardButton");
+                        actedAt = view.Identity.StateVersion;
+                        yield return null;
+                        continue;
+                    }
+
+                    if (view.Board.Phase == PlayerGamePhase.ResponseWindow ||
+                        view.Board.Phase == PlayerGamePhase.ChankanWindow)
+                    {
+                        if (view.Own.Decision.Candidates.Any(a => a.Action == PlayerActionKind.Pass))
+                        {
+                            ClickButton("PassButton");
+                            actedAt = view.Identity.StateVersion;
+                            yield return null;
+                            continue;
                         }
                     }
                 }
