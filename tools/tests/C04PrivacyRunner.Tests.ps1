@@ -93,7 +93,13 @@ function New-CaseEvidenceFixture([string]$CaseName, [string]$Root) {
             Write-C04Json (Join-Path $Root 'control-session-reconnect.json') $reconnect
             $ready = @{ fixtureOnly=$true; schemaVersion=1; case=$CaseName; phase='post-recovery-no-change-claim'; sessionState='Ready'; requestId='fixture-nochange'; receiptStatus='Recorded'; receiptReason='LOCAL_CONTROL'; recoveryBranchTaken=$true; oldSessionId='fixture-player-session'; newSessionId='fixture-player-session'; oldRoomId='fixture-room'; newRoomId='fixture-room'; oldScopeId='fixture-middle-scope'; newScopeId='fixture-current-scope'; oldBindingEpoch=4; bindingEpoch=5; welcomeFrameCountBefore=2; welcomeFrameCountAfter=3; oldWelcomeAccountId='fixture-account'; newWelcomeAccountId='fixture-account'; oldWelcomeSessionId='fixture-player-session'; newWelcomeSessionId='fixture-player-session'; oldWelcomeRoomId='fixture-room'; newWelcomeRoomId='fixture-room'; oldWelcomeScopeId='fixture-middle-scope'; newWelcomeScopeId='fixture-current-scope'; oldWelcomeRole=1; newWelcomeRole=1; oldWelcomeSeat=0; newWelcomeSeat=0; resumeTicketSha256Before=('b'*64); resumeTicketSha256After=('b'*64); controlEpochBefore=2; controlEpochAfter=2; controlHuman=$true; sessionId='fixture-player-session'; scopeId='fixture-current-scope'; commandFrames=1; pendingCommands=0 }
             Write-C04Json (Join-Path $Root 'control-session-ready-positive.json') $ready
-            Write-C04Utf8 (Join-Path $Root 'released-control-raw/raw-frames.json') $fixtureRaw
+            $rawFrames = New-Object Collections.Generic.List[object]
+            foreach ($identity in @(@{epoch=3;scope='fixture-old-scope'},@{epoch=4;scope='fixture-middle-scope'},@{epoch=5;scope='fixture-current-scope'})) {
+                $wireBytes = [Text.Encoding]::UTF8.GetBytes('FIXTURE ONLY player frame ' + $identity.epoch)
+                $welcomeBytes = [Text.Encoding]::UTF8.GetBytes('FIXTURE ONLY WELCOME ' + $identity.epoch + ' ' + $identity.scope)
+                $rawFrames.Add(@{ ordinal=$identity.epoch; rawBase64=[Convert]::ToBase64String($wireBytes); wireSha256=(Get-C04Sha256Bytes $wireBytes); welcomeRawBase64=[Convert]::ToBase64String($welcomeBytes); welcomeWireSha256=(Get-C04Sha256Bytes $welcomeBytes); decodeStatus='Ok'; sessionId='fixture-player-session'; roomId='fixture-room'; scopeId=$identity.scope; accountId='fixture-account'; connectionRole='Player'; boundSeat=0; seatId=0; bindingEpoch=$identity.epoch; ownerSeat=0; privateClosedTileCount=13 })
+            }
+            Write-C04Json (Join-Path $Root 'released-control-raw/raw-frames.json') @{ fixtureOnly=$true; schemaVersion=2; frames=$rawFrames.ToArray() }
         }
         'RealRoom_OpenDecisionDeadlineContinuesAfterPlayerClose' {
             $e = @{ fixtureOnly=$true; schemaVersion=1; case=$CaseName; roomId='fixture-room'; roundId='fixture-round'; decisionId='fixture-decision'; decisionSeat=0; controlEpoch=0; decisionDeadlineRemainingMs=5000; clockDecisionSeat=0; clockServerTimeMs=10000; clockDeadlineRemainingMs=5000; authoritativeDeadlineServerTimeMs=15000; playerSessionId='fixture-player-session'; playerScopeId='fixture-player-scope'; playerRole=1; playerSeat=0; playerBindingEpoch=3; releaseVersion=0; releaseCursorStreamVersion=0; releaseCursorProjectionSeq=0; closeRequestedUtcMs=100; closeCompletedUtcMs=110; playerBindingClosed=$true; spectatorSessionId='fixture-spectator-session'; spectatorRole=2; spectatorSeat=-1; spectatorBaselineVersion=0; spectatorBaselineCursorStreamVersion=0; spectatorBaselineCursorProjectionSeq=0; afterVersion=1; afterCursorStreamVersion=1; afterCursorProjectionSeq=1; afterPhase='Discard'; advancedWithoutPlayerBinding=$true }
@@ -447,6 +453,26 @@ Invoke-Case 'required raw scenes are all present and any missing scene is reject
     Assert-Throws { Get-C04ValidatedRawScenes -PrivacyEvidence $dir } "Required raw scene 'closed-binding'"
 }
 
+Invoke-Case 'Windows raw verifier runs the four canonical privacy scenes and excludes control scope-rotation raw' {
+    $cases = New-TestDirectory 'windows-raw-scenes'
+    $required = @(
+        'RealRoom_FourPlayersSpectatorAndRoleSwitchUseIndependentSessions/role-switch-raw/raw-frames.json',
+        'RealRoom_LegalSleeveAndFeeOwnershipAcrossFourSeatsAndSpectator/four-owner-raw/raw-frames.json',
+        'RealRoom_ClosedPlayerToSpectatorToNewPlayerReceivePathRejectsOldRaw/closed-binding-raw/raw-frames.json',
+        'RealRoom_ColdReopenReconcilesOriginalRequestWithoutDuplicate/recovery-raw/raw-frames.json'
+    )
+    foreach ($relative in $required + @('RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly/released-control-raw/raw-frames.json')) {
+        $path = Join-Path $cases ($relative -replace '/', [IO.Path]::DirectorySeparatorChar)
+        [IO.Directory]::CreateDirectory((Split-Path -Parent $path)) | Out-Null
+        Write-C04Utf8 $path '{"fixtureOnly":true,"schemaVersion":2,"frames":[{}]}'
+    }
+    $selected = @(Get-C04WindowsCanonicalRawVerifierFiles $cases)
+    Assert-Equal 4 $selected.Count 'canonical Windows raw verifier scene count'
+    Assert-True (-not (@($selected | Where-Object {$_.path -like '*released-control-raw*'}).Count -gt 0)) 'scope-rotated control raw was incorrectly sent to the four-seat verifier'
+    Remove-Item -LiteralPath (Join-Path $cases ($required[2] -replace '/', [IO.Path]::DirectorySeparatorChar)) -Force
+    Assert-Throws { Get-C04WindowsCanonicalRawVerifierFiles $cases } 'Required Windows raw verifier scene is missing'
+}
+
 Invoke-Case 'mutex wait timeout does not acquire or release another process lock' {
     $name = 'Local\C04RunnerTests-' + [guid]::NewGuid().ToString('N')
     $dir = New-TestDirectory 'mutex'
@@ -710,6 +736,27 @@ Invoke-Case 'released-control stale-command evidence requires a live ready bound
         Write-C04Json $path $e
         Assert-Throws { Assert-C04PlayerCaseEvidence -CaseName $caseName -CaseRoot $caseRoot } 'Released-control'
     }
+}
+
+Invoke-Case 'released-control raw verifies wire hashes and binds every WELCOME scope to a binding epoch' {
+    $caseName = 'RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly'
+    $caseRoot = New-CaseFixtureRoot $caseName
+    New-CaseEvidenceFixture $caseName $caseRoot
+    Assert-C04PlayerCaseEvidence -CaseName $caseName -CaseRoot $caseRoot | Out-Null
+
+    $rawPath = Join-Path $caseRoot 'released-control-raw/raw-frames.json'
+    $raw = [IO.File]::ReadAllText($rawPath) | ConvertFrom-Json
+    $raw.frames[0].wireSha256 = ('0' * 64)
+    Write-C04Json $rawPath $raw
+    Assert-Throws { Assert-C04PlayerCaseEvidence -CaseName $caseName -CaseRoot $caseRoot } 'Released-control raw frame failed'
+
+    $caseRoot = New-CaseFixtureRoot $caseName
+    New-CaseEvidenceFixture $caseName $caseRoot
+    $rawPath = Join-Path $caseRoot 'released-control-raw/raw-frames.json'
+    $raw = [IO.File]::ReadAllText($rawPath) | ConvertFrom-Json
+    $raw.frames[1].bindingEpoch = $raw.frames[0].bindingEpoch
+    Write-C04Json $rawPath $raw
+    Assert-Throws { Assert-C04PlayerCaseEvidence -CaseName $caseName -CaseRoot $caseRoot } 'binding epoch maps to conflicting WELCOME identity'
 }
 
 Invoke-Case 'runner test root rejects over-budget paths before fixture creation' {

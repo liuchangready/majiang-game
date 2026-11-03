@@ -549,6 +549,24 @@ function Get-C04ValidatedRawScenes([string]$PrivacyEvidence) {
   return $results.ToArray()
 }
 
+function Get-C04WindowsCanonicalRawVerifierFiles([string]$CasesRoot) {
+  $required = @(
+    'RealRoom_FourPlayersSpectatorAndRoleSwitchUseIndependentSessions/role-switch-raw/raw-frames.json',
+    'RealRoom_LegalSleeveAndFeeOwnershipAcrossFourSeatsAndSpectator/four-owner-raw/raw-frames.json',
+    'RealRoom_ClosedPlayerToSpectatorToNewPlayerReceivePathRejectsOldRaw/closed-binding-raw/raw-frames.json',
+    'RealRoom_ColdReopenReconcilesOriginalRequestWithoutDuplicate/recovery-raw/raw-frames.json'
+  )
+  $results = New-Object Collections.Generic.List[object]
+  foreach ($relative in $required) {
+    $path = Join-Path $CasesRoot ($relative -replace '/', [IO.Path]::DirectorySeparatorChar)
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Required Windows raw verifier scene is missing: $relative" }
+    $raw = [IO.File]::ReadAllText($path,[Text.Encoding]::UTF8) | ConvertFrom-Json
+    if ([int]$raw.schemaVersion -ne 2 -or @($raw.frames).Count -lt 1) { throw "Required Windows raw verifier scene is empty or unsupported: $relative" }
+    $results.Add([pscustomobject]@{ scene=($relative.Split('/')[1] -replace '-raw$',''); path=$path; count=@($raw.frames).Count; sha256=Get-C04Sha256File $path })
+  }
+  return $results.ToArray()
+}
+
 function Get-C04TestPlayerPackage {
   param(
     [Parameter(Mandatory = $true)][string]$StagingProject,
@@ -1222,6 +1240,42 @@ function Get-C04WindowsPlayerManifest([string]$Root) {
   return [pscustomobject]@{ root = $rootFull; count = $files.Count; canonical = $canonical; sha256 = Get-C04Sha256Bytes ([Text.Encoding]::UTF8.GetBytes($canonical)) }
 }
 
+function Assert-C04ReleasedControlRaw($Raw, $Reconnect, $ReadyPositive) {
+  if ([int]$Raw.schemaVersion -ne 2 -or @($Raw.frames).Count -lt 1) { throw 'Released-control raw evidence is empty or has an unsupported schema.' }
+  $bindings = @{}
+  foreach ($frame in @($Raw.frames)) {
+    try {
+      $wire = [Convert]::FromBase64String([string]$frame.rawBase64)
+      $welcome = [Convert]::FromBase64String([string]$frame.welcomeRawBase64)
+    } catch { throw 'Released-control raw frame or WELCOME is not valid base64.' }
+    if ($frame.decodeStatus -cne 'Ok' -or $frame.wireSha256 -notmatch '^[0-9a-fA-F]{64}$' -or
+      (Get-C04Sha256Bytes $wire) -cne ([string]$frame.wireSha256).ToLowerInvariant() -or
+      $frame.welcomeWireSha256 -notmatch '^[0-9a-fA-F]{64}$' -or
+      (Get-C04Sha256Bytes $welcome) -cne ([string]$frame.welcomeWireSha256).ToLowerInvariant() -or
+      $frame.sessionId -cne $Reconnect.newSessionId -or $frame.roomId -cne $Reconnect.newRoomId -or
+      $frame.connectionRole -cne 'Player' -or [int]$frame.boundSeat -ne 0 -or [int]$frame.seatId -ne 0 -or
+      $frame.accountId -cne $ReadyPositive.newWelcomeAccountId -or [int]$frame.ownerSeat -ne 0 -or [int]$frame.privateClosedTileCount -le 0) {
+      throw 'Released-control raw frame failed its decoded owner, identity, or wire-hash checks.'
+    }
+    $key = ([string]$frame.sessionId) + '/' + [string]$frame.bindingEpoch
+    if ($bindings.ContainsKey($key) -and ($bindings[$key].scopeId -cne $frame.scopeId -or $bindings[$key].accountId -cne $frame.accountId -or $bindings[$key].role -cne $frame.connectionRole -or $bindings[$key].seat -ne [int]$frame.seatId)) {
+      throw 'Released-control raw binding epoch maps to conflicting WELCOME identity.'
+    }
+    $bindings[$key] = [pscustomobject]@{scopeId=[string]$frame.scopeId;accountId=[string]$frame.accountId;role=[string]$frame.connectionRole;seat=[int]$frame.seatId}
+  }
+  foreach ($identity in @(
+    @{scope=[string]$Reconnect.oldScopeId;epoch=[UInt64]$Reconnect.oldBindingEpoch},
+    @{scope=[string]$Reconnect.newScopeId;epoch=[UInt64]$Reconnect.newBindingEpoch},
+    @{scope=[string]$ReadyPositive.newScopeId;epoch=[UInt64]$ReadyPositive.bindingEpoch}
+  )) {
+    $key = ([string]$Reconnect.newSessionId) + '/' + [string]$identity.epoch
+    if (-not $bindings.ContainsKey($key) -or $bindings[$key].scopeId -cne $identity.scope) {
+      throw 'Released-control raw does not bind every observed scope rotation to its actual session and binding epoch.'
+    }
+  }
+  return $true
+}
+
 function Assert-C04PlayerCaseEvidence([string]$CaseName, [string]$CaseRoot) {
   $summaryPath = Join-Path $CaseRoot 'summary.json'
   $logPath = Join-Path $CaseRoot 'player-case.jsonl'
@@ -1364,6 +1418,9 @@ function Assert-C04PlayerCaseEvidence([string]$CaseName, [string]$CaseRoot) {
         [int]$readyPositive.pendingCommands -ne 0) {
         throw 'Released-control no-regression Ready positive control did not preserve the current owner, epoch, and binding.'
       }
+      if (-not (Assert-C04ReleasedControlRaw $artifacts['released-control-raw/raw-frames.json'] $reconnect $readyPositive)) {
+        throw 'Released-control raw evidence did not preserve the real WELCOME-bound owner frames.'
+      }
     }
     'RealRoom_OpenDecisionDeadlineContinuesAfterPlayerClose' {
       $e = $artifacts['deadline-evidence.json']
@@ -1416,17 +1473,16 @@ function Invoke-C04WindowsAppMatrix([string]$PlayerPath, [string]$CasesRoot, [in
     $caseEvidence = Assert-C04PlayerCaseEvidence -CaseName $caseName -CaseRoot $caseRoot
     $results.Add([pscustomobject]@{ testName = $testName; case = $caseName; pid = $record.pid; exitCode = $record.exitCode; timedOut = $record.timedOut; requiredArtifactCount = $caseEvidence.count; artifacts = $caseEvidence.artifacts; summary = $caseEvidence.summary; log = $caseEvidence.log })
   }
-  $rawFiles = @(Get-ChildItem -LiteralPath $CasesRoot -Recurse -File -Filter 'raw-frames.json' | Sort-Object FullName)
-  if ($rawFiles.Count -lt 4) { throw "Ordinary Windows app cases produced too few real privacy raw captures: $($rawFiles.Count)" }
+  $rawFiles = @(Get-C04WindowsCanonicalRawVerifierFiles $CasesRoot)
   $rawVerifications = New-Object Collections.Generic.List[object]
   $matrixTests = Join-Path $repo 'tools/tests/C04PrivacyMatrix.Tests.ps1'
   foreach ($rawFile in $rawFiles) {
-    $sceneName = [IO.Path]::GetFileName([IO.Path]::GetDirectoryName($rawFile.FullName))
+    $sceneName = [string]$rawFile.scene
     $verifyRoot = Join-Path $script:RunRoot ('windows-app-verifier/' + $sceneName)
     $verify = Start-C04Owned ('windows-app-raw-verify-' + $sceneName) 'powershell.exe' @('-NoProfile','-ExecutionPolicy','Bypass','-File',$matrixTests,
-      '-DotnetPath',$DotnetPath,'-VerifierDll',$VerifierDll,'-RawFramesPath',$rawFile.FullName,'-RunRoot',$verifyRoot) $repo 240
+      '-DotnetPath',$DotnetPath,'-VerifierDll',$VerifierDll,'-RawFramesPath',$rawFile.path,'-RunRoot',$verifyRoot) $repo 240
     Assert-C04NativeSuccess $verify ('windows-app-raw-verify-' + $sceneName)
-    $rawVerifications.Add([pscustomobject]@{ scene=$sceneName; path=$rawFile.FullName; sha256=Get-C04Sha256File $rawFile.FullName; verifierRoot=$verifyRoot; nativeExit=$verify.exitCode })
+    $rawVerifications.Add([pscustomobject]@{ scene=$sceneName; path=$rawFile.path; sha256=$rawFile.sha256; frames=$rawFile.count; verifierRoot=$verifyRoot; nativeExit=$verify.exitCode })
   }
 
   # The accepted recovery probe performs the real original-outbox receipt lookup.
