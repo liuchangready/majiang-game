@@ -81,11 +81,13 @@ $driverStale = $driver.IndexOf('var staleCommand = new ProtocolCommand', $driver
 $playModeNoChange = $playMode.IndexOf('PlayerSnapshot noChangeBase', [StringComparison]::Ordinal)
 $playModeStale = $playMode.IndexOf('var staleCommand = new ProtocolCommand', $playModeNoChange, [StringComparison]::Ordinal)
 Check ($driverNoChange -ge 0 -and $driverStale -gt $driverNoChange -and $playModeNoChange -ge 0 -and $playModeStale -gt $playModeNoChange) 'NO_CHANGE_READY_POSITIVE_CONTROL_PRECEDES_STALE_ACTION'
+Check ($driver.Contains('noChangeRecoveryBranchTaken') -and $driver.Contains('noChangeResumedWelcome') -and $playMode.Contains('noChangeRecoveryBranchTaken') -and $playMode.Contains('noChangeResumedWelcome')) 'NO_CHANGE_CONTROL_USES_FORMAL_ORIGINAL_TICKET_RECOVERY'
+Check ($driver.Contains('C04PrivacyProbe.Begin(Path.Combine(EvidenceRoot(), "released-control-raw"))') -and $driver.Contains('scene=released-control') -and $playMode.Contains('C04PrivacyProbe.Begin(Path.Combine(EvidenceRoot(), "released-control-raw"))')) 'RELEASED_CONTROL_SCENARIO_SEALS_REAL_RAW_FRAMES'
 $recoveryProbe = [IO.File]::ReadAllText((Join-Path $repo 'unity/Mahjong.Unity/Assets/Scripts/App/C04RecoveryReconciliationProbe.cs'),[Text.Encoding]::UTF8)
 Check ($recoveryProbe.Contains('FileOutboxStore(arguments.OutboxDirectory)') -and $recoveryProbe.Contains('session.ReconcilePendingAsync') -and $recoveryProbe.Contains('noOriginalCommandResend')) 'P2_REAL_OUTBOX_RECONCILE_CONTRACT'
 $guid = [regex]::Match([IO.File]::ReadAllText($metaPath),'(?m)^guid: ([0-9a-f]{32})$').Groups[1].Value
 Check ($guid.Length -eq 32) 'UNIQUE_META_GUID'
-$result = [ordered]@{ schemaVersion=1; testKind='source-contract'; total=43; passed=(43-$failures.Count); failed=$failures.Count; failures=$failures.ToArray(); driverSha256=(Get-FileHash -Algorithm SHA256 $driverPath).Hash.ToLowerInvariant(); playModeSha256=(Get-FileHash -Algorithm SHA256 $playModePath).Hash.ToLowerInvariant(); runnerSha256=(Get-FileHash -Algorithm SHA256 $runnerPath).Hash.ToLowerInvariant() }
+$result = [ordered]@{ schemaVersion=1; testKind='source-contract'; total=45; passed=(45-$failures.Count); failed=$failures.Count; failures=$failures.ToArray(); driverSha256=(Get-FileHash -Algorithm SHA256 $driverPath).Hash.ToLowerInvariant(); playModeSha256=(Get-FileHash -Algorithm SHA256 $playModePath).Hash.ToLowerInvariant(); runnerSha256=(Get-FileHash -Algorithm SHA256 $runnerPath).Hash.ToLowerInvariant() }
 $json = $result | ConvertTo-Json -Depth 5
 [IO.File]::WriteAllText((Join-Path $root 'summary.json'),$json + "`n",[Text.UTF8Encoding]::new($false))
 if ($failures.Count) { Write-Error ('C04_PRIVACY_PLAYER_TESTS_FAIL ' + ($failures -join ',')); exit 1 }

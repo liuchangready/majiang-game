@@ -1246,7 +1246,7 @@ function Assert-C04PlayerCaseEvidence([string]$CaseName, [string]$CaseRoot) {
     'RealRoom_DelayedOldRawReceiveIsRejectedByNewBinding' { @('delayed-old-raw/delayed-old-raw.json') }
     'RealRoom_ColdReopenReconcilesOriginalRequestWithoutDuplicate' { @('recovery-query/recovery-query.json','recovery-raw/raw-frames.json') }
     'RealRoom_LegalSleeveAndFeeOwnershipAcrossFourSeatsAndSpectator' { @('four-owner/four-owner.json','four-owner-raw/raw-frames.json') }
-    'RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly' { @('released-control/released-control.json','control-session-before-stale-submit.json','control-session-reconnect.json','control-session-ready-positive.json') }
+    'RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly' { @('released-control/released-control.json','control-session-before-stale-submit.json','control-session-reconnect.json','control-session-ready-positive.json','released-control-raw/raw-frames.json') }
     'RealRoom_OpenDecisionDeadlineContinuesAfterPlayerClose' { @('deadline-evidence.json') }
     'RealRoom_ClosedPlayerToSpectatorToNewPlayerReceivePathRejectsOldRaw' { @('closed-binding-raw/raw-frames.json') }
     default { throw "Unknown Player case evidence contract: $CaseName" }
@@ -1332,11 +1332,32 @@ function Assert-C04PlayerCaseEvidence([string]$CaseName, [string]$CaseRoot) {
       if (-not $reconnectEvidenceValid) {
         throw 'Released-control evidence does not prove serialized same-identity recovery to a new Ready baseline.'
       }
+      $noChangeRecoveryValid = ($readyPositive.recoveryBranchTaken -eq $true -and
+          [string]$readyPositive.oldSessionId -ceq [string]$readyPositive.newSessionId -and
+          [string]$readyPositive.oldRoomId -ceq [string]$readyPositive.newRoomId -and
+          [string]$readyPositive.oldScopeId -cne [string]$readyPositive.newScopeId -and
+          [UInt64]$readyPositive.bindingEpoch -gt [UInt64]$readyPositive.oldBindingEpoch -and
+          [int]$readyPositive.welcomeFrameCountAfter -gt [int]$readyPositive.welcomeFrameCountBefore) -or
+        ($readyPositive.recoveryBranchTaken -eq $false -and
+          [string]$readyPositive.oldSessionId -ceq [string]$readyPositive.newSessionId -and
+          [string]$readyPositive.oldRoomId -ceq [string]$readyPositive.newRoomId -and
+          [string]$readyPositive.oldScopeId -ceq [string]$readyPositive.newScopeId -and
+          [UInt64]$readyPositive.bindingEpoch -eq [UInt64]$readyPositive.oldBindingEpoch -and
+          [int]$readyPositive.welcomeFrameCountAfter -eq [int]$readyPositive.welcomeFrameCountBefore)
       if ([int]$readyPositive.schemaVersion -ne 1 -or $readyPositive.case -cne $CaseName -or $readyPositive.phase -cne 'post-recovery-no-change-claim' -or
         $readyPositive.sessionState -cne 'Ready' -or [string]::IsNullOrWhiteSpace($readyPositive.requestId) -or
         $readyPositive.receiptStatus -notin @('Applied','Recorded') -or $readyPositive.receiptReason -cne 'LOCAL_CONTROL' -or
         [UInt64]$readyPositive.controlEpochBefore -ne [UInt64]$readyPositive.controlEpochAfter -or
         [UInt64]$readyPositive.controlEpochAfter -ne [UInt64]$e.claimEpoch -or $readyPositive.controlHuman -ne $true -or
+        -not $noChangeRecoveryValid -or [string]::IsNullOrWhiteSpace($readyPositive.oldWelcomeAccountId) -or
+        $readyPositive.oldWelcomeAccountId -cne $readyPositive.newWelcomeAccountId -or
+        $readyPositive.oldWelcomeSessionId -cne $readyPositive.oldSessionId -or $readyPositive.newWelcomeSessionId -cne $readyPositive.newSessionId -or
+        $readyPositive.oldWelcomeRoomId -cne $readyPositive.oldRoomId -or $readyPositive.newWelcomeRoomId -cne $readyPositive.newRoomId -or
+        $readyPositive.oldWelcomeScopeId -cne $readyPositive.oldScopeId -or $readyPositive.newWelcomeScopeId -cne $readyPositive.newScopeId -or
+        [int]$readyPositive.oldWelcomeRole -ne 1 -or [int]$readyPositive.newWelcomeRole -ne 1 -or
+        [int]$readyPositive.oldWelcomeSeat -ne 0 -or [int]$readyPositive.newWelcomeSeat -ne 0 -or
+        $readyPositive.resumeTicketSha256Before -notmatch '^[0-9a-fA-F]{64}$' -or
+        $readyPositive.resumeTicketSha256Before -cne $readyPositive.resumeTicketSha256After -or
         $readyPositive.sessionId -cne $session.sessionId -or $readyPositive.scopeId -cne $session.scopeId -or
         [UInt64]$readyPositive.bindingEpoch -ne [UInt64]$session.bindingEpoch -or [int]$readyPositive.commandFrames -ne 1 -or
         [int]$readyPositive.pendingCommands -ne 0) {

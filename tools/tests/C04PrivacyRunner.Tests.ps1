@@ -91,8 +91,9 @@ function New-CaseEvidenceFixture([string]$CaseName, [string]$Root) {
             Write-C04Json (Join-Path $Root 'control-session-before-stale-submit.json') $session
             $reconnect = @{ fixtureOnly=$true; schemaVersion=1; case=$CaseName; recoveryBranchTaken=$true; oldState='Reconnecting'; newState='Ready'; oldSessionId='fixture-player-session'; newSessionId='fixture-player-session'; oldRoomId='fixture-room'; newRoomId='fixture-room'; oldRole=1; newRole=1; oldSeat=0; newSeat=0; oldScopeId='fixture-old-scope'; newScopeId='fixture-new-scope'; oldWelcomeSessionId='fixture-player-session'; newWelcomeSessionId='fixture-player-session'; oldWelcomeRoomId='fixture-room'; newWelcomeRoomId='fixture-room'; oldWelcomeScopeId='fixture-old-scope'; newWelcomeScopeId='fixture-new-scope'; oldWelcomeRole=1; newWelcomeRole=1; oldWelcomeSeat=0; newWelcomeSeat=0; welcomeFrameCountBefore=1; welcomeFrameCountAfter=2; resumeTicketSha256Before=('a'*64); resumeTicketSha256After=('a'*64); sameSessionIdentity=$true; scopeRotated=$true; oldBindingEpoch=3; newBindingEpoch=4; preRecoveryCachedControlEpoch=1; newSnapshotControlEpoch=2; transportOpen=$true; pendingCommands=0 }
             Write-C04Json (Join-Path $Root 'control-session-reconnect.json') $reconnect
-            $ready = @{ fixtureOnly=$true; schemaVersion=1; case=$CaseName; phase='post-recovery-no-change-claim'; sessionState='Ready'; requestId='fixture-nochange'; receiptStatus='Recorded'; receiptReason='LOCAL_CONTROL'; controlEpochBefore=2; controlEpochAfter=2; controlHuman=$true; sessionId='fixture-player-session'; scopeId='fixture-new-scope'; bindingEpoch=4; commandFrames=1; pendingCommands=0 }
+            $ready = @{ fixtureOnly=$true; schemaVersion=1; case=$CaseName; phase='post-recovery-no-change-claim'; sessionState='Ready'; requestId='fixture-nochange'; receiptStatus='Recorded'; receiptReason='LOCAL_CONTROL'; recoveryBranchTaken=$true; oldSessionId='fixture-player-session'; newSessionId='fixture-player-session'; oldRoomId='fixture-room'; newRoomId='fixture-room'; oldScopeId='fixture-old-scope'; newScopeId='fixture-new-scope'; oldBindingEpoch=3; bindingEpoch=4; welcomeFrameCountBefore=2; welcomeFrameCountAfter=3; oldWelcomeAccountId='fixture-account'; newWelcomeAccountId='fixture-account'; oldWelcomeSessionId='fixture-player-session'; newWelcomeSessionId='fixture-player-session'; oldWelcomeRoomId='fixture-room'; newWelcomeRoomId='fixture-room'; oldWelcomeScopeId='fixture-old-scope'; newWelcomeScopeId='fixture-new-scope'; oldWelcomeRole=1; newWelcomeRole=1; oldWelcomeSeat=0; newWelcomeSeat=0; resumeTicketSha256Before=('b'*64); resumeTicketSha256After=('b'*64); controlEpochBefore=2; controlEpochAfter=2; controlHuman=$true; sessionId='fixture-player-session'; scopeId='fixture-new-scope'; commandFrames=1; pendingCommands=0 }
             Write-C04Json (Join-Path $Root 'control-session-ready-positive.json') $ready
+            Write-C04Utf8 (Join-Path $Root 'released-control-raw/raw-frames.json') $fixtureRaw
         }
         'RealRoom_OpenDecisionDeadlineContinuesAfterPlayerClose' {
             $e = @{ fixtureOnly=$true; schemaVersion=1; case=$CaseName; roomId='fixture-room'; roundId='fixture-round'; decisionId='fixture-decision'; decisionSeat=0; controlEpoch=2; decisionDeadlineRemainingMs=5000; clockDecisionSeat=0; clockServerTimeMs=10000; clockDeadlineRemainingMs=5000; authoritativeDeadlineServerTimeMs=15000; playerSessionId='fixture-player-session'; playerScopeId='fixture-player-scope'; playerRole=1; playerSeat=0; playerBindingEpoch=3; releaseVersion=9; releaseCursorStreamVersion=4; releaseCursorProjectionSeq=8; closeRequestedUtcMs=100; closeCompletedUtcMs=110; playerBindingClosed=$true; spectatorSessionId='fixture-spectator-session'; spectatorRole=2; spectatorSeat=-1; spectatorBaselineVersion=9; spectatorBaselineCursorStreamVersion=1; spectatorBaselineCursorProjectionSeq=2; afterVersion=10; afterCursorStreamVersion=2; afterCursorProjectionSeq=3; afterPhase='Discard'; advancedWithoutPlayerBinding=$true }
@@ -553,6 +554,36 @@ Invoke-Case 'semantic Windows Player evidence accepts all seven fixture-only pro
         $accepted = Assert-C04PlayerCaseEvidence -CaseName $caseName -CaseRoot $caseRoot
         Assert-Equal $caseName $accepted.case "semantic evidence case $caseName"
         Assert-True ($accepted.artifacts.Count -gt 0) "semantic evidence did not return required case artifacts for $caseName"
+    }
+}
+
+Invoke-Case 'no-change Ready evidence rejects identity, WELCOME, epoch, and terminal-state drift' {
+    $caseName = 'RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly'
+    foreach ($mutation in @(
+        @{ key='recoveryBranchTaken'; value=$false },
+        @{ key='newSessionId'; value='foreign-session' },
+        @{ key='newRoomId'; value='foreign-room' },
+        @{ key='newScopeId'; value='fixture-old-scope' },
+        @{ key='bindingEpoch'; value=3 },
+        @{ key='welcomeFrameCountAfter'; value=2 },
+        @{ key='newWelcomeAccountId'; value='foreign-account' },
+        @{ key='newWelcomeScopeId'; value='unissued-scope' },
+        @{ key='newWelcomeRole'; value=2 },
+        @{ key='newWelcomeSeat'; value=1 },
+        @{ key='resumeTicketSha256After'; value=('c'*64) },
+        @{ key='controlEpochAfter'; value=3 },
+        @{ key='receiptReason'; value='OTHER_REASON' },
+        @{ key='sessionState'; value='Reconnecting' },
+        @{ key='commandFrames'; value=2 },
+        @{ key='pendingCommands'; value=1 }
+    )) {
+        $caseRoot = New-CaseFixtureRoot $caseName
+        New-CaseEvidenceFixture $caseName $caseRoot
+        $path = Join-Path $caseRoot 'control-session-ready-positive.json'
+        $evidence = [IO.File]::ReadAllText($path,[Text.Encoding]::UTF8) | ConvertFrom-Json
+        $evidence.($mutation.key) = $mutation.value
+        Write-C04Json $path $evidence
+        Assert-Throws { Assert-C04PlayerCaseEvidence -CaseName $caseName -CaseRoot $caseRoot } 'Released-control no-regression Ready positive control'
     }
 }
 

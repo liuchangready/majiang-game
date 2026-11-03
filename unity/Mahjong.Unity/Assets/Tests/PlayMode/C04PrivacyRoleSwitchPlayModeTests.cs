@@ -873,6 +873,7 @@ namespace Mahjong.Unity.Tests.PlayMode
         private static async Task<ReleaseEvidence> RunReleasedControlScenarioAsync(string root, string roomId)
         {
             LocalTableChannelFactory.DisableC04PrivacyRoomModeForTest();
+            C04PrivacyProbe.Begin(Path.Combine(EvidenceRoot(), "released-control-raw"));
             var paths = new UnityAppPaths(root);
             paths.EnsureDirectoriesCreated();
             Directory.CreateDirectory(paths.LocalSaveDirectory);
@@ -1077,17 +1078,76 @@ namespace Mahjong.Unity.Tests.PlayMode
                         noChangeAfter.PrivateView.Control?.ControlledByComputer == false && claimed.PendingCommands.Count == 0) break;
                     await Task.Delay(10, pumpCts.Token).ConfigureAwait(false);
                 }
+                bool noChangeRecoveryBranchTaken = claimed.State == TableConnectionState.Reconnecting;
+                string noChangeOldSessionId = claimed.Binding!.SessionId.Value;
+                string noChangeOldRoomId = claimed.Binding.RoomId.Value;
+                string noChangeOldScopeId = claimed.Binding.Scope.ScopeId.Value;
+                ulong noChangeOldBindingEpoch = claimed.Binding.BindingEpoch.Value;
+                int noChangeWelcomeCountBefore = claimedCapture.WelcomeFrameCount;
+                Welcome noChangeWelcomeBefore = claimedCapture.CapturedWelcome
+                    ?? throw new InvalidOperationException("No WELCOME was captured before no-change control verification.");
+                string noChangeResumeTicketHash = Sha256Hex(Encoding.UTF8.GetBytes(claimedTicket.SessionTicket));
+                if (noChangeRecoveryBranchTaken)
+                {
+                    claimedPumpCts.Cancel();
+                    if (claimedPump != null) await claimedPump.ConfigureAwait(false);
+                    claimedPumpCts.Dispose();
+                    claimedPumpCts = CancellationTokenSource.CreateLinkedTokenSource(pumpCts.Token);
+                    await claimed.OpenAsync(new TableSessionOpenRequest(claimedTicket.SessionTicket, LocalTableChannelFactory.ClientBuild), pumpCts.Token).ConfigureAwait(false);
+                    claimedPumpError = null;
+                    claimedPump = PumpLoopAsync(claimed, claimedPumpCts.Token,
+                        exception => Interlocked.CompareExchange(ref claimedPumpError, exception.ToString(), null));
+                    await WaitReadyAsync(claimed, pumpCts.Token).ConfigureAwait(false);
+                    TableSessionBinding noChangeResumedBinding = claimed.Binding
+                        ?? throw new InvalidOperationException("No binding after no-change control recovery.");
+                    Welcome noChangeResumedWelcome = claimedCapture.CapturedWelcome
+                        ?? throw new InvalidOperationException("No resumed WELCOME after no-change control recovery.");
+                    if (noChangeResumedBinding.SessionId.Value != noChangeOldSessionId || noChangeResumedBinding.RoomId.Value != noChangeOldRoomId ||
+                        noChangeResumedBinding.Role != ProtocolRole.Player || noChangeResumedBinding.SeatId != 0 ||
+                        noChangeResumedBinding.BindingEpoch.Value <= noChangeOldBindingEpoch || noChangeResumedBinding.Scope.ScopeId.Value == noChangeOldScopeId ||
+                        noChangeResumedWelcome.SessionId != noChangeResumedBinding.SessionId.Value || noChangeResumedWelcome.RoomId != noChangeResumedBinding.RoomId.Value ||
+                        noChangeResumedWelcome.Scope?.ScopeId != noChangeResumedBinding.Scope.ScopeId.Value || (int)noChangeResumedWelcome.Role != (int)ProtocolRole.Player || noChangeResumedWelcome.SeatId != 0 ||
+                        noChangeWelcomeBefore.SessionId != noChangeOldSessionId || noChangeWelcomeBefore.RoomId != noChangeOldRoomId || noChangeWelcomeBefore.Scope?.ScopeId != noChangeOldScopeId)
+                        throw new InvalidOperationException("No-change control recovery changed authenticated session identity or did not bind its new WELCOME.");
+                }
+                Welcome noChangeWelcomeAfter = claimedCapture.CapturedWelcome
+                    ?? throw new InvalidOperationException("No current WELCOME after no-change control verification.");
+                noChangeAfter = claimed.PlayerSnapshot ?? noChangeAfter;
                 int noChangeFrames = claimedCapture.CommandFrames - noChangeFramesBefore;
+                bool noChangeIdentityValid = claimed.Binding != null && claimed.State == TableConnectionState.Ready &&
+                    claimed.Binding.SessionId.Value == noChangeOldSessionId && claimed.Binding.RoomId.Value == noChangeOldRoomId &&
+                    claimed.Binding.Role == ProtocolRole.Player && claimed.Binding.SeatId == 0 &&
+                    noChangeWelcomeAfter.SessionId == claimed.Binding.SessionId.Value && noChangeWelcomeAfter.RoomId == claimed.Binding.RoomId.Value &&
+                    noChangeWelcomeAfter.Scope?.ScopeId == claimed.Binding.Scope.ScopeId.Value && (int)noChangeWelcomeAfter.Role == (int)ProtocolRole.Player &&
+                    noChangeWelcomeAfter.SeatId == 0 && noChangeWelcomeBefore.Scope?.AccountId == noChangeWelcomeAfter.Scope?.AccountId &&
+                    noChangeResumeTicketHash == Sha256Hex(Encoding.UTF8.GetBytes(claimedTicket.SessionTicket)) &&
+                    (noChangeRecoveryBranchTaken
+                        ? claimed.Binding.BindingEpoch.Value > noChangeOldBindingEpoch && claimed.Binding.Scope.ScopeId.Value != noChangeOldScopeId && claimedCapture.WelcomeFrameCount > noChangeWelcomeCountBefore
+                        : claimed.Binding.BindingEpoch.Value == noChangeOldBindingEpoch && claimed.Binding.Scope.ScopeId.Value == noChangeOldScopeId && claimedCapture.WelcomeFrameCount == noChangeWelcomeCountBefore);
                 bool noChangeReady = claimed.State == TableConnectionState.Ready &&
                     (noChangeAfter.PrivateView.Control?.ControlEpoch ?? 0UL) == noChangeEpochBefore &&
                     noChangeAfter.PrivateView.Control?.ControlledByComputer == false && claimed.PendingCommands.Count == 0 && noChangeFrames == 1 &&
+                    noChangeAfter.StateVersion >= noChangeBase.StateVersion && noChangeAfter.EventSeq >= noChangeBase.EventSeq && noChangeIdentityValid &&
                     (noChangeReceipt.Resolution.ReceiptStatus == Mahjong.Contracts.ReceiptStatus.Applied ||
                      noChangeReceipt.Resolution.ReceiptStatus == Mahjong.Contracts.ReceiptStatus.Recorded) &&
                     string.Equals(noChangeReceipt.Resolution.ReasonCode, "LOCAL_CONTROL", StringComparison.Ordinal);
                 File.WriteAllText(Path.Combine(EvidenceRoot(), "control-session-ready-positive.json"),
                     "{\"schemaVersion\":1,\"case\":\"RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly\",\"phase\":\"post-recovery-no-change-claim\",\"sessionState\":\"" + claimed.State +
                     "\",\"requestId\":\"" + noChangeClaim.RequestId.Value + "\",\"receiptStatus\":\"" + noChangeReceipt.Resolution.ReceiptStatus +
-                    "\",\"receiptReason\":\"" + noChangeReceipt.Resolution.ReasonCode + "\",\"controlEpochBefore\":" + noChangeEpochBefore +
+                    "\",\"receiptReason\":\"" + noChangeReceipt.Resolution.ReasonCode + "\",\"recoveryBranchTaken\":" + noChangeRecoveryBranchTaken.ToString().ToLowerInvariant() +
+                    ",\"oldSessionId\":\"" + noChangeOldSessionId + "\",\"newSessionId\":\"" + claimed.Binding!.SessionId.Value +
+                    "\",\"oldRoomId\":\"" + noChangeOldRoomId + "\",\"newRoomId\":\"" + claimed.Binding.RoomId.Value +
+                    "\",\"oldScopeId\":\"" + noChangeOldScopeId + "\",\"newScopeId\":\"" + claimed.Binding.Scope.ScopeId.Value +
+                    "\",\"oldBindingEpoch\":" + noChangeOldBindingEpoch + ",\"bindingEpoch\":" + claimed.Binding.BindingEpoch.Value +
+                    ",\"welcomeFrameCountBefore\":" + noChangeWelcomeCountBefore + ",\"welcomeFrameCountAfter\":" + claimedCapture.WelcomeFrameCount +
+                    ",\"oldWelcomeAccountId\":\"" + noChangeWelcomeBefore.Scope?.AccountId + "\",\"newWelcomeAccountId\":\"" + noChangeWelcomeAfter.Scope?.AccountId +
+                    "\",\"oldWelcomeSessionId\":\"" + noChangeWelcomeBefore.SessionId + "\",\"newWelcomeSessionId\":\"" + noChangeWelcomeAfter.SessionId +
+                    "\",\"oldWelcomeRoomId\":\"" + noChangeWelcomeBefore.RoomId + "\",\"newWelcomeRoomId\":\"" + noChangeWelcomeAfter.RoomId +
+                    "\",\"oldWelcomeScopeId\":\"" + noChangeWelcomeBefore.Scope?.ScopeId + "\",\"newWelcomeScopeId\":\"" + noChangeWelcomeAfter.Scope?.ScopeId +
+                    "\",\"oldWelcomeRole\":" + (int)noChangeWelcomeBefore.Role + ",\"newWelcomeRole\":" + (int)noChangeWelcomeAfter.Role +
+                    ",\"oldWelcomeSeat\":" + noChangeWelcomeBefore.SeatId + ",\"newWelcomeSeat\":" + noChangeWelcomeAfter.SeatId +
+                    ",\"resumeTicketSha256Before\":\"" + noChangeResumeTicketHash + "\",\"resumeTicketSha256After\":\"" + Sha256Hex(Encoding.UTF8.GetBytes(claimedTicket.SessionTicket)) +
+                    ",\"controlEpochBefore\":" + noChangeEpochBefore +
                     ",\"controlEpochAfter\":" + (noChangeAfter.PrivateView.Control?.ControlEpoch ?? 0UL) + ",\"controlHuman\":" +
                     (noChangeAfter.PrivateView.Control?.ControlledByComputer == false).ToString().ToLowerInvariant() + " ,\"sessionId\":\"" + claimed.Binding!.SessionId.Value +
                     "\",\"scopeId\":\"" + claimed.Binding.Scope.ScopeId.Value + "\",\"bindingEpoch\":" + claimed.Binding.BindingEpoch.Value +
@@ -1167,6 +1227,8 @@ namespace Mahjong.Unity.Tests.PlayMode
                     !staleReceipt.Resolution.EventSeq.HasValue &&
                     !staleReceipt.Resolution.CommittedAtMs.HasValue;
 
+                string releasedRawHash = C04PrivacyProbe.Seal();
+                Debug.Log("C04_PRIVACY_RAW scene=released-control frames=" + C04PrivacyProbe.CapturedFrameCount + " sha256=" + releasedRawHash);
                 return new ReleaseEvidence
                 {
                     ReleaseVersion = releaseVersion,
