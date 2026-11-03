@@ -873,7 +873,7 @@ namespace Mahjong.Unity.Tests.PlayMode
         private static async Task<ReleaseEvidence> RunReleasedControlScenarioAsync(string root, string roomId)
         {
             LocalTableChannelFactory.DisableC04PrivacyRoomModeForTest();
-            C04PrivacyProbe.Begin(Path.Combine(EvidenceRoot(), "released-control-raw"));
+            C04PrivacyProbe.BeginPlayerSeatZero(Path.Combine(EvidenceRoot(), "released-control-raw"));
             var paths = new UnityAppPaths(root);
             paths.EnsureDirectoriesCreated();
             Directory.CreateDirectory(paths.LocalSaveDirectory);

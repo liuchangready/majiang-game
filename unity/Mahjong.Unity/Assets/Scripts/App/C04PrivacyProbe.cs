@@ -68,8 +68,10 @@ namespace Mahjong.Unity.App
         private static readonly List<FrameRecord> Frames = new List<FrameRecord>();
         private static readonly Dictionary<string, ConnectionFacts> Connections = new Dictionary<string, ConnectionFacts>(StringComparer.Ordinal);
         private static readonly HashSet<string> AmbiguousWelcomeSessions = new HashSet<string>(StringComparer.Ordinal);
+        private static readonly HashSet<string> PlayerSeatZeroSessions = new HashSet<string>(StringComparer.Ordinal);
         private static string? _root;
         private static bool _sealed;
+        private static bool _playerSeatZeroOnly;
 
         private sealed class ConnectionFacts
         {
@@ -103,6 +105,12 @@ namespace Mahjong.Unity.App
             }
         }
 
+        public static void BeginPlayerSeatZero(string outputDirectory)
+        {
+            Begin(outputDirectory);
+            lock (Gate) _playerSeatZeroOnly = true;
+        }
+
         internal static void RecordInbound(ReadOnlyMemory<byte> wire)
         {
             lock (Gate)
@@ -111,19 +119,32 @@ namespace Mahjong.Unity.App
                 byte[] bytes = wire.ToArray();
                 WireDecodeResult decoded = WireCodec.Decode(bytes);
                 Envelope? envelope = decoded.Envelope;
+                if (_playerSeatZeroOnly)
+                {
+                    if (envelope?.Welcome != null)
+                    {
+                        if (envelope.Welcome.Role != Mahjong.Contracts.Wire.Role.Player || envelope.Welcome.SeatId != 0) return;
+                        PlayerSeatZeroSessions.Add(envelope.Welcome.SessionId);
+                    }
+                    else if (envelope == null || !PlayerSeatZeroSessions.Contains(envelope.SessionId))
+                    {
+                        return;
+                    }
+                }
                 if (decoded.Status == WireDecodeStatus.Ok && envelope?.Welcome != null)
                 {
                     Welcome welcome = envelope.Welcome;
                     string welcomeHash = Sha256(bytes);
-                    if (Connections.TryGetValue(welcome.SessionId, out ConnectionFacts? prior) &&
+                    string welcomeKey = ConnectionKey(welcome.SessionId, envelope.BindingEpoch);
+                    if (Connections.TryGetValue(welcomeKey, out ConnectionFacts? prior) &&
                         !StringComparer.Ordinal.Equals(prior.WelcomeWireSha256, welcomeHash))
                     {
-                        Connections.Remove(welcome.SessionId);
-                        AmbiguousWelcomeSessions.Add(welcome.SessionId);
+                        Connections.Remove(welcomeKey);
+                        AmbiguousWelcomeSessions.Add(welcomeKey);
                     }
-                    if (!AmbiguousWelcomeSessions.Contains(welcome.SessionId))
+                    if (!AmbiguousWelcomeSessions.Contains(welcomeKey))
                     {
-                        Connections[welcome.SessionId] = new ConnectionFacts
+                        Connections[welcomeKey] = new ConnectionFacts
                         {
                             ScopeId = welcome.Scope?.ScopeId ?? string.Empty,
                             AccountId = welcome.Scope?.AccountId ?? string.Empty,
@@ -160,7 +181,8 @@ namespace Mahjong.Unity.App
                         envelope?.PublicUpdate?.Snapshot?.Cursor?.ProjectionSeq ?? envelope?.Cursor?.ProjectionSeq ?? 0UL,
                     unknownFieldsZero = decoded.UnknownFieldCount == 0
                 };
-                if (envelope != null && Connections.TryGetValue(envelope.SessionId, out ConnectionFacts? connection))
+                string connectionKey = envelope == null ? string.Empty : ConnectionKey(envelope.SessionId, envelope.BindingEpoch);
+                if (envelope != null && Connections.TryGetValue(connectionKey, out ConnectionFacts? connection))
                 {
                     record.scopeId = connection.ScopeId;
                     record.accountId = connection.AccountId;
@@ -273,8 +295,13 @@ namespace Mahjong.Unity.App
                 Frames.Clear();
                 Connections.Clear();
                 AmbiguousWelcomeSessions.Clear();
+                PlayerSeatZeroSessions.Clear();
+                _playerSeatZeroOnly = false;
             }
         }
+
+        private static string ConnectionKey(string sessionId, ulong bindingEpoch) =>
+            sessionId + "|" + bindingEpoch.ToString(System.Globalization.CultureInfo.InvariantCulture);
 
         private static string Sha256(byte[] bytes)
         {
