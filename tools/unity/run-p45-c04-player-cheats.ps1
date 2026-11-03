@@ -2103,6 +2103,23 @@ function Wait-C04UnityProjectReleased {
     return $false
 }
 
+function Get-C04PathBudgetErrors {
+    param([string]$EvidenceRoot)
+    $limit = 250
+    $project = Join-Path $EvidenceRoot 'staging\repo\unity\Mahjong.Unity'
+    $paths = [ordered]@{
+        'staging-project' = $project
+        'trace-urtshader-meta' = Join-Path $project 'Library\PackageCache\com.unity.render-pipelines.core@6c7e6aba313a\Editor\Lighting\ProbeVolume\VirtualOffset\TraceVirtualOffset.urtshader.meta'
+        'trace-urtshader' = Join-Path $project 'Library\PackageCache\com.unity.render-pipelines.core@6c7e6aba313a\Editor\Lighting\ProbeVolume\VirtualOffset\TraceVirtualOffset.urtshader'
+        'yaml-dotnet-dll' = Join-Path $project 'Library\PackageCache\com.unity.visualscripting@4edfcc09512f\Runtime\VisualScripting.Core\Dependencies\YamlDotNet\Unity.VisualScripting.YamlDotNet.dll'
+    }
+    $errors = New-Object System.Collections.Generic.List[string]
+    foreach ($name in $paths.Keys) {
+        $length = ([string]$paths[$name]).Length
+        if ($length -gt $limit) { $errors.Add(('PATH_BUDGET:{0}:{1}>{2}:{3}' -f $name, $length, $limit, $paths[$name])) | Out-Null }
+    }
+    return @($errors)
+}
 function Invoke-C04UnityWarmup {
     param(
         [string]$StagingProject,
@@ -2257,6 +2274,9 @@ function Write-C04FinalSummary {
         schemaVersion = 1
         task = 'D04-C'
         runnerVersion = $script:C04RunnerVersion
+        runId = $script:C04RunId
+        requestedUtc = $script:C04RequestedUtc.ToString('O')
+        evidenceRoot = $EvidenceRoot
         startedUtc = $script:C04StartedUtc
         finishedUtc = $finished.ToString('O')
         durationSeconds = [math]::Round(($finished - [datetime]$script:C04StartedUtc).TotalSeconds, 3)
@@ -2283,6 +2303,7 @@ function Write-C04FinalSummary {
     Write-C04Json -Path (Join-Path $EvidenceRoot 'summary.json') -Object $summary
 
     $text = New-Object System.Collections.Generic.List[string]
+    $text.Add("RUN_ID=$script:C04RunId") | Out-Null
     $text.Add("C04_D04_C_STATUS=$Status") | Out-Null
     $text.Add("GAME_STATUS=$GameStatus") | Out-Null
     $text.Add("FULL_D04=NOT_PASSED") | Out-Null
@@ -2314,6 +2335,8 @@ if ($SelfTest) {
 # ---------------------------------------------------------------------------
 
 $script:C04StartedUtc = [DateTime]::UtcNow
+$script:C04RunId = [guid]::NewGuid().ToString('D')
+$script:C04RequestedUtc = [DateTime]::UtcNow
 $script:C04Stages = New-Object System.Collections.Generic.List[object]
 $script:C04Cases = New-Object System.Collections.Generic.List[object]
 $script:C04Errors = New-Object System.Collections.Generic.List[string]
@@ -2336,8 +2359,18 @@ try {
         if ([int]$bound.Value -le 0) { throw "C04FAIL:USAGE:$($bound.Name) must be positive" }
     }
 
-    if ([string]::IsNullOrWhiteSpace($EvidenceRoot)) {
-        $EvidenceRoot = Join-Path $root ('build\c04-d04c-' + [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    $defaultEvidence = [string]::IsNullOrWhiteSpace($EvidenceRoot)
+    if ($defaultEvidence) {
+        $id = 'c' + $script:C04RunId.Replace('-', '').Substring(0, 8)
+        $candidate = Join-Path $root ('build\' + $id)
+        $suffix = 0
+        while (Test-Path -LiteralPath $candidate) {
+            $suffix++
+            if ($suffix -gt 32) { throw 'C04FAIL:EVIDENCE_ID_COLLISION:could not allocate a short evidence root' }
+            $id = 'c' + $script:C04RunId.Replace('-', '').Substring($suffix, 8)
+            $candidate = Join-Path $root ('build\' + $id)
+        }
+        $EvidenceRoot = $candidate
     }
     $EvidenceRoot = Get-C04FullPath $EvidenceRoot
     $buildRoot = Get-C04FullPath (Join-Path $root 'build')
@@ -2349,7 +2382,14 @@ try {
     }
     $EvidenceRoot = Assert-C04PathSafe -Path $EvidenceRoot -Label 'evidence-root'
     if (Test-Path -LiteralPath $EvidenceRoot) { throw "C04FAIL:REFUSE_OVERWRITE:evidence root already exists: $EvidenceRoot" }
+    if (-not $SkipBuild) {
+        $budgetErrors = @(Get-C04PathBudgetErrors -EvidenceRoot $EvidenceRoot)
+        if ($budgetErrors.Count -gt 0) {
+            throw ("C04FAIL:PATH_BUDGET:short evidence root required; " + ($budgetErrors -join ","))
+        }
+    }
     New-Item -ItemType Directory -Force -Path $EvidenceRoot | Out-Null
+    Write-C04Text -Path (Join-Path $EvidenceRoot 'run-id.txt') -Text ("runId={0}`nrequestedUtc={1}`nevidenceRoot={2}`n" -f $script:C04RunId, $script:C04RequestedUtc.ToString('O'), $EvidenceRoot)
     $script:C04LogPath = Join-Path $EvidenceRoot 'runner.log'
     Write-C04Log ("C04 runner={0} case={1} skipBuild={2} sourceHead={3}" -f $script:C04RunnerVersion, $Case, $SkipBuild, $SourceHead)
 

@@ -245,6 +245,12 @@ $effectiveProjects=@($effectiveSource | Where-Object { [string]$_.path -like 'do
 Assert-True ($rawProjects.Count -gt 0) 'source-policy-real-projects-present'
 Assert-Equal $rawProjects.Count $effectiveProjects.Count 'source-policy-real-projects-retained'
 Assert-True (@($effectiveProjects | Where-Object { [string]$_.path -eq 'dotnet/src/Mahjong.Domain/Mahjong.Domain.csproj' }).Count -eq 1) 'source-policy-domain-project'
+# Production path-budget precheck: healthy short root passes, long default-style
+# root fails before any Unity/shared build.
+$healthyRoot = Join-Path $root 'build\c12345678'
+$longRoot = Join-Path $root 'build\c04-d04c-20261103-123456-abcdef12'
+Assert-Equal (@(Get-C04PathBudgetErrors -EvidenceRoot $healthyRoot)).Count 0 'path-budget-short'
+Assert-True (@(Get-C04PathBudgetErrors -EvidenceRoot $longRoot).Count -ge 1) 'path-budget-long'
 # 5. Package seal requires real source/build/provenance/report/plugin relations.
 $package = New-PackageFixture -Dir (Join-Path $testRoot 'package') -ValidEvidence -UnityArtifact
 $check = Test-C04PackageSeal -PlayerPath $package.exe -ExpectedSourceHead $package.head -ExpectedBuildCommit $package.head -CurrentSourceIdentitySha256 $package.identity.identitySha256
