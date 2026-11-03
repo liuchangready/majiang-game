@@ -157,7 +157,7 @@ namespace Mahjong.Unity.App
             var factory = new LocalTableChannelFactory(
                 new AppConfig { pumpBarrierTimeoutMs = 5000, closeTimeoutMs = 5000, cancelObservationMs = 50 },
                 paths,
-                "c04-delayed-" + Guid.NewGuid().ToString("N"),
+                "r-" + Guid.NewGuid().ToString("N"),
                 "owner-" + Guid.NewGuid().ToString("N"),
                 TimeSpan.FromMinutes(2));
             TableSession? seatZero = null;
@@ -248,7 +248,7 @@ namespace Mahjong.Unity.App
         {
             LocalTableChannelFactory.DisableC04PrivacyRoomModeForTest();
             string root = StateRoot("c04-recovery");
-            string roomId = "c04-recovery-" + Guid.NewGuid().ToString("N");
+            string roomId = "r-" + Guid.NewGuid().ToString("N");
             var paths = new UnityAppPaths(root);
             paths.EnsureDirectoriesCreated();
             Directory.CreateDirectory(paths.LocalSaveDirectory);
@@ -437,7 +437,7 @@ namespace Mahjong.Unity.App
         public IEnumerator RealRoom_ClosedPlayerToSpectatorToNewPlayerReceivePathRejectsOldRaw()
         {
             string root = StateRoot("c04-closed-path");
-            string roomId = "c04-closed-path-" + Guid.NewGuid().ToString("N");
+            string roomId = "r-" + Guid.NewGuid().ToString("N");
             try
             {
                 Task<bool> task = Task.Run(() => RunClosedBindingRawPathAsync(root, roomId));
@@ -463,7 +463,7 @@ namespace Mahjong.Unity.App
         public IEnumerator RealRoom_LegalSleeveAndFeeOwnershipAcrossFourSeatsAndSpectator()
         {
             string root = StateRoot("c04-owner");
-            string roomId = "c04-owner-" + Guid.NewGuid().ToString("N");
+            string roomId = "r-" + Guid.NewGuid().ToString("N");
             try
             {
             Task<FourOwnerEvidence> task = Task.Run(() => RunFourOwnerPrivacyScenarioAsync(root, roomId));
@@ -510,7 +510,7 @@ namespace Mahjong.Unity.App
         public IEnumerator RealRoom_OpenDecisionDeadlineContinuesAfterPlayerClose()
         {
             string root = StateRoot("c04-deadline");
-            string roomId = "c04-deadline-" + Guid.NewGuid().ToString("N");
+            string roomId = "r-" + Guid.NewGuid().ToString("N");
             Task<OpenDeadlineEvidence> task = Task.Run(() => RunOpenDeadlineScenarioAsync(root, roomId));
             yield return WaitTask(() => task.IsCompleted, 75f, "open deadline after player close");
             Assert.IsFalse(task.IsFaulted, task.Exception?.ToString());
@@ -558,7 +558,7 @@ namespace Mahjong.Unity.App
         public IEnumerator RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly()
         {
             string root = StateRoot("c04-release");
-            string roomId = "c04-release-" + Guid.NewGuid().ToString("N");
+            string roomId = "r-" + Guid.NewGuid().ToString("N");
             Task<ReleaseEvidence> task = Task.Run(() => RunReleasedControlScenarioAsync(root, roomId));
             yield return WaitTask(() => task.IsCompleted, 90f, "released-seat authority scenario");
             Assert.IsFalse(task.IsFaulted, task.Exception?.ToString());
@@ -1625,7 +1625,7 @@ namespace Mahjong.Unity.App
         {
             string evidence = EvidenceRoot();
             string runRoot = Path.GetDirectoryName(evidence) ?? Application.temporaryCachePath;
-            return Path.Combine(runRoot, "state", prefix + "-" + Guid.NewGuid().ToString("N"));
+            return Path.Combine(runRoot, "state", prefix.Substring(0, Math.Min(2, prefix.Length)) + "-" + Guid.NewGuid().ToString("N"));
         }
         private static string EvidenceRoot()
         {
