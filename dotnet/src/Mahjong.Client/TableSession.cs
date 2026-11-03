@@ -1411,6 +1411,7 @@ namespace Mahjong.Client
                         digest,
                         fromLookup: false),
                     cancellationToken).ConfigureAwait(false);
+                await RequestFullBaselineAsync("CONTROL_APPLIED", force: false, cancellationToken).ConfigureAwait(false);
                 return;
             }
             OutboxResolution resolution;
@@ -1480,6 +1481,7 @@ namespace Mahjong.Client
                     {
                         tracked.LastLookup = ReceiptLookupStatus.Found;
                         await ResolveTrackedAsync(tracked, OutboxResolution.ControlApplied(new StateVersion(receipt.EvaluatedStateVersion), tracked.Entry.DigestSha256, true), cancellationToken).ConfigureAwait(false);
+                        await RequestFullBaselineAsync("CONTROL_APPLIED", force: false, cancellationToken).ConfigureAwait(false);
                         return;
                     }
 

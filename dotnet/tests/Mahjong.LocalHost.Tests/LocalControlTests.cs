@@ -31,6 +31,103 @@ namespace Mahjong.LocalHost.Tests
     {
         private const string ControlReason = "LOCAL_CONTROL";
 
+        private static void SaveControlProjectionEvidence(
+            RecordingTableChannel capture,
+            TableSession session,
+            LocalTableRuntime? runtime,
+            IReadOnlyList<(ulong ExpectedEpoch, bool ExpectedAutomated, ulong ActualEpoch, bool ActualAutomated)> transitions,
+            TableControlSnapshot? actorControl)
+        {
+            string? evidenceRoot = Environment.GetEnvironmentVariable("G2_CONTROL_EVIDENCE_DIR");
+            if (string.IsNullOrWhiteSpace(evidenceRoot)) return;
+            Directory.CreateDirectory(evidenceRoot);
+
+            byte[][] outbound = capture.SentFrames;
+            int commandIndex = 0;
+            var projectionLines = new List<string>();
+            for (int i = 0; i < outbound.Length; i++)
+            {
+                var decoded = WireCodec.Decode(outbound[i]);
+                if (decoded.IsOk && decoded.Envelope?.BodyCase == WireEnvelope.BodyOneofCase.Command)
+                {
+                    File.WriteAllBytes(
+                        Path.Combine(evidenceRoot, "outbound-control-request-" + commandIndex++ + ".bin"),
+                        outbound[i]);
+                    projectionLines.Add(
+                        "request=" + decoded.Envelope.RequestId +
+                        "; kind=" + decoded.Envelope.Command.Type +
+                        "; controlEpoch=" + decoded.Envelope.ControlEpoch +
+                        "; expectedStateVersion=" + decoded.Envelope.Command.ExpectedStateVersion +
+                        "; expectedRound=" + decoded.Envelope.Command.ExpectedRoundId);
+                }
+            }
+
+            byte[][] inbound = capture.ReceivedFrames;
+            int receiptIndex = 0;
+            for (int i = 0; i < inbound.Length; i++)
+            {
+                var decoded = WireCodec.Decode(inbound[i]);
+                if (!decoded.IsOk || decoded.Envelope == null) continue;
+                WireEnvelope envelope = decoded.Envelope;
+                if (envelope.BodyCase == WireEnvelope.BodyOneofCase.Receipt)
+                {
+                    File.WriteAllBytes(
+                        Path.Combine(evidenceRoot, "inbound-control-receipt-" + receiptIndex++ + ".bin"),
+                        inbound[i]);
+                    projectionLines.Add(
+                        "receipt=" + envelope.RequestId +
+                        "; status=" + envelope.Receipt.Status +
+                        "; reason=" + envelope.Receipt.ReasonCode +
+                        "; replayed=" + envelope.Receipt.Replayed +
+                        "; commandVersionPresent=" + envelope.Receipt.HasCommandVersion +
+                        "; eventSeqPresent=" + envelope.Receipt.HasEventSeq +
+                        "; committedAtPresent=" + envelope.Receipt.HasCommittedAtMs);
+                }
+                else if (envelope.BodyCase == WireEnvelope.BodyOneofCase.PlayerUpdate &&
+                         envelope.PlayerUpdate?.Snapshot?.PrivateView?.Control != null)
+                {
+                    var control = envelope.PlayerUpdate.Snapshot.PrivateView.Control;
+                    projectionLines.Add(
+                        "wire-frame=" +
+                        "; full=" + envelope.PlayerUpdate.IsFullSnapshot +
+                        "; epoch=" + control.ControlEpoch +
+                        "; automated=" + control.ControlledByComputer +
+                        "; cursor=" + envelope.Cursor?.StreamVersion + "/" + envelope.Cursor?.ProjectionSeq);
+                }
+            }
+
+            TableStreamFrame? producer = runtime?.LastStreamFrameForTest;
+            for (int i = 0; i < transitions.Count; i++)
+            {
+                var transition = transitions[i];
+                projectionLines.Add(
+                    "receipt-transition=" + i +
+                    "; expectedEpoch=" + transition.ExpectedEpoch +
+                    "; expectedAutomated=" + transition.ExpectedAutomated +
+                    "; clientEpoch=" + transition.ActualEpoch +
+                    "; clientAutomated=" + transition.ActualAutomated);
+            }
+            projectionLines.Add(
+                "client-final=" + session.PlayerSnapshot?.PrivateView.Control.ControlEpoch +
+                "; automated=" + session.PlayerSnapshot?.PrivateView.Control.ControlledByComputer +
+                "; cursor=" + session.PlayerSnapshot?.Cursor.StreamVersion + "/" + session.PlayerSnapshot?.Cursor.ProjectionSeq);
+            projectionLines.Add(
+                "producer-final=" + producer?.Player?.Private?.Control?.ControlEpoch.Value +
+                "; automated=" + producer?.Player?.Private?.Control?.ControlledByComputer +
+                "; full=" + producer?.IsFullSnapshot +
+                "; cursor=" + producer?.Cursor.StreamVersion.Value + "/" + producer?.Cursor.ProjectionSeq.Value);
+            if (actorControl != null)
+            {
+                var seat = actorControl.Seats[0];
+                projectionLines.Add(
+                    "actor-final=" + seat.ControlEpoch +
+                    "; controller=" + seat.Kind +
+                    "; automated=" + seat.IsAutomated +
+                    "; controlVersion=" + actorControl.ControlVersion);
+            }
+            File.WriteAllLines(Path.Combine(evidenceRoot, "control-projection.txt"), projectionLines);
+        }
+
         [Fact]
         public async Task ReviewerProbe_ControlReplaySurvivesDecisionRetirement()
         {
@@ -110,8 +207,9 @@ namespace Mahjong.LocalHost.Tests
             ITableChannel channel = await LocalTableHost.CreateChannelAsync(harness.Options, ct);
             string channelTicket = LocalTableHost.IssueTicket(harness.Options);
             await channel.OpenAsync(new TableChannelConnectRequest(channelTicket, "p41-test", null), ct);
+            var wireCapture = new RecordingTableChannel(channel);
             string outboxPath = System.IO.Path.Combine(harness.Root, "control-outbox");
-            var session = new TableSession(channel, new FileOutboxStore(outboxPath));
+            var session = new TableSession(wireCapture, new FileOutboxStore(outboxPath));
             string sessionTicket = LocalTableHost.IssueTicket(harness.Options);
             await session.OpenAsync(new TableSessionOpenRequest(sessionTicket, "p41-test"), ct);
             using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -136,6 +234,7 @@ namespace Mahjong.LocalHost.Tests
             RequestScopeId controlScope = default;
             RequestId lastControlRequest = default;
             string lastControlDigest = string.Empty;
+            var projectedControls = new List<(ulong ExpectedEpoch, bool ExpectedAutomated, ulong ActualEpoch, bool ActualAutomated)>();
             try
             {
                 await WaitReadyAsync(session, pumpCts.Token);
@@ -163,7 +262,22 @@ namespace Mahjong.LocalHost.Tests
                     var resolved = new TaskCompletionSource<TableReceiptResolvedEventArgs>(
                         TaskCreationOptions.RunContinuationsAsynchronously);
                     EventHandler<TableReceiptResolvedEventArgs> handler = (_, args) => resolved.TrySetResult(args);
+                    ulong expectedEpoch = claim && i > 1 ? epoch : epoch + 1;
+                    var projectedBaseline = new TaskCompletionSource<TableSnapshotChangedEventArgs>(
+                        TaskCreationOptions.RunContinuationsAsynchronously);
+                    EventHandler<TableSnapshotChangedEventArgs> snapshotHandler = (_, args) =>
+                    {
+                        PlayerSnapshot? snapshot = args.PlayerSnapshot;
+                        if (args.IsFullBaseline &&
+                            snapshot?.PrivateView?.Control != null &&
+                            snapshot.PrivateView.Control.ControlEpoch == expectedEpoch &&
+                            snapshot.PrivateView.Control.ControlledByComputer == !claim)
+                        {
+                            projectedBaseline.TrySetResult(args);
+                        }
+                    };
                     session.ReceiptResolved += handler;
+                    session.SnapshotChanged += snapshotHandler;
                     try
                     {
                         CommandSubmission submission = await session.SubmitAsync(command, pumpCts.Token);
@@ -175,10 +289,23 @@ namespace Mahjong.LocalHost.Tests
                         Assert.Equal(ControlReason, receipt.Resolution.ReasonCode);
                         Assert.Equal(64, receipt.Resolution.CanonicalPayloadSha256.Length);
                         Assert.Equal(claim ? CommandKind.ClaimControl : CommandKind.ReleaseControl, receipt.Command.Kind);
+
+                        TableSnapshotChangedEventArgs baselineUpdate = await LocalHostCommandTests.WithTimeoutAsync(
+                            projectedBaseline.Task,
+                            pumpCts.Token);
+                        Assert.True(baselineUpdate.IsFullBaseline);
+                        PlayerSnapshot projected = baselineUpdate.PlayerSnapshot ??
+                            throw new XunitException("the production TableSession lost its player snapshot after a control receipt");
+                        projectedControls.Add((
+                            expectedEpoch,
+                            !claim,
+                            projected.PrivateView.Control.ControlEpoch,
+                            projected.PrivateView.Control.ControlledByComputer));
                     }
                     finally
                     {
                         session.ReceiptResolved -= handler;
+                        session.SnapshotChanged -= snapshotHandler;
                     }
 
                     epoch++;
@@ -190,6 +317,11 @@ namespace Mahjong.LocalHost.Tests
             {
                 pumpCts.Cancel();
                 await pump;
+                LocalTableRuntime? runtime = ((LocalTableChannel)channel).RuntimeForMatch;
+                TableControlSnapshot? actorControl = runtime == null
+                    ? null
+                    : await runtime.ActorForTest.GetControlSnapshotAsync(CancellationToken.None);
+                SaveControlProjectionEvidence(wireCapture, session, runtime, projectedControls, actorControl);
                 await session.CloseAsync("TEST_DONE", CancellationToken.None);
                 await channel.CloseAsync(new TableChannelCloseReason("TEST_DONE", true), CancellationToken.None);
             }
@@ -202,6 +334,18 @@ namespace Mahjong.LocalHost.Tests
                 Assert.NotNull(record);
                 Assert.Equal(lastControlDigest, record!.Digest);
                 Assert.Equal("ClaimControl", record.Kind);
+            }
+
+            for (int i = 0; i < projectedControls.Count; i++)
+            {
+                (ulong expectedEpoch, bool expectedAutomated, ulong actualEpoch, bool actualAutomated) = projectedControls[i];
+                Assert.True(
+                    actualEpoch == expectedEpoch && actualAutomated == expectedAutomated,
+                    "transition=" + i +
+                    "; expectedEpoch=" + expectedEpoch +
+                    "; expectedAutomated=" + expectedAutomated +
+                    "; clientEpoch=" + actualEpoch +
+                    "; clientAutomated=" + actualAutomated);
             }
         }
 
@@ -311,20 +455,58 @@ namespace Mahjong.LocalHost.Tests
             Assert.True(live.Session.PendingCommands[0].NeedsReconciliation);
             Assert.Equal(digest, live.Session.PendingCommands[0].DigestSha256);
 
-            await live.DisconnectAndReopenAsync(harness, ct);
+            object baselineGate = new object();
+            int baselineCount = 0;
+            int? baselineCountAtLookupResolution = null;
+            var reconciledBaseline = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            EventHandler<TableSnapshotChangedEventArgs> baselineHandler = (_, args) =>
+            {
+                if (!args.IsFullBaseline) return;
+                lock (baselineGate)
+                {
+                    baselineCount++;
+                    if (baselineCountAtLookupResolution.HasValue && baselineCount > baselineCountAtLookupResolution.Value)
+                    {
+                        reconciledBaseline.TrySetResult(true);
+                    }
+                }
+            };
+            EventHandler<TableReceiptResolvedEventArgs> lookupResolutionHandler = (_, args) =>
+            {
+                if (!string.Equals(args.Command.RequestId, requestId, StringComparison.Ordinal) ||
+                    !args.Resolution.FromReceiptLookup) return;
+                lock (baselineGate)
+                {
+                    baselineCountAtLookupResolution = baselineCount;
+                }
+            };
+            live.Session.SnapshotChanged += baselineHandler;
+            live.Session.ReceiptResolved += lookupResolutionHandler;
+            TableReceiptResolvedEventArgs resolved;
+            try
+            {
+                await live.DisconnectAndReopenAsync(harness, ct);
 
-            TableReceiptResolvedEventArgs resolved = await live.WaitResolutionAsync(
-                args => string.Equals(args.Command.RequestId, requestId, StringComparison.Ordinal),
-                "the reconnected outbox receipt lookup",
-                ct);
-            Assert.Equal(OutboxDisposition.Recorded, resolved.Resolution.Disposition);
-            Assert.Equal(ContractReceiptStatus.Recorded, resolved.Resolution.ReceiptStatus);
-            Assert.Equal(ControlReason, resolved.Resolution.ReasonCode);
-            Assert.True(resolved.Resolution.FromReceiptLookup, "the reconnect resolution must come from RECEIPT_QUERY");
-            Assert.Equal(CommandKind.ReleaseControl, resolved.Command.Kind);
-            Assert.Equal(digest, resolved.Command.DigestSha256);
-            Assert.Equal(digest, resolved.Resolution.CanonicalPayloadSha256);
-            Assert.Empty(live.Session.PendingCommands);
+                resolved = await live.WaitResolutionAsync(
+                    args => string.Equals(args.Command.RequestId, requestId, StringComparison.Ordinal),
+                    "the reconnected outbox receipt lookup",
+                    ct);
+                Assert.Equal(OutboxDisposition.Recorded, resolved.Resolution.Disposition);
+                Assert.Equal(ContractReceiptStatus.Recorded, resolved.Resolution.ReceiptStatus);
+                Assert.Equal(ControlReason, resolved.Resolution.ReasonCode);
+                Assert.True(resolved.Resolution.FromReceiptLookup, "the reconnect resolution must come from RECEIPT_QUERY");
+                Assert.Equal(CommandKind.ReleaseControl, resolved.Command.Kind);
+                Assert.Equal(digest, resolved.Command.DigestSha256);
+                Assert.Equal(digest, resolved.Resolution.CanonicalPayloadSha256);
+                await LocalHostCommandTests.WithTimeoutAsync(reconciledBaseline.Task, ct);
+                await live.WaitReadyAsync(ct);
+                Assert.Empty(live.Session.PendingCommands);
+            }
+            finally
+            {
+                live.Session.SnapshotChanged -= baselineHandler;
+                live.Session.ReceiptResolved -= lookupResolutionHandler;
+            }
 
             LocalControlRecord? record = live.Runtime.StoreForTest.GetControlResult(
                 SeatAccount,
@@ -3055,11 +3237,51 @@ namespace Mahjong.LocalHost.Tests
                 DecisionId? decisionId,
                 CancellationToken ct)
             {
-                await SubmitControlAsync(kind, epoch, requestId, decisionId, ct);
-                return await WaitResolutionAsync(
-                    args => string.Equals(args.Command.RequestId, requestId, StringComparison.Ordinal),
-                    "the receipt for " + requestId,
-                    ct);
+                var nextBaseline = new TaskCompletionSource<TableSnapshotChangedEventArgs>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                EventHandler<TableSnapshotChangedEventArgs> snapshotHandler = (_, args) =>
+                {
+                    if (args.IsFullBaseline)
+                    {
+                        nextBaseline.TrySetResult(args);
+                    }
+                };
+                Session.SnapshotChanged += snapshotHandler;
+                try
+                {
+                    await SubmitControlAsync(kind, epoch, requestId, decisionId, ct);
+                    TableReceiptResolvedEventArgs resolution = await WaitResolutionAsync(
+                        args => string.Equals(args.Command.RequestId, requestId, StringComparison.Ordinal),
+                        "the receipt for " + requestId,
+                        ct);
+                    if (resolution.Resolution.Disposition == OutboxDisposition.Recorded &&
+                        string.Equals(resolution.Resolution.ReasonCode, ControlReason, StringComparison.Ordinal))
+                    {
+                        try
+                        {
+                            await LocalHostCommandTests.WithTimeoutAsync(nextBaseline.Task, ct);
+                        }
+                        catch (TimeoutException)
+                        {
+                            throw new XunitException(
+                                "The recorded control receipt was not followed by a full baseline; state=" +
+                                Session.State + " last=" + Session.LastError +
+                                " runtime=" + LocalTableRuntime.LastCommandException?.ToString() +
+                                " stream=" + (Runtime.LastStreamFrameForTest == null
+                                    ? "none"
+                                    : Runtime.LastStreamFrameForTest.Cursor.StreamVersion.Value + "/" +
+                                      Runtime.LastStreamFrameForTest.Cursor.ProjectionSeq.Value));
+                        }
+
+                        await WaitReadyAsync(ct);
+                    }
+
+                    return resolution;
+                }
+                finally
+                {
+                    Session.SnapshotChanged -= snapshotHandler;
+                }
             }
 
             public async Task<TableReceiptResolvedEventArgs> WaitResolutionAsync(
@@ -3635,6 +3857,47 @@ namespace Mahjong.LocalHost.Tests
 
                 return bytes;
             }
+        }
+
+        private sealed class RecordingTableChannel : ITableChannel
+        {
+            private readonly ITableChannel _inner;
+            private readonly object _gate = new object();
+            private readonly List<byte[]> _sent = new List<byte[]>();
+            private readonly List<byte[]> _received = new List<byte[]>();
+
+            public RecordingTableChannel(ITableChannel inner) { _inner = inner; }
+
+            public bool IsOpen => _inner.IsOpen;
+
+            public byte[][] SentFrames
+            {
+                get { lock (_gate) return _sent.Select(frame => (byte[])frame.Clone()).ToArray(); }
+            }
+
+            public byte[][] ReceivedFrames
+            {
+                get { lock (_gate) return _received.Select(frame => (byte[])frame.Clone()).ToArray(); }
+            }
+
+            public Task OpenAsync(TableChannelConnectRequest request, CancellationToken cancellationToken) =>
+                _inner.OpenAsync(request, cancellationToken);
+
+            public Task SendAsync(ReadOnlyMemory<byte> wireEnvelope, CancellationToken cancellationToken)
+            {
+                lock (_gate) _sent.Add(wireEnvelope.ToArray());
+                return _inner.SendAsync(wireEnvelope, cancellationToken);
+            }
+
+            public async Task<ReadOnlyMemory<byte>> ReceiveAsync(CancellationToken cancellationToken)
+            {
+                ReadOnlyMemory<byte> frame = await _inner.ReceiveAsync(cancellationToken).ConfigureAwait(false);
+                lock (_gate) _received.Add(frame.ToArray());
+                return frame;
+            }
+
+            public Task CloseAsync(TableChannelCloseReason reason, CancellationToken cancellationToken) =>
+                _inner.CloseAsync(reason, cancellationToken);
         }
     }
 }
