@@ -12,14 +12,15 @@
 
 冻结 base：`a234432e57efa790c40987d9720091d93bd270a8`（既有 Draft PR20 头）
 
-代码提交：`28bd63d0397d5f135d667523c048a1efa9e1850f`（首轮 `60f43ad7`、R1 `5dc8534a`、R2 `223284df` 的 R3 增量）
-证据根：`build/6ea1d77e-57e2-4c7f-bca8-1d4ce9ca3d46/`（仓库 ignored，独占）
+代码提交：`0dac2cefa8b943e91d50473910e81b88f0d3fd8b`（首轮 `60f43ad7`、R1 `5dc8534a`、R2 `223284df`、R3 `28bd63d0` 的最终 Player 推进修复）
+冻结集成 HEAD：`0dac2cefa8b943e91d50473910e81b88f0d3fd8b`（B `0dac2cef` + accepted C `f042fbf1/69b9e669` + caller `9243ad91/97f9ba21`）
+证据根：`build/i57a9cb72f/`（最终任务卡/预检/日志）、`build/c5a1b3/`（fresh Player 包/case/A 输出）、`build/p5a1b3/repo/`（同 DLL 复制 PlayMode）
 
 ## 结论（组件与实际边界）
 
-本交付关闭的是 **B 自身可执行的确定性组件/意图/真实通道/PlayMode 部分**：定位并修复了“SleeveBloom SECOND 后第二 discard 失败”的真实产品原因，更新了过时的 110/100、隐藏入口断言，完整正流程在真实 `TablePresenter → TableIntent → TableSession → LocalHost` 链上实际跑到 120→119→109→99、3 笔私有 ledger、SECOND/SWAP 精确物理换位。R1 复核后补齐了 raw 基线、discard 原始件关联、第三条 PlayMode 负例、136 物理审计和精确换位断言，最终 PlayMode `3/3 PASS`、LocalHost `179/179`。
+本交付已完成 **B 自身可执行的确定性组件/意图/真实通道/PlayMode 以及最终同包 Windows Player 六行**：定位并修复了“SleeveBloom SECOND 后第二 discard 失败”的真实产品原因，更新了过时的 110/100、隐藏入口断言，完整正流程在真实 `TablePresenter → TableIntent → TableSession → LocalHost` 链上实际跑到 120→119→109→99、3 笔私有 ledger、SECOND/SWAP 精确物理换位。R1–R3 补齐了 raw 基线、discard 原始件关联、raw 精确绑定、B producer→A、PlayMode 负例/136/精确换位断言。最终在冻结集成候选 `0dac2cef` 上实际生成 fresh Windows 完整包并执行 `-Case all`：**authorized PASS 29/29、negative PASS 15/15、A Verifier2 两 case native 0、包 seal PASS（1612 files / 51,896,845 bytes）、BuildReport errors 0 / stepErrors 0 / stepExceptions 0、PlayMode 3/3**。
 
-**整个 D04 仍不能 approve。** 同候选同包 Windows Player `-Case all`、A Verifier2 对 Player 原始件的最终验证、完整包 manifest/SHA、六行 GAME 证据均未在本轮执行；它们依赖 D04-C 的真实 `errors=0` 完整包（原线程 `thread_20261103_013102_3a7e` 仍在 R5 reworking，未见可消费的最终包）。本报告不把组件通过、PlayMode 通过或历史分 run 拼成最终 D04 PASS。
+同包六行已实际通过，B 自身范围结论为 **PASS（组件 + 同包 GAME）**。D04/C04/C05/C06 与 G2–G5 的项目级批准仍由 caller/reviewer 决定；本报告不代替 D05 或其他任务裁决。
 
 ## 1. 范围与最终 diff
 
@@ -202,10 +203,9 @@ Unity 版本/进程：`6000.3.27f1`；未改机器许可；未终止他人既有
 
 ## 6. 未覆盖 / 依赖 / 精确检查点
 
-- R1 的三项 MAJOR 子项（raw 基线、discard 原始件关联、PlayMode 六行覆盖）与 MINOR 高亮已在 B 自身可执行范围批量修复；不要求 Actor/Domain decision-refresh 扩围。上面的 producer/consumer 正负对照使用未修改的 A Verifier2 和真实 LocalHost capture，不是 Unity/Player 原始件；最终 Player 原始件仍 NOT_RUN。
-- **NOT_RUN**：同冻结包的 Windows Player `-Case all`、Player 原始件 raw index 的 A Verifier2 校验、完整包 manifest/所有文件 SHA、六行 GAME、同包 Unity Player 退出码/XML/raw 分母。
-- **BLOCKED**：D04-C 原线程 `thread_20261103_013102_3a7e` 仍 R5 reworking；进程子项 01 已独立关闭，02/03/04（输入转换、真实 source→stage→package 来源、真实 BuildReport errors=6）仍开放，无 `errors=0` 完整包。未取 C 在途文件，未用旧 runner/坏包抢做昂贵构建。
-- 最终阶段不得另起重复验证任务：由 parent caller / 原 dedicated reviewer 在同一 B 线程接续，先集成已接受的 A + C 并冻结，再执行最终 PlayMode + Player Case all。若届时 C 仍未交付，应由 dedicated reviewer 以真实 `waitingForThreadId=thread_20261103_013102_3a7e` 挂起，而不是虚构依赖或把本报告当 D04 通过。
+- 上述 R1/R2/R3 的 NOT_RUN/BLOCKED 为历史检查点，**已由 §8 的 fresh 完整包、Player `-Case all`、A 两 case native 0 与同 DLL PlayMode 3/3 取代**。
+- 已接受的 D04-C 依赖已解除；未使用旧 C 包或旧 B 组件原件冒充最终包。最终包 seal/script/DLL/argv 均在 §8 有 SHA 与覆盖。
+- 最终阶段未另起重复任务；所有执行均在本 B 线程/native receiver 会话完成。项目级 D04/C04/C05/C06 与 G2–G5 批准仍由 caller/reviewer 处理。
 - 本报告不改变 V4 生产、D04/C04/C05/C06 与 G2–G5 未批准状态；未生成 `complete.flag`。
 
 ## 7. 调用方集成检查点（2026-11-03，最终执行前）
@@ -217,3 +217,56 @@ D04-C 已在原线程 `thread_20261103_013102_3a7e` 第 13 轮完成独立组件
 实际验证：runner **82/82**、compat **20/20**，均 native 0；脚本解析 0 错误。独占组件夹具调用实际 A：JSON native 0，旧 CSV native 1；检查嵌套产物闭包、CSV 绑定 JSON 哈希、实际 Player argv 传入同一 JSON。原件与命令位于 `E:/majiang-review/g2-c04-d04-player-ds-20261103/build/i9fe8ca79`。首个调用方测试脚本误用了 dot-source 后带 ValidateSet 的 Case 变量，已在新夹具目录用专用变量修正，未改生产断言，原脚本保留。
 
 此处仅为最终执行前检查点：**集成候选 fresh Unity/Windows Player Case all、同包六行与完整 Probe 原件仍 NOT_RUN**。原 C 包与旧 B 组件原件不得冒作新包。按原合同由本 B 线程和原 receiver 会话继续，先填写新任务卡，冻结完整输入与 fresh DLL/包，再取得真实执行、原生退出、XML、五正两负 raw→A 和全包 SHA；完成前不批准完整 B/D04、不推送 MR、不合并。
+
+## 8. 最终同包执行（2026-11-03，PASS）
+
+### 8.1 冻结身份与任务卡
+
+- 最终冻结 HEAD：`0dac2cefa8b943e91d50473910e81b88f0d3fd8b`；B 修复 `0dac2cef` 仅调整 `AdvanceToNextDealerTurn`：允许在“同一 stateVersion 已打开 dealer decision”上继续，不再要求必须先看到 version 增长。该修复来自 c5a1b2 首跑 authorized `G3-ADVANCE-2 timeout`；首败原件保留。
+- 任务卡/预检：`build/i57a9cb72f/task-card.txt`、`preflight.log`；SDK 8.0.426、Unity 6000.3.27f1、E free 11.49GB、clean HEAD、许可可识别。
+- 廉价合同：`runner-tests.log` 实际 **82/82**、native 0；API JSON 与 Player argv 同一 `c04-verifier-package-manifest.json`（runner 原件）。
+
+### 8.2 Fresh 完整包与 Player `-Case all`
+
+实际命令（完整 argv 在 `player-runner2.log`）：
+
+```text
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
+  -File tools/unity/run-p45-c04-player-cheats.ps1 -Case all \
+  -EvidenceRoot E:/.../build/c5a1b3 \
+  -SourceHead 0dac2cefa8b943e91d50473910e81b88f0d3fd8b \
+  -BuildCommit 0dac2cefa8b943e91d50473910e81b88f0d3fd8b \
+  -VerifierPath E:/.../build/i57a9cb72f/verifier-artifacts/bin/C04PlayerCheatVerifier2/debug/C04PlayerCheatVerifier2.dll \
+  -DotnetPath D:/Unity/dotnet/dotnet.exe
+```
+
+- 包 seal：**PASS**，`sourceHead=0dac2cef`，manifest SHA `be88ffb5daf8ba134b434efa3adc5f82e786c7cd6a14666872a065b6cd60916d`，**1612 files / 51,896,845 bytes**。
+- BuildReport：`Succeeded`，errors **0**、stepError **0**、stepException **0**、warnings 200；unity/build/shared/process 原生 exit 已知，drain 完成，owned remaining **0**。
+- Player authorized：native **0**；case PASS **29/29**；A Verifier2 native **0 / PASS**，五行动作位 `tile-mark/sleeve-bloom/sleeve-second/beam-swap/beam-swap-choice`，balance 119/109/99、3 private ledger、每态 136、SECOND/SWAP 双向精确实体与 canonical/receipt/publication/recovery 均通过。
+- Player negative：native **0**；case PASS **15/15**；A Verifier2 native **0 / PASS**；两条不同 request/payload：`DECISION_MISMATCH`、`CHEAT_INSUFFICIENT_FUNDS`，wire/durable reason 一致，state/event/ledger/physical 前后 SHA 全等。
+- 关键 SHA：
+  - `c04-verifier-package-manifest.json` `23EC8B87E7E196DBB5053BA919FE81702CD867A3D8B8E22297F70EA6EF4BB80A`
+  - `c04-package-manifest.csv` `13717361AA11AABB9795963CFD75F3C4BE42E937F7748EB5C898E15D4C24363A`
+  - `c04-package-seal.json` `867D283B7E25CC61D4CA01C2C1B32A79FF1EB30F05889413C95F7EAECC18BAD2`
+  - authorized case/index/A-out：`9E4D6378086B1189D60F1F2FB5E9ABF69004A3B6118157E74BEEA964E05D331E` / `EBD2D222028CA81F764178754945966D01649A96F6CD548CC7A72552AF36ACC0` / `A802D2A4D22CC6C2377E5313B66113CF793048D42051033079F20CABCD3A7DAB`
+  - negative case/index/A-out：`F2513295C146A73D63A76022F414DB43D1C61AA16E0E6473824A6D786A02ACCD` / `78333D49683671F06C2C85A6647E24D25017DC738D57004A4A064FB99F017F2D` / `4BC8058BFBCABFCF047D764C4B9E81E02382011C5A4950911F67548A8AF29D7B`
+
+### 8.3 同 DLL 复制 PlayMode
+
+从 `build/c5a1b3/staging/repo` 只读复制到 `build/p5a1b3/repo`；`Mahjong.*.dll`/Google.Protobuf 与包 `Mahjong_Data/Managed` 逐一 SHA 相同。为通过共享插件 provenance gate，在复制根重新生成 provenance 并把 8 个 package DLL 及对应 build 输出对齐到包 SHA；`check-shared-plugins.ps1` 在复制根 **PASS**。原件 sealed 包未写。
+
+实际命令：
+
+```text
+Unity.exe -batchmode -projectPath build/p5a1b3/repo/unity/Mahjong.Unity \
+  -runTests -testPlatform PlayMode \
+  -testFilter Mahjong.Unity.Tests.PlayMode.C04PlayerCheatScenarioTests \
+  -testResults build/i57a9cb72f/playmode-final.xml \
+  -logFile build/i57a9cb72f/playmode-final.log
+```
+
+XML：**total=3 passed=3 failed=0 inconclusive=0 skipped=0**；authorized/insufficient/unauthorized 三条均 PASS，含 136、exact two-way/134、unauthorized zero-effect。XML SHA `3AB39039C053A04AE0ABC1486DF58C282D61D90860E3ED3DF7925353DECC20F8`；log SHA `72F66A34C54E6D9CD2BCA3FD231D13334896E5219A5212287ADE5A0A81B4F48E`。PlayMode 为独立复制项目，不是 Windows Player 包内运行。
+
+### 8.4 最终结论
+
+六行 required 均已实际通过，B 自身范围 **PASS（组件 + 同包 Windows Player GAME）**。工作树 clean；tracked diff 仍仅原 12 路径中的 6 个代码文件 + 本报告；`git diff --check` native 0。未 push/PR/MR/merge/deploy/approve，未改 scheduler/complete.flag/锁/许可/A/C 生产源。最终统一 Draft PR20 由 caller 处理。
