@@ -49,6 +49,7 @@ $script:C04KnownNonFatalBuildErrors = @(
     'Host type is not matching any asset type at Path Packages/com.unity.render-pipelines.core/Editor/Lighting/ProbeVolume/VirtualOffset/TraceVirtualOffset.urtshader.'
 )
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+. (Join-Path $PSScriptRoot 'shared-plugin-provenance-lib.ps1')
 if (-not $ProjectPath) { $ProjectPath = Join-Path $root 'unity\Mahjong.Unity' }
 $mutexName = 'Local\MahjongV5P45UnityValidation'
 $script:C04TempRoot = Join-Path $root ('build\temp\c04-runner-' + [guid]::NewGuid().ToString('N'))
@@ -1545,6 +1546,8 @@ function Test-C04PackageSeal {
             $sourceByPath = @{}
             foreach ($row in @(Get-C04SourceInputRows -RepoRoot $root)) { $sourceByPath[[string]$row.path] = $row }
             $allowedChanged = @('ProjectSettings/ProjectSettings.asset','Assets/Art/UI/Fonts/NotoSansSC-Regular SDF.asset')
+            $expectedProvenance = @()
+            try { $expectedProvenance = @(Get-SharedPluginInputClosure -RepoRoot $root) } catch { $errors.Add('PACKAGE_EVIDENCE_PROVENANCE_CLOSURE:' + $_.Exception.Message) | Out-Null }
             if (Test-Path -LiteralPath $stagedManifest) {
                 foreach ($row in @(Import-Csv -LiteralPath $stagedManifest)) {
                     $rel = [string]$row.path
@@ -1554,11 +1557,25 @@ function Test-C04PackageSeal {
                     if ([long]$sourceByPath[$srcPath].bytes -ne [long]$row.bytes -or [string]$sourceByPath[$srcPath].sha256 -ne [string]$row.sha256) { $errors.Add('PACKAGE_EVIDENCE_STAGED_SOURCE_MISMATCH:' + $rel) | Out-Null }
                 }
             }
+            $stagedMap = @{}
+            if (Test-Path -LiteralPath $stagedManifest) { foreach ($row in @(Import-Csv -LiteralPath $stagedManifest)) { $stagedMap[[string]$row.path] = $row } }
+            $removedUnityFiles = @('Assets/Resources/PerformanceTestRunInfo.json','Assets/Resources/PerformanceTestRunInfo.json.meta','Assets/Resources/PerformanceTestRunSettings.json','Assets/Resources/PerformanceTestRunSettings.json.meta')
+            foreach ($srcRow in @($sourceByPath.Values | Where-Object { [string]$_.path -like 'unity/Mahjong.Unity/*' })) {
+                $rel = ([string]$srcRow.path).Substring('unity/Mahjong.Unity/'.Length)
+                if ($removedUnityFiles -contains $rel) { if ($stagedMap.ContainsKey($rel)) { $errors.Add('PACKAGE_EVIDENCE_REMOVED_FILE_PRESENT:' + $rel) | Out-Null }; continue }
+                if (-not $stagedMap.ContainsKey($rel)) { $errors.Add('PACKAGE_EVIDENCE_REQUIRED_STAGED_MISSING:' + $rel) | Out-Null; continue }
+                if ($allowedChanged -notcontains $rel -and ([long]$srcRow.bytes -ne [long]$stagedMap[$rel].bytes -or [string]$srcRow.sha256 -ne [string]$stagedMap[$rel].sha256)) { $errors.Add('PACKAGE_EVIDENCE_REQUIRED_STAGED_CHANGED:' + $rel) | Out-Null }
+            }
             if (Test-Path -LiteralPath $stagedCodeManifest) {
                 foreach ($row in @(Import-Csv -LiteralPath $stagedCodeManifest)) {
                     $rel = [string]$row.path
                     if (-not $sourceByPath.ContainsKey($rel)) { $errors.Add('PACKAGE_EVIDENCE_CODE_NOT_SOURCE:' + $rel) | Out-Null; continue }
                     if ([long]$sourceByPath[$rel].bytes -ne [long]$row.bytes -or [string]$sourceByPath[$rel].sha256 -ne [string]$row.sha256) { $errors.Add('PACKAGE_EVIDENCE_CODE_SOURCE_MISMATCH:' + $rel) | Out-Null }
+                }
+                $codeMap = @{}
+                foreach ($row in @(Import-Csv -LiteralPath $stagedCodeManifest)) { $codeMap[[string]$row.path] = $row }
+                foreach ($srcRow in @($sourceByPath.Values | Where-Object { [string]$_.path -notlike 'unity/*' })) {
+                    if (-not $codeMap.ContainsKey([string]$srcRow.path)) { $errors.Add('PACKAGE_EVIDENCE_REQUIRED_CODE_MISSING:' + [string]$srcRow.path) | Out-Null }
                 }
             }            if (Test-Path -LiteralPath $stagedManifest) {
                 if ((Get-C04Sha256 $stagedManifest) -ne [string]$receipt.stagedInputManifestSha256) { $errors.Add('PACKAGE_EVIDENCE_STAGED_HASH') | Out-Null }
@@ -1590,11 +1607,36 @@ function Test-C04PackageSeal {
                 if ((Get-C04Sha256 $evidenceClosure) -ne [string]$receipt.pluginClosureSha256) { $errors.Add('PACKAGE_EVIDENCE_CLOSURE_HASH') | Out-Null }
                 $rows = @(Import-Csv -LiteralPath $evidenceClosure | ForEach-Object { [pscustomobject]@{ name = $_.path; bytes = [long]$_.bytes; sha256 = [string]$_.sha256 } })
                 if ((Get-C04PluginSetSha $rows) -ne [string]$seal.pluginSetSha256) { $errors.Add('PACKAGE_EVIDENCE_PLUGIN_SET') | Out-Null }
+                $closureDir = Join-Path $evidenceFull 'staging\repo\unity\Mahjong.Unity\Assets\Plugins\Mahjong'
+                $managedDir = Join-Path $evidenceFull 'build\player\Mahjong_Data\Managed'
+                foreach ($row in $rows) {
+                    $name = [string]$row.name
+                    $closureFile = Join-Path $closureDir $name
+                    if (-not (Test-Path -LiteralPath $closureFile -PathType Leaf)) { $errors.Add('PACKAGE_EVIDENCE_PLUGIN_FILE_MISSING:' + $name) | Out-Null; continue }
+                    if ([string]$row.sha256 -ne (Get-C04Sha256 $closureFile)) { $errors.Add('PACKAGE_EVIDENCE_PLUGIN_FILE_HASH:' + $name) | Out-Null }
+                    if ($name.EndsWith('.dll') -and -not (Test-C04PeImage $closureFile)) { $errors.Add('PACKAGE_EVIDENCE_PLUGIN_NOT_PE:' + $name) | Out-Null }
+                    if ($name.EndsWith('.dll') -and $name -notlike 'System.*') {
+                        $managedFile = Join-Path $managedDir $name
+                        if (-not (Test-Path -LiteralPath $managedFile -PathType Leaf)) { $errors.Add('PACKAGE_EVIDENCE_MANAGED_MISSING:' + $name) | Out-Null }
+                        elseif ((Get-C04Sha256 $managedFile) -ne [string]$row.sha256) { $errors.Add('PACKAGE_EVIDENCE_MANAGED_HASH:' + $name) | Out-Null }
+                    }
+                }
             }
             if (Test-Path -LiteralPath $evidenceReport) {
                 if ((Get-C04Sha256 $evidenceReport) -ne [string]$seal.buildReportSha256) { $errors.Add('PACKAGE_EVIDENCE_REPORT_HASH') | Out-Null }
             }
-            $evidencePlayer = Join-Path $evidenceFull ('build\player\' + $playerRelative.Replace('/', '\'))
+            $executionPath = Join-Path $evidenceFull 'build\player\c04-build-execution.json'
+            if (-not (Test-Path -LiteralPath $executionPath -PathType Leaf)) { $errors.Add('PACKAGE_EVIDENCE_BUILD_EXECUTION_MISSING') | Out-Null }
+            else {
+                try {
+                    $execution = Get-Content -LiteralPath $executionPath -Raw | ConvertFrom-Json
+                    if ([string]$execution.kind -ne 'c04-build-execution') { $errors.Add('PACKAGE_EVIDENCE_BUILD_EXECUTION_KIND') | Out-Null }
+                    if ([string]$execution.sourceIdentitySha256 -ne [string]$seal.sourceIdentitySha256) { $errors.Add('PACKAGE_EVIDENCE_BUILD_EXECUTION_SOURCE') | Out-Null }
+                    if ([string]$execution.playerSha256 -ne [string]$seal.playerSha256) { $errors.Add('PACKAGE_EVIDENCE_BUILD_EXECUTION_PLAYER') | Out-Null }
+                    if ([int]$execution.unityExitCode -ne 0 -or $execution.unityExitCodeKnown -ne $true -or $execution.targetStartFailed -ne $false) { $errors.Add('PACKAGE_EVIDENCE_BUILD_EXECUTION_FAILED') | Out-Null }
+                    if ([string]$execution.buildId -ne [string]$receipt.buildId) { $errors.Add('PACKAGE_EVIDENCE_BUILD_EXECUTION_BUILD_ID') | Out-Null }
+                } catch { $errors.Add('PACKAGE_EVIDENCE_BUILD_EXECUTION_MALFORMED') | Out-Null }
+            }            $evidencePlayer = Join-Path $evidenceFull ('build\player\' + $playerRelative.Replace('/', '\'))
             if (-not (Test-Path -LiteralPath $evidencePlayer -PathType Leaf)) { $errors.Add('PACKAGE_EVIDENCE_PLAYER_MISSING') | Out-Null }
             elseif ((Get-C04Sha256 $evidencePlayer) -ne [string]$seal.playerSha256 -or (Get-Item -LiteralPath $evidencePlayer).Length -ne [long]$seal.playerBytes) { $errors.Add('PACKAGE_EVIDENCE_PLAYER_MISMATCH') | Out-Null }
 
@@ -1605,12 +1647,22 @@ function Test-C04PackageSeal {
                 try { $provData = Get-Content -LiteralPath $evidenceProvenance -Raw | ConvertFrom-Json } catch { $provData = $null; $errors.Add('PACKAGE_EVIDENCE_PROVENANCE_MALFORMED') | Out-Null }
                 if ($provData) {
                     $stagingRepo = Join-Path $evidenceFull 'staging\repo'
+                    $actualProvMap = @{}
                     foreach ($input in @($provData.inputs)) {
+                        $actualProvMap[[string]$input.Path] = $input
                         $inputPath = Join-Path $stagingRepo ([string]$input.Path).Replace('/', '\')
                         if (-not (Test-Path -LiteralPath $inputPath -PathType Leaf)) { $errors.Add('PACKAGE_EVIDENCE_INPUT_MISSING:' + [string]$input.Path) | Out-Null; continue }
                         if ([long]$input.Length -ne (Get-Item -LiteralPath $inputPath).Length -or [string]$input.Sha256 -ne (Get-C04Sha256 $inputPath)) { $errors.Add('PACKAGE_EVIDENCE_INPUT_MISMATCH:' + [string]$input.Path) | Out-Null }
                         if (-not $sourceByPath.ContainsKey([string]$input.Path)) { $errors.Add('PACKAGE_EVIDENCE_INPUT_NOT_SOURCE:' + [string]$input.Path) | Out-Null }
                         elseif ([long]$sourceByPath[[string]$input.Path].bytes -ne [long]$input.Length -or [string]$sourceByPath[[string]$input.Path].sha256 -ne [string]$input.Sha256) { $errors.Add('PACKAGE_EVIDENCE_INPUT_SOURCE_MISMATCH:' + [string]$input.Path) | Out-Null }
+                    }
+                    foreach ($expectedInput in @($expectedProvenance)) {
+                        $pkey = [string]$expectedInput.Path
+                        if (-not $actualProvMap.ContainsKey($pkey)) { $errors.Add('PACKAGE_EVIDENCE_PROVENANCE_MISSING_INPUT:' + $pkey) | Out-Null; continue }
+                        if ([long]$actualProvMap[$pkey].Length -ne [long]$expectedInput.Length -or [string]$actualProvMap[$pkey].Sha256 -ne [string]$expectedInput.Sha256) { $errors.Add('PACKAGE_EVIDENCE_PROVENANCE_INPUT_CHANGED:' + $pkey) | Out-Null }
+                    }
+                    foreach ($actualKey in $actualProvMap.Keys) {
+                        if (@($expectedProvenance | Where-Object { [string]$_.Path -eq $actualKey }).Count -eq 0) { $errors.Add('PACKAGE_EVIDENCE_PROVENANCE_EXTRA_INPUT:' + $actualKey) | Out-Null }
                     }
                     $stagingPlugins = Join-Path $stagingRepo 'unity\Mahjong.Unity\Assets\Plugins\Mahjong'
                     foreach ($output in @($provData.outputs)) {
@@ -2393,7 +2445,24 @@ try {
             throw ('C04FAIL:BUILD_FAILED:' + (($unityBuild.reportCheck.errors + @('UNITY_NATIVE_EXIT_' + $unityBuild.process.exitCode)) -join ','))
         }
 
-        $provenanceCopy = Join-Path $packageRoot 'c04-plugin-provenance.json'
+        $executionRecord = [ordered]@{
+            schemaVersion = 1
+            kind = 'c04-build-execution'
+            buildId = (Split-Path -Leaf $EvidenceRoot)
+            sourceHead = $SourceHead
+            buildCommit = $BuildCommit
+            sourceIdentitySha256 = $script:C04SourceBefore.identitySha256
+            playerRelativePath = $playerRelative
+            playerBytes = (Get-Item -LiteralPath $playerFull).Length
+            playerSha256 = Get-C04Sha256 $playerFull
+            unityExitCode = [int]$unityBuild.process.exitCode
+            unityExitCodeKnown = [bool]$unityBuild.process.exitCodeKnown
+            targetStartFailed = [bool]$unityBuild.process.targetStartFailed
+            unityTargetPid = [int]$unityBuild.process.targetPid
+            unityLogSha256 = if (Test-Path -LiteralPath $unityLog) { Get-C04Sha256 $unityLog } else { '' }
+            recordedAtUtc = [DateTime]::UtcNow.ToString('O')
+        }
+        Write-C04Json -Path (Join-Path $EvidenceRoot 'build\player\c04-build-execution.json') -Object $executionRecord        $provenanceCopy = Join-Path $packageRoot 'c04-plugin-provenance.json'
         Copy-Item -LiteralPath $stagingBuild.provenancePath -Destination $provenanceCopy -Force
         $closureCopy = Join-Path $packageRoot 'c04-plugin-closure.csv'
         Copy-Item -LiteralPath (Join-Path $stagingRoot 'plugin-closure.csv') -Destination $closureCopy -Force
