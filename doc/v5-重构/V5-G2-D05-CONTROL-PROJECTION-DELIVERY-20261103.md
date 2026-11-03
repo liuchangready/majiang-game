@@ -1,7 +1,77 @@
 # G2-D05-CONTROL-PROJECTION 交付与范围阻塞记录
 
 日期：2026-11-03（Asia/Shanghai）
-状态：**第 2 轮部分修复，组件验收阻塞 / D05-CONTROL-01 未关闭**。普通真实控制回执与回执查询路径均已证明可通过 correlated full baseline 更新 client snapshot；deadline/自动接管后控制的真实 stream 场景仍会停在 Synchronizing，未完成完整矩阵。本报告没有把部分通过称为组件接受，也未重开 D05 矩阵、隐私/恢复组件或 C01/C02/C03/D03。V4 仍为生产基线；D05/G2–G5 仍未通过。
+状态：**第 3 轮批量修复候选已完成，等待专属 reviewer 复核；不自行 approve 或建 MR。** 本报告的第 2 轮内容保留为历史记录。当前 D05-CONTROL-01 候选已通过 LocalControlTests、完整 LocalHost、TableRuntime、Client Release 验证；组件是否接受仍由专属 reviewer 与原 D05 矩阵线程裁决。没有重开 D05 矩阵、隐私/恢复组件或 C01/C02/C03/D03；V4 仍为生产基线，D05/G2–G5 仍未通过。
+
+## 第 3 轮独立复核返修记录
+
+### 已知缺陷全集：D05-CONTROL-01 — MAJOR（0 新缺陷组）
+
+- **历史与范围：** 原 D05-I3 / B 第 9 轮；缺陷计数不因任务名或轮次重置。R2 独立复核仍报 1 组 MAJOR，review-root 为 `build/reviewer-control-r2-567b879bf683476e86d2fb2994ee344e/`，`localcontrol.log` SHA-256 `EBAA618312898FA344757F29701BABB1D34AD0FD5BA84E8C37FBE16389B9709D`、XML SHA-256 `1C93B9F40CF543D4342767BA6DEFFAAD293CD12ADBE6CF01E76A2B7447BB1BE5`，实际 23 项 / 22 pass / 1 fail。该轮要求同一 receiver 批量修复 deadline、重连与已前进 projection cursor 生命周期。当前批准且唯一 tracked 范围为 `LocalTableRuntime.cs`、`LocalControlTests.cs`、`TableSession.cs`、本报告四个文件；R1 三文件不足只作历史记录。
+- **位置：** `TableSession.HandleSyncResponseAsync` cursor floor guard 与控制 baseline 生命周期；`RequestFullBaselineAsync`；`LocalTableRuntime.HandleSyncAsync` / `OnFrame` / `TableStreamSink`；`LocalControlTests.ClientClaimReleaseProducesDurableRecordedResults`、`ControlAroundAuthoritativeDeadlineRejectsStaleDecisionAndStaleEpoch`、receipt-query/replay 与旧帧回归。
+- **复现命令（修复前 fresh 失败）：**
+
+  ```powershell
+  D:/Unity/dotnet/dotnet.exe build dotnet/tests/Mahjong.LocalHost.Tests/Mahjong.LocalHost.Tests.csproj -c Release -t:Rebuild --no-restore -v:minimal
+  D:/Unity/dotnet/dotnet.exe exec dotnet/tests/Mahjong.LocalHost.Tests/bin/Release/net8.0/Mahjong.LocalHost.Tests.dll -method Mahjong.LocalHost.Tests.LocalControlTests.ControlAroundAuthoritativeDeadlineRejectsStaleDecisionAndStaleEpoch -noLogo -noColor -result-xml build/g2-d05-control-projection-517c6fdfe4e845bdb1b0b2e441e12d68/round3/deadline-diagnostic-r3.xml
+  ```
+
+- **修复前实际 vs 期望：** 回执 `deadline-release` 为 `Recorded/LOCAL_CONTROL`，session `loc-8` / binding 1 / Player seat 0 / scope `loc-7`；匹配 correlation `sync-5` 的真实 `SyncResponse` 确实到达，cursor `66/1`、control `epoch 1 / automated=true`，客户端拒绝点为 `drop-cursor-floor`，已确认 floor `1/3`。此前 actor 每次新 sync epoch 重置 projection cursor，早期 push overflow 又不断提升 StreamVersion，导致同 binding 的重试仍低于双分量 floor并卡在 Synchronizing。期望是在不降低 floor、不伪造 cursor 的前提下，通过现有 transient reconnect / host-issued binding 合同恢复真实 baseline；同 session 的正确 client snapshot 到达后继续 stale/合法动作断言。
+- **修复要求与映射：** `TableSession` 只对 `CONTROL_APPLIED` 引发的、身份及当前 correlation 均已匹配的 cursor floor 回退，关闭当前 channel 并进入既有 transient reconnect 状态；普通 stale sync 仍按原合同丢弃并等待。由现有真实 ticket/binding 恢复路径取得新 binding 后重发相关 baseline，不写 cache、不改 floor、不扩权限。`LocalTableRuntime` 为每次订阅分配新 callback generation，并校验完整 session/audience/binding/syncEpoch identity；旧 generation 的在途帧不得消费新 correlation。两个 receipt 分支的 baseline 请求保持原实现。`LocalControlTests` 通过真实 LocalTableHost、ITableChannel、TableSession 与 host-issued reconnect ticket 验证回执到 snapshot，并延迟旧 subscription 帧作负例。
+- **修复后结果：** deadline 用例通过；raw receipt 后绑定从 2 升到 3，scope 从 `loc-9` 升到 `loc-10`；`sync-6` 为当前 session `loc-8` / binding 3 / Player seat 0 / correlation、cursor `4/1`，客户端 guard 为 `accepted-full-baseline`，最终 snapshot epoch 2 / automated=false。Release 的 raw `Recorded/LOCAL_CONTROL` receipt 后 client 为 epoch 1 / automated=true；Claim 后 epoch 2 / automated=false；无变化 Claim 保持 epoch 2 / automated=false。旧 sink 延迟 callback 被 active identity/generation guard 丢弃，随后生产 SyncResponse 才完成观察。
+
+### 统一负例矩阵
+
+| 项 | 验收断言 / 实际证据 |
+|---|---|
+| 已前进 projectionSeq 的 control baseline | deadline 真实场景 floor `1/3`、incoming `1/1` 不降低 floor；正常重连取得 binding 3 baseline `4/1` 并恢复 Ready。 |
+| 延迟旧 sink callback | `ClientClaimReleaseProducesDurableRecordedResults` 在真实 SyncResponse 被 gate 暂存时投递旧 frame；断言 `FRAME_DROPPED` 且 `activeIdentity=False`，再放行真实 response。 |
+| receipt / lookup / replay | 完整 `LocalControlTests` 23 项通过，包含 persistent outbox receipt-query、同 ID 同 bytes 精确重放与不同 bytes 冲突；目标控制 snapshot 关联匹配 receipt。 |
+| no-op control / 副作用 | Release→Claim→无变化 Claim 的真实 command/receipt/snapshot 连续回归；control epoch 1→2→2。既有 request-scope / recovery 幂等断言保留。 |
+| stale action / 零副作用 | deadline 测试继续验证旧 decision/epoch 业务拒绝后旧动作不提交，再验证新 epoch 合法动作；完整 LocalHost 全套通过。 |
+| 多席与观战隔离、关闭竞态 | 完整 TableRuntime 483 项包含 `FourSeatsAndSpectatorsSeeOnlyTheirOwnPrivateEventAndPayload`、`ControlEpochChangeClosesTheOldSeatStreamButRefreshesSpectator` 及 stream close/recovery 回归；本轮未改 actor/权限合同。 |
+
+### fresh 验证与证据身份
+
+命令均使用 `D:/Unity/dotnet/dotnet.exe` 8.0.426，候选 DLL 均来自以下 Release `-t:Rebuild --no-restore`，无旧 DLL 复用：
+
+```powershell
+D:/Unity/dotnet/dotnet.exe build dotnet/tests/Mahjong.LocalHost.Tests/Mahjong.LocalHost.Tests.csproj -c Release -t:Rebuild --no-restore -v:minimal
+D:/Unity/dotnet/dotnet.exe exec dotnet/tests/Mahjong.LocalHost.Tests/bin/Release/net8.0/Mahjong.LocalHost.Tests.dll -class Mahjong.LocalHost.Tests.LocalControlTests -noLogo -noColor -result-xml build/g2-d05-control-projection-517c6fdfe4e845bdb1b0b2e441e12d68/round3/localcontrol-delivery-final.xml
+D:/Unity/dotnet/dotnet.exe exec dotnet/tests/Mahjong.LocalHost.Tests/bin/Release/net8.0/Mahjong.LocalHost.Tests.dll -noLogo -noColor -result-xml build/g2-d05-control-projection-517c6fdfe4e845bdb1b0b2e441e12d68/round3/localhost-delivery-final.xml
+D:/Unity/dotnet/dotnet.exe build dotnet/tests/Mahjong.TableRuntime.Tests/Mahjong.TableRuntime.Tests.csproj -c Release -t:Rebuild --no-restore -v:minimal
+D:/Unity/dotnet/dotnet.exe exec dotnet/tests/Mahjong.TableRuntime.Tests/bin/Release/net8.0/Mahjong.TableRuntime.Tests.dll -noLogo -noColor -result-xml build/g2-d05-control-projection-517c6fdfe4e845bdb1b0b2e441e12d68/round3/tableruntime-final-full.xml
+D:/Unity/dotnet/dotnet.exe build dotnet/tests/Mahjong.Client.Tests/Mahjong.Client.Tests.csproj -c Release -t:Rebuild --no-restore -v:minimal
+D:/Unity/dotnet/dotnet.exe exec dotnet/tests/Mahjong.Client.Tests/bin/Release/net8.0/Mahjong.Client.Tests.dll -noLogo -noColor -result-xml build/g2-d05-control-projection-517c6fdfe4e845bdb1b0b2e441e12d68/round3/client-final-full.xml
+D:/Unity/dotnet/dotnet.exe exec dotnet/tests/Mahjong.LocalHost.Tests/bin/Release/net8.0/Mahjong.LocalHost.Tests.dll -method Mahjong.LocalHost.Tests.LocalControlTests.ControlAroundAuthoritativeDeadlineRejectsStaleDecisionAndStaleEpoch -noLogo -noColor -result-xml build/g2-d05-control-projection-517c6fdfe4e845bdb1b0b2e441e12d68/round3/deadline-final.xml
+```
+
+| 命令 | native 退出 | XML Total / Passed / Failed / Errors / Skipped / NotRun | 证据 |
+|---|---:|---:|---|
+| `build dotnet/tests/Mahjong.LocalHost.Tests/Mahjong.LocalHost.Tests.csproj -c Release -t:Rebuild --no-restore -v:minimal` | 0 | 编译 0 warning / 0 error | `round3/localhost-delivery-rebuild.log` |
+| `exec ...Mahjong.LocalHost.Tests.dll -class Mahjong.LocalHost.Tests.LocalControlTests -noLogo -noColor -result-xml .../localcontrol-delivery-final.xml` | 0 | 23 / 23 / 0 / 0 / 0 / 0 | XML SHA-256 `D980F2D2C9F9F07BE68432CAE391F29F35E7EC35A98D85E6418B6BF536753727` |
+| `exec ...Mahjong.LocalHost.Tests.dll -noLogo -noColor -result-xml .../localhost-delivery-final.xml` | 0 | 167 / 167 / 0 / 0 / 0 / 0 | XML SHA-256 `43C29E7662C1EE3757A18DBBA522EF59783BF88A1EFB730D0E5A67298551CFDF` |
+| `build dotnet/tests/Mahjong.TableRuntime.Tests/Mahjong.TableRuntime.Tests.csproj -c Release -t:Rebuild --no-restore -v:minimal`；`exec ...Mahjong.TableRuntime.Tests.dll -noLogo -noColor -result-xml .../tableruntime-final-full.xml` | 0 / 0 | 483 / 483 / 0 / 0 / 0 / 0 | XML SHA-256 `CB003702A219247A832CF4583B628E81783FE22AF1DEC7F98AF95500FFBE24DD` |
+| `build dotnet/tests/Mahjong.Client.Tests/Mahjong.Client.Tests.csproj -c Release -t:Rebuild --no-restore -v:minimal`；`exec ...Mahjong.Client.Tests.dll -noLogo -noColor -result-xml .../client-final-full.xml` | 0 / 0 | 182 / 182 / 0 / 0 / 0 / 0 | XML SHA-256 `236E763F9D10FE73475274A56E38EABAB9255F36D7875CF9C57A22C9CCC29C91` |
+| `exec ...Mahjong.LocalHost.Tests.dll -method Mahjong.LocalHost.Tests.LocalControlTests.ControlAroundAuthoritativeDeadlineRejectsStaleDecisionAndStaleEpoch -noLogo -noColor -result-xml .../deadline-final.xml` | 0 | 1 / 1 / 0 / 0 / 0 / 0 | XML SHA-256 `2233D0B10D58633B63BEA0E55CDBDE55410C450CC6C6014DF7CA8346180929DF` |
+
+修复前决定性日志 `round3/deadline-diagnostic-r3.log` SHA-256 `3335A8ECE605DE6097DEAE13DEC81FDE2C15987F49B5ED6528717A106FF6F81C`；脱敏关联记录 `round3/baseline-deadline/control-sync-diagnostic.txt` SHA-256 `A1CACB96EB4DED192C100420A9AAFB8284E60F7947E5FEF5DB89D86FA5C628AF`。修复后 deadline 的 raw request/receipt、六条 sync request 与脱敏关联记录在 `round3/deadline-control-evidence-r3/`；其中关联记录 SHA-256 `DE1A7A645328BB2594412211A5E643BBD8E344BF80CC39729DDAB2DC15F7555E`，request SHA-256 `85E26E533B8318075610E2F618ED6D850B365DC422D226D3A1F03C59BF4F002D`，receipt SHA-256 `D870715C9384877CD8B8343C3959DA095E94D6AF3EF65E507780A38389316063`。三条 control raw bytes / 回执及前后投影汇总在 `round3/raw-control-evidence-r3/`；汇总 SHA-256 `1DFC339A6E3E1441A1499C11903913592EB5DD00488980046CC9AFA0F90290BB`。完整原件不含 ticket、整帧私有快照或其他座位秘密。
+
+Release→Claim→无变化 Claim 的原始请求文件 SHA-256 依次为 `D0B86B9D40E113483718A7D9945A397B0E0A6770ECFFBB1613C970194FF6ECA3`、`5C56885208B2F433DEC4CF516F15BFA905292F6144D91250B16492438D9FA8D6`、`32B724014C7C19A02B5008405F06E5FEE72D6AC9F32D1D79E906538048945802`；匹配 receipt 文件 SHA-256 依次为 `2CA55F77D4BE5D5C6B1A69556FCA7626DEAF28CF210B2A08A5A1D56ACBBC9B3A`、`87060E8F50ECDB4CF0063CCD919F493BE490E28B4A5D0E9889820B45E29994E3`、`B4499A0619BC75F02F54F0F7E3641DEE70D1FAE8FB2ECBD8FC249716E76580F4`。日志 `round3/control-projection-final.log` SHA-256 `8C17D24EF188D04E0FA1900EA2864D907A1C663960F3FF5109440607C5839DD1`、XML SHA-256 `9A2793AD811AF3AB500D374AB3B9F71A93E3F5CA4FDDCB69E9BAC7A33C0050F4`；projection summary 中 receipt 与最终 client/producer/actor 三方 epoch、automation、cursor 一致。
+
+最终 Release DLL SHA-256：`Mahjong.LocalHost.Tests.dll` `C984FA21C5605685B514CF4AB7F15C6895959522CF3EE3563E7B5C3112FC025A`；`Mahjong.Client.Tests.dll` `BEC33C6F00D809097ED9EAE1E62FDF1F954C87FD4C4917CEB5EBF07D0529E9D9`；`Mahjong.TableRuntime.Tests.dll` `6C2A7D8D02E642F23C031539DB6DBE7C0427AFBDFD1FCB63AF19042387FC660E`。本轮完整 LocalHost 首次运行曾有 1 项 deadline timing 偶发失败，单项复现通过，随后最终完整重建运行为 167/167；该失败日志 `round3/localhost-full-r3.log` 与 XML 保留，不隐藏这次波动。早期 Client Rebuild 在本轮控制 flag 调整前有 2 项 cursor guard 预期失败（当时错误地对任意 stale baseline 触发 reconnect）；实现已收窄到关联的 control baseline lifecycle，最终 Client 全套 182/182。历史清理构建的实际缺 assets 退出见第 2 轮记录，没有以外层 runner 状态冒称成功。
+
+### 源文件身份、提交与边界
+
+本轮输入 base `4842dbd6aab16e40c8f952b170842df06e6c0d2f`、上一代码提交 `877e3cd1`、上一报告提交 `39f2454d`；无 cherry-pick。源码 SHA-256：`TableSession.cs` `350CDE59C76B187C8592D21680AD07C69994918222ACF91BBD54140A1B961DE7`，`LocalTableRuntime.cs` `C49917CACF9F53E4E8A823DF7CC401868E8ACDAEE8C8042B07FF167BD9D6DD7D`，`LocalControlTests.cs` `15658CBC1929657D8E9E049D89B14A8BFFB3A1FDB54EA089C52FAB71F6F7FB5D`。仅 4 个批准文件有 tracked diff。代码提交 `207578f0715cf3fd769f54f9036f172b04955fa9`；报告单独提交。两次提交后 `git diff --check` 与 tracked clean 状态列于末节。
+
+未运行 Unity / Player / PlayMode、Windows/Game/D05/G2 全矩阵；未验证全房新生产组包，亦不宣称 D05/G2 通过。组件候选完成后等待本任务专属 reviewer 仅复核新增差异，再由原 D05 矩阵线程进行同包最终裁决；不自行 approve、不建 MR、不 push、不写 `complete.flag`。
+
+### 本轮提交与封存
+
+- 代码独立提交：`207578f0715cf3fd769f54f9036f172b04955fa9`（3 个授权代码/测试文件）。
+- 报告独立提交（仅交付报告；与代码分开）。提交后 `git diff --check` 通过、`git status --short` 为空；tracked 差异仅上述 4 个批准文件。ignored build/log/XML/raw evidence 留在 `build/g2-d05-control-projection-517c6fdfe4e845bdb1b0b2e441e12d68/round3/`。
+- 本地候选封存后等待专属 reviewer；未 approve、未 push/PR/merge/deploy。
 
 ## 身份、范围与任务结论
 
