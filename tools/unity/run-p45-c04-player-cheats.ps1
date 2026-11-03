@@ -1329,14 +1329,70 @@ function Write-C04PackageSeal {
     return [pscustomobject]@{ sealPath = $sealPath; seal = $seal; receiptPath = $receiptPath; receipt = $receipt; manifestPath = $manifestPath; manifest = $manifest }
 }
 
+function Test-C04PeImage {
+    param([string]$Path)
+    try {
+        $bytes = [System.IO.File]::ReadAllBytes($Path)
+        if ($bytes.Length -lt 512 -or $bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) { return $false }
+        $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+        if ($pe -lt 64 -or $pe + 24 -ge $bytes.Length) { return $false }
+        if ($bytes[$pe] -ne 0x50 -or $bytes[$pe+1] -ne 0x45 -or $bytes[$pe+2] -ne 0 -or $bytes[$pe+3] -ne 0) { return $false }
+        $sections = [BitConverter]::ToUInt16($bytes, $pe + 6)
+        $optSize = [BitConverter]::ToUInt16($bytes, $pe + 20)
+        $opt = $pe + 24
+        if ($sections -lt 1 -or $sections -gt 96 -or $opt + $optSize -gt $bytes.Length) { return $false }
+        $magic = [BitConverter]::ToUInt16($bytes, $opt)
+        if ($magic -ne 0x10B -and $magic -ne 0x20B) { return $false }
+        $sectionTable = $opt + $optSize
+        if ($sectionTable + ($sections * 40) -gt $bytes.Length) { return $false }
+        return $true
+    } catch { return $false }
+}
+function Test-C04PeImports {
+    param([string]$Path, [string]$DllName)
+    try {
+        $bytes = [System.IO.File]::ReadAllBytes($Path)
+        $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+        $sections = [BitConverter]::ToUInt16($bytes, $pe + 6)
+        $optSize = [BitConverter]::ToUInt16($bytes, $pe + 20)
+        $opt = $pe + 24
+        $magic = [BitConverter]::ToUInt16($bytes, $opt)
+        $dirBase = if ($magic -eq 0x20B) { $opt + 112 } else { $opt + 96 }
+        $importRva = [BitConverter]::ToInt32($bytes, $dirBase + 8)
+        $sectionTable = $opt + $optSize
+        $rvaToOffset = {
+            param([int]$rva)
+            for ($i = 0; $i -lt $sections; $i++) {
+                $s = $sectionTable + ($i * 40)
+                $va = [BitConverter]::ToInt32($bytes, $s + 12)
+                $rawSize = [BitConverter]::ToInt32($bytes, $s + 16)
+                $rawPtr = [BitConverter]::ToInt32($bytes, $s + 20)
+                if ($rva -ge $va -and $rva -lt ($va + $rawSize)) { return $rawPtr + ($rva - $va) }
+            }
+            return -1
+        }
+        $off = & $rvaToOffset $importRva
+        if ($off -lt 0) { return $false }
+        while ($off + 20 -le $bytes.Length) {
+            $nameRva = [BitConverter]::ToInt32($bytes, $off + 12)
+            if ($nameRva -eq 0) { break }
+            $nameOff = & $rvaToOffset $nameRva
+            if ($nameOff -lt 0) { break }
+            $end = $nameOff; while ($end -lt $bytes.Length -and $bytes[$end] -ne 0) { $end++ }
+            $name = [Text.Encoding]::ASCII.GetString($bytes, $nameOff, $end - $nameOff)
+            if ($name -ieq $DllName) { return $true }
+            $off += 20
+        }
+        return $false
+    } catch { return $false }
+}
 function Test-C04UnityPlayerArtifact {
     param([string]$PlayerPath)
     $errors = New-Object System.Collections.Generic.List[string]
     $playerDir = Split-Path -Parent $PlayerPath
     try {
-        $bytes = [System.IO.File]::ReadAllBytes($PlayerPath)
-        $text = [System.Text.Encoding]::ASCII.GetString($bytes)
-        if (-not $text.Contains('UnityPlayer.dll')) { $errors.Add('PLAYER_NOT_UNITY_EXECUTABLE') | Out-Null }
+        if (-not (Test-C04PeImage $PlayerPath)) { $errors.Add('PLAYER_NOT_VALID_PE') | Out-Null }
+        if (-not (Test-C04PeImports -Path $PlayerPath -DllName 'UnityPlayer.dll')) { $errors.Add('PLAYER_MISSING_UNITYPLAYER_IMPORT') | Out-Null }
     }
     catch { $errors.Add('PLAYER_UNREADABLE') | Out-Null }
     $unityPlayer = Join-Path $playerDir 'UnityPlayer.dll'
@@ -1344,14 +1400,24 @@ function Test-C04UnityPlayerArtifact {
     else {
         $item = Get-Item -LiteralPath $unityPlayer
         if ($item.Length -lt 1048576) { $errors.Add('PLAYER_UNITY_DLL_TOO_SMALL') | Out-Null }
-        $stream = [System.IO.File]::OpenRead($unityPlayer)
-        try { if ($stream.ReadByte() -ne 0x4D -or $stream.ReadByte() -ne 0x5A) { $errors.Add('PLAYER_UNITY_DLL_NOT_PE') | Out-Null } } finally { $stream.Dispose() }
+        if (-not (Test-C04PeImage $unityPlayer)) { $errors.Add('PLAYER_UNITY_DLL_NOT_PE') | Out-Null }
     }
     $dataRoot = Join-Path $playerDir 'Mahjong_Data'
     $global = Join-Path $dataRoot 'globalgamemanagers'
     if (-not (Test-Path -LiteralPath $global -PathType Leaf) -or (Get-Item -LiteralPath $global).Length -lt 1024) { $errors.Add('PLAYER_DATA_GLOBALGAMEMANAGERS_MISSING') | Out-Null }
+    else {
+        try {
+            $gb = [System.IO.File]::ReadAllBytes($global)
+            $version = if ($gb.Length -ge 48) { [Text.Encoding]::ASCII.GetString($gb, 48, [Math]::Min(32, $gb.Length - 48)) } else { '' }
+            if ($version -notmatch '^\d+\.\d+\.\d+[a-z]\d+') { $errors.Add('PLAYER_DATA_NOT_UNITY_SERIALIZED') | Out-Null }
+        } catch { $errors.Add('PLAYER_DATA_UNREADABLE') | Out-Null }
+    }
     $managed = Join-Path $dataRoot 'Managed'
     if (-not (Test-Path -LiteralPath $managed -PathType Container) -or @(Get-ChildItem -LiteralPath $managed -Filter '*.dll' -File).Count -eq 0) { $errors.Add('PLAYER_MANAGED_ASSEMBLIES_MISSING') | Out-Null }
+    else {
+        $validManaged = @(Get-ChildItem -LiteralPath $managed -Filter '*.dll' -File | Where-Object { Test-C04PeImage $_.FullName }).Count
+        if ($validManaged -eq 0) { $errors.Add('PLAYER_MANAGED_ASSEMBLIES_NOT_PE') | Out-Null }
+    }
     return @($errors)
 }
 
@@ -1451,13 +1517,14 @@ function Test-C04PackageSeal {
     if ([string]::IsNullOrWhiteSpace($evidenceRelative)) { $errors.Add('PACKAGE_EVIDENCE_PATH') | Out-Null }
     else {
         $buildRoot = (Get-C04FullPath (Join-Path $root 'build')).TrimEnd('\', '/')
-        $evidenceFull = Get-C04FullPath (Join-Path $buildRoot ($evidenceRelative.Replace('/', '\')))
-        if (-not (Test-C04PathWithin $evidenceFull $buildRoot) -or $evidenceFull.Equals($buildRoot, [StringComparison]::OrdinalIgnoreCase)) { $errors.Add('PACKAGE_EVIDENCE_OUTSIDE') | Out-Null }
+        try { $evidenceFull = Resolve-C04RelativeMember -Root $buildRoot -Relative $evidenceRelative -Label 'build-evidence' } catch { $errors.Add('PACKAGE_EVIDENCE_PATH:' + $_.Exception.Message) | Out-Null; $evidenceFull = $null }
+        if ($null -eq $evidenceFull -or $evidenceFull.Equals($buildRoot, [StringComparison]::OrdinalIgnoreCase)) { $errors.Add('PACKAGE_EVIDENCE_OUTSIDE') | Out-Null }
         elseif (-not (Test-Path -LiteralPath $evidenceFull -PathType Container)) { $errors.Add('PACKAGE_EVIDENCE_MISSING') | Out-Null }
         else {
             $sourceManifest = Join-Path $evidenceFull 'source-input-manifest.csv'
             $stagedManifest = Join-Path $evidenceFull 'staging\staged-project-input-manifest.csv'
             $stagedFinalManifest = Join-Path $evidenceFull 'staging\staged-project-final-manifest.csv'
+            $stagedCodeManifest = Join-Path $evidenceFull 'staging\staged-code-manifest.csv'
             $evidenceClosure = Join-Path $evidenceFull 'staging\plugin-closure.csv'
             $evidenceReport = Join-Path $evidenceFull 'build\player\c04-build-report.json'
             foreach ($requiredEvidence in @($sourceManifest, $stagedManifest, $stagedFinalManifest, $evidenceClosure, $evidenceReport)) {
@@ -1475,7 +1542,25 @@ function Test-C04PackageSeal {
                     if ([long]$expectedSource[$key].bytes -ne [long]$actualSource[$key].bytes -or [string]$expectedSource[$key].sha256 -ne [string]$actualSource[$key].sha256) { $errors.Add('PACKAGE_EVIDENCE_SOURCE_CHANGED:' + $key) | Out-Null }
                 }
             }
+            $sourceByPath = @{}
+            foreach ($row in @(Get-C04SourceInputRows -RepoRoot $root)) { $sourceByPath[[string]$row.path] = $row }
+            $allowedChanged = @('ProjectSettings/ProjectSettings.asset','Assets/Art/UI/Fonts/NotoSansSC-Regular SDF.asset')
             if (Test-Path -LiteralPath $stagedManifest) {
+                foreach ($row in @(Import-Csv -LiteralPath $stagedManifest)) {
+                    $rel = [string]$row.path
+                    if ($allowedChanged -contains $rel -or $rel -like 'Assets/Plugins/Mahjong/*') { continue }
+                    $srcPath = 'unity/Mahjong.Unity/' + $rel
+                    if (-not $sourceByPath.ContainsKey($srcPath)) { $errors.Add('PACKAGE_EVIDENCE_STAGED_NOT_SOURCE:' + $rel) | Out-Null; continue }
+                    if ([long]$sourceByPath[$srcPath].bytes -ne [long]$row.bytes -or [string]$sourceByPath[$srcPath].sha256 -ne [string]$row.sha256) { $errors.Add('PACKAGE_EVIDENCE_STAGED_SOURCE_MISMATCH:' + $rel) | Out-Null }
+                }
+            }
+            if (Test-Path -LiteralPath $stagedCodeManifest) {
+                foreach ($row in @(Import-Csv -LiteralPath $stagedCodeManifest)) {
+                    $rel = [string]$row.path
+                    if (-not $sourceByPath.ContainsKey($rel)) { $errors.Add('PACKAGE_EVIDENCE_CODE_NOT_SOURCE:' + $rel) | Out-Null; continue }
+                    if ([long]$sourceByPath[$rel].bytes -ne [long]$row.bytes -or [string]$sourceByPath[$rel].sha256 -ne [string]$row.sha256) { $errors.Add('PACKAGE_EVIDENCE_CODE_SOURCE_MISMATCH:' + $rel) | Out-Null }
+                }
+            }            if (Test-Path -LiteralPath $stagedManifest) {
                 if ((Get-C04Sha256 $stagedManifest) -ne [string]$receipt.stagedInputManifestSha256) { $errors.Add('PACKAGE_EVIDENCE_STAGED_HASH') | Out-Null }
             }
             if (Test-Path -LiteralPath $stagedFinalManifest) {
@@ -1485,8 +1570,15 @@ function Test-C04PackageSeal {
             if (-not (Test-Path -LiteralPath $stagedCodeManifest -PathType Leaf)) { $errors.Add('PACKAGE_EVIDENCE_CODE_MANIFEST_MISSING') | Out-Null }
             elseif ((Get-C04Sha256 $stagedCodeManifest) -ne [string]$seal.stagedCodeManifestSha256) { $errors.Add('PACKAGE_EVIDENCE_CODE_HASH') | Out-Null }
             $stagingProject = Join-Path $evidenceFull 'staging\repo\unity\Mahjong.Unity'
+            $beforeProject = Join-Path $evidenceFull 'staging\before-build\unity\Mahjong.Unity'
+            if (-not (Test-Path -LiteralPath $beforeProject -PathType Container)) { $errors.Add('PACKAGE_EVIDENCE_BEFORE_SNAPSHOT_MISSING') | Out-Null }
             if (Test-Path -LiteralPath $stagingProject -PathType Container) {
-                foreach ($treeError in @(Test-C04ManifestAgainstRoot -Root $stagingProject -ManifestPath $stagedManifest -ExcludeDirectoryNames @('Library','Temp','Logs','obj','UserSettings') -ExcludeRelativeDirectories @('.vscode') -ExcludeFileSuffixes @('.csproj','.slnx','.pdb.meta'))) { $errors.Add('PACKAGE_EVIDENCE_STAGED_TREE:' + $treeError) | Out-Null }
+                if (Test-Path -LiteralPath $beforeProject -PathType Container) {
+                    foreach ($treeError in @(Test-C04ManifestAgainstRoot -Root $beforeProject -ManifestPath $stagedManifest -ExcludeDirectoryNames @('Library','Temp','Logs','obj','UserSettings') -ExcludeRelativeDirectories @('.vscode') -ExcludeFileSuffixes @('.csproj','.slnx','.pdb.meta'))) { $errors.Add('PACKAGE_EVIDENCE_BEFORE_TREE:' + $treeError) | Out-Null }
+                    $transitionErrors = @(Test-C04ManifestAgainstRoot -Root $stagingProject -ManifestPath $stagedManifest -ExcludeDirectoryNames @('Library','Temp','Logs','obj','UserSettings') -ExcludeRelativeDirectories @('.vscode') -ExcludeFileSuffixes @('.csproj','.slnx','.pdb.meta'))
+                    $transitionCheck = Split-C04StagingTransitions -Errors $transitionErrors -BeforeRoot $beforeProject -AfterRoot $stagingProject
+                    foreach ($transitionError in @($transitionCheck.fatal)) { $errors.Add('PACKAGE_EVIDENCE_TRANSITION:' + $transitionError) | Out-Null }
+                }
                 foreach ($treeError in @(Test-C04ManifestAgainstRoot -Root $stagingProject -ManifestPath $stagedFinalManifest -ExcludeDirectoryNames @('Library','Temp','Logs','obj','UserSettings') -ExcludeRelativeDirectories @('.vscode') -ExcludeFileSuffixes @('.csproj','.slnx','.pdb.meta'))) { $errors.Add('PACKAGE_EVIDENCE_FINAL_TREE:' + $treeError) | Out-Null }
             }
             else { $errors.Add('PACKAGE_EVIDENCE_STAGING_TREE_MISSING') | Out-Null }
@@ -1517,6 +1609,8 @@ function Test-C04PackageSeal {
                         $inputPath = Join-Path $stagingRepo ([string]$input.Path).Replace('/', '\')
                         if (-not (Test-Path -LiteralPath $inputPath -PathType Leaf)) { $errors.Add('PACKAGE_EVIDENCE_INPUT_MISSING:' + [string]$input.Path) | Out-Null; continue }
                         if ([long]$input.Length -ne (Get-Item -LiteralPath $inputPath).Length -or [string]$input.Sha256 -ne (Get-C04Sha256 $inputPath)) { $errors.Add('PACKAGE_EVIDENCE_INPUT_MISMATCH:' + [string]$input.Path) | Out-Null }
+                        if (-not $sourceByPath.ContainsKey([string]$input.Path)) { $errors.Add('PACKAGE_EVIDENCE_INPUT_NOT_SOURCE:' + [string]$input.Path) | Out-Null }
+                        elseif ([long]$sourceByPath[[string]$input.Path].bytes -ne [long]$input.Length -or [string]$sourceByPath[[string]$input.Path].sha256 -ne [string]$input.Sha256) { $errors.Add('PACKAGE_EVIDENCE_INPUT_SOURCE_MISMATCH:' + [string]$input.Path) | Out-Null }
                     }
                     $stagingPlugins = Join-Path $stagingRepo 'unity\Mahjong.Unity\Assets\Plugins\Mahjong'
                     foreach ($output in @($provData.outputs)) {
@@ -1527,7 +1621,7 @@ function Test-C04PackageSeal {
                 }
             }
         }
-    }
+}
 
     $reportRelative = [string]$seal.buildReportRelativePath
     if ([string]::IsNullOrWhiteSpace($reportRelative)) { $errors.Add('PACKAGE_SEAL_REPORT_PATH') | Out-Null }
@@ -1610,6 +1704,14 @@ function Test-C04AdditiveYamlTransition {
     foreach ($line in $beforeCounts.Keys) {
         if ([int]$afterCounts[$line] -lt [int]$beforeCounts[$line]) { return $false }
     }
+    $beforeKeys = @{}
+    $afterKeys = @{}
+    foreach ($line in $beforeLines) { if ($line -match '^\s*([A-Za-z0-9_]+):') { $beforeKeys[$Matches[1]] = 1 + [int]($beforeKeys[$Matches[1]]) } }
+    foreach ($line in $afterLines) { if ($line -match '^\s*([A-Za-z0-9_]+):') { $afterKeys[$Matches[1]] = 1 + [int]($afterKeys[$Matches[1]]) } }
+    foreach ($key in $afterKeys.Keys) {
+        $beforeKeyCount = [int]($beforeKeys[$key])
+        if ($beforeKeyCount -gt 0 -and $key -ne 'm_SubKind' -and [int]$afterKeys[$key] -ne $beforeKeyCount) { return $false }
+    }
     if ($Mode -eq 'project') {
         $cursor = 0
         foreach ($line in $beforeLines) {
@@ -1651,8 +1753,7 @@ function Split-C04StagingTransitions {
                 if ($action -eq 'changed') { $mode = if ($path -match 'ProjectSettings.asset$') { 'project' } elseif ($path -match 'SDF.asset$') { 'font' } else { 'other' }; $valid = Test-C04AdditiveYamlTransition -Before $before -After $after -Mode $mode }
                 elseif ($action -eq 'removed') { $valid = (Test-Path -LiteralPath $before -PathType Leaf) -and -not (Test-Path -LiteralPath $after) }
             }
-            if (-not $valid -and $kind -eq 'EXTRA' -and $AfterRoot -and (Test-C04GeneratedUnityFile -Relative $path -Path $after)) { $valid = $true }
-            if (-not $valid -and $kind -eq 'CHANGED' -and $path -eq 'Mahjong.Unity.slnx' -and $BeforeRoot -and $AfterRoot -and (Test-C04GeneratedUnityFile -Relative $path -Path $before) -and (Test-C04GeneratedUnityFile -Relative $path -Path $after)) { $valid = $true }
+
             if ($valid) {
                 $transitions.Add([pscustomobject]@{
                     path = $path
@@ -2251,7 +2352,11 @@ try {
         if ($warmupDiff.fatal.Count -gt 0) { throw ('C04FAIL:STAGING_CHANGED_DURING_WARMUP:' + ($warmupDiff.fatal -join ',')) }
         $stagedInputRows = Get-C04FileTable -Root $stagingProject -ExcludeDirectoryNames @('Library', 'Temp', 'Logs', 'obj', 'UserSettings') -ExcludeRelativeDirectories @('.vscode') -ExcludeFileSuffixes @('.csproj', '.slnx', '.pdb.meta')
         $stagedInputManifest = Write-C04ManifestFile -Path (Join-Path $stagingRoot 'staged-project-input-manifest.csv') -Rows $stagedInputRows -Kind 'c04-staged-project-input'
-        $preBuildSnapshot = Join-Path $stagingRoot 'transitions-pre-build'
+        $beforeBuildProject = Join-Path $stagingRoot 'before-build\unity\Mahjong.Unity'
+        New-Item -ItemType Directory -Force -Path $beforeBuildProject | Out-Null
+        foreach ($entry in @(Get-ChildItem -LiteralPath $stagingProject -Force | Where-Object { $_.Name -notin @('Library','Temp','Logs','obj') })) {
+            Copy-Item -LiteralPath $entry.FullName -Destination $beforeBuildProject -Recurse -Force
+        }        $preBuildSnapshot = Join-Path $stagingRoot 'transitions-pre-build'
         Copy-C04TransitionSnapshot -Root $stagingProject -SnapshotRoot $preBuildSnapshot
         $unityBuild = Invoke-C04UnityBuild -StagingProject $stagingProject -PlayerPath $playerFull -ReportPath $reportFull -UnityLogPath $unityLog -PluginClosure $stagingBuild.closure
         if ($BuildReport) {

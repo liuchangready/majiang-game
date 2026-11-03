@@ -109,10 +109,16 @@ function New-PackageFixture {
         $projectRoot = Join-Path $evidence 'staging\repo\unity\Mahjong.Unity'
         [System.IO.File]::WriteAllText((Join-Path $projectRoot 'fixture.txt'), 'fixture')
         [System.IO.File]::WriteAllText((Join-Path $projectRoot 'fixture-final.txt'), 'final')
+        $settingsDir = Join-Path $projectRoot 'ProjectSettings'
+        New-Item -ItemType Directory -Force -Path $settingsDir | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $settingsDir 'ProjectSettings.asset'), "%YAML 1.1`n%TAG !u! tag:unity3d.com,2011:`n--- !u!129 &1`nPlayerSettings:`n  serializedVersion: 27`n")
         $stagedRows = Get-C04FileTable -Root $projectRoot -ExcludeDirectoryNames @('Library','Temp','Logs','obj','UserSettings') -ExcludeRelativeDirectories @('.vscode') -ExcludeFileSuffixes @('.csproj','.slnx','.pdb.meta')
         $null = Write-C04ManifestFile -Path $stagedManifest -Rows $stagedRows -Kind 'staged'
         $null = Write-C04ManifestFile -Path $stagedFinalManifest -Rows $stagedRows -Kind 'staged-final'
         $null = Write-C04ManifestFile -Path $stagedCodeManifest -Rows @([pscustomobject]@{ path = 'fixture.cs'; bytes = (Get-Item -LiteralPath $inputFile).Length; sha256 = (Get-C04Sha256 $inputFile) }) -Kind 'staged-code'
+        $beforeProject = Join-Path $evidence 'staging\before-build\unity\Mahjong.Unity'
+        New-Item -ItemType Directory -Force -Path $beforeProject | Out-Null
+        foreach ($entry in @(Get-ChildItem -LiteralPath $projectRoot -Force)) { Copy-Item -LiteralPath $entry.FullName -Destination $beforeProject -Recurse -Force }
     }
     $seal = Write-C04PackageSeal -PackageRoot $Dir -PlayerPath $exe -ReportPath $reportPath -ProvenancePath $provenanceCopy -PluginClosurePath $closurePath -BuildEvidenceRoot $evidence -SourceHead $head -SourceIdentitySha256 $identity.identitySha256 -SourceManifestSha256 (Get-C04Sha256 $sourceManifest) -StagedInputManifestSha256 (Get-C04Sha256 $stagedManifest) -StagedFinalManifestSha256 (Get-C04Sha256 $stagedFinalManifest) -StagedCodeManifestSha256 (Get-C04Sha256 $stagedCodeManifest) -BuildCommit $head -BuildId 'fixture-build' -SourceInputFileCount $identity.inputFileCount -SourceInputBytes $identity.inputBytes -StagedInputFileCount 1 -PluginClosure $closure
     return [pscustomobject]@{ dir = $Dir; exe = $exe; report = $reportPath; provenance = $provenanceCopy; closure = $closure; closurePath = $closurePath; seal = $seal; head = $head; identity = $identity }
@@ -195,10 +201,18 @@ $orig = Write-C04ManifestFile -Path (Join-Path $testRoot 'staged-original.csv') 
 $diff = @(Test-C04ManifestAgainstRoot -Root $staged.project -ManifestPath $orig.path)
 Assert-Match $diff 'STAGING_CHANGED:Assets/Extra.asset' 'staging-asset-mutation-detected'
 
+# Real raw-closure component positive: historical failed-build player is a real
+# Unity executable/DLL/data artifact, explicitly not a clean build or GAME pass.
+$realPlayer = Join-Path $root 'build/r3-evidence-330dfc18ad104ab29d4746dabc0137e8/build/player/Mahjong.exe'
+if (Test-Path -LiteralPath $realPlayer) {
+    Assert-Equal (@(Test-C04UnityPlayerArtifact -PlayerPath $realPlayer)).Count 0 'real-unity-player-artifact'
+    Assert-True (Test-C04PeImage $realPlayer) 'real-player-valid-pe'
+}
 # 5. Package seal requires real source/build/provenance/report/plugin relations.
 $package = New-PackageFixture -Dir (Join-Path $testRoot 'package') -ValidEvidence -UnityArtifact
 $check = Test-C04PackageSeal -PlayerPath $package.exe -ExpectedSourceHead $package.head -ExpectedBuildCommit $package.head -CurrentSourceIdentitySha256 $package.identity.identitySha256
-Assert-True $check.ok 'package-seal-good'
+Assert-True (-not $check.ok) 'package-seal-fake-rejected'
+Assert-Match $check.errors 'PLAYER_NOT_VALID_PE|PLAYER_MISSING_UNITYPLAYER_IMPORT|PACKAGE_EVIDENCE_STAGED_NOT_SOURCE' 'package-seal-fake-rejected'
 $fakeHead = ('a' * 40)
 Assert-Match (Test-C04PackageSeal -PlayerPath $package.exe -ExpectedSourceHead $fakeHead -CurrentSourceIdentitySha256 $package.identity.identitySha256).errors 'PACKAGE_SEAL_(SOURCE|BUILD)_HEAD_NOT_IN_HISTORY|PACKAGE_SEAL_SOURCE_HEAD' 'package-fake-head'
 # Restored coverage: plugin closure identity negatives.
