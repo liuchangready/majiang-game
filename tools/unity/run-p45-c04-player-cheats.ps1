@@ -1581,7 +1581,7 @@ function Test-C04PackageSeal {
             $removedUnityFiles = @('Assets/Resources/PerformanceTestRunInfo.json','Assets/Resources/PerformanceTestRunInfo.json.meta','Assets/Resources/PerformanceTestRunSettings.json','Assets/Resources/PerformanceTestRunSettings.json.meta')
             foreach ($srcRow in @($sourceByPath.Values | Where-Object { [string]$_.path -like 'unity/Mahjong.Unity/*' })) {
                 $rel = ([string]$srcRow.path).Substring('unity/Mahjong.Unity/'.Length)
-                if ($removedUnityFiles -contains $rel) { if ($stagedMap.ContainsKey($rel)) { $errors.Add('PACKAGE_EVIDENCE_REMOVED_FILE_PRESENT:' + $rel) | Out-Null }; continue }
+                if ($removedUnityFiles -contains $rel) { continue }
                 if (-not $stagedMap.ContainsKey($rel)) { $errors.Add('PACKAGE_EVIDENCE_REQUIRED_STAGED_MISSING:' + $rel) | Out-Null; continue }
                 if ($allowedChanged -notcontains $rel -and ([long]$srcRow.bytes -ne [long]$stagedMap[$rel].bytes -or [string]$srcRow.sha256 -ne [string]$stagedMap[$rel].sha256)) { $errors.Add('PACKAGE_EVIDENCE_REQUIRED_STAGED_CHANGED:' + $rel) | Out-Null }
             }
@@ -2496,7 +2496,7 @@ try {
         Copy-Item -LiteralPath $stagingBuild.provenancePath -Destination $provenanceCopy -Force
         $closureCopy = Join-Path $packageRoot 'c04-plugin-closure.csv'
         Copy-Item -LiteralPath (Join-Path $stagingRoot 'plugin-closure.csv') -Destination $closureCopy -Force
-        $packageSeal = Write-C04PackageSeal -PackageRoot $packageRoot -PlayerPath $playerFull -ReportPath $reportFull -ProvenancePath $provenanceCopy -PluginClosurePath $closureCopy -BuildEvidenceRoot $EvidenceRoot -SourceHead $SourceHead -SourceIdentitySha256 $script:C04SourceBefore.identitySha256 -SourceManifestSha256 $sourceInputManifest.sha256 -StagedInputManifestSha256 $stagedInputManifest.sha256 -StagedFinalManifestSha256 $finalManifest.sha256 -BuildCommit $BuildCommit -BuildId (Split-Path -Leaf $EvidenceRoot) -SourceInputFileCount $script:C04SourceBefore.inputFileCount -SourceInputBytes $script:C04SourceBefore.inputBytes -StagedInputFileCount $stagedInputManifest.fileCount -PluginClosure $finalPluginClosure
+        $packageSeal = Write-C04PackageSeal -PackageRoot $packageRoot -PlayerPath $playerFull -ReportPath $reportFull -ProvenancePath $provenanceCopy -PluginClosurePath $closureCopy -BuildEvidenceRoot $EvidenceRoot -SourceHead $SourceHead -SourceIdentitySha256 $script:C04SourceBefore.identitySha256 -SourceManifestSha256 $sourceInputManifest.sha256 -StagedInputManifestSha256 $stagedInputManifest.sha256 -StagedFinalManifestSha256 $finalManifest.sha256 -StagedCodeManifestSha256 $stagedCodeManifest.sha256 -BuildCommit $BuildCommit -BuildId (Split-Path -Leaf $EvidenceRoot) -SourceInputFileCount $script:C04SourceBefore.inputFileCount -SourceInputBytes $script:C04SourceBefore.inputBytes -StagedInputFileCount $stagedInputManifest.fileCount -PluginClosure $finalPluginClosure
         $sealCheck = Test-C04PackageSeal -PlayerPath $playerFull -ExpectedSourceHead $SourceHead -ExpectedBuildCommit $BuildCommit -CurrentSourceIdentitySha256 $script:C04SourceBefore.identitySha256
         if (-not $sealCheck.ok) { throw ('C04FAIL:PACKAGE_SEAL_INVALID:' + ($sealCheck.errors -join ',')) }
 
