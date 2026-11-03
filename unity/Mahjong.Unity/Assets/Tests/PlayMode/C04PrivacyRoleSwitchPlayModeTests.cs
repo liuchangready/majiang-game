@@ -879,6 +879,7 @@ namespace Mahjong.Unity.Tests.PlayMode
             Task? playerPump = null;
             Task? spectatorPump = null;
             Task? claimedPump = null;
+            string? claimedPumpError = null;
             Mahjong.Contracts.Wire.DecisionView? staleDecisionSeed = null;
             ulong staleEpochSeed = 0UL;
             string staleRoundSeed = string.Empty;
@@ -936,7 +937,8 @@ namespace Mahjong.Unity.Tests.PlayMode
                     ?? throw new InvalidOperationException("The claimed player channel did not expose its ticket.");
                 claimed = new TableSession(claimedCapture, new InMemoryOutboxStore());
                 await claimed.OpenAsync(new TableSessionOpenRequest(claimedTicket.SessionTicket, LocalTableChannelFactory.ClientBuild), pumpCts.Token).ConfigureAwait(false);
-                claimedPump = PumpLoopAsync(claimed, pumpCts.Token);
+                claimedPump = PumpLoopAsync(claimed, pumpCts.Token,
+                    exception => Interlocked.CompareExchange(ref claimedPumpError, exception.ToString(), null));
                 await WaitReadyAsync(claimed, pumpCts.Token).ConfigureAwait(false);
                 PlayerSnapshot claimBase = claimed.PlayerSnapshot
                     ?? throw new InvalidOperationException("No claimed baseline.");
@@ -1015,6 +1017,9 @@ namespace Mahjong.Unity.Tests.PlayMode
                 {
                     File.WriteAllText(Path.Combine(controlEvidenceDirectory, "control-session-submit-error.txt"),
                         "state=" + claimed.State + Environment.NewLine +
+                    "lastError=" + (claimed.LastError ?? "<none>") + Environment.NewLine +
+                    "transportOpen=" + claimedCapture.IsOpen + Environment.NewLine +
+                    "pumpError=" + (claimedPumpError ?? "<none>") + Environment.NewLine +
                         "bindingPresent=" + (claimed.Binding != null) + Environment.NewLine +
                         "pendingCommands=" + claimed.PendingCommands.Count + Environment.NewLine +
                         "commandFrames=" + claimedCapture.CommandFrames + Environment.NewLine +
@@ -1245,7 +1250,7 @@ namespace Mahjong.Unity.Tests.PlayMode
             }
         }
 
-        private static async Task PumpLoopAsync(TableSession session, CancellationToken cancellationToken)
+        private static async Task PumpLoopAsync(TableSession session, CancellationToken cancellationToken, Action<Exception>? onTransientError = null)
         {
             try
             {
@@ -1256,6 +1261,7 @@ namespace Mahjong.Unity.Tests.PlayMode
                 exception is TableChannelClosedException ||
                 exception is InvalidOperationException)
             {
+                onTransientError?.Invoke(exception);
             }
         }
 

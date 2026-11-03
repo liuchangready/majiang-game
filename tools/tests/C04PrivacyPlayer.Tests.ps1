@@ -55,13 +55,14 @@ Check ($driver.Contains('deadline-evidence.json') -and $driver.Contains('Authori
 Check ($driver.Contains('decisionClock.DecisionSeat') -and $driver.Contains('decisionClock.ServerTimeMs') -and $driver.Contains('session.State == TableConnectionState.Closed') -and $driver.Contains('PlayerBindingClosed = playerBindingClosed')) 'DEADLINE_EVIDENCE_IS_CAPTURED_FROM_LIVE_SNAPSHOTS_AND_CLOSED_BINDING'
 Check ($driver.Contains('control-session-before-stale-submit.json') -and $driver.Contains('claimed.State != TableConnectionState.Ready') -and $driver.Contains('Scope.ScopeId.Value')) 'RELEASED_CONTROL_CAPTURE_PROVES_READY_BOUND_SESSION_AT_SUBMIT'
 Check ($driver.Contains('"r-" + Guid.NewGuid().ToString("N")') -and $driver.Contains('Path.Combine(runRoot, "state", prefix.Substring(0, Math.Min(2, prefix.Length))')) 'WINDOWS_SAVE_PATH_COMPONENTS_STAY_BELOW_LEGACY_PATH_LIMIT'
+Check ($driver.Contains('claimedPumpError') -and $driver.Contains('onTransientError?.Invoke(exception)') -and $driver.Contains('transportOpen=') -and $driver.Contains('lastError=')) 'RELEASED_CONTROL_RECONNECT_FAILURE_PRESERVES_TRANSPORT_DIAGNOSTIC'
 Check ($runner.Contains('function Assert-C04PlayerCaseEvidence') -and $runner.Contains('Open-deadline evidence failed its real decision') -and -not $runner.Contains('$caseFiles.Count -lt 3')) 'RUNNER_SEMANTICALLY_ACCEPTS_CASE_ARTIFACTS'
 Check ($runner.Contains('raw-frames.json') -and $runner.Contains('zeroDuplicateStateDelta') -and $runner.Contains('staleNoCommitMetadata')) 'ALL_CASE_RAW_RECOVERY_AND_CONTROL_OUTPUTS_ARE_REQUIRED'
 $recoveryProbe = [IO.File]::ReadAllText((Join-Path $repo 'unity/Mahjong.Unity/Assets/Scripts/App/C04RecoveryReconciliationProbe.cs'),[Text.Encoding]::UTF8)
 Check ($recoveryProbe.Contains('FileOutboxStore(arguments.OutboxDirectory)') -and $recoveryProbe.Contains('session.ReconcilePendingAsync') -and $recoveryProbe.Contains('noOriginalCommandResend')) 'P2_REAL_OUTBOX_RECONCILE_CONTRACT'
 $guid = [regex]::Match([IO.File]::ReadAllText($metaPath),'(?m)^guid: ([0-9a-f]{32})$').Groups[1].Value
 Check ($guid.Length -eq 32) 'UNIQUE_META_GUID'
-$result = [ordered]@{ schemaVersion=1; testKind='source-contract'; total=23; passed=(23-$failures.Count); failed=$failures.Count; failures=$failures.ToArray(); driverSha256=(Get-FileHash -Algorithm SHA256 $driverPath).Hash.ToLowerInvariant(); runnerSha256=(Get-FileHash -Algorithm SHA256 $runnerPath).Hash.ToLowerInvariant() }
+$result = [ordered]@{ schemaVersion=1; testKind='source-contract'; total=24; passed=(24-$failures.Count); failed=$failures.Count; failures=$failures.ToArray(); driverSha256=(Get-FileHash -Algorithm SHA256 $driverPath).Hash.ToLowerInvariant(); runnerSha256=(Get-FileHash -Algorithm SHA256 $runnerPath).Hash.ToLowerInvariant() }
 $json = $result | ConvertTo-Json -Depth 5
 [IO.File]::WriteAllText((Join-Path $root 'summary.json'),$json + "`n",[Text.UTF8Encoding]::new($false))
 if ($failures.Count) { Write-Error ('C04_PRIVACY_PLAYER_TESTS_FAIL ' + ($failures -join ',')); exit 1 }

@@ -960,6 +960,7 @@ namespace Mahjong.Unity.App
             Task? playerPump = null;
             Task? spectatorPump = null;
             Task? claimedPump = null;
+            string? claimedPumpError = null;
             Mahjong.Contracts.Wire.DecisionView? staleDecisionSeed = null;
             ulong staleEpochSeed = 0UL;
             string staleRoundSeed = string.Empty;
@@ -1017,7 +1018,8 @@ namespace Mahjong.Unity.App
                     ?? throw new InvalidOperationException("The claimed player channel did not expose its ticket.");
                 claimed = new TableSession(claimedCapture, new InMemoryOutboxStore());
                 await claimed.OpenAsync(new TableSessionOpenRequest(claimedTicket.SessionTicket, LocalTableChannelFactory.ClientBuild), pumpCts.Token).ConfigureAwait(false);
-                claimedPump = PumpLoopAsync(claimed, pumpCts.Token);
+                claimedPump = PumpLoopAsync(claimed, pumpCts.Token,
+                    exception => Interlocked.CompareExchange(ref claimedPumpError, exception.ToString(), null));
                 await WaitReadyAsync(claimed, pumpCts.Token).ConfigureAwait(false);
                 PlayerSnapshot claimBase = claimed.PlayerSnapshot
                     ?? throw new InvalidOperationException("No claimed baseline.");
@@ -1071,10 +1073,24 @@ namespace Mahjong.Unity.App
                     ",\"snapshotCurrentSeat\":" + (staleSubmitSnapshot?.PublicView.Board?.CurrentSeat ?? -2).ToString(System.Globalization.CultureInfo.InvariantCulture) +
                     ",\"snapshotDecisionId\":\"" + (staleSubmitSnapshot?.PrivateView.Decision?.DecisionId ?? string.Empty) + "\",\"snapshotControlEpoch\":" + claimedEpoch.ToString(System.Globalization.CultureInfo.InvariantCulture) +
                     ",\"pendingCommands\":" + claimed.PendingCommands.Count.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                    ",\"transportOpen\":" + claimedCapture!.IsOpen.ToString().ToLowerInvariant() +
                     ",\"claimCommandFrames\":" + claimedCapture!.CommandFrames.ToString(System.Globalization.CultureInfo.InvariantCulture) + "}", new UTF8Encoding(false));
                 if (claimed.State != TableConnectionState.Ready || staleSubmitBinding == null || staleSubmitBinding.Scope == null || staleSubmitSnapshot == null)
+                {
+                    File.WriteAllText(Path.Combine(controlEvidenceDirectory, "control-session-submit-error.txt"),
+                        "state=" + claimed.State + Environment.NewLine +
+                        "lastError=" + (claimed.LastError ?? "<none>") + Environment.NewLine +
+                        "transportOpen=" + claimedCapture!.IsOpen + Environment.NewLine +
+                        "pumpError=" + (claimedPumpError ?? "<none>") + Environment.NewLine +
+                        "bindingPresent=" + (staleSubmitBinding != null) + Environment.NewLine +
+                        "pendingCommands=" + claimed.PendingCommands.Count + Environment.NewLine +
+                        "commandFrames=" + claimedCapture.CommandFrames + Environment.NewLine,
+                        new UTF8Encoding(false));
                     throw new InvalidOperationException("Claimed player session lost its ready binding before the stale-epoch probe; state=" + claimed.State +
-                        ", binding=" + (staleSubmitBinding != null) + ", snapshot=" + (staleSubmitSnapshot != null) + ", epoch=" + claimedEpoch);
+                        ", binding=" + (staleSubmitBinding != null) + ", snapshot=" + (staleSubmitSnapshot != null) + ", epoch=" + claimedEpoch +
+                        ", lastError=" + (claimed.LastError ?? "<none>") + ", transportOpen=" + claimedCapture.IsOpen +
+                        ", pumpError=" + (claimedPumpError ?? "<none>"));
+                }
                 int staleCommandFramesBefore = claimedCapture!.CommandFrames;
                 var staleCommand = new ProtocolCommand(
                     CommandKind.SubmitAction,
@@ -1315,7 +1331,7 @@ namespace Mahjong.Unity.App
             }
         }
 
-        private static async Task PumpLoopAsync(TableSession session, CancellationToken cancellationToken)
+        private static async Task PumpLoopAsync(TableSession session, CancellationToken cancellationToken, Action<Exception>? onTransientError = null)
         {
             try
             {
@@ -1326,6 +1342,7 @@ namespace Mahjong.Unity.App
                 exception is TableChannelClosedException ||
                 exception is InvalidOperationException)
             {
+                onTransientError?.Invoke(exception);
             }
         }
 
