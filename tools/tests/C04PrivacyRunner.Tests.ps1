@@ -75,6 +75,8 @@ function New-CaseEvidenceFixture([string]$CaseName, [string]$Root) {
         'RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly' {
             $e = @{ fixtureOnly=$true; schemaVersion=1; releaseVersion='10'; afterVersion='11'; advancedWithoutPlayerBinding=$true; claimed=$true; claimEpochAdvanced=$true; controlPresent=$true; controlHuman=$true; receiptStatus='Rejected'; receiptReason='stale'; expectedStaleReason='stale'; staleReason='stale'; capturedDecisionEpoch=1; staleEpoch=2; staleRound='fixture-round'; staleCommandFrames=1; stalePendingAfter=0; staleNoCommitMetadata=$true; staleDecisionRejected=$true }
             Write-C04Json (Join-Path $Root 'released-control/released-control.json') $e
+            $session = @{ fixtureOnly=$true; schemaVersion=1; case=$CaseName; phase='before-stale-submit'; sessionState='Ready'; bindingPresent=$true; sessionId='fixture-player-session'; scopeId='fixture-player-scope'; role=1; seat=0; bindingEpoch=3; snapshotStateVersion=11; snapshotEventSeq=8; snapshotRoundId='fixture-round'; snapshotPhase='Discard'; snapshotCurrentSeat=0; snapshotDecisionId='fixture-decision'; snapshotControlEpoch=2; pendingCommands=0; claimCommandFrames=1 }
+            Write-C04Json (Join-Path $Root 'released-control/control-session-before-stale-submit.json') $session
         }
         'RealRoom_OpenDecisionDeadlineContinuesAfterPlayerClose' {
             $e = @{ fixtureOnly=$true; schemaVersion=1; case=$CaseName; roomId='fixture-room'; roundId='fixture-round'; decisionId='fixture-decision'; decisionSeat=0; controlEpoch=2; decisionDeadlineRemainingMs=5000; clockDecisionSeat=0; clockServerTimeMs=10000; clockDeadlineRemainingMs=5000; authoritativeDeadlineServerTimeMs=15000; playerSessionId='fixture-player-session'; playerScopeId='fixture-player-scope'; playerRole=1; playerSeat=0; playerBindingEpoch=3; releaseVersion=9; releaseCursorStreamVersion=4; releaseCursorProjectionSeq=8; closeRequestedUtcMs=100; closeCompletedUtcMs=110; playerBindingClosed=$true; spectatorSessionId='fixture-spectator-session'; spectatorRole=2; spectatorSeat=-1; spectatorBaselineVersion=9; spectatorBaselineCursorStreamVersion=1; spectatorBaselineCursorProjectionSeq=2; afterVersion=10; afterCursorStreamVersion=2; afterCursorProjectionSeq=3; afterPhase='Discard'; advancedWithoutPlayerBinding=$true }
@@ -572,6 +574,19 @@ Invoke-Case 'deadline evidence rejects wrong identity, missing decision, epoch, 
         $e.($mutation.key) = $mutation.value
         Write-C04Json $path $e
         Assert-Throws { Assert-C04PlayerCaseEvidence -CaseName $caseName -CaseRoot $caseRoot } 'Open-deadline evidence failed'
+    }
+}
+
+Invoke-Case 'released-control stale-command evidence requires a live ready bound player session' {
+    $caseName = 'RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly'
+    foreach ($mutation in @(@{ key='sessionState'; value='Closed' },@{ key='bindingPresent'; value=$false },@{ key='scopeId'; value='' },@{ key='bindingEpoch'; value=0 })) {
+        $caseRoot = Join-Path (New-TestDirectory ([guid]::NewGuid().ToString('N'))) $caseName
+        New-CaseEvidenceFixture $caseName $caseRoot
+        $path = Join-Path $caseRoot 'released-control/control-session-before-stale-submit.json'
+        $e = [IO.File]::ReadAllText($path) | ConvertFrom-Json
+        $e.($mutation.key) = $mutation.value
+        Write-C04Json $path $e
+        Assert-Throws { Assert-C04PlayerCaseEvidence -CaseName $caseName -CaseRoot $caseRoot } 'Released-control session evidence'
     }
 }
 

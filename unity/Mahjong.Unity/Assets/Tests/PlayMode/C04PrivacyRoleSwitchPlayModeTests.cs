@@ -367,10 +367,16 @@ namespace Mahjong.Unity.Tests.PlayMode
                 Assert.AreEqual(originalScope.Value, reconciled.Command.Key.ScopeId.Value);
                 Assert.AreEqual(requestId, reconciled.Command.Key.RequestId.Value);
                 Assert.AreEqual(originalDigest, reconciled.Resolution.CanonicalPayloadSha256);
+                Assert.AreEqual(afterSubmitVersion, reconciled.Resolution.CommandVersion?.Value,
+                    "Receipt lookup did not return the original request's committed command version.");
+                Assert.AreEqual(afterSubmitEventSeq, reconciled.Resolution.EventSeq?.Value,
+                    "Receipt lookup did not return the original request's committed event sequence.");
                 Assert.Greater(recoveredCapture.ReceiptQueryFrames, 0, "Recovery did not send a ReceiptQuery.");
                 Assert.AreEqual(0, recoveredCapture.CommandFrames);
-                Assert.AreEqual(afterSubmitVersion, recoveredSession.PlayerSnapshot!.StateVersion);
-                Assert.AreEqual(afterSubmitEventSeq, recoveredSession.PlayerSnapshot.EventSeq);
+                Assert.GreaterOrEqual(recoveredSession.PlayerSnapshot!.StateVersion, afterSubmitVersion,
+                    "Recovered snapshot is behind the original request's committed version.");
+                Assert.GreaterOrEqual(recoveredSession.PlayerSnapshot.EventSeq, afterSubmitEventSeq,
+                    "Recovered snapshot is behind the original request's committed event sequence.");
 
                 for (int seat = 1; seat < 4; seat++)
                 {

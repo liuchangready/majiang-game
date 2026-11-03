@@ -1246,7 +1246,7 @@ function Assert-C04PlayerCaseEvidence([string]$CaseName, [string]$CaseRoot) {
     'RealRoom_DelayedOldRawReceiveIsRejectedByNewBinding' { @('delayed-old-raw/delayed-old-raw.json') }
     'RealRoom_ColdReopenReconcilesOriginalRequestWithoutDuplicate' { @('recovery-query/recovery-query.json','recovery-raw/raw-frames.json') }
     'RealRoom_LegalSleeveAndFeeOwnershipAcrossFourSeatsAndSpectator' { @('four-owner/four-owner.json','four-owner-raw/raw-frames.json') }
-    'RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly' { @('released-control/released-control.json') }
+    'RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly' { @('released-control/released-control.json','released-control/control-session-before-stale-submit.json') }
     'RealRoom_OpenDecisionDeadlineContinuesAfterPlayerClose' { @('deadline-evidence.json') }
     'RealRoom_ClosedPlayerToSpectatorToNewPlayerReceivePathRejectsOldRaw' { @('closed-binding-raw/raw-frames.json') }
     default { throw "Unknown Player case evidence contract: $CaseName" }
@@ -1283,8 +1283,12 @@ function Assert-C04PlayerCaseEvidence([string]$CaseName, [string]$CaseRoot) {
     }
     'RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly' {
       $e = $artifacts['released-control/released-control.json']
+      $session = $artifacts['released-control/control-session-before-stale-submit.json']
       if ([int]$e.schemaVersion -ne 1 -or [UInt64]$e.afterVersion -le [UInt64]$e.releaseVersion -or $e.advancedWithoutPlayerBinding -ne $true -or $e.claimed -ne $true -or $e.claimEpochAdvanced -ne $true -or $e.controlPresent -ne $true -or $e.controlHuman -ne $true -or $e.receiptStatus -cne 'Rejected' -or [string]::IsNullOrWhiteSpace($e.expectedStaleReason) -or $e.staleReason -cne $e.expectedStaleReason -or [int]$e.staleCommandFrames -ne 1 -or [int]$e.stalePendingAfter -ne 0 -or $e.staleNoCommitMetadata -ne $true -or $e.staleDecisionRejected -ne $true) {
         throw 'Released-control evidence failed its epoch, rejection, or no-side-effect contract.'
+      }
+      if ([int]$session.schemaVersion -ne 1 -or $session.case -cne $CaseName -or $session.phase -cne 'before-stale-submit' -or $session.sessionState -cne 'Ready' -or $session.bindingPresent -ne $true -or [string]::IsNullOrWhiteSpace($session.sessionId) -or [string]::IsNullOrWhiteSpace($session.scopeId) -or [int]$session.role -ne 1 -or [int]$session.seat -ne 0 -or [UInt64]$session.bindingEpoch -eq 0 -or [UInt64]$session.snapshotStateVersion -eq 0 -or [string]::IsNullOrWhiteSpace($session.snapshotRoundId) -or [string]::IsNullOrWhiteSpace($session.snapshotPhase) -or [UInt64]$session.snapshotControlEpoch -lt [UInt64]$e.claimEpoch -or [int]$session.claimCommandFrames -lt 1) {
+        throw 'Released-control session evidence does not prove a ready, bound player at the stale-command submission point.'
       }
     }
     'RealRoom_OpenDecisionDeadlineContinuesAfterPlayerClose' {
