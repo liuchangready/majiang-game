@@ -1,0 +1,246 @@
+{
+    "schemaVersion":  5,
+    "kind":  "V5_G2_C05_ANDROID_EMULATOR_BINDING",
+    "generatedAtUtc":  "2026-11-04T04:30:00Z",
+    "status":  "ROUND5_TOOLS_PASS_DEVICE_BLOCKED_ACCEL",
+    "phase":  "REVIEW_R4_SINGLE_REMAINDER_CLOSED_APK_INPUTS_UNCHANGED",
+    "notFinalC05":  true,
+    "notG2":  true,
+    "notArm64Device":  true,
+    "reviewRound":  5,
+    "reviewedRequest":  {
+                            "reviewFile":  "build/c05-review-r4-20261104/review.md",
+                            "sha256":  "D4E3DD47E65EA0575BFCFCEF8A480DBD0AB4DC4F88ECCC2F39B8353A3D8EF15F"
+                        },
+    "candidate":  {
+                      "acceptedBase":  "8fd7c6cb701dfbb41c28938de4186749bdd1d6c7",
+                      "parentCandidateCommit":  "2c8238cd29386ab52994c8e3839dfdb85059660c",
+                      "worktreeHead":  "5b484774860aa9b59ed1dce26f6efa720ed44b7d",
+                      "branch":  "wt/v5-g2-c05-android-validation-ds-20261103"
+                  },
+    "trackedScope":  {
+                         "expectedFilesCount":  7,
+                         "files":  [
+                                       "tools/unity/build-c05-android-emulator.ps1",
+                                       "tools/unity/run-c05-android-emulator.ps1",
+                                       "tools/tests/C05AndroidEmulator.Tests.ps1",
+                                       "unity/Mahjong.Unity/Assets/Editor/C05EmulatorAndroidBuild.cs",
+                                       "unity/Mahjong.Unity/Assets/Editor/C05EmulatorAndroidBuild.cs.meta",
+                                       "doc/v5-重构/V5-G2-C05-ANDROID-EMULATOR-DELIVERY-20261103.md",
+                                       "doc/v5-重构/V5-G2-C05-ANDROID-EMULATOR-BINDING-20261103.json"
+                                   ],
+                         "metaGuid":  "b905573dc52542f79e65453693ed5f6d",
+                         "gitStatus":  "7 untracked expectedFiles only",
+                         "gitDiffCheckExit":  0
+                     },
+    "toolSourceSha256":  {
+                             "tools/unity/build-c05-android-emulator.ps1":  "2EA5435DB668D6B91817F0BD58808EF0B14A6829B40D2F7E22F9E03AD19C3769",
+                             "tools/unity/run-c05-android-emulator.ps1":  "1841035A5412BBDF923DA40B07F868D4024B3B0E8CF12539B241CBB79E2F867F",
+                             "tools/tests/C05AndroidEmulator.Tests.ps1":  "B38A8B09C2E2BCC4949B564E9A90EC7D591A220720D6C9F3D8CEAB030FBC1285",
+                             "unity/Mahjong.Unity/Assets/Editor/C05EmulatorAndroidBuild.cs":  "CCF546D86EE3C449856F905C19ADB41FB1E02C823E30FBCA5C450EB80DDC0D82",
+                             "unity/Mahjong.Unity/Assets/Editor/C05EmulatorAndroidBuild.cs.meta":  "66B2073981A0D74A75204EAD3C912E2B17A76C9F62A960A7B9DCEF858E0A6D07"
+                         },
+    "closedGroups":  {
+                         "C05-R1-01":  {
+                                           "status":  "CLOSED",
+                                           "summary":  "parent0 and parent-launcher qemu records both stop; foreign records survive."
+                                       },
+                         "C05-R1-02":  {
+                                           "status":  "CLOSED",
+                                           "summary":  "fractional/boolean strict and mandatory receipt instanceId/monolithic enforced."
+                                       },
+                         "C05-R2-04":  {
+                                           "status":  "CLOSED",
+                                           "summary":  "nested junction subtrees rejected with zero mutation."
+                                       }
+                     },
+    "reviewFixes":  {
+                        "C05-R1-03":  {
+                                          "severity":  "MAJOR",
+                                          "status":  "FIXED",
+                                          "summary":  "Removed independent-echo ABSENT inference; only a fully drained native-0 PASS probe with one well-formed C05_PIDOF_EXIT marker and empty stderr yields ABSENT/RUNNING; stderr, timeout, drain, native nonzero/null, duplicate/missing/malformed/contradictory markers stay UNKNOWN; multi-PID parsed; raw probe command/exit/flags/stdout/stderr preserved in stop evidence.",
+                                          "evidence":  [
+                                                           "build/c05-review-repro7-25c737691b074929879806890e18e6e1/process-probe-results.json",
+                                                           "build/c05-review-repro7-25c737691b074929879806890e18e6e1/valid-cli-results.json",
+                                                           "build/c05-review-repro7-25c737691b074929879806890e18e6e1/valid-cli-218bfb11/20261104-034353-stop-0e4abdd7/stop-result.json",
+                                                           "build/round5-tests/run-2e6394e3/test-summary.json"
+                                                       ],
+                                          "assertions":  [
+                                                             "reviewer process-probe 7/7 match",
+                                                             "stop-absent exit0, stop-running exit1 RUNNING",
+                                                             "stop-empty-error/stderr-error exit1 UNKNOWN",
+                                                             "run-target-state 12 cases (3 positive + 9 negative)"
+                                                         ]
+                                      }
+                    },
+    "authorization":  {
+                          "sdkRoot":  "D:\\Android\\Sdk",
+                          "avdHome":  "D:\\Android\\avd",
+                          "source":  "doc/v5-重构/V5-G2-C05-ANDROID-EMULATOR-TASK-20261103.md §用户最新目录与接续检查点",
+                          "eIsolationRetainedFor":  "build cache/TEMP/Library/staging/APK/evidence under this worktree build/"
+                      },
+    "environment":  {
+                        "unity":  {
+                                      "path":  "D:\\Unity\\Hub\\Editor\\6000.3.27f1\\Editor\\Unity.exe",
+                                      "version":  "6000.3.27f1"
+                                  },
+                        "androidPlayer":  {
+                                              "jdk":  "17.0.20.1",
+                                              "ndk":  "27.2.12479018",
+                                              "cmake":  "3.22.1"
+                                          },
+                        "androidSdk":  {
+                                           "root":  "D:\\Android\\Sdk",
+                                           "adb":  "37.0.1-15733141",
+                                           "aapt2":  "36.0.0",
+                                           "emulator":  "37.2.13.0"
+                                       },
+                        "androidAvd":  {
+                                           "name":  "medium_phone",
+                                           "apiLevel":  36,
+                                           "abi":  "x86_64",
+                                           "resolution":  "1080x2400",
+                                           "density":  420
+                                       },
+                        "acceleration":  {
+                                             "accelCheckNativeExit":  6,
+                                             "hypervisorPresent":  false,
+                                             "aehdServicePresent":  false
+                                         }
+                    },
+    "build":  {
+                  "status":  "PASS",
+                  "evidenceRoot":  "build/c05-emulator-build-staged-20261104-030443",
+                  "cacheMode":  "CLEAN",
+                  "variant":  "ANDROID_EMULATOR",
+                  "backend":  "IL2CPP",
+                  "abi":  "x86_64",
+                  "sourceHead":  "5b484774860aa9b59ed1dce26f6efa720ed44b7d",
+                  "sourceInputFileCount":  373,
+                  "sourceInputFreezeSha256":  "77958E499D21B90A842CBEE1EA36EC0C7B960F8CC0E92807D2203B4ED8A8FA81",
+                  "sourceInputsUnchanged":  true,
+                  "sourcePluginsUnchanged":  true,
+                  "apkInputsChangedThisRound":  false,
+                  "buildReport":  {
+                                      "schema":  2,
+                                      "result":  "Succeeded",
+                                      "errors":  0,
+                                      "stepErrors":  0,
+                                      "stepExceptions":  0,
+                                      "resolvedTargetSdk":  36,
+                                      "minSdkVersion":  25,
+                                      "targetSdkSetting":  0,
+                                      "packageId":  "com.majiang.game",
+                                      "launchableActivity":  "com.unity3d.player.UnityPlayerActivity",
+                                      "durationSeconds":  546.882
+                                  },
+                  "summaryElapsedSeconds":  618,
+                  "apk":  {
+                              "file":  "Mahjong-emulator-x86_64.apk",
+                              "bytes":  54031339,
+                              "sha256":  "1E57F07C6961886407F41C7CFAAE583ABCEE7BA8674E0CF7834581DB4272E2A9",
+                              "nativeCode":  "x86_64",
+                              "notAotProbe":  true
+                          },
+                  "artifactHashes":  {
+                                         "summarySha256":  "1C2071729D549216205EE308F32889E22CAE0FBAD85F4A46B8C6564F1B614A47",
+                                         "buildReportSha256":  "84DF0C3D977D542F8C1E36226213B4FD0FA652DDA743625C271EB66946DE88FB",
+                                         "metadataSha256":  "16302C8998CEB5DF64A0607CCCE7432BE941503AD2088BF3C6EB68E20B8B7781",
+                                         "sourceFreezeBeforeSha256":  "77958E499D21B90A842CBEE1EA36EC0C7B960F8CC0E92807D2203B4ED8A8FA81",
+                                         "sourceFreezeAfterSha256":  "77958E499D21B90A842CBEE1EA36EC0C7B960F8CC0E92807D2203B4ED8A8FA81",
+                                         "pluginProvenanceSha256":  "54B1117B3EE53F3CB23BF854C496EED3D9AB554F02267E63EAC1120765F534C1",
+                                         "provenanceManifestSha256":  "D709811B841F81B7C1B81D337C2ECF3D14007D68B546D21FE6C489B4DA953D47"
+                                     },
+                  "sharedProvenance":  {
+                                           "inputCount":  156,
+                                           "schema":  2,
+                                           "pluginProvenanceCopied":  true
+                                       }
+              },
+    "tests":  {
+                  "suite":  "tools/tests/C05AndroidEmulator.Tests.ps1",
+                  "assertions":  92,
+                  "fixtures":  15,
+                  "nativeExit":  0,
+                  "outputRoot":  "build/round5-tests/run-2e6394e3",
+                  "testSummarySha256":  "19BD49EF1F1D64B408C7831A410FA5A5703FF83D2C0C9D7C5EC560DF2EB6C9BE",
+                  "fixtureCounts":  {
+                                        "build-verdict":  27,
+                                        "build-staging-guard":  6,
+                                        "run-artifact":  24,
+                                        "run-state":  5,
+                                        "run-input":  7,
+                                        "run-device-contract":  2,
+                                        "run-receipt":  4,
+                                        "run-target-state":  9,
+                                        "run-root-eligibility":  1,
+                                        "others":  0
+                                    },
+                  "reviewerRepro":  {
+                                        "root":  "build/c05-review-repro7-25c737691b074929879806890e18e6e1",
+                                        "processProbeSha256":  "D9596359374B6C3EB6C3210486B1D5E125A53EBF94ECFA41E3BABDECB1671C51",
+                                        "validCliSha256":  "6C96796190A7B24CEBC0E115EC61B24156180008B5E5A0FDD3BAABB9D316EE14",
+                                        "stopResultSha256":  "A44499F5D531C8F8A56C2670AFE81EE55A5A33884F1DA388728A9105667CD660"
+                                    }
+              },
+    "device":  {
+                   "status":  "BLOCKED_ACCEL",
+                   "bootCompleted":  false,
+                   "screenshotCaptured":  false,
+                   "avdRetriedThisRound":  false,
+                   "minimalDependency":  "Enable WHPX or install AEHD (admin, reboot); emulator -accel-check must exit 0."
+               },
+    "matrix":  {
+                   "E1":  {
+                              "status":  "PASS"
+                          },
+                   "B1":  {
+                              "status":  "PASS",
+                              "binding":  "030443 CLEAN APK 1E57F07C…E2A9 revalidated"
+                          },
+                   "D1":  {
+                              "status":  "BLOCKED_ACCEL"
+                          },
+                   "R1":  {
+                              "status":  "NOT_RUN"
+                          },
+                   "V1":  {
+                              "status":  "NOT_RUN"
+                          },
+                   "I1":  {
+                              "status":  "NOT_RUN"
+                          },
+                   "L1":  {
+                              "status":  "NOT_RUN"
+                          },
+                   "F1":  {
+                              "status":  "PASS"
+                          }
+               },
+    "limitations":  [
+                        "No device boot, install, launch, screenshot/video, native GAME input or lifecycle evidence.",
+                        "No ARM64 real device, Windows, Editor, iOS, G2-G5 conclusion.",
+                        "APK is the 030443 cold build; round-5 changed only PowerShell/tests/docs, not APK inputs."
+                    ],
+    "independentAcceptance":  {
+                                  "reviewer":  "codex",
+                                  "threadId":  "thread_20261103_205948_6dbe",
+                                  "round":  5,
+                                  "scopeStatus":  "ACCEPTED_TOOLS_APK_AND_BLOCKED_DEVICE_HANDOFF",
+                                  "codeCommit":  "7ee6d72b5553abae6103f55b1afccac0be125c00",
+                                  "evidenceRoot":  "build/c05-review-r5-20261104",
+                                  "assertions":  92,
+                                  "fixtures":  15,
+                                  "nativeExit":  0,
+                                  "processProbeCases":  7,
+                                  "sourceFreezeFiles":  373,
+                                  "sourceChanges":  0,
+                                  "apkInputsUnchanged":  true,
+                                  "realGameDeviceStatus":  "NOT_RUN",
+                                  "deviceBlock":  "BLOCKED_ACCEL",
+                                  "notFullC05":  true,
+                                  "notG2":  true,
+                                  "mergeRequest":  "https://github.com/liuchangready/majiang-game/pull/20",
+                                  "mergeRequestRemainsDraft":  true
+                              }
+}
