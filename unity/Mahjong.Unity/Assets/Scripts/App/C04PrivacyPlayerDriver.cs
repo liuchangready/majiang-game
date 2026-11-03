@@ -575,8 +575,15 @@ namespace Mahjong.Unity.App
                 ",\"claimEpochAdvanced\":" + evidence.ClaimEpochAdvanced.ToString().ToLowerInvariant() +
                 ",\"controlPresent\":" + evidence.ControlPresent.ToString().ToLowerInvariant() +
                 ",\"controlHuman\":" + evidence.ControlHuman.ToString().ToLowerInvariant() +
-                ",\"receiptStatus\":\"" + evidence.ReceiptStatus +
-                "\",\"receiptReason\":\"" + evidence.ReceiptReason +
+                ",\"claimRequestId\":\"" + evidence.ClaimRequestId +
+                "\",\"claimReceiptStatus\":\"" + evidence.ClaimReceiptStatus +
+                "\",\"claimReceiptReason\":\"" + evidence.ClaimReceiptReason +
+                "\",\"staleRequestId\":\"" + evidence.StaleRequestId +
+                "\",\"staleDecisionId\":\"" + evidence.StaleDecisionId +
+                "\",\"staleSessionId\":\"" + evidence.StaleSessionId +
+                "\",\"staleScopeId\":\"" + evidence.StaleScopeId +
+                "\",\"staleBindingEpoch\":" + evidence.StaleBindingEpoch +
+                ",\"staleReceiptStatus\":\"" + evidence.StaleReceiptStatus +
                 "\",\"expectedStaleReason\":\"" + evidence.ExpectedStaleReason +
                 "\",\"staleReason\":\"" + evidence.StaleReason +
                 "\",\"capturedDecisionEpoch\":" + evidence.CapturedDecisionEpoch +
@@ -602,6 +609,9 @@ namespace Mahjong.Unity.App
             Assert.IsTrue(evidence.ControlPresent, "ClaimControl did not produce a client control projection.");
             Assert.IsTrue(evidence.ClaimEpochAdvanced, "ClaimControl did not advance the client control epoch.");
             Assert.IsTrue(evidence.ControlHuman, "ClaimControl did not restore explicit human control.");
+            Assert.AreEqual("LOCAL_CONTROL", evidence.ClaimReceiptReason, "ClaimControl returned an unexpected receipt reason.");
+            Assert.IsTrue(evidence.ClaimReceiptStatus == "Recorded" || evidence.ClaimReceiptStatus == "Applied", "ClaimControl receipt was not accepted.");
+            Assert.AreEqual("Rejected", evidence.StaleReceiptStatus, "Stale action receipt was not rejected.");
             Assert.AreEqual(evidence.CapturedDecisionEpoch, evidence.StaleEpoch, "The stale request did not use the decision epoch it was captured with.");
             Assert.AreEqual(evidence.ExpectedStaleReason, evidence.StaleReason, "The stale request was rejected for the wrong reason.");
             Assert.IsTrue(evidence.StaleDecisionRejected, "A legal stale decision was not rejected.");
@@ -957,6 +967,7 @@ namespace Mahjong.Unity.App
             ITableChannel? claimedChannel = null;
             RawCaptureChannel? claimedCapture = null;
             TableSession? claimed = null;
+            CancellationTokenSource? claimedPumpCts = null;
             Task? playerPump = null;
             Task? spectatorPump = null;
             Task? claimedPump = null;
@@ -1018,7 +1029,8 @@ namespace Mahjong.Unity.App
                     ?? throw new InvalidOperationException("The claimed player channel did not expose its ticket.");
                 claimed = new TableSession(claimedCapture, new InMemoryOutboxStore());
                 await claimed.OpenAsync(new TableSessionOpenRequest(claimedTicket.SessionTicket, LocalTableChannelFactory.ClientBuild), pumpCts.Token).ConfigureAwait(false);
-                claimedPump = PumpLoopAsync(claimed, pumpCts.Token,
+                claimedPumpCts = CancellationTokenSource.CreateLinkedTokenSource(pumpCts.Token);
+                claimedPump = PumpLoopAsync(claimed, claimedPumpCts.Token,
                     exception => Interlocked.CompareExchange(ref claimedPumpError, exception.ToString(), null));
                 await WaitReadyAsync(claimed, pumpCts.Token).ConfigureAwait(false);
                 PlayerSnapshot claimBase = claimed.PlayerSnapshot
@@ -1047,6 +1059,41 @@ namespace Mahjong.Unity.App
                     await Task.Delay(20, pumpCts.Token).ConfigureAwait(false);
                 }
                 ulong claimedEpoch = claimedSnapshot.PrivateView.Control?.ControlEpoch ?? 0UL;
+                if (claimed.State != TableConnectionState.Reconnecting)
+                    throw new InvalidOperationException("The control cursor-floor recovery branch was not entered; state=" + claimed.State + ", epoch=" + claimedEpoch);
+                TableSessionBinding oldResumeBinding = claimed.Binding
+                    ?? throw new InvalidOperationException("The reconnecting claimed player lost its original session binding.");
+                ulong oldResumeBindingEpoch = oldResumeBinding.BindingEpoch.Value;
+                string oldResumeSessionId = oldResumeBinding.SessionId.Value;
+                string oldResumeScopeId = oldResumeBinding.Scope.ScopeId.Value;
+                claimedPumpCts.Cancel();
+                if (claimedPump != null) await claimedPump.ConfigureAwait(false);
+                claimedPumpCts.Dispose();
+                claimedPumpCts = CancellationTokenSource.CreateLinkedTokenSource(pumpCts.Token);
+                await claimed.OpenAsync(new TableSessionOpenRequest(claimedTicket.SessionTicket, LocalTableChannelFactory.ClientBuild), pumpCts.Token).ConfigureAwait(false);
+                claimedPumpError = null;
+                claimedPump = PumpLoopAsync(claimed, claimedPumpCts.Token,
+                    exception => Interlocked.CompareExchange(ref claimedPumpError, exception.ToString(), null));
+                await WaitReadyAsync(claimed, pumpCts.Token).ConfigureAwait(false);
+                PlayerSnapshot resumedSnapshot = claimed.PlayerSnapshot
+                    ?? throw new InvalidOperationException("The resumed claimed player has no baseline.");
+                TableSessionBinding resumedBinding = claimed.Binding
+                    ?? throw new InvalidOperationException("The resumed claimed player has no binding.");
+                if (resumedBinding.SessionId.Value != oldResumeSessionId || resumedBinding.Scope.ScopeId.Value != oldResumeScopeId ||
+                    resumedBinding.BindingEpoch.Value <= oldResumeBindingEpoch || resumedSnapshot.PrivateView.Control?.ControlEpoch != claimedEpoch ||
+                    claimedCapture == null || !claimedCapture.IsOpen || claimed.PendingCommands.Count != 0)
+                    throw new InvalidOperationException("Formal control stream recovery did not preserve identity and produce a fresh Ready baseline.");
+                string controlEvidenceDirectory = Path.Combine(EvidenceRoot(), "released-control");
+                Directory.CreateDirectory(controlEvidenceDirectory);
+                File.WriteAllText(Path.Combine(controlEvidenceDirectory, "control-session-reconnect.json"),
+                    "{\"schemaVersion\":1,\"case\":\"RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly\",\"recoveryBranchTaken\":true," +
+                    "\"oldState\":\"Reconnecting\",\"newState\":\"" + claimed.State + "\",\"oldSessionId\":\"" + oldResumeSessionId +
+                    "\",\"newSessionId\":\"" + resumedBinding.SessionId.Value + "\",\"oldScopeId\":\"" + oldResumeScopeId +
+                    "\",\"newScopeId\":\"" + resumedBinding.Scope.ScopeId.Value + "\",\"sameSessionIdentity\":true,\"sameScopeIdentity\":true," +
+                    "\"oldBindingEpoch\":" + oldResumeBindingEpoch + ",\"newBindingEpoch\":" + resumedBinding.BindingEpoch.Value +
+                    ",\"newSnapshotControlEpoch\":" + (resumedSnapshot.PrivateView.Control?.ControlEpoch ?? 0UL) +
+                    ",\"transportOpen\":" + claimedCapture.IsOpen.ToString().ToLowerInvariant() + ",\"pendingCommands\":" + claimed.PendingCommands.Count + "}", new UTF8Encoding(false));
+                claimedSnapshot = resumedSnapshot;
                 Mahjong.Contracts.Wire.DecisionView? staleDecision = staleDecisionSeed
                     ?? throw new InvalidOperationException("No captured decision is available for a legal stale-epoch request.");
                 Mahjong.Contracts.Wire.LegalActionView? staleAction = null;
@@ -1060,7 +1107,7 @@ namespace Mahjong.Unity.App
                 var staleSubmitBinding = claimed.Binding;
                 string controlEvidenceDirectory = Path.Combine(EvidenceRoot(), "released-control");
                 Directory.CreateDirectory(controlEvidenceDirectory);
-                File.WriteAllText(Path.Combine(controlEvidenceDirectory, "control-session-before-stale-submit.json"),
+                File.WriteAllText(Path.Combine(EvidenceRoot(), "control-session-before-stale-submit.json"),
                     "{\"schemaVersion\":1,\"case\":\"RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly\",\"phase\":\"before-stale-submit\"" +
                     ",\"sessionState\":\"" + claimed.State + "\",\"bindingPresent\":" + (staleSubmitBinding != null).ToString().ToLowerInvariant() +
                     ",\"sessionId\":\"" + (staleSubmitBinding?.SessionId.Value ?? string.Empty) + "\",\"scopeId\":\"" + (staleSubmitBinding?.Scope.ScopeId.Value ?? string.Empty) + "\"" +
@@ -1126,8 +1173,15 @@ namespace Mahjong.Unity.App
                     ClaimEpochAdvanced = claimedEpoch > claimEpoch,
                     ControlPresent = claimedSnapshot.PrivateView.Control != null,
                     ControlHuman = claimedSnapshot.PrivateView.Control != null && claimedSnapshot.PrivateView.Control.ControlledByComputer == false,
-                    ReceiptStatus = claimReceipt.Resolution.ReceiptStatus.ToString(),
-                    ReceiptReason = claimReceipt.Resolution.ReasonCode,
+                    ClaimRequestId = claimCommand.RequestId.Value,
+                    ClaimReceiptStatus = claimReceipt.Resolution.ReceiptStatus.ToString(),
+                    ClaimReceiptReason = claimReceipt.Resolution.ReasonCode,
+                    StaleRequestId = staleCommand.RequestId.Value,
+                    StaleDecisionId = staleDecision.DecisionId,
+                    StaleSessionId = claimed.Binding!.SessionId.Value,
+                    StaleScopeId = claimed.Binding.Scope.ScopeId.Value,
+                    StaleBindingEpoch = claimed.Binding.BindingEpoch.Value,
+                    StaleReceiptStatus = staleReceipt.Resolution.ReceiptStatus.ToString(),
                     ExpectedStaleReason = "DECISION_MISMATCH",
                     StaleReason = staleReceipt.Resolution.ReasonCode,
                     StaleEpoch = staleEpochSeed,
@@ -1141,6 +1195,7 @@ namespace Mahjong.Unity.App
             }
             finally
             {
+                if (claimedPumpCts != null) { try { claimedPumpCts.Cancel(); } catch { } }
                 pumpCts.Cancel();
                 if (playerPump != null) { try { await playerPump.ConfigureAwait(false); } catch { } }
                 if (spectatorPump != null) { try { await spectatorPump.ConfigureAwait(false); } catch { } }
@@ -1151,6 +1206,7 @@ namespace Mahjong.Unity.App
                 if (spectatorChannel != null) try { await spectatorChannel.CloseAsync(new TableChannelCloseReason("C04_TEST_DONE", true), CancellationToken.None).ConfigureAwait(false); } catch { }
                 if (claimed != null) try { await claimed.CloseAsync("C04_TEST_DONE", CancellationToken.None).ConfigureAwait(false); } catch { }
                 if (claimedChannel != null) try { await claimedChannel.CloseAsync(new TableChannelCloseReason("C04_TEST_DONE", true), CancellationToken.None).ConfigureAwait(false); } catch { }
+                claimedPumpCts?.Dispose();
                 try { await factory.CloseRoomAsync(CancellationToken.None).ConfigureAwait(false); } catch { }
             }
         }
@@ -1469,8 +1525,15 @@ namespace Mahjong.Unity.App
             public bool ClaimEpochAdvanced;
             public bool ControlPresent;
             public bool ControlHuman;
-            public string ReceiptStatus = string.Empty;
-            public string ReceiptReason = string.Empty;
+            public string ClaimRequestId = string.Empty;
+            public string ClaimReceiptStatus = string.Empty;
+            public string ClaimReceiptReason = string.Empty;
+            public string StaleRequestId = string.Empty;
+            public string StaleDecisionId = string.Empty;
+            public string StaleSessionId = string.Empty;
+            public string StaleScopeId = string.Empty;
+            public ulong StaleBindingEpoch;
+            public string StaleReceiptStatus = string.Empty;
             public string ExpectedStaleReason = string.Empty;
             public string StaleReason = string.Empty;
             public ulong StaleEpoch;

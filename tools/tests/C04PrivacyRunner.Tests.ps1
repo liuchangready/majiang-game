@@ -13,6 +13,12 @@ if ([string]::IsNullOrWhiteSpace($script:TestRoot)) {
 }
 $script:TestRoot = [IO.Path]::GetFullPath($script:TestRoot)
 if (Test-Path -LiteralPath $script:TestRoot) { throw 'Runner test root exists; refusing to overwrite evidence.' }
+function Assert-TestRootPathBudget([string]$Root) {
+    $probe = [IO.Path]::GetFullPath((Join-Path $Root 'c000\control-session-before-stale-submit.json'))
+    if ($probe.Length -gt 240) { throw "Runner test root exceeds the portable Windows path budget before writing fixtures: $($probe.Length) > 240" }
+    return $probe.Length
+}
+$script:RootPathBudget = Assert-TestRootPathBudget $script:TestRoot
 [IO.Directory]::CreateDirectory($script:TestRoot) | Out-Null
 $script:TestTemp = Join-Path $script:TestRoot 'temp'
 [IO.Directory]::CreateDirectory($script:TestTemp) | Out-Null
@@ -24,6 +30,7 @@ $env:TMP = $script:TestTemp
 $script:Tests = 0
 $script:Failures = New-Object Collections.Generic.List[string]
 $script:Results = New-Object Collections.Generic.List[object]
+$script:CaseDirectoryOrdinal = 0
 
 function Assert-True([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw $Message }
@@ -43,6 +50,11 @@ function New-TestDirectory([string]$Name) {
     $path = Join-Path $script:TestRoot $Name
     [IO.Directory]::CreateDirectory($path) | Out-Null
     return $path
+}
+function New-CaseFixtureRoot([string]$CaseName) {
+    $script:CaseDirectoryOrdinal++
+    $leaf = 'c' + $script:CaseDirectoryOrdinal.ToString('D3',[Globalization.CultureInfo]::InvariantCulture)
+    return New-TestDirectory $leaf
 }
 function New-CaseEvidenceFixture([string]$CaseName, [string]$Root) {
     [IO.Directory]::CreateDirectory($Root) | Out-Null
@@ -73,10 +85,12 @@ function New-CaseEvidenceFixture([string]$CaseName, [string]$Root) {
             Write-C04Utf8 (Join-Path $Root 'four-owner-raw/raw-frames.json') $fixtureRaw
         }
         'RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly' {
-            $e = @{ fixtureOnly=$true; schemaVersion=1; releaseVersion='10'; afterVersion='11'; advancedWithoutPlayerBinding=$true; claimed=$true; claimEpochAdvanced=$true; controlPresent=$true; controlHuman=$true; receiptStatus='Rejected'; receiptReason='stale'; expectedStaleReason='stale'; staleReason='stale'; capturedDecisionEpoch=1; staleEpoch=2; staleRound='fixture-round'; staleCommandFrames=1; stalePendingAfter=0; staleNoCommitMetadata=$true; staleDecisionRejected=$true }
+            $e = @{ fixtureOnly=$true; schemaVersion=1; releaseVersion='10'; afterVersion='11'; advancedWithoutPlayerBinding=$true; claimed=$true; claimEpochBefore=1; claimEpoch=2; claimEpochAdvanced=$true; controlPresent=$true; controlHuman=$true; claimRequestId='fixture-claim'; claimReceiptStatus='Recorded'; claimReceiptReason='LOCAL_CONTROL'; staleRequestId='fixture-stale'; staleDecisionId='fixture-decision'; staleSessionId='fixture-player-session'; staleScopeId='fixture-player-scope'; staleBindingEpoch=4; staleReceiptStatus='Rejected'; expectedStaleReason='DECISION_MISMATCH'; staleReason='DECISION_MISMATCH'; capturedDecisionEpoch=1; staleEpoch=1; staleRound='fixture-round'; staleCommandFrames=1; stalePendingAfter=0; staleNoCommitMetadata=$true; staleDecisionRejected=$true }
             Write-C04Json (Join-Path $Root 'released-control/released-control.json') $e
-            $session = @{ fixtureOnly=$true; schemaVersion=1; case=$CaseName; phase='before-stale-submit'; sessionState='Ready'; bindingPresent=$true; sessionId='fixture-player-session'; scopeId='fixture-player-scope'; role=1; seat=0; bindingEpoch=3; snapshotStateVersion=11; snapshotEventSeq=8; snapshotRoundId='fixture-round'; snapshotPhase='Discard'; snapshotCurrentSeat=0; snapshotDecisionId='fixture-decision'; snapshotControlEpoch=2; pendingCommands=0; claimCommandFrames=1 }
-            Write-C04Json (Join-Path $Root 'released-control/control-session-before-stale-submit.json') $session
+            $session = @{ fixtureOnly=$true; schemaVersion=1; case=$CaseName; phase='before-stale-submit'; sessionState='Ready'; bindingPresent=$true; sessionId='fixture-player-session'; scopeId='fixture-player-scope'; role=1; seat=0; bindingEpoch=4; snapshotStateVersion=11; snapshotEventSeq=8; snapshotRoundId='fixture-round'; snapshotPhase='Discard'; snapshotCurrentSeat=0; snapshotDecisionId='fixture-decision'; snapshotControlEpoch=2; pendingCommands=0; claimCommandFrames=1 }
+            Write-C04Json (Join-Path $Root 'control-session-before-stale-submit.json') $session
+            $reconnect = @{ fixtureOnly=$true; schemaVersion=1; case=$CaseName; recoveryBranchTaken=$true; oldState='Reconnecting'; newState='Ready'; oldSessionId='fixture-player-session'; newSessionId='fixture-player-session'; oldScopeId='fixture-player-scope'; newScopeId='fixture-player-scope'; sameSessionIdentity=$true; sameScopeIdentity=$true; oldBindingEpoch=3; newBindingEpoch=4; newSnapshotControlEpoch=2; transportOpen=$true; pendingCommands=0 }
+            Write-C04Json (Join-Path $Root 'control-session-reconnect.json') $reconnect
         }
         'RealRoom_OpenDecisionDeadlineContinuesAfterPlayerClose' {
             $e = @{ fixtureOnly=$true; schemaVersion=1; case=$CaseName; roomId='fixture-room'; roundId='fixture-round'; decisionId='fixture-decision'; decisionSeat=0; controlEpoch=2; decisionDeadlineRemainingMs=5000; clockDecisionSeat=0; clockServerTimeMs=10000; clockDeadlineRemainingMs=5000; authoritativeDeadlineServerTimeMs=15000; playerSessionId='fixture-player-session'; playerScopeId='fixture-player-scope'; playerRole=1; playerSeat=0; playerBindingEpoch=3; releaseVersion=9; releaseCursorStreamVersion=4; releaseCursorProjectionSeq=8; closeRequestedUtcMs=100; closeCompletedUtcMs=110; playerBindingClosed=$true; spectatorSessionId='fixture-spectator-session'; spectatorRole=2; spectatorSeat=-1; spectatorBaselineVersion=9; spectatorBaselineCursorStreamVersion=1; spectatorBaselineCursorProjectionSeq=2; afterVersion=10; afterCursorStreamVersion=2; afterCursorProjectionSeq=3; afterPhase='Discard'; advancedWithoutPlayerBinding=$true }
@@ -532,7 +546,7 @@ Invoke-Case 'ordinary Windows app P2 launches separate processes and reconciles 
 Invoke-Case 'semantic Windows Player evidence accepts all seven fixture-only producer schemas' {
     foreach ($testName in $script:C04ExpectedTests) {
         $caseName = $testName.Substring($testName.LastIndexOf('.') + 1)
-        $caseRoot = Join-Path (New-TestDirectory ([guid]::NewGuid().ToString('N'))) $caseName
+        $caseRoot = New-CaseFixtureRoot $caseName
         New-CaseEvidenceFixture $caseName $caseRoot
         $accepted = Assert-C04PlayerCaseEvidence -CaseName $caseName -CaseRoot $caseRoot
         Assert-Equal $caseName $accepted.case "semantic evidence case $caseName"
@@ -543,7 +557,7 @@ Invoke-Case 'semantic Windows Player evidence accepts all seven fixture-only pro
 Invoke-Case 'semantic Windows Player evidence rejects every missing required artifact' {
     foreach ($testName in $script:C04ExpectedTests) {
         $caseName = $testName.Substring($testName.LastIndexOf('.') + 1)
-        $caseRoot = Join-Path (New-TestDirectory ([guid]::NewGuid().ToString('N'))) $caseName
+        $caseRoot = New-CaseFixtureRoot $caseName
         New-CaseEvidenceFixture $caseName $caseRoot
         $required = @(Get-C04StableFiles -Root $caseRoot | Where-Object { $_.Name -notin @('summary.json','player-case.jsonl') })
         foreach ($artifact in $required) {
@@ -567,7 +581,7 @@ Invoke-Case 'deadline evidence rejects wrong identity, missing decision, epoch, 
         @{ name='player-still-bound'; key='playerBindingClosed'; value=$false }
     )
     foreach ($mutation in $mutations) {
-        $caseRoot = Join-Path (New-TestDirectory ([guid]::NewGuid().ToString('N'))) $caseName
+        $caseRoot = New-CaseFixtureRoot $caseName
         New-CaseEvidenceFixture $caseName $caseRoot
         $path = Join-Path $caseRoot 'deadline-evidence.json'
         $e = [IO.File]::ReadAllText($path) | ConvertFrom-Json
@@ -579,20 +593,50 @@ Invoke-Case 'deadline evidence rejects wrong identity, missing decision, epoch, 
 
 Invoke-Case 'released-control stale-command evidence requires a live ready bound player session' {
     $caseName = 'RealRoom_ReleasedSeatAiAdvancesAfterPlayerCloseWithSpectatorOnly'
-    foreach ($mutation in @(@{ key='sessionState'; value='Closed' },@{ key='bindingPresent'; value=$false },@{ key='scopeId'; value='' },@{ key='bindingEpoch'; value=0 })) {
-        $caseRoot = Join-Path (New-TestDirectory ([guid]::NewGuid().ToString('N'))) $caseName
+    foreach ($mutation in @(
+        @{ file='control-session-before-stale-submit.json'; key='sessionState'; value='Closed' },
+        @{ file='control-session-before-stale-submit.json'; key='bindingPresent'; value=$false },
+        @{ file='control-session-before-stale-submit.json'; key='scopeId'; value='' },
+        @{ file='control-session-before-stale-submit.json'; key='bindingEpoch'; value=0 },
+        @{ file='control-session-before-stale-submit.json'; key='seat'; value=1 },
+        @{ file='released-control/released-control.json'; key='claimReceiptStatus'; value='Rejected' },
+        @{ file='released-control/released-control.json'; key='claimReceiptReason'; value='DECISION_MISMATCH' },
+        @{ file='released-control/released-control.json'; key='staleReceiptStatus'; value='Recorded' },
+        @{ file='released-control/released-control.json'; key='staleReason'; value='SAME_WRONG_REASON' },
+        @{ file='released-control/released-control.json'; key='expectedStaleReason'; value='SAME_WRONG_REASON' },
+        @{ file='released-control/released-control.json'; key='capturedDecisionEpoch'; value=0 },
+        @{ file='released-control/released-control.json'; key='claimEpoch'; value=1 },
+        @{ file='released-control/released-control.json'; key='staleNoCommitMetadata'; value=$false },
+        @{ file='released-control/released-control.json'; key='staleCommandFrames'; value=2 },
+        @{ file='released-control/released-control.json'; key='stalePendingAfter'; value=1 },
+        @{ file='released-control/released-control.json'; key='staleRequestId'; value='fixture-claim' },
+        @{ file='released-control/released-control.json'; key='staleDecisionId'; value='different-decision' },
+        @{ file='released-control/released-control.json'; key='staleScopeId'; value='different-scope' },
+        @{ file='released-control/released-control.json'; key='staleRound'; value='different-round' },
+        @{ file='control-session-before-stale-submit.json'; key='snapshotControlEpoch'; value=1 },
+        @{ file='control-session-reconnect.json'; key='newSessionId'; value='different-session' },
+        @{ file='control-session-reconnect.json'; key='newBindingEpoch'; value=3 },
+        @{ file='control-session-reconnect.json'; key='recoveryBranchTaken'; value=$false },
+        @{ file='control-session-reconnect.json'; key='newState'; value='Reconnecting' }
+    )) {
+        $caseRoot = New-CaseFixtureRoot $caseName
         New-CaseEvidenceFixture $caseName $caseRoot
-        $path = Join-Path $caseRoot 'released-control/control-session-before-stale-submit.json'
+        $path = Join-Path $caseRoot $mutation.file
         $e = [IO.File]::ReadAllText($path) | ConvertFrom-Json
         $e.($mutation.key) = $mutation.value
         Write-C04Json $path $e
-        Assert-Throws { Assert-C04PlayerCaseEvidence -CaseName $caseName -CaseRoot $caseRoot } 'Released-control session evidence'
+        Assert-Throws { Assert-C04PlayerCaseEvidence -CaseName $caseName -CaseRoot $caseRoot } 'Released-control'
     }
+}
+
+Invoke-Case 'runner test root rejects over-budget paths before fixture creation' {
+    $longRoot = Join-Path $script:TestRoot (('x' * 220))
+    Assert-Throws { Assert-TestRootPathBudget $longRoot } 'portable Windows path budget'
 }
 
 Invoke-Case 'a meaningless third file cannot substitute for deadline evidence' {
     $caseName = 'RealRoom_OpenDecisionDeadlineContinuesAfterPlayerClose'
-    $caseRoot = Join-Path (New-TestDirectory ([guid]::NewGuid().ToString('N'))) $caseName
+    $caseRoot = New-CaseFixtureRoot $caseName
     New-CaseEvidenceFixture $caseName $caseRoot
     Remove-Item -LiteralPath (Join-Path $caseRoot 'deadline-evidence.json')
     Write-C04Utf8 (Join-Path $caseRoot 'meaningless-third-file.txt') 'FIXTURE ONLY'
@@ -601,7 +645,7 @@ Invoke-Case 'a meaningless third file cannot substitute for deadline evidence' {
 
 Invoke-Case 'case summary and JSONL event identity are required and nonempty' {
     $caseName = 'RealRoom_OpenDecisionDeadlineContinuesAfterPlayerClose'
-    $caseRoot = Join-Path (New-TestDirectory ([guid]::NewGuid().ToString('N'))) $caseName
+    $caseRoot = New-CaseFixtureRoot $caseName
     New-CaseEvidenceFixture $caseName $caseRoot
     Write-C04Utf8 (Join-Path $caseRoot 'player-case.jsonl') "`n"
     Assert-Throws { Assert-C04PlayerCaseEvidence -CaseName $caseName -CaseRoot $caseRoot } 'Player case terminal log'
