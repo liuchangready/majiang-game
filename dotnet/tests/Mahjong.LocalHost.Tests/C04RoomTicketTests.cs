@@ -723,55 +723,132 @@ namespace Mahjong.LocalHost.Tests
             await using var harness = new P41Harness();
             harness.Options.AutoPlay = true;
             CancellationToken ct = TestContext.Current.CancellationToken;
-            string decision;
+            LocalTableRecoveryFacts persistedBeforeClose;
+            TableRecoveredDecision persistedDecision;
             await using (LocalTableRoom initial = await LocalTableHost.OpenRoomAsync(harness.Options, ct))
             {
                 await using RoomSession player = await RoomSession.OpenPlayerAsync(initial, 0, "recover-deadline-initial", ct);
                 await WaitUntilAsync(
                     () => !string.IsNullOrEmpty(player.Runtime.ActorForTest.GetPendingDecisionId(0)),
-                    "the initial open human decision",
+                    "an open human decision from the real room driver",
                     ct);
-                decision = player.Runtime.ActorForTest.GetPendingDecisionId(0)!;
-                Assert.Equal("local-human-initial", decision);
+                // Stop the real driver after it has produced a pending decision. This freezes
+                // the observation point without assuming whether the room-open path or the
+                // driver won the startup race (the latter emits a state/phase-specific ID).
+                await player.Runtime.DriverForTest.StopAsync();
+                string observedDecision = Assert.IsType<string>(player.Runtime.ActorForTest.GetPendingDecisionId(0));
+                LocalTableRecoveryCapture sourceCapture = await LocalTableHost.CaptureRecoveryAsync(
+                    harness.Options.SaveDirectory, ct);
+                LocalSave sourceSave = LocalSaveCodec.DecodeEnvelope(sourceCapture.AuthoritySaveBytes);
+                TableTimingCheckpoint sourceTiming = TableTimingCheckpointCodec.Decode(sourceSave.LatestTimingPayload);
+                persistedDecision = Assert.Single(sourceTiming.Decisions, item => item.Key.Seat == 0);
+
+                Assert.Equal(observedDecision, persistedDecision.Key.DecisionId);
+                Assert.Equal(sourceCapture.Facts.RoundId, persistedDecision.Key.RoundId);
+                Assert.Equal(sourceCapture.Facts.StateVersion, sourceSave.CurrentState.StateVersion.Value.ToString());
+                Assert.Equal(sourceCapture.Facts.EventSeq, sourceSave.CurrentState.LastEventSeq.Value.ToString());
+                Assert.Equal(sourceCapture.Facts.ControlEpochs[0], persistedDecision.ControlEpoch);
+                TableTimingSnapshot sourceSnapshot = await player.Runtime.ActorForTest.GetTimingSnapshotAsync(ct);
+                DecisionTiming sourceTimingView = Assert.IsType<DecisionTiming>(sourceSnapshot.Seats[0].Timing);
+                long sourceExpectedDeadline = checked(
+                    harness.Clock.MonotonicMillis +
+                    persistedDecision.RemainingBaseMillis +
+                    persistedDecision.RemainingReserveMillis -
+                    persistedDecision.OverdueMillis);
+                Assert.Equal(persistedDecision.Key, sourceTimingView.Key);
+                Assert.Equal(sourceExpectedDeadline, sourceTimingView.DeadlineMillis);
+                Assert.Equal(persistedDecision.RecoveryGraceMillis, sourceTimingView.RecoveryGraceMillis);
+                Assert.Equal(persistedDecision.RecoveryGraceApplied, sourceTimingView.RecoveryGraceApplied);
+                persistedBeforeClose = sourceCapture.Facts;
             }
 
+            // The prepared capture is taken from the first recovered save before any driver
+            // action. It ties the recovered DecisionKey and remaining clock values to the exact
+            // durable envelope instead of accepting an arbitrary later snapshot.
+            LocalTableHost.PrepareRecoveryCaptureOnNextOpen(harness.Options.SaveDirectory);
             await using LocalTableRoom restored = await LocalTableHost.OpenRoomAsync(harness.Options, ct);
+            LocalTableRecoveryCapture recoveredCapture = await LocalTableHost.TakePreparedRecoveryCaptureAsync(
+                harness.Options.SaveDirectory, ct);
+            LocalSave recoveredSave = LocalSaveCodec.DecodeEnvelope(recoveredCapture.AuthoritySaveBytes);
+            TableTimingCheckpoint recoveredCheckpoint = TableTimingCheckpointCodec.Decode(recoveredSave.LatestTimingPayload);
+            TableRecoveredDecision recoveredDecision = Assert.Single(
+                recoveredCheckpoint.Decisions, item => item.Key.Seat == 0);
+
+            Assert.Equal(persistedDecision.Key, recoveredDecision.Key);
+            Assert.Equal(persistedDecision.ControlEpoch, recoveredDecision.ControlEpoch);
+            Assert.Equal(persistedDecision.RemainingReserveMillis, recoveredDecision.RemainingReserveMillis);
+            Assert.Equal(persistedDecision.OverdueMillis, recoveredDecision.OverdueMillis);
+            Assert.Equal(
+                persistedDecision.RemainingBaseMillis +
+                    (persistedDecision.RecoveryGraceApplied ? 0L : recoveredDecision.RecoveryGraceMillis),
+                recoveredDecision.RemainingBaseMillis);
+            Assert.True(recoveredDecision.RecoveryGraceApplied);
+            Assert.Equal(persistedBeforeClose.StateVersion, recoveredCapture.Facts.StateVersion);
+            Assert.Equal(persistedBeforeClose.EventSeq, recoveredCapture.Facts.EventSeq);
+            Assert.Equal(persistedBeforeClose.StateFingerprint, recoveredCapture.Facts.StateFingerprint);
+            Assert.Equal(persistedBeforeClose.StateHash, recoveredCapture.Facts.StateHash);
+            Assert.Equal(persistedBeforeClose.ControlEpochs, recoveredCapture.Facts.ControlEpochs);
+            Assert.Equal(136, recoveredCapture.Facts.Physical.TileCount);
+            Assert.Equal(136, recoveredCapture.Facts.Physical.UniqueCount);
+            Assert.Equal(persistedBeforeClose.Physical.TilesSha256, recoveredCapture.Facts.Physical.TilesSha256);
+
             await using RoomSession spectator = await RoomSession.OpenSpectatorAsync(restored, "recover-deadline-spectator", ct);
             TableActor actor = spectator.Runtime.ActorForTest;
-            Assert.Equal(decision, actor.GetPendingDecisionId(0));
+            Assert.Equal(persistedDecision.Key.DecisionId, actor.GetPendingDecisionId(0));
             Assert.True(restored.CanTickAuthority,
                 "A recovered room with an open decision is already Playing even without a human binding.");
 
             TableTimingSnapshot before = await actor.GetTimingSnapshotAsync(ct);
             DecisionTiming recoveredTiming = Assert.IsType<DecisionTiming>(before.Seats[0].Timing);
-            long deadline = recoveredTiming.DeadlineMillis;
+            long expectedDeadline = checked(
+                harness.Clock.MonotonicMillis +
+                recoveredDecision.RemainingBaseMillis +
+                recoveredDecision.RemainingReserveMillis -
+                recoveredDecision.OverdueMillis);
+            Assert.Equal(persistedDecision.Key, recoveredTiming.Key);
+            Assert.Equal(expectedDeadline, recoveredTiming.DeadlineMillis);
             long grace = recoveredTiming.RecoveryGraceMillis;
             Assert.True(recoveredTiming.RecoveryGraceApplied);
-            Assert.True(deadline > harness.Clock.MonotonicMillis);
+            Assert.True(expectedDeadline > harness.Clock.MonotonicMillis);
+            TableControlSnapshot control = await actor.GetControlSnapshotAsync(ct);
+            Assert.Equal(SeatControllerKind.LocalHuman, control.Seats[0].Kind);
+            Assert.Equal(persistedDecision.ControlEpoch, control.Seats[0].ControlEpoch);
 
             // Just before the persisted deadline: nothing may retire early and the
             // recovered deadline/grace must not be re-armed by attaching a spectator.
-            AdvanceClockTo(harness, deadline - 500);
-            await Task.Delay(300, ct);
-            Assert.Equal(decision, actor.GetPendingDecisionId(0));
+            AdvanceClockTo(harness, expectedDeadline - 1);
+            await actor.TickAsync(TableTickRequest.Empty, ct);
+            Assert.Equal(persistedDecision.Key.DecisionId, actor.GetPendingDecisionId(0));
             TableTimingSnapshot atBefore = await actor.GetTimingSnapshotAsync(ct);
-            Assert.Equal(deadline, atBefore.Seats[0].Timing!.DeadlineMillis);
+            Assert.Equal(expectedDeadline, atBefore.Seats[0].Timing!.DeadlineMillis);
             Assert.Equal(grace, atBefore.Seats[0].Timing!.RecoveryGraceMillis);
             Assert.True(atBefore.Seats[0].Timing!.RecoveryGraceApplied);
 
-            // Crossing the recovered deadline retires the old decision through the
-            // production driver. With no live player, no new human decision may open.
-            AdvanceClockTo(harness, deadline + 500);
-            await WaitUntilAsync(
-                () => !string.Equals(actor.GetPendingDecisionId(0), decision, StringComparison.Ordinal),
-                "the recovered open decision to retire at its persisted deadline",
-                ct);
-            await Task.Delay(300, ct);
+            // Crossing the recovered deadline through the authoritative actor tick
+            // retires the old decision deterministically. With no live player, no new
+            // human decision may open. Keep the autonomous driver stopped so it cannot
+            // race the manually controlled clock boundary above.
+            AdvanceClockTo(harness, expectedDeadline + 1);
+            await actor.TickAsync(TableTickRequest.Empty, ct);
             Assert.True(string.IsNullOrEmpty(actor.GetPendingDecisionId(0)),
                 "No new decision may open for an unbound LocalHuman seat after the old deadline retires.");
             TableTimingSnapshot after = await actor.GetTimingSnapshotAsync(ct);
             Assert.Null(after.Seats[0].Timing);
             Assert.Null(after.Seats[0].PendingKey);
+
+            LocalTableRecoveryFacts persistedAfterDeadline = (await LocalTableHost.CaptureRecoveryAsync(
+                harness.Options.SaveDirectory, ct)).Facts;
+            Assert.Equal(136, persistedAfterDeadline.Physical.TileCount);
+            Assert.Equal(136, persistedAfterDeadline.Physical.UniqueCount);
+            Assert.Equal(persistedBeforeClose.ControlEpochs, persistedAfterDeadline.ControlEpochs);
+            Assert.Equal(persistedBeforeClose.Ledger.EntriesSha256, persistedAfterDeadline.Ledger.EntriesSha256);
+            Assert.Equal(persistedBeforeClose.Ledger.BalancesSha256, persistedAfterDeadline.Ledger.BalancesSha256);
+            Assert.Equal(
+                persistedBeforeClose.Requests.Select(item => item.AccountId + "|" + item.ScopeId + "|" + item.RequestId + "|" + item.PayloadSha256).OrderBy(item => item),
+                persistedAfterDeadline.Requests.Select(item => item.AccountId + "|" + item.ScopeId + "|" + item.RequestId + "|" + item.PayloadSha256).OrderBy(item => item));
+            Assert.Equal(
+                persistedBeforeClose.ControlRequests.Select(item => item.AccountId + "|" + item.ScopeId + "|" + item.RequestId + "|" + item.Digest).OrderBy(item => item),
+                persistedAfterDeadline.ControlRequests.Select(item => item.AccountId + "|" + item.ScopeId + "|" + item.RequestId + "|" + item.Digest).OrderBy(item => item));
         }
 
         [Fact]
