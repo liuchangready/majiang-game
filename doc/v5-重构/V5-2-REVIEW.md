@@ -47,3 +47,11 @@ G2 阶段结论：`G2_NOT_ACCEPTED`
 当前明确缺口 ID 为 `G2-C06-PLATFORM-WIN`、`G2-C06-PLATFORM-ANDROID`、`G2-C06-FINAL-SIGNOFF`，详情见 [G2-C06 缺口清单](V5-G2-C06-GAPS-20261105.md)：Windows 当前应用候选包闭包/运行、Android 当前候选 APK 与真实设备覆盖、以及最终 G2 独立签署。历史 `FU-02 UNKNOWN` 首败原因未解释，`SYNC-03` 为间歇风险记录；未声称根因修复，也不无变化重开已接受实现。
 
 正式 C06 裁决需由原 owner 完成当前候选平台证据并绑定准确 source/package/hash；原 owner/reviewer 核验上述缺口退出断言后，专属 reviewer 才能签署 G2。平台线程继续运行不影响本次预审结论。此草稿没有批准阶段切换、合并、推送、部署或 V4 下线。
+
+## C06 预审独立接受（2026-11-05）
+
+专属 reviewer 在同一 thread `thread_20261105_195433_d9b8` 接受本次预审，受测文档提交为 `ba5ffdb527e1abf518b1c9c3f1a478bb8f926c0b`。D-1-01 与 D-1-02 已关闭；桥接 `approve_task` 返回 `COMPLETED`。该接受只确认 `PRE_REVIEW_COMPLETE`，G2 仍为 `G2_NOT_ACCEPTED`。
+
+独立实际执行：在新 `build/reviewer-c06-round2/` 输出根运行只读核对脚本，136/136、native exit 0；四文档和检查脚本 hash 与开发封存 manifest 相符（manifest SHA-256 `4062CCD4F66CD42B733B62E15AF65E6650FCE504C7E25D406A044561D1D6EB29`）。另用 XML 解析器核对已接受 LocalHost 原件，184 个 test 节点全部 Pass。D05 历史 PlayMode 7/7、Windows 同包七案/P2、包 manifest 和八 DLL，以及稳定 R3/R8 原审指令及其 hash 均按原候选复核。没有重新运行产品测试、构建、Unity/Player、PG、设备或 CI。
+
+`P41-LOCAL-ASSET-REJECT` 的精确拒绝证据仍为 UNKNOWN；正式 G2 签署前须定位并核定该合同，不能从 2872 汇总推断通过。不可访问历史 raw 的限制保留。Windows/Android 当前包与设备验收仍归原 owner/reviewer，不因本次预审接受而关闭。按用户后续明确授权，本次预审与已接受的待推送审计文档统一收口到既有 Draft PR20；不合并、不部署，源码/应用包的历史受测身份不变。
