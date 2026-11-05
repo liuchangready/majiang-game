@@ -17,97 +17,275 @@
       "evidence": "E:/majiang-review/g2-final-ci-green-luna6-20261105/build/b1118ef0-4f4b-4fa8-aea6-c59523dc1368/final-c19a633f17c74f4d9ab376bdf0a48a23/",
       "nativeResult": "wrapper exit 0; 21 project/helper rows PASS; 14 test projects 2872/2872, 0 fail/error/skip/not-run; LocalHost 184/184; Client 182/182; TableRuntime 483/483; Lobby 89/89; Table 42/42, targeted 13/13",
       "independentReview": "thread_20261105_101301_c651 accepted local scope; fresh Release build and focused controls 10/10; full 2872/2872; real PG recovery/cleanup inspected and rerun as documented",
-      "platform": ["local-host", "desktop/windows package dependency"],
+      "platform": [
+        "local-host",
+        "desktop/windows package dependency"
+      ],
       "status": "ACCEPTED_SCOPED; CURRENT_UI_PACKAGE_NOT_BOUND",
-      "limits": ["FU-02 cause remains UNKNOWN", "SYNC-03 intermittent historical risk remains"]
+      "limits": [
+        "FU-02 cause remains UNKNOWN",
+        "SYNC-03 intermittent historical risk remains"
+      ]
     },
     {
       "id": "P4.2",
       "assertion": "Unity composition/navigation/platform shell use Client facade and actual platform entry; static dependency boundary and runtime evidence are distinct.",
       "source": "doc/v5-重构/V5-G2-C03-UNIFIED-CANDIDATE-DELIVERY-20261101.md; doc/v5-重构/V5-G2-C04-D05-FINAL-UNIFIED-DELIVERY-20261103.md",
-      "sourceSha256": ["F8794C325F885C1860E27426B6B8AF6AD6BF127313B7BAE3C9A1D00AB121C1E0", "CD80E0088D6092B554284EAEF726C9EBFFD44C9E3B68EE9AC9A63D185941CE10"],
-      "sourceCommit": ["b33f0aad21c962a6f147dbfdb8a63fd98942d4a2", "3aec0c3a92bb87e954163ad1847c78dcb08eba3a"],
-      "evidence": ["doc/v5-重构/V5-G2-C03-UNIFIED-CANDIDATE-DELIVERY-20261101.md §15", "doc/v5-重构/V5-G2-C04-D05-FINAL-UNIFIED-DELIVERY-20261103.md R6/R7 acceptance append"],
+      "sourceSha256": [
+        "F8794C325F885C1860E27426B6B8AF6AD6BF127313B7BAE3C9A1D00AB121C1E0",
+        "CD80E0088D6092B554284EAEF726C9EBFFD44C9E3B68EE9AC9A63D185941CE10"
+      ],
+      "sourceCommit": [
+        "b33f0aad21c962a6f147dbfdb8a63fd98942d4a2",
+        "3aec0c3a92bb87e954163ad1847c78dcb08eba3a"
+      ],
+      "evidence": [
+        "doc/v5-重构/V5-G2-C03-UNIFIED-CANDIDATE-DELIVERY-20261101.md §15",
+        "doc/v5-重构/V5-G2-C04-D05-FINAL-UNIFIED-DELIVERY-20261103.md R6/R7 acceptance append"
+      ],
       "nativeResult": "Historical PlayMode 7/7; historical Windows package seven cases/P2; C03 source integration check as documented",
       "independentReview": "C03 caller review and D05 dedicated reviewer R6/R7 are recorded in later acceptance sections; not a current 6850fcc app build",
-      "platform": ["desktop-editor", "windows-player", "android-tooling"],
+      "platform": [
+        "desktop-editor",
+        "windows-player",
+        "android-tooling"
+      ],
       "status": "HISTORICAL_CANDIDATE_ACCEPTED; CURRENT_CANDIDATE_BINDING_BLOCKED"
     },
     {
       "id": "P4.3",
       "assertion": "Four-seat game, normal actions and three cheats are driven from confirmed Client view/events; animation cannot invent entities or override deadline/authority.",
       "source": "doc/v5-重构/V5-G2-C03-UNIFIED-CANDIDATE-DELIVERY-20261101.md; doc/v5-重构/V5-G2-C04-D05-FINAL-UNIFIED-DELIVERY-20261103.md",
-      "sourceSha256": ["F8794C325F885C1860E27426B6B8AF6AD6BF127313B7BAE3C9A1D00AB121C1E0", "CD80E0088D6092B554284EAEF726C9EBFFD44C9E3B68EE9AC9A63D185941CE10"],
-      "sourceCommit": ["b33f0aad21c962a6f147dbfdb8a63fd98942d4a2", "3aec0c3a92bb87e954163ad1847c78dcb08eba3a"],
-      "evidence": "source delivery §§14–15 and D05 R6/R7 accepted evidence; raw artifacts retained under source build roots",
-      "nativeResult": "C03 Player: 12 distinct rounds, 12 terminal, 12 match commits, WestCompletion, 269 actions; D05 PlayMode 7/7 and Windows same-package seven scenarios/P2",
+      "sourceSha256": [
+        "F8794C325F885C1860E27426B6B8AF6AD6BF127313B7BAE3C9A1D00AB121C1E0",
+        "CD80E0088D6092B554284EAEF726C9EBFFD44C9E3B68EE9AC9A63D185941CE10"
+      ],
+      "sourceCommit": [
+        "b33f0aad21c962a6f147dbfdb8a63fd98942d4a2",
+        "3aec0c3a92bb87e954163ad1847c78dcb08eba3a"
+      ],
+      "evidence": "C03 §6 command and §15 acceptance; D04-B §§8-9 command/results; D05 R6 package and R7 reviewer manifests; detailed mappings in evidenceRequirements.",
+      "nativeResult": "C03 historical full-match: 12 rounds/12 terminal/12 match commits/WestCompletion; 269 actual Applied action outcomes. Separately, 252 unique requests paired with Applied receipts; populations differ. D04-B: 29/29 authorized, 15/15 negative, PlayMode 3/3; historical candidate only.",
       "independentReview": "D05 R6 package/evidence rehashed; R7 consumer and privacy/control checks independently executed; no new Player/Unity run in R7",
-      "platform": ["desktop-editor", "windows-player"],
+      "platform": [
+        "desktop-editor",
+        "windows-player"
+      ],
       "status": "HISTORICAL_CANDIDATE_ACCEPTED; CURRENT_WINDOWS_ANDROID_RUNTIME_NOT_ACCEPTED"
     },
     {
       "id": "P4.4",
       "assertion": "Spectator public stream and seat-private state remain isolated; role switching clears identity/binding/cursors; settlement uses typed fields.",
-      "source": "doc/v5-重构/CODEX-V5-G2-C04-D05-FINAL-UNIFIED-DELIVERY-20261103.md",
+      "source": "doc/v5-重构/V5-G2-C04-D05-FINAL-UNIFIED-DELIVERY-20261103.md",
       "sourceSha256": "CD80E0088D6092B554284EAEF726C9EBFFD44C9E3B68EE9AC9A63D185941CE10",
-      "sourceCommit": ["2fc30cdfd8243342e894bf903d2111b454536116", "44d469bdfc4447c46dba50939b9cb0603716d1a8"],
-      "evidence": "D05 R7 build/reviewer evidence build/012d1de46ea442a1a902fdc6c33840e5; preserved R6 package evidence",
-      "nativeResult": "LocalHost 180/180; authentic Windows capture 1/1; seven wire identity/hash negatives rejected; runner 33/33; source contract 47/47",
+      "sourceCommit": [
+        "3aec0c3a92bb87e954163ad1847c78dcb08eba3a",
+        "6850fcc1913301c9d58d473a447dfc3c5dbb7856"
+      ],
+      "evidence": "D05 R7: E:/majiang-review/g2-c04-d05-final-unified-luna6-20261103/build/4a73add46b8d4b48950c896daea28bbe/review.json + review-manifest.json; R6 package matrix at build/77cc2a1e52224f1d9336a0987086d90b/windows-app-matrix.json",
+      "nativeResult": "R7: LocalHost 180/180; authentic Windows capture 1/1; seven wire identity/hash negatives; runner 33/33; source contract 47/47. R6 package: 206 files/eight DLLs, PlayMode 7/7, Windows seven scenarios + P2.",
       "independentReview": "thread acceptance appended 2026-11-04; reviewer ran fresh build, full LocalHost, raw capture and negative cases, and inspected prior package; FU-02 retained as unknown historical risk",
-      "platform": ["windows-source-consumer", "desktop-player historical package"],
-      "status": "ACCEPTED_SCOPED; CURRENT_UI_PACKAGE_NOT_BOUND"
+      "platform": [
+        "windows-source-consumer",
+        "desktop-player historical package"
+      ],
+      "status": "ACCEPTED_SCOPED; CURRENT_UI_PACKAGE_NOT_BOUND",
+      "limits": [
+        "R7 source/privacy acceptance does not bind a new current UI package",
+        "FU-02 historical cause remains UNKNOWN"
+      ]
     },
     {
       "id": "P4.5",
       "assertion": "Complete local match, lifecycle, AI/control, offline behavior, forced restart, save recovery, LOCAL asset rejection and same-candidate platform matrix.",
       "source": "doc/v5-重构/V5-G2-FINAL-CI-GREEN-DELIVERY-20261105.md; E:/majiang-review/g2-final-remote-ci-luna6-20261105/doc/v5-重构/V5-G2-FINAL-REMOTE-CI-REVIEW-20261105.md",
-      "sourceSha256": ["1F3D283D46729C36D84B32A1A5DC4D391966A5DDCFD2B260AE0930679434E44F", "29DF32676212164B42336B3670D03A19599DBE9AD6FE1A9D2F32F5639330B9ED"],
+      "sourceSha256": [
+        "1F3D283D46729C36D84B32A1A5DC4D391966A5DDCFD2B260AE0930679434E44F",
+        "29DF32676212164B42336B3670D03A19599DBE9AD6FE1A9D2F32F5639330B9ED"
+      ],
       "sourceCommit": "6850fcc1913301c9d58d473a447dfc3c5dbb7856",
       "evidence": "E:/majiang-review/g2-final-ci-green-luna6-20261105/build/b1118ef0-4f4b-4fa8-aea6-c59523dc1368/final-c19a633f17c74f4d9ab376bdf0a48a23/; E:/majiang-review/g2-final-remote-ci-luna6-20261105/build/e98c7d38-23e1-4c58-b662-410fb80199a8/; E:/majiang-review/g2-final-remote-ci-luna6-20261105/build/reviewer-8a68c18e/",
       "nativeResult": "local unified 2872/2872; table 42/42 and 13/13; both existing remote runs SUCCESS; independent artifact audit 4782 assertions native 0",
       "independentReview": "local candidate accepted in thread_20261105_101301_c651; remote artifact audit accepted in thread_20261105_165108_49fe; remote audit did not rerun CI",
-      "platform": ["local", "push CI source", "PR CI synthetic merge"],
+      "platform": [
+        "local",
+        "push CI source",
+        "PR CI synthetic merge"
+      ],
       "status": "SERVICE_AND_REMOTE_CI_EVIDENCE_ACCEPTED; G2_PLATFORM_MATRIX_INCOMPLETE"
     },
     {
       "id": "G2-REMOTE-CI",
       "assertion": "Bind existing CI runs to actual checkout and current PR20 source/base identity.",
       "source": "E:/majiang-review/g2-final-remote-ci-luna6-20261105/doc/v5-重构/V5-G2-FINAL-REMOTE-CI-REVIEW-20261105.md; build/caller-preflight-20261105/query-results.json",
-      "sourceSha256": ["29DF32676212164B42336B3670D03A19599DBE9AD6FE1A9D2F32F5639330B9ED", "65E59A6C247C3DAAF0044EEDF2C605739A38BE9C7B0038E0231F4C90A6552B0C"],
+      "sourceSha256": [
+        "29DF32676212164B42336B3670D03A19599DBE9AD6FE1A9D2F32F5639330B9ED",
+        "65E59A6C247C3DAAF0044EEDF2C605739A38BE9C7B0038E0231F4C90A6552B0C"
+      ],
       "sourceCommit": "59e8bd741385b5d7b39ccdbc47573dde552067d1",
       "evidence": "E:/majiang-review/g2-final-remote-ci-luna6-20261105/build/e98c7d38-23e1-4c58-b662-410fb80199a8/; E:/majiang-review/g2-final-remote-ci-luna6-20261105/build/reviewer-8a68c18e/; build/caller-preflight-20261105/query-results.json",
       "nativeResult": "run 41995915276 push checkout source 59e8bd74…, SUCCESS; run 41995924338 PR checkout merge 0794af7f…, SUCCESS; caller GitHub API plus git ls-remote native exit 0; PR20 OPEN/Draft, base v5, head 59e8bd74…, merge 0794af7f…",
       "independentReview": "two remote artifact originals audited with 4782 assertions, native 0; previous TLS failure remains in audit history and is supplemented by later caller query",
-      "platform": ["remote-ci"],
+      "platform": [
+        "remote-ci"
+      ],
       "status": "PASS_AT_OBSERVED_SOURCE_AND_QUERY_TIME; NOT_A_G2_SIGNOFF"
     }
   ],
   "acceptedApplicationEvidence": {
-    "gameplay": "C03 12 actual rounds / terminal / match commits and 269 actual action outcomes; retain original candidate identity",
-    "cheats": "three cheats, six real evidence rows; retain original candidate identity",
-    "d05PlayMode": "7/7; native 0; historical accepted package only",
-    "d05Windows": "same-package seven cases plus P2; 206-file package and eight DLL closure; historical accepted package only",
-    "doNotRebindTo": "6850fcc LocalHost DLL or current 59e8bd74 source without fresh candidate application closure"
+    "gameplay": {
+      "evidenceId": "P43-FULLMATCH",
+      "source": "doc/v5-重构/V5-G2-C03-UNIFIED-CANDIDATE-DELIVERY-20261101.md §6/§15",
+      "candidate": "b33f0aad21c962a6f147dbfdb8a63fd98942d4a2",
+      "actual": "12 rounds, 12 terminal, 12 match commits, WestCompletion; 269 actual Applied action outcomes",
+      "independentPairing": "252 unique request IDs paired with Applied receipts; separate measurement",
+      "status": "ACCEPTED_SCOPED; historical candidate"
+    },
+    "cheats": {
+      "evidenceId": "P43-CHEATS-136",
+      "source": "doc/v5-重构/V5-G2-C04-D04-B-PLAYER-DELIVERY-20261103.md §§8-9; C03 §15",
+      "candidate": "0dac2cefa8b943e91d50473910e81b88f0d3fd8b",
+      "actual": "D04-B 29/29 authorized, 15/15 negative, PlayMode 3/3; C03 six accepted cheat rows",
+      "status": "ACCEPTED_SCOPED; historical candidates"
+    },
+    "d05PlayMode": {
+      "evidenceId": "P42-D05-PLAYMODE",
+      "path": "E:/majiang-review/g2-c04-d05-final-unified-luna6-20261103/build/5aeb60c9fc8f4b58aa840b44a02f4b98/playmode-results.xml",
+      "sha256": "04DF164D69F3F96E03022B67F485D899F610D7D32DBB2BF942A644733D264EF9",
+      "actual": "7/7 native 0",
+      "candidate": "3aec0c3a92bb87e954163ad1847c78dcb08eba3a",
+      "status": "historical package only"
+    },
+    "d05Windows": {
+      "evidenceId": "P42-D05-WINDOWS",
+      "matrixPath": "E:/majiang-review/g2-c04-d05-final-unified-luna6-20261103/build/77cc2a1e52224f1d9336a0987086d90b/windows-app-matrix.json",
+      "matrixSha256": "E8571CECDD6047F652039458EB5A8080DA323C5B6CB7DA679C062237F0B78402",
+      "manifestPath": "E:/majiang-review/g2-c04-d05-final-unified-luna6-20261103/build/77cc2a1e52224f1d9336a0987086d90b/manifest.sha256",
+      "manifestSha256": "527FF33EC7D8304DE702D41999366891F1F74D37B6004E82AA067658BA926034",
+      "packageSha256": "e914b470d8977c9ebe10da08330091041ea3f6441fd8c1b3fafae088a6143b83",
+      "reviewManifestPath": "E:/majiang-review/g2-c04-d05-final-unified-luna6-20261103/build/4a73add46b8d4b48950c896daea28bbe/review-manifest.sha256",
+      "reviewManifestSha256": "9FF6E8B2D77E5AADC6EDF174FEA6E23ACD04F69EDF1D02A7F727CCD022B3E090",
+      "actual": "206 files, eight shared DLLs, seven scenarios/P2",
+      "reviewer": "Dedicated D05 R6/R7 reviewer; R7 rehashed package/source and ran scoped consumer/privacy checks; Unity/Player run reused R6",
+      "status": "historical package only"
+    }
   },
   "acceptedComponents": [
-    {"id":"C01","source":"doc/v5-重构/CODEX-V5-G2-C01-ACCEPTANCE-20261101.md","sha256":"24F867B86CCBBE08200817CE792A336C059EE3F5C70068F8EF9AC26BB7E9C6E9","status":"ACCEPTED_SCOPED","scope":"execution boundary and terminal UTC; not G2 or PostgreSQL cold-win acceptance"},
-    {"id":"C02","source":"doc/v5-重构/CODEX-V5-G2-C02-ACCEPTANCE-20261101.md","sha256":"5DD33322084B5F40935C7A92C3E8EABA3E8015700CFC5AFFFA5E2BBD6AA055E9","status":"ACCEPTED_SCOPED","scope":"controlled collection/verifier; not unified Player or G2"},
-    {"id":"C03","source":"doc/v5-重构/V5-G2-C03-UNIFIED-CANDIDATE-DELIVERY-20261101.md","sha256":"F8794C325F885C1860E27426B6B8AF6AD6BF127313B7BAE3C9A1D00AB121C1E0","sourceCommit":"b33f0aad21c962a6f147dbfdb8a63fd98942d4a2","status":"ACCEPTED_SCOPED","scope":"unified historical candidate and retained 132/147 result; not current 6850fcc package"},
-    {"id":"D03","source":"doc/v5-重构/V5-G2-D03-CI-CONFIRMATION-DELIVERY-20261102.md","sha256":"303831F6A30711074EF813F7F8C98C62AD63BDECD61E36DE0C6984FE9F7DFDB6","status":"ACCEPTED_SCOPED","scope":"D03 CI confirmation only"},
-    {"id":"D04","source":"doc/v5-重构/V5-G2-C04-D04-EVIDENCE-CONTRACT-20261103.md; doc/v5-重构/V5-G2-C04-D04-A-EVIDENCE-DELIVERY-20261103.md; doc/v5-重构/V5-G2-C04-D04-B-PLAYER-DELIVERY-20261103.md; doc/v5-重构/V5-G2-C04-D04-C-RUNNER-DELIVERY-20261103.md","sha256":["4BB97994CA06DC471690F56FB9E30366357E4402745DFAD146360C1D84E0AF0E","F5BB9146D71386D66B81FB06524C202A9C935273B7719533E9CB567CF7F90311","5E8D77260B48313664E2451DFB095B709B905C169FBD4EC35C80384810397344","1EDCBF1F44F4920CF20E41B1ACC250394D5A1505DF7B68A37D06CF5B6C769A0E"],"status":"ACCEPTED_SCOPED","scope":"D04 evidence/Player/runner contract only; not current platform package"},
-    {"id":"D05","source":"doc/v5-重构/V5-G2-C04-D05-FINAL-UNIFIED-DELIVERY-20261103.md","sha256":"CD80E0088D6092B554284EAEF726C9EBFFD44C9E3B68EE9AC9A63D185941CE10","status":"ACCEPTED_SCOPED","scope":"dedicated reviewer R6/R7 acceptance; historical app package remains bound to its own source"}
+    {
+      "id": "C01",
+      "source": "doc/v5-重构/CODEX-V5-G2-C01-ACCEPTANCE-20261101.md",
+      "sha256": "24F867B86CCBBE08200817CE792A336C059EE3F5C70068F8EF9AC26BB7E9C6E9",
+      "status": "ACCEPTED_SCOPED",
+      "scope": "execution boundary and terminal UTC; not G2 or PostgreSQL cold-win acceptance"
+    },
+    {
+      "id": "C02",
+      "source": "doc/v5-重构/CODEX-V5-G2-C02-ACCEPTANCE-20261101.md",
+      "sha256": "5DD33322084B5F40935C7A92C3E8EABA3E8015700CFC5AFFFA5E2BBD6AA055E9",
+      "status": "ACCEPTED_SCOPED",
+      "scope": "controlled collection/verifier; not unified Player or G2"
+    },
+    {
+      "id": "C03",
+      "source": "doc/v5-重构/V5-G2-C03-UNIFIED-CANDIDATE-DELIVERY-20261101.md",
+      "sha256": "F8794C325F885C1860E27426B6B8AF6AD6BF127313B7BAE3C9A1D00AB121C1E0",
+      "sourceCommit": "b33f0aad21c962a6f147dbfdb8a63fd98942d4a2",
+      "status": "ACCEPTED_SCOPED",
+      "scope": "unified historical candidate and retained 132/147 result; not current 6850fcc package"
+    },
+    {
+      "id": "D03",
+      "source": "doc/v5-重构/V5-G2-D03-CI-CONFIRMATION-DELIVERY-20261102.md",
+      "sha256": "303831F6A30711074EF813F7F8C98C62AD63BDECD61E36DE0C6984FE9F7DFDB6",
+      "status": "ACCEPTED_SCOPED",
+      "scope": "D03 CI confirmation only"
+    },
+    {
+      "id": "D04",
+      "source": "doc/v5-重构/V5-G2-C04-D04-EVIDENCE-CONTRACT-20261103.md; doc/v5-重构/V5-G2-C04-D04-A-EVIDENCE-DELIVERY-20261103.md; doc/v5-重构/V5-G2-C04-D04-B-PLAYER-DELIVERY-20261103.md; doc/v5-重构/V5-G2-C04-D04-C-RUNNER-DELIVERY-20261103.md",
+      "sha256": [
+        "4BB97994CA06DC471690F56FB9E30366357E4402745DFAD146360C1D84E0AF0E",
+        "F5BB9146D71386D66B81FB06524C202A9C935273B7719533E9CB567CF7F90311",
+        "5E8D77260B48313664E2451DFB095B709B905C169FBD4EC35C80384810397344",
+        "1EDCBF1F44F4920CF20E41B1ACC250394D5A1505DF7B68A37D06CF5B6C769A0E"
+      ],
+      "status": "ACCEPTED_SCOPED",
+      "scope": "D04 evidence/Player/runner contract only; not current platform package"
+    },
+    {
+      "id": "D05",
+      "source": "doc/v5-重构/V5-G2-C04-D05-FINAL-UNIFIED-DELIVERY-20261103.md",
+      "sha256": "CD80E0088D6092B554284EAEF726C9EBFFD44C9E3B68EE9AC9A63D185941CE10",
+      "status": "ACCEPTED_SCOPED",
+      "scope": "dedicated reviewer R6/R7 acceptance; historical app package remains bound to its own source"
+    }
   ],
   "platformMatrix": [
-    {"platform":"Unity Editor/Desktop PlayMode","status":"HISTORICAL_PASS; current candidate unbound","source":"D05 R6 accepted package evidence"},
-    {"platform":"ordinary Windows Player","status":"CURRENT_PACKAGE_NOT_ACCEPTED","owner":"thread_20261105_180011_21e1 R3 reworking","source":"E:/majiang-review/g2-win-rebind-codex-20261105; do not read live writer output"},
-    {"platform":"Android full APK plus actual device/emulator","status":"CURRENT_CANDIDATE_NOT_ACCEPTED; device gameplay NOT_RUN","owner":"thread_20261104_181451_ad90 R8 reworking","source":"D:/majiang/build/bridge-dispatch-20261104/android; do not read live writer output"},
-    {"platform":"iOS real device","status":"NOT_RUN; deferred G4/V5-4 hard gap, not G2 prerequisite","source":"doc/v5-重构/V5-0-1-IMPLEMENTATION-TASKS.md P4.5/G4"}
+    {
+      "platform": "Unity Editor/Desktop PlayMode",
+      "status": "HISTORICAL_PASS; current candidate unbound",
+      "source": "D05 R6 accepted package evidence"
+    },
+    {
+      "platform": "ordinary Windows Player",
+      "status": "CURRENT_PACKAGE_NOT_ACCEPTED",
+      "owner": "thread_20261105_180011_21e1 R3 reworking",
+      "source": "E:/majiang-review/g2-win-rebind-codex-20261105; do not read live writer output",
+      "stableSnapshot": "build/reviewer-c06-round1/thread_20261105_180011_21e1-review-instruction.json",
+      "snapshotSha256": "FDDEAC7938EBC1A9E3F6C4B9A013577084AFE81437A1D0C156C24A67BF68D051",
+      "knownOpen": [
+        "D-1-01 no package/BuildReport/PlayMode XML; app rows NOT_RUN; 22-minute wait cause unknown, no pre-cancel parent/child snapshot",
+        "D-1-03 stale ExpectedSourceHead, >250-char root, missing explicit VerifierPath"
+      ],
+      "acceptedClosed": [
+        "D-1-02 path diagnostic"
+      ],
+      "minimumNext": "Owner executes fresh-source/short-root/verifier preflight and bounded CompileOnly diagnostics; then same-candidate Player/PlayMode/seven cases/P2/visual-input and 8-DLL closure accepted by original reviewer.",
+      "snapshotStatusAtRead": "R3 reworking"
+    },
+    {
+      "platform": "Android full APK plus actual device/emulator",
+      "status": "CURRENT_CANDIDATE_NOT_ACCEPTED; device gameplay NOT_RUN",
+      "owner": "thread_20261104_181451_ad90 R8 reworking",
+      "source": "D:/majiang/build/bridge-dispatch-20261104/android; do not read live writer output",
+      "stableSnapshot": "build/reviewer-c06-round1/thread_20261104_181451_ad90-review-instruction.json",
+      "snapshotSha256": "4F5D77F2A6AF69D7926AA768AFA2A8EB3C1D1D66CC1937CA952B12F710F30469",
+      "knownOpen": [
+        "D-R7-01 resume/shutdown stubs do not call Run-C05OStep",
+        "D-R7-02 drain timeout leaves child and failure/native output proof incomplete",
+        "D-R8-01 helper missing branches false-green; fixture not self-contained; source snapshot/output root incomplete"
+      ],
+      "evidenceHashes": {
+        "entry-audit-result-v2.json": "B5F543…",
+        "native-io-result.json": "6D79BF…",
+        "fixture-probe-result-v2.json": "69D24C…",
+        "fixture-source-snapshot": "30BA7D…"
+      },
+      "matrix": "E1/D1 historical support; B1 BLOCKED_LICENSE; R1/V1/I1/L1 NOT_RUN",
+      "minimumNext": "Original R8 owner fixes real resume/shutdown/drain cleanup/helper fail-closed and self-contained sealed source fixture; reviewer accepts. Then current full APK/BuildReport/device hash and actual gameplay/visual/input matrix.",
+      "snapshotStatusAtRead": "R8 snapshot waiting_review; do not infer dispatch-time or later live status"
+    },
+    {
+      "platform": "iOS real device",
+      "status": "NOT_RUN; deferred G4/V5-4 hard gap, not G2 prerequisite",
+      "source": "doc/v5-重构/V5-0-1-IMPLEMENTATION-TASKS.md P4.5/G4"
+    }
   ],
   "knownRisks": [
-    {"id":"FU-02","status":"UNKNOWN historical first-failure cause; not claimed repaired; no unchanged-input rework"},
-    {"id":"SYNC-03","status":"intermittent historical risk retained; no root-cause claim"}
+    {
+      "id": "FU-02",
+      "status": "UNKNOWN historical first-failure cause; not claimed repaired; no unchanged-input rework"
+    },
+    {
+      "id": "SYNC-03",
+      "status": "intermittent historical risk retained; no root-cause claim"
+    }
   ],
-  "excludedFromG2Prerequisite": ["iOS real-device acceptance (G4/V5-4)", "real public WSS/HTTPS/PG match (G3)", "weak network, release and rollback (G4/G5)"],
+  "excludedFromG2Prerequisite": [
+    "iOS real-device acceptance (G4/V5-4)",
+    "real public WSS/HTTPS/PG match (G3)",
+    "weak network, release and rollback (G4/G5)"
+  ],
   "callerIdentitySnapshot": {
     "file": "build/caller-preflight-20261105/query-results.json",
     "sha256": "65E59A6C247C3DAAF0044EEDF2C605739A38BE9C7B0038E0231F4C90A6552B0C",
@@ -126,5 +304,364 @@
     "G2-C06-PLATFORM-WIN",
     "G2-C06-PLATFORM-ANDROID",
     "G2-C06-FINAL-SIGNOFF"
-  ]
+  ],
+  "evidenceRequirements": [
+    {
+      "id": "P41-FULLMATCH",
+      "assertion": "LOCAL completes real offline match through Client commands.",
+      "source": {
+        "path": "doc/v5-重构/V5-G2-C03-UNIFIED-CANDIDATE-DELIVERY-20261101.md",
+        "sha256": "F8794C325F885C1860E27426B6B8AF6AD6BF127313B7BAE3C9A1D00AB121C1E0",
+        "section": "§6 command, §15 acceptance",
+        "candidate": "b33f0aad21c962a6f147dbfdb8a63fd98942d4a2"
+      },
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-full-match.ps1 -Mode All -RunDir build/g2-c03-20261101-ds/fullmatch -UnityPath D:\\Unity\\Hub\\Editor\\6000.3.27f1\\Editor\\Unity.exe -DotnetPath D:\\Unity\\dotnet\\dotnet.exe -TimeoutSeconds 5400",
+      "raw": {
+        "availability": "NOT_ACCESSIBLE_IN_THIS_PRECHECK_TREE",
+        "locator": "C03 §6 names driver/tool summaries, round facts, Unity log, player exe and package manifest; raw run root not mounted; no rehash/current-candidate claim",
+        "artifactHashesAtSource": [
+          {
+            "artifact": "fullmatch driver summary",
+            "sha256": "CFE928C5C174303797268E3CF478F2E09622354D083CCFE2F24BAB4171D0C395"
+          },
+          {
+            "artifact": "tool summary",
+            "sha256": "F039B63EF34B50698B0DF559DDFAA3D3444D8B118E519EE93FF4CC58EAA0C617"
+          },
+          {
+            "artifact": "fullmatch analysis",
+            "sha256": "3CC902FD7FF3FCDC157A3AB7AA31D2D06000AD0D6BE81DCBAFFE3BB05E5A6635"
+          },
+          {
+            "artifact": "12 round facts",
+            "sha256": "6F1BA360B9ADE82155778694A3080F10A435819D3ACB71828E891E1FC9213AFE"
+          },
+          {
+            "artifact": "run log",
+            "sha256": "87BBDE6CC84471D518BBC56646165101E9FCB3AEE6CDF7DBEE281AEFE2449D04"
+          },
+          {
+            "artifact": "player manifest",
+            "sha256": "8335C4249A89F2C463B9702C93ED2A62CF11F083FDB7A3985F32B374D678C7CC"
+          },
+          {
+            "artifact": "Player executable",
+            "sha256": "F083B0E879A9298CDCF9933A8F3B4F2B013E13F7D3E51221FC0D756B79E28807"
+          },
+          {
+            "artifact": "Unity build log",
+            "sha256": "67D965E6E503C4A30F6838967EA372CC797D3C5E177E3B90379FAF05A5181243"
+          }
+        ],
+        "root": "build/g2-c03-20261101-ds/fullmatch/ under C03 source worktree; files are named and individually SHA-bound by C03 §§6/15; this run root is not mounted here"
+      },
+      "native": "12 rounds/terminal/match commits, WestCompletion; player/tool exit 0 as report records",
+      "review": "C03 caller acceptance §15; independently paired 252 unique requests/Applied receipts, distinct from 269 actual Applied outcomes",
+      "status": "ACCEPTED_SCOPED historical candidate"
+    },
+    {
+      "id": "P41-LOCAL-ASSET-REJECT",
+      "assertion": "LOCAL does not contact remote services or mint online token/wallet/rank settlement assets.",
+      "source": {
+        "path": "E:/majiang-review/g2-final-ci-green-luna6-20261105/doc/v5-重构/V5-G2-FINAL-CI-GREEN-DELIVERY-20261105.md",
+        "sha256": "1F3D283D46729C36D84B32A1A5DC4D391966A5DDCFD2B260AE0930679434E44F",
+        "section": "LocalHost acceptance append"
+      },
+      "command": "No uniquely named retained negative test/artifact located; no new product test run in this docs-only precheck.",
+      "raw": {
+        "availability": "UNKNOWN",
+        "path": "E:/majiang-review/g2-final-ci-green-luna6-20261105/build/b1118ef0-4f4b-4fa8-aea6-c59523dc1368/final-c19a633f17c74f4d9ab376bdf0a48a23/unified/direct-xml/Mahjong.LocalHost.Tests/direct-results.xml",
+        "sha256": "F2F0687952ECB6A2DAA719C59456AEA29982A4028A7E8C8D433BCF4401616AC1",
+        "limit": "184/184 aggregate; exact assertion not located"
+      },
+      "native": "LocalHost 184/184 aggregate does not prove this unnamed assertion",
+      "review": "thread_20261105_101301_c651 accepted documented LocalHost scope; exact claim remains unlocated",
+      "status": "UNKNOWN; existing G2-C06-FINAL-SIGNOFF"
+    },
+    {
+      "id": "P41-RECOVERY-IDEMPOTENCY",
+      "assertion": "Fallback, explicit corrupt-save refusal, cold reopen reconciliation, idempotency/conflict/expiry use named test nodes.",
+      "source": {
+        "path": "E:/majiang-review/g2-final-ci-green-luna6-20261105/doc/v5-重构/V5-G2-FINAL-CI-GREEN-DELIVERY-20261105.md",
+        "sha256": "1F3D283D46729C36D84B32A1A5DC4D391966A5DDCFD2B260AE0930679434E44F"
+      },
+      "artifact": {
+        "path": "E:/majiang-review/g2-final-ci-green-luna6-20261105/build/b1118ef0-4f4b-4fa8-aea6-c59523dc1368/final-c19a633f17c74f4d9ab376bdf0a48a23/unified/direct-xml/Mahjong.LocalHost.Tests/direct-results.xml",
+        "sha256": "F2F0687952ECB6A2DAA719C59456AEA29982A4028A7E8C8D433BCF4401616AC1",
+        "nodes": [
+          "LocalHostRecoveryTests.CorruptPrimaryFallsBackToPreviousSave",
+          "LocalHostRecoveryTests.CorruptPrimaryAndBackupAreRefusedWithoutSilentNewGame",
+          "LocalHostRecoveryTests.LostReceiptIsReconciledAfterColdReopenWithoutDuplicateSideEffect",
+          "LocalTableStoreTests.Idempotency_ActionsCheatsSettlements_ExecuteOnce_RejectConflictingBytes_RejectExpiredScope"
+        ]
+      },
+      "command": "Retained Release NUnit XML from accepted CI; no rerun",
+      "native": "LocalHost 184/184; required named nodes present in XML",
+      "review": "thread_20261105_101301_c651 accepted local service scope",
+      "status": "ACCEPTED_SCOPED source 6850fcc service tests; not app package",
+      "sourceCommit": "6850fcc1913301c9d58d473a447dfc3c5dbb7856"
+    },
+    {
+      "id": "P42-ASSEMBLY-BOUNDARY",
+      "assertion": "Five Unity asmdefs use Client-facing dependencies and have no forbidden Domain/TableRuntime reverse refs.",
+      "source": {
+        "path": "build/reviewer-c06-round1/critical-checks.json",
+        "sha256": "CE2D5DA4C01D3638EF9E2423F574D39BFF01DD57021D5AA6FB74BF4CD4010BFA"
+      },
+      "artifacts": [
+        {
+          "path": "unity/Mahjong.Unity/Assets/Scripts/App/Mahjong.Unity.App.asmdef",
+          "sha256": "BE92904C4542FD5B847ADFD59793AE1B8504DD7990F00CD83F28C5D80DBD3510"
+        },
+        {
+          "path": "unity/Mahjong.Unity/Assets/Scripts/Platform/Mahjong.Unity.Platform.asmdef",
+          "sha256": "C489EAD8943C14FA9974159F1AE9AC5D812DD04FF146A93798DCA4966ED0E25E"
+        },
+        {
+          "path": "unity/Mahjong.Unity/Assets/Scripts/Spectator/Mahjong.Unity.Spectator.asmdef",
+          "sha256": "7BF74009A5D9315D6810B60C75786B3BA2410DC2E52B83AFD6A20906BE6D895A"
+        },
+        {
+          "path": "unity/Mahjong.Unity/Assets/Scripts/Table/Mahjong.Unity.Table.asmdef",
+          "sha256": "F3CB0F5000AEA4F7129261D5075AC1E462DAF3F6A5E70F9C67DF72021800A3CA"
+        },
+        {
+          "path": "unity/Mahjong.Unity/Assets/Scripts/UI/Mahjong.Unity.UI.asmdef",
+          "sha256": "5A12BA575A53E288054D3A816C9793E82EBB2E5EAF8CF2823B87C8849321F25A"
+        }
+      ],
+      "command": "node.exe build/0eba878d-40a0-4943-ac70-28967eed2a44/check-round2.js (read-only SHA + asmdef-reference assertions); prior reviewer parse is preserved in build/reviewer-c06-round1/critical-checks.json",
+      "native": "5 parsed; zero forbidden reverse references",
+      "review": "C06 dedicated reviewer parsed refs; no runtime claim",
+      "status": "STATIC_BOUNDARY_ACCEPTED"
+    },
+    {
+      "id": "P42-UX-PLATFORM",
+      "assertion": "Fonts/glyphs, safe-area/aspect, keyboard/touch/legal input and visuals need platform runtime evidence.",
+      "source": {
+        "path": "doc/v5-重构/V5-0-1-IMPLEMENTATION-TASKS.md",
+        "section": "P4.2/P4.5"
+      },
+      "command": "No current accepted evidence located; Windows/Android remain with original owners.",
+      "raw": {
+        "status": "NOT_RUN_CURRENT_CANDIDATE",
+        "gaps": [
+          "G2-C06-PLATFORM-WIN",
+          "G2-C06-PLATFORM-ANDROID"
+        ]
+      },
+      "native": "N/A for static/LocalHost CI; no app visual/input count",
+      "review": "Not accepted for current candidate",
+      "status": "NOT_RUN mapped to existing platform gaps"
+    },
+    {
+      "id": "P43-CHEATS-136",
+      "assertion": "Three cheats preserve six accepted evidence rows and all 136 unique physical entities; keep verifier denominators distinct.",
+      "source": {
+        "path": "doc/v5-重构/V5-G2-C04-D04-B-PLAYER-DELIVERY-20261103.md",
+        "sha256": "5E8D77260B48313664E2451DFB095B709B905C169FBD4EC35C80384810397344",
+        "section": "§§8.2-9 and final acceptance append"
+      },
+      "command": "Historical sealed command: tools/unity/run-p45-c04-player-cheats.ps1 -Case all -EvidenceRoot build/c5a1b3 -SourceHead/-BuildCommit 0dac2cefa8b943e91d50473910e81b88f0d3fd8b -VerifierPath build/i57a9cb72f/verifier-artifacts/bin/C04PlayerCheatVerifier2/debug/C04PlayerCheatVerifier2.dll -DotnetPath D:/Unity/dotnet/dotnet.exe; original workspace E:/majiang-review/g2-c04-d04-player-ds-20261103",
+      "raw": {
+        "availability": "NOT_ACCESSIBLE_IN_THIS_PRECHECK_TREE",
+        "locator": "D04-B §8-9 binds package seal and package-manifest.csv; no raw run copied"
+      },
+      "native": "D04-B authorized 29/29 native0; negative 15/15 native0; A verifier two cases native0; PlayMode 3/3; source report separately records 3 cheats, 3 private ledger debits, balances 119/109/99 and 136 unique entities. C03 retains its own six accepted cheat evidence rows under its original identity.",
+      "review": "D04-B reviewer accepted sealed package/verifier; historical source 0dac2ce only",
+      "status": "ACCEPTED_SCOPED historical candidate",
+      "artifacts": [
+        {
+          "path": "E:/majiang-review/g2-c04-d04-player-ds-20261103/build/c5a1b3/c04-package-manifest.csv",
+          "sha256": "13717361AA11AABB9795963CFD75F3C4BE42E937F7748EB5C898E15D4C24363A",
+          "availability": "NOT_ACCESSIBLE_IN_THIS_PRECHECK_TREE; exact hash in source report"
+        },
+        {
+          "path": "E:/majiang-review/g2-c04-d04-player-ds-20261103/build/c5a1b3/c04-package-seal.json",
+          "sha256": "867D283B7E25CC61D4CA01C2C1B32A79FF1EB30F05889413C95F7EAECC18BAD2",
+          "availability": "NOT_ACCESSIBLE_IN_THIS_PRECHECK_TREE; exact hash in source report"
+        },
+        {
+          "path": "E:/majiang-review/g2-c04-d04-player-ds-20261103/build/c5a1b3/c04-verifier-package-manifest.json",
+          "sha256": "23EC8B87E7E196DBB5053BA919FE81702CD867A3D8B8E22297F70EA6EF4BB80A",
+          "availability": "NOT_ACCESSIBLE_IN_THIS_PRECHECK_TREE; exact hash in source report"
+        }
+      ],
+      "caseRows": [
+        "tile-mark",
+        "sleeve-bloom",
+        "sleeve-second",
+        "beam-swap",
+        "beam-swap-choice",
+        "unauthorized",
+        "insufficient-funds"
+      ],
+      "packageIdentity": {
+        "sourceHead": "0dac2cefa8b943e91d50473910e81b88f0d3fd8b",
+        "evidenceSealSha256": "be88ffb5daf8ba134b434efa3adc5f82e786c7cd6a14666872a065b6cd60916d",
+        "evidenceFiles": 1612,
+        "evidenceBytes": 51896845,
+        "playerPackageFiles": 210,
+        "playerPackageBytes": 128868864,
+        "packageManifestSha256": "13717361AA11AABB9795963CFD75F3C4BE42E937F7748EB5C898E15D4C24363A",
+        "verifierPackageManifestSha256": "23EC8B87E7E196DBB5053BA919FE81702CD867A3D8B8E22297F70EA6EF4BB80A",
+        "packageSealSha256": "867D283B7E25CC61D4CA01C2C1B32A79FF1EB30F05889413C95F7EAECC18BAD2"
+      }
+    },
+    {
+      "id": "P43-DEADLINE-CONTROL",
+      "assertion": "Authoritative deadline and stale controlEpoch rejection are exercised.",
+      "source": {
+        "path": "E:/majiang-review/g2-final-ci-green-luna6-20261105/doc/v5-重构/V5-G2-FINAL-CI-GREEN-DELIVERY-20261105.md",
+        "sha256": "1F3D283D46729C36D84B32A1A5DC4D391966A5DDCFD2B260AE0930679434E44F"
+      },
+      "artifact": {
+        "path": "E:/majiang-review/g2-final-ci-green-luna6-20261105/build/b1118ef0-4f4b-4fa8-aea6-c59523dc1368/final-c19a633f17c74f4d9ab376bdf0a48a23/unified/direct-xml/Mahjong.LocalHost.Tests/direct-results.xml",
+        "sha256": "F2F0687952ECB6A2DAA719C59456AEA29982A4028A7E8C8D433BCF4401616AC1",
+        "nodes": [
+          "LocalControlTests.ControlAroundAuthoritativeDeadlineRejectsStaleDecisionAndStaleEpoch",
+          "LocalMatchChannelProgressionTests.RealMatchChannelDeadlineRetiresDecisionAndRejectsStaleControl"
+        ]
+      },
+      "native": "Both named tests retained; LocalHost 184/184",
+      "review": "thread_20261105_101301_c651 accepted local service scope",
+      "status": "ACCEPTED_SCOPED; not app runtime proof",
+      "sourceCommit": "6850fcc1913301c9d58d473a447dfc3c5dbb7856"
+    },
+    {
+      "id": "P44-PRIVACY-ROLE",
+      "assertion": "Four-seat private/public spectator projections and role-switch clearing reject stale identities.",
+      "source": {
+        "path": "doc/v5-重构/V5-G2-C04-D05-FINAL-UNIFIED-DELIVERY-20261103.md",
+        "sha256": "CD80E0088D6092B554284EAEF726C9EBFFD44C9E3B68EE9AC9A63D185941CE10",
+        "section": "R6/R7 appended acceptance"
+      },
+      "artifacts": [
+        {
+          "path": "E:/majiang-review/g2-c04-d05-final-unified-luna6-20261103/build/4a73add46b8d4b48950c896daea28bbe/review.json",
+          "sha256": "31267123713D371E36872D68E394F7E52F4FA65AB2E9757D3D5FAE2312F435DF"
+        },
+        {
+          "path": "E:/majiang-review/g2-c04-d05-final-unified-luna6-20261103/build/4a73add46b8d4b48950c896daea28bbe/review-manifest.sha256",
+          "sha256": "9FF6E8B2D77E5AADC6EDF174FEA6E23ACD04F69EDF1D02A7F727CCD022B3E090"
+        },
+        {
+          "path": "E:/majiang-review/g2-c04-d05-final-unified-luna6-20261103/build/4a73add46b8d4b48950c896daea28bbe/final-evidence-check.json",
+          "sha256": "2CAFA9ACA4E1C9ADF96F1E61920E5AB71F012373FDBC209322C342CF2DE98C77"
+        },
+        {
+          "path": "E:/majiang-review/g2-c04-d05-final-unified-luna6-20261103/build/77cc2a1e52224f1d9336a0987086d90b/manifest.sha256",
+          "sha256": "527FF33EC7D8304DE702D41999366891F1F74D37B6004E82AA067658BA926034"
+        },
+        {
+          "path": "E:/majiang-review/g2-c04-d05-final-unified-luna6-20261103/build/77cc2a1e52224f1d9336a0987086d90b/windows-app-cases/RealRoom_FourPlayersSpectatorAndRoleSwitchUseIndependentSessions/role-switch-raw/raw-frames.json",
+          "sha256": "6ED58036CF01E6F2D7C0AF4C284BDAD71E2F546D4FB0849AD2F5A2412C5CE36E"
+        },
+        {
+          "path": "E:/majiang-review/g2-c04-d05-final-unified-luna6-20261103/build/77cc2a1e52224f1d9336a0987086d90b/windows-app-cases/RealRoom_LegalSleeveAndFeeOwnershipAcrossFourSeatsAndSpectator/four-owner-raw/raw-frames.json",
+          "sha256": "F218D8BEFFE7108BE563CD17362AE6C0146172C50302696D901B710AE885D895"
+        },
+        {
+          "path": "E:/majiang-review/g2-c04-d05-final-unified-luna6-20261103/build/77cc2a1e52224f1d9336a0987086d90b/windows-app-cases/RealRoom_ClosedPlayerToSpectatorToNewPlayerReceivePathRejectsOldRaw/closed-binding-raw/raw-frames.json",
+          "sha256": "7C0EB9DB3F38D6FED2B86F85348D847B33688B88185641057F400159226871F2"
+        }
+      ],
+      "native": "R7 LocalHost 180/180, authentic capture 1/1, seven wire identity/hash negatives, runner 33/33, source 47/47. R6 role-switch 7 frames SHA 6ed58036…; four-owner 50 frames f218d8be…; closed-role 6 frames 7c0eb9db…",
+      "review": "Dedicated D05 R7 reviewer ran consumer/privacy/capture checks and rehashed prior app package; did not rerun Unity/Player",
+      "status": "ACCEPTED_SCOPED historical candidate"
+    },
+    {
+      "id": "P45-LOCAL-CI",
+      "assertion": "Separate real project test counts from helper rows and preserve PG cleanup/recovery provenance.",
+      "source": {
+        "path": "E:/majiang-review/g2-final-ci-green-luna6-20261105/doc/v5-重构/V5-G2-FINAL-CI-GREEN-DELIVERY-20261105.md",
+        "sha256": "1F3D283D46729C36D84B32A1A5DC4D391966A5DDCFD2B260AE0930679434E44F",
+        "candidate": "6850fcc1913301c9d58d473a447dfc3c5dbb7856"
+      },
+      "artifacts": [
+        {
+          "path": "E:/majiang-review/g2-final-ci-green-luna6-20261105/build/reviewer-g2-03e51a6d23b2437f91b0343ba92f72b8/full-projects.json",
+          "sha256": "listed in 10-file reviewer manifest"
+        },
+        {
+          "path": "E:/majiang-review/g2-final-ci-green-luna6-20261105/build/b1118ef0-4f4b-4fa8-aea6-c59523dc1368/final-c19a633f17c74f4d9ab376bdf0a48a23/unified/direct-xml/Mahjong.LocalHost.Tests/direct-results.xml",
+          "sha256": "F2F0687952ECB6A2DAA719C59456AEA29982A4028A7E8C8D433BCF4401616AC1"
+        }
+      ],
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/ci/verify-v5-table-postgres.ps1 -Configuration Release -DotnetPath D:/game_dev_tools/dotnet/dotnet.exe -RunUnifiedVerification (accepted command at V5-G2-FINAL-CI-GREEN-DELIVERY-20261105.md:11; independent reviewer commands and native results in build/reviewer-g2-03e51a6d23b2437f91b0343ba92f72b8/run-review.ps1)",
+      "native": "21 project/helper rows PASS; 14 test projects 2872/2872 with 0 fail/error/skip/not-run; LocalHost 184/184, Client 182/182, TableRuntime 483/483, Lobby 89/89; Table 42/42, targeted 13/13",
+      "review": "thread_20261105_101301_c651 accepted Release/full suite and real PG recovery/cleanup",
+      "status": "ACCEPTED_SCOPED; not current application package"
+    },
+    {
+      "id": "P45-REMOTE-CI",
+      "assertion": "Bind the two existing CI jobs to their actual checkout and preserve PR/base/head query time.",
+      "sources": [
+        {
+          "path": "E:/majiang-review/g2-final-remote-ci-luna6-20261105/doc/v5-重构/V5-G2-FINAL-REMOTE-CI-REVIEW-20261105.md",
+          "sha256": "29DF32676212164B42336B3670D03A19599DBE9AD6FE1A9D2F32F5639330B9ED"
+        },
+        {
+          "path": "build/caller-preflight-20261105/query-results.json",
+          "sha256": "65E59A6C247C3DAAF0044EEDF2C605739A38BE9C7B0038E0231F4C90A6552B0C"
+        }
+      ],
+      "raw": "E:/majiang-review/g2-final-remote-ci-luna6-20261105/build/e98c7d38-23e1-4c58-b662-410fb80199a8/; build/reviewer-8a68c18e/",
+      "native": "41995915276 push checkout 59e8bd74 SUCCESS; 41995924338 PR checkout merge 0794af7f SUCCESS; each 14/2872, Table 42+13; caller API + ls-remote native 0, PR20 OPEN/Draft/base v5/head 59e8bd74",
+      "review": "thread_20261105_165108_49fe accepted 4,782 artifact assertions; no CI rerun. Historical TLS failure remains; successful caller query is later point only.",
+      "status": "ACCEPTED_AT_OBSERVED_TIME; not G2 signoff"
+    },
+    {
+      "id": "P45-PLATFORMS",
+      "assertion": "Distinguish Editor, Windows Player, Android full APK/device and iOS real device.",
+      "sources": [
+        {
+          "path": "build/reviewer-c06-round1/thread_20261105_180011_21e1-review-instruction.json",
+          "sha256": "FDDEAC7938EBC1A9E3F6C4B9A013577084AFE81437A1D0C156C24A67BF68D051"
+        },
+        {
+          "path": "build/reviewer-c06-round1/thread_20261104_181451_ad90-review-instruction.json",
+          "sha256": "4F5D77F2A6AF69D7926AA768AFA2A8EB3C1D1D66CC1937CA952B12F710F30469"
+        }
+      ],
+      "native": "Editor historical D05 7/7; Windows current NOT_ACCEPTED; Android E1/D1 historical support, B1 BLOCKED_LICENSE, R1/V1/I1/L1 NOT_RUN; iOS NOT_RUN/G4 boundary",
+      "review": "Windows/Android results remain original owners/reviewers; snapshots do not accept later builds",
+      "status": "OPEN; maps to existing G2-C06-PLATFORM-WIN / ANDROID / FINAL-SIGNOFF"
+    },
+    {
+      "id": "P43-LEGAL-ACTIONS",
+      "assertion": "Four legal Pon/Chi/Riichi/ClosedKan actions are submitted and applied through the real local Client channel.",
+      "source": {
+        "path": "E:/majiang-review/g2-final-ci-green-luna6-20261105/doc/v5-重构/V5-G2-FINAL-CI-GREEN-DELIVERY-20261105.md",
+        "sha256": "1F3D283D46729C36D84B32A1A5DC4D391966A5DDCFD2B260AE0930679434E44F",
+        "sourceCommit": "6850fcc1913301c9d58d473a447dfc3c5dbb7856"
+      },
+      "artifact": {
+        "path": "E:/majiang-review/g2-final-ci-green-luna6-20261105/build/b1118ef0-4f4b-4fa8-aea6-c59523dc1368/final-c19a633f17c74f4d9ab376bdf0a48a23/unified/direct-xml/Mahjong.LocalHost.Tests/direct-results.xml",
+        "sha256": "F2F0687952ECB6A2DAA719C59456AEA29982A4028A7E8C8D433BCF4401616AC1",
+        "nodes": [
+          "C04PlayerActionChannelTests.fixed_player_action_scenario_is_legal_and_applies_over_the_real_local_channel(scenario: \"pon\", actionType: DeclarePon)",
+          "C04PlayerActionChannelTests.fixed_player_action_scenario_is_legal_and_applies_over_the_real_local_channel(scenario: \"chi\", actionType: DeclareChi)",
+          "C04PlayerActionChannelTests.fixed_player_action_scenario_is_legal_and_applies_over_the_real_local_channel(scenario: \"riichi\", actionType: DeclareRiichi)",
+          "C04PlayerActionChannelTests.fixed_player_action_scenario_is_legal_and_applies_over_the_real_local_channel(scenario: \"closed-kan\", actionType: DeclareKan)"
+        ]
+      },
+      "command": "Retained CI Release NUnit XML; exact CI command in V5-G2-FINAL-CI-GREEN-DELIVERY-20261105.md:11, not rerun",
+      "native": "four named parameter cases PASS; LocalHost project 184/184",
+      "review": "thread_20261105_101301_c651 accepted local service scope",
+      "status": "ACCEPTED_SCOPED service-channel evidence; not current app package"
+    }
+  ],
+  "round2Review": {
+    "thread": "thread_20261105_195433_d9b8",
+    "callerSessionId": "01a1ab8f-90d7-7190-b884-6548a3801dfc",
+    "reviewRound": 2,
+    "fixedFindings": [
+      "D-1-01",
+      "D-1-02"
+    ],
+    "preReviewStatus": "PRE_REVIEW_COMPLETE",
+    "g2Status": "G2_NOT_ACCEPTED",
+    "reviewerArtifacts": "build/reviewer-c06-round1 is read-only; no prior reviewer file modified"
+  }
 }

@@ -64,3 +64,10 @@
 - caller PR 身份原件 SHA-256 `65E59A6C247C3DAAF0044EEDF2C605739A38BE9C7B0038E0231F4C90A6552B0C`，native exit 0；成功结果只补记查询时点，不覆盖此前 TLS 失败原审。
 - 文档结论：`PRE_REVIEW_COMPLETE`；`G2_NOT_ACCEPTED`。当前阻断为 Windows 当前候选包证据、Android 当前 APK/设备证据、以及其后正式 G2 独立签署。FU-02/SYNC-03 保留为历史风险；iOS/G3-G5 不扩入 G2。
 - 本树运行记录位于 ignored `build/5e123516-73e8-4f1c-8d48-c06a11112026/phase-card.txt`。最终四文件 hash 与提交身份另见同目录 `final-manifest.json`；封存后不再修改四份文件。
+
+## 第2轮专属复核修复记录（同一 thread）
+
+- 复核：`thread_20261105_195433_d9b8`，caller session `01a1ab8f-90d7-7190-b884-6548a3801dfc`。只处理首次发现的两组本任务文档/证据索引 MAJOR：`D-1-01`（路径/hash/逐项证据追溯不足）和 `D-1-02`（Windows/Android 稳定原审返修原因未并入当前清单）；不等待平台线程、不改变原 reviewer/owner，预审状态可为 `PRE_REVIEW_COMPLETE`，G2 仍 `G2_NOT_ACCEPTED`。
+- `D-1-01` 修复：修正 D05 源路径；INDEX 增加稳定 evidence ID、合同断言、报告/原件路径与 hash、命令/命令章节、候选/包身份、原生计数、独立接受动作及 UNKNOWN/NOT_RUN 到既有 gap 的指向。明确区分 C03 269 actual Applied outcomes 与 252 request/Applied pairs；补充 8 DLL/包 manifest、D05 PlayMode/Windows 原件、LocalHost XML 精确测试节点及 5 asmdef 静态哈希。当前材料未定位 LOCAL 假线上资产拒绝具体负例，明确为 UNKNOWN；字体/安全区/输入映射到既有平台 gap。
+- `D-1-02` 修复：GAPS 原 Windows/Android 两个 ID 内，补入只读 R3/R8 reviewer instruction snapshot 路径/hash/时间、未关闭原审子项、最小先行退出条件与最终包/设备退出断言；Windows 已接受 D-1-02 路径诊断不重开。未将 R8 新产物写成已接受，Android E1/D1 历史支持、B1 `BLOCKED_LICENSE`、R1/V1/I1/L1 `NOT_RUN` 明确保留。
+- 新检查脚本、负例输入/结果、证据核对和本轮 manifest 写入新 ignored `build/0eba878d-40a0-4943-ac70-28967eed2a44/`；`build/reviewer-c06-round1/` 全部只读。最终复现命令、hash、原生退出和 commit/clean 记录追加于此节；未构建、未运行产品测试/Unity/Player/PG/设备、未重跑 CI、未触及 PR/平台 live writer。

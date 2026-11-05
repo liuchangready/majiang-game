@@ -10,6 +10,8 @@ G2 阶段结论：`G2_NOT_ACCEPTED`
 
 状态解释：历史组件/候选 `ACCEPTED` 仅适用于对应 source、运行包和复核范围；当前应用包及 G2 未因此自动通过。证据路径均为原报告/原件路径，摘要文件哈希绑定见 [证据索引](V5-G2-C06-EVIDENCE-INDEX-20261105.json)。
 
+本轮映射按 `E-*` 稳定子 ID 定位，逐项给出合同断言、精确报告/原件与 hash、执行命令或已封存命令位置、原生计数、接受身份及适用候选。索引脚本对引用路径/hash、必需字段/ID 和关键 D05 manifest/raw 条目做只读校验；它不重跑产品测试。合同中找不到现有证据的要求以 `UNKNOWN`/`NOT_RUN` 明示并指向既有平台或最终签署 gap；不得从汇总绿灯推断该要求通过。
+
 | ID | 门槛断言与实现范围 | 已接受证据、源码身份与真实执行 | 当前状态 / 缺口 |
 |---|---|---|---|
 | P4.1 | LocalHost 复用 Client 命令/回执和 TableRuntime；LOCAL 不触网、不产生线上 token/钱包/排名；存档原子保存、损坏/旧版明确拒绝；真实整局/整场、恢复和原请求对账保持一致。 | `6850fcc1913301c9d58d473a447dfc3c5dbb7856`；最终 CI 独立复核原件：21/21 project/helper 行 PASS，其中14个测试工程 2872/2872，0 fail/error/skip/not-run；LocalHost 184/184、Client 182/182、TableRuntime 483/483、Lobby 89/89；真实 PG crash recovery、backup/restore、清理及环境恢复通过。CI run `41995915276` 实际 checkout source `59e8bd74…`，PR run `41995924338` 实际 checkout merge `0794af7f…`，不得混为同一源码 checkout。`V5-G2-FINAL-CI-GREEN-DELIVERY-20261105.md` 的专属 reviewer 追加接受 `6850fcc` 本地范围。 | 已接受本地服务/测试范围；不单独证明 Unity UI、Windows/Android 当前包或设备。保留 `FU-02 UNKNOWN`、`SYNC-03` 间歇风险。 |
@@ -18,6 +20,8 @@ G2 阶段结论：`G2_NOT_ACCEPTED`
 | P4.4 | 观战公共流与四席私有投影隔离；角色切换清除身份/游标/旧 binding；观战不可发玩家命令；结算来自结构化字段。 | D05 R7 独立复核实跑真实 WireCodec 与绑定/可见性验证：LocalHost 180/180、真实九帧 Windows capture 1/1；七个 canonical-hash 变体逐项拒绝；runner 33/33、Player source contract 47/47。D05 R6 的 PlayMode 7/7 与 Windows 同包七案/P2 被 reviewer 以原件复核并沿用。 | D05 组件及指定历史应用候选已接受；没有新候选同包的 UI/平台覆盖。历史 FU-02 原因未知，不作为无变化返修循环。 |
 | P4.5 | 无人工改状态完成菜单→本地房→码牌→完整一局/整场/连庄或下一局；AI 托管/收回、流局、断网本地继续、强杀/重启/坏存档恢复；每节点对照 Domain；LOCAL 假线上资产入口拒绝；实际平台矩阵。 | 当前本地完整 CI 候选源码 `6850fcc`：21 行 PASS / 14 测试工程 2872/2872；Table 42/42、定向 13/13；真实 PG 证据通过。远端既有 push/PR 两 run SUCCESS，独立原件审计 4,782 assertions。C01、C02、C03、D03、D04、D05 组件分别保留自己的真实 source/run/package 身份和接受段。 | 代码/服务和远端 CI 证据可接受，但平台矩阵仍不完整；Windows 当前包未接受、Android 当前 APK/设备未接受。P4.5/G2 尚未接受。 |
 | G2 | 独立复核 P4.1–P4.5 的测试/场景证据，记录桌面、Android、iOS 实际构建/设备、LOCAL 隔离、恢复、隐私投影和门面依赖；V4 保持可回退生产。 | P4 来源如上；远端当前身份快照确认 PR20 `OPEN/Draft`、base `v5`、head `59e8bd74…`，与受测 source 一致。查询原件 SHA `65E59A6C…`；此前 CI reviewer 报告记载的 09:26 UTC TLS 失败仍是历史事实，此次成功查询是后续补记。 | `G2_NOT_ACCEPTED`。Windows/Android 原 owner 续验及最终同候选包接受、独立 G2 签署仍待；本预审不等待平台线程结束，也不代其验收。 |
+
+本次独立复核回合修复映射：`D-1-01` → INDEX `evidenceRequirements` 的逐项断言/来源/manifest/命令/原生结果/接受范围映射；P4.4 错误文件名已改为存在的 `V5-G2-C04-D05-FINAL-UNIFIED-DELIVERY-20261103.md`。`D-1-02` → GAPS 两个平台条目补入稳定 R3/R8 指令快照 hash、原缺陷 ID、原因及先行/最终退出条件；已接受 Windows `D-1-02` 明确不重开。新只读校验脚本及其负例结果仅在本任务新 ignored `build/<GUID>/`，round1 reviewer 封存保持不变。
 
 ## 证据分类与已关闭范围
 
