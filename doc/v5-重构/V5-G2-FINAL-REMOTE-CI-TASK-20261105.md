@@ -58,3 +58,13 @@ E. 封存与独立审查
 返修方须在同一轮内批量修复全部 BLOCKER/MAJOR，并逐条给出修复映射与验证证据；本任务是只读审计，不允许以此条款扩大修码范围。
 不得用 skip、空测试、放宽断言、刷新摘要或旧产物获得绿色。
 仅当出现新信息时才允许追加缺陷，并须说明此前为何不可发现。
+
+## 执行记录（2026-11-05，Asia/Shanghai）
+
+- 本地独占原件与审计证据根：`build/e98c7d38-23e1-4c58-b662-410fb80199a8`。任务卡原始 SHA-256：`04AD64D6320A821EB2EFB6300AB7F722134C27B1EDEA3E720E0AB745DBBABD33`。
+- A：本地派发 HEAD/branch/clean 状态已记录；GitHub REST 初始读取 PR20、run、jobs、workflow id/path 均成功。最后成功的 PR live response 为 2026-11-05 09:13:05 UTC（17:13:05 +08）：OPEN/Draft，head `59e8bd74…`，base `8fd7c6cb…`，merge field `0794af7f…`。另有两条 run 完成后的 API snapshots。
+- B：只读轮询已有 run `41995915276` 与 `41995924338`，45 秒节奏，单次网络超时 25 秒，总轮询 411 秒；未 dispatch/rerun/cancel。push 于 09:00:08 UTC SUCCESS，PR 于 08:59:25 UTC SUCCESS，attempt 均为 1。
+- C：按 run/attempt 各下载一次完整 job-log ZIP 与 artifact ZIP。原始 ZIP、API artifact metadata digest、文件清单均保留；每包 625 项。初次匿名下载 403/401 后使用当前已配置的 Git Credential Manager 在内存中访问；未输出/落盘 token。普通路径展开遇 Windows MAX_PATH 后，仅在 build 证据根以短目录/extended path完成展开；该 partial 目录未用于结论。
+- D：独立解析 14 个 direct XML/console/meta/native exit；复算两个 run 的 222 项 table manifest 与 12 项 PG evidence hash；核对 42/42、13/13、PG crash/backup restore、cleanup/env restore。运行 `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File build/e98c7d38-23e1-4c58-b662-410fb80199a8/audit-evidence.ps1`，exit 0。未运行本地 build 或重新测试。
+- E：已形成 [复核报告](V5-G2-FINAL-REMOTE-CI-REVIEW-20261105.md) 与 binding JSON，源码/工具/workflow/test/Android 无改动。最后一次 09:26 UTC 的 live PR 读取因 TLS/连接关闭失败，`git ls-remote` 也以 TLS unexpected EOF 失败；current head 之后状态记 UNKNOWN/BLOCKED。独立 reviewer 未运行，原因是用户明令不得继续委派，未冒称独立审查。
+- 本轮未发现新的 CI 代码缺陷；远端 run/artifact 事实通过，但任务整体不记 `FINAL_REMOTE_CI_VERIFIED`。历史失败、FU-02 UNKNOWN、SYNC-03 与平台边界继续保留。
