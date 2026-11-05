@@ -778,11 +778,22 @@ namespace Mahjong.LocalHost.Tests
             Assert.Equal(persistedDecision.ControlEpoch, recoveredDecision.ControlEpoch);
             Assert.Equal(persistedDecision.RemainingReserveMillis, recoveredDecision.RemainingReserveMillis);
             Assert.Equal(persistedDecision.OverdueMillis, recoveredDecision.OverdueMillis);
+            // LocalHost uses TableRecoveryOptions' contractual 5-second default. Cross-boot
+            // recovery adds it only when the source checkpoint says it was not already applied.
+            const long configuredFirstRecoveryGraceMillis = 5_000L;
+            long expectedRecoveryGraceMillis = persistedDecision.RecoveryGraceApplied
+                ? persistedDecision.RecoveryGraceMillis
+                : configuredFirstRecoveryGraceMillis;
+            long newlyAppliedRecoveryGraceMillis = persistedDecision.RecoveryGraceApplied
+                ? 0L
+                : configuredFirstRecoveryGraceMillis;
+            Assert.Equal(expectedRecoveryGraceMillis, recoveredDecision.RecoveryGraceMillis);
+            long expectedRecoveredBaseMillis = checked(
+                persistedDecision.RemainingBaseMillis + newlyAppliedRecoveryGraceMillis);
+            Assert.Equal(expectedRecoveredBaseMillis, recoveredDecision.RemainingBaseMillis);
             Assert.Equal(
-                persistedDecision.RemainingBaseMillis +
-                    (persistedDecision.RecoveryGraceApplied ? 0L : recoveredDecision.RecoveryGraceMillis),
-                recoveredDecision.RemainingBaseMillis);
-            Assert.True(recoveredDecision.RecoveryGraceApplied);
+                persistedDecision.RecoveryGraceApplied || expectedRecoveryGraceMillis > 0L,
+                recoveredDecision.RecoveryGraceApplied);
             Assert.Equal(persistedBeforeClose.StateVersion, recoveredCapture.Facts.StateVersion);
             Assert.Equal(persistedBeforeClose.EventSeq, recoveredCapture.Facts.EventSeq);
             Assert.Equal(persistedBeforeClose.StateFingerprint, recoveredCapture.Facts.StateFingerprint);
@@ -794,44 +805,54 @@ namespace Mahjong.LocalHost.Tests
 
             await using RoomSession spectator = await RoomSession.OpenSpectatorAsync(restored, "recover-deadline-spectator", ct);
             TableActor actor = spectator.Runtime.ActorForTest;
+            Assert.False(spectator.Runtime.DriverRunning,
+                "The recovery-capture test seam intentionally defers the autonomous driver; this test's boundary ticks below exercise the actor only.");
             Assert.Equal(persistedDecision.Key.DecisionId, actor.GetPendingDecisionId(0));
             Assert.True(restored.CanTickAuthority,
                 "A recovered room with an open decision is already Playing even without a human binding.");
 
             TableTimingSnapshot before = await actor.GetTimingSnapshotAsync(ct);
             DecisionTiming recoveredTiming = Assert.IsType<DecisionTiming>(before.Seats[0].Timing);
-            long expectedDeadline = checked(
-                harness.Clock.MonotonicMillis +
-                recoveredDecision.RemainingBaseMillis +
-                recoveredDecision.RemainingReserveMillis -
-                recoveredDecision.OverdueMillis);
+            long restoredAtMonotonicMillis = harness.Clock.MonotonicMillis;
+            long expectedRestoredDeadlineFromOriginalCheckpoint = checked(
+                restoredAtMonotonicMillis +
+                expectedRecoveredBaseMillis +
+                persistedDecision.RemainingReserveMillis -
+                persistedDecision.OverdueMillis);
             Assert.Equal(persistedDecision.Key, recoveredTiming.Key);
-            Assert.Equal(expectedDeadline, recoveredTiming.DeadlineMillis);
-            long grace = recoveredTiming.RecoveryGraceMillis;
-            Assert.True(recoveredTiming.RecoveryGraceApplied);
+            Assert.Equal(expectedRecoveryGraceMillis, recoveredTiming.RecoveryGraceMillis);
+            Assert.Equal(
+                persistedDecision.RecoveryGraceApplied || expectedRecoveryGraceMillis > 0L,
+                recoveredTiming.RecoveryGraceApplied);
+            Assert.Equal(expectedRestoredDeadlineFromOriginalCheckpoint, recoveredTiming.DeadlineMillis);
+            long expectedDeadline = expectedRestoredDeadlineFromOriginalCheckpoint;
+            long grace = expectedRecoveryGraceMillis;
             Assert.True(expectedDeadline > harness.Clock.MonotonicMillis);
             TableControlSnapshot control = await actor.GetControlSnapshotAsync(ct);
             Assert.Equal(SeatControllerKind.LocalHuman, control.Seats[0].Kind);
             Assert.Equal(persistedDecision.ControlEpoch, control.Seats[0].ControlEpoch);
 
-            // Just before the persisted deadline: nothing may retire early and the
-            // recovered deadline/grace must not be re-armed by attaching a spectator.
+            // Just before the recovered deadline (original checkpoint plus its one allowed
+            // configured grace): nothing may retire early or re-arm timing on spectator attach.
             AdvanceClockTo(harness, expectedDeadline - 1);
             await actor.TickAsync(TableTickRequest.Empty, ct);
             Assert.Equal(persistedDecision.Key.DecisionId, actor.GetPendingDecisionId(0));
             TableTimingSnapshot atBefore = await actor.GetTimingSnapshotAsync(ct);
-            Assert.Equal(expectedDeadline, atBefore.Seats[0].Timing!.DeadlineMillis);
-            Assert.Equal(grace, atBefore.Seats[0].Timing!.RecoveryGraceMillis);
-            Assert.True(atBefore.Seats[0].Timing!.RecoveryGraceApplied);
+            DecisionTiming timingBeforeDeadline = Assert.IsType<DecisionTiming>(atBefore.Seats[0].Timing);
+            Assert.Equal(expectedDeadline, timingBeforeDeadline.DeadlineMillis);
+            Assert.Equal(expectedRecoveryGraceMillis, timingBeforeDeadline.RecoveryGraceMillis);
+            Assert.Equal(
+                persistedDecision.RecoveryGraceApplied || expectedRecoveryGraceMillis > 0L,
+                timingBeforeDeadline.RecoveryGraceApplied);
 
-            // Crossing the recovered deadline through the authoritative actor tick
-            // retires the old decision deterministically. With no live player, no new
-            // human decision may open. Keep the autonomous driver stopped so it cannot
-            // race the manually controlled clock boundary above.
+            // Crossing the recovered deadline through an explicit authoritative actor tick
+            // retires the old decision deterministically. The pending recovery capture keeps
+            // the real autonomous driver deferred; this is actor-only coverage, not evidence
+            // that the driver-level unbound-human gate ran.
             AdvanceClockTo(harness, expectedDeadline + 1);
             await actor.TickAsync(TableTickRequest.Empty, ct);
             Assert.True(string.IsNullOrEmpty(actor.GetPendingDecisionId(0)),
-                "No new decision may open for an unbound LocalHuman seat after the old deadline retires.");
+                "No decision may remain after the configured recovered deadline without a player binding.");
             TableTimingSnapshot after = await actor.GetTimingSnapshotAsync(ct);
             Assert.Null(after.Seats[0].Timing);
             Assert.Null(after.Seats[0].PendingKey);
@@ -849,6 +870,7 @@ namespace Mahjong.LocalHost.Tests
             Assert.Equal(
                 persistedBeforeClose.ControlRequests.Select(item => item.AccountId + "|" + item.ScopeId + "|" + item.RequestId + "|" + item.Digest).OrderBy(item => item),
                 persistedAfterDeadline.ControlRequests.Select(item => item.AccountId + "|" + item.ScopeId + "|" + item.RequestId + "|" + item.Digest).OrderBy(item => item));
+
         }
 
         [Fact]
