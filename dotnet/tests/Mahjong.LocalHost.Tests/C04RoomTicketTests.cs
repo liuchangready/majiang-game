@@ -832,10 +832,17 @@ namespace Mahjong.LocalHost.Tests
             Assert.Equal(SeatControllerKind.LocalHuman, control.Seats[0].Kind);
             Assert.Equal(persistedDecision.ControlEpoch, control.Seats[0].ControlEpoch);
 
-            // Just before the recovered deadline (original checkpoint plus its one allowed
-            // configured grace): nothing may retire early or re-arm timing on spectator attach.
+            LocalTableDriver driver = spectator.Runtime.DriverForTest;
+            Assert.False(driver.IsRunning);
+
+            // Let the real deferred driver execute the recovered turn. Its completion barrier
+            // proves the actor tick and the unbound-human gate have both run for this iteration.
             AdvanceClockTo(harness, expectedDeadline - 1);
-            await actor.TickAsync(TableTickRequest.Empty, ct);
+            long beforeDeadlineIteration = driver.CompletedIterationsForTest;
+            driver.Start();
+            await LocalHostCommandTests.WithTimeoutAsync(
+                driver.WaitForIterationAfterForTest(beforeDeadlineIteration, ct), ct);
+            Assert.True(driver.IsRunning);
             Assert.Equal(persistedDecision.Key.DecisionId, actor.GetPendingDecisionId(0));
             TableTimingSnapshot atBefore = await actor.GetTimingSnapshotAsync(ct);
             DecisionTiming timingBeforeDeadline = Assert.IsType<DecisionTiming>(atBefore.Seats[0].Timing);
@@ -845,12 +852,12 @@ namespace Mahjong.LocalHost.Tests
                 persistedDecision.RecoveryGraceApplied || expectedRecoveryGraceMillis > 0L,
                 timingBeforeDeadline.RecoveryGraceApplied);
 
-            // Crossing the recovered deadline through an explicit authoritative actor tick
-            // retires the old decision deterministically. The pending recovery capture keeps
-            // the real autonomous driver deferred; this is actor-only coverage, not evidence
-            // that the driver-level unbound-human gate ran.
+            // The same real driver must retire the original decision after the deadline. The
+            // barrier observes completion without manually ticking the actor or sleeping.
             AdvanceClockTo(harness, expectedDeadline + 1);
-            await actor.TickAsync(TableTickRequest.Empty, ct);
+            long afterDeadlineIteration = driver.CompletedIterationsForTest;
+            await LocalHostCommandTests.WithTimeoutAsync(
+                driver.WaitForIterationAfterForTest(afterDeadlineIteration, ct), ct);
             Assert.True(string.IsNullOrEmpty(actor.GetPendingDecisionId(0)),
                 "No decision may remain after the configured recovered deadline without a player binding.");
             TableTimingSnapshot after = await actor.GetTimingSnapshotAsync(ct);

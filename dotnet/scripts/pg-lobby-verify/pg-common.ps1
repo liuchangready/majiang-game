@@ -152,6 +152,25 @@ function Initialize-PgRoot {
     }
 }
 
+function Assert-PgInstallationClosure {
+    param([Parameter(Mandatory = $true)]$Context)
+
+    $required = @(
+        $Context.PgCtl,
+        $Context.InitDb,
+        $Context.Psql,
+        $Context.Createdb,
+        $Context.PgIsReady,
+        $Context.PostgresExe,
+        (Join-Path $Context.Root 'pgsql\share\timezone'),
+        (Join-Path $Context.Root 'pgsql\share\timezonesets\Default')
+    )
+    $missing = @($required | Where-Object { -not (Test-Path -LiteralPath $_) })
+    if ($missing.Count -gt 0) {
+        throw "PostgreSQL installation is incomplete under '$($Context.Root)'; missing: $($missing -join ', ')"
+    }
+}
+
 function Test-TcpPortOpen {
     param([string]$HostName = '127.0.0.1', [int]$Port, [int]$TimeoutMs = 400)
 

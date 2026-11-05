@@ -158,7 +158,7 @@ $productionFunctionNames = @(
     'Test-TcpListenerReachable', 'Get-PortProbe', 'Resolve-TablePort',
     'Get-LogTail', 'Restore-ProcessEnvironment', 'Invoke-Native',
     'Wait-PgReady', 'Get-PgScalar', 'Get-PgDataDirectory', 'Get-ClusterOwnershipState',
-    'Assert-OwnedCluster', 'Initialize-Cluster', 'Restart-ClusterImmediate'
+    'Assert-OwnedCluster', 'Initialize-Cluster', 'Restart-ClusterImmediate', 'Test-ManifestPathIncluded'
 )
 function Get-ProductionFunctionAst([string]$Name) {
     return $productionAst.FindAll({
@@ -314,6 +314,10 @@ try {
             }, $true).Count -gt 0
         Assert-True $found "S0 production defines $name"
     }
+    Assert-True (Test-ManifestPathIncluded 'tests.xml') 'S0 evidence manifest includes stable root files'
+    Assert-True (Test-ManifestPathIncluded 'pg\postgres.log') 'S0 evidence manifest includes stable evidence subdirectories'
+    Assert-True (-not (Test-ManifestPathIncluded 'tmp\VBCSCompiler\AnalyzerAssemblyLoader\volatile.dll')) 'S0 evidence manifest excludes runtime temp scratch'
+    Assert-True (-not (Test-ManifestPathIncluded 'tmp/xml-selfcheck/case.xml')) 'S0 evidence manifest excludes temporary XML self-check fixtures'
 
     $parameters = @($productionAst.ParamBlock.Parameters)
     $portParameter = $parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'Port' } | Select-Object -First 1

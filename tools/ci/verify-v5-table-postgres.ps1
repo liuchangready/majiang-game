@@ -210,6 +210,13 @@ function Get-TextSha256([string]$Text) {
     finally { $sha.Dispose() }
 }
 
+function Test-ManifestPathIncluded([string]$RelativePath) {
+    if ([string]::IsNullOrWhiteSpace($RelativePath)) { return $false }
+    $normalized = $RelativePath.Replace('/', '\')
+    if ([string]::Equals($normalized, 'tmp', [StringComparison]::OrdinalIgnoreCase)) { return $false }
+    return -not $normalized.StartsWith('tmp\', [StringComparison]::OrdinalIgnoreCase)
+}
+
 function Write-JsonEvidence([string]$Path, [object]$Value) {
     $utf8 = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText($Path, ($Value | ConvertTo-Json -Depth 12), $utf8)
@@ -2246,7 +2253,10 @@ finally {
         $manifest = @()
         Get-ChildItem -LiteralPath $LogDir -File -Recurse -ErrorAction Stop | Sort-Object FullName | Where-Object {
             $full = [IO.Path]::GetFullPath($_.FullName)
-            $full -ne [IO.Path]::GetFullPath($manifestPath) -and $full -ne [IO.Path]::GetFullPath($manifestTempPath)
+            $relative = $_.FullName.Substring($LogDir.Length).TrimStart('\')
+            (Test-ManifestPathIncluded $relative) -and
+                $full -ne [IO.Path]::GetFullPath($manifestPath) -and
+                $full -ne [IO.Path]::GetFullPath($manifestTempPath)
         } | ForEach-Object {
             $manifest += [ordered]@{
                 path = $_.FullName.Substring($LogDir.Length).TrimStart('\')

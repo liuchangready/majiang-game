@@ -28,6 +28,9 @@ namespace Mahjong.LocalHost
         private readonly long[] _controlEpochs = new long[4];
         private readonly bool[] _aiSeats = new bool[4];
         private readonly string[] _lastDecisionKeys = new string[4];
+        private readonly object _iterationGateForTest = new object();
+        private TaskCompletionSource<long> _iterationCompletedForTest = NewIterationSignal();
+        private long _completedIterationsForTest;
         private long _requestCounter;
         private Task? _task;
         private string _lastLoopErrorForTest = string.Empty;
@@ -75,6 +78,33 @@ namespace Mahjong.LocalHost
         }
 
         public bool IsRunning => _task != null && !_task.IsCompleted;
+
+        internal long CompletedIterationsForTest
+        {
+            get
+            {
+                lock (_iterationGateForTest)
+                {
+                    return _completedIterationsForTest;
+                }
+            }
+        }
+
+        internal Task<bool> WaitForIterationAfterForTest(long completedIterations, CancellationToken cancellationToken)
+        {
+            Task<long> changed;
+            lock (_iterationGateForTest)
+            {
+                if (_completedIterationsForTest > completedIterations)
+                {
+                    return Task.FromResult(true);
+                }
+
+                changed = _iterationCompletedForTest.Task;
+            }
+
+            return WaitForIterationAsync(changed, cancellationToken);
+        }
 
         public string DescribeDriverForTest()
         {
@@ -133,6 +163,7 @@ namespace Mahjong.LocalHost
                         return;
                     }
 
+                    CompleteIterationForTest();
                     continue;
                 }
 
@@ -158,6 +189,8 @@ namespace Mahjong.LocalHost
                     _lastLoopErrorForTest = exception.GetType().Name + ":" + exception.Message;
                 }
 
+                CompleteIterationForTest();
+
                 try
                 {
                     await Task.Delay(15, _stop.Token).ConfigureAwait(false);
@@ -167,6 +200,40 @@ namespace Mahjong.LocalHost
                     return;
                 }
             }
+        }
+
+        private static TaskCompletionSource<long> NewIterationSignal() =>
+            new TaskCompletionSource<long>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private static async Task<bool> WaitForIterationAsync(Task<long> changed, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var canceled = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using (cancellationToken.Register(() => canceled.TrySetResult(true)))
+            {
+                Task completed = await Task.WhenAny(changed, canceled.Task).ConfigureAwait(false);
+                if (completed != changed)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                }
+            }
+
+            await changed.ConfigureAwait(false);
+            return true;
+        }
+
+        private void CompleteIterationForTest()
+        {
+            TaskCompletionSource<long> completed;
+            long count;
+            lock (_iterationGateForTest)
+            {
+                count = ++_completedIterationsForTest;
+                completed = _iterationCompletedForTest;
+                _iterationCompletedForTest = NewIterationSignal();
+            }
+
+            completed.TrySetResult(count);
         }
 
         private async Task DriveOneAsync(TableSnapshot snapshot)

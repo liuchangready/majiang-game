@@ -619,15 +619,28 @@ namespace Mahjong.LocalHost.Tests
             object baselineGate = new object();
             int baselineCount = 0;
             int? baselineCountAtLookupResolution = null;
+            TableConnectionState? stateAtReconciledBaseline = null;
+            bool reconciledBaselineMatchedBinding = false;
             var reconciledBaseline = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             EventHandler<TableSnapshotChangedEventArgs> baselineHandler = (_, args) =>
             {
-                if (!args.IsFullBaseline) return;
+                TableSessionBinding? binding = live.Session.Binding;
+                TableVisibleEventBatch batch = args.VisibleEventBatch;
+                if (!args.IsFullBaseline || binding == null ||
+                    batch.Kind != TableVisibleEventBatchKind.Baseline ||
+                    !string.Equals(batch.SessionId, binding.SessionId.Value, StringComparison.Ordinal) ||
+                    !string.Equals(batch.RoomId, binding.RoomId.Value, StringComparison.Ordinal) ||
+                    !string.Equals(batch.ScopeId, binding.Scope.ScopeId.Value, StringComparison.Ordinal) ||
+                    batch.BindingEpoch != binding.BindingEpoch.Value ||
+                    batch.ConnectionEpoch != binding.ConnectionEpoch.Value ||
+                    batch.Seat != binding.SeatId || batch.Role != ProtocolRole.Player) return;
                 lock (baselineGate)
                 {
                     baselineCount++;
                     if (baselineCountAtLookupResolution.HasValue && baselineCount > baselineCountAtLookupResolution.Value)
                     {
+                        stateAtReconciledBaseline = live.Session.State;
+                        reconciledBaselineMatchedBinding = true;
                         reconciledBaseline.TrySetResult(true);
                     }
                 }
@@ -680,11 +693,17 @@ namespace Mahjong.LocalHost.Tests
                 Assert.Equal(ContractReceiptStatus.Recorded, resolved.Resolution.ReceiptStatus);
                 Assert.Equal(ControlReason, resolved.Resolution.ReasonCode);
                 Assert.True(resolved.Resolution.FromReceiptLookup, "the reconnect resolution must come from RECEIPT_QUERY");
+                Assert.Equal(scope.Value, resolved.Command.ScopeId);
                 Assert.Equal(CommandKind.ReleaseControl, resolved.Command.Kind);
                 Assert.Equal(digest, resolved.Command.DigestSha256);
                 Assert.Equal(digest, resolved.Resolution.CanonicalPayloadSha256);
                 await LocalHostCommandTests.WithTimeoutAsync(reconciledBaseline.Task, ct);
-                await live.WaitReadyAsync(ct);
+                Assert.Equal(4, staleInjector.InvalidSyncResponseCount);
+                Assert.True(staleInjector.ValidSyncResponseReleased,
+                    "The CONTROL_APPLIED baseline must be applied from the current sync response after foreign/expired responses are ignored.");
+                Assert.True(reconciledBaselineMatchedBinding,
+                    "A baseline from another session, scope, seat, connection, or binding epoch cannot complete reconciliation.");
+                Assert.Equal(TableConnectionState.Ready, stateAtReconciledBaseline);
                 Assert.Equal(0, staleInjector.EarlyBufferGapRequestCount);
                 Assert.Equal(0, live.Session.EarlyBufferItemCount);
                 Assert.Equal(TableConnectionState.Ready, live.Session.State);
@@ -4084,7 +4103,7 @@ namespace Mahjong.LocalHost.Tests
             private readonly object _gate = new object();
             private TaskCompletionSource<bool> _reconciliationQuery = NewSignal();
             private TaskCompletionSource<bool> _injection = NewSignal();
-            private ReadOnlyMemory<byte>? _heldSyncResponse;
+            private readonly Queue<ReadOnlyMemory<byte>> _heldFrames = new Queue<ReadOnlyMemory<byte>>();
             private bool _armed;
             private bool _watchingRecovery;
             private ulong _expectedBindingEpoch;
@@ -4108,6 +4127,10 @@ namespace Mahjong.LocalHost.Tests
 
             public int EarlyBufferGapRequestCount { get; private set; }
 
+            public int InvalidSyncResponseCount { get; private set; }
+
+            public bool ValidSyncResponseReleased { get; private set; }
+
             public void ArmNextSyncResponse(ulong bindingEpoch)
             {
                 lock (_gate)
@@ -4118,6 +4141,9 @@ namespace Mahjong.LocalHost.Tests
                     _armed = false;
                     _watchingRecovery = true;
                     EarlyBufferGapRequestCount = 0;
+                    InvalidSyncResponseCount = 0;
+                    ValidSyncResponseReleased = false;
+                    _heldFrames.Clear();
                 }
             }
 
@@ -4171,11 +4197,17 @@ namespace Mahjong.LocalHost.Tests
 
             public async Task<ReadOnlyMemory<byte>> ReceiveAsync(CancellationToken cancellationToken)
             {
-                ReadOnlyMemory<byte>? held;
+                ReadOnlyMemory<byte>? held = null;
                 lock (_gate)
                 {
-                    held = _heldSyncResponse;
-                    _heldSyncResponse = null;
+                    if (_heldFrames.Count > 0)
+                    {
+                        held = _heldFrames.Dequeue();
+                        if (_heldFrames.Count == 0)
+                        {
+                            ValidSyncResponseReleased = true;
+                        }
+                    }
                 }
 
                 if (held.HasValue)
@@ -4186,6 +4218,7 @@ namespace Mahjong.LocalHost.Tests
                 ReadOnlyMemory<byte> frame = await _inner.ReceiveAsync(cancellationToken).ConfigureAwait(false);
                 WireEnvelope? envelope = WireCodec.Decode(frame.Span).Envelope;
                 WireEnvelope? stale = null;
+                ReadOnlyMemory<byte>[]? probes = null;
                 TaskCompletionSource<bool>? injectionSignal = null;
                 lock (_gate)
                 {
@@ -4193,7 +4226,25 @@ namespace Mahjong.LocalHost.Tests
                     {
                         _armed = false;
                         stale = MakeStaleIncremental(envelope);
-                        _heldSyncResponse = frame.ToArray();
+                        WireEnvelope expiredCorrelation = envelope.Clone();
+                        expiredCorrelation.CorrelationId = "expired-" + expiredCorrelation.CorrelationId;
+                        WireEnvelope replacedCorrelation = envelope.Clone();
+                        replacedCorrelation.CorrelationId = "replaced-" + replacedCorrelation.CorrelationId;
+                        WireEnvelope foreignSession = envelope.Clone();
+                        foreignSession.SessionId = "foreign-session";
+                        WireEnvelope foreignBindingEpoch = envelope.Clone();
+                        foreignBindingEpoch.BindingEpoch = checked(envelope.BindingEpoch + 1);
+                        probes = new ReadOnlyMemory<byte>[]
+                        {
+                            WireCodec.Encode(expiredCorrelation),
+                            WireCodec.Encode(replacedCorrelation),
+                            WireCodec.Encode(foreignSession),
+                            WireCodec.Encode(foreignBindingEpoch),
+                            WireCodec.Encode(stale)
+                        };
+                        for (int i = 0; i < probes.Length; i++) _heldFrames.Enqueue(probes[i]);
+                        _heldFrames.Enqueue(frame.ToArray());
+                        InvalidSyncResponseCount = 4;
                         InjectedCount++;
                         InjectedStreamVersion = stale.PlayerUpdate.Cursor.StreamVersion;
                         InjectedProjectionSeq = stale.PlayerUpdate.Cursor.ProjectionSeq;
@@ -4208,9 +4259,11 @@ namespace Mahjong.LocalHost.Tests
                     return frame;
                 }
 
-                ReadOnlyMemory<byte> injected = WireCodec.Encode(stale);
                 injectionSignal?.TrySetResult(true);
-                return injected;
+                lock (_gate)
+                {
+                    return _heldFrames.Dequeue();
+                }
             }
 
             public Task CloseAsync(TableChannelCloseReason reason, CancellationToken cancellationToken) =>
