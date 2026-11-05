@@ -1,7 +1,7 @@
 {
     "schema":  "v5-g2-final-ci-green-binding-v1",
     "taskId":  "G2-FINAL-CI-GREEN-20261105",
-    "status":  "LOCAL_VALIDATION_PASS_PENDING_INDEPENDENT_REVIEW",
+    "status":  "LOCAL_INDEPENDENT_ACCEPTED_REMOTE_CI_PENDING",
     "worktree":  "E:/majiang-review/g2-final-ci-green-luna6-20261105",
     "branch":  "wt/v5-g2-final-ci-green-luna6-20261105",
     "dispatchHead":  "8b084f0c4a6b60f17f32fe79ce8f59af0698a583",
@@ -621,13 +621,38 @@
                        "SYNC03":  "INTERMITTENT_UNEXPLAINED"
                    },
     "independentReview":  {
-                              "status":  "PENDING",
-                              "requiredModel":  "bridge configured reviewer distinct from executor",
-                              "reviewerRerunRequired":  [
-                                                            "receipt-control deterministic positive/negative cases",
-                                                            "recovered-driver boundary cases",
-                                                            "complete table-postgres + unified entry on exact candidate"
-                                                        ]
+                              "status":  "PASS",
+                              "threadId":  "thread_20261105_101301_c651",
+                              "bridgeStatus":  "COMPLETED",
+                              "testedHead":  "8b51a2a529b277112567a627d9de304acde6323f",
+                              "codeCommit":  "6850fcc1913301c9d58d473a447dfc3c5dbb7856",
+                              "evidenceRoot":  "E:\\majiang-review\\g2-final-ci-green-luna6-20261105\\build\\reviewer-g2-03e51a6d23b2437f91b0343ba92f72b8",
+                              "buildNativeExit":  0,
+                              "focusedInvocations":  10,
+                              "focusedPassed":  10,
+                              "lobbySelftestChecks":  193,
+                              "tableStartupChecks":  153,
+                              "fullNativeExit":  0,
+                              "fullSeconds":  1268,
+                              "projectRows":  21,
+                              "testProjects":  14,
+                              "cases":  2872,
+                              "passed":  2872,
+                              "failed":  0,
+                              "errors":  0,
+                              "skipped":  0,
+                              "notRun":  0,
+                              "tableCleanup":  "PASS",
+                              "lobbyCleanup":  "PASS",
+                              "environmentRestore":  "PASS",
+                              "ownedResidualProcesses":  0,
+                              "sealedManifestRows":  217,
+                              "sealedManifestMismatches":  0,
+                              "summarySha256":  "F941B8A48A8789BEDF89D593BE477FCAFD01317BD114D1E533CECEA4EF99AEEF",
+                              "firstReviewerPgAttempt":  "FAIL: insufficient C TEMP extraction capacity; retained",
+                              "retryChange":  "only process TEMP/TMP moved to unique D directory",
+                              "optionalPs7DualHost":  "NOT_RUN",
+                              "applicationPackageRebind":  "REQUIRED for future LocalHost-dependent application candidate; old package evidence retains old identity"
                           },
     "remoteCi":  {
                      "status":  "NOT_RUN",
@@ -639,7 +664,7 @@
                  },
     "acceptance":  {
                        "localValidationPassed":  true,
-                       "independentlyAccepted":  false,
+                       "independentlyAccepted":  true,
                        "remoteCiGreen":  false,
                        "g2StageApproved":  false,
                        "v4RemainsProduction":  true

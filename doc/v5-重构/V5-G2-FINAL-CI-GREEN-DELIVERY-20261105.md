@@ -1,4 +1,4 @@
-﻿# G2 最终统一候选 CI 收绿 — 本地交付（2026-11-05）
+# G2 最终统一候选 CI 收绿 — 本地交付（2026-11-05）
 
 **状态：本地候选验证 PASS，等待独立复核；远端 CI NOT_RUN。** 本交付不表示 G2 阶段批准或最终 CI 已收绿。
 
@@ -54,3 +54,14 @@
 - D05 的已接受范围保持原样；Unity/普通 Windows 同包矩阵未因本轮变化重跑。Android/C06 不在本轮范围；V4 继续生产。
 - 独立 reviewer 尚未复验，状态 `PENDING`。远端新候选 CI 尚未运行，状态 `NOT_RUN`；旧 source push run `41729487041 SUCCESS` 与旧 PR 合成 merge run `41729493387 FAILURE` 是不同身份，不能替代本候选远端 CI。
 - **结论：本地完整候选验证 PASS，交独立复核；G2 最终 CI 收绿尚未完成。**
+## 专属 reviewer 独立验收追加（2026-11-05）
+
+本段更新上述开发交付时的 PENDING 状态。原 thread `thread_20261105_101301_c651` 已由专属 caller/reviewer 在同一会话实际复验并调用 `approve_task`，桥接返回 `COMPLETED`。本任务本地范围接受；截至本次 docs-only 提交，远端最终候选 CI 仍为 `NOT_RUN`，后续结果以同一 Draft PR20 与桥接 MR 记录为准。
+
+- 实际复验头 `8b51a2a529b277112567a627d9de304acde6323f`，代码仍为 `6850fcc1913301c9d58d473a447dfc3c5dbb7856`；八个授权源码/测试文件 hash 与 binding 全部一致，无越界代码修改。新构建原生 exit 0、零 warning/error；控制对账及真实恢复 driver 各固定五次，10/10 逐例 XML PASS。
+- Lobby PG 自检 193 checks / 0 failures；Table startup 自检 153/153，native exit 均为 0。可选 PS7 双 host leg 未运行，不作为本次 PS5.1 范围的通过证据。首次 C 盘 TEMP 解包写入失败（当时 free 941,826,048 bytes；包解压 861,890,074 bytes，另需复制 zip 322,530,154 bytes）的原件保留；仅把本次验证进程的 TEMP/TMP 改到空间充足的 `D:/g2-review-temp-03e51a6d` 后，在新独占根复验通过，未改机器设置。
+- 独立完整入口仍为生产 `tools/ci/verify-v5-table-postgres.ps1 -Configuration Release -DotnetPath D:/game_dev_tools/dotnet/dotnet.exe -RunUnifiedVerification`，另指定 ports 56240/56241、自有 table/Lobby roots、相同 pinned PG zip 及独占 logs。完整命令/native exit 保存在 reviewer `full.result.json`。运行 1268 秒，捕获原生 exit **0**；21/21 项目行 PASS、14 测试项目 **2872/2872**，零 fail/error/skip/notrun。LocalHost 184/184、Client 182/182、TableRuntime 483/483、Lobby 89/89；Table PG 42/42 与 targeted 13/13、崩溃恢复、备份还原 PASS。
+- Table 与 Lobby ownership-checked cleanup、进程环境恢复均 PASS；两 roots 删除，ports 56240/56241 无残留 listener，无自有 PG 进程。开发与 reviewer 两份 217 行 Table manifest 均逐项 hash 匹配；开发 14 份逐例 XML hash 与计数全部匹配。复核者的实际重跑与开发原件核对分开记录。
+- 独立证据根 `build/reviewer-g2-03e51a6d23b2437f91b0343ba92f72b8`：`REVIEW-PLAN.txt`、`run-review.ps1`、`review-checklist.json`、`focused-summary.json`、`full-projects.json`、各命令 stdout/stderr/native result、完整 `table/` 与 `unified/`。统一 summary SHA-256 `F941B8A48A8789BEDF89D593BE477FCAFD01317BD114D1E533CECEA4EF99AEEF`，Table summary `E721F61E467FD87D58D906DAD64BD120779EEB629874F31428E091746DB6A3C3`，外层 native result `2432733D88089122EBD48A0749836ECF05A414CFE2A45F055AA5DF80D08538E6`。
+
+本次 `Mahjong.LocalHost.dll` 因内部观察点而变化，其依赖的后续 Unity/Windows 应用包需要按新候选重新构建/绑定；旧 D05 的 206 文件/八 DLL/七场景证据继续只归属旧应用候选，本次不将其改称新头应用实测。未重跑无变化的 Unity/Windows/Android 矩阵；历史 FU-02 UNKNOWN、SYNC-03 间歇未解释记录保留。V4 继续生产；本任务接受及后续 CI 收绿均不等于 G2 阶段批准、合并或部署授权。
