@@ -1,5 +1,15 @@
 # G2 最终头远端 CI 复核报告（2026-11-05）
 
+## 调用方独立复核补记
+
+专属 reviewer 已在同一线程 `thread_20261105_165108_49fe` 完成独立原件复核；下文 `NOT_RUN` 是接收方提交 `7d596dc6` 时的历史状态。没有新增委派，也没有把原件审查改称独立重跑 CI。
+
+在本工作区实际运行 `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File build/reviewer-8a68c18e/verify.ps1`，原生退出 0，4,782 条断言通过。脚本直接读取两份原始 artifact ZIP 与完整 job-log ZIP，复核 109 份封存文件、GitHub digest、625 项包清单、逐节点 XML/console/native/metadata、14 工程各 2,872/2,872、table 42/42 与 13/13、222 项 table manifest、12 项 PG hash、实际 cheap gates、PG crash/restart/backup 与清理/环境恢复。两条 run 全部一致，未发现本任务缺陷。另核对 workflow blob、PR merge 的 source parent、修复提交祖先与脚本字节，以及本次仅三文档 diff。证据为 `build/reviewer-8a68c18e/verification.json`；原接收方证据未改写。
+
+调用方分别用现有凭据执行 PowerShell REST、系统 curl、Git curl/TLS 1.2 与 Git ls-remote；实时 GitHub API/远端仍出现 TLS handshake/connection close，未能补获当前 PR head。网络错误与请求时间保存在同一 reviewer 目录。独立审查缺口现已关闭，实时 PR 身份缺口仍为 `UNKNOWN/BLOCKED`，不能宣告 `FINAL_REMOTE_CI_VERIFIED`。本任务作为如实保留缺口的审计报告可验收，不构成 G2/C06 或平台批准。
+
+最新调用方指令已授权一次统一 MR 收口。沿用现有唯一 PR20（`feat/v5-post-g1-batch` → `v5`），不另建 PR；仅以普通非强制 push 汇入本任务文档。受审 source 固定为 `59e8bd74`，后续文档提交不继承这两条 run 的源码身份认证。若网络仍不可用，MR 同步必须记为失败，不能冒称已推送。
+
 ## 结论与边界
 
 两个已存在的远端 run 均以 attempt 1 / SUCCESS 结束；job logs 与 artifact 均已下载，artifact SHA-256 与 GitHub 返回 digest 相符，原件内容、计数矩阵及 manifest hash 已复算。远端 CI 执行证据为 PASS。

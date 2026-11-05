@@ -61,6 +61,8 @@ E. 封存与独立审查
 
 ## 执行记录（2026-11-05，Asia/Shanghai）
 
+- 调用方独立复核接续：同一线程、同一工作树，输出根 `build/reviewer-8a68c18e`；实际原始 ZIP 断言检查 exit 0、4,782 条通过，详见 REVIEW 的独立复核补记。没有重跑 CI/产品构建/设备或 PG。独立 reviewer 已完成，当前 live PR head 仍因 TLS 失败记 UNKNOWN；审计交付可验收，最终 CI 认证仍 BLOCKED。最新指令授权调用方统一推送并复用 PR20，取代任务卡中对接收方的不推送要求；不强推、不新增 PR、不合并。
+
 - 本地独占原件与审计证据根：`build/e98c7d38-23e1-4c58-b662-410fb80199a8`。任务卡原始 SHA-256：`04AD64D6320A821EB2EFB6300AB7F722134C27B1EDEA3E720E0AB745DBBABD33`。
 - A：本地派发 HEAD/branch/clean 状态已记录；GitHub REST 初始读取 PR20、run、jobs、workflow id/path 均成功。最后成功的 PR live response 为 2026-11-05 09:13:05 UTC（17:13:05 +08）：OPEN/Draft，head `59e8bd74…`，base `8fd7c6cb…`，merge field `0794af7f…`。另有两条 run 完成后的 API snapshots。
 - B：只读轮询已有 run `41995915276` 与 `41995924338`，45 秒节奏，单次网络超时 25 秒，总轮询 411 秒；未 dispatch/rerun/cancel。push 于 09:00:08 UTC SUCCESS，PR 于 08:59:25 UTC SUCCESS，attempt 均为 1。

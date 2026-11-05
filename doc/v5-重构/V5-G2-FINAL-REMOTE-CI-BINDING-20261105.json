@@ -5,8 +5,7 @@
     "remoteCiRunResult":  "SUCCESS_ARTIFACTS_VERIFIED",
     "finalRemoteCiVerified":  false,
     "blockedConditions":  [
-                              "Current PR20 head after 2026-11-05T09:13:05Z is UNKNOWN because final REST request at 09:26Z failed with TLS connection close.",
-                              "Dedicated independent reviewer was NOT_RUN because user explicitly prohibited further delegation."
+                              "Current PR20 head remains UNKNOWN: reviewer REST/curl/ls-remote checks also failed with TLS connection close; no FINAL_REMOTE_CI_VERIFIED claim."
                           ],
     "identity":  {
                      "sourceToDispatchDiff":  [
@@ -122,10 +121,26 @@
                   "summaryRows":  "21 PASS, 0 FAIL, 0 BLOCKED, 0 NOT_RUN"
               },
     "reviewer":  {
-                     "independentReviewer":  "NOT_RUN",
+                     "independentReviewer":  "COMPLETE_PASS",
                      "receiverOriginalEvidenceAudit":  "COMPLETE",
-                     "reason":  "Explicit user instruction prohibits continued delegation",
-                     "doNotRepresentAsIndependentRerun":  true
+                     "reason":  "Dedicated reviewer resumed in the same bridge thread; original ZIP assertions passed locally; no delegation or CI rerun.",
+                     "doNotRepresentAsIndependentRerun":  true,
+                     "callerReview":  {
+                                          "threadId":  "thread_20261105_165108_49fe",
+                                          "reviewedDeliveryCommit":  "7d596dc62b53ee61a70248698ab18a776afb50d0",
+                                          "reviewedUtc":  "2026-11-05T09:38:24.4614112Z",
+                                          "evidenceRoot":  "build/reviewer-8a68c18e",
+                                          "assertions":  4782,
+                                          "nativeExit":  0,
+                                          "auditDeliveryAccepted":  true,
+                                          "receiverReviewSha256":  "B6CA42F07AADE8D4A959DCBE5D1CD6345F25811CD165EEE0F9464F1D7799B346",
+                                          "verificationSha256":  "3365548877FF5824722C0A9215F62AC8200F62C811E1997522FF08F08D48E0A1",
+                                          "verificationScriptSha256":  "31F9E943B43EBA7376E6B06F2538AC7634B60028A1AAC1D7BD469974FBBC499D",
+                                          "productTestsRerun":  false,
+                                          "remoteCiRerun":  false,
+                                          "mergeRequest":  "https://github.com/liuchangready/majiang-game/pull/20",
+                                          "handoff":  "caller authorized one normal push to existing PR20; remote status must be recorded separately"
+                                      }
                  },
     "execution":  {
                       "rerunOrDispatchPerformed":  false,
@@ -142,9 +157,9 @@
                    "taskCardInitialSha256":  "04AD64D6320A821EB2EFB6300AB7F722134C27B1EDEA3E720E0AB745DBBABD33",
                    "auditScriptSha256":  "D40A754151CB9A1FEA8B4D1D0852C269413746372624E89A15686EEE953E2C55",
                    "auditComputedSha256":  "B6BC7A940079AA2498F3D7E2B291AED84573E940CA41C8790F427F175743D423",
-                   "reviewSha256":  "B6CA42F07AADE8D4A959DCBE5D1CD6345F25811CD165EEE0F9464F1D7799B346",
+                   "reviewSha256":  "29DF32676212164B42336B3670D03A19599DBE9AD6FE1A9D2F32F5639330B9ED",
                    "evidenceManifestSha256":  "4DBD4087135CFCABA56A0DC9FD5CE6B6CA77DF842C2E94ACAACCF0786EF10C90",
-                   "taskCardFinalSha256":  "DCBEC76C5C9C52A975D4028B536D2082A90D70897B1DA7419762BB7037744994"
+                   "taskCardFinalSha256":  "0CF44C9619FD66754915BD00D8133544727C30B5C883F9CBE1CB94564D31E690"
                },
     "evidenceFiles":  [
                           "run-41995915276-attempt-1/logs.zip",
