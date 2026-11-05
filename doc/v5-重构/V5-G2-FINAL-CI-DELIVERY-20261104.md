@@ -1,4 +1,4 @@
-﻿# G2 Final CI delivery — corrected timing oracle (2026-11-05)
+# G2 Final CI delivery — corrected timing oracle (2026-11-05)
 
 **State: NOT ACCEPTED.** This same-receiver follow-up corrects the prior round's mistaken interpretation of recovery grace. It makes no production/verifier changes, performs no remote operation, and does not claim the historical full Unified matrix is green. G2-REVIEW-01 remains the accepted scope gap; G2-REVIEW-03 delivery is present.
 

@@ -1,4 +1,4 @@
-﻿{
+{
   "schema": "v5-g2-final-ci-binding-v1",
   "taskId": "G2-FINAL-CI-20261104",
   "status": "NOT_ACCEPTED",
@@ -153,4 +153,3 @@
     "v4RemainsProduction": true
   }
 }
-

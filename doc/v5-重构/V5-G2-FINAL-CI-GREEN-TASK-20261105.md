@@ -8,6 +8,7 @@
 - 分支：wt/v5-g2-final-ci-green-luna6-20261105
 - 派发前已接受基线：9e3e08d00dd7e3f9aca563af16b6b0e4c5c35882；其上本任务卡为 docs-only 提交，最终派发头另在工具消息给出。
 - fresh fetch 2026-11-05 成功：PR20 源分支 feat/v5-post-g1-batch 为 4a855c3c49e65ec97708784d84a784df9f11c199；origin/v5 为 8fd7c6cb701dfbb41c28938de4186749bdd1d6c7。前者是上述基线祖先；不要把主仓旧分支当当前候选。
+- 新树承接的两份历史交付文档仅规范换行与EOF，语义未变；9e3e08d0及旧树保留字节相同原件，历史证据不改写。
 - 旧任务 thread_20261104_192433_c77d 已 completed，仅局部修改/缺口报告接受，仍 mergePending；这是明确承接其已接受成果的新范围，禁止重启/改写旧任务、覆盖其树或冒认旧 reviewer 身份。
 - 旧树 E:/majiang-review/g2-final-ci-luna6-20261104 保留为只读证据源。其已接受三文件已按字节复制并独立提交至 9e3e08d0；C04 SHA256 DEC3C9F2879B926B81E1E7BC109F6D942C6D151A0C2F2D38DE6E317F391F3E2C。
 - 20261104 CI 交付文档和 binding 的 NOT_ACCEPTED/未提交/independentReview NOT_RUN 是开发交付时历史状态；旧任务后续已独立接受局部范围。不要修改历史文档或据其旧文字推翻真实审批，使用本任务新交付记录承接。
@@ -73,4 +74,3 @@ E 停止自有writer后封存，提交必要源修改和新交付报告/binding�
 返修方须在同一轮内批量修复全部 BLOCKER/MAJOR，并逐条给出修复映射与验证证据；
 不得用 skip、空测试、放宽断言、刷新摘要或旧产物获得绿色。
 仅当出现新信息时才允许追加缺陷，并须说明此前为何不可发现。
-
