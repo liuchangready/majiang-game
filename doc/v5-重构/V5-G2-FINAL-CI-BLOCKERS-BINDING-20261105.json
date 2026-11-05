@@ -1,0 +1,77 @@
+{
+    "schema":  "g2-final-ci-blockers-binding.v1",
+    "task":  "G2-20261105-final-ci-blockers",
+    "status":  "LOCAL_REPAIR_COMPLETE_PENDING_INDEPENDENT_ACCEPTANCE_AND_FINAL_REMOTE_CI",
+    "model":  "gpt-6-luna",
+    "branch":  "wt/v5-g2-final-ci-blockers-luna6-20261105",
+    "validatedCodeCommit":  "75d2782ae0ce7c1458cfd906252c29d24caa144c",
+    "sourceSha256":  {
+                         "dotnet/scripts/pg-lobby-verify/cleanup-postgres.ps1":  "8F1072B98A77ADE1F800708BD1C585477B3DB2003D4D6C79DB931157AAA39B49",
+                         "tools/ci/test-v5-table-evidence.ps1":  "351EFD10B61C57FBCFFB42F97947A9D34C2BA1B71E9897FB0F9DA75B9EAF943C"
+                     },
+    "documentSha256":  {
+                           "doc/v5-重构/V5-G2-FINAL-CI-BLOCKERS-DELIVERY-20261105.md":  "5024767718224C543DCE21FADEF231793DBF23828001A1926C573EE68342FFFF",
+                           "doc/v5-重构/V5-G2-FINAL-CI-BLOCKERS-TASK-20261105.md":  "E41804D71B9B11C1B95DF0ACC4DB7B256FFEA3871087C88EC218A9883A06202B"
+                       },
+    "evidenceManifest":  {
+                             "path":  "build/fedfb0c5ff3548568696d536235c4439/final-evidence-manifest.json",
+                             "sha256":  "6322405F0D6DB181D763BE2575B14533AA730BDB9963B26B280AA002DC20CF78",
+                             "files":  2050
+                         },
+    "results":  {
+                    "tableEvidence":  {
+                                          "nativeExit":  0,
+                                          "passed":  82,
+                                          "failed":  0,
+                                          "manifestRows":  4,
+                                          "manifestSelfRows":  0,
+                                          "hashMismatches":  0
+                                      },
+                    "postgresWrapper":  {
+                                            "nativeExit":  0,
+                                            "checks":  193,
+                                            "failures":  0,
+                                            "basePort":  58000
+                                        },
+                    "tableStartup":  {
+                                         "nativeExit":  0,
+                                         "checks":  153,
+                                         "failures":  0,
+                                         "skipped":  0,
+                                         "notRun":  0,
+                                         "basePort":  58100
+                                     },
+                    "cheapGates":  {
+                                       "nativeExit":  0,
+                                       "nativeExitCases":  "24/24",
+                                       "directXml":  "19/19",
+                                       "dotnetTestXml":  "61/61"
+                                   },
+                    "fullProduction":  {
+                                           "nativeExit":  0,
+                                           "tableTests":  "42/42",
+                                           "tableTargeted":  "13/13",
+                                           "unifiedRows":  "21/21 PASS",
+                                           "unifiedTestProjects":  14,
+                                           "unifiedTests":  "2872/2872",
+                                           "fail":  0,
+                                           "error":  0,
+                                           "skip":  0,
+                                           "notRun":  0,
+                                           "postgresVersion":  "16.10",
+                                           "cleanupRootDeleted":  true,
+                                           "postgresProcessesAfter":  0,
+                                           "listenersAfter":  0
+                                       }
+                },
+    "remote":  {
+                   "historicalPushRun":  "41971880599",
+                   "historicalPushJob":  "127061790102",
+                   "historicalPrRun":  "41971887843",
+                   "historicalPrJob":  "127061812776",
+                   "historicalResults":  "FAIL at the original head; retained",
+                   "newPushOrPrRun":  "NOT_RUN",
+                   "independentAcceptance":  "PENDING",
+                   "finalStatus":  "NOT_CLOSED"
+               }
+}
