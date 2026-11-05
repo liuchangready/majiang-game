@@ -56,3 +56,11 @@
 返修方须在同一轮内批量修复全部 BLOCKER/MAJOR，并逐条给出修复映射与验证证据；此任务只允许文档与只读核验，范围外代码缺陷给完整清单及原owner，不以此暗扩scope。
 不得用 skip、空测试、放宽断言、刷新摘要或旧产物获得绿色。
 仅当出现新信息时才允许追加缺陷，并须说明此前为何不可发现。
+
+## 本次执行记录（预审交付）
+
+- 执行身份：Codex configured model `gpt-6-luna`；未切换模型、未新增委派。Dedicated reviewer 的独立最终签署未在本执行工具中调用；本报告不冒称 reviewer 已接受本次预审或 G2。
+- 范围：只改任务卡、`V5-2-REVIEW.md`、`V5-G2-C06-EVIDENCE-INDEX-20261105.json`、`V5-G2-C06-GAPS-20261105.md`。未运行构建、测试、Unity/Player/PG/模拟器，未读取 Windows R3 / Android R8 live writer 结果，未操作 PR/CI。
+- caller PR 身份原件 SHA-256 `65E59A6C247C3DAAF0044EEDF2C605739A38BE9C7B0038E0231F4C90A6552B0C`，native exit 0；成功结果只补记查询时点，不覆盖此前 TLS 失败原审。
+- 文档结论：`PRE_REVIEW_COMPLETE`；`G2_NOT_ACCEPTED`。当前阻断为 Windows 当前候选包证据、Android 当前 APK/设备证据、以及其后正式 G2 独立签署。FU-02/SYNC-03 保留为历史风险；iOS/G3-G5 不扩入 G2。
+- 本树运行记录位于 ignored `build/5e123516-73e8-4f1c-8d48-c06a11112026/phase-card.txt`。最终四文件 hash 与提交身份另见同目录 `final-manifest.json`；封存后不再修改四份文件。
