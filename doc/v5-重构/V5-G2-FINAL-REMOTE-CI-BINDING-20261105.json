@@ -1,0 +1,174 @@
+{
+    "schema":  "v5-g2-final-remote-ci-binding/1",
+    "taskId":  "G2 final remote CI verification and closeout 2026-11-05",
+    "reportStatus":  "BLOCKED",
+    "remoteCiRunResult":  "SUCCESS_ARTIFACTS_VERIFIED",
+    "finalRemoteCiVerified":  false,
+    "blockedConditions":  [
+                              "Current PR20 head remains UNKNOWN: reviewer REST/curl/ls-remote checks also failed with TLS connection close; no FINAL_REMOTE_CI_VERIFIED claim."
+                          ],
+    "identity":  {
+                     "sourceToDispatchDiff":  [
+                                                  "doc/v5-重构/V5-G2-FINAL-REMOTE-CI-TASK-20261105.md"
+                                              ],
+                     "branch":  "wt/v5-g2-final-remote-ci-luna6-20261105",
+                     "mergeSha":  "0794af7f3dd601f4fc75154f92add6b96fcc40f6",
+                     "prHeadLastLive":  "59e8bd741385b5d7b39ccdbc47573dde552067d1",
+                     "prDraftLastLive":  true,
+                     "baseSha":  "8fd7c6cb701dfbb41c28938de4186749bdd1d6c7",
+                     "prStateLastLive":  "open",
+                     "baseRef":  "v5",
+                     "dispatchHead":  "6da3e72681242257bd8741eee11a54be0d62dc0a",
+                     "prNumber":  20,
+                     "lastLivePrQueryUtc":  "2026-11-05T09:13:05Z",
+                     "reviewedSource":  "59e8bd741385b5d7b39ccdbc47573dde552067d1",
+                     "workspace":  "E:/majiang-review/g2-final-remote-ci-luna6-20261105",
+                     "lastLivePrSnapshotUnknownAfter":  "2026-11-05T09:13:05Z"
+                 },
+    "workflow":  {
+                     "id":  394054164,
+                     "pushEventRef":  "refs/heads/feat/v5-post-g1-batch",
+                     "separateWorkflowShaAvailable":  false,
+                     "path":  ".github/workflows/v5-verify.yml",
+                     "note":  "Run API identifies workflow id/path; actual commit identity comes from checkout log and run summary.",
+                     "pullRequestEventRef":  "refs/pull/20/merge"
+                 },
+    "runs":  [
+                 {
+                     "jobId":  127138901833,
+                     "id":  41995915276,
+                     "mergeSha":  "0794af7f3dd601f4fc75154f92add6b96fcc40f6",
+                     "apiHeadSha":  "59e8bd741385b5d7b39ccdbc47573dde552067d1",
+                     "status":  "completed",
+                     "sourceSha":  "59e8bd741385b5d7b39ccdbc47573dde552067d1",
+                     "baseSha":  "8fd7c6cb701dfbb41c28938de4186749bdd1d6c7",
+                     "startedUtc":  "2026-11-05T08:37:29Z",
+                     "job":  "verify",
+                     "artifact":  {
+                                      "id":  13401696225,
+                                      "logsZipSha256":  "490DC5B1B659FC92C958C7D0E0758FA13D4864B6E9726232267F5093A3AB75D2",
+                                      "expiresUtc":  "2026-12-05T09:00:02Z",
+                                      "name":  "v5-verify-logs-41995915276-1",
+                                      "downloadedSha256":  "0B5C12879116A226A9D0E6D40200700980ACA6B5943D2D808B2CF87A34D563AC",
+                                      "expired":  false,
+                                      "bytes":  4791397,
+                                      "sha256":  "sha256:0b5c12879116a226a9d0e6d40200700980aca6b5943d2d808b2cf87a34d563ac"
+                                  },
+                     "attempt":  1,
+                     "conclusion":  "success",
+                     "completedUtc":  "2026-11-05T09:00:08Z",
+                     "actualCheckoutSha":  "59e8bd741385b5d7b39ccdbc47573dde552067d1",
+                     "event":  "push"
+                 },
+                 {
+                     "jobId":  127138931940,
+                     "id":  41995924338,
+                     "mergeSha":  "0794af7f3dd601f4fc75154f92add6b96fcc40f6",
+                     "apiHeadSha":  "59e8bd741385b5d7b39ccdbc47573dde552067d1",
+                     "status":  "completed",
+                     "sourceSha":  "59e8bd741385b5d7b39ccdbc47573dde552067d1",
+                     "baseSha":  "8fd7c6cb701dfbb41c28938de4186749bdd1d6c7",
+                     "startedUtc":  "2026-11-05T08:37:34Z",
+                     "job":  "verify",
+                     "artifact":  {
+                                      "id":  13400998687,
+                                      "logsZipSha256":  "300C314B829E4B87D70B311E7116DA26BE4391BB8B206BF20D43EA8903881E8F",
+                                      "expiresUtc":  "2026-12-05T08:59:18Z",
+                                      "name":  "v5-verify-logs-41995924338-1",
+                                      "downloadedSha256":  "A22FE812994BB3C764ABB9F9C1207085FE164A100986DDF83037B5AD5D45D7EE",
+                                      "expired":  false,
+                                      "bytes":  4789685,
+                                      "sha256":  "sha256:a22fe812994bb3c764abb9f9c1207085fe164a100986ddf83037b5ad5d45d7ee"
+                                  },
+                     "attempt":  1,
+                     "conclusion":  "success",
+                     "completedUtc":  "2026-11-05T08:59:25Z",
+                     "actualCheckoutSha":  "0794af7f3dd601f4fc75154f92add6b96fcc40f6",
+                     "event":  "pull_request"
+                 }
+             ],
+    "audit":  {
+                  "allRuns":  [
+                                  41995915276,
+                                  41995924338
+                              ],
+                  "evidenceRoot":  "E:\\majiang-review\\g2-final-remote-ci-luna6-20261105\\build\\e98c7d38-23e1-4c58-b662-410fb80199a8",
+                  "manifestSelfIncluded":  false,
+                  "unifiedTestTotals":  "2872/2872 each",
+                  "pgCleanup":  "PASS; stop exit 0; rootDeleted=true",
+                  "artifactFilesPerRun":  625,
+                  "pgEvidenceHashMismatches":  0,
+                  "skipped":  0,
+                  "historicalGitPins":  "NOT_RUN; summary says historical freeze blobs were not requested/fetched",
+                  "unifiedTestProjects":  14,
+                  "pgEvidenceHashEntries":  12,
+                  "cheapSelfTests":  {
+                                         "dotnetTest":  "61/61 each",
+                                         "tableEvidence":  "82/82 each",
+                                         "directXml":  "19/19 each",
+                                         "native":  "24/24 each"
+                                     },
+                  "tableTargetedTests":  "13/13 each",
+                  "pgEnvironmentRestore":  "PASS; restoredToPreCall=true",
+                  "backupRestore":  "PASS",
+                  "tableManifestMismatches":  0,
+                  "errors":  0,
+                  "notRun":  0,
+                  "tableAllTests":  "42/42 each",
+                  "failed":  0,
+                  "pgCrashRecovery":  "PASS",
+                  "tableManifestEntries":  222,
+                  "summaryRows":  "21 PASS, 0 FAIL, 0 BLOCKED, 0 NOT_RUN"
+              },
+    "reviewer":  {
+                     "independentReviewer":  "COMPLETE_PASS",
+                     "receiverOriginalEvidenceAudit":  "COMPLETE",
+                     "reason":  "Dedicated reviewer resumed in the same bridge thread; original ZIP assertions passed locally; no delegation or CI rerun.",
+                     "doNotRepresentAsIndependentRerun":  true,
+                     "callerReview":  {
+                                          "threadId":  "thread_20261105_165108_49fe",
+                                          "reviewedDeliveryCommit":  "7d596dc62b53ee61a70248698ab18a776afb50d0",
+                                          "reviewedUtc":  "2026-11-05T09:38:24.4614112Z",
+                                          "evidenceRoot":  "build/reviewer-8a68c18e",
+                                          "assertions":  4782,
+                                          "nativeExit":  0,
+                                          "auditDeliveryAccepted":  true,
+                                          "receiverReviewSha256":  "B6CA42F07AADE8D4A959DCBE5D1CD6345F25811CD165EEE0F9464F1D7799B346",
+                                          "verificationSha256":  "3365548877FF5824722C0A9215F62AC8200F62C811E1997522FF08F08D48E0A1",
+                                          "verificationScriptSha256":  "31F9E943B43EBA7376E6B06F2538AC7634B60028A1AAC1D7BD469974FBBC499D",
+                                          "productTestsRerun":  false,
+                                          "remoteCiRerun":  false,
+                                          "mergeRequest":  "https://github.com/liuchangready/majiang-game/pull/20",
+                                          "handoff":  "caller authorized one normal push to existing PR20; remote status must be recorded separately"
+                                      }
+                 },
+    "execution":  {
+                      "rerunOrDispatchPerformed":  false,
+                      "pushPerformed":  false,
+                      "locallyBuilt":  false,
+                      "workflowModified":  false,
+                      "locallyTested":  false,
+                      "finalPrHead":  "UNKNOWN",
+                      "taskStatusAt":  "2026-11-05T09:26:25Z",
+                      "sourceCodeModified":  false,
+                      "livePrFailure":  "TLS connection closed; git ls-remote exit 128 unexpected EOF"
+                  },
+    "hashes":  {
+                   "taskCardInitialSha256":  "04AD64D6320A821EB2EFB6300AB7F722134C27B1EDEA3E720E0AB745DBBABD33",
+                   "auditScriptSha256":  "D40A754151CB9A1FEA8B4D1D0852C269413746372624E89A15686EEE953E2C55",
+                   "auditComputedSha256":  "B6BC7A940079AA2498F3D7E2B291AED84573E940CA41C8790F427F175743D423",
+                   "reviewSha256":  "29DF32676212164B42336B3670D03A19599DBE9AD6FE1A9D2F32F5639330B9ED",
+                   "evidenceManifestSha256":  "4DBD4087135CFCABA56A0DC9FD5CE6B6CA77DF842C2E94ACAACCF0786EF10C90",
+                   "taskCardFinalSha256":  "0CF44C9619FD66754915BD00D8133544727C30B5C883F9CBE1CB94564D31E690"
+               },
+    "evidenceFiles":  [
+                          "run-41995915276-attempt-1/logs.zip",
+                          "run-41995915276-attempt-1/artifact.zip",
+                          "run-41995924338-attempt-1/logs.zip",
+                          "run-41995924338-attempt-1/artifact.zip",
+                          "evidence-manifest.json",
+                          "audit-evidence.ps1",
+                          "audit-computed.json",
+                          "final-pr-state.json"
+                      ]
+}
