@@ -38,7 +38,7 @@ $tokens = $null
 $parseErrors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($wrapperScript, [ref]$tokens, [ref]$parseErrors)
 if ($parseErrors.Count) { throw "Production wrapper does not parse: $($parseErrors[0].Message)" }
-foreach ($name in @('Get-Sha256', 'Write-Step', 'Test-TableResultEvidence', 'Get-ClusterOwnershipState', 'Test-RestorePreflightEmpty', 'Test-CleanupRootContained')) {
+foreach ($name in @('Get-Sha256', 'Write-Step', 'Test-TableResultEvidence', 'Get-ClusterOwnershipState', 'Test-RestorePreflightEmpty', 'Test-CleanupRootContained', 'Test-ManifestPathIncluded')) {
     $fn = $ast.Find({
             param($node)
             $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name
