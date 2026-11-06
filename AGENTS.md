@@ -1,5 +1,9 @@
 # 🀄 千术麻将 (Mahjong Cheater) - 架构与开发指南 (AGENTS.md)
 
+**2026-11-06 后续任务统一开发基线：`g2_base`。** 用户指定后续所有新任务从本地 `g2_base` 分支创建任务分支或独立工作树，并记录实际起始 commit；基线工作树为 `D:/majiang-wt/g2_base`。已有在途任务保留原线程、工作树和证据，接续时先核对基线差异，不自动重置或重新派发。
+
+该基线以 `e1ef2b212b96e399a0e0978a258c3d083eb2a914` 初始化，已完整包含 Android APK 构建源码 `51f35b3ec0a57e123991cd5f54fd47d121617f6a`；两者的 `dotnet/`、`tools/`、`unity/` 内容相同。Windows 返修提交 `319cf555` 未纳入。基线设立只统一后续开发起点，不代表 Android 游戏稳定启动、Windows 成品或 G2 整体验收通过；V4 生产地位和既有验收缺口保持。
+
 **2026-10-17 传输迁移进展与当前实现：** 远端传输已全面切换为 TCP (MJ-TCP/1 契约，12 字节固定帧头)，旧 UDP 生产链路与测试已移除。TCP 代码迁移与自动化验收已完成，用户决定带已记录的环境实测缺口合并；T4 跨物理网络与 Android 真机/模拟器实测仍待补验，不能视为已通过。R01–R16 自动化代码阻断已全绿（Codex 独立复验通过 22 项探针与 1,275 项标准全量用例，桌面 GL 冒烟 6 张快照通过）。旧 TCP/V3 永不恢复。业务幂等（`RequestScopeReceiptStore`）、控制代次、全量快照、物理守恒（136张）与七模块边界继续有效。三大绝技为：落汗（TileMark）、袖里藏花（SleeveBloom）、偷梁换柱（BeamSwap）。详见 [TCP 迁移设计](doc/v4-重构/TCP-MIGRATION-DESIGN.md)、[独立复核](doc/v4-重构/CODEX-TCP-CURRENT-REWORK-REVIEW20.md) 与 [迁移验收决定](doc/v4-重构/CODEX-TCP-MIGRATION-ACCEPTANCE.md)。
 
 **2026-10-07 当前架构与迁移状态：**
