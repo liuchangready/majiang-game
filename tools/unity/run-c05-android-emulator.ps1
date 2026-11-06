@@ -1,12 +1,12 @@
 #Requires -Version 5.1
 [CmdletBinding()]
 param(
-  [Parameter(Mandatory=$false)][ValidateSet('Probe','Devices','StartEmulator','ShutdownEmulator','DeviceInfo','Install','Start','Stop','Capture','Input','BackgroundResume')]
+  [Parameter(Mandatory=$false)][ValidateSet('Probe','Devices','StartEmulator','ShutdownEmulator','DeviceInfo','ValidateArtifact','Install','Start','Stop','Capture','Input','BackgroundResume')]
   [string]$Action = 'Probe',
   [string]$Serial = 'emulator-5580',
   [int]$EmulatorPort = 5580,
   [string]$AvdName = 'medium_phone',
-  [ValidateSet('auto','off','whpx','on')][string]$AccelMode = 'auto',
+  [ValidateSet('auto','off','on')][string]$AccelMode = 'auto',
   [int]$AvdWaitSeconds = 600,
   [string]$Apk,
   [string]$EvidenceDir,
@@ -33,6 +33,63 @@ param(
   [switch]$RootEligibilityFixtureTest
 )
 $ErrorActionPreference = 'Stop'
+if (-not ('C05RJobNative' -as [type])) {
+  Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+public static class C05RJobNative {
+  [StructLayout(LayoutKind.Sequential)] struct BasicLimit {
+    public long PerProcessUserTimeLimit, PerJobUserTimeLimit;
+    public uint LimitFlags;
+    public UIntPtr MinimumWorkingSetSize, MaximumWorkingSetSize;
+    public uint ActiveProcessLimit;
+    public UIntPtr Affinity;
+    public uint PriorityClass, SchedulingClass;
+  }
+  [StructLayout(LayoutKind.Sequential)] struct IoCounters {
+    public ulong ReadOperationCount, WriteOperationCount, OtherOperationCount;
+    public ulong ReadTransferCount, WriteTransferCount, OtherTransferCount;
+  }
+  [StructLayout(LayoutKind.Sequential)] struct ExtendedLimit {
+    public BasicLimit BasicLimitInformation;
+    public IoCounters IoInfo;
+    public UIntPtr ProcessMemoryLimit, JobMemoryLimit, PeakProcessMemoryUsed, PeakJobMemoryUsed;
+  }
+  [StructLayout(LayoutKind.Sequential)] struct BasicAccounting {
+    public long TotalUserTime, TotalKernelTime, ThisPeriodTotalUserTime, ThisPeriodTotalKernelTime;
+    public uint TotalPageFaultCount, TotalProcesses, ActiveProcesses, TotalTerminatedProcesses;
+  }
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern IntPtr CreateJobObject(IntPtr attributes, string name);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool SetInformationJobObject(IntPtr job, int infoClass, ref ExtendedLimit info, uint length);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr OpenProcess(uint access, bool inherit, int processId);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool TerminateJobObject(IntPtr job, uint exitCode);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool QueryInformationJobObject(IntPtr job, int infoClass, out BasicAccounting info, uint length, IntPtr returnedLength);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool CloseHandle(IntPtr handle);
+  public static IntPtr CreateKillOnCloseJob() {
+    IntPtr job=CreateJobObject(IntPtr.Zero,null);
+    if(job==IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
+    ExtendedLimit info=new ExtendedLimit();info.BasicLimitInformation.LimitFlags=0x2000;
+    if(!SetInformationJobObject(job,9,ref info,(uint)Marshal.SizeOf(typeof(ExtendedLimit)))) { int e=Marshal.GetLastWin32Error();CloseHandle(job);throw new Win32Exception(e); }
+    return job;
+  }
+  public static void Assign(IntPtr job,int processId) {
+    IntPtr process=OpenProcess(0x0101,false,processId);
+    if(process==IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
+    try { if(!AssignProcessToJobObject(job,process)) throw new Win32Exception(Marshal.GetLastWin32Error()); }
+    finally { CloseHandle(process); }
+  }
+  public static void Terminate(IntPtr job) { if(!TerminateJobObject(job,1)) throw new Win32Exception(Marshal.GetLastWin32Error()); }
+  public static int ActiveProcesses(IntPtr job) {
+    BasicAccounting info;
+    if(!QueryInformationJobObject(job,1,out info,(uint)Marshal.SizeOf(typeof(BasicAccounting)),IntPtr.Zero)) throw new Win32Exception(Marshal.GetLastWin32Error());
+    return checked((int)info.ActiveProcesses);
+  }
+  public static void Close(IntPtr handle) { if(handle!=IntPtr.Zero && !CloseHandle(handle)) throw new Win32Exception(Marshal.GetLastWin32Error()); }
+}
+'@
+}
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $adb = Join-Path $AndroidSdkRoot 'platform-tools\adb.exe'
 $emulator = Join-Path $AndroidSdkRoot 'emulator\emulator.exe'
@@ -83,27 +140,108 @@ function New-C05RProcessRecord([int]$ProcessId, [int]$ParentId) {
   return [pscustomobject]@{ pid=$ProcessId; startUtcTicks=$p.StartTime.ToUniversalTime().Ticks;
     name=$p.ProcessName; parentPid=$ParentId; parentStartUtcTicks=$parentStart }
 }
+function Get-C05RObservedDescendantRecords([int]$RootId, [long]$RootTicks, [object[]]$ExistingRecords = @()) {
+  $root = Get-Process -Id $RootId -ErrorAction SilentlyContinue
+  if (-not $root -or $root.StartTime.ToUniversalTime().Ticks -ne $RootTicks) {
+    return [pscustomobject]@{ rootIdentityMismatch=$true; trackingComplete=$false; records=@($ExistingRecords); error='Root was not verifiably alive for ancestry observation.' }
+  }
+  $records = New-Object System.Collections.Generic.List[object]
+  foreach ($record in @($ExistingRecords)) { if ($record) { $records.Add($record) } }
+  $rows = @(Get-CimInstance Win32_Process -ErrorAction Stop | Select-Object ProcessId,ParentProcessId)
+  $frontier = @([pscustomobject]@{ pid=$RootId; ticks=$RootTicks; depth=0 })
+  while ($frontier.Count) {
+    $next = New-Object System.Collections.Generic.List[object]
+    foreach ($parent in $frontier) {
+      $liveParent = Get-Process -Id ([int]$parent.pid) -ErrorAction SilentlyContinue
+      if (-not $liveParent -or $liveParent.StartTime.ToUniversalTime().Ticks -ne [long]$parent.ticks) { continue }
+      foreach ($row in $rows) {
+        $id = [int]$row.ProcessId
+        if ([int]$row.ParentProcessId -ne [int]$parent.pid -or $id -eq $RootId -or @($records | Where-Object { $_.pid -eq $id }).Count) { continue }
+        $child = Get-Process -Id $id -ErrorAction SilentlyContinue
+        if (-not $child) { continue }
+        $ticks = $child.StartTime.ToUniversalTime().Ticks
+        if ($ticks -lt [long]$parent.ticks) { continue }
+        $record = [pscustomobject]@{ pid=$id; ticks=$ticks; parentPid=[int]$parent.pid; parentTicks=[long]$parent.ticks; depth=([int]$parent.depth+1); observedWhileParentLive=$true }
+        $records.Add($record); $next.Add([pscustomobject]@{ pid=$id; ticks=$ticks; depth=$record.depth })
+      }
+    }
+    $frontier = $next.ToArray()
+  }
+  $root = Get-Process -Id $RootId -ErrorAction SilentlyContinue
+  $complete = [bool]($root -and $root.StartTime.ToUniversalTime().Ticks -eq $RootTicks)
+  return [pscustomobject]@{ rootIdentityMismatch=(-not $complete); trackingComplete=$complete; records=$records.ToArray(); error=$(if ($complete) { $null } else { 'Root exited or changed identity during ancestry observation.' }) }
+}
+function Get-C05RSafeObservedDescendantRecords([int]$RootId, [long]$RootTicks, [object[]]$ExistingRecords = @()) {
+  try { return Get-C05RObservedDescendantRecords $RootId $RootTicks $ExistingRecords }
+  catch { return [pscustomobject]@{ rootIdentityMismatch=$true; trackingComplete=$false; records=@($ExistingRecords); error=$_.Exception.ToString() } }
+}
+function Stop-C05RObservedDescendants([int]$RootId, [long]$RootTicks, [object[]]$Records = @(), [bool]$TrackingComplete = $false, [switch]$StopRoot, [IntPtr]$JobHandle = [IntPtr]::Zero) {
+  if ($JobHandle -ne [IntPtr]::Zero) {
+    $jobErrors = New-Object System.Collections.Generic.List[string]; $active = $null; $stoppedJob = $false
+    try {
+      $active = [C05RJobNative]::ActiveProcesses($JobHandle)
+      if ($active -gt 0) { [C05RJobNative]::Terminate($JobHandle); $stoppedJob = $true }
+      $deadline = [DateTime]::UtcNow.AddSeconds(5)
+      while ([DateTime]::UtcNow -lt $deadline) { $active = [C05RJobNative]::ActiveProcesses($JobHandle); if ($active -eq 0) { break }; Start-Sleep -Milliseconds 50 }
+    } catch { $jobErrors.Add($_.Exception.ToString()); $active = $null }
+    $jobStatus = if ($null -eq $active) { 'OWNERSHIP_UNVERIFIED' } elseif ($active -ne 0 -or $jobErrors.Count) { 'CLEANUP_FAILED' } else { 'PASS' }
+    return [pscustomobject]@{ status=$jobStatus; rootPid=$RootId; rootStartUtcTicks=$RootTicks; rootIdentityMismatch=$false; trackingComplete=($null -ne $active); unknown=($null -eq $active); jobOwned=$true; jobTerminated=$stoppedJob; stoppedPids=@(); rejectedPids=@(); residualPids=$(if ($null -ne $active) { @() } else { $null }); residualCount=$active; knownResidualCount=$active; killErrors=@($jobErrors) }
+  }
+  $stopped = New-Object System.Collections.Generic.List[int]
+  $rejected = New-Object System.Collections.Generic.List[int]
+  $killErrors = New-Object System.Collections.Generic.List[string]
+  $rootNow = Get-Process -Id $RootId -ErrorAction SilentlyContinue
+  if (-not $rootNow -or $rootNow.StartTime.ToUniversalTime().Ticks -ne $RootTicks) {
+    return [pscustomobject]@{ status='OWNERSHIP_UNVERIFIED'; rootPid=$RootId; rootStartUtcTicks=$RootTicks; rootIdentityMismatch=$true; trackingComplete=$false; unknown=$true; stoppedPids=@(); rejectedPids=@($RootId); residualPids=$null; residualCount=$null; knownResidualCount=$null; killErrors=@('Root PID is absent or no longer matches its captured start time; descendant ownership cannot be established without the live root or its job object.') }
+  }
+  $deadline = [DateTime]::UtcNow.AddSeconds(5)
+  foreach ($record in @($Records | Sort-Object -Property depth -Descending)) {
+    if (-not $record.observedWhileParentLive) { $rejected.Add([int]$record.pid); continue }
+    $live = Get-Process -Id ([int]$record.pid) -ErrorAction SilentlyContinue
+    if (-not $live) { continue }
+    if ($live.StartTime.ToUniversalTime().Ticks -ne [long]$record.ticks) { $rejected.Add([int]$record.pid); continue }
+    $row = Get-CimInstance Win32_Process -Filter ("ProcessId=$([int]$record.pid)") -ErrorAction SilentlyContinue
+    if (-not $row -or [int]$row.ParentProcessId -ne [int]$record.parentPid) { $rejected.Add([int]$record.pid); continue }
+    if ([int]$record.parentPid -ne $RootId) {
+      $parent = Get-Process -Id ([int]$record.parentPid) -ErrorAction SilentlyContinue
+      if ($parent -and $parent.StartTime.ToUniversalTime().Ticks -ne [long]$record.parentTicks) { $rejected.Add([int]$record.pid); continue }
+    } else {
+      $parent = Get-Process -Id $RootId -ErrorAction SilentlyContinue
+      if ($parent -and $parent.StartTime.ToUniversalTime().Ticks -ne $RootTicks) { $rejected.Add([int]$record.pid); continue }
+    }
+    try {
+      $live.Kill()
+      $remainingMs = [int][Math]::Max(0,[Math]::Min(1000,($deadline-[DateTime]::UtcNow).TotalMilliseconds))
+      if ($remainingMs -gt 0 -and $live.WaitForExit($remainingMs)) { $stopped.Add([int]$record.pid) }
+    } catch { $killErrors.Add("PID $($record.pid): $($_.Exception.Message)") }
+  }
+  if ($StopRoot) {
+    $rootNow = Get-Process -Id $RootId -ErrorAction SilentlyContinue
+    if ($rootNow) {
+      if ($rootNow.StartTime.ToUniversalTime().Ticks -ne $RootTicks) { $rejected.Add($RootId) }
+      else {
+        try { $rootNow.Kill(); $remainingMs=[int][Math]::Max(0,[Math]::Min(1000,($deadline-[DateTime]::UtcNow).TotalMilliseconds)); if ($remainingMs -gt 0 -and $rootNow.WaitForExit($remainingMs)) { $stopped.Add($RootId) } }
+        catch { $killErrors.Add("Root PID ${RootId}: $($_.Exception.Message)") }
+      }
+    }
+  }
+  $residual = New-Object System.Collections.Generic.List[int]
+  do {
+    $residual.Clear()
+    foreach ($record in @($Records)+@([pscustomobject]@{pid=$RootId;ticks=$RootTicks})) {
+      $live=Get-Process -Id ([int]$record.pid) -ErrorAction SilentlyContinue
+      if ($live -and $live.StartTime.ToUniversalTime().Ticks -eq [long]$record.ticks) { $residual.Add([int]$record.pid) }
+    }
+    if ($residual.Count -eq 0) { break }
+    Start-Sleep -Milliseconds 100
+  } while ([DateTime]::UtcNow -lt $deadline)
+  $status = if (-not $TrackingComplete) { 'OWNERSHIP_UNVERIFIED' } elseif ($rejected.Count -or $killErrors.Count -or $residual.Count) { 'CLEANUP_FAILED' } else { 'PASS' }
+  return [pscustomobject]@{ status=$status; rootPid=$RootId; rootStartUtcTicks=$RootTicks; rootIdentityMismatch=(-not $TrackingComplete); trackingComplete=$TrackingComplete; unknown=(-not $TrackingComplete); stoppedPids=@($stopped); rejectedPids=@($rejected); residualPids=$(if ($TrackingComplete) { @($residual) } else { $null }); residualCount=$(if ($TrackingComplete) { $residual.Count } else { $null }); knownResidualCount=$residual.Count; killErrors=@($killErrors); trackingError=$(if ($TrackingComplete) { $null } else { 'Descendant ancestry was not completely observed while the root identity was live.' }) }
+}
 function Stop-C05ROwnedProcess([int]$ProcessId, [long]$StartTicks) {
-  $p = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
-  if (-not $p -or $p.StartTime.ToUniversalTime().Ticks -ne $StartTicks) { return $false }
-  $parentStart = $p.StartTime
-  $descendants = @(Get-C05RDescendantProcessIds $ProcessId)
-  $verified = New-Object System.Collections.Generic.List[int]
-  foreach ($id in $descendants) {
-    $child = Get-Process -Id $id -ErrorAction SilentlyContinue
-    if ($child -and $child.StartTime -ge $parentStart) { $verified.Add($id) }
-  }
-  for ($i = $verified.Count - 1; $i -ge 0; $i--) {
-    $child = Get-Process -Id $verified[$i] -ErrorAction SilentlyContinue
-    if ($child) { try { $child.Kill() } catch { } }
-  }
-  try { $p.Kill(); $p.WaitForExit() } catch { }
-  $deadline = (Get-Date).AddSeconds(10)
-  while ((Get-Date) -lt $deadline) {
-    if (@($verified | Where-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue }).Count -eq 0) { break }
-    Start-Sleep -Milliseconds 250
-  }
-  return (@($verified | Where-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue }).Count -eq 0)
+  $observed = Get-C05RSafeObservedDescendantRecords $ProcessId $StartTicks
+  $result = Stop-C05RObservedDescendants $ProcessId $StartTicks $observed.records $observed.trackingComplete -StopRoot
+  return ($result.status -eq 'PASS')
 }
 function Stop-C05RVerifiedRecordSet([object[]]$Records, [int]$LauncherPid, [int]$QemuPid) {
   $live = New-Object System.Collections.Generic.List[object]
@@ -159,14 +297,33 @@ function Pop-C05RChildEnvironment([hashtable]$Saved) {
   }
 }
 function Start-C05RProcess([string]$FilePath, [string[]]$Arguments) {
+  $runDir = Join-Path $env:TEMP ('c05-adb-run-' + [guid]::NewGuid().ToString('N'))
+  New-Item -ItemType Directory -Path $runDir | Out-Null
+  $statusPath = Join-Path $runDir 'native-exit.txt'
+  $argumentLine = (@($Arguments | ForEach-Object { ConvertTo-C05RWindowsArgument ([string]$_) }) -join ' ')
+  $payload = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((ConvertTo-Json -InputObject ([pscustomobject]@{file=$FilePath;argumentLine=$argumentLine;statusPath=$statusPath}) -Compress)))
+  $bridgeScript = '$ErrorActionPreference=''Stop'';$ProgressPreference=''SilentlyContinue'';$request=ConvertFrom-Json ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:C05R_JOB_PAYLOAD)));[void][Console]::ReadLine();$child=New-Object Diagnostics.Process;$si=New-Object Diagnostics.ProcessStartInfo;$si.FileName=$request.file;$si.Arguments=$request.argumentLine;$si.UseShellExecute=$false;$si.CreateNoWindow=$true;$si.RedirectStandardOutput=$true;$si.RedirectStandardError=$true;$child.StartInfo=$si;try{[void]$child.Start();$outTask=$child.StandardOutput.BaseStream.CopyToAsync([Console]::OpenStandardOutput());$errTask=$child.StandardError.BaseStream.CopyToAsync([Console]::OpenStandardError());$child.WaitForExit();$code=[int]$child.ExitCode;[IO.File]::WriteAllText($request.statusPath,[string]$code);[Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($outTask,$errTask));exit $code}catch{try{$bytes=[Text.Encoding]::UTF8.GetBytes($_.Exception.ToString());[Console]::OpenStandardError().Write($bytes,0,$bytes.Length)}catch{};exit 1}finally{$child.Dispose()}'
   $psi = New-Object Diagnostics.ProcessStartInfo
-  $psi.FileName = $FilePath
-  $psi.Arguments = (@($Arguments | ForEach-Object { ConvertTo-C05RWindowsArgument ([string]$_) }) -join ' ')
+  $psi.FileName = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+  $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($bridgeScript))
+  $psi.Arguments = (@('-NoProfile','-NonInteractive','-EncodedCommand',$encoded) | ForEach-Object { ConvertTo-C05RWindowsArgument ([string]$_) }) -join ' '
   $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true; $psi.WindowStyle = 'Hidden'
-  $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
-  $proc = New-Object Diagnostics.Process; $proc.StartInfo = $psi
+  $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+  $psi.EnvironmentVariables['C05R_JOB_PAYLOAD'] = $payload
+  $proc = New-Object Diagnostics.Process; $proc.StartInfo = $psi; $job = [C05RJobNative]::CreateKillOnCloseJob()
   $savedEnv = Push-C05RChildEnvironment
   try { [void]$proc.Start() } finally { Pop-C05RChildEnvironment $savedEnv }
+  try {
+    [C05RJobNative]::Assign($job,$proc.Id)
+    $proc | Add-Member -NotePropertyName C05RJobHandle -NotePropertyValue $job
+    $proc | Add-Member -NotePropertyName C05RStatusPath -NotePropertyValue $statusPath
+    $proc | Add-Member -NotePropertyName C05RRunDir -NotePropertyValue $runDir
+    $proc.StandardInput.WriteLine('GO'); $proc.StandardInput.Close()
+  } catch {
+    try { [C05RJobNative]::Terminate($job) } catch { }
+    if (-not $proc.HasExited) { try { $proc.Kill(); [void]$proc.WaitForExit(3000) } catch { } }
+    [C05RJobNative]::Close($job); $proc.Dispose(); Remove-Item -LiteralPath $statusPath -Force -ErrorAction SilentlyContinue; Remove-Item -LiteralPath $runDir -Force -ErrorAction SilentlyContinue; throw
+  }
   return $proc
 }
 function Invoke-C05RToFiles([string]$FilePath, [string[]]$Arguments, [int]$TimeoutSeconds, [string]$OutPath, [string]$ErrPath) {
@@ -190,29 +347,45 @@ function Invoke-C05RAdb([string[]]$AdbArgs, [int]$TimeoutSeconds = $AdbTimeoutSe
   $proc = Start-C05RProcess $adb (@('-s',$Serial) + $AdbArgs)
   $pidOwn = $proc.Id; $ticks = $proc.StartTime.ToUniversalTime().Ticks
   $outTask = $proc.StandardOutput.ReadToEndAsync(); $errTask = $proc.StandardError.ReadToEndAsync()
-  $exited = $proc.WaitForExit($TimeoutSeconds * 1000); $killed = $false
-  if (-not $exited) { $killed = Stop-C05ROwnedProcess $pidOwn $ticks; [void]$proc.WaitForExit(2000) }
-  $drained = [Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($outTask,$errTask), [TimeSpan]::FromSeconds(3))
-  $stdout = if ($outTask.IsCompleted) { $outTask.Result } else { '' }
-  $stderr = if ($errTask.IsCompleted) { $errTask.Result } else { '' }
-  $native = if ($exited -and $proc.HasExited) { $proc.ExitCode } else { $null }
-  $status = if (-not $exited) { 'TIMEOUT' } elseif (-not $drained) { 'OUTPUT_DRAIN_TIMEOUT' } elseif ($native -eq 0) { 'PASS' } else { 'FAIL' }
-  [pscustomobject]@{ action=($AdbArgs -join ' '); exit=$native; timedOut=(-not $exited); timeoutSeconds=$TimeoutSeconds;
-    pid=$pidOwn; startUtcTicks=$ticks; killedOwnedProcess=$killed; drainComplete=$drained; stdout=$stdout; stderr=$stderr; status=$status }
+  $watch = [Diagnostics.Stopwatch]::StartNew(); $exited = $false
+  while ($watch.Elapsed.TotalSeconds -lt $TimeoutSeconds) { if ($proc.WaitForExit(50)) { $exited = $true; break } }
+  $watch.Stop()
+  $drained = $false
+  try { $drained = [Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($outTask,$errTask), [TimeSpan]::FromSeconds(3)) } catch { }
+  $initialDrainComplete = $drained
+  $cleanup = Stop-C05RObservedDescendants $pidOwn $ticks @() $true -StopRoot:(-not $exited) -JobHandle $proc.C05RJobHandle
+  if (-not $exited) { [void]$proc.WaitForExit(3000) }
+  if (-not $drained -or -not $exited) { try { $drained = [Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($outTask,$errTask), [TimeSpan]::FromSeconds(3)) } catch { } }
+  $stdout = if ($outTask.IsCompleted) { $outTask.Result } else { '' }; $stderr = if ($errTask.IsCompleted) { $errTask.Result } else { '' }
+  $native = if (Test-Path -LiteralPath $proc.C05RStatusPath -PathType Leaf) { [int](Get-Content -LiteralPath $proc.C05RStatusPath -Raw) } else { $null }
+  try { [C05RJobNative]::Close($proc.C05RJobHandle) } catch { $cleanup.status='CLEANUP_FAILED'; $cleanup.killErrors=@($cleanup.killErrors)+@($_.Exception.ToString()) }
+  $cleanupFailed = $cleanup.status -ne 'PASS' -or $cleanup.trackingComplete -ne $true -or $cleanup.unknown -eq $true -or $null -eq $cleanup.residualCount -or $cleanup.residualCount -ne 0 -or $null -eq $cleanup.knownResidualCount -or $cleanup.knownResidualCount -ne 0 -or @($cleanup.rejectedPids).Count -gt 0 -or @($cleanup.killErrors).Count -gt 0
+  $status = if ($cleanupFailed) { if ($cleanup.status -eq 'OWNERSHIP_UNVERIFIED') { 'OWNERSHIP_UNVERIFIED' } else { 'CLEANUP_FAILED' } } elseif ($null -eq $native) { 'TIMEOUT' } elseif (-not $initialDrainComplete) { 'OUTPUT_DRAIN_TIMEOUT' } elseif (-not $drained) { 'OUTPUT_DRAIN_TIMEOUT' } elseif ($native -eq 0) { 'PASS' } else { 'FAIL' }
+  $result = [pscustomobject]@{ action=($AdbArgs -join ' '); exit=$native; timedOut=($null -eq $native); timeoutSeconds=$TimeoutSeconds;
+    pid=$pidOwn; startUtcTicks=$ticks; drainComplete=$drained; initialDrainComplete=$initialDrainComplete; cleanup=$cleanup; stdout=$stdout; stderr=$stderr; status=$status }
+  $proc.Dispose(); Remove-Item -LiteralPath $proc.C05RStatusPath -Force -ErrorAction SilentlyContinue; Remove-Item -LiteralPath $proc.C05RRunDir -Force -ErrorAction SilentlyContinue; return $result
 }
 function Invoke-C05RAdbBinary([string[]]$AdbArgs, [int]$TimeoutSeconds = $AdbTimeoutSeconds) {
   $proc = Start-C05RProcess $adb (@('-s',$Serial) + $AdbArgs)
   $pidOwn = $proc.Id; $ticks = $proc.StartTime.ToUniversalTime().Ticks; $memory = New-Object IO.MemoryStream
   $outTask = $proc.StandardOutput.BaseStream.CopyToAsync($memory); $errTask = $proc.StandardError.ReadToEndAsync()
-  $exited = $proc.WaitForExit($TimeoutSeconds * 1000); $killed = $false
-  if (-not $exited) { $killed = Stop-C05ROwnedProcess $pidOwn $ticks; [void]$proc.WaitForExit(2000) }
-  $drained = [Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($outTask,$errTask), [TimeSpan]::FromSeconds(3))
+  $watch = [Diagnostics.Stopwatch]::StartNew(); $exited = $false
+  while ($watch.Elapsed.TotalSeconds -lt $TimeoutSeconds) { if ($proc.WaitForExit(50)) { $exited = $true; break } }
+  $watch.Stop()
+  $drained = $false
+  try { $drained = [Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($outTask,$errTask), [TimeSpan]::FromSeconds(3)) } catch { }
+  $initialDrainComplete = $drained
+  $cleanup = Stop-C05RObservedDescendants $pidOwn $ticks @() $true -StopRoot:(-not $exited) -JobHandle $proc.C05RJobHandle
+  if (-not $exited) { [void]$proc.WaitForExit(3000) }
+  if (-not $drained -or -not $exited) { try { $drained = [Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($outTask,$errTask), [TimeSpan]::FromSeconds(3)) } catch { } }
   $stderr = if ($errTask.IsCompleted) { $errTask.Result } else { '' }; $bytes = $memory.ToArray()
-  $native = if ($exited -and $proc.HasExited) { $proc.ExitCode } else { $null }
-  $memory.Dispose()
-  $status = if (-not $exited) { 'TIMEOUT' } elseif (-not $drained) { 'OUTPUT_DRAIN_TIMEOUT' } elseif ($native -eq 0) { 'PASS' } else { 'FAIL' }
-  [pscustomobject]@{ action=($AdbArgs -join ' '); exit=$native; timedOut=(-not $exited); timeoutSeconds=$TimeoutSeconds;
-    pid=$pidOwn; startUtcTicks=$ticks; killedOwnedProcess=$killed; drainComplete=$drained; stderr=$stderr; bytes=$bytes; status=$status }
+  $native = if (Test-Path -LiteralPath $proc.C05RStatusPath -PathType Leaf) { [int](Get-Content -LiteralPath $proc.C05RStatusPath -Raw) } else { $null }
+  try { [C05RJobNative]::Close($proc.C05RJobHandle) } catch { $cleanup.status='CLEANUP_FAILED'; $cleanup.killErrors=@($cleanup.killErrors)+@($_.Exception.ToString()) }
+  $cleanupFailed = $cleanup.status -ne 'PASS' -or $cleanup.trackingComplete -ne $true -or $cleanup.unknown -eq $true -or $null -eq $cleanup.residualCount -or $cleanup.residualCount -ne 0 -or $null -eq $cleanup.knownResidualCount -or $cleanup.knownResidualCount -ne 0 -or @($cleanup.rejectedPids).Count -gt 0 -or @($cleanup.killErrors).Count -gt 0
+  $status = if ($cleanupFailed) { if ($cleanup.status -eq 'OWNERSHIP_UNVERIFIED') { 'OWNERSHIP_UNVERIFIED' } else { 'CLEANUP_FAILED' } } elseif ($null -eq $native) { 'TIMEOUT' } elseif (-not $initialDrainComplete) { 'OUTPUT_DRAIN_TIMEOUT' } elseif (-not $drained) { 'OUTPUT_DRAIN_TIMEOUT' } elseif ($native -eq 0) { 'PASS' } else { 'FAIL' }
+  $result = [pscustomobject]@{ action=($AdbArgs -join ' '); exit=$native; timedOut=($null -eq $native); timeoutSeconds=$TimeoutSeconds;
+    pid=$pidOwn; startUtcTicks=$ticks; drainComplete=$drained; initialDrainComplete=$initialDrainComplete; cleanup=$cleanup; stderr=$stderr; bytes=$bytes; status=$status }
+  $memory.Dispose(); $proc.Dispose(); Remove-Item -LiteralPath $proc.C05RStatusPath -Force -ErrorAction SilentlyContinue; Remove-Item -LiteralPath $proc.C05RRunDir -Force -ErrorAction SilentlyContinue; return $result
 }
 function Save-C05RJson([string]$Path, [object]$Value) { [IO.File]::WriteAllText($Path, ($Value | ConvertTo-Json -Depth 20), (New-Object Text.UTF8Encoding($false))) }
 function Get-C05REvidenceDir([string]$ActionName) {
@@ -413,16 +586,37 @@ function Get-C05RDisplaySize([string]$SerialName) {
   $r = Invoke-C05RAdb @('shell','wm','size')
   if ($r.status -ne 'PASS') { throw 'FAIL: could not read display size.' }
   $rotation = 0; $rotationObserved = $false
-  $ri = Invoke-C05RAdb @('shell','dumpsys','input')
-  if ($ri.status -eq 'PASS') {
-    $m = [regex]::Match([string]$ri.stdout, '(?m)SurfaceOrientation:\s*(?<r>[0-3])')
-    if ($m.Success) { $rotation = [int]$m.Groups['r'].Value; $rotationObserved = $true }
+  $ri = $null
+  $rw = Invoke-C05RAdb @('shell','dumpsys','window','displays')
+  if ($rw.status -eq 'PASS') {
+    $mr = [regex]::Match([string]$rw.stdout, '(?m)\b(?:mCurrentRotation=ROTATION_|mDisplayRotation=ROTATION_|mRotation=ROTATION_|mCurrentRotation=|mDisplayRotation=|orientation=)(?<r>[0-3]|0|90|180|270)\b')
+    if ($mr.Success) {
+      $val = $mr.Groups['r'].Value
+      $rotation = switch ($val) { '90' { 1 } '180' { 2 } '270' { 3 } default { [int]$val } }
+      $rotationObserved = $true
+    }
   }
-  # A successfully observed SurfaceOrientation: 0 is authoritative; only fall back when
-  # the surface orientation was not observed at all.
+  if (-not $rotationObserved) {
+    $ri = Invoke-C05RAdb @('shell','dumpsys','input')
+    if ($ri.status -eq 'PASS') {
+      $m = [regex]::Match([string]$ri.stdout, '(?m)SurfaceOrientation:\s*(?<r>[0-3])')
+      if (-not $m.Success) {
+        $m = [regex]::Match([string]$ri.stdout, '(?m)\borientation=(?<r>[0-3])\b')
+      }
+      if ($m.Success) {
+        $rotation = [int]$m.Groups['r'].Value
+        $rotationObserved = $true
+      }
+    }
+  }
+  # A successfully observed SurfaceOrientation from dumpsys input is authoritative;
+  # only query user_rotation if neither window display rotation nor input orientation was observed.
   if (-not $rotationObserved) {
     $rs = Invoke-C05RAdb @('shell','settings','get','system','user_rotation')
-    if ($rs.status -eq 'PASS' -and ([string]$rs.stdout).Trim() -match '^(?<r>[0-3])$') { $rotation = [int]$Matches['r']; $rotationObserved = $true }
+    if ($rs.status -eq 'PASS' -and ([string]$rs.stdout).Trim() -match '^(?<r>[0-3])$') {
+      $rotation = [int]$Matches['r']
+      $rotationObserved = $true
+    }
   }
   $metrics = Get-C05RDisplayMetricsFromText ([string]$r.stdout) $rotation
   $metrics | Add-Member -NotePropertyName rotationObserved -NotePropertyValue $rotationObserved -Force
@@ -555,9 +749,11 @@ function Get-C05RInstallReceipt([object]$State, [string]$StateFile, [object]$Art
   return [pscustomobject]@{ receipt=$receipt; installed=$installed; receiptPath=$receiptPath; instanceId=$instanceId }
 }
 function Test-C05RCaptureObservation([object]$Capture) {
-  if ($null -eq $Capture) { return $false }
-  return [bool]($Capture.screencap.status -eq 'PASS' -and [int]$Capture.bytes -ge 256 -and
-    $Capture.pidof.status -eq 'PASS' -and -not [string]::IsNullOrWhiteSpace([string]$Capture.pidof.stdout))
+  if ($null -eq $Capture -or $null -eq $Capture.screencap -or $null -eq $Capture.pidof -or $null -eq $Capture.logcat) { return $false }
+  $screenOk = ($Capture.screencap.status -eq 'PASS' -and ($null -ne $Capture.screencap.exit) -and ($Capture.screencap.exit -eq 0) -and [int]$Capture.bytes -ge 256)
+  $pidOk = ($Capture.pidof.status -eq 'PASS' -and ($null -ne $Capture.pidof.exit) -and ($Capture.pidof.exit -eq 0) -and -not [string]::IsNullOrWhiteSpace([string]$Capture.pidof.stdout))
+  $logOk = ($Capture.logcat.status -eq 'PASS' -and $null -ne $Capture.logcat.exit -and $Capture.logcat.exit -eq 0 -and -not [string]::IsNullOrWhiteSpace([string]$Capture.logcat.stdout) -and $Capture.logcat.drainComplete -ne $false)
+  return [bool]($screenOk -and $pidOk -and $logOk)
 }
 function Get-C05RPngSample([string]$Path) {
   try {
@@ -577,17 +773,35 @@ function Get-C05RPngSample([string]$Path) {
 function Save-C05RCapture([string]$Dir, [string]$Prefix) {
   $stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
   $png = Join-Path $Dir "$stamp-$Prefix.png"
+  if (Test-Path -LiteralPath $png) {
+    throw "FAIL: Destination capture file already exists and cannot be overwritten: $png"
+  }
   $screen = Invoke-C05RAdbBinary @('exec-out','screencap','-p') 60
-  [IO.File]::WriteAllBytes($png, [byte[]]$screen.bytes)
-  $sample = Get-C05RPngSample $png
+  $validPng = ($screen.status -eq 'PASS' -and $screen.exit -eq 0 -and $screen.bytes.Length -ge 256 -and
+    $screen.bytes[0] -eq 0x89 -and $screen.bytes[1] -eq 0x50 -and $screen.bytes[2] -eq 0x4E -and $screen.bytes[3] -eq 0x47)
+  if ($validPng) {
+    [IO.File]::WriteAllBytes($png, [byte[]]$screen.bytes)
+  }
+  $sample = if (Test-Path -LiteralPath $png) { Get-C05RPngSample $png } else { $null }
   $pidResult = Invoke-C05RAdb @('shell','pidof',$PackageId)
   $log = $null
-  if ($pidResult.status -eq 'PASS' -and -not [string]::IsNullOrWhiteSpace($pidResult.stdout)) {
+  if ($pidResult.status -eq 'PASS' -and $pidResult.exit -eq 0 -and -not [string]::IsNullOrWhiteSpace($pidResult.stdout)) {
     $log = Invoke-C05RAdb @('logcat','-d','-v','threadtime','--pid',([string]$pidResult.stdout).Trim()) 60
-    if ($null -ne $log) { [IO.File]::WriteAllText((Join-Path $Dir "$stamp-$Prefix-logcat.txt"), ([string]$log.stdout + "`n[stderr]`n" + [string]$log.stderr), (New-Object Text.UTF8Encoding($false))) }
+    $logOutPath = Join-Path $Dir "$stamp-$Prefix-logcat.stdout.txt"
+    $logErrPath = Join-Path $Dir "$stamp-$Prefix-logcat.stderr.txt"
+    $logReceiptPath = Join-Path $Dir "$stamp-$Prefix-logcat-receipt.json"
+    foreach ($path in @($logOutPath,$logErrPath,$logReceiptPath)) { if (Test-Path -LiteralPath $path) { throw "FAIL: Destination logcat evidence already exists and cannot be overwritten: $path" } }
+    [IO.File]::WriteAllText($logOutPath,[string]$log.stdout,(New-Object Text.UTF8Encoding($false)))
+    [IO.File]::WriteAllText($logErrPath,[string]$log.stderr,(New-Object Text.UTF8Encoding($false)))
+    Save-C05RJson $logReceiptPath ([pscustomobject]@{status=$log.status;exit=$log.exit;timedOut=$log.timedOut;drainComplete=$log.drainComplete;cleanup=$log.cleanup;stdoutPath=$logOutPath;stderrPath=$logErrPath})
+    if ($log.status -ne 'PASS' -or $null -eq $log.exit -or $log.exit -ne 0 -or [string]::IsNullOrWhiteSpace([string]$log.stdout) -or $log.drainComplete -eq $false) {
+      $log.status = 'FAIL'
+    }
   }
-  return [pscustomobject]@{ screenshot=(Split-Path $png -Leaf); bytes=(Get-Item $png).Length;
-    sha256=(Get-FileHash $png -Algorithm SHA256).Hash; sample=$sample; screencap=$screen; pidof=$pidResult; logcat=$log }
+  $bytesLen = if (Test-Path -LiteralPath $png) { (Get-Item -LiteralPath $png).Length } else { 0 }
+  $fileHash = if (Test-Path -LiteralPath $png) { (Get-FileHash -LiteralPath $png -Algorithm SHA256).Hash } else { '' }
+  return [pscustomobject]@{ screenshot=(Split-Path $png -Leaf); bytes=$bytesLen;
+    sha256=$fileHash; sample=$sample; screencap=$screen; pidof=$pidResult; logcat=$log }
 }
 
 # ----------------------------- deterministic fixtures -----------------------------
@@ -797,12 +1011,20 @@ if ($DeviceContractFixtureTest) {
   if (Test-C05RInstalledBinding ('a'*64) ('b'*64) 'x86_64') { throw 'install fixture accepted a digest mismatch' }
   if (Test-C05RInstalledBinding ('a'*64) ('a'*64) 'arm64-v8a') { throw 'install fixture accepted a non-x86_64 device ABI' }
   if (-not (Test-C05RInstalledBinding ('a'*64) ('A'*64) 'x86_64')) { throw 'install fixture rejected a case-insensitive digest match' }
-  $badCapture = [pscustomobject]@{ screencap=[pscustomobject]@{status='FAIL'}; bytes=0; pidof=[pscustomobject]@{status='FAIL';stdout=''} }
+  $badCapture = [pscustomobject]@{ screencap=[pscustomobject]@{status='FAIL';exit=7}; bytes=0; pidof=[pscustomobject]@{status='FAIL';exit=1;stdout=''} }
   if (Test-C05RCaptureObservation $badCapture) { throw 'capture-observation fixture accepted failed screencap/PID' }
-  $goodCapture = [pscustomobject]@{ screencap=[pscustomobject]@{status='PASS'}; bytes=2048; pidof=[pscustomobject]@{status='PASS';stdout='1234'} }
+  $missingExitCapture = [pscustomobject]@{ screencap=[pscustomobject]@{status='PASS'}; bytes=2048; pidof=[pscustomobject]@{status='PASS';stdout='1234'} }
+  if (Test-C05RCaptureObservation $missingExitCapture) { throw 'capture-observation fixture accepted missing native exit' }
+  $goodCapture = [pscustomobject]@{ screencap=[pscustomobject]@{status='PASS';exit=0}; bytes=2048; pidof=[pscustomobject]@{status='PASS';exit=0;stdout='1234'} }
+  $goodCapture | Add-Member -NotePropertyName logcat -NotePropertyValue ([pscustomobject]@{status='PASS';exit=0;stdout='fixture log';drainComplete=$true})
   if (-not (Test-C05RCaptureObservation $goodCapture)) { throw 'capture-observation fixture rejected a valid observation' }
-  if ($rejected -ne 2) { throw "device-contract negative matrix rejected=$rejected expected=2" }
-  Write-Output 'DEVICE_CONTRACT_FIXTURE PASS foreground-other-rejected-target-accepted override-priority rotation-logical installed-digest-abi capture-required-observations state-serial-port count=2'
+  foreach ($badLog in @([pscustomobject]@{status='FAIL';exit=7;stdout='';drainComplete=$true},[pscustomobject]@{status='PASS';exit=0;stdout='';drainComplete=$true})) {
+    $bad = $goodCapture | Select-Object *; $bad.logcat = $badLog
+    if (Test-C05RCaptureObservation $bad) { throw 'capture-observation fixture accepted failed or empty native logcat' }
+    $rejected++
+  }
+  if ($rejected -ne 4) { throw "device-contract negative matrix rejected=$rejected expected=4" }
+  Write-Output 'DEVICE_CONTRACT_FIXTURE PASS valid-nonempty-logcat native7-empty-logcat-rejected capture-required-observations count=4'
   exit 0
 }
 
@@ -886,6 +1108,16 @@ if ($RootEligibilityFixtureTest) {
       if ($pair[0]) { $p=Get-Process -Id $pair[0].Id -ErrorAction SilentlyContinue; if ($p -and $p.StartTime.ToUniversalTime().Ticks -eq $pair[1]) { $p.Kill(); [void]$p.WaitForExit(5000) } }
     }
   }
+}
+
+# Artifact validation is a file-only preflight and must not start or query adb.
+if ($Action -eq 'ValidateArtifact') {
+  $dir = Get-C05REvidenceDir 'validate-artifact'
+  $verified = Get-C05RVerifiedArtifact $Apk $PackageId
+  $artifactReceipt = [pscustomobject]@{ status='PASS'; action='ValidateArtifact'; artifact=$verified; validatedUtc=(Get-Date).ToUniversalTime().ToString('o') }
+  Save-C05RJson (Join-Path $dir 'artifact-validation.json') $artifactReceipt
+  Write-Host "ARTIFACT_VALIDATION PASS sha256=$($verified.sha256) sourceHead=$($verified.sourceHead)"
+  exit 0
 }
 
 # ----------------------------- real device/emulator actions -----------------------------
@@ -987,13 +1219,29 @@ if ($Action -eq 'StartEmulator') {
   $accelMatch = [regex]::Match([string]$accel.stdout, '(?m)^(\d+)\s*$')
   $accelExit = if ($accelMatch.Success) { [int]$accelMatch.Groups[1].Value } else { $accel.exit }
   $accelText = (([string]$accel.stdout) + ([string]$accel.stderr)).Trim()
+  # `auto` is the only safe default: accelerate whenever the host proves it can
+  # (`-accel-check` exit 0), and refuse the round when it cannot.
+  #
+  # There is deliberately no silent fall back to `-accel off`. An unaccelerated
+  # x86_64 guest does not boot here: QEMU dies with EXCEPTION_ACCESS_VIOLATION_READ
+  # at 0x4 before sys.boot_completed, so "try again without acceleration" could
+  # only ever produce a crash report that reads like a missing-capability verdict
+  # even when AEHD is installed and usable. `off` stays reachable only as an
+  # explicit diagnostic choice, never as an automatic retry.
   $effectiveAccel = if ($accelExit -eq 0) { 'on' } else { 'off' }
   if ($AccelMode -ne 'auto') { $effectiveAccel = $AccelMode }
+  if ($effectiveAccel -eq 'off' -and $accelExit -eq 0) {
+    Write-Warning ("ACCEL_AVAILABLE_BUT_DISABLED: -accel-check exit 0 (" +
+      (($accelText -split "`r?`n" | Where-Object { $_ -match 'installed|usable|WHPX|HAXM' }) -join ' ') +
+      ') but -AccelMode off was requested; software acceleration cannot boot this x86_64 image.')
+  }
   $emuArgs = @('-avd',$AvdName,'-port',[string]$EmulatorPort,'-no-snapshot-load','-read-only','-no-snapshot-save','-no-audio',
     '-no-boot-anim','-no-window','-gpu','swiftshader_indirect','-accel',$effectiveAccel,'-no-metrics')
-  # With software accel (TCG) the gfxstream/Vulkan composition path crashed QEMU in a
-  # real minidump (ACCESS_VIOLATION after ~4 s). GLES-on-SwiftShader booted without the
-  # crash, so disable guest Vulkan only for the software-acceleration mode and record it.
+  # Software acceleration (TCG) is a diagnostic mode only. Keep guest Vulkan off
+  # there because the gfxstream/Vulkan path crashes QEMU in a real minidump.
+  # While GLES-on-SwiftShader was intended as a bootable fallback, an
+  # unaccelerated x86_64 guest still dies with ACCESS_VIOLATION_READ at 0x4
+  # before sys.boot_completed, so this path can report a crash but never a verdict.
   $vulkanDisabled = $false
   if ($effectiveAccel -eq 'off') { $emuArgs += @('-feature','-Vulkan'); $vulkanDisabled = $true }
   $emuArgs += @($ExtraEmulatorArgs)
@@ -1075,7 +1323,20 @@ if ($Action -eq 'StartEmulator') {
     $reason = if ($crashFile) { "emulator guest crashed before boot (minidump decoded into crash-report.txt)" }
       elseif ($proc.HasExited -and -not ($qemuPid -gt 0)) { "emulator launcher exited before a guest process appeared" }
       else { "emulator did not reach sys.boot_completed=1 within $AvdWaitSeconds s" }
-    throw "BLOCKED_ACCEL: $reason (accelExit=$accelExit effective=$effectiveAccel); owned launcher/qemu PID+descendant stop attempted=$killed. Logs saved."
+    # Name the actual cause. A crash under SOFTWARE acceleration is a broken
+    # diagnostic mode, not proof the host cannot accelerate: reporting it as an
+    # acceleration verdict made a healthy AEHD host look BLOCKED and sent rounds
+    # into a futile retry loop.
+    $cause = if ($effectiveAccel -eq 'off' -and $accelExit -eq 0) {
+      "SOFTWARE_ACCEL_CRASH: -AccelMode off was used even though -accel-check reported exit 0 " +
+        "(hardware acceleration is available); an unaccelerated x86_64 guest cannot boot. " +
+        'Re-run with -AccelMode auto.'
+    } elseif ($effectiveAccel -eq 'off') {
+      "NO_ACCELERATION: -accel-check reported exit $accelExit, so the guest ran unaccelerated and crashed."
+    } else {
+      $reason
+    }
+    throw "BLOCKED_ACCEL: $cause (accelExit=$accelExit effective=$effectiveAccel); owned launcher/qemu PID+descendant stop attempted=$killed. Logs saved."
   }
   $abi = Invoke-C05RAdb @('shell','getprop','ro.product.cpu.abi')
   if ($abi.status -ne 'PASS' -or ([string]$abi.stdout).Trim() -notmatch 'x86_64') { [void](Stop-C05ROwnedProcess $ownedPid $ownedStart); throw "BLOCKED: emulator booted but ABI is '$(([string]$abi.stdout).Trim())', not x86_64." }
@@ -1115,7 +1376,7 @@ if ($Action -eq 'StartEmulator') {
   }
 }
 
-# All remaining actions require an owned state and (except shutdown) a verified APK.
+# All device actions require an owned state and (except shutdown) a verified APK.
 $state = Get-C05RState $StateFile $Serial $AvdName
 $artifact = $null
 if ($Action -in @('Install','Start','Stop','Capture','Input','BackgroundResume')) { $artifact = Get-C05RVerifiedArtifact $Apk $PackageId }
@@ -1209,13 +1470,14 @@ switch ($Action) {
     $fg = Get-C05RForegroundState ([string]$resumed.stdout) ([string]$focused.stdout) $PackageId
     $preflightPid = Invoke-C05RAdb @('shell','pidof',$PackageId)
     $capture = Save-C05RCapture $dir 'screen'
-    $requiredFail = $capture.screencap.status -ne 'PASS' -or $capture.bytes -lt 256 -or $capture.pidof.status -ne 'PASS' -or
-      [string]::IsNullOrWhiteSpace([string]$capture.pidof.stdout) -or $preflightPid.status -ne 'PASS' -or
-      [string]::IsNullOrWhiteSpace([string]$preflightPid.stdout) -or -not $fg.resumedMatches -or -not $fg.focusedMatches
+    $requiredFail = $capture.screencap.status -ne 'PASS' -or $capture.screencap.exit -ne 0 -or $capture.bytes -lt 256 -or $capture.pidof.status -ne 'PASS' -or
+      $capture.pidof.exit -ne 0 -or [string]::IsNullOrWhiteSpace([string]$capture.pidof.stdout) -or $preflightPid.status -ne 'PASS' -or
+      $preflightPid.exit -ne 0 -or [string]::IsNullOrWhiteSpace([string]$preflightPid.stdout) -or -not $fg.resumedMatches -or -not $fg.focusedMatches -or
+      $capture.logcat.status -ne 'PASS' -or $capture.logcat.exit -ne 0 -or $capture.logcat.drainComplete -eq $false -or [string]::IsNullOrWhiteSpace([string]$capture.logcat.stdout)
     $status = if ($requiredFail) { 'FAIL' } elseif ($capture.sample.nonBlackSample -ne $true) { 'BLACK_OR_DECODE_FAILED_REQUIRES_INVESTIGATION' } else { 'CAPTURED_REQUIRES_REVIEW' }
     $result = [pscustomobject]@{ status=$status; serial=$Serial; artifact=$identity; foreground=$fg; preflightPid=$preflightPid;
       screenshot=$capture.screenshot; bytes=$capture.bytes; sha256=$capture.sha256; sample=$capture.sample; screenshotIsGamePass=$false;
-      screencap=$capture.screencap; pidof=$capture.pidof; logcatStatus=$(if ($capture.logcat) { $capture.logcat.status } else { 'NO_PID' }) }
+      screencap=$capture.screencap; pidof=$capture.pidof; logcat=$capture.logcat; logcatStatus=$(if ($capture.logcat) { $capture.logcat.status } else { 'NO_PID' }) }
     Save-C05RJson (Join-Path $dir 'capture-summary.json') $result
     if ($requiredFail) { throw 'Capture required observation(s) failed (foreground/pid/screencap); raw exits/stdout/stderr saved.' }
     Write-Host "CAPTURED status=$status bytes=$($capture.bytes) SHA256=$($capture.sha256); visual semantics require independent reviewer."; exit 0
@@ -1232,7 +1494,7 @@ switch ($Action) {
     $size = Get-C05RDisplaySize $Serial
     [void](Assert-C05RInputBounds $InputAction $X $Y $X2 $Y2 $DurationMs $size.width $size.height)
     $before = Save-C05RCapture $dir 'before'
-    $beforeFail = $before.screencap.status -ne 'PASS' -or $before.bytes -lt 256 -or $before.pidof.status -ne 'PASS' -or [string]::IsNullOrWhiteSpace([string]$before.pidof.stdout)
+    $beforeFail = -not (Test-C05RCaptureObservation $before)
     if ($beforeFail) { throw 'FAIL: pre-input required screenshot/PID observation failed; native input not sent.' }
     if ($InputAction -eq 'tap') { $inputArgs = @('shell','input','tap',[string]$X,[string]$Y) }
     elseif ($InputAction -eq 'swipe') { $inputArgs = @('shell','input','swipe',[string]$X,[string]$Y,[string]$X2,[string]$Y2,[string]$DurationMs) }
@@ -1241,7 +1503,7 @@ switch ($Action) {
     $r = Invoke-C05RAdb $inputArgs 60
     Start-Sleep -Milliseconds 800
     $after = Save-C05RCapture $dir 'after'
-    $afterFail = $after.screencap.status -ne 'PASS' -or $after.bytes -lt 256 -or $after.pidof.status -ne 'PASS' -or [string]::IsNullOrWhiteSpace([string]$after.pidof.stdout)
+    $afterFail = -not (Test-C05RCaptureObservation $after)
     $changed = $before.sha256 -ne $after.sha256
     $status = if ($r.status -ne 'PASS' -or $afterFail) { 'FAIL' } elseif ($changed) { 'EXECUTED_REQUIRES_REVIEW' } else { 'NO_VISIBLE_CHANGE_REQUIRES_REVIEW' }
     $result = [pscustomobject]@{ status=$status; serial=$Serial; artifact=$identity; inputAction=$InputAction; foreground=$fg;
@@ -1271,7 +1533,7 @@ switch ($Action) {
     $focusedAfter = Invoke-C05RAdb @('shell','dumpsys','window','displays')
     $fgAfter = Get-C05RForegroundState ([string]$resumedAfter.stdout) ([string]$focusedAfter.stdout) $PackageId
     $beforeOk = Test-C05RCaptureObservation $before
-    $backgroundOk = ($background.screencap.status -eq 'PASS' -and [int]$background.bytes -ge 256)
+    $backgroundOk = Test-C05RCaptureObservation $background
     $afterOk = Test-C05RCaptureObservation $after
     $requiredObservations = ($beforeOk -and $backgroundOk -and $afterOk)
     $status = if ($homeKey.status -eq 'PASS' -and $resume.status -eq 'PASS' -and $pidResult.status -eq 'PASS' -and

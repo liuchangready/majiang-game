@@ -51,13 +51,15 @@ $expected = @(
   'unity/Mahjong.Unity/Assets/Editor/C05EmulatorAndroidBuild.cs',
   'unity/Mahjong.Unity/Assets/Editor/C05EmulatorAndroidBuild.cs.meta'
 )
-$docPattern = '^doc/[^/]+/V5-G2-C05-ANDROID-EMULATOR-(DELIVERY|BINDING)-20261103\.(md|json)$'
+$docPattern = '^doc/[^/]+/V5-G2-C05-ANDROID-GEMINI38-(DELIVERY|BINDING)-20261104\.(md|json)$'
 $requiredNow = $expected
 foreach ($p in $requiredNow) { Check "exists:$p" (Test-Path -LiteralPath (Join-Path $root $p) -PathType Leaf) }
-$docDelivery = @(Get-ChildItem (Join-Path $root 'doc') -Recurse -File -Filter 'V5-G2-C05-ANDROID-EMULATOR-DELIVERY-20261103.md' -ErrorAction SilentlyContinue)
-$docBinding = @(Get-ChildItem (Join-Path $root 'doc') -Recurse -File -Filter 'V5-G2-C05-ANDROID-EMULATOR-BINDING-20261103.json' -ErrorAction SilentlyContinue)
-Check 'exists:delivery-doc' ($docDelivery.Count -eq 1) ($docDelivery | ForEach-Object { $_.FullName })
-Check 'exists:binding-json' ($docBinding.Count -eq 1) ($docBinding | ForEach-Object { $_.FullName })
+$docDelivery = @(Get-ChildItem (Join-Path $root 'doc') -Recurse -File -Filter 'V5-G2-C05-ANDROID-GEMINI38-DELIVERY-20261104.md' -ErrorAction SilentlyContinue)
+$docBinding = @(Get-ChildItem (Join-Path $root 'doc') -Recurse -File -Filter 'V5-G2-C05-ANDROID-GEMINI38-BINDING-20261104.json' -ErrorAction SilentlyContinue)
+Check 'exists:gemini38-delivery-doc' ($docDelivery.Count -eq 1) ($docDelivery | ForEach-Object { $_.FullName })
+Check 'exists:gemini38-binding-json' ($docBinding.Count -eq 1) ($docBinding | ForEach-Object { $_.FullName })
+$histDiff = @(& git -C $root diff --name-only HEAD -- "doc/*20261103*" 2>&1)
+Check 'scope:historical-20261103-untouched' ($histDiff.Count -eq 0) ($histDiff -join '; ')
 $status = @(& git -C $root -c core.quotepath=false status --porcelain=v1 --untracked-files=all 2>&1)
 Check 'git-status-native0' ($LASTEXITCODE -eq 0)
 $dirty = @($status | Where-Object { $_ -match '^\s*(?:\?\?|[MADRCU ][MADRCU])\s+(.+)$' } | ForEach-Object { ($_ -replace '^\s*(?:\?\?|[MADRCU ][MADRCU])\s+','').Trim('"').Replace('\','/') })
@@ -113,6 +115,32 @@ Check 'run:child-env' (($run -match 'Push-C05RChildEnvironment') -and ($run -mat
 Check 'run:exact-foreground' ($run -match 'Get-C05RForegroundState')
 Check 'run:installed-digest' (($run -match 'Get-C05RInstalledIdentity') -and ($run -match 'baseDigest'))
 Check 'run:owned-records' (($run -match 'ownedProcesses') -and ($run -match 'Stop-C05RVerifiedRecordSet'))
+Check 'run:artifact-preflight-action' (($run -match "'ValidateArtifact'") -and ($run -match 'if \(\$Action -eq ''ValidateArtifact''\)') -and ($run -match 'Get-C05RVerifiedArtifact \$Apk \$PackageId'))
+Check 'run:artifact-preflight-before-adb' ($run.IndexOf("if (`$Action -eq 'ValidateArtifact')") -lt $run.IndexOf("if (-not (Test-Path -LiteralPath `$adb -PathType Leaf))"))
+Check 'run:capture-requires-logcat' (($run -match '\$capture\.logcat\.status -ne ''PASS''') -and ($run -match '\$capture\.logcat\.exit -ne 0') -and ($run -match 'IsNullOrWhiteSpace\(\[string\]\$capture\.logcat\.stdout\)'))
+Check 'run:raw-logcat-evidence' (($run -match 'logcat\.stdout\.txt') -and ($run -match 'logcat\.stderr\.txt') -and ($run -match 'logcat-receipt\.json'))
+Check 'run:drain-descendant-cleanup' (($run -match 'Stop-C05RObservedDescendants') -and ($run -match 'residualCount'))
+Check 'run:descendants-bound-to-live-root' (($run -match 'Get-C05RObservedDescendantRecords') -and ($run -match 'observedWhileParentLive') -and ($run -match 'trackingComplete=\$false'))
+Check 'run:cleanup-result-gates-native-status' (($run -match '\$cleanup\.status -ne ''PASS''') -and ($run -match '\$cleanup\.residualCount -ne 0') -and ($run -match '\$cleanup\.trackingComplete -ne \$true') -and ($run -match '\$cleanup\.unknown -eq \$true') -and ($run -match 'knownResidualCount -ne 0'))
+Check 'run:timeout-uses-recorded-tree' (-not ($run -match 'Stop-C05ROwnedProcess \$pidOwn'))
+$observedStopStart = $run.IndexOf('function Stop-C05RObservedDescendants')
+$observedStopEnd = $run.IndexOf('function Stop-C05ROwnedProcess')
+$observedStopBody = if ($observedStopStart -ge 0 -and $observedStopEnd -gt $observedStopStart) { $run.Substring($observedStopStart,$observedStopEnd-$observedStopStart) } else { '' }
+Check 'run:dead-root-never-scans-or-kills' ($observedStopBody -match 'if \(-not \$rootNow -or \$rootNow\.StartTime\.ToUniversalTime\(\)\.Ticks -ne \$RootTicks\)' -and $observedStopBody.IndexOf('if (-not $rootNow') -lt $observedStopBody.IndexOf('foreach ($record in @($Records'))
+Check 'run:bridge-copies-raw-native-streams' (($run -match 'BaseStream\.CopyToAsync\(\[Console\]::OpenStandardOutput\(\)\)') -and ($run -match 'BaseStream\.CopyToAsync\(\[Console\]::OpenStandardError\(\)\)') -and ($run -notmatch '& \$request\.file @argv'))
+Check 'run:bridge-suppresses-powershell-progress' ($run.Contains('$ProgressPreference=' + [char]39 + [char]39 + 'SilentlyContinue' + [char]39 + [char]39))
+Check 'run:native-exit-recorded-before-drain' (($run -match 'WriteAllText\(\$request\.statusPath') -and ($run -match 'C05RStatusPath') -and ($run -match 'native = if \(Test-Path -LiteralPath \$proc\.C05RStatusPath'))
+$ownedStopStart = $run.IndexOf('function Stop-C05ROwnedProcess')
+$ownedStopEnd = $run.IndexOf('function Push-C05RChildEnvironment')
+$ownedStopBody = if ($ownedStopStart -ge 0 -and $ownedStopEnd -gt $ownedStopStart) { $run.Substring($ownedStopStart,$ownedStopEnd-$ownedStopStart) } else { '' }
+Check 'run:owned-stop-wait-bounded' ($ownedStopBody.Length -gt 0 -and $ownedStopBody -notmatch '\.WaitForExit\(\)')
+Check 'run:accel-validate-set' ($run -match '\[ValidateSet\(''auto'',''off'',''on''\)\]\[string\]\$AccelMode')
+Check 'run:accel-no-whpx' ($run -notmatch '\[ValidateSet\([^)]*''whpx''[^)]*\)\]\[string\]\$AccelMode')
+Check 'run:swiftshader-comment-corrected' ($run -match 'While GLES-on-SwiftShader was intended')
+Check 'run:display-orientation-authoritative' ($run -match 'SurfaceOrientation.*authoritative')
+Check 'run:no-aspect-ratio-guessing' ($run -notmatch '\$curW\s+-gt\s+\$curH')
+Check 'run:capture-reject-stale' ($run -match 'Test-Path -LiteralPath \$png' -and $run -match 'throw.*Destination capture file already exists')
+Check 'run:capture-native-exit' ($run -match '\$Capture\.screencap\.exit -eq 0' -and $run -match '\$Capture\.pidof\.exit -eq 0')
 Check 'build:step-errors' (($build -match 'stepErrors') -and ($build -match 'stepExceptions'))
 Check 'build:staging' (($build -match 'Copy-C05EStagingProject') -and ($build -match 'sourceInputsUnchanged'))
 Check 'build:no-source-restore' (-not ($build -match 'git -C \$RepoRoot checkout'))
@@ -129,7 +157,7 @@ Run-Fixture 'run-state' 'tools/unity/run-c05-android-emulator.ps1' '-StateFixtur
 Run-Fixture 'run-input' 'tools/unity/run-c05-android-emulator.ps1' '-InputFixtureTest' 7 -ScriptHasAction
 Run-Fixture 'run-tree' 'tools/unity/run-c05-android-emulator.ps1' '-TreeFixtureTest' 0 -ScriptHasAction
 Run-Fixture 'run-env' 'tools/unity/run-c05-android-emulator.ps1' '-EnvFixtureTest' 0 -ScriptHasAction
-Run-Fixture 'run-device-contract' 'tools/unity/run-c05-android-emulator.ps1' '-DeviceContractFixtureTest' 2 -ScriptHasAction
+Run-Fixture 'run-device-contract' 'tools/unity/run-c05-android-emulator.ps1' '-DeviceContractFixtureTest' 4 -ScriptHasAction
 Run-Fixture 'run-receipt' 'tools/unity/run-c05-android-emulator.ps1' '-ReceiptFixtureTest' 4 -ScriptHasAction
 Run-Fixture 'run-target-state' 'tools/unity/run-c05-android-emulator.ps1' '-TargetStateFixtureTest' 9 -ScriptHasAction
 Run-Fixture 'run-root-eligibility' 'tools/unity/run-c05-android-emulator.ps1' '-RootEligibilityFixtureTest' 1 -ScriptHasAction
