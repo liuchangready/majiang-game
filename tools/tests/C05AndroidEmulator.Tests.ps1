@@ -169,6 +169,7 @@ Check 'build:path-budget-incomplete-inventory-fails-closed' (($build -match 'INC
 Check 'build:registry-package-lock-identity-and-hashes' (($build -match 'Get-C05ERegistryPackageInventory') -and ($build -match 'package-identity-mismatch') -and ($build -match 'inventorySha256') -and ($build -match 'packageJsonSha256'))
 Check 'build:fresh-package-cache-copy-before-path-gate' (($build -match '\$RegistryCacheSource') -and ($build -match 'Copy-C05EVerifiedRegistryCache') -and ($build.IndexOf('Copy-C05EVerifiedRegistryCache $RegistryCacheSource $project') -lt $build.IndexOf('$pathBudgetAudit.status -ne ''PASS''')) -and ($build.IndexOf('$pathBudgetAudit.status -ne ''PASS''') -lt $build.IndexOf('Start-C05EHiddenProcess $unity')))
 Check 'build:bounded-unity-job-workers' (($build -match "'-job-worker-count','1'") -and ($build -match 'unityJobWorkerCount=1'))
+Check 'build:task-owned-toolchain-root' (($build -match '\$PrivateToolchainRoot') -and ($build -match '\[IO\.Path\]::GetFullPath\(\$PrivateToolchainRoot\)'))
 
 # 6. Real deterministic fixtures through the actual entry points.
 Run-Fixture 'build-verdict' 'tools/unity/build-c05-android-emulator.ps1' '-VerdictFixtureTest' 27

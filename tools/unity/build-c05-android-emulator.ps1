@@ -4,6 +4,7 @@ param(
   [string]$UnityPath = 'D:\Unity\Hub\Editor\6000.3.27f1\Editor\Unity.exe',
   [string]$OutputRoot,
   [string]$StagingRoot,
+  [string]$PrivateToolchainRoot,
   [string]$RegistryCacheSource,
   [switch]$ReuseStaging,
   [string]$AndroidSdkRoot = 'D:\Android\Sdk',
@@ -1137,7 +1138,7 @@ try {
   # global registry/EditorPrefs change). The CLI adapter only forwards read-only
   # discovery to the installed classic sdkmanager 16.0 and passes its exit
   # code through unchanged.
-  $toolchainRoot = Join-Path $root 'build\android-toolchain\private'
+  $toolchainRoot = if ($PrivateToolchainRoot) { [IO.Path]::GetFullPath($PrivateToolchainRoot) } else { Join-Path $root 'build\android-toolchain\private' }
   $cliShim = Join-Path $toolchainRoot 'android-cli\android-cli-sdkmanager16.cmd'
   $ninjaExe = Join-Path $toolchainRoot 'ninja\1.13.2\ninja.exe'
   foreach ($requiredTool in @($cliShim, $ninjaExe)) {
