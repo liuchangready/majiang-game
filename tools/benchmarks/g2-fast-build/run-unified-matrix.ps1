@@ -480,8 +480,7 @@ if ($Platform -in @('All', 'Android') -and $Version -in @('All', 'Candidate')) {
 }
 
 # Output Results JSON
-$docV5Dir = (Get-ChildItem -LiteralPath (Join-Path $script:BenchmarkRoot 'doc') -Directory | Where-Object { $_.Name -like '*v5*' })[0].FullName
-$bindingJsonPath = Join-Path $docV5Dir 'G2-FAST-BUILD-BINDING-20261107.json'
+$bindingJsonPath = Join-Path $script:BenchmarkRoot 'build\G2-FAST-BUILD-BINDING-20261107.json'
 
 $finalCells = @($results)
 if (Test-Path -LiteralPath $bindingJsonPath) {
@@ -513,6 +512,14 @@ $bindingOutput = [ordered]@{
 
 [IO.File]::WriteAllText($bindingJsonPath, ($bindingOutput | ConvertTo-Json -Depth 5), (New-Object Text.UTF8Encoding($false)))
 Write-Host "`nSaved Matrix Binding JSON to: $bindingJsonPath" -ForegroundColor Green
+
+# If all 12 cells have executed or doc output requested, copy to doc/v5
+if ($finalCells.Count -ge 12) {
+  $docV5Dir = (Get-ChildItem -LiteralPath (Join-Path $script:BenchmarkRoot 'doc') -Directory | Where-Object { $_.Name -like '*v5*' })[0].FullName
+  $finalDocPath = Join-Path $docV5Dir 'G2-FAST-BUILD-BINDING-20261107.json'
+  [IO.File]::WriteAllText($finalDocPath, ($bindingOutput | ConvertTo-Json -Depth 5), (New-Object Text.UTF8Encoding($false)))
+  Write-Host "Also saved Final Matrix Binding JSON to: $finalDocPath" -ForegroundColor Green
+}
 
 # Print Summary Table
 Write-Host "`n======================= 12-CELL TIMING MATRIX SUMMARY =======================" -ForegroundColor Cyan
