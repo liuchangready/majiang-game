@@ -59,10 +59,10 @@ function Invoke-CellWindows {
   Write-Host "[START] $CellId (Version=$Version Platform=Windows64 Scenario=$Scenario)" -ForegroundColor Cyan
   Write-Host "========================================================" -ForegroundColor Cyan
 
-  $cellDir = Join-Path $script:EvidenceBase $CellId
+  $buildDir = Join-Path $RepoPath 'build'
+  [IO.Directory]::CreateDirectory($buildDir) | Out-Null
   $runGuid = [guid]::NewGuid().ToString('N')
-  $runRoot = Join-Path $cellDir $runGuid
-  [IO.Directory]::CreateDirectory($cellDir) | Out-Null
+  $runRoot = Join-Path $buildDir $runGuid
 
   $resBefore = Get-C05ResourceSample
   $sw = [Diagnostics.Stopwatch]::StartNew()
@@ -86,8 +86,8 @@ function Invoke-CellWindows {
     }
   }
 
-  $runnerLog = Join-Path $cellDir "$runGuid-stdout.log"
-  $runnerErr = Join-Path $cellDir "$runGuid-stderr.log"
+  $runnerLog = Join-Path $buildDir "$CellId-$runGuid-stdout.log"
+  $runnerErr = Join-Path $buildDir "$CellId-$runGuid-stderr.log"
   try {
     Write-Host "Running Windows build in $RepoPath..."
     $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $args -RedirectStandardOutput $runnerLog -RedirectStandardError $runnerErr -PassThru -WindowStyle Hidden
@@ -203,9 +203,10 @@ function Invoke-CellAndroid {
   Write-Host "[START] $CellId (Version=$Version Platform=Android-x86_64 Scenario=$Scenario)" -ForegroundColor Cyan
   Write-Host "========================================================" -ForegroundColor Cyan
 
-  $cellDir = Join-Path $script:EvidenceBase $CellId
+  $buildDir = Join-Path $RepoPath 'build'
+  [IO.Directory]::CreateDirectory($buildDir) | Out-Null
   $runGuid = [guid]::NewGuid().ToString('N')
-  $runRoot = Join-Path $cellDir $runGuid
+  $runRoot = Join-Path $buildDir $runGuid
 
   $stagingRoot = if ($IsCandidate) { $script:CandidateAndStaging } else { $script:BaselineAndStaging }
 
@@ -237,9 +238,8 @@ function Invoke-CellAndroid {
     if ($ReuseBuildCache) { $args += '-ReuseBuildCache' }
   }
 
-  $runnerLog = Join-Path $cellDir "$runGuid-stdout.log"
-  $runnerErr = Join-Path $cellDir "$runGuid-stderr.log"
-  [IO.Directory]::CreateDirectory($cellDir) | Out-Null
+  $runnerLog = Join-Path $buildDir "$CellId-$runGuid-stdout.log"
+  $runnerErr = Join-Path $buildDir "$CellId-$runGuid-stderr.log"
 
   try {
     Write-Host "Running Android build in $RepoPath..."
@@ -356,7 +356,7 @@ function Invoke-CellAndroid {
 }
 
 # ----------------- Execution Driver -----------------
-$results = New-Object Collections.Generic.List[object]
+$results = New-Object System.Collections.ArrayList
 
 # Prepare short staging clean state
 if ($Platform -in @('All', 'Windows') -and $Version -in @('All', 'Candidate')) {
@@ -379,15 +379,15 @@ if ($Platform -in @('All', 'Android') -and $Version -in @('All', 'Baseline')) {
 if ($Platform -in @('All', 'Windows') -and $Version -in @('All', 'Baseline')) {
   if (-not $CellFilter -or $CellFilter -eq 'B-WIN-COLD') {
     $r = Invoke-CellWindows -CellId 'B-WIN-COLD' -Version 'Baseline' -Scenario 'cold' -RepoPath $script:BaselineSrc -IsCandidate:$false
-    $results.Add($r)
+    [void]$results.Add($r)
   }
   if (-not $CellFilter -or $CellFilter -eq 'B-WIN-NOOP') {
     $r = Invoke-CellWindows -CellId 'B-WIN-NOOP' -Version 'Baseline' -Scenario 'noop' -RepoPath $script:BaselineSrc -IsCandidate:$false
-    $results.Add($r)
+    [void]$results.Add($r)
   }
   if (-not $CellFilter -or $CellFilter -eq 'B-WIN-CSHARP') {
     $r = Invoke-CellWindows -CellId 'B-WIN-CSHARP' -Version 'Baseline' -Scenario 'csharp' -RepoPath $script:BaselineCsharpSrc -IsCandidate:$false
-    $results.Add($r)
+    [void]$results.Add($r)
   }
 }
 
@@ -395,15 +395,15 @@ if ($Platform -in @('All', 'Windows') -and $Version -in @('All', 'Baseline')) {
 if ($Platform -in @('All', 'Windows') -and $Version -in @('All', 'Candidate')) {
   if (-not $CellFilter -or $CellFilter -eq 'C-WIN-COLD') {
     $r = Invoke-CellWindows -CellId 'C-WIN-COLD' -Version 'Candidate' -Scenario 'cold' -RepoPath $script:CandidateSrc -IsCandidate:$true -ReuseStaging:$false
-    $results.Add($r)
+    [void]$results.Add($r)
   }
   if (-not $CellFilter -or $CellFilter -eq 'C-WIN-NOOP') {
     $r = Invoke-CellWindows -CellId 'C-WIN-NOOP' -Version 'Candidate' -Scenario 'noop' -RepoPath $script:CandidateSrc -IsCandidate:$true -ReuseStaging:$true
-    $results.Add($r)
+    [void]$results.Add($r)
   }
   if (-not $CellFilter -or $CellFilter -eq 'C-WIN-CSHARP') {
     $r = Invoke-CellWindows -CellId 'C-WIN-CSHARP' -Version 'Candidate' -Scenario 'csharp' -RepoPath $script:CandidateCsharpSrc -IsCandidate:$true -ReuseStaging:$true
-    $results.Add($r)
+    [void]$results.Add($r)
   }
 }
 
@@ -411,15 +411,15 @@ if ($Platform -in @('All', 'Windows') -and $Version -in @('All', 'Candidate')) {
 if ($Platform -in @('All', 'Android') -and $Version -in @('All', 'Baseline')) {
   if (-not $CellFilter -or $CellFilter -eq 'B-AND-COLD') {
     $r = Invoke-CellAndroid -CellId 'B-AND-COLD' -Version 'Baseline' -Scenario 'cold' -RepoPath $script:BaselineSrc -IsCandidate:$false -ReuseStaging:$false
-    $results.Add($r)
+    [void]$results.Add($r)
   }
   if (-not $CellFilter -or $CellFilter -eq 'B-AND-NOOP') {
     $r = Invoke-CellAndroid -CellId 'B-AND-NOOP' -Version 'Baseline' -Scenario 'noop' -RepoPath $script:BaselineSrc -IsCandidate:$false -ReuseStaging:$true
-    $results.Add($r)
+    [void]$results.Add($r)
   }
   if (-not $CellFilter -or $CellFilter -eq 'B-AND-CSHARP') {
     $r = Invoke-CellAndroid -CellId 'B-AND-CSHARP' -Version 'Baseline' -Scenario 'csharp' -RepoPath $script:BaselineCsharpSrc -IsCandidate:$false -ReuseStaging:$true
-    $results.Add($r)
+    [void]$results.Add($r)
   }
 }
 
@@ -427,15 +427,15 @@ if ($Platform -in @('All', 'Android') -and $Version -in @('All', 'Baseline')) {
 if ($Platform -in @('All', 'Android') -and $Version -in @('All', 'Candidate')) {
   if (-not $CellFilter -or $CellFilter -eq 'C-AND-COLD') {
     $r = Invoke-CellAndroid -CellId 'C-AND-COLD' -Version 'Candidate' -Scenario 'cold' -RepoPath $script:CandidateSrc -IsCandidate:$true -ReuseStaging:$false -ReuseBuildCache:$false
-    $results.Add($r)
+    [void]$results.Add($r)
   }
   if (-not $CellFilter -or $CellFilter -eq 'C-AND-NOOP') {
     $r = Invoke-CellAndroid -CellId 'C-AND-NOOP' -Version 'Candidate' -Scenario 'noop' -RepoPath $script:CandidateSrc -IsCandidate:$true -ReuseStaging:$true -ReuseBuildCache:$true
-    $results.Add($r)
+    [void]$results.Add($r)
   }
   if (-not $CellFilter -or $CellFilter -eq 'C-AND-CSHARP') {
     $r = Invoke-CellAndroid -CellId 'C-AND-CSHARP' -Version 'Candidate' -Scenario 'csharp' -RepoPath $script:CandidateCsharpSrc -IsCandidate:$true -ReuseStaging:$true -ReuseBuildCache:$true
-    $results.Add($r)
+    [void]$results.Add($r)
   }
 }
 
