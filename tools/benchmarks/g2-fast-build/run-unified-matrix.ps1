@@ -114,7 +114,7 @@ function Invoke-CellWindows {
       $status = if ($nativeExit -eq 0) { 'PASS' } else { 'FAIL' }
       if ($nativeExit -ne 0) {
         $errContent = Get-Content -LiteralPath (Join-Path $runRoot 'runner-stderr.log') -Raw -ErrorAction SilentlyContinue
-        $errorMsg = "Process exited with code $nativeExit: $errContent"
+        $errorMsg = "Process exited with code ${nativeExit}: $errContent"
       }
     }
   } catch {
@@ -272,7 +272,7 @@ function Invoke-CellAndroid {
           $errorMsg = ($errContent -split "`r?`n" | Where-Object { $_ -match 'BLOCKED' }) -join '; '
         } else {
           $status = 'FAIL'
-          $errorMsg = "Process exited with code $nativeExit: $errContent"
+          $errorMsg = "Process exited with code ${nativeExit}: $errContent"
         }
       }
     }
