@@ -62,7 +62,7 @@ function Invoke-CellWindows {
   $cellDir = Join-Path $script:EvidenceBase $CellId
   $runGuid = [guid]::NewGuid().ToString('N')
   $runRoot = Join-Path $cellDir $runGuid
-  New-Item -ItemType Directory -Force -Path $runRoot | Out-Null
+  [IO.Directory]::CreateDirectory($cellDir) | Out-Null
 
   $resBefore = Get-C05ResourceSample
   $sw = [Diagnostics.Stopwatch]::StartNew()
@@ -86,10 +86,11 @@ function Invoke-CellWindows {
     }
   }
 
-  $runnerLog = Join-Path $runRoot 'runner-stdout.log'
+  $runnerLog = Join-Path $cellDir "$runGuid-stdout.log"
+  $runnerErr = Join-Path $cellDir "$runGuid-stderr.log"
   try {
     Write-Host "Running Windows build in $RepoPath..."
-    $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $args -RedirectStandardOutput $runnerLog -RedirectStandardError (Join-Path $runRoot 'runner-stderr.log') -PassThru -WindowStyle Hidden
+    $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $args -RedirectStandardOutput $runnerLog -RedirectStandardError $runnerErr -PassThru -WindowStyle Hidden
     
     $lastBeat = [Diagnostics.Stopwatch]::StartNew()
     while (-not $proc.HasExited) {
@@ -113,7 +114,7 @@ function Invoke-CellWindows {
     } else {
       $status = if ($nativeExit -eq 0) { 'PASS' } else { 'FAIL' }
       if ($nativeExit -ne 0) {
-        $errContent = Get-Content -LiteralPath (Join-Path $runRoot 'runner-stderr.log') -Raw -ErrorAction SilentlyContinue
+        $errContent = Get-Content -LiteralPath $runnerErr -Raw -ErrorAction SilentlyContinue
         $errorMsg = "Process exited with code ${nativeExit}: $errContent"
       }
     }
@@ -180,7 +181,7 @@ function Invoke-CellWindows {
     artifactPath = $playerExe
     artifactBytes = $playerBytes
     artifactSha256 = $playerSha
-    cacheMode = if ($IsCandidate) { (if ($ReuseStaging) { 'FAST_REUSE' } else { 'FAST_COLD' }) } else { 'FORMAL_COLD' }
+    cacheMode = $(if ($IsCandidate) { $(if ($ReuseStaging) { 'FAST_REUSE' } else { 'FAST_COLD' }) } else { 'FORMAL_COLD' })
     resBefore = $resBefore
     resAfter = $resAfter
     runRoot = $runRoot
@@ -236,12 +237,13 @@ function Invoke-CellAndroid {
     if ($ReuseBuildCache) { $args += '-ReuseBuildCache' }
   }
 
-  $runnerLog = Join-Path $runRoot 'builder-stdout.log'
+  $runnerLog = Join-Path $cellDir "$runGuid-stdout.log"
+  $runnerErr = Join-Path $cellDir "$runGuid-stderr.log"
   [IO.Directory]::CreateDirectory($cellDir) | Out-Null
 
   try {
     Write-Host "Running Android build in $RepoPath..."
-    $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $args -RedirectStandardOutput $runnerLog -RedirectStandardError (Join-Path $cellDir "$runGuid-stderr.log") -PassThru -WindowStyle Hidden
+    $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $args -RedirectStandardOutput $runnerLog -RedirectStandardError $runnerErr -PassThru -WindowStyle Hidden
 
     $lastBeat = [Diagnostics.Stopwatch]::StartNew()
     while (-not $proc.HasExited) {
@@ -345,7 +347,7 @@ function Invoke-CellAndroid {
     artifactPath = $apkPath
     artifactBytes = $apkBytes
     artifactSha256 = $apkSha
-    cacheMode = if ($IsCandidate) { (if ($ReuseStaging) { 'FAST_REUSE' } else { 'FAST_COLD' }) } else { 'FORMAL_COLD' }
+    cacheMode = $(if ($IsCandidate) { $(if ($ReuseStaging) { 'FAST_REUSE' } else { 'FAST_COLD' }) } else { 'FORMAL_COLD' })
     resBefore = $resBefore
     resAfter = $resAfter
     runRoot = $runRoot
