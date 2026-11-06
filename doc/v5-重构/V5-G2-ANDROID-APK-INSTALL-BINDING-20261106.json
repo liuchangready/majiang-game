@@ -1,0 +1,81 @@
+{
+  "schema": 1,
+  "generatedAtUtc": "2026-11-06T07:53:23Z",
+  "status": "PASS_THREE_TARGETS",
+  "scope": ["APK_BUILD", "EMULATOR_BOOT", "APK_INSTALL"],
+  "candidate": {
+    "branch": "wt/v5-g2-android-apk-install-luna6-20261106",
+    "sourceHead": "51f35b3ec0a57e123991cd5f54fd47d121617f6a",
+    "acceptedBase": "59e8bd741385b5d7b39ccdbc47573dde552067d1",
+    "productionInputsMatchAcceptedBase": true
+  },
+  "targets": {
+    "APK_BUILD": {
+      "status": "PASS",
+      "apk": "build/c05luna/aa82604ee7a547628cf981557e408f32/apk-build/Mahjong-emulator-x86_64.apk",
+      "bytes": 54188351,
+      "sha256": "578B062F5CB4DCCB01ACA48B0E0575F9F5824CD7469B775057726D4AC0EFA3F1",
+      "buildSummarySha256": "5DF69A8E0AB887BC942EF2973B3C9618D7AEA7C8A1A85037F183555E5C1F5218",
+      "buildReportSha256": "E9D93F246BC1CEC49D6575B6D951D2D9AAB4114591F4D8183138F27B4475F78C",
+      "pluginProvenanceSha256": "F684313DCF033C85D2C766753A33BA8916650548B2C5EA7EC9BCF16DDF61ABF5",
+      "buildReport": {
+        "result": "Succeeded",
+        "nativeExit": 0,
+        "errors": 0,
+        "stepErrors": 0,
+        "stepExceptions": 0,
+        "unityVersion": "6000.3.27f1",
+        "backend": "IL2CPP",
+        "abi": "X86_64",
+        "packageId": "com.majiang.game",
+        "activity": "com.unity3d.player.UnityPlayerActivity",
+        "enabledSceneCount": 6,
+        "requiredSharedDllCount": 8,
+        "sourceInputFileCount": 368,
+        "sourceInputsUnchanged": true,
+        "sourcePluginsUnchanged": true
+      },
+      "evidenceRoot": "build/c05luna/aa82604ee7a547628cf981557e408f32/apk-build"
+    },
+    "EMULATOR_BOOT": {
+      "status": "PASS",
+      "avd": "medium_phone",
+      "serial": "emulator-5580",
+      "port": 5580,
+      "abi": "x86_64",
+      "sysBootCompleted": "1",
+      "emulatorPid": 20472,
+      "emulatorStartUtcTicks": 639295480611493214,
+      "qemuPid": 3972,
+      "qemuStartUtcTicks": 639295480617942432,
+      "statePath": "build/c05luna/aa82604ee7a547628cf981557e408f32/device/20261106-154737-startemulator-9e731979/state.json",
+      "stateSha256": "975D6D6A4368F38453E9124AF8A95B7B118725E1E9CB358A6BC81376278E71AD",
+      "logsActive": true
+    },
+    "APK_INSTALL": {
+      "status": "PASS",
+      "packageId": "com.majiang.game",
+      "versionCode": 1,
+      "versionName": "1.0",
+      "abi": "x86_64",
+      "adbNativeExit": 0,
+      "adbStdout": "Performing Streamed Install\r\nSuccess\r\n",
+      "deviceBaseApkPath": "/data/app/~~W4aKg3j9LQPk5dUD2Kyu5A==/com.majiang.game-04JcJStyAqnPWxn8xhdujw==/base.apk",
+      "localApkSha256": "578B062F5CB4DCCB01ACA48B0E0575F9F5824CD7469B775057726D4AC0EFA3F1",
+      "deviceBaseApkSha256": "578b062f5cb4dccb01aca48b0e0575f9f5824cd7469b775057726d4ac0efa3f1",
+      "installResultSha256": "5300B800BC250AAAB39FF0D9E898035A3225CFA93F053965FE19D767542745ED",
+      "evidenceRoot": "build/c05luna/aa82604ee7a547628cf981557e408f32/device/install/20261106-154937-install-992516d3"
+    }
+  },
+  "deterministicChecks": {
+    "status": "PASS",
+    "assertions": 131,
+    "fixtures": 18,
+    "summaryPath": "build/c05luna/00cabbb7a4dd4865bf4589f2cf85e18c/tests/test-summary.json",
+    "summarySha256": "CA33F8CF6A0B9D3C1A97107E8E64A98DB0071DBDCA2F106AEE81E0C7662CCFE6"
+  },
+  "review": {
+    "independentReviewer": "NOT_RUN",
+    "reason": "This handoff explicitly forbade further delegation; local execution evidence and deterministic checks are recorded instead."
+  }
+}

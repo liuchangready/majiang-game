@@ -71,3 +71,14 @@
 不继续委派、不恢复旧Android任务、不改Windows任务，不push/PR/merge/deploy、不移动V5-G2标签、不改scheduler/complete.flag。执行者可在本独立分支提交已授权修改以满足clean-source门禁；运行矩阵中不写任务文档造成dirty。独立reviewer只审本三项目标，不能因未做游戏八项全矩阵反复返修。
 
 复核每轮一次给全全部已知缺陷，含ID/级别/位置/原样复现/actual与expected/证据/hash/最小修复/验收；同类合并，批修全部已知问题。不得skip/放宽断言/旧包重标或工具假绿，已有输入未变的成功不机械重复。
+
+## 实际执行结果（2026-11-06）
+
+- 冻结 production candidate：HEAD `51f35b3ec0a57e123991cd5f54fd47d121617f6a`，branch `wt/v5-g2-android-apk-install-luna6-20261106`。两个受影响的生产输入提交分别为 `6d117065`（短路径、package-cache 来源/审计与 GBK/UTF-8 源边界）和 `51f35b3e`（私有工具链根隔离）；该 HEAD 在 Unity 启动前冻结。
+- 确定性回归最终 `PASS`：131 assertions / 18 fixtures。第一次运行发现 PathBudget fixture 锁文件根路径多退一级，修复并重跑；之后私有构建工具缺失在实际入口预检暴露，将工具根改为本任务 `build/c05luna/<GUID>`，避免仓库公共缓存，并再跑 131/18。
+- APK_BUILD：`PASS`。成功 APK 为 54,188,351 bytes，SHA256 `578B062F5CB4DCCB01ACA48B0E0575F9F5824CD7469B775057726D4AC0EFA3F1`。BuildReport result Succeeded、errors/stepErrors/stepExceptions 均为 0，六场景、IL2CPP x86_64、8 个要求 DLL 和 provenance 全部绑定。
+- EMULATOR_BOOT：`PASS`。本任务 owned medium_phone / emulator-5580 / port 5580，x86_64 且 boot_completed=1；launcher PID/start ticks `20472/639295480611493214`，QEMU `3972/639295480617942432`。
+- APK_INSTALL：`PASS`。native adb install exit 0、stdout `Success`；package `com.majiang.game` versionCode 1/versionName 1.0；设备 base.apk SHA256 与本地完全一致。
+- 首次构建命令因本树缺少私有 `android-cli-sdkmanager16.cmd`/`ninja.exe` 在 Unity 启动前 `BLOCKED`，未产生 Unity 运行；按授权从只读历史工具副本复制到本任务独占 GUID 工具根后，第二次完整构建通过。失败记录保留在 `build/c05luna/e3f0f3d6b5214aba8e168251a53e4837/apk-build/`。
+- 最终报告：[交付报告](V5-G2-ANDROID-APK-INSTALL-DELIVERY-20261106.md)；字段绑定：[binding JSON](V5-G2-ANDROID-APK-INSTALL-BINDING-20261106.json)。独占运行证据根为 `build/c05luna/aa82604ee7a547628cf981557e408f32/`，临时 Unity 工程为 `D:/c05s/aa82604ee7a547628cf981557e408f32/project`。
+- 本轮未再委派；独立 reviewer 没有签收，报告明确记为 NOT_RUN。报告 `summary.json` 的 `unityVersion` 字段为 UNKNOWN，但同包 BuildReport 与 ProjectVersion.txt 均显示 `6000.3.27f1`。
