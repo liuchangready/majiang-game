@@ -66,8 +66,11 @@ param(
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
 
+    # Default stays the current CI/acceptance behavior (direct). A caller can
+    # opt in to dotnetTest/auto explicitly; the table wrapper forwards its own
+    # -RunnerMode value here.
     [ValidateSet('auto', 'dotnetTest', 'direct')]
-    [string]$RunnerMode = 'auto',
+    [string]$RunnerMode = 'direct',
 
     [string]$DotnetPath,
 

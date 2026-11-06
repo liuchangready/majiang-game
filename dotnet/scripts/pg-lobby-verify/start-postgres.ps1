@@ -56,6 +56,8 @@ if (-not (Test-Path -LiteralPath $context.PgCtl)) {
     }
 }
 
+Assert-PgInstallationClosure -Context $context
+
 # Never trust "something answers on host/port". Verify the server's own
 # data_directory before creating a database, schema, marker or stopping it.
 $listenerPresent = Test-TcpPortOpen -Port $context.Port

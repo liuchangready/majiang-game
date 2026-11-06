@@ -1,0 +1,218 @@
+{
+  "projectAsmdefs": [
+    "Mahjong.Unity.App",
+    "Mahjong.Unity.UI",
+    "Mahjong.Unity.Table",
+    "Mahjong.Unity.Spectator",
+    "Mahjong.Unity.Platform",
+    "Mahjong.Unity.EditMode.Tests",
+    "Mahjong.Unity.PlayMode.Tests"
+  ],
+  "packageAsmdefs": [
+    "Unity.TextMeshPro",
+    "UnityEngine.UI",
+    "Unity.InputSystem",
+    "UnityEngine.TestRunner",
+    "UnityEditor.TestRunner"
+  ],
+  "requiredPluginDlls": [
+    "Google.Protobuf.dll",
+    "Mahjong.Ai.dll",
+    "Mahjong.Client.dll",
+    "Mahjong.Contracts.dll",
+    "Mahjong.Contracts.Wire.dll",
+    "Mahjong.Domain.dll",
+    "Mahjong.LocalHost.dll",
+    "Mahjong.TableRuntime.dll",
+    "System.Buffers.dll",
+    "System.Memory.dll",
+    "System.Numerics.Vectors.dll",
+    "System.Runtime.CompilerServices.Unsafe.dll"
+  ],
+  "forbiddenClientImplementationsInUI": [
+    "FileOutboxStore",
+    "TableSession",
+    "TableSessionOperationQueue",
+    "TcpTableChannel",
+    "InProcessTableChannel"
+  ],
+  "allowedPrecompiledDlls": [
+    "Mahjong.Client.dll",
+    "Mahjong.Contracts.dll",
+    "Mahjong.Contracts.Wire.dll",
+    "Google.Protobuf.dll",
+    "nunit.framework.dll"
+  ],
+  "assemblies": {
+    "Mahjong.Unity.App": {
+      "path": "Assets/Scripts/App/Mahjong.Unity.App.asmdef",
+      "references": [
+        "Mahjong.Unity.UI",
+        "Mahjong.Unity.Table",
+        "Mahjong.Unity.Spectator",
+        "Mahjong.Unity.Platform"
+      ],
+      "precompiledReferences": [
+        "Mahjong.Client.dll",
+        "Mahjong.Contracts.dll",
+        "Mahjong.Contracts.Wire.dll",
+        "Mahjong.LocalHost.dll",
+        "Google.Protobuf.dll"
+      ],
+      "forbiddenNamespaces": [
+        "Mahjong.Domain",
+        "Mahjong.TableRuntime",
+        "Mahjong.Ai"
+      ]
+    },
+    "Mahjong.Unity.UI": {
+      "path": "Assets/Scripts/UI/Mahjong.Unity.UI.asmdef",
+      "references": [
+        "Unity.TextMeshPro",
+        "UnityEngine.UI",
+        "Unity.InputSystem"
+      ],
+      "precompiledReferences": [
+        "Mahjong.Client.dll",
+        "Mahjong.Contracts.dll",
+        "Mahjong.Contracts.Wire.dll",
+        "Google.Protobuf.dll"
+      ],
+      "forbiddenNamespaces": [
+        "Mahjong.Domain",
+        "Mahjong.TableRuntime",
+        "Mahjong.LocalHost",
+        "Mahjong.Ai",
+        "Mahjong.Unity.App",
+        "Mahjong.Unity.Table",
+        "Mahjong.Unity.Spectator",
+        "Mahjong.Unity.Platform"
+      ]
+    },
+    "Mahjong.Unity.Table": {
+      "path": "Assets/Scripts/Table/Mahjong.Unity.Table.asmdef",
+      "references": [
+        "Mahjong.Unity.UI",
+        "Unity.TextMeshPro",
+        "UnityEngine.UI",
+        "Unity.InputSystem"
+      ],
+      "precompiledReferences": [
+        "Mahjong.Client.dll",
+        "Mahjong.Contracts.dll",
+        "Mahjong.Contracts.Wire.dll",
+        "Google.Protobuf.dll"
+      ],
+      "forbiddenNamespaces": [
+        "Mahjong.Domain",
+        "Mahjong.TableRuntime",
+        "Mahjong.LocalHost",
+        "Mahjong.Ai",
+        "Mahjong.Unity.App",
+        "Mahjong.Unity.Spectator",
+        "Mahjong.Unity.Platform"
+      ]
+    },
+    "Mahjong.Unity.Spectator": {
+      "path": "Assets/Scripts/Spectator/Mahjong.Unity.Spectator.asmdef",
+      "references": [
+        "Mahjong.Unity.UI",
+        "Unity.TextMeshPro",
+        "UnityEngine.UI"
+      ],
+      "precompiledReferences": [
+        "Mahjong.Client.dll",
+        "Mahjong.Contracts.dll",
+        "Mahjong.Contracts.Wire.dll",
+        "Google.Protobuf.dll"
+      ],
+      "forbiddenNamespaces": [
+        "Mahjong.Domain",
+        "Mahjong.TableRuntime",
+        "Mahjong.LocalHost",
+        "Mahjong.Ai",
+        "Mahjong.Unity.App",
+        "Mahjong.Unity.Table",
+        "Mahjong.Unity.Platform"
+      ]
+    },
+    "Mahjong.Unity.Platform": {
+      "path": "Assets/Scripts/Platform/Mahjong.Unity.Platform.asmdef",
+      "references": [
+        "Unity.InputSystem"
+      ],
+      "precompiledReferences": [
+        "Mahjong.Client.dll"
+      ],
+      "forbiddenNamespaces": [
+        "Mahjong.Domain",
+        "Mahjong.TableRuntime",
+        "Mahjong.LocalHost",
+        "Mahjong.Ai",
+        "Mahjong.Contracts",
+        "Mahjong.Unity.App",
+        "Mahjong.Unity.UI",
+        "Mahjong.Unity.Table",
+        "Mahjong.Unity.Spectator"
+      ]
+    },
+    "Mahjong.Unity.EditMode.Tests": {
+      "path": "Assets/Tests/EditMode/Mahjong.Unity.EditMode.Tests.asmdef",
+      "references": [
+        "UnityEngine.TestRunner",
+        "UnityEditor.TestRunner",
+        "Unity.TextMeshPro",
+        "UnityEngine.UI",
+        "Unity.InputSystem",
+        "Mahjong.Unity.App",
+        "Mahjong.Unity.UI",
+        "Mahjong.Unity.Platform",
+        "Mahjong.Unity.Spectator",
+        "Mahjong.Unity.Table"
+      ],
+      "precompiledReferences": [
+        "nunit.framework.dll",
+        "Mahjong.Client.dll",
+        "Mahjong.Contracts.dll",
+        "Mahjong.Contracts.Wire.dll",
+        "Google.Protobuf.dll"
+      ],
+      "forbiddenNamespaces": [
+        "Mahjong.Domain",
+        "Mahjong.TableRuntime",
+        "Mahjong.LocalHost",
+        "Mahjong.Ai"
+      ]
+    },
+    "Mahjong.Unity.PlayMode.Tests": {
+      "path": "Assets/Tests/PlayMode/Mahjong.Unity.PlayMode.Tests.asmdef",
+      "references": [
+        "UnityEngine.TestRunner",
+        "Unity.TextMeshPro",
+        "UnityEngine.UI",
+        "Unity.InputSystem",
+        "Mahjong.Unity.App",
+        "Mahjong.Unity.UI",
+        "Mahjong.Unity.Platform",
+        "Mahjong.Unity.Spectator",
+        "Mahjong.Unity.Table"
+      ],
+      "precompiledReferences": [
+        "nunit.framework.dll",
+        "Mahjong.Client.dll",
+        "Mahjong.Contracts.dll",
+        "Mahjong.Contracts.Wire.dll",
+        "Google.Protobuf.dll"
+      ],
+      "forbiddenNamespaces": [
+        "Mahjong.Domain",
+        "Mahjong.TableRuntime",
+        "Mahjong.LocalHost",
+        "Mahjong.Ai"
+      ]
+    }
+  },
+  "reflectionAllowedFiles": [
+    "Assets/Scripts/Platform/WireAotSmoke.cs"
+  ]
+}

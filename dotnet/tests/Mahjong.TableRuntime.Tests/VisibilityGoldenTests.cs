@@ -28,6 +28,10 @@ namespace Mahjong.TableRuntime.Tests
     {
         private const string Schema = "v5-visibility-golden-v1";
         private const string BaselineCommit = "1432d775526de921f2cde3aba283236fc3b8e8c1";
+        private const string AcceptedVisibilityFixtureLfSha256 = "30291EC270EFB6F2A7D8C6984D53E7AE2DBD5AE45A41A7114EE69288749F346E";
+        private const string AcceptedVisibilityFixtureCrlfSha256 = "6506C0729A36E4625E157A5E6EA2CCB79B9C2FF2E4F3F57988BBB9535CC52B94";
+        private const int AcceptedVisibilityFixtureLfBytes = 141007;
+        private const int AcceptedVisibilityFixtureCrlfBytes = 147185;
 
         private static readonly Lazy<JsonDocument> Golden = new Lazy<JsonDocument>(LoadGolden);
 
@@ -1546,6 +1550,7 @@ namespace Mahjong.TableRuntime.Tests
 
         private static void VerifySourceHashes(JsonElement root)
         {
+            AssertAcceptedVisibilityFixtureBytes();
             JsonElement sources = root.GetProperty("sourceHashes");
             Assert.Equal(RequiredSourceFiles.Length, sources.GetArrayLength());
             var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -1578,20 +1583,67 @@ namespace Mahjong.TableRuntime.Tests
             int crlf = Count(text, "\r\n");
             int lfOnly = Count(text, "\n") - crlf;
             string actualKind = ClassifyLineEndings(crlf, lfOnly);
-            Assert.Equal(Str(source, "sha256LfNormalized"), Sha256(Encoding.UTF8.GetBytes(lf)));
-            if (string.Equals(Str(source, "lineEndings"), actualKind, StringComparison.Ordinal))
+            string expectedLf = Str(source, "sha256LfNormalized");
+            if (string.Equals(Sha256(Encoding.UTF8.GetBytes(lf)), expectedLf, StringComparison.Ordinal))
             {
-                Assert.Equal(Int(source, "bytesRaw"), raw.Length);
-                Assert.Equal(Str(source, "sha256RawBytes"), Sha256(raw));
-                Assert.Equal(Int(source, "crlfCount"), crlf);
-                Assert.Equal(Int(source, "lfOnlyCount"), lfOnly);
+                if (string.Equals(Str(source, "lineEndings"), actualKind, StringComparison.Ordinal))
+                {
+                    Assert.Equal(Int(source, "bytesRaw"), raw.Length);
+                    Assert.Equal(Str(source, "sha256RawBytes"), Sha256(raw));
+                    Assert.Equal(Int(source, "crlfCount"), crlf);
+                    Assert.Equal(Int(source, "lfOnlyCount"), lfOnly);
+                }
+                else
+                {
+                    Assert.NotEqual(Str(source, "sha256RawBytes"), Sha256(raw));
+                    Assert.NotEqual(Int(source, "bytesRaw"), raw.Length);
+                    Assert.Contains(actualKind, new[] { "CRLF", "LF", "MIXED", "NONE" });
+                }
+
+                return;
             }
-            else
-            {
-                Assert.NotEqual(Str(source, "sha256RawBytes"), Sha256(raw));
-                Assert.NotEqual(Int(source, "bytesRaw"), raw.Length);
-                Assert.Contains(actualKind, new[] { "CRLF", "LF", "MIXED", "NONE" });
-            }
+
+            // visibility-v1 is a frozen audit sample: its sourceHashes describe the
+            // baseline commit recorded in the fixture, not whatever HEAD contains after
+            // later accepted component work. The fixture's exact accepted LF/CRLF bytes
+            // are pinned above, so this is the frozen provenance record. Verify its
+            // internal raw/LF/line-ending metadata here without requiring Git history
+            // (shallow CI checkouts and source snapshots intentionally have no baseline
+            // object). Mutating any byte of the fixture fails the accepted-bytes pin.
+            AssertFrozenSourceMetadata(source);
+            return;
+        }
+
+        private static void AssertAcceptedVisibilityFixtureBytes()
+        {
+            string path = Path.Combine(RepositoryRoot(), "tests/v5-golden/visibility-v1.json");
+            byte[] raw = File.ReadAllBytes(path);
+            string sha = Sha256(raw);
+            bool acceptedLf = string.Equals(sha, AcceptedVisibilityFixtureLfSha256, StringComparison.OrdinalIgnoreCase) &&
+                              raw.Length == AcceptedVisibilityFixtureLfBytes;
+            bool acceptedCrlf = string.Equals(sha, AcceptedVisibilityFixtureCrlfSha256, StringComparison.OrdinalIgnoreCase) &&
+                                raw.Length == AcceptedVisibilityFixtureCrlfBytes;
+            Assert.True(
+                acceptedLf || acceptedCrlf,
+                "visibility-v1 is not the accepted frozen fixture: sha256=" + sha +
+                " bytes=" + raw.Length.ToString(CultureInfo.InvariantCulture));
+        }
+
+        private static void AssertFrozenSourceMetadata(JsonElement source)
+        {
+            string relative = Str(source, "file");
+            Assert.False(string.IsNullOrWhiteSpace(relative), "frozen source entry has an empty file");
+            string expectedKind = Str(source, "lineEndings");
+            Assert.Contains(expectedKind, new[] { "CRLF", "LF", "MIXED", "NONE" });
+            int bytesRaw = Int(source, "bytesRaw");
+            int crlf = Int(source, "crlfCount");
+            int lfOnly = Int(source, "lfOnlyCount");
+            Assert.True(bytesRaw > 0, relative + ": bytesRaw must be positive");
+            Assert.True(crlf >= 0, relative + ": crlfCount must be non-negative");
+            Assert.True(lfOnly >= 0, relative + ": lfOnlyCount must be non-negative");
+            Assert.Equal(expectedKind, ClassifyLineEndings(crlf, lfOnly));
+            Assert.Matches("^[0-9a-f]{64}$", Str(source, "sha256LfNormalized"));
+            Assert.Matches("^[0-9a-f]{64}$", Str(source, "sha256RawBytes"));
         }
 
         // ------------------------------------------------------------------

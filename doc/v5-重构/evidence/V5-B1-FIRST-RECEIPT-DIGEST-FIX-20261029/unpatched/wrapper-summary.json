@@ -1,0 +1,160 @@
+{
+    "exitCode":  1,
+    "status":  "FAIL",
+    "cleanupOk":  true,
+    "secretMaterialRoot":  "<isolated-candidate-tree>\\artifacts\\b1-pg-unpatched-59171\\material",
+    "secretMaterialRemoved":  true,
+    "stages":  [
+                   {
+                       "stage":  "guard",
+                       "status":  "PASS",
+                       "exitCode":  0,
+                       "detail":  "sdk=8.0.426 head=8b7b96545dbb15c560a142c115b08961da72c430 branch=candidate-scratch trackedDirty=no"
+                   },
+                   {
+                       "stage":  "role-separation",
+                       "status":  "PASS",
+                       "exitCode":  0,
+                       "detail":  "lobbyDbOwner=b1_lobby_owner lobbySchemaOwner=b1_lobby_owner lobbyAppAttrs=false/false/false lobbyAppDdl=false lobbyAppDml=true; tableDbOwner=b1_table_owner tableSchemaOwner=b1_table_owner tableAppAttrs=false/false/false tableAppDdl=false tableAppDml=true"
+                   },
+                   {
+                       "stage":  "cluster",
+                       "status":  "PASS",
+                       "exitCode":  0,
+                       "detail":  "postgres=16.10 data_directory=<isolated-candidate-tree>/artifacts/b1-pg-unpatched-59171/data port=59171 lobbyDb=mahjong_b1_lobby tableDb=mahjong_b1_table owners=b1_lobby_owner/b1_table_owner"
+                   },
+                   {
+                       "stage":  "fresh-build",
+                       "status":  "PASS",
+                       "exitCode":  0,
+                       "detail":  "2 B1 projects built with 8.0.426 (--no-incremental, -nr:false)"
+                   },
+                   {
+                       "stage":  "tests-b1",
+                       "status":  "PASS",
+                       "exitCode":  0,
+                       "detail":  "total=44 passed=44 failed=0 errors=0 skipped=0 notRun=0 xmlSha256=23C18CA46030C3C35C2A5986CAA099E6C3E825606424A9B1987D7447911F174A"
+                   },
+                   {
+                       "stage":  "fresh-build-accepted-helper",
+                       "status":  "PASS",
+                       "exitCode":  0,
+                       "detail":  "accepted keygen/certgen helper rebuilt fresh from frozen source; no A long chain executed"
+                   },
+                   {
+                       "stage":  "keygen-certgen",
+                       "status":  "PASS",
+                       "exitCode":  0,
+                       "detail":  "isolated ES256 ticket key and test TLS chain generated; positive tickets are Lobby-signed only"
+                   },
+                   {
+                       "stage":  "fresh-build-services",
+                       "status":  "PASS",
+                       "exitCode":  0,
+                       "detail":  "LobbyService and TableService built Release with --no-incremental -nr:false; build servers shut down"
+                   },
+                   {
+                       "stage":  "lobby-https",
+                       "status":  "PASS",
+                       "exitCode":  0,
+                       "detail":  "real LobbyService HTTPS Postgres store ready on 127.0.0.1:59172 pid=63236"
+                   },
+                   {
+                       "stage":  "table-wss",
+                       "status":  "PASS",
+                       "exitCode":  0,
+                       "detail":  "real TableService WSS Postgres host ready on 127.0.0.1:59173 pid=460"
+                   },
+                   {
+                       "stage":  "exception",
+                       "status":  "FAIL",
+                       "exitCode":  1,
+                       "detail":  "The B1 suite failed with exit 1 (see <isolated-candidate-tree>\\artifacts\\b1-logs-unpatched-59171\\suite.log)."
+                   },
+                   {
+                       "stage":  "cleanup",
+                       "status":  "PASS",
+                       "exitCode":  0,
+                       "detail":  "ownership-verified cluster removed; ports free; no postmaster"
+                   }
+               ],
+    "suite":  {
+                  "RoomId":  "room_01a187857da87d69b66510cc21823287",
+                  "PlayerCount":  4,
+                  "SpectatorCount":  1,
+                  "AdmittedPlayers":  4,
+                  "SpectatorAdmitted":  true,
+                  "BaselineFullForAll":  true,
+                  "PrivateStreamsIsolated":  true,
+                  "NormalActionSeat":  0,
+                  "NormalActionStateVersion":  1,
+                  "NormalRequestId":  "req-normal-d534e2a7406e41b79f2889ed97b4973c",
+                  "NormalReplayCommandVersion":  1,
+                  "NormalReplaySameReceipt":  true,
+                  "NormalReplayObservedReceipts":  2,
+                  "AllClientsSawNormalAction":  true,
+                  "CrashPid":  22736,
+                  "CrashCommandVersion":  2,
+                  "CrashRequestId":  "req-crash-8ac600fbf4d84b2cabd3673b01e54ee6",
+                  "RecoveredProjectionConfirmed":  true,
+                  "RecoverPid":  62484,
+                  "RecoveryFound":  true,
+                  "RecoveryPendingAfter":  0,
+                  "AllClientsSawCrashAction":  true,
+                  "NegativeResults":  [
+                                          "tls_untrusted_root=rejected_https_and_wss",
+                                          "tls_wrong_san=rejected_https_and_wss",
+                                          "tls_expired=rejected_https_and_wss"
+                                      ],
+                  "NegativeFacts":  [
+
+                                    ],
+                  "HttpIdempotencyCreateReplay":  true,
+                  "HttpIdempotencyCreateConflict":  true,
+                  "HttpIdempotencyJoinReplay":  true,
+                  "HttpIdempotencyJoinConflict":  true,
+                  "HttpDifferentKindConflict":  true,
+                  "HttpTicketReplay":  true,
+                  "HttpTicketConflict":  true,
+                  "TlsHttpsUntrustedRootRejected":  true,
+                  "TlsHttpsWrongNameRejected":  true,
+                  "TlsHttpsExpiredRejected":  true,
+                  "TlsWssUntrustedRootRejected":  true,
+                  "TlsWssWrongNameRejected":  true,
+                  "TlsWssExpiredRejected":  true,
+                  "CrossAccountReceiptQueryRejected":  false,
+                  "ForeignRoomTicketRejected":  false,
+                  "ExpiredTicketRejected":  false,
+                  "TamperedTicketRejected":  false,
+                  "SpectatorPlayerCommandRejected":  false,
+                  "SameKeyDifferentBytesPreservedOriginal":  false,
+                  "ReceiptDigestDomainMismatch":  false,
+                  "CanonicalReceiptIdentityVerified":  true,
+                  "Blocked":  false,
+                  "BlockerCode":  "",
+                  "BlockerDetail":  "",
+                  "ServerReceiptObserved":  false,
+                  "ServerReceiptStatus":  "",
+                  "ServerReceiptCommandVersion":  0,
+                  "ServerReceiptScopePresent":  false,
+                  "ClientPendingAfterServerReceipt":  0,
+                  "RawReceiptQueryFound":  false,
+                  "RawReceiptQueryCommandVersion":  0,
+                  "RawReceiptQueryDetail":  "",
+                  "ImmediateReissueRejected":  false,
+                  "ImmediateReissueDetail":  "",
+                  "Assertions":  [
+                                     "lobby_ready",
+                                     "five_real_guest_sessions",
+                                     "room_join_spectator_assignments",
+                                     "lobby_issued_five_binding_tickets",
+                                     "wss_baseline_and_stream_identity",
+                                     "real_action_applied_and_exact_replay_idempotent",
+                                     "crash_command_committed_and_receipt_lost",
+                                     "real_os_kill_client",
+                                     "new_pid_disk_outbox_receipt_query_found",
+                                     "multi_client_confirmation_after_recovery",
+                                     "FAILED: InvalidOperationException: [redacted]"
+                                 ]
+              }
+}

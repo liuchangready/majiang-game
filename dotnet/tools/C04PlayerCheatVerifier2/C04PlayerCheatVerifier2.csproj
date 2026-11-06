@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AssemblyName>C04PlayerCheatVerifier2</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/Mahjong.Contracts/Mahjong.Contracts.csproj" />
+    <ProjectReference Include="../../src/Mahjong.Contracts.Wire/Mahjong.Contracts.Wire.csproj" />
+    <ProjectReference Include="../../src/Mahjong.LocalHost/Mahjong.LocalHost.csproj" />
+  </ItemGroup>
+</Project>

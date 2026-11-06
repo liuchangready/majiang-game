@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>Mahjong.LocalHost.CrashWorker</AssemblyName>
+    <RootNamespace>Mahjong.LocalHost.CrashWorker</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Mahjong.LocalHost\Mahjong.LocalHost.csproj" />
+    <ProjectReference Include="..\..\src\Mahjong.Client\Mahjong.Client.csproj" />
+    <ProjectReference Include="..\..\src\Mahjong.Contracts\Mahjong.Contracts.csproj" />
+    <ProjectReference Include="..\..\src\Mahjong.Domain\Mahjong.Domain.csproj" />
+    <ProjectReference Include="..\..\src\Mahjong.TableRuntime\Mahjong.TableRuntime.csproj" />
+  </ItemGroup>
+</Project>

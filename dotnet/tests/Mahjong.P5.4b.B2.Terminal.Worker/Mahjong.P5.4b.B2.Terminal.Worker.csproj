@@ -1,0 +1,44 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    P5.4b-B2-T formal worker. A plain console process driven by
+    tools/ci/verify-v5-b2-terminal.ps1. It reuses the accepted B1 HTTPS lobby client, strict
+    WSS transport and production ClientHandle by source link (read-only: the B1 project,
+    verifier, schema and gates are not modified). Not registered in Mahjong.sln; the runner
+    builds and executes this DLL directly.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <LangVersion>12.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <Deterministic>true</Deterministic>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <AssemblyName>Mahjong.P5.4b.B2.Terminal.Worker</AssemblyName>
+    <RootNamespace>Mahjong.P5_4b.B2.Terminal.Worker</RootNamespace>
+    <StartupObject>Mahjong.P5_4b.B2.Terminal.Worker.Program</StartupObject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Mahjong.P5.4b.B1.HttpsAdmission.Worker\B1Actions.cs" Link="B1\B1Actions.cs" />
+    <Compile Include="..\Mahjong.P5.4b.B1.HttpsAdmission.Worker\B1Flows.cs" Link="B1\B1Flows.cs" />
+    <Compile Include="..\Mahjong.P5.4b.B1.HttpsAdmission.Worker\B1LobbyClient.cs" Link="B1\B1LobbyClient.cs" />
+    <Compile Include="..\Mahjong.P5.4b.B1.HttpsAdmission.Worker\B1Models.cs" Link="B1\B1Models.cs" />
+    <Compile Include="..\Mahjong.P5.4b.B1.HttpsAdmission.Worker\ClientHandle.cs" Link="B1\ClientHandle.cs" />
+    <Compile Include="..\Mahjong.P5.4b.B1.HttpsAdmission.Worker\HeartbeatBindingAuditChannel.cs" Link="B1\HeartbeatBindingAuditChannel.cs" />
+    <Compile Include="..\Mahjong.P5.4b.B1.HttpsAdmission.Worker\HeartbeatLivenessGate.cs" Link="B1\HeartbeatLivenessGate.cs" />
+    <Compile Include="..\Mahjong.P5.4b.B1.HttpsAdmission.Worker\PublicProjectionValidator.cs" Link="B1\PublicProjectionValidator.cs" />
+    <Compile Include="..\Mahjong.P5.4b.B1.HttpsAdmission.Worker\RealWssTableChannel.cs" Link="B1\RealWssTableChannel.cs" />
+    <Compile Include="..\Mahjong.P5.4b.B1.HttpsAdmission.Worker\ReceiptLossChannel.cs" Link="B1\ReceiptLossChannel.cs" />
+    <Compile Include="..\Mahjong.P5.4b.B1.HttpsAdmission.Worker\StrictRootTrust.cs" Link="B1\StrictRootTrust.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Mahjong.Client\Mahjong.Client.csproj" />
+    <ProjectReference Include="..\..\src\Mahjong.Contracts\Mahjong.Contracts.csproj" />
+    <ProjectReference Include="..\..\src\Mahjong.Contracts.Wire\Mahjong.Contracts.Wire.csproj" />
+  </ItemGroup>
+
+</Project>

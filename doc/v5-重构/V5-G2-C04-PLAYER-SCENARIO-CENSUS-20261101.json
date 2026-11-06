@@ -1,0 +1,2260 @@
+{
+    "schemaVersion":  1,
+    "task":  "G2-C04 preparation only",
+    "sourceHead":  "bae6b8b0c98c9ed80256373060a9e754d6fc4296",
+    "acceptedBase":  "8fd7c6cb701dfbb41c28938de4186749bdd1d6c7",
+    "branch":  "wt/v5-g2-c04-census-luna6-20261101-0943",
+    "c03":  {
+                "status":  "NOT_DELIVERED_AT_CENSUS",
+                "candidateSha":  null,
+                "rule":  "Do not select or approve a future C03 SHA here; formal C04 execution binds to the independently accepted C03 candidate."
+            },
+    "scope":  {
+                  "productionChanges":  false,
+                  "newHarness":  false,
+                  "formalC04":  "NOT_RUN",
+                  "futureFormalStatuses":  [
+                                               "PASS",
+                                               "FAIL",
+                                               "BLOCKED",
+                                               "NOT_RUN"
+                                           ],
+                  "evidenceLayers":  [
+                                         "DOTNET_PURE",
+                                         "SCRIPT_TOOL_FIXTURE",
+                                         "UNITY_EDITMODE",
+                                         "UNITY_PLAYMODE",
+                                         "WINDOWS_PLAYER",
+                                         "ANDROID_DEVICE",
+                                         "IOS_DEVICE"
+                                     ],
+                  "notCovered":  [
+                                     "G3 remote HTTPS/WSS/PostgreSQL full match",
+                                     "G4 physical network topology",
+                                     "G5 production rollout"
+                                 ]
+              },
+    "fixedDenominator":  {
+                             "rule":  "Freeze these 8 parent groups and listed child IDs now. Do not expand the denominator during execution; record additional observations as gaps against the closest existing row.",
+                             "parentCount":  8,
+                             "childCount":  33,
+                             "groups":  [
+                                            {
+                                                "id":  "C04-G1",
+                                                "title":  "Navigation, round and match progression/settlement",
+                                                "caseIds":  [
+                                                                "C04-G1-01",
+                                                                "C04-G1-02",
+                                                                "C04-G1-03",
+                                                                "C04-G1-04"
+                                                            ]
+                                            },
+                                            {
+                                                "id":  "C04-G2",
+                                                "title":  "Real Pon / Chi / Riichi / Kan",
+                                                "caseIds":  [
+                                                                "C04-G2-01",
+                                                                "C04-G2-02",
+                                                                "C04-G2-03",
+                                                                "C04-G2-04"
+                                                            ]
+                                            },
+                                            {
+                                                "id":  "C04-G3",
+                                                "title":  "Three cheats, cost, authorization and 136 physical entities",
+                                                "caseIds":  [
+                                                                "C04-G3-01",
+                                                                "C04-G3-02",
+                                                                "C04-G3-03",
+                                                                "C04-G3-04",
+                                                                "C04-G3-05",
+                                                                "C04-G3-06"
+                                                            ]
+                                            },
+                                            {
+                                                "id":  "C04-G4",
+                                                "title":  "Takeover, leave/re-enter, explicit claim and stale epochs",
+                                                "caseIds":  [
+                                                                "C04-G4-01",
+                                                                "C04-G4-02",
+                                                                "C04-G4-03"
+                                                            ]
+                                            },
+                                            {
+                                                "id":  "C04-G5",
+                                                "title":  "Four seats, spectator privacy and role-switch cleanup",
+                                                "caseIds":  [
+                                                                "C04-G5-01",
+                                                                "C04-G5-02",
+                                                                "C04-G5-03"
+                                                            ]
+                                            },
+                                            {
+                                                "id":  "C04-G6",
+                                                "title":  "Eight recovery classes plus original-request reconciliation/no duplicate side effect",
+                                                "caseIds":  [
+                                                                "C04-G6-01",
+                                                                "C04-G6-02",
+                                                                "C04-G6-03",
+                                                                "C04-G6-04",
+                                                                "C04-G6-05",
+                                                                "C04-G6-06",
+                                                                "C04-G6-07",
+                                                                "C04-G6-08"
+                                                            ]
+                                            },
+                                            {
+                                                "id":  "C04-G7",
+                                                "title":  "Offline full match and service-entry rejection of LOCAL settlement assets",
+                                                "caseIds":  [
+                                                                "C04-G7-01",
+                                                                "C04-G7-02"
+                                                            ]
+                                            },
+                                            {
+                                                "id":  "C04-G8",
+                                                "title":  "Final effective visuals, mouse/keyboard/touch, aspect ratio and safe area",
+                                                "caseIds":  [
+                                                                "C04-G8-01",
+                                                                "C04-G8-02",
+                                                                "C04-G8-03"
+                                                            ]
+                                            }
+                                        ]
+                         },
+    "executionContracts":  {
+                               "commonBinding":  "For every real command record source/build/player identity, roomId, sessionId, seat, role, roundId, stateVersion, eventSeq/cursor, decisionId where applicable, controlEpoch/ownerEpoch, connection/binding epoch, scopeId, original requestId and canonical payload SHA. Confirm visible outcomes against the same request and current binding; rejections must leave version/events/ledger/physical entities unchanged.",
+                               "playerEvidence":  "Player rows require fresh final-candidate Player process identity, full package manifest, source/build provenance, stdout/stderr/player log, native exit and structured per-case assertions. Screenshot/native exit alone is never a game pass.",
+                               "fixtureRule":  "Script TOOL_FIXTURE and scripted channels can verify tooling/negative control behavior only; they cannot count as Player gameplay or recovery positives.",
+                               "commandCatalog":  {
+                                                      "DOTNET_LOCALHOST":  "dotnet test dotnet/tests/Mahjong.LocalHost.Tests/Mahjong.LocalHost.Tests.csproj -c Release --no-restore",
+                                                      "DOTNET_RUNTIME":  "dotnet test dotnet/tests/Mahjong.TableRuntime.Tests/Mahjong.TableRuntime.Tests.csproj -c Release --no-restore",
+                                                      "UNITY_P43":  "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/test-p43-scenes.ps1 -UnityExe \u003cfinal-C03-Unity.exe\u003e -ProjectPath unity/Mahjong.Unity -OutputDir build/c04/\u003cunique\u003e/p43 -LogDir build/c04/\u003cunique\u003e/logs-p43 -TempDir build/c04/\u003cunique\u003e/temp-p43",
+                                                      "UNITY_P44":  "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/test-p44-views.ps1 -UnityExe \u003cfinal-C03-Unity.exe\u003e -ProjectPath unity/Mahjong.Unity -OutputDir build/c04/\u003cunique\u003e/p44 -LogDir build/c04/\u003cunique\u003e/logs-p44 -TempDir build/c04/\u003cunique\u003e/temp-p44",
+                                                      "UNITY_CONTROL":  "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/test-p45-control-ui.ps1 -EvidenceRoot build/c04/\u003cunique\u003e/control -SkipPlayer",
+                                                      "PLAYER_FULL_MATCH":  "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-full-match.ps1 -Mode All -RunDir build/c04/\u003cunique\u003e/full-match -UnityPath \u003cfinal-C03-Unity.exe\u003e -DotnetPath \u003cE-drive-dotnet.exe\u003e -TimeoutSeconds 5400",
+                                                      "PLAYER_RECOVERY":  "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-controlled-recovery-collection.ps1 -Case \u003cNormal|Force\u003e -SaveFault \u003cNone|TruncatePrimary|BadChecksumPrimary|IncompatiblePrimary|MissingPrimaryWithBackup|BothMissing|BothBad\u003e -PlayerPath \u003cfinal-C03-player.exe\u003e -BuildCommit \u003cfinal-C03-SHA\u003e -BuildLog \u003cfinal-build-log\u003e -BuildCommand \u003cexact-build-command\u003e -BuildExitCode 0 -Baseline \u003caccepted-real-baseline.save\u003e -VerifierPath \u003cbuilt-P45RecoveryVerifier.dll\u003e -DotnetPath \u003cE-drive-dotnet.exe\u003e -EvidenceRoot build/c04/\u003cunique\u003e/recovery/\u003ccase\u003e -EvidenceClass GAME",
+                                                      "PLAYER_RECOVERY_VERIFY":  "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/verify-p45-controlled-recovery-collection.ps1 -CaseDir \u003ccase-dir\u003e -ExpectedManifestSha256 \u003ccollector-output\u003e -VerifierPath \u003cbuilt-P45RecoveryVerifier.dll\u003e -DotnetPath \u003cE-drive-dotnet.exe\u003e -OutputDir build/c04/\u003cunique\u003e/verify/\u003ccase\u003e",
+                                                      "ANDROID_C05_TOOLS_ONLY":  "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-android-game.ps1 -Action \u003cDevices|DeviceInfo|Install|Start|Stop|Capture\u003e [-Serial \u003cdevice-serial\u003e] [-Apk \u003cfinal-C03-APK\u003e] [-EvidenceDir build/c04/\u003cunique\u003e/android] (the inspected script has Action, not Mode; no device run is part of this preparation)",
+                                                      "DOTNET_TABLESERVICE":  "dotnet test dotnet/tests/Mahjong.TableService.Tests/Mahjong.TableService.Tests.csproj -c Release --no-restore --filter FullyQualifiedName~RawSettlementBearingEnvelope_IsRejectedBeforeAnyScoring"
+                                                  },
+                               "parameterVerification":  "The referenced checked-in entry points and parameter declarations exist at sourceHead bae6b8b0. The TableService test filter is a future command (not run here). Placeholders are required future identities/paths, not literal values. Do not run any command in this census; Unity runners acquire Local\\MahjongV5P45UnityValidation. Output/log/temp roots must be unique ignored build/\u003cGUID\u003e paths on E:.",
+                               "commandLimitations":  [
+                                                          "No existing command drives real Pon+Chi+Riichi+Kan through final Windows Player with per-action request/scope/event assertions.",
+                                                          "The recovery collector/verifier records eight recovery classes but does not reconcile the same canonical request after recovery through TableSession and real channel transport. ITableChannel contains only OpenAsync/SendAsync/ReceiveAsync/CloseAsync; public client methods are TableSession.SubmitAsync/ReconcilePendingAsync/RetryPendingAsync, and local receipt query is LocalTableRuntime.HandleReceiptQueryAsync.",
+                                                          "The TableService suite raw-settlement rejection case calls room.Actor.SubmitAsync directly; it does not prove explicit LOCAL-origin rejection through TableSessionHandler/channel ingress.",
+                                                          "No existing Player tool covers complete privacy stream scans, role-switch cache cleanup, stale binding rejection, or bounded cheat/action cases."
+                                                      ],
+                               "recoveryRequestContract":  "G6-01..05 recovered branches reconcile the same preserved canonical request and assert its command-specific historical effect vector plus zero incremental replay deltas. G6-06 FRESH_START is NOT_REPLAYED_IN_NEW_SCOPE. G6-07/08 REJECTED are NOT_APPLICABLE_SAFE_REFUSAL with no Ready session, query, retry, submit or side effects. Do not demand one new effect in refusal/fresh-start rows."
+                           },
+    "evidenceSources":  [
+                            {
+                                "id":  "SRC-UNITY-EDITMODE",
+                                "kind":  "repository_directory",
+                                "layer":  "UNITY_EDITMODE",
+                                "path":  "unity/Mahjong.Unity/Assets/Tests/EditMode",
+                                "scope":  "Scene composition/layout/component assertions only; not final Player."
+                            },
+                            {
+                                "id":  "SRC-UNITY-PLAYMODE",
+                                "kind":  "repository_directory",
+                                "layer":  "UNITY_PLAYMODE",
+                                "path":  "unity/Mahjong.Unity/Assets/Tests/PlayMode",
+                                "scope":  "Scripted/local component routes only; final C03 Player rows remain NOT_RUN."
+                            },
+                            {
+                                "id":  "SRC-DOTNET",
+                                "kind":  "repository_directory",
+                                "layer":  "DOTNET_PURE",
+                                "path":  "dotnet/tests/Mahjong.LocalHost.Tests; dotnet/tests/Mahjong.TableRuntime.Tests; dotnet/tests/Mahjong.Unity.TableModel.Tests; dotnet/tests/Mahjong.TableService.Tests",
+                                "scope":  "Native .NET authority/client/runtime/component tests. C02 PowerShell 27/27 is excluded from this layer."
+                            },
+                            {
+                                "id":  "SRC-TOOL-FIXTURE",
+                                "kind":  "repository_files",
+                                "layer":  "SCRIPT_TOOL_FIXTURE",
+                                "path":  "tools/tests/VerifyP45ControlledRecoveryCollection.Tests.ps1; tools/tests/VerifyP45FullMatchDriver.Tests.ps1; tools/tests/VerifyP45AndroidGame.Tests.ps1",
+                                "scope":  "Tool parameter, integrity and fixture behavior only; not Player gameplay or device execution."
+                            },
+                            {
+                                "id":  "SRC-WINDOWS-HISTORICAL",
+                                "kind":  "repository_files",
+                                "layer":  "WINDOWS_PLAYER",
+                                "path":  "doc/v5-重构/CODEX-V5-G2-C01-ACCEPTANCE-20261101.md; doc/v5-重构/CODEX-V5-G2-C02-ACCEPTANCE-20261101.md; doc/v5-重构/CODEX-V5-G2-C05-ACCEPTANCE-20261101.md; doc/v5-重构/V5-P4.5-COMBINED-PLAYER-RECOVERY-REGRESSION-20261030.md",
+                                "scope":  "Historical accepted/results and retained failure; not C03 candidate evidence."
+                            },
+                            {
+                                "id":  "SRC-ANDROID-HISTORICAL",
+                                "kind":  "repository_file",
+                                "layer":  "ANDROID_DEVICE",
+                                "path":  "doc/v5-重构/CODEX-V5-G2-C05-ACCEPTANCE-20261101.md",
+                                "scope":  "Historical APK/tool evidence; pinned adb found no device; no installation/gameplay/visual/touch proof."
+                            },
+                            {
+                                "id":  "SRC-IOS-NOT-RUN",
+                                "kind":  "external_readonly_reference",
+                                "layer":  "IOS_DEVICE",
+                                "path":  "D:/majiang/doc/v5-重构/V5-G2-CLOSEOUT-TASKS-20261031.md",
+                                "capturedRepoHead":  "6c3573620f61e8cbb6a13c8c4b81abef0b173fd9",
+                                "sha256":  "DA6D65038637393CE3AB36B101C888E6B2288A7FEA05D680A4492F53B193B865",
+                                "scope":  "External read-only scope reference only; not in frozen repository and not iOS evidence.",
+                                "workingTreeState":  "Untracked external planning file at capture; bytes are not represented by captured HEAD. Read-only reference only."
+                            }
+                        ],
+    "cases":  [
+                  {
+                      "id":  "C04-G1-01",
+                      "parent":  "C04-G1",
+                      "title":  "Menu to local room, ready/wall setup and first turn",
+                      "trigger":  "Launch final Player offline; Menu \u003e local game; complete wall preparation; submit one legal discard from current decision.",
+                      "initialFixture":  "Fresh isolated local save/outbox; source/build/player manifest from final C03 candidate; deterministic seed not exposed by Player entry—record actual seed/command or mark seed-source gap.",
+                      "entry":  "Actual Windows Player UI -\u003e AppRouter.StartLocalGameAsync -\u003e LocalTableChannelFactory -\u003e TableSession -\u003e TablePresenter.",
+                      "assert":  "Menu/lobby/table scenes transition; authoritative initial snapshot has 4 seats, wall/hand physical inventory 136; one canonical discard gets Applied + matching TileDiscarded visible event and advances exactly one version.",
+                      "bindings":  "Common binding plus seat0, actual requestId/scopeId/payloadSha256, decisionId and controlEpoch.",
+                      "evidence":  [
+                                       "CODEX-V5-G2-C01-ACCEPTANCE historical PlayMode 7/7 and Player basic evidence; not fresh C04",
+                                       "LocalHostCompositionPlayModeTests.RealLocalHost_StartFromLobby_PublishesRealSnapshot"
+                                   ],
+                      "commands":  [
+                                       "UNITY_P43",
+                                       "PLAYER_FULL_MATCH"
+                                   ],
+                      "playerRequired":  true,
+                      "deviceRequired":  false,
+                      "dependsC03":  true,
+                      "status":  "NOT_RUN",
+                      "gap":  "P4.3 PlayMode uses controlled channels; no fresh C03 Player evidence in this row.",
+                      "implementation":  [
+                                             "unity/Mahjong.Unity/Assets/Scripts/App/AppRouter.cs:AppRouter.StartLocalGameAsync",
+                                             "unity/Mahjong.Unity/Assets/Scripts/App/LocalFullMatchPlayerDriver.cs:RunMatchCore",
+                                             "unity/Mahjong.Unity/Assets/Scripts/App/FullMatchExecutionBoundary.cs",
+                                             "dotnet/src/Mahjong.Client/TableSession.cs:SubmitAsync",
+                                             "dotnet/src/Mahjong.LocalHost/LocalTableChannel.cs:OpenAsync"
+                                         ],
+                      "evidenceLayerRefs":  {
+                                                "DOTNET_PURE":  [
+                                                                    "DOTNET_PURE"
+                                                                ],
+                                                "SCRIPT_TOOL_FIXTURE":  [
+
+                                                                        ],
+                                                "UNITY_EDITMODE":  [
+
+                                                                   ],
+                                                "UNITY_PLAYMODE":  [
+                                                                       "UNITY_PLAYMODE"
+                                                                   ],
+                                                "WINDOWS_PLAYER":  [
+                                                                       "WINDOWS_PLAYER"
+                                                                   ],
+                                                "ANDROID_DEVICE":  [
+
+                                                                   ],
+                                                "IOS_DEVICE":  [
+
+                                                               ]
+                                            }
+                  },
+                  {
+                      "id":  "C04-G1-02",
+                      "parent":  "C04-G1",
+                      "title":  "Real round completion by win and exhaustive draw",
+                      "trigger":  "From legal live-round Player state, complete one Tsumo/Ron round and a separate exhaustive-draw round using documented actual gameplay inputs.",
+                      "initialFixture":  "Actual game state/seed or pre-existing recorded real fixture; must preserve authority origin, do not inject snapshot/result by reflection.",
+                      "entry":  "Windows Player UI through TablePresenter/ITableCommandSink and actual local authority channel.",
+                      "assert":  "RoundEnded has matching current round/version and result; scores/riichi sticks/honba/accounting and 136 entities reconcile; terminal round cannot accept later actions.",
+                      "bindings":  "Per action request/scope/payload SHA, roundId/version/event sequence, seat/role/control epoch; terminal result identity.",
+                      "evidence":  [
+                                       "P4.5 historical combined recovery Player covered discard/Pon only, not win/draw Player matrix"
+                                   ],
+                      "commands":  [
+                                       "PLAYER_FULL_MATCH"
+                                   ],
+                      "playerRequired":  true,
+                      "deviceRequired":  false,
+                      "dependsC03":  true,
+                      "status":  "NOT_RUN",
+                      "gap":  "No command automates or enumerates both win and exhaustive-draw Player outcomes with accounting assertions.",
+                      "implementation":  [
+                                             "unity/Mahjong.Unity/Assets/Scripts/App/AppRouter.cs:AppRouter.StartLocalGameAsync",
+                                             "unity/Mahjong.Unity/Assets/Scripts/App/LocalFullMatchPlayerDriver.cs:RunMatchCore",
+                                             "unity/Mahjong.Unity/Assets/Scripts/App/FullMatchExecutionBoundary.cs",
+                                             "dotnet/src/Mahjong.Client/TableSession.cs:SubmitAsync",
+                                             "dotnet/src/Mahjong.LocalHost/LocalTableChannel.cs:OpenAsync"
+                                         ],
+                      "evidenceLayerRefs":  {
+                                                "DOTNET_PURE":  [
+                                                                    "DOTNET_PURE"
+                                                                ],
+                                                "SCRIPT_TOOL_FIXTURE":  [
+
+                                                                        ],
+                                                "UNITY_EDITMODE":  [
+
+                                                                   ],
+                                                "UNITY_PLAYMODE":  [
+                                                                       "UNITY_PLAYMODE"
+                                                                   ],
+                                                "WINDOWS_PLAYER":  [
+                                                                       "WINDOWS_PLAYER"
+                                                                   ],
+                                                "ANDROID_DEVICE":  [
+
+                                                                   ],
+                                                "IOS_DEVICE":  [
+
+                                                               ]
+                                            }
+                  },
+                  {
+                      "id":  "C04-G1-03",
+                      "parent":  "C04-G1",
+                      "title":  "Renchan and next round creation",
+                      "trigger":  "Complete a dealer-retaining round then a non-retaining round through actual Player decisions.",
+                      "initialFixture":  "Continuation from G1-02 actual run; no test-only state write.",
+                      "entry":  "Player UI and actual TableSession/local authority.",
+                      "assert":  "Renchan rules and honba advance correctly; next roundId and state machine are new; old round terminal remains immutable; sticks and scores carry forward exactly once.",
+                      "bindings":  "Round IDs, terminal event versions, next-round baseline cursor, score/ledger and request scopes.",
+                      "evidence":  [
+                                       "LocalFullMatchDriverPlayModeTests.MatchModeRealSession_CompletesOneRoundAndOpensNext is a one-round PlayMode component, not Player evidence"
+                                   ],
+                      "commands":  [
+                                       "PLAYER_FULL_MATCH"
+                                   ],
+                      "playerRequired":  true,
+                      "deviceRequired":  false,
+                      "dependsC03":  true,
+                      "status":  "NOT_RUN",
+                      "gap":  "No fresh Player round-chain and renchan assertion.",
+                      "implementation":  [
+                                             "unity/Mahjong.Unity/Assets/Scripts/App/AppRouter.cs:AppRouter.StartLocalGameAsync",
+                                             "unity/Mahjong.Unity/Assets/Scripts/App/LocalFullMatchPlayerDriver.cs:RunMatchCore",
+                                             "unity/Mahjong.Unity/Assets/Scripts/App/FullMatchExecutionBoundary.cs",
+                                             "dotnet/src/Mahjong.Client/TableSession.cs:SubmitAsync",
+                                             "dotnet/src/Mahjong.LocalHost/LocalTableChannel.cs:OpenAsync"
+                                         ],
+                      "evidenceLayerRefs":  {
+                                                "DOTNET_PURE":  [
+                                                                    "DOTNET_PURE"
+                                                                ],
+                                                "SCRIPT_TOOL_FIXTURE":  [
+
+                                                                        ],
+                                                "UNITY_EDITMODE":  [
+
+                                                                   ],
+                                                "UNITY_PLAYMODE":  [
+                                                                       "UNITY_PLAYMODE"
+                                                                   ],
+                                                "WINDOWS_PLAYER":  [
+                                                                       "WINDOWS_PLAYER"
+                                                                   ],
+                                                "ANDROID_DEVICE":  [
+
+                                                                   ],
+                                                "IOS_DEVICE":  [
+
+                                                               ]
+                                            }
+                  },
+                  {
+                      "id":  "C04-G1-04",
+                      "parent":  "C04-G1",
+                      "title":  "Whole match settlement and final rankings",
+                      "trigger":  "Drive east/half match to authority terminal via full-match driver on final Player.",
+                      "initialFixture":  "Fresh isolated Player run; use only declared strategy/seed in driver and preserve whole run artifacts.",
+                      "entry":  "Player LocalFullMatchPlayerDriver through production FullMatchExecutionBoundary and real LocalHost.",
+                      "assert":  "All submitted actions have proper receipts/visible confirmations; matchFinished true, match terminal commit once, final scores/rankings/riichi sticks/honba reconcile, no pending outbox.",
+                      "bindings":  "Every request identity/scope, each roundId/version/event, seat/role/control epoch, final match ID and settlement commit ID.",
+                      "evidence":  [
+                                       "C01 accepted final Player: 12 rounds/12 terminal/12 commits/WestCompletion/native0; historical source/build, not current C03 SHA",
+                                       "C01 Player summary SHA256 575BF95B811B5DEE316FBB82F9A02350D5458EC3F5E5FA0BB8A2D266A84C3539",
+                                       "CODEX-V5-G2-C01 acceptance explicitly says fresh full match is still independently scoped"
+                                   ],
+                      "commands":  [
+                                       "PLAYER_FULL_MATCH"
+                                   ],
+                      "playerRequired":  true,
+                      "deviceRequired":  false,
+                      "dependsC03":  true,
+                      "status":  "NOT_RUN",
+                      "gap":  "Existing historical Player cannot substitute for the final C03 candidate.",
+                      "implementation":  [
+                                             "unity/Mahjong.Unity/Assets/Scripts/App/AppRouter.cs:AppRouter.StartLocalGameAsync",
+                                             "unity/Mahjong.Unity/Assets/Scripts/App/LocalFullMatchPlayerDriver.cs:RunMatchCore",
+                                             "unity/Mahjong.Unity/Assets/Scripts/App/FullMatchExecutionBoundary.cs",
+                                             "dotnet/src/Mahjong.Client/TableSession.cs:SubmitAsync",
+                                             "dotnet/src/Mahjong.LocalHost/LocalTableChannel.cs:OpenAsync"
+                                         ],
+                      "evidenceLayerRefs":  {
+                                                "DOTNET_PURE":  [
+                                                                    "DOTNET_PURE"
+                                                                ],
+                                                "SCRIPT_TOOL_FIXTURE":  [
+
+                                                                        ],
+                                                "UNITY_EDITMODE":  [
+
+                                                                   ],
+                                                "UNITY_PLAYMODE":  [
+                                                                       "UNITY_PLAYMODE"
+                                                                   ],
+                                                "WINDOWS_PLAYER":  [
+                                                                       "WINDOWS_PLAYER"
+                                                                   ],
+                                                "ANDROID_DEVICE":  [
+
+                                                                   ],
+                                                "IOS_DEVICE":  [
+
+                                                               ]
+                                            }
+                  },
+                  {
+                      "id":  "C04-G2-01",
+                      "parent":  "C04-G2",
+                      "title":  "Pon from a live response window",
+                      "trigger":  "Reach a legal discard that offers Pon; accept from responding seat through Player input.",
+                      "initialFixture":  "Real legal state via actual run/declared seed; do not call authority internals to set hand.",
+                      "entry":  "Player UI -\u003e TablePresenter/command sink -\u003e TableSession -\u003e LocalTableChannel.",
+                      "assert":  "Applied request has exactly one matching PonDeclared/visible event; meld/called tile/from-seat and hand update correct; wall and entity set remain 136; stale/illegal Pon rejected without mutation.",
+                      "bindings":  "Response decisionId, requestId/scope, seat/role/controlEpoch, round/version/event cursor and canonical payload SHA.",
+                      "evidence":  [
+                                       "Historical combined recovery report: Pon Applied then native31 because PonDeclared absent in frozen projection",
+                                       "P4.5 Pon/Chi/Riichi projection fix delivery; component repair accepted in current PR20, not a new Player run"
+                                   ],
+                      "commands":  [
+                                       "PLAYER_FULL_MATCH"
+                                   ],
+                      "playerRequired":  true,
+                      "deviceRequired":  false,
+                      "dependsC03":  true,
+                      "status":  "NOT_RUN",
+                      "gap":  "Projection repair is not proof of a fresh Player legal-call path; exact independent call automation absent.",
+                      "implementation":  [
+                                             "unity/Mahjong.Unity/Assets/Scripts/Table/TablePresenter.cs",
+                                             "unity/Mahjong.Unity/Assets/Scripts/Table/TableCommandIntentFactory.cs",
+                                             "dotnet/src/Mahjong.TableRuntime/TableActor.cs",
+                                             "dotnet/src/Mahjong.TableRuntime/TableEventProjection.cs",
+                                             "dotnet/src/Mahjong.LocalHost/LocalSnapshotFacts.cs"
+                                         ],
+                      "evidenceLayerRefs":  {
+                                                "DOTNET_PURE":  [
+                                                                    "DOTNET_PURE"
+                                                                ],
+                                                "SCRIPT_TOOL_FIXTURE":  [
+
+                                                                        ],
+                                                "UNITY_EDITMODE":  [
+
+                                                                   ],
+                                                "UNITY_PLAYMODE":  [
+                                                                       "UNITY_PLAYMODE"
+                                                                   ],
+                                                "WINDOWS_PLAYER":  [
+                                                                       "WINDOWS_PLAYER"
+                                                                   ],
+                                                "ANDROID_DEVICE":  [
+
+                                                                   ],
+                                                "IOS_DEVICE":  [
+
+                                                               ]
+                                            }
+                  },
+                  {
+                      "id":  "C04-G2-02",
+                      "parent":  "C04-G2",
+                      "title":  "Chi from a live response window",
+                      "trigger":  "Reach a legal discard and accept an available Chi sequence from the responding seat.",
+                      "initialFixture":  "Actual live round and candidate options from Player, record real seed/state provenance.",
+                      "entry":  "Player UI/table command path.",
+                      "assert":  "One Applied + matching ChiDeclared visible event; correct ordered tile IDs/called source; conservation 136; unavailable sequence rejected without version change.",
+                      "bindings":  "DecisionId, request/scope/payload SHA, seat, round/version/cursor/control epoch.",
+                      "evidence":  [
+                                       "P4.5-PON-CHI-RIICHI-PROJECTION-FIX-20261031 component evidence; historical Player call path unavailable"
+                                   ],
+                      "commands":  [
+                                       "PLAYER_FULL_MATCH"
+                                   ],
+                      "playerRequired":  true,
+                      "deviceRequired":  false,
+                      "dependsC03":  true,
+                      "status":  "NOT_RUN",
+                      "gap":  "No dedicated real Player Chi exercise or command option confirmed.",
+                      "implementation":  [
+                                             "unity/Mahjong.Unity/Assets/Scripts/Table/TablePresenter.cs",
+                                             "unity/Mahjong.Unity/Assets/Scripts/Table/TableCommandIntentFactory.cs",
+                                             "dotnet/src/Mahjong.TableRuntime/TableActor.cs",
+                                             "dotnet/src/Mahjong.TableRuntime/TableEventProjection.cs",
+                                             "dotnet/src/Mahjong.LocalHost/LocalSnapshotFacts.cs"
+                                         ],
+                      "evidenceLayerRefs":  {
+                                                "DOTNET_PURE":  [
+                                                                    "DOTNET_PURE"
+                                                                ],
+                                                "SCRIPT_TOOL_FIXTURE":  [
+
+                                                                        ],
+                                                "UNITY_EDITMODE":  [
+
+                                                                   ],
+                                                "UNITY_PLAYMODE":  [
+                                                                       "UNITY_PLAYMODE"
+                                                                   ],
+                                                "WINDOWS_PLAYER":  [
+
+                                                                   ],
+                                                "ANDROID_DEVICE":  [
+
+                                                                   ],
+                                                "IOS_DEVICE":  [
+
+                                                               ]
+                                            }
+                  },
+                  {
+                      "id":  "C04-G2-03",
+                      "parent":  "C04-G2",
+                      "title":  "Riichi declaration and double-riichi facts",
+                      "trigger":  "Reach a valid tenpai discard state and declare Riichi; include first-turn/double-riichi where the live fixture permits.",
+                      "initialFixture":  "Legal Player state with actual candidates; record whether first-turn condition is naturally met.",
+                      "entry":  "Player UI/table command path.",
+                      "assert":  "Riichi declaration event and stick debit occur once, reach/ippatsu facts are projected, invalid/non-tenpai declaration rejects unchanged; next settlement includes correct sticks.",
+                      "bindings":  "Turn decision, request/scope, seat/round/version, event cursor, ledger balance and control epoch.",
+                      "evidence":  [
+                                       "LocalCallEventFactsTests preserve double-riichi facts at .NET projection layer",
+                                       "P4.5 projection repair component only"
+                                   ],
+                      "commands":  [
+                                       "PLAYER_FULL_MATCH"
+                                   ],
+                      "playerRequired":  true,
+                      "deviceRequired":  false,
+                      "dependsC03":  true,
+                      "status":  "NOT_RUN",
+                      "gap":  "No final Player Riichi declaration run; do not reopen accepted projection repair.",
+                      "implementation":  [
+                                             "unity/Mahjong.Unity/Assets/Scripts/Table/TablePresenter.cs",
+                                             "unity/Mahjong.Unity/Assets/Scripts/Table/TableCommandIntentFactory.cs",
+                                             "dotnet/src/Mahjong.TableRuntime/TableActor.cs",
+                                             "dotnet/src/Mahjong.TableRuntime/TableEventProjection.cs",
+                                             "dotnet/src/Mahjong.LocalHost/LocalSnapshotFacts.cs"
+                                         ],
+                      "evidenceLayerRefs":  {
+                                                "DOTNET_PURE":  [
+                                                                    "DOTNET_PURE"
+                                                                ],
+                                                "SCRIPT_TOOL_FIXTURE":  [
+
+                                                                        ],
+                                                "UNITY_EDITMODE":  [
+
+                                                                   ],
+                                                "UNITY_PLAYMODE":  [
+                                                                       "UNITY_PLAYMODE"
+                                                                   ],
+                                                "WINDOWS_PLAYER":  [
+
+                                                                   ],
+                                                "ANDROID_DEVICE":  [
+
+                                                                   ],
+                                                "IOS_DEVICE":  [
+
+                                                               ]
+                                            }
+                  },
+                  {
+                      "id":  "C04-G2-04",
+                      "parent":  "C04-G2",
+                      "title":  "Kan declaration, replacement draw and chankan window",
+                      "trigger":  "Use one legal open/added/concealed Kan available in live play, then exercise replacement draw and a chankan response if offered.",
+                      "initialFixture":  "Real legal state; record exact Kan kind and whether chankan branch was available.",
+                      "entry":  "Player UI through production TableSession/local authority.",
+                      "assert":  "KanCommitted/declared and replacement wall movement reconcile; chankan window resolves exactly once; impossible Kan rejected; physical set stays 136.",
+                      "bindings":  "Decision/request/scope/payload SHA, round/version/event cursor, seat/control epoch, replacement wall and terminal response identity.",
+                      "evidence":  [
+                                       "TableRuntime KAN recovery component tests exist; no evidence of real Windows Player Kan path"
+                                   ],
+                      "commands":  [
+                                       "PLAYER_FULL_MATCH"
+                                   ],
+                      "playerRequired":  true,
+                      "deviceRequired":  false,
+                      "dependsC03":  true,
+                      "status":  "NOT_RUN",
+                      "gap":  "Explicit real Player Kan coverage missing; automated driver must prove which Kan variant actually occurred.",
+                      "implementation":  [
+                                             "unity/Mahjong.Unity/Assets/Scripts/Table/TablePresenter.cs",
+                                             "unity/Mahjong.Unity/Assets/Scripts/Table/TableCommandIntentFactory.cs",
+                                             "dotnet/src/Mahjong.TableRuntime/TableActor.cs",
+                                             "dotnet/src/Mahjong.TableRuntime/TableEventProjection.cs",
+                                             "dotnet/src/Mahjong.LocalHost/LocalSnapshotFacts.cs"
+                                         ],
+                      "evidenceLayerRefs":  {
+                                                "DOTNET_PURE":  [
+                                                                    "DOTNET_PURE"
+                                                                ],
+                                                "SCRIPT_TOOL_FIXTURE":  [
+
+                                                                        ],
+                                                "UNITY_EDITMODE":  [
+
+                                                                   ],
+                                                "UNITY_PLAYMODE":  [
+                                                                       "UNITY_PLAYMODE"
+                                                                   ],
+                                                "WINDOWS_PLAYER":  [
+
+                                                                   ],
+                                                "ANDROID_DEVICE":  [
+
+                                                                   ],
+                                                "IOS_DEVICE":  [
+
+                                                               ]
+                                            }
+                  },
+                  {
+                      "id":  "C04-G3-01",
+                      "parent":  "C04-G3",
+                      "title":  "TileMark (落汗) successful authorized execution",
+                      "trigger":  "At legal cheat window, purchase/activate TileMark through normal Player UI, mark an existing physical tile, then use authorized observation.",
+                      "initialFixture":  "Actual game wall/hand; no seeded/private reflection write. Record entity ID before/after.",
+                      "entry":  "Player cheat UI -\u003e normal command channel -\u003e authoritative ledger/round.",
+                      "assert":  "Only authorized seat receives mark insight; exact fee debited once; same entity remains among unique IDs 0..135; later locate action correlates to the marked entity.",
+                      "bindings":  "Cheat requestId/scope/payload, seat/role, round/version, control epoch, ledger sequence, physical entity ID and event cursor.",
+                      "evidence":  [
+                                       "N1bCheatExecutionTests covers .NET execution boundary; not Unity Player route"
+                                   ],
+                      "commands":  [
+                                       "PLAYER_FULL_MATCH"
+                                   ],
+                      "playerRequired":  true,
+                      "deviceRequired":  false,
+                      "dependsC03":  true,
+                      "status":  "NOT_RUN",
+                      "gap":  "No Windows Player three-cheat driver path or accepted GAME evidence.",
+                      "implementation":  [
+                                             "unity/Mahjong.Unity/Assets/Scripts/Table/TablePresenter.cs",
+                                             "unity/Mahjong.Unity/Assets/Scripts/Table/TableCommandIntentFactory.cs",
+                                             "dotnet/src/Mahjong.TableRuntime/TableActor.cs",
+                                             "dotnet/src/Mahjong.Domain"
+                                         ],
+                      "evidenceLayerRefs":  {
+                                                "DOTNET_PURE":  [
+                                                                    "DOTNET_PURE"
+                                                                ],
+                                                "SCRIPT_TOOL_FIXTURE":  [
+
+                                                                        ],
+                                                "UNITY_EDITMODE":  [
+
+                                                                   ],
+                                                "UNITY_PLAYMODE":  [
+                                                                       "UNITY_PLAYMODE"
+                                                                   ],
+                                                "WINDOWS_PLAYER":  [
+
+                                                                   ],
+                                                "ANDROID_DEVICE":  [
+
+                                                                   ],
+                                                "IOS_DEVICE":  [
+
+                                                               ]
+                                            }
+                  },
+                  {
+                      "id":  "C04-G3-02",
+                      "parent":  "C04-G3",
+                      "title":  "SleeveBloom (袖里藏花) successful authorized execution",
+                      "trigger":  "Purchase/activate sleeve concealment, then perform the allowed hidden swap through normal controls.",
+                      "initialFixture":  "Real legal hand and wall from live Player; record tile IDs and zones before.",
+                      "entry":  "Player cheat UI and actual authority command.",
+                      "assert":  "Only authorized hand view sees sleeve data; cost charged exactly once; swap preserves unique 136 physical entities and legal hand size; opponent/spectator/public snapshots omit concealed identities and private fee.",
+                      "bindings":  "Request/scope/payload, owner seat/role, round/version/control epoch, private ledger event and public cursor.",
+                      "evidence":  [
+                                       "PrivateLedgerAuthorizationTests and spectator whitelist tests are component-level; not Player integration"
+                                   ],
+                      "commands":  [
+                                       "PLAYER_FULL_MATCH"
+                                   ],
+                      "playerRequired":  true,
+                      "deviceRequired":  false,
+                      "dependsC03":  true,
+                      "status":  "NOT_RUN",
+                      "gap":  "No actual Player SleeveBloom action/fee/privacy evidence.",
+                      "implementation":  [
+                                             "unity/Mahjong.Unity/Assets/Scripts/Table/TablePresenter.cs",
+                                             "unity/Mahjong.Unity/Assets/Scripts/Table/TableCommandIntentFactory.cs",
+                                             "dotnet/src/Mahjong.TableRuntime/TableActor.cs",
+                                             "dotnet/src/Mahjong.Domain"
+                                         ],
+                      "evidenceLayerRefs":  {
+                                                "DOTNET_PURE":  [
+                                                                    "DOTNET_PURE"
+                                                                ],
+                                                "SCRIPT_TOOL_FIXTURE":  [
+
+                                                                        ],
+                                                "UNITY_EDITMODE":  [
+
+                                                                   ],
+                                                "UNITY_PLAYMODE":  [
+                                                                       "UNITY_PLAYMODE"
+                                                                   ],
+                                                "WINDOWS_PLAYER":  [
+
+                                                                   ],
+                                                "ANDROID_DEVICE":  [
+
+                                                                   ],
+                                                "IOS_DEVICE":  [
+
+                                                               ]
+                                            }
+                  },
+                  {
+                      "id":  "C04-G3-03",
+                      "parent":  "C04-G3",
+                      "title":  "BeamSwap (偷梁换柱) successful authorized execution",
+                      "trigger":  "Purchase/activate equal-count hand and wall/dead-wall exchange at an allowed window.",
+                      "initialFixture":  "Real live physical entities and legal zone state.",
+                      "entry":  "Player cheat UI -\u003e actual authority command.",
+                      "assert":  "Before/after multiset exactly equals all 136 physical IDs; source/destination zones and hand size match contract; fee once; unauthorized seat or invalid window rejected unchanged.",
+                      "bindings":  "Request/scope/payload, seat/role, round/version, control epoch, ledger seq, entity IDs/zones, visible event cursor.",
+                      "evidence":  [
+                                       "Census source confirms generic 136 invariant components; no real Player BeamSwap evidence found"
+                                   ],
+                      "commands":  [
+                                       "PLAYER_FULL_MATCH"
+                                   ],
+                      "playerRequired":  true,
+                      "deviceRequired":  false,
+                      "dependsC03":  true,
+                      "status":  "NOT_RUN",
+                      "gap":  "No actual Player BeamSwap exercise; do not substitute isolated 136-count fixture.",
+                      "implementation":  [
+                                             "unity/Mahjong.Unity/Assets/Scripts/Table/TablePresenter.cs",
+                                             "unity/Mahjong.Unity/Assets/Scripts/Table/TableCommandIntentFactory.cs",
+                                             "dotnet/src/Mahjong.TableRuntime/TableActor.cs",
+                                             "dotnet/src/Mahjong.Domain"
+                                         ],
+                      "evidenceLayerRefs":  {
+                                                "DOTNET_PURE":  [
+                                                                    "DOTNET_PURE"
+                                                                ],
+                                                "SCRIPT_TOOL_FIXTURE":  [
+
+                                                                        ],
+                                                "UNITY_EDITMODE":  [
+
+                                                                   ],
+                                                "UNITY_PLAYMODE":  [
+                                                                       "UNITY_PLAYMODE"
+                                                                   ],
+                                                "WINDOWS_PLAYER":  [
+
+                                                                   ],
+                                                "ANDROID_DEVICE":  [
+
+                                                                   ],
+                                                "IOS_DEVICE":  [
+
+                                                               ]
+                                            }
+                  },
+                  {
+                      "id":  "C04-G3-04",
+                      "parent":  "C04-G3",
+                      "title":  "Exact fee debit and private ledger change for each successful cheat",
+                      "trigger":  "For TileMark, SleeveBloom, and BeamSwap on eligible turns, submit each authorized action through the actual Player UI once; record before/after cheat balance and private ledger entry against the same receipt.",
+                      "initialFixture":  "Actual ledger and eligibility from Player; no direct ledger mutation.",
+                      "entry":  "Player cheat controls and server-side/local authority validation.",
+                      "assert":  "Each successful action has exactly its configured fee once, private balance/ledger updates only for the owning player, receipt and visible outcome bind to the same request; no other seat/public stream exposes the fee.",
+                      "bindings":  "Command request/scope/payload, account/seat/role, ledger before-after sequence, round/version/control epoch.",
+                      "evidence":  [
+                                       "Private ledger UI authorization tests do not exercise authority rejection"
+                                   ],
+                      "commands":  [
+                                       "PLAYER_FULL_MATCH"
+                                   ],
+                      "playerRequired":  true,
+                      "deviceRequired":  false,
+                      "dependsC03":  true,
+                      "status":  "NOT_RUN",
+                      "gap":  "No final Windows Player route selects all three cheat actions and emits the authoritative fee/ledger observation; visible ledger UI alone does not prove exact durable debit.",
+                      "implementation":  [
+                                             "unity/Mahjong.Unity/Assets/Scripts/Table/TablePresenter.cs",
+                                             "unity/Mahjong.Unity/Assets/Scripts/Table/TableCommandIntentFactory.cs",
+                                             "dotnet/src/Mahjong.TableRuntime/TableActor.cs",
+                                             "dotnet/src/Mahjong.Domain"
+                                         ],
+                      "evidenceLayerRefs":  {
+                                                "DOTNET_PURE":  [
+                                                                    "DOTNET_PURE"
+                                                                ],
+                                                "SCRIPT_TOOL_FIXTURE":  [
+
+                                                                        ],
+                                                "UNITY_EDITMODE":  [
+
+                                                                   ],
+                                                "UNITY_PLAYMODE":  [
+                                                                       "UNITY_PLAYMODE"
+                                                                   ],
+                                                "WINDOWS_PLAYER":  [
+
+                                                                   ],
+                                                "ANDROID_DEVICE":  [
+
+                                                                   ],
+                                                "IOS_DEVICE":  [
+
+                                                               ]
+                                            }
+                  },
+                  {
+                      "id":  "C04-G3-05",
+                      "parent":  "C04-G3",
+                      "title":  "136 physical entity invariant across all three cheats",
+                      "trigger":  "Record complete physical zone assignment immediately before/after each cheat and subsequent draw/discard.",
+                      "initialFixture":  "Same live Player runs as G3-01..03, persisted raw authority export or trusted structured record.",
+                      "entry":  "Actual authority state and real Player event/receipt observation; never private reflection writes.",
+                      "assert":  "Sorted physical IDs equal 0..135 with one occurrence each, zone totals reconcile and state hash changes only as expected.",
+                      "bindings":  "Each cheat request/scope/receipt and version; export/build identity and entity digest.",
+                      "evidence":  [
+                                       "Historical recovery observer recorded 136 positions in other scenarios; not all-cheat invariant"
+                                   ],
+                      "commands":  [
+                                       "PLAYER_FULL_MATCH"
+                                   ],
+                      "playerRequired":  true,
+                      "deviceRequired":  false,
+                      "dependsC03":  true,
+                      "status":  "NOT_RUN",
+                      "gap":  "No supported final Player export/assertion path for all cheat states; post-run structured authority export must be available.",
+                      "implementation":  [
+                                             "unity/Mahjong.Unity/Assets/Scripts/Table/TablePresenter.cs",
+                                             "unity/Mahjong.Unity/Assets/Scripts/Table/TableCommandIntentFactory.cs",
+                                             "dotnet/src/Mahjong.TableRuntime/TableActor.cs",
+                                             "dotnet/src/Mahjong.Domain"
+                                         ],
+                      "evidenceLayerRefs":  {
+                                                "DOTNET_PURE":  [
+                                                                    "DOTNET_PURE"
+                                                                ],
+                                                "SCRIPT_TOOL_FIXTURE":  [
+
+                                                                        ],
+                                                "UNITY_EDITMODE":  [
+
+                                                                   ],
+                                                "UNITY_PLAYMODE":  [
+                                                                       "UNITY_PLAYMODE"
+                                                                   ],
+                                                "WINDOWS_PLAYER":  [
+
+                                                                   ],
+                                                "ANDROID_DEVICE":  [
+
+                                                                   ],
+                                                "IOS_DEVICE":  [
+
+                                                               ]
+                                            }
+                  },
+                  {
+                      "id":  "C04-G3-06",
+                      "parent":  "C04-G3",
+                      "title":  "Unauthorized and insufficient-balance cheat rejection",
+                      "trigger":  "At a real Player cheat prompt, repeat one authorized action with authorization absent and one action with balance below its configured cost; do not inject results through reflection or test-only channel.",
+                      "initialFixture":  "Actual Player authority state with a seat that lacks the required cheat authorization for one attempt and a separately established insufficient cheat balance for another; establish both through supported game/session setup, never reflection or private ledger writes.",
+                      "entry":  "Player cheat prompt -\u003e TablePresenter/TableCommandIntentFactory -\u003e TableSession.SubmitAsync -\u003e actual LocalTableChannel/authority response; use separate request IDs for unauthorized and insufficient-balance payloads.",
+                      "assert":  "Both distinct requests receive the authority rejection and correlated receipt/visible rejection result; stateVersion, events, hand/wall 136-ID multiset and private ledger balance remain unchanged. A separate valid authorized/adequately funded control changes only the expected action result and configured fee.",
+                      "bindings":  "For each negative request independently bind account/session/room/seat/role/round/scope/controlEpoch/stateVersion/requestId/API/canonical payload SHA and returned receipt; do not reuse one requestId for different payload bytes.",
+                      "evidence":  [
+                                       "dotnet/tests/Mahjong.LocalHost.Tests/LocalHostCheatTests.cs:TileMarkIsSubmittedThroughTheClientAndProjectsPrivately",
+                                       "dotnet/tests/Mahjong.LocalHost.Tests/LocalHostCheatTests.cs:SleeveBloomAndBeamSwapAreSubmittedThroughTheClient",
+                                       "dotnet/tests/Mahjong.TableRuntime.Tests/N1bCheatExecutionTests.cs:tile_mark_from_the_wrong_seat_is_rejected_with_zero_side_effects",
+                                       "No existing final-Player authorization/balance negative run; C02 factsEqual and recovery fixtures are not evidence for this row."
+                                   ],
+                      "commands":  [
+                                       "PLAYER_FULL_MATCH (general runner only; no cheat selector)",
+                                       "Independent bounded Player scenario driver required"
+                                   ],
+                      "playerRequired":  true,
+                      "deviceRequired":  false,
+                      "dependsC03":  true,
+                      "status":  "NOT_RUN",
+                      "gap":  "No final Player prompt/request negative selector or structured authority observation. The existing .NET client/authority tests do not establish the Player UI authorization and insufficient-balance states.",
+                      "implementation":  [
+                                             "unity/Mahjong.Unity/Assets/Scripts/Table/TablePresenter.cs",
+                                             "unity/Mahjong.Unity/Assets/Scripts/Table/TableCommandIntentFactory.cs",
+                                             "dotnet/src/Mahjong.Client/TableSession.cs:SubmitAsync",
+                                             "dotnet/src/Mahjong.LocalHost/LocalTableChannel.cs",
+                                             "dotnet/tests/Mahjong.LocalHost.Tests/LocalHostCheatTests.cs",
+                                             "dotnet/tests/Mahjong.TableRuntime.Tests/N1bCheatExecutionTests.cs"
+                                         ],
+                      "evidenceLayerRefs":  {
+                                                "DOTNET_PURE":  [
+                                                                    "DOTNET_PURE"
+                                                                ],
+                                                "SCRIPT_TOOL_FIXTURE":  [
+
+                                                                        ],
+                                                "UNITY_EDITMODE":  [
+
+                                                                   ],
+                                                "UNITY_PLAYMODE":  [
+                                                                       "UNITY_PLAYMODE"
+                                                                   ],
+                                                "WINDOWS_PLAYER":  [
+
+                                                                   ],
+                                                "ANDROID_DEVICE":  [
+
+                                                                   ],
+                                                "IOS_DEVICE":  [
+
+                                                               ]
+                                            }
+                  },
+                  {
+                      "id":  "C04-G4-01",
+                      "parent":  "C04-G4",
+                      "title":  "Disconnect takeover and stale AI decision rejection",
+                      "trigger":  "During an active decision disconnect owned human channel, wait declared grace/policy, allow takeover action; submit old decision response after control epoch advances.",
+                      "initialFixture":  "Actual live local session, deterministic ManualClock available only in .NET tests; Player case uses documented wait and real process.",
+                      "entry":  "Player UI/transport and actual local runtime; control component path via test-p45-control-ui.",
+                      "assert":  "Takeover shown; authoritative owner/control epoch changes; stale old decision rejected without state/version/event mutation.",
+                      "bindings":  "Seat/session/binding, old/new controlEpoch, decisionId, request scope and version.",
+                      "evidence":  [
+                                       "CODEX-V5-P4.5-UNITY-CONTROL-UI-DELIVERY and accepted C01 control/session evidence; not C04 fresh Player"
+                                   ],
+                      "commands":  [
+                                       "UNITY_CONTROL",
+                                       "PLAYER_FULL_MATCH"
+                                   ],
+                      "playerRequired":  true,
+                      "deviceRequired":  false,
+                      "dependsC03":  true,
+                      "status":  "NOT_RUN",
+                      "gap":  "UI and .NET control tests do not prove a Player stale-decision round trip after takeover.",
+                      "implementation":  [
+                                             "unity/Mahjong.Unity/Assets/Scripts/App/LocalControlPlayerProbe.cs",
+                                             "unity/Mahjong.Unity/Assets/Scripts/App/SessionCoordinator.cs",
+                                             "unity/Mahjong.Unity/Assets/Scripts/Table/TablePresenter.cs",
+                                             "unity/Mahjong.Unity/Assets/Scripts/Table/TableCommandIntentFactory.cs"
+                                         ],
+                      "evidenceLayerRefs":  {
+                                                "DOTNET_PURE":  [
+                                                                    "DOTNET_PURE"
+                                                                ],
+                                                "SCRIPT_TOOL_FIXTURE":  [
+
+                                                                        ],
+                                                "UNITY_EDITMODE":  [
+
+                                                                   ],
+                                                "UNITY_PLAYMODE":  [
+                                                                       "UNITY_PLAYMODE"
+                                                                   ],
+                                                "WINDOWS_PLAYER":  [
+
+                                                                   ],
+                                                "ANDROID_DEVICE":  [
+
+                                                                   ],
+                                                "IOS_DEVICE":  [
+
+                                                               ]
+                                            }
+                  },
+                  {
+                      "id":  "C04-G4-02",
+                      "parent":  "C04-G4",
+                      "title":  "Leave/re-enter same room and data without unsafe duplicate action",
+                      "trigger":  "Leave table/menu during live room, re-enter through actual UI, read authoritative full snapshot and reconcile pending outbox.",
+                      "initialFixture":  "Same run, room and durable data root; real channel lifecycle.",
+                      "entry":  "Player routing through AppRouter/SessionCoordinator and actual local host.",
+                      "assert":  "Old view binding unsubscribed; new snapshot baseline is current; old pending action is not blindly replayed; room identity/data continuity is explicit.",
+                      "bindings":  "Room/session ID, binding epoch, snapshot cursor/stateVersion, outbox request/scope identity.",
+                      "evidence":  [
+                                       "LocalHostCompositionPlayModeTests.RealLocalHost_ReturnToMenuThenReenter_RecoversSameRoom component test"
+                                   ],
+                      "commands":  [
+                                       "PLAYER_FULL_MATCH"
+                                   ],
+                      "playerRequired":  true,
+                      "deviceRequired":  false,
+                      "dependsC03":  true,
+                      "status":  "NOT_RUN",
+                      "gap":  "No final Player leave/re-enter evidence; this is not automatic reconnect.",
+                      "implementation":  [
+                                             "unity/Mahjong.Unity/Assets/Scripts/App/LocalControlPlayerProbe.cs",
+                                             "unity/Mahjong.Unity/Assets/Scripts/App/SessionCoordinator.cs",
+                                             "unity/Mahjong.Unity/Assets/Scripts/Table/TablePresenter.cs",
+                                             "unity/Mahjong.Unity/Assets/Scripts/Table/TableCommandIntentFactory.cs"
+                                         ],
+                      "evidenceLayerRefs":  {
+                                                "DOTNET_PURE":  [
+                                                                    "DOTNET_PURE"
+                                                                ],
+                                                "SCRIPT_TOOL_FIXTURE":  [
+
+                                                                        ],
+                                                "UNITY_EDITMODE":  [
+
+                                                                   ],
+                                                "UNITY_PLAYMODE":  [
+                                                                       "UNITY_PLAYMODE"
+                                                                   ],
+                                                "WINDOWS_PLAYER":  [
+
+                                                                   ],
+                                                "ANDROID_DEVICE":  [
+
+                                                                   ],
+                                                "IOS_DEVICE":  [
+
+                                                               ]
+                                            }
+                  },
+                  {
+                      "id":  "C04-G4-03",
+                      "parent":  "C04-G4",
+                      "title":  "Explicit claim reclaims control and clears prior epoch",
+                      "trigger":  "Reconnect same authenticated human, invoke explicit claim, then attempt any captured older-owner command.",
+                      "initialFixture":  "Actual seat identity/control history from G4-01; claim only through supported UI/API.",
+                      "entry":  "Player control UI via normal channel.",
+                      "assert":  "Reconnect alone leaves takeover; explicit claim increments epoch; older command rejected and no stale callback updates view; no double charge/action.",
+                      "bindings":  "Authentication/session, seat, old/new owner/controlEpoch, request/scope, decision/version and binding epoch.",
+                      "evidence":  [
+                                       "C01 accepted P4.5 UI control chain has component coverage, not full Player claim case"
+                                   ],
+                      "commands":  [
+                                       "UNITY_CONTROL",
+                                       "PLAYER_FULL_MATCH"
+                                   ],
+                      "playerRequired":  true,
+                      "deviceRequired":  false,
+                      "dependsC03":  true,
+                      "status":  "NOT_RUN",
+                      "gap":  "Final candidate Player evidence still needed; old-binding UI cache must be observed after claim.",
+                      "implementation":  [
+                                             "unity/Mahjong.Unity/Assets/Scripts/App/LocalControlPlayerProbe.cs",
+                                             "unity/Mahjong.Unity/Assets/Scripts/App/SessionCoordinator.cs",
+                                             "unity/Mahjong.Unity/Assets/Scripts/Table/TablePresenter.cs",
+                                             "unity/Mahjong.Unity/Assets/Scripts/Table/TableCommandIntentFactory.cs"
+                                         ],
+                      "evidenceLayerRefs":  {
+                                                "DOTNET_PURE":  [
+                                                                    "DOTNET_PURE"
+                                                                ],
+                                                "SCRIPT_TOOL_FIXTURE":  [
+
+                                                                        ],
+                                                "UNITY_EDITMODE":  [
+
+                                                                   ],
+                                                "UNITY_PLAYMODE":  [
+                                                                       "UNITY_PLAYMODE"
+                                                                   ],
+                                                "WINDOWS_PLAYER":  [
+
+                                                                   ],
+                                                "ANDROID_DEVICE":  [
+
+                                                                   ],
+                                                "IOS_DEVICE":  [
+
+                                                               ]
+                                            }
+                  },
+                  {
+                      "id":  "C04-G5-01",
+                      "parent":  "C04-G5",
+                      "title":  "Four player seats see own hand and not opponent private state",
+                      "trigger":  "Open four authenticated player views for one table; advance private hand updates and scan every seat snapshot and visible event.",
+                      "initialFixture":  "Four real sessions/roles; actual stream from authority, not only hand-authored DTO fixture.",
+                      "entry":  "Player stream/client mapper/TablePresenter; protocol/public channels as configured.",
+                      "assert":  "Each seat sees only its hand/authorized preview; scan for opponent concealed tile IDs, sleeve contents, shuffle seed and private fees; none leak in snapshot/event/log/public stream.",
+                      "bindings":  "Each identity/scope, seat/role, session/binding epoch, stateVersion and independent cursor.",
+                      "evidence":  [
+                                       "SpectatorWhitelistTests and PlayerTableProjectionMapper are component-level; no four-seat real Player scan"
+                                   ],
+                      "commands":  [
+                                       "UNITY_P43",
+                                       "PLAYER_FULL_MATCH"
+                                   ],
+                      "playerRequired":  true,
+                      "deviceRequired":  false,
+                      "dependsC03":  true,
+                      "status":  "NOT_RUN",
+                      "gap":  "Need captured actual serialized streams/snapshots for every role and forbidden-value scan.",
+                      "implementation":  [
+                                             "dotnet/src/Mahjong.TableRuntime/TableVisibilityProjection.cs",
+                                             "dotnet/src/Mahjong.TableRuntime/TableVisibilityContexts.cs",
+                                             "unity/Mahjong.Unity/Assets/Scripts/Spectator/SpectatorWhitelistMapper.cs",
+                                             "unity/Mahjong.Unity/Assets/Scripts/Spectator/SpectatorPresenter.cs",
+                                             "unity/Mahjong.Unity/Assets/Scripts/App/SessionCoordinator.cs"
+                                         ],
+                      "evidenceLayerRefs":  {
+                                                "DOTNET_PURE":  [
+                                                                    "DOTNET_PURE"
+                                                                ],
+                                                "SCRIPT_TOOL_FIXTURE":  [
+
+                                                                        ],
+                                                "UNITY_EDITMODE":  [
+
+                                                                   ],
+                                                "UNITY_PLAYMODE":  [
+                                                                       "UNITY_PLAYMODE"
+                                                                   ],
+                                                "WINDOWS_PLAYER":  [
+
+                                                                   ],
+                                                "ANDROID_DEVICE":  [
+
+                                                                   ],
+                                                "IOS_DEVICE":  [
+
+                                                               ]
+                                            }
+                  },
+                  {
+                      "id":  "C04-G5-02",
+                      "parent":  "C04-G5",
+                      "title":  "Spectator public stream excludes hidden and private values",
+                      "trigger":  "Join active table as spectator and capture public stream throughout initial snapshot and each private update/cheat.",
+                      "initialFixture":  "Same live run; separate spectator identity and public cursor.",
+                      "entry":  "Spectator channel/public stream and SpectatorPresenter; not private player API.",
+                      "assert":  "No concealed hand, sleeve tile IDs, random seed, private fees or receipt payloads; public cursor independent and round/settlement presentation uses only public projection.",
+                      "bindings":  "Spectator account/scope/session, public cursor, (sessionId,sync epoch), source hash and role.",
+                      "evidence":  [
+                                       "P4.4 SpectatorWhitelistTests/PlayMode cover projection behavior; not live all-secret stream scan"
+                                   ],
+                      "commands":  [
+                                       "UNITY_P44",
+                                       "PLAYER_FULL_MATCH"
+                                   ],
+                      "playerRequired":  true,
+                      "deviceRequired":  false,
+                      "dependsC03":  true,
+                      "status":  "NOT_RUN",
+                      "gap":  "No unified actual stream scan over all protected field categories.",
+                      "implementation":  [
+                                             "dotnet/src/Mahjong.TableRuntime/TableVisibilityProjection.cs",
+                                             "dotnet/src/Mahjong.TableRuntime/TableVisibilityContexts.cs",
+                                             "unity/Mahjong.Unity/Assets/Scripts/Spectator/SpectatorWhitelistMapper.cs",
+                                             "unity/Mahjong.Unity/Assets/Scripts/Spectator/SpectatorPresenter.cs",
+                                             "unity/Mahjong.Unity/Assets/Scripts/App/SessionCoordinator.cs"
+                                         ],
+                      "evidenceLayerRefs":  {
+                                                "DOTNET_PURE":  [
+                                                                    "DOTNET_PURE"
+                                                                ],
+                                                "SCRIPT_TOOL_FIXTURE":  [
+
+                                                                        ],
+                                                "UNITY_EDITMODE":  [
+
+                                                                   ],
+                                                "UNITY_PLAYMODE":  [
+                                                                       "UNITY_PLAYMODE"
+                                                                   ],
+                                                "WINDOWS_PLAYER":  [
+
+                                                                   ],
+                                                "ANDROID_DEVICE":  [
+
+                                                                   ],
+                                                "IOS_DEVICE":  [
+
+                                                               ]
+                                            }
+                  },
+                  {
+                      "id":  "C04-G5-03",
+                      "parent":  "C04-G5",
+                      "title":  "Role switch clears caches and old binding cannot publish",
+                      "trigger":  "Switch player to spectator and spectator to player or rebind to another seat; inject delayed old-stream delivery after switch.",
+                      "initialFixture":  "Actual sessions with distinct roles/bindings and delayed real transport event.",
+                      "entry":  "Client binding lifecycle -\u003e mapper/presenter/role router.",
+                      "assert":  "Old private hand/ledger/sleeve cache cleared before new role render; old binding epoch event dropped; new public/player baseline correct; no secret survives scene transition.",
+                      "bindings":  "Old/new bindingEpoch, role, session, seat, cursor/stateVersion and scope.",
+                      "evidence":  [
+                                       "SettlementPlayModeTests.PrivateLedger_ClearedOnSpectator is a specific UI cleanup component test"
+                                   ],
+                      "commands":  [
+                                       "UNITY_P44",
+                                       "PLAYER_FULL_MATCH"
+                                   ],
+                      "playerRequired":  true,
+                      "deviceRequired":  false,
+                      "dependsC03":  true,
+                      "status":  "NOT_RUN",
+                      "gap":  "Existing cleanup test is not a stale network binding/cache scan across all roles.",
+                      "implementation":  [
+                                             "dotnet/src/Mahjong.TableRuntime/TableVisibilityProjection.cs",
+                                             "dotnet/src/Mahjong.TableRuntime/TableVisibilityContexts.cs",
+                                             "unity/Mahjong.Unity/Assets/Scripts/Spectator/SpectatorWhitelistMapper.cs",
+                                             "unity/Mahjong.Unity/Assets/Scripts/Spectator/SpectatorPresenter.cs",
+                                             "unity/Mahjong.Unity/Assets/Scripts/App/SessionCoordinator.cs"
+                                         ],
+                      "evidenceLayerRefs":  {
+                                                "DOTNET_PURE":  [
+                                                                    "DOTNET_PURE"
+                                                                ],
+                                                "SCRIPT_TOOL_FIXTURE":  [
+
+                                                                        ],
+                                                "UNITY_EDITMODE":  [
+
+                                                                   ],
+                                                "UNITY_PLAYMODE":  [
+                                                                       "UNITY_PLAYMODE"
+                                                                   ],
+                                                "WINDOWS_PLAYER":  [
+
+                                                                   ],
+                                                "ANDROID_DEVICE":  [
+
+                                                                   ],
+                                                "IOS_DEVICE":  [
+
+                                                               ]
+                                            }
+                  },
+                  {
+                      "id":  "C04-G6-01",
+                      "parent":  "C04-G6",
+                      "title":  "Normal restart from valid primary",
+                      "trigger":  "Exit the exact Player process normally after the real Discard was Applied but its receipt delivery was withheld; reopen the same final Player data root.",
+                      "initialFixture":  "Start from a real legal Discard fixture; commit its canonical request into the primary and persist the matching Applied receipt plus post-discard authority state. Persist the client outbox request but withhold only receipt delivery at the actual channel boundary. Record exact request bytes and pre/post save hashes.",
+                      "entry":  "Windows Player startup -\u003e TableSession.ReconcilePendingAsync -\u003e receipt query envelope over ITableChannel.SendAsync/ReceiveAsync -\u003e LocalTableRuntime.HandleReceiptQueryAsync. RetryPendingAsync is permitted only after Unknown and original same-scope request remains eligible; never submit a new command to emulate reconciliation.",
+                      "assert":  "After restart, ReconcilePendingAsync must find the exact original requestId/scope/API/payload digest and matching Applied receipt persisted with restored state. Original Discard effect vector: one TileDiscarded event, one hand-to-river entity move, stateVersion +1 at original commit, ledger delta 0; physical IDs remain exactly 0..135. Reconciliation/repeated query adds zero version/event/ledger/entity deltas. RetryPendingAsync is allowed only after Unknown and only if same original scope/key/action remains eligible; receipt/state mismatch fails closed without Submit.",
+                      "bindings":  "Bind pre-fault exact canonical command bytes/payload SHA, API, original requestId/scope, owner account, room/session/seat/round, source/build/player and process identity, save/backup hashes and manifest. On recovery bind resulting scope/room/version, receipt lookup and event/ledger/entity observation.",
+                      "evidence":  [
+                                       "C02 historical recovery collector/verifier evidence is status/facts only and does not perform this same-request reconciliation: see H-C02 and SCRIPT_TOOL_FIXTURE/WINDOWS_PLAYER layers.",
+                                       "No fresh C03-bound result; this row remains NOT_RUN."
+                                   ],
+                      "commands":  [
+                                       "PLAYER_RECOVERY -Case Normal -SaveFault None",
+                                       "PLAYER_RECOVERY_VERIFY",
+                                       "Proposed post-C03 request reconciler: tools/unity/run-p45-c04-recovery-reconciliation.ps1"
+                                   ],
+                      "playerRequired":  true,
+                      "deviceRequired":  false,
+                      "dependsC03":  true,
+                      "status":  "NOT_RUN",
+                      "gap":  "No accepted collector path calls TableSession.ReconcilePendingAsync/RetryPendingAsync with the original outbox identity after actual Player recovery; the expected outcome is RECOVERED.",
+                      "implementation":  [
+                                             "dotnet/src/Mahjong.Client/ITableChannel.cs:OpenAsync",
+                                             "dotnet/src/Mahjong.Client/ITableChannel.cs:SendAsync",
+                                             "dotnet/src/Mahjong.Client/ITableChannel.cs:ReceiveAsync",
+                                             "dotnet/src/Mahjong.Client/ITableChannel.cs:CloseAsync",
+                                             "dotnet/src/Mahjong.Client/TableSession.cs:SubmitAsync",
+                                             "dotnet/src/Mahjong.Client/TableSession.cs:ReconcilePendingAsync",
+                                             "dotnet/src/Mahjong.Client/TableSession.cs:RetryPendingAsync",
+                                             "dotnet/src/Mahjong.LocalHost/LocalTableRuntime.cs:HandleReceiptQueryAsync",
+                                             "tools/unity/run-p45-controlled-recovery-collection.ps1",
+                                             "tools/unity/verify-p45-controlled-recovery-collection.ps1"
+                                         ],
+                      "evidenceLayerRefs":  {
+                                                "DOTNET_PURE":  [
+                                                                    "DOTNET_PURE"
+                                                                ],
+                                                "SCRIPT_TOOL_FIXTURE":  [
+                                                                            "SCRIPT_TOOL_FIXTURE"
+                                                                        ],
+                                                "UNITY_EDITMODE":  [
+
+                                                                   ],
+                                                "UNITY_PLAYMODE":  [
+
+                                                                   ],
+                                                "WINDOWS_PLAYER":  [
+                                                                       "WINDOWS_PLAYER"
+                                                                   ],
+                                                "ANDROID_DEVICE":  [
+
+                                                                   ],
+                                                "IOS_DEVICE":  [
+
+                                                               ]
+                                            },
+                      "expectedRecoveryOutcome":  "RECOVERED",
+                      "recoveryFault":  "None",
+                      "requestDisposition":  "Reconcile original canonical request to the primary-stored Applied receipt; if Found, never resend. Retry only after Unknown and only if original room/scope/key remains eligible.",
+                      "requiredEffects":  "Original commit exactly: TileDiscarded=1, hand-to-river entity move=1, stateVersion +1, ledger delta 0; reconciliation delta is zero."
+                  },
+                  {
+                      "id":  "C04-G6-02",
+                      "parent":  "C04-G6",
+                      "title":  "Strong kill and cold restart",
+                      "trigger":  "After actual Discard Applied and receipt delivery withheld, collector pauses at its real first snapshot, force-terminates the exact owned Player process, then relaunches the same data root.",
+                      "initialFixture":  "Start from a real legal Discard fixture; commit its canonical request into the primary and persist the matching Applied receipt plus post-discard authority state. Persist the client outbox request but withhold only receipt delivery at the actual channel boundary. Record exact request bytes and pre/post save hashes.",
+                      "entry":  "Windows Player startup -\u003e TableSession.ReconcilePendingAsync -\u003e receipt query envelope over ITableChannel.SendAsync/ReceiveAsync -\u003e LocalTableRuntime.HandleReceiptQueryAsync. RetryPendingAsync is permitted only after Unknown and original same-scope request remains eligible; never submit a new command to emulate reconciliation.",
+                      "assert":  "After restart, ReconcilePendingAsync must find the exact original requestId/scope/API/payload digest and matching Applied receipt persisted with restored state. Original Discard effect vector: one TileDiscarded event, one hand-to-river entity move, stateVersion +1 at original commit, ledger delta 0; physical IDs remain exactly 0..135. Reconciliation/repeated query adds zero version/event/ledger/entity deltas. RetryPendingAsync is allowed only after Unknown and only if same original scope/key/action remains eligible; receipt/state mismatch fails closed without Submit.",
+                      "bindings":  "Bind pre-fault exact canonical command bytes/payload SHA, API, original requestId/scope, owner account, room/session/seat/round, source/build/player and process identity, save/backup hashes and manifest. On recovery bind resulting scope/room/version, receipt lookup and event/ledger/entity observation.",
+                      "evidence":  [
+                                       "C02 historical recovery collector/verifier evidence is status/facts only and does not perform this same-request reconciliation: see H-C02 and SCRIPT_TOOL_FIXTURE/WINDOWS_PLAYER layers.",
+                                       "No fresh C03-bound result; this row remains NOT_RUN."
+                                   ],
+                      "commands":  [
+                                       "PLAYER_RECOVERY -Case Force -SaveFault None",
+                                       "PLAYER_RECOVERY_VERIFY",
+                                       "Proposed post-C03 request reconciler: tools/unity/run-p45-c04-recovery-reconciliation.ps1"
+                                   ],
+                      "playerRequired":  true,
+                      "deviceRequired":  false,
+                      "dependsC03":  true,
+                      "status":  "NOT_RUN",
+                      "gap":  "No accepted collector path calls TableSession.ReconcilePendingAsync/RetryPendingAsync with the original outbox identity after actual Player recovery; the expected outcome is RECOVERED.",
+                      "implementation":  [
+                                             "dotnet/src/Mahjong.Client/ITableChannel.cs:OpenAsync",
+                                             "dotnet/src/Mahjong.Client/ITableChannel.cs:SendAsync",
+                                             "dotnet/src/Mahjong.Client/ITableChannel.cs:ReceiveAsync",
+                                             "dotnet/src/Mahjong.Client/ITableChannel.cs:CloseAsync",
+                                             "dotnet/src/Mahjong.Client/TableSession.cs:SubmitAsync",
+                                             "dotnet/src/Mahjong.Client/TableSession.cs:ReconcilePendingAsync",
+                                             "dotnet/src/Mahjong.Client/TableSession.cs:RetryPendingAsync",
+                                             "dotnet/src/Mahjong.LocalHost/LocalTableRuntime.cs:HandleReceiptQueryAsync",
+                                             "tools/unity/run-p45-controlled-recovery-collection.ps1",
+                                             "tools/unity/verify-p45-controlled-recovery-collection.ps1"
+                                         ],
+                      "evidenceLayerRefs":  {
+                                                "DOTNET_PURE":  [
+                                                                    "DOTNET_PURE"
+                                                                ],
+                                                "SCRIPT_TOOL_FIXTURE":  [
+                                                                            "SCRIPT_TOOL_FIXTURE"
+                                                                        ],
+                                                "UNITY_EDITMODE":  [
+
+                                                                   ],
+                                                "UNITY_PLAYMODE":  [
+
+                                                                   ],
+                                                "WINDOWS_PLAYER":  [
+                                                                       "WINDOWS_PLAYER"
+                                                                   ],
+                                                "ANDROID_DEVICE":  [
+
+                                                                   ],
+                                                "IOS_DEVICE":  [
+
+                                                               ]
+                                            },
+                      "expectedRecoveryOutcome":  "RECOVERED",
+                      "recoveryFault":  "None",
+                      "requestDisposition":  "Reconcile the original canonical request to the primary-stored Applied receipt after verified FORCE_KILLED; if Found, never resend. Retry only after Unknown and only if original room/scope/key remains eligible.",
+                      "requiredEffects":  "Original commit exactly: TileDiscarded=1, hand-to-river entity move=1, stateVersion +1, ledger delta 0; reconciliation delta is zero."
+                  },
+                  {
+                      "id":  "C04-G6-03",
+                      "parent":  "C04-G6",
+                      "title":  "Truncated primary plus valid backup",
+                      "trigger":  "Collector applies TruncatePrimary after authenticated BEFORE capture, then cold starts.",
+                      "initialFixture":  "Use a real legal Discard request whose Applied receipt and post-discard authority state are present in the valid `.save.prev` backup; persist same request in client outbox and withhold only receipt delivery at the real channel boundary. Record exact request bytes and both storage hashes before fault.",
+                      "entry":  "Windows Player startup -\u003e TableSession.ReconcilePendingAsync -\u003e receipt query envelope over ITableChannel.SendAsync/ReceiveAsync -\u003e LocalTableRuntime.HandleReceiptQueryAsync. RetryPendingAsync is permitted only after Unknown and original same-scope request remains eligible; never submit a new command to emulate reconciliation.",
+                      "assert":  "After restart, ReconcilePendingAsync must find the exact original requestId/scope/API/payload digest and matching Applied receipt persisted with restored state. Original Discard effect vector: one TileDiscarded event, one hand-to-river entity move, stateVersion +1 at original commit, ledger delta 0; physical IDs remain exactly 0..135. Reconciliation/repeated query adds zero version/event/ledger/entity deltas. RetryPendingAsync is allowed only after Unknown and only if same original scope/key/action remains eligible; receipt/state mismatch fails closed without Submit.",
+                      "bindings":  "Bind pre-fault exact canonical command bytes/payload SHA, API, original requestId/scope, owner account, room/session/seat/round, source/build/player and process identity, save/backup hashes and manifest. On recovery bind resulting scope/room/version, receipt lookup and event/ledger/entity observation.",
+                      "evidence":  [
+                                       "C02 historical recovery collector/verifier evidence is status/facts only and does not perform this same-request reconciliation: see H-C02 and SCRIPT_TOOL_FIXTURE/WINDOWS_PLAYER layers.",
+                                       "No fresh C03-bound result; this row remains NOT_RUN."
+                                   ],
+                      "commands":  [
+                                       "PLAYER_RECOVERY -Case Normal -SaveFault TruncatePrimary",
+                                       "PLAYER_RECOVERY_VERIFY",
+                                       "Proposed post-C03 request reconciler: tools/unity/run-p45-c04-recovery-reconciliation.ps1"
+                                   ],
+                      "playerRequired":  true,
+                      "deviceRequired":  false,
+                      "dependsC03":  true,
+                      "status":  "NOT_RUN",
+                      "gap":  "No accepted collector path calls TableSession.ReconcilePendingAsync/RetryPendingAsync with the original outbox identity after actual Player recovery; the expected outcome is RECOVERED_FROM_BACKUP.",
+                      "implementation":  [
+                                             "dotnet/src/Mahjong.Client/ITableChannel.cs:OpenAsync",
+                                             "dotnet/src/Mahjong.Client/ITableChannel.cs:SendAsync",
+                                             "dotnet/src/Mahjong.Client/ITableChannel.cs:ReceiveAsync",
+                                             "dotnet/src/Mahjong.Client/ITableChannel.cs:CloseAsync",
+                                             "dotnet/src/Mahjong.Client/TableSession.cs:SubmitAsync",
+                                             "dotnet/src/Mahjong.Client/TableSession.cs:ReconcilePendingAsync",
+                                             "dotnet/src/Mahjong.Client/TableSession.cs:RetryPendingAsync",
+                                             "dotnet/src/Mahjong.LocalHost/LocalTableRuntime.cs:HandleReceiptQueryAsync",
+                                             "tools/unity/run-p45-controlled-recovery-collection.ps1",
+                                             "tools/unity/verify-p45-controlled-recovery-collection.ps1"
+                                         ],
+                      "evidenceLayerRefs":  {
+                                                "DOTNET_PURE":  [
+                                                                    "DOTNET_PURE"
+                                                                ],
+                                                "SCRIPT_TOOL_FIXTURE":  [
+                                                                            "SCRIPT_TOOL_FIXTURE"
+                                                                        ],
+                                                "UNITY_EDITMODE":  [
+
+                                                                   ],
+                                                "UNITY_PLAYMODE":  [
+
+                                                                   ],
+                                                "WINDOWS_PLAYER":  [
+                                                                       "WINDOWS_PLAYER"
+                                                                   ],
+                                                "ANDROID_DEVICE":  [
+
+                                                                   ],
+                                                "IOS_DEVICE":  [
+
+                                                               ]
+                                            },
+                      "expectedRecoveryOutcome":  "RECOVERED_FROM_BACKUP",
+                      "recoveryFault":  "TruncatePrimary",
+                      "requestDisposition":  "Require accepted valid backup to contain this request receipt and resulting state; reconcile same original outbox identity and do not create another effect. Retry only after Unknown if original scope/key remains eligible.",
+                      "requiredEffects":  "Original commit exactly: TileDiscarded=1, hand-to-river entity move=1, stateVersion +1, ledger delta 0; reconciliation delta is zero."
+                  },
+                  {
+                      "id":  "C04-G6-04",
+                      "parent":  "C04-G6",
+                      "title":  "Bad checksum primary plus valid backup",
+                      "trigger":  "Collector applies BadChecksumPrimary after BEFORE capture, then cold starts.",
+                      "initialFixture":  "Use a real legal Discard request whose Applied receipt and post-discard authority state are present in the valid `.save.prev` backup; persist same request in client outbox and withhold only receipt delivery at the real channel boundary. Record exact request bytes and both storage hashes before fault.",
+                      "entry":  "Windows Player startup -\u003e TableSession.ReconcilePendingAsync -\u003e receipt query envelope over ITableChannel.SendAsync/ReceiveAsync -\u003e LocalTableRuntime.HandleReceiptQueryAsync. RetryPendingAsync is permitted only after Unknown and original same-scope request remains eligible; never submit a new command to emulate reconciliation.",
+                      "assert":  "After restart, ReconcilePendingAsync must find the exact original requestId/scope/API/payload digest and matching Applied receipt persisted with restored state. Original Discard effect vector: one TileDiscarded event, one hand-to-river entity move, stateVersion +1 at original commit, ledger delta 0; physical IDs remain exactly 0..135. Reconciliation/repeated query adds zero version/event/ledger/entity deltas. RetryPendingAsync is allowed only after Unknown and only if same original scope/key/action remains eligible; receipt/state mismatch fails closed without Submit.",
+                      "bindings":  "Bind pre-fault exact canonical command bytes/payload SHA, API, original requestId/scope, owner account, room/session/seat/round, source/build/player and process identity, save/backup hashes and manifest. On recovery bind resulting scope/room/version, receipt lookup and event/ledger/entity observation.",
+                      "evidence":  [
+                                       "C02 historical recovery collector/verifier evidence is status/facts only and does not perform this same-request reconciliation: see H-C02 and SCRIPT_TOOL_FIXTURE/WINDOWS_PLAYER layers.",
+                                       "No fresh C03-bound result; this row remains NOT_RUN."
+                                   ],
+                      "commands":  [
+                                       "PLAYER_RECOVERY -Case Normal -SaveFault BadChecksumPrimary",
+                                       "PLAYER_RECOVERY_VERIFY",
+                                       "Proposed post-C03 request reconciler: tools/unity/run-p45-c04-recovery-reconciliation.ps1"
+                                   ],
+                      "playerRequired":  true,
+                      "deviceRequired":  false,
+                      "dependsC03":  true,
+                      "status":  "NOT_RUN",
+                      "gap":  "No accepted collector path calls TableSession.ReconcilePendingAsync/RetryPendingAsync with the original outbox identity after actual Player recovery; the expected outcome is RECOVERED_FROM_BACKUP.",
+                      "implementation":  [
+                                             "dotnet/src/Mahjong.Client/ITableChannel.cs:OpenAsync",
+                                             "dotnet/src/Mahjong.Client/ITableChannel.cs:SendAsync",
+                                             "dotnet/src/Mahjong.Client/ITableChannel.cs:ReceiveAsync",
+                                             "dotnet/src/Mahjong.Client/ITableChannel.cs:CloseAsync",
+                                             "dotnet/src/Mahjong.Client/TableSession.cs:SubmitAsync",
+                                             "dotnet/src/Mahjong.Client/TableSession.cs:ReconcilePendingAsync",
+                                             "dotnet/src/Mahjong.Client/TableSession.cs:RetryPendingAsync",
+                                             "dotnet/src/Mahjong.LocalHost/LocalTableRuntime.cs:HandleReceiptQueryAsync",
+                                             "tools/unity/run-p45-controlled-recovery-collection.ps1",
+                                             "tools/unity/verify-p45-controlled-recovery-collection.ps1"
+                                         ],
+                      "evidenceLayerRefs":  {
+                                                "DOTNET_PURE":  [
+                                                                    "DOTNET_PURE"
+                                                                ],
+                                                "SCRIPT_TOOL_FIXTURE":  [
+                                                                            "SCRIPT_TOOL_FIXTURE"
+                                                                        ],
+                                                "UNITY_EDITMODE":  [
+
+                                                                   ],
+                                                "UNITY_PLAYMODE":  [
+
+                                                                   ],
+                                                "WINDOWS_PLAYER":  [
+                                                                       "WINDOWS_PLAYER"
+                                                                   ],
+                                                "ANDROID_DEVICE":  [
+
+                                                                   ],
+                                                "IOS_DEVICE":  [
+
+                                                               ]
+                                            },
+                      "expectedRecoveryOutcome":  "RECOVERED_FROM_BACKUP",
+                      "recoveryFault":  "BadChecksumPrimary",
+                      "requestDisposition":  "Require accepted valid backup to contain this request receipt and resulting state; reconcile same original outbox identity and do not create another effect. Retry only after Unknown if original scope/key remains eligible.",
+                      "requiredEffects":  "Original commit exactly: TileDiscarded=1, hand-to-river entity move=1, stateVersion +1, ledger delta 0; reconciliation delta is zero."
+                  },
+                  {
+                      "id":  "C04-G6-05",
+                      "parent":  "C04-G6",
+                      "title":  "Missing primary plus valid backup",
+                      "trigger":  "Collector removes primary only inside isolated owned case after BEFORE; cold starts with valid `.save.prev`.",
+                      "initialFixture":  "Use a real legal Discard request whose Applied receipt and post-discard authority state are present in the valid `.save.prev` backup; persist same request in client outbox and withhold only receipt delivery at the real channel boundary. Record exact request bytes and both storage hashes before fault.",
+                      "entry":  "Windows Player startup -\u003e TableSession.ReconcilePendingAsync -\u003e receipt query envelope over ITableChannel.SendAsync/ReceiveAsync -\u003e LocalTableRuntime.HandleReceiptQueryAsync. RetryPendingAsync is permitted only after Unknown and original same-scope request remains eligible; never submit a new command to emulate reconciliation.",
+                      "assert":  "After restart, ReconcilePendingAsync must find the exact original requestId/scope/API/payload digest and matching Applied receipt persisted with restored state. Original Discard effect vector: one TileDiscarded event, one hand-to-river entity move, stateVersion +1 at original commit, ledger delta 0; physical IDs remain exactly 0..135. Reconciliation/repeated query adds zero version/event/ledger/entity deltas. RetryPendingAsync is allowed only after Unknown and only if same original scope/key/action remains eligible; receipt/state mismatch fails closed without Submit.",
+                      "bindings":  "Bind pre-fault exact canonical command bytes/payload SHA, API, original requestId/scope, owner account, room/session/seat/round, source/build/player and process identity, save/backup hashes and manifest. On recovery bind resulting scope/room/version, receipt lookup and event/ledger/entity observation.",
+                      "evidence":  [
+                                       "C02 historical recovery collector/verifier evidence is status/facts only and does not perform this same-request reconciliation: see H-C02 and SCRIPT_TOOL_FIXTURE/WINDOWS_PLAYER layers.",
+                                       "No fresh C03-bound result; this row remains NOT_RUN."
+                                   ],
+                      "commands":  [
+                                       "PLAYER_RECOVERY -Case Normal -SaveFault MissingPrimaryWithBackup",
+                                       "PLAYER_RECOVERY_VERIFY",
+                                       "Proposed post-C03 request reconciler: tools/unity/run-p45-c04-recovery-reconciliation.ps1"
+                                   ],
+                      "playerRequired":  true,
+                      "deviceRequired":  false,
+                      "dependsC03":  true,
+                      "status":  "NOT_RUN",
+                      "gap":  "No accepted collector path calls TableSession.ReconcilePendingAsync/RetryPendingAsync with the original outbox identity after actual Player recovery; the expected outcome is RECOVERED_FROM_BACKUP.",
+                      "implementation":  [
+                                             "dotnet/src/Mahjong.Client/ITableChannel.cs:OpenAsync",
+                                             "dotnet/src/Mahjong.Client/ITableChannel.cs:SendAsync",
+                                             "dotnet/src/Mahjong.Client/ITableChannel.cs:ReceiveAsync",
+                                             "dotnet/src/Mahjong.Client/ITableChannel.cs:CloseAsync",
+                                             "dotnet/src/Mahjong.Client/TableSession.cs:SubmitAsync",
+                                             "dotnet/src/Mahjong.Client/TableSession.cs:ReconcilePendingAsync",
+                                             "dotnet/src/Mahjong.Client/TableSession.cs:RetryPendingAsync",
+                                             "dotnet/src/Mahjong.LocalHost/LocalTableRuntime.cs:HandleReceiptQueryAsync",
+                                             "tools/unity/run-p45-controlled-recovery-collection.ps1",
+                                             "tools/unity/verify-p45-controlled-recovery-collection.ps1"
+                                         ],
+                      "evidenceLayerRefs":  {
+                                                "DOTNET_PURE":  [
+                                                                    "DOTNET_PURE"
+                                                                ],
+                                                "SCRIPT_TOOL_FIXTURE":  [
+                                                                            "SCRIPT_TOOL_FIXTURE"
+                                                                        ],
+                                                "UNITY_EDITMODE":  [
+
+                                                                   ],
+                                                "UNITY_PLAYMODE":  [
+
+                                                                   ],
+                                                "WINDOWS_PLAYER":  [
+                                                                       "WINDOWS_PLAYER"
+                                                                   ],
+                                                "ANDROID_DEVICE":  [
+
+                                                                   ],
+                                                "IOS_DEVICE":  [
+
+                                                               ]
+                                            },
+                      "expectedRecoveryOutcome":  "RECOVERED_FROM_BACKUP",
+                      "recoveryFault":  "MissingPrimaryWithBackup",
+                      "requestDisposition":  "Require accepted valid backup to contain this request receipt and resulting state; reconcile same original outbox identity and do not create another effect. Retry only after Unknown if original scope/key remains eligible.",
+                      "requiredEffects":  "Original commit exactly: TileDiscarded=1, hand-to-river entity move=1, stateVersion +1, ledger delta 0; reconciliation delta is zero."
+                  },
+                  {
+                      "id":  "C04-G6-06",
+                      "parent":  "C04-G6",
+                      "title":  "Both primary and backup missing",
+                      "trigger":  "Collector applies BothMissing in an isolated owned directory then cold starts the final Player.",
+                      "initialFixture":  "The primary and backup are absent after fault; retain pre-fault request identity and directory inventory. FRESH_START must establish a distinct room/session/scope; do not carry old pending command into it.",
+                      "entry":  "Windows Player recovery/startup classifier and visible safe-start UI. The old request is classified NOT_REPLAYED_IN_NEW_SCOPE; no TableSession Submit/Retry or receipt query is issued against the new scope.",
+                      "assert":  "Expected FRESH_START per Get-ExpectedOutcome(BothMissing). New session can become Ready only as a fresh room; no old-command Submit/Retry/query is sent to new scope. Preserve old/new identities and zero old-request-induced new-room version/event/ledger/entity deltas.",
+                      "bindings":  "Bind pre-fault exact canonical command bytes/payload SHA, API, original requestId/scope, owner account, room/session/seat/round, source/build/player and process identity, save/backup hashes and manifest. On recovery bind resulting scope/room/version, receipt lookup and event/ledger/entity observation.",
+                      "evidence":  [
+                                       "C02 accepted recorded GAME outcome BothMissing -\u003e FRESH_START/factsEqual=false; see H-C02, SCRIPT_TOOL_FIXTURE and WINDOWS_PLAYER evidence limits."
+                                   ],
+                      "commands":  [
+                                       "PLAYER_RECOVERY -Case Normal -SaveFault BothMissing",
+                                       "PLAYER_RECOVERY_VERIFY",
+                                       "No request Submit after FRESH_START or REJECTED outcome; observe zero-send boundary"
+                                   ],
+                      "playerRequired":  true,
+                      "deviceRequired":  false,
+                      "dependsC03":  true,
+                      "status":  "NOT_RUN",
+                      "gap":  "No final Player assertion records that the stale outbox command was not resubmitted into the new room/scope; reconciliation of the old request is explicitly not applicable to the fresh scope.",
+                      "implementation":  [
+                                             "tools/unity/run-p45-controlled-recovery-collection.ps1",
+                                             "tools/unity/verify-p45-controlled-recovery-collection.ps1"
+                                         ],
+                      "evidenceLayerRefs":  {
+                                                "DOTNET_PURE":  [
+                                                                    "DOTNET_PURE"
+                                                                ],
+                                                "SCRIPT_TOOL_FIXTURE":  [
+                                                                            "SCRIPT_TOOL_FIXTURE"
+                                                                        ],
+                                                "UNITY_EDITMODE":  [
+
+                                                                   ],
+                                                "UNITY_PLAYMODE":  [
+
+                                                                   ],
+                                                "WINDOWS_PLAYER":  [
+                                                                       "WINDOWS_PLAYER"
+                                                                   ],
+                                                "ANDROID_DEVICE":  [
+
+                                                                   ],
+                                                "IOS_DEVICE":  [
+
+                                                               ]
+                                            },
+                      "expectedRecoveryOutcome":  "FRESH_START",
+                      "recoveryFault":  "BothMissing",
+                      "requestDisposition":  "NOT_REPLAYED_IN_NEW_SCOPE. Do not call RetryPendingAsync, ReconcilePendingAsync for old request, or SubmitAsync under new room/scope. No old-scope receipt is required.",
+                      "requiredEffects":  "Zero old-request-induced new scope effects; fresh-room setup effects are separately identified and excluded from this delta."
+                  },
+                  {
+                      "id":  "C04-G6-07",
+                      "parent":  "C04-G6",
+                      "title":  "Both files bad",
+                      "trigger":  "Collector applies BothBad to isolated primary and backup then cold starts.",
+                      "initialFixture":  "Owned primary and backup copies are both invalid; retain each pre-fault byte length/SHA and fault operation record. Keep valid-backup control in G6-05.",
+                      "entry":  "Windows Player startup recovery refusal UI/state. Expected REJECTED; no Ready gameplay session and no Submit, RetryPendingAsync, ReconcilePendingAsync, or receipt query.",
+                      "assert":  "Expected REJECTED per Get-ExpectedOutcome(BothBad); no Ready session and no client action/receipt query; both inputs remain unchanged after classifier observation; authority/outbox/event/ledger/entity deltas are zero. G6-05 is the recovered positive control.",
+                      "bindings":  "Bind pre-fault exact canonical command bytes/payload SHA, API, original requestId/scope, owner account, room/session/seat/round, source/build/player and process identity, save/backup hashes and manifest. On recovery bind resulting scope/room/version, receipt lookup and event/ledger/entity observation.",
+                      "evidence":  [
+                                       "C02 accepted recorded GAME outcome BothBad -\u003e REJECTED/factsEqual=false; see H-C02; this historical result is not a fresh C03 Player run."
+                                   ],
+                      "commands":  [
+                                       "PLAYER_RECOVERY -Case Normal -SaveFault BothBad",
+                                       "PLAYER_RECOVERY_VERIFY",
+                                       "No request Submit after FRESH_START or REJECTED outcome; observe zero-send boundary"
+                                   ],
+                      "playerRequired":  true,
+                      "deviceRequired":  false,
+                      "dependsC03":  true,
+                      "status":  "NOT_RUN",
+                      "gap":  "No final Player fail-closed UX/zero-operation assertion. Same-request processing is explicitly NOT_APPLICABLE because no usable restored session exists; G6-05 supplies the recovered backup control.",
+                      "implementation":  [
+                                             "tools/unity/run-p45-controlled-recovery-collection.ps1",
+                                             "tools/unity/verify-p45-controlled-recovery-collection.ps1"
+                                         ],
+                      "evidenceLayerRefs":  {
+                                                "DOTNET_PURE":  [
+                                                                    "DOTNET_PURE"
+                                                                ],
+                                                "SCRIPT_TOOL_FIXTURE":  [
+                                                                            "SCRIPT_TOOL_FIXTURE"
+                                                                        ],
+                                                "UNITY_EDITMODE":  [
+
+                                                                   ],
+                                                "UNITY_PLAYMODE":  [
+
+                                                                   ],
+                                                "WINDOWS_PLAYER":  [
+                                                                       "WINDOWS_PLAYER"
+                                                                   ],
+                                                "ANDROID_DEVICE":  [
+
+                                                                   ],
+                                                "IOS_DEVICE":  [
+
+                                                               ]
+                                            },
+                      "expectedRecoveryOutcome":  "REJECTED",
+                      "recoveryFault":  "BothBad",
+                      "requestDisposition":  "NOT_APPLICABLE_SAFE_REFUSAL. No request reconciliation/retry/submit is attempted; retain original request bytes only as sealed evidence.",
+                      "requiredEffects":  "Zero stateVersion/event/outbox/ledger/entity delta and no session Ready."
+                  },
+                  {
+                      "id":  "C04-G6-08",
+                      "parent":  "C04-G6",
+                      "title":  "Incompatible primary is rejected per frozen recovery policy",
+                      "trigger":  "Collector applies IncompatiblePrimary and cold starts under the frozen collector policy; do not add/assume a serviceable backup in this fixed row.",
+                      "initialFixture":  "Owned primary has an incompatible schema/ruleset marker. Preserve exact input bytes/SHA and fault operation record; no valid backup is part of this row.",
+                      "entry":  "Windows Player recovery classifier and refusal UI/state. Expected REJECTED; no Ready session, no backup fallback, no Submit/RetryPendingAsync/ReconcilePendingAsync or receipt query.",
+                      "assert":  "Expected REJECTED exactly as Get-ExpectedOutcome(IncompatiblePrimary); no fallback-to-backup branch; no Ready gameplay session or client action/receipt query. Preserve input bytes and prove zero authority/outbox/event/ledger/entity deltas.",
+                      "bindings":  "Bind pre-fault exact canonical command bytes/payload SHA, API, original requestId/scope, owner account, room/session/seat/round, source/build/player and process identity, save/backup hashes and manifest. On recovery bind resulting scope/room/version, receipt lookup and event/ledger/entity observation.",
+                      "evidence":  [
+                                       "C02 accepted recorded GAME outcome IncompatiblePrimary -\u003e REJECTED/factsEqual=false; see H-C02; no same-request after-recovery proof."
+                                   ],
+                      "commands":  [
+                                       "PLAYER_RECOVERY -Case Normal -SaveFault IncompatiblePrimary",
+                                       "PLAYER_RECOVERY_VERIFY",
+                                       "No request Submit after FRESH_START or REJECTED outcome; observe zero-send boundary"
+                                   ],
+                      "playerRequired":  true,
+                      "deviceRequired":  false,
+                      "dependsC03":  true,
+                      "status":  "NOT_RUN",
+                      "gap":  "Current row previously allowed the opposite outcome (backup selected); fixed policy is REJECTED. No final Player failure UX/no-side-effect evidence. Same-request processing is NOT_APPLICABLE until a valid recovery exists.",
+                      "implementation":  [
+                                             "tools/unity/run-p45-controlled-recovery-collection.ps1",
+                                             "tools/unity/verify-p45-controlled-recovery-collection.ps1"
+                                         ],
+                      "evidenceLayerRefs":  {
+                                                "DOTNET_PURE":  [
+                                                                    "DOTNET_PURE"
+                                                                ],
+                                                "SCRIPT_TOOL_FIXTURE":  [
+                                                                            "SCRIPT_TOOL_FIXTURE"
+                                                                        ],
+                                                "UNITY_EDITMODE":  [
+
+                                                                   ],
+                                                "UNITY_PLAYMODE":  [
+
+                                                                   ],
+                                                "WINDOWS_PLAYER":  [
+                                                                       "WINDOWS_PLAYER"
+                                                                   ],
+                                                "ANDROID_DEVICE":  [
+
+                                                                   ],
+                                                "IOS_DEVICE":  [
+
+                                                               ]
+                                            },
+                      "expectedRecoveryOutcome":  "REJECTED",
+                      "recoveryFault":  "IncompatiblePrimary",
+                      "requestDisposition":  "NOT_APPLICABLE_SAFE_REFUSAL. Do not reconcile/retry/submit on incompatible storage; preserve original bytes and demonstrate recovered control on G6-05.",
+                      "requiredEffects":  "Zero stateVersion/event/outbox/ledger/entity delta and no session Ready."
+                  },
+                  {
+                      "id":  "C04-G7-01",
+                      "parent":  "C04-G7",
+                      "title":  "Offline complete match remains playable without network",
+                      "trigger":  "Disable network before launch; play local match from menu through settlement and inspect outbound traffic/channel type.",
+                      "initialFixture":  "Fresh isolated offline Player data; no network topology emulator; OS network disabled for actual manual run.",
+                      "entry":  "Player UI -\u003e local composition -\u003e LocalTableChannel/LocalTableRuntime.",
+                      "assert":  "Full match can complete offline; no remote channel is attempted; normal score/rank/ledger results hold.",
+                      "bindings":  "Local transport kind, run/player/build identity, match/round/action IDs and local request scopes.",
+                      "evidence":  [
+                                       "P4.2 local activation and C01 full-match historical components; not current Player with offline condition"
+                                   ],
+                      "commands":  [
+                                       "PLAYER_FULL_MATCH"
+                                   ],
+                      "playerRequired":  true,
+                      "deviceRequired":  false,
+                      "dependsC03":  true,
+                      "status":  "NOT_RUN",
+                      "gap":  "Full-match driver does not itself document/record network-disabled state; manual environment evidence needed.",
+                      "implementation":  [
+                                             "unity/Mahjong.Unity/Assets/Scripts/App/AppRouter.cs",
+                                             "unity/Mahjong.Unity/Assets/Scripts/App/UnavailableLocalTableChannelFactory.cs",
+                                             "dotnet/src/Mahjong.LocalHost/LocalTableHost.cs",
+                                             "dotnet/src/Mahjong.TableService/TableSettlementAuthority.cs"
+                                         ],
+                      "evidenceLayerRefs":  {
+                                                "DOTNET_PURE":  [
+                                                                    "DOTNET_PURE"
+                                                                ],
+                                                "SCRIPT_TOOL_FIXTURE":  [
+
+                                                                        ],
+                                                "UNITY_EDITMODE":  [
+
+                                                                   ],
+                                                "UNITY_PLAYMODE":  [
+
+                                                                   ],
+                                                "WINDOWS_PLAYER":  [
+
+                                                                   ],
+                                                "ANDROID_DEVICE":  [
+
+                                                                   ],
+                                                "IOS_DEVICE":  [
+
+                                                               ]
+                                            }
+                  },
+                  {
+                      "id":  "C04-G7-02",
+                      "parent":  "C04-G7",
+                      "title":  "Service/settlement authority rejects LOCAL assets",
+                      "trigger":  "Take a valid LOCAL settlement asset/result and submit it through the actual service-side settlement/commit entry intended for online authority.",
+                      "initialFixture":  "TableServiceTestHost with DealerTsumoRound; current negative constructs a caller-supplied RoundSettlement and raw SUBMIT_ACTION envelope. It is not a real LOCAL save/outbox asset and does not traverse ITableChannel.",
+                      "entry":  "TableServiceTestHost connects a player, but accepted test RawSettlementBearingEnvelope_IsRejectedBeforeAnyScoring calls room.Actor.SubmitAsync directly; it bypasses the TableSessionHandler wire command ingress. Actual service route candidates: dotnet/src/Mahjong.TableService/TableSessionHandler.cs:DispatchCommandAsync and TableActor.SubmitSettlementAsync.",
+                      "assert":  "Through an actual TableSession/ITableChannel request into TableSessionHandler, submit a LOCAL-origin/caller-supplied settlement payload and require rejection before actor/store commit; assert stateVersion unchanged and zero outbox/settlement records. Submit a valid server-derived settlement control through the supported typed path.",
+                      "bindings":  "Service room/session, origin/transport provenance, match/round/version, request scope/ID, receipt and durable commit ID.",
+                      "evidence":  [
+                                       "dotnet/tests/Mahjong.TableService.Tests/B2TerminalSettlementTests.cs:RawSettlementBearingEnvelope_IsRejectedBeforeAnyScoring — service host/real actor, but direct Actor.SubmitAsync bypasses wire ingress",
+                                       "dotnet/src/Mahjong.TableService/TableSessionHandler.cs:DispatchCommandAsync",
+                                       "dotnet/src/Mahjong.TableRuntime/TableActor.cs:SubmitSettlementAsync"
+                                   ],
+                      "commands":  [
+                                       "dotnet test dotnet/tests/Mahjong.TableService.Tests/Mahjong.TableService.Tests.csproj -c Release --no-restore --filter FullyQualifiedName~RawSettlementBearingEnvelope_IsRejectedBeforeAnyScoring (existing partial authority rejection only; not the required wire ingress)",
+                                       "Independent service-ingress test/driver required for explicit LOCAL provenance"
+                                   ],
+                      "playerRequired":  false,
+                      "deviceRequired":  false,
+                      "dependsC03":  false,
+                      "status":  "BLOCKED",
+                      "gap":  "Specific blocker: current test calls room.Actor.SubmitAsync directly and has no serialized LOCAL-origin marker; no accepted test drives the actual TableSessionHandler/IChannel ingress with the LOCAL asset. Add one bounded service acceptance case and valid server-origin control; do not create a remote G3 service or expand C04.",
+                      "implementation":  [
+                                             "dotnet/tests/Mahjong.TableService.Tests/B2TerminalSettlementTests.cs:RawSettlementBearingEnvelope_IsRejectedBeforeAnyScoring",
+                                             "dotnet/src/Mahjong.TableService/TableSessionHandler.cs:DispatchCommandAsync",
+                                             "dotnet/src/Mahjong.TableRuntime/TableActor.cs:SubmitSettlementAsync",
+                                             "dotnet/src/Mahjong.TableRuntime/TableActor.cs:ProcessCommandCoreAsync"
+                                         ],
+                      "evidenceLayerRefs":  {
+                                                "DOTNET_PURE":  [
+                                                                    "DOTNET_PURE"
+                                                                ],
+                                                "SCRIPT_TOOL_FIXTURE":  [
+
+                                                                        ],
+                                                "UNITY_EDITMODE":  [
+
+                                                                   ],
+                                                "UNITY_PLAYMODE":  [
+
+                                                                   ],
+                                                "WINDOWS_PLAYER":  [
+
+                                                                   ],
+                                                "ANDROID_DEVICE":  [
+
+                                                                   ],
+                                                "IOS_DEVICE":  [
+
+                                                               ]
+                                            }
+                  },
+                  {
+                      "id":  "C04-G8-01",
+                      "parent":  "C04-G8",
+                      "title":  "Effective final visual quality and layout at supported aspect ratios",
+                      "trigger":  "Capture actual final Player screen at declared baseline/wide/tall ratios and compare table/menu/settlement safe bounds and text readability.",
+                      "initialFixture":  "Actual built final Player, fixed resolution/device info and captured full-frame PNG; record scaling/display settings.",
+                      "entry":  "Real Windows Player visual display; Android must be separately measured for its device row.",
+                      "assert":  "No clipped/overlapping controls/text/tiles; table fits supported bounds; safe-area content remains visible; screenshots are non-black and visually reviewed by caller.",
+                      "bindings":  "Player binary/package SHA, source/build SHA, OS/display resolution/DPI/aspect, scene, time and screenshot SHA.",
+                      "evidence":  [
+                                       "C05 accepted tool coverage only; prior P4.5 hidden smoke 4 identical 12,152-byte black screenshots explicitly nonvisual",
+                                       "C05 acceptance APK 52,142,409 bytes SHA 0506AEEA2593B7E70C7B2796CE353D3B401A12ADCBF1FFFCC24A0464481C8D6B is historical build, no device run"
+                                   ],
+                      "commands":  [
+                                       "ANDROID_C05_TOOLS_ONLY for future authorized actual capture; no Windows visual automation currently proves semantics"
+                                   ],
+                      "playerRequired":  true,
+                      "deviceRequired":  true,
+                      "dependsC03":  true,
+                      "status":  "NOT_RUN",
+                      "gap":  "Need effective screenshots/video plus human semantic inspection on final candidate; image integrity/black-frame rejection alone insufficient.",
+                      "implementation":  [
+                                             "unity/Mahjong.Unity/Assets/Scripts/UI/SafeAreaFitter.cs",
+                                             "unity/Mahjong.Unity/Assets/Scripts/UI/DesignViewport.cs",
+                                             "unity/Mahjong.Unity/Assets/Scripts/UI/UiInputLifecycle.cs",
+                                             "tools/unity/run-p45-android-game.ps1"
+                                         ],
+                      "evidenceLayerRefs":  {
+                                                "DOTNET_PURE":  [
+
+                                                                ],
+                                                "SCRIPT_TOOL_FIXTURE":  [
+
+                                                                        ],
+                                                "UNITY_EDITMODE":  [
+                                                                       "UNITY_EDITMODE"
+                                                                   ],
+                                                "UNITY_PLAYMODE":  [
+                                                                       "UNITY_PLAYMODE"
+                                                                   ],
+                                                "WINDOWS_PLAYER":  [
+
+                                                                   ],
+                                                "ANDROID_DEVICE":  [
+                                                                       "ANDROID_DEVICE"
+                                                                   ],
+                                                "IOS_DEVICE":  [
+                                                                   "IOS_DEVICE"
+                                                               ]
+                                            }
+                  },
+                  {
+                      "id":  "C04-G8-02",
+                      "parent":  "C04-G8",
+                      "title":  "Mouse and keyboard controls across critical gameplay flow",
+                      "trigger":  "Use mouse and keyboard to navigate, select discard/calls/cheats, cancel dialogs and leave/re-enter at least one live table.",
+                      "initialFixture":  "Final Player with actual input devices and known display; record input bindings/version.",
+                      "entry":  "Actual Player event system/Input System, not invoking presenter methods.",
+                      "assert":  "Each physical input yields at most one intended action; invalid/stale input does not submit; focus/back/pause transitions do not leak delayed click; all required actions reachable.",
+                      "bindings":  "Input action/device, UI scene, resulting request/scope and authoritative receipt/event if game action.",
+                      "evidence":  [
+                                       "Unity PlayMode pointer lifecycle tests and C05 input/tool gates are component/tool evidence"
+                                   ],
+                      "commands":  [
+                                       "Manual final Player run; no existing command automates physical keyboard/mouse semantics"
+                                   ],
+                      "playerRequired":  true,
+                      "deviceRequired":  true,
+                      "dependsC03":  true,
+                      "status":  "NOT_RUN",
+                      "gap":  "Need recorded physical input evidence and action-to-receipt assertions on final candidate.",
+                      "implementation":  [
+                                             "unity/Mahjong.Unity/Assets/Scripts/UI/SafeAreaFitter.cs",
+                                             "unity/Mahjong.Unity/Assets/Scripts/UI/DesignViewport.cs",
+                                             "unity/Mahjong.Unity/Assets/Scripts/UI/UiInputLifecycle.cs",
+                                             "tools/unity/run-p45-android-game.ps1"
+                                         ],
+                      "evidenceLayerRefs":  {
+                                                "DOTNET_PURE":  [
+
+                                                                ],
+                                                "SCRIPT_TOOL_FIXTURE":  [
+
+                                                                        ],
+                                                "UNITY_EDITMODE":  [
+                                                                       "UNITY_EDITMODE"
+                                                                   ],
+                                                "UNITY_PLAYMODE":  [
+                                                                       "UNITY_PLAYMODE"
+                                                                   ],
+                                                "WINDOWS_PLAYER":  [
+
+                                                                   ],
+                                                "ANDROID_DEVICE":  [
+                                                                       "ANDROID_DEVICE"
+                                                                   ],
+                                                "IOS_DEVICE":  [
+                                                                   "IOS_DEVICE"
+                                                               ]
+                                            }
+                  },
+                  {
+                      "id":  "C04-G8-03",
+                      "parent":  "C04-G8",
+                      "title":  "Touch targets, touch navigation and device safe area",
+                      "trigger":  "On actual supported Android device, perform menu/start/discard/call/cheat/back and pause/resume using touch; test cutout/inset and rotation/resize if supported.",
+                      "initialFixture":  "Final C03-integrated full-game APK installed on identified device; capture Android version, ABI, screen dimensions/insets.",
+                      "entry":  "Actual Android application and touch screen; ADB records process/install/capture but does not prove gameplay by itself.",
+                      "assert":  "Touch maps once to intended action; minimum hit bounds and safe insets pass; no hidden/clipped controls; background/resume leaves valid session and no duplicate action.",
+                      "bindings":  "APK SHA/source/build, device model/API/ABI, screen/insets, session/request/receipt and lifecycle events.",
+                      "evidence":  [
+                                       "C05 accepted full game build/tools; prior pinned adb enumeration had no devices; Android install/play/touch/visual NOT_RUN"
+                                   ],
+                      "commands":  [
+                                       "ANDROID_C05_TOOLS_ONLY (verify exact integrated interface and device identity before use)"
+                                   ],
+                      "playerRequired":  true,
+                      "deviceRequired":  true,
+                      "dependsC03":  true,
+                      "status":  "NOT_RUN",
+                      "gap":  "No actual Android device was attached in accepted evidence. iOS is separately NOT_RUN and must not be inferred from Android.",
+                      "implementation":  [
+                                             "unity/Mahjong.Unity/Assets/Scripts/UI/SafeAreaFitter.cs",
+                                             "unity/Mahjong.Unity/Assets/Scripts/UI/DesignViewport.cs",
+                                             "unity/Mahjong.Unity/Assets/Scripts/UI/UiInputLifecycle.cs",
+                                             "tools/unity/run-p45-android-game.ps1"
+                                         ],
+                      "evidenceLayerRefs":  {
+                                                "DOTNET_PURE":  [
+
+                                                                ],
+                                                "SCRIPT_TOOL_FIXTURE":  [
+
+                                                                        ],
+                                                "UNITY_EDITMODE":  [
+                                                                       "UNITY_EDITMODE"
+                                                                   ],
+                                                "UNITY_PLAYMODE":  [
+                                                                       "UNITY_PLAYMODE"
+                                                                   ],
+                                                "WINDOWS_PLAYER":  [
+
+                                                                   ],
+                                                "ANDROID_DEVICE":  [
+                                                                       "ANDROID_DEVICE"
+                                                                   ],
+                                                "IOS_DEVICE":  [
+                                                                   "IOS_DEVICE"
+                                                               ]
+                                            }
+                  }
+              ],
+    "historicalEvidence":  [
+                               {
+                                   "id":  "H-C01",
+                                   "acceptedIntegrationHead":  "4b743e6964d2b643e484d4071830d5e3def86d32",
+                                   "report":  "doc/v5-重构/CODEX-V5-G2-C01-ACCEPTANCE-20261101.md",
+                                   "facts":  "Unity PlayMode 7/7 native0; .NET 1,048/1,048. Historical Windows Player: 12 distinct rounds, 12 terminal commits, one match_finished/WestCompletion; Player native0/tool0. Player build source.json records f8ed9090 plus declared R4 dirty patch; not a clean build from accepted integration HEAD and not C03.",
+                                   "reportSha256":  "24F867B86CCBBE08200817CE792A336C059EE3F5C70068F8EF9AC26BB7E9C6E9",
+                                   "implementationBase":  "c3c95af6023e13915656acd686269475d5dcceb8",
+                                   "codeCommit":  "aec0c9a52c353b9220e06ed74343cfcb734b3749",
+                                   "receiverFinal":  "5d103e3614e09fc7d4632b352c7944b13b6b1ce7",
+                                   "testedIntegrationCommit":  "4b743e6964d2b643e484d4071830d5e3def86d32",
+                                   "acceptedFrozenIntegrationHead":  "bae6b8b0c98c9ed80256373060a9e754d6fc4296",
+                                   "playerBuildSource":  "source.json records f8ed9090 plus the declared R4 dirty patch; patch digest checked, two changed blobs match final code; not a clean build from the accepted integration HEAD."
+                               },
+                               {
+                                   "id":  "H-C02",
+                                   "report":  "doc/v5-重构/CODEX-V5-G2-C02-ACCEPTANCE-20261101.md",
+                                   "facts":  "Accepted controlled collector/verifier component; distinguishes tool fixtures, recorded GAME outcomes, source/build identity and caller acceptance. No post-recovery TableSession same-request reconciliation.",
+                                   "reportSha256":  "5DD33322084B5F40935C7A92C3E8EABA3E8015700CFC5AFFFA5E2BBD6AA055E9",
+                                   "implementationBase":  "6750b4362063169cd435302e0cc9c6685325bbe5",
+                                   "implementationCommit":  "6cae2910bd8afde984f5b5efd4b3e5c4b8fc1507",
+                                   "receiverFinal":  "699bbaf4989245c487cb6b40f1e6418153242882",
+                                   "testedIntegrationCommit":  "c43187efba69c03753f952276900af2c52287246",
+                                   "acceptedFrozenIntegrationHead":  "bae6b8b0c98c9ed80256373060a9e754d6fc4296",
+                                   "recordedGameBuildSource":  "6cae2910bd8afde984f5b5efd4b3e5c4b8fc1507 plus 21 declared generated Unity/plugin/settings dirty paths; dirty-diff SHA 9819741E1D827A9F2F6B50B942025C19F2CF54189CD1BB3529041028987C2272.",
+                                   "toolFixtureEvidence":  "27/27 native0; test-summary SHA256 DFB0808D9DA9571C56832C353A4110F07F4B78449C8A23F369DD23E9420B2D5B; SCRIPT_TOOL_FIXTURE only.",
+                                   "recordedGameEvidence":  "8/8 native0 recorded GAME recovery outcomes; recorded-game-results SHA256 18F3EFB34F68FE8277CD9F4A0D8DFD7510F95EB61A4DB3BCC9B56D2A4EE6D040. R5 historical build inputs; not fresh C03."
+                               },
+                               {
+                                   "id":  "H-C05",
+                                   "report":  "doc/v5-重构/CODEX-V5-G2-C05-ACCEPTANCE-20261101.md",
+                                   "facts":  "Android build/tooling accepted; APK SHA256 0506AEEA2593B7E70C7B2796CE353D3B401A12ADCBF1FFFCC24A0464481C8D6B. Pinned adb found no devices; installation/gameplay/visual/touch remain NOT_RUN.",
+                                   "reportSha256":  "483E43BA96C9B795EC9FF3A1F6CF7381BA7A77A9C939B9032696320B2E3AB44F",
+                                   "implementationBase":  "a8d58ffb81957e3f2afb7281d1d009b834e0ee5d",
+                                   "receiverFinal":  "a215f2d95d2747735c059425336187630442b30c",
+                                   "testedIntegrationCommit":  "dc2aeadb8306ac7d70cedefc57c4ca6702b0dbda",
+                                   "acceptedFrozenIntegrationHead":  "bae6b8b0c98c9ed80256373060a9e754d6fc4296",
+                                   "apkBuildSource":  "ce74c277272e395df6ab09d063d356dc889b2d12 plus four permitted dirty task inputs; Unity native0; APK 52,142,409 bytes.",
+                                   "toolFixtureEvidence":  "29/29 native0, selftest SHA 7FED2C155FEF311ED4A143B72A4506280876465AFAEA981A6A1042A5D80CEC5B; separate gates 28/28, SHA ED70FE7C2E32BC69359AADBA0A716F0EB8F4EBBAE1818C759AA4910876A96569."
+                               },
+                               {
+                                   "id":  "H-COMBINED-RECOVERY",
+                                   "report":  "doc/v5-重构/V5-P4.5-COMBINED-PLAYER-RECOVERY-REGRESSION-20261030.md",
+                                   "facts":  "Historical real Windows Player recovery: valid backup facts restored, Pon became Applied but PonDeclared was absent; Player native31/tool10. Preserve as a failure, not current C03 evidence.",
+                                   "reportSha256":  "9CEE90740AE71C2F4561FDA208F4FC5A41B51C760274A5058A5757C24AA9AC95",
+                                   "kind":  "historical_failure",
+                                   "sourceCommit":  "0d338ec79a9ca5d01897d7c1c70ec2b0e2f73156"
+                               },
+                               {
+                                   "id":  "H-LOCAL-SERVICE-NEGATIVE",
+                                   "sourceHead":  "bae6b8b0c98c9ed80256373060a9e754d6fc4296",
+                                   "facts":  "Source test RawSettlementBearingEnvelope_IsRejectedBeforeAnyScoring constructs a TableServiceTestHost but calls room.Actor.SubmitAsync directly; asserts RawEntryRejected, unchanged stateVersion and zero outbox. Not TableSessionHandler/channel ingress and no explicit LOCAL provenance.",
+                                   "kind":  "current_source_test",
+                                   "sourceFile":  "dotnet/tests/Mahjong.TableService.Tests/B2TerminalSettlementTests.cs",
+                                   "sourceSha256":  "400D0C0C3B7AC4F926E21CF0259F8BE2E4775F088311ADE728E70567D991123B"
+                               }
+                           ],
+    "knownDefects":  [
+                         {
+                             "id":  "C04-D01",
+                             "severity":  "BLOCKER",
+                             "location":  "C04-G6-01..08; real TableSession/ITableChannel and LocalTableRuntime.HandleReceiptQueryAsync local receipt query",
+                             "reproduction":  "Run tools/unity/run-p45-controlled-recovery-collection.ps1 for a supported SaveFault, inspect its source and verify-p45-controlled-recovery-collection.ps1: it captures BEFORE/AFTER recovery facts and runs offline verification; no code invokes TableSession.SubmitAsync with the saved original canonical command after recovery or dispatches/query-reconciles the same request through the real receipt-query wire route.",
+                             "actualVsExpected":  "Actual: the accepted C02 collector records recovery facts and offline hashes; no existing code invokes same canonical TableSession request after restore and reconciles its receipt through transport. Expected: recovered rows reconcile identical account/role/scope/request/API/canonical digest; receipts match restored effects; replay/query never adds duplicate effects. Fresh-start/rejected branches stay zero-effect and never force submission.",
+                             "evidence":  "doc/v5-重构/CODEX-V5-G2-C02-ACCEPTANCE-20261101.md SHA256 5DD33322084B5F40935C7A92C3E8EABA3E8015700CFC5AFFFA5E2BBD6AA055E9; accepted suite 27/27 native0 summary DFB0808D9DA9571C56832C353A4110F07F4B78449C8A23F369DD23E9420B2D5B; eight recorded GAME outcomes 8/8 native0 result 18F3EFB34F68FE8277CD9F4A0D8DFD7510F95EB61A4DB3BCC9B56D2A4EE6D040 are historical and do not cover this assertion. Source head bae6b8b0.",
+                             "fix":  "Add only the listed C04-owned test/orchestrator files after C03. Use TableSession.ReconcilePendingAsync and, only when the unknown outcome and same-scope contract allow it, RetryPendingAsync through the existing LocalTableChannel/ITableChannel transport. Do not add ITableChannel methods or alter C02 collector/exporter. Record request disposition by the frozen outcome branch.",
+                             "acceptanceAssertion":  "For G6-01..05 assert exact original receipt identity and command effect vector once, then zero delta on repeat; for G6-06 no old-scope submit; for G6-07/08 no Ready/action and zero deltas. Preserve per-case manifest/hash/native exit.",
+                             "proposedFiles":  [
+                                                   {
+                                                       "path":  "dotnet/tests/Mahjong.LocalHost.Tests/C04RecoveryRequestReconciliationTests.cs",
+                                                       "purpose":  "same canonical request recovery/reconciliation contract",
+                                                       "kind":  "PROPOSED_NEW"
+                                                   },
+                                                   {
+                                                       "path":  "tools/unity/run-p45-c04-recovery-reconciliation.ps1",
+                                                       "purpose":  "bind each frozen recovery row to Player and structured request/effect observations",
+                                                       "kind":  "PROPOSED_NEW"
+                                                   }
+                                               ],
+                             "futureAcceptanceCommand":  "PROPOSED after C03: dotnet test dotnet/tests/Mahjong.LocalHost.Tests/Mahjong.LocalHost.Tests.csproj -c Release --no-restore --filter FullyQualifiedName~C04RecoveryRequestReconciliationTests; then powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-c04-recovery-reconciliation.ps1 -PlayerPath \u003cbound-final-player\u003e -EvidenceRoot build/c04/\u003cGUID\u003e/recovery-request"
+                         },
+                         {
+                             "id":  "C04-D02",
+                             "severity":  "MAJOR",
+                             "location":  "C04-G7-02; TableService wire ingress to TableActor",
+                             "reproduction":  "Run dotnet test dotnet/tests/Mahjong.TableService.Tests/Mahjong.TableService.Tests.csproj -c Release --no-restore --filter FullyQualifiedName~RawSettlementBearingEnvelope_IsRejectedBeforeAnyScoring. The existing test creates a real TableServiceTestHost but calls room.Actor.SubmitAsync(envelope) directly; it does not pass through TableSessionHandler.DispatchCommandAsync / ITableChannel.",
+                             "actualVsExpected":  "Actual: current test runs a TableServiceTestHost but calls room.Actor.SubmitAsync directly; it proves actor rejection only, not TableSessionHandler/ITableChannel ingress or explicit LOCAL provenance. Expected: actual service wire ingress rejects explicit client LOCAL settlement before any commit, while valid server-origin settlement is accepted exactly once.",
+                             "evidence":  "dotnet/tests/Mahjong.TableService.Tests/B2TerminalSettlementTests.cs:RawSettlementBearingEnvelope_IsRejectedBeforeAnyScoring; dotnet/src/Mahjong.TableService/TableSessionHandler.cs:DispatchCommandAsync and DispatchReceiptQueryAsync; dotnet/src/Mahjong.TableRuntime/TableActor.cs:SubmitSettlementAsync / ProcessCommandCoreAsync. Current-source SHA is fixed by sourceHead bae6b8b0c98c9ed80256373060a9e754d6fc4296. This is real actor/service-host evidence but not wire-ingress evidence.",
+                             "fix":  "Extend one service-owned acceptance case across the actual TableSession/channel ingress, with a LOCAL-origin/caller-supplied settlement fixture and valid server-origin control; keep scope to this local service boundary, not remote HTTPS/WSS/PG G3.",
+                             "acceptanceAssertion":  "Wire test captures envelope/source/scope/request, rejection code, unchanged version/events/ledger/entities and accepted server-origin control; command must traverse handler/channel, not Actor directly.",
+                             "proposedFiles":  [
+                                                   {
+                                                       "path":  "dotnet/tests/Mahjong.TableService.Tests/B2TerminalSettlementTests.cs",
+                                                       "purpose":  "add a distinct wire-ingress LOCAL negative and server-origin positive control; stop if trusted origin injection requires production changes",
+                                                       "kind":  "EXISTING_REPO_TEST_FILE"
+                                                   },
+                                                   {
+                                                       "path":  "none unless the test demonstrates a missing trusted-origin guard",
+                                                       "purpose":  "do not presume or silently expand production scope",
+                                                       "kind":  "NO_TRACKED_SOURCE_CHANGE"
+                                                   }
+                                               ],
+                             "futureAcceptanceCommand":  "Existing partial only: dotnet test dotnet/tests/Mahjong.TableService.Tests/Mahjong.TableService.Tests.csproj -c Release --no-restore --filter FullyQualifiedName~RawSettlementBearingEnvelope_IsRejectedBeforeAnyScoring. Proposed wire-ingress row has no command until implemented; expected observation is explicit LOCAL rejected before commit plus valid trusted server-origin control."
+                         },
+                         {
+                             "id":  "C04-D03",
+                             "severity":  "MAJOR",
+                             "location":  "C04-G2-01..04; tools/unity/run-p45-full-match.ps1 and Player action driver",
+                             "reproduction":  "Run the documented PLAYER_FULL_MATCH command with -Mode All and inspect driver selectors/case records; actual parameter set has Mode/RunDir/UnityPath/DotnetPath/TimeoutSeconds and no Pon/Chi/Riichi/Kan selector.",
+                             "actualVsExpected":  "Actual: current full-match runner has no Pon/Chi/Riichi/Kan selectors or per-action assertions; projection/component tests cannot show Player action occurred. Expected: each Pon/Chi/Riichi/Kan is initiated through Player UI and correlated to Applied receipt, expected event, state version and physical facts.",
+                             "evidence":  "doc/v5-重构/V5-P4.5-PON-CHI-RIICHI-PROJECTION-FIX-20261031.md SHA256 D8418EC8CB8549AC99EA6D9E5DB4D2C0E6457E9D67F94831C495B2CB475CCC76 is accepted projection/component work only; old failure report doc/v5-重构/V5-P4.5-COMBINED-PLAYER-RECOVERY-REGRESSION-20261030.md SHA256 9CEE90740AE71C2F4561FDA208F4FC5A41B51C760274A5058A5757C24AA9AC95, source 0d338ec79a9ca5d01897d7c1c70ec2b0e2f73156, Pon missing event, native31/tool10. Current runner sourceHead bae6b8b0.",
+                             "fix":  "After C03, add only an independent bounded Player case driver/structured observation for the four action rows; do not reopen accepted projection fixes or count random full-match occurrence without action record.",
+                             "acceptanceAssertion":  "Four distinct Player case records bind request/scope/seat/round/version and Applied receipt to PonDeclared/ChiDeclared/RiichiDeclared/KanDeclared (plus replacement/chankan semantics where applicable); missing action fails.",
+                             "proposedFiles":  [
+                                                   {
+                                                       "path":  "unity/Mahjong.Unity/Assets/Tests/PlayMode/C04PlayerActionScenarioTests.cs",
+                                                       "purpose":  "four real action request/result/event assertions",
+                                                       "kind":  "PROPOSED_NEW"
+                                                   },
+                                                   {
+                                                       "path":  "tools/unity/run-p45-c04-player-actions.ps1",
+                                                       "purpose":  "bounded Player action selector and structured evidence",
+                                                       "kind":  "PROPOSED_NEW"
+                                                   }
+                                               ],
+                             "futureAcceptanceCommand":  "PROPOSED after C03: powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-c04-player-actions.ps1 -Action Pon,Chi,Riichi,Kan -PlayerPath \u003cbound-final-player\u003e -EvidenceRoot build/c04/\u003cGUID\u003e/actions; this command is not currently executable."
+                         },
+                         {
+                             "id":  "C04-D04",
+                             "severity":  "MAJOR",
+                             "location":  "C04-G3-01..06; cheat UI/authority and Player observation",
+                             "reproduction":  "Run current full-match Player driver and inspect its declared action surface; there is no TileMark/SleeveBloom/BeamSwap selector or structured authoritative cheat observation.",
+                             "actualVsExpected":  "Actual: no final Player cheat selector/structured fee, authorization, private ledger and physical-entity observation; existing .NET tests are not Player proof. Expected: each cheat success records its configured fee/private ledger and exact physical effects; unauthorized and insufficient-balance requests reject with zero deltas; all maintain 136 unique IDs.",
+                             "evidence":  "dotnet/tests/Mahjong.TableRuntime.Tests/N1bCheatExecutionTests.cs and Unity private ledger/component tests; sourceHead bae6b8b0c98c9ed80256373060a9e754d6fc4296. C01 Player summary 575BF95B811B5DEE316FBB82F9A02350D5458EC3F5E5FA0BB8A2D266A84C3539 is a prior-source general full match and not cheat evidence.",
+                             "fix":  "Add bounded final Player cheat selectors/structured authority observations only where needed; no reflection/private result writes. Record before/after entities, fee, owner scope, balance, authorization and rejection facts.",
+                             "acceptanceAssertion":  "Three distinct authorized cases assert exact configured fee/ledger and 136-ID multiset; unauthorized and insufficient balance each use distinct request IDs and assert reject plus zero event/version/ledger/entity delta.",
+                             "proposedFiles":  [
+                                                   {
+                                                       "path":  "unity/Mahjong.Unity/Assets/Tests/PlayMode/C04PlayerActionScenarioTests.cs",
+                                                       "purpose":  "authorized/underfunded cheat Player outcomes plus exact fee and 136 entity observations",
+                                                       "kind":  "PROPOSED_NEW"
+                                                   },
+                                                   {
+                                                       "path":  "tools/unity/run-p45-c04-player-actions.ps1",
+                                                       "purpose":  "bounded three-cheat scenario selection and receipt/state capture",
+                                                       "kind":  "PROPOSED_NEW"
+                                                   },
+                                                   {
+                                                       "path":  "dotnet/tests/Mahjong.TableRuntime.Tests/N1bCheatExecutionTests.cs",
+                                                       "purpose":  "read-only reference for authorization negative; do not reopen accepted fix",
+                                                       "kind":  "EXISTING_REPO_TEST_FILE"
+                                                   }
+                                               ],
+                             "futureAcceptanceCommand":  "PROPOSED after C03: powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-c04-player-actions.ps1 -Action TileMark,SleeveBloom,BeamSwap,Unauthorized,InsufficientBalance -PlayerPath \u003cbound-final-player\u003e -EvidenceRoot build/c04/\u003cGUID\u003e/cheats; this command is not currently executable."
+                         },
+                         {
+                             "id":  "C04-D05",
+                             "severity":  "MAJOR",
+                             "location":  "C04-G5-01..03; player/spectator serialized streams, role binding and caches",
+                             "reproduction":  "Inspect SpectatorWhitelistTests, PlayerTableProjectionMapper and SettlementPlayModeTests.PrivateLedger_ClearedOnSpectator; these assert whitelist/projection/UI cases, not a complete scan of real four-seat/public serialized streams plus delayed old-binding deliveries after every role switch.",
+                             "actualVsExpected":  "Actual: whitelist/projection/UI unit evidence does not scan serialized streams for hidden hand/sleeve/seed/private fees across four seats and spectator, nor prove cache cleanup/stale-binding rejection after role switches. Expected: protected values never occur in any player-visible foreign seat or public serialized stream; role changes clear private cache and old scope/binding deliveries cannot republish it.",
+                             "evidence":  "doc/v5-重构/V5-P4.3-A-TABLE-MODELS-DELIVERY.md; doc/v5-重构/V5-P4.3-B2a-CLIENT-VISIBLE-EVENTS-DELIVERY.md; doc/v5-重构/V5-P4.3-B2b-UNITY-VISIBLE-EVENTS-DELIVERY.md; doc/v5-重构/V5-P4.4-SPECTATOR-SETTLEMENT-DELIVERY.md SHA256 8DE8A2FFB67EE8731CB8079773E716083FC6C98073CF77CB867469ACD7E1D259; C01 PlayMode 7/7 native0 XML 3777ED8FDBE7CF1887FBEC44777009E3BFCD626C951BDD436820F4FF376A1F4F is historical component evidence, not a four-role Player stream scan.",
+                             "fix":  "Add a bounded real serialized-stream capture/scan and role-switch case with distinct sentinels for protected values, complete snapshots, caches and delayed old binding delivery; preserve accepted projection work.",
+                             "acceptanceAssertion":  "For each seat and spectator scan raw serialized public payloads for secret sentinels; repeat after each role switch and inject delayed prior-binding delivery; assert cleared caches and no visible stale data.",
+                             "proposedFiles":  [
+                                                   {
+                                                       "path":  "dotnet/tests/Mahjong.LocalHost.Tests/C04PrivacyStreamMatrixTests.cs",
+                                                       "purpose":  "serialized four-seat/public sentinel scan and role/binding assertions",
+                                                       "kind":  "PROPOSED_NEW"
+                                                   },
+                                                   {
+                                                       "path":  "unity/Mahjong.Unity/Assets/Tests/PlayMode/C04PrivacyRoleSwitchPlayModeTests.cs",
+                                                       "purpose":  "role-switch cache cleanup and delayed stale-binding delivery",
+                                                       "kind":  "PROPOSED_NEW"
+                                                   },
+                                                   {
+                                                       "path":  "tools/unity/run-p45-c04-privacy-matrix.ps1",
+                                                       "purpose":  "bounded stream capture, sentinel scan and evidence manifest",
+                                                       "kind":  "PROPOSED_NEW"
+                                                   }
+                                               ],
+                             "futureAcceptanceCommand":  "PROPOSED after C03: powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-p45-c04-privacy-matrix.ps1 -PlayerPath \u003cbound-final-player\u003e -EvidenceRoot build/c04/\u003cGUID\u003e/privacy; assert zero protected sentinels on public stream and reject stale binding after each role switch."
+                         },
+                         {
+                             "id":  "C04-D06",
+                             "severity":  "MAJOR",
+                             "location":  "C04-G8-01..03; final Windows Player, Android device and visual/input evidence",
+                             "reproduction":  "Inspect accepted C05 gates and Android command. Tool suite/gate pass does not imply a connected device; historical adb enumeration returned no device, and previous black frames are not meaningful gameplay evidence.",
+                             "actualVsExpected":  "Actual: no bound final C03 Player/device visual/input evidence; C05 APK/tool evidence has no attached device result and black frames are not gameplay evidence. Expected: identified final binaries show usable UI and input-to-action results at measured aspect/safe-area on Windows and actual Android; iOS remains separately explicit.",
+                             "evidence":  "doc/v5-重构/CODEX-V5-G2-C05-ACCEPTANCE-20261101.md SHA256 483E43BA96C9B795EC9FF3A1F6CF7381BA7A77A9C939B9032696320B2E3AB44F; tool suite 29/29 native0 SHA 7FED2C155FEF311ED4A143B72A4506280876465AFAEA981A6A1042A5D80CEC5B; independent gate 28/28 native0 SHA ED70FE7C2E32BC69359AADBA0A716F0EB8F4EBBAE1818C759AA4910876A96569; pinned adb no devices; iOS absent.",
+                             "fix":  "After C03, use exact final Windows/Android artifacts on identified displays/devices; retain original screenshots/video, process/device/build identity, insets/aspect and input-to-receipt assertions. Leave iOS explicitly NOT_RUN absent hardware.",
+                             "acceptanceAssertion":  "Retain original screenshot/video, package/player/device identity and display geometry; assert each physical input maps to expected visible action/receipt. No black frame or native exit alone counts.",
+                             "proposedFiles":  [
+                                                   {
+                                                       "path":  "none",
+                                                       "purpose":  "manual device/visual/input evidence; no source harness required for this prep",
+                                                       "kind":  "NO_TRACKED_SOURCE_CHANGE"
+                                                   },
+                                                   {
+                                                       "path":  "build/c04/\u003cGUID\u003e/visual-input/evidence.json and build/c04/\u003cGUID\u003e/visual-input/screens/",
+                                                       "purpose":  "record artifact/player/device/display/viewport/insets/input event-to-receipt and unmodified screenshots/video; Windows/Android separate, iOS NOT_RUN without hardware",
+                                                       "kind":  "GENERATED_EVIDENCE_OUTPUT"
+                                                   }
+                                               ],
+                             "futureAcceptanceCommand":  "Manual, no tracked source command: capture actual final Windows Player and identified Android device separately; evidence.json records build/package/device/display/viewport/insets and input event -\u003e matching receipt/action. iOS remains NOT_RUN absent device."
+                         }
+                     ],
+    "formalRunOrderAfterC03":  [
+                                   "1. Caller independently accepts and freezes one C03 candidate SHA; do not use moving PR20/PR24 state or this census SHA.",
+                                   "2. Verify source/package/Unity versions and fresh ignored E:/.../build/c04/\u003cGUID\u003e output/log/temp roots; preserve any first failure/native exit; check current owner and Unity mutex availability before Unity work.",
+                                   "3. Run existing low-cost .NET suites for LocalHost/TableRuntime and targeted Unity EditMode/PlayMode P4.3/P4.4/control suites, each with distinct logs and native exits. Unity-heavy stages serialize on Local\\MahjongV5P45UnityValidation; do not overlap Unity/Player Android build stages.",
+                                   "4. Build/run final-candidate Windows Player full match; then run each supported recovery save fault in a separate case root. Verify manifests/hashes and original per-case outputs before any interpretation.",
+                                   "5. Execute only the bounded independent additions needed for original-request recovery reconciliation, call/cheat Player actions, full privacy scan and LOCAL service-boundary rejection; they must bind to the frozen C03 SHA and cannot alter accepted C01/C02/C05 scope.",
+                                   "6. Run final-candidate Android build/device visual/input checks only when C05 tool contract and device are available; do not infer iOS. Caller stops on first unexplained failure, native nonzero, manifest/hash mismatch, missing case, wrong binary, stale binding, or unexpected Unity mutex contention; preserve evidence and report full defect list before repair."
+                               ],
+    "thisTurnChecks":  {
+                           "unityPlayerAdbNetworkRuns":  "NOT_RUN by instruction",
+                           "sourcePathSymbolParameterReview":  "R1 revision static review: 169 case implementation path/symbol references, all evidence-source paths, 7 runner parameter ASTs and evidence hashes checked; this revision audit 17/17 passed, native exit 0.",
+                           "jsonParsingAndCrossReference":  "UTF-8 JSON parse, fixed 8/33 IDs, G6 branch contracts, API, history/source kinds, proposed file kinds, report row cross-reference, path/symbol and parameter checks: 17/17, native 0.",
+                           "reportMatrixCrossReference":  "Readiness contains exact 33 unique case rows and six D01..D06 handoff entries; 32 NOT_RUN + 1 BLOCKED; no PASS.",
+                           "nativeExit":  "Final R1 static audit native exit 0; audit-r1-final.log SHA256 72DB1B059EC940E46DD70B106D00EF2FDE24B6D9A4C9B72D7DEC1EA0D96D839F.",
+                           "evidenceDirectory":  "build/c04-census-r1-c664f2a42c1a4d1bbfb1f64209731855",
+                           "evidenceSha256":  "72DB1B059EC940E46DD70B106D00EF2FDE24B6D9A4C9B72D7DEC1EA0D96D839F",
+                           "firstDiffChecks":  "Formatting-only staged checks preserved: diff-check-first.log native2 SHA256 504D18178F96E0DCF7A63EB165C4C9787049DE9D2D9815517B6E9FA652BD8FA2 (PowerShell BOM/CRLF and Markdown hard-break spaces); diff-check-second.log native2 SHA256 942B9445A7F4FF1F3A1F1E5C6F855EF5B81A7F63E57D67893B4661771E617189 (remaining Markdown hard-break spaces); diff-check-final.log native2 SHA256 B01A86F8E2E7993DFA449A483DB0A77B091A224E336EF20DB79B4B1FA2D6AB90 (JSON was reserialized with BOM/CRLF after normalization). All tracked text was then normalized and final staged diff-check passed native0.",
+                           "finalDiffCheck":  "git diff --cached --check native exit 0; build/c04-census-audit-20261101-0943/diff-check-success.log SHA256 3E16534CECE581D4CAF49808937164B69E6C3DF12FCD0D06BEFB24371D885E5B",
+                           "revisionAuditCommand":  "powershell.exe -NoProfile -ExecutionPolicy Bypass -File build/c04-census-r1-c664f2a42c1a4d1bbfb1f64209731855/audit-r1.ps1",
+                           "revisionAuditCheckCount":  "17/17",
+                           "revisionAuditNativeExit":  0
+                       },
+    "evidenceLayerCatalog":  [
+                                 {
+                                     "id":  "DOTNET_PURE",
+                                     "sources":  [
+                                                     "H-C01 accepted report: native .NET aggregate 1,048/1,048; report SHA 24F867B86CCBBE08200817CE792A336C059EE3F5C70068F8EF9AC26BB7E9C6E9",
+                                                     "dotnet/tests/Mahjong.TableService.Tests/B2TerminalSettlementTests.cs:RawSettlementBearingEnvelope_IsRejectedBeforeAnyScoring; source SHA 400D0C0C3B7AC4F926E21CF0259F8BE2E4775F088311ADE728E70567D991123B"
+                                                 ],
+                                     "status":  "HISTORICAL_COMPONENT_ONLY",
+                                     "limitation":  "C02 PowerShell 27-case suite is not a .NET test and is excluded. No C03/C04 run."
+                                 },
+                                 {
+                                     "id":  "SCRIPT_TOOL_FIXTURE",
+                                     "sources":  [
+                                                     "H-C02 VerifyP45ControlledRecoveryCollection.Tests.ps1:27/27 native0; test-summary SHA DFB0808D9DA9571C56832C353A4110F07F4B78449C8A23F369DD23E9420B2D5B",
+                                                     "H-C05 VerifyP45AndroidGame.Tests.ps1:29/29 native0; selftest SHA 7FED2C155FEF311ED4A143B72A4506280876465AFAEA981A6A1042A5D80CEC5B",
+                                                     "H-C05 independent gates:28/28 native0; gate-results SHA ED70FE7C2E32BC69359AADBA0A716F0EB8F4EBBAE1818C759AA4910876A96569"
+                                                 ],
+                                     "status":  "HISTORICAL_TOOL_FIXTURE",
+                                     "limitation":  "These are script/tool assertions, not .NET business tests, GAME outcomes or device results."
+                                 },
+                                 {
+                                     "id":  "UNITY_EDITMODE",
+                                     "sources":  [
+                                                     "doc/v5-重构/V5-P4.3-B1-PLAYER-SCENES-DELIVERY.md SHA C91AECCC9EA97B59A74A4309D686A60FDF57B51A0F23D3A5EFAC83C2C9ECEB3E",
+                                                     "doc/v5-重构/V5-P4.4-SPECTATOR-SETTLEMENT-DELIVERY.md SHA 8DE8A2FFB67EE8731CB8079773E716083FC6C98073CF77CB867469ACD7E1D259"
+                                                 ],
+                                     "status":  "HISTORICAL_COMPONENT_ONLY",
+                                     "limitation":  "Editor assertions do not establish final Player runtime."
+                                 },
+                                 {
+                                     "id":  "UNITY_PLAYMODE",
+                                     "sources":  [
+                                                     "H-C01 accepted PlayMode 7/7 native0; XML SHA 3777ED8FDBE7CF1887FBEC44777009E3BFCD626C951BDD436820F4FF376A1F4F",
+                                                     "doc/v5-重构/V5-P4.3-B1-PLAYER-SCENES-DELIVERY.md SHA C91AECCC9EA97B59A74A4309D686A60FDF57B51A0F23D3A5EFAC83C2C9ECEB3E",
+                                                     "doc/v5-重构/V5-P4.4-SPECTATOR-SETTLEMENT-DELIVERY.md SHA 8DE8A2FFB67EE8731CB8079773E716083FC6C98073CF77CB867469ACD7E1D259"
+                                                 ],
+                                     "status":  "HISTORICAL_COMPONENT_ONLY",
+                                     "limitation":  "Not a run against the future C03 candidate."
+                                 },
+                                 {
+                                     "id":  "WINDOWS_PLAYER",
+                                     "sources":  [
+                                                     "H-C01 Player summary 12 distinct rounds/12 terminal commits/one match_finished and WestCompletion, native0/tool0; SHA 575BF95B811B5DEE316FBB82F9A02350D5458EC3F5E5FA0BB8A2D266A84C3539",
+                                                     "H-C02 8/8 native0 recorded recovery facts only; SHA 18F3EFB34F68FE8277CD9F4A0D8DFD7510F95EB61A4DB3BCC9B56D2A4EE6D040",
+                                                     "H-COMBINED-RECOVERY old Pon Applied/PonDeclared absent, Player native31/tool10; source 0d338ec79a9ca5d01897d7c1c70ec2b0e2f73156"
+                                                 ],
+                                     "status":  "HISTORICAL_PLAYER_ONLY",
+                                     "limitation":  "Historical build/source identities and dirty inputs remain explicit; not future C03."
+                                 },
+                                 {
+                                     "id":  "ANDROID_DEVICE",
+                                     "sources":  [
+                                                     "H-C05 historical APK 52,142,409 bytes SHA 0506AEEA2593B7E70C7B2796CE353D3B401A12ADCBF1FFFCC24A0464481C8D6B; pinned adb enumerated no device"
+                                                 ],
+                                     "status":  "NOT_RUN",
+                                     "limitation":  "No install/gameplay/visual/input or safe-area result."
+                                 },
+                                 {
+                                     "id":  "IOS_DEVICE",
+                                     "sources":  [
+
+                                                 ],
+                                     "status":  "NOT_RUN",
+                                     "limitation":  "No iOS device result; external plan is a scope note, not device evidence."
+                                 }
+                             ]
+}

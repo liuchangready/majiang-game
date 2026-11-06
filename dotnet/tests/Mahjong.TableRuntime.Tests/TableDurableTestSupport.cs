@@ -87,7 +87,8 @@ namespace Mahjong.TableRuntime.Tests
             TableTimingCheckpoint? timing = null,
             string boot = Boot,
             ulong utc = (ulong)UtcBase,
-            int schemaVersion = TableCheckpointFactory.SchemaVersion)
+            int schemaVersion = TableCheckpointFactory.SchemaVersion,
+            ITableProjectionContextSource? projectionSource = null)
         {
             var clock = new DecisionClock(new DecisionClockConfig(1000L, 0L, ReserveScope.Round));
             clock.BeginRound(round.RoundId, 0L);
@@ -105,7 +106,7 @@ namespace Mahjong.TableRuntime.Tests
             byte[] timingBytes = TableTimingCheckpointCodec.Encode(actualTiming);
             byte[] cheatBytes = TableCheatLedgerCheckpointCodec.Encode(TableCheatLedgerCheckpoint.FromLedger(ledger));
             byte[] facts = TableProjectionFactsCodec.Encode(
-                new TestProjectionSource().Capture(new TableProjectionContextRequest(
+                (projectionSource ?? new TestProjectionSource()).Capture(new TableProjectionContextRequest(
                     Room,
                     round,
                     new StateVersion(0),

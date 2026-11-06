@@ -858,6 +858,33 @@ namespace Mahjong.TableRuntime.Tests
                 value => value.Type == RoundEventType.ResponseClaimed && value.Detail == "CHI");
         }
 
+        [Fact]
+        public void RealPonAfterRiichiInterruptsIppatsuAndRemovesTheYaku()
+        {
+            RoundStateMachine round = SettlementFixture.RiichiPonThenRonWindow();
+            var intent = new TableSettlementIntent(round.RoundId, TableSettlementAction.Ron, 1);
+            RoundSettlementFacts facts = BuildFacts(
+                round, intent, new DefaultSettlementFactsPort(), "pon-ippatsu-facts");
+            RoundSettlementSeatFacts seat1 = facts.FindSeat(1)!;
+            Assert.True(seat1.IsDoubleRiichi);
+            Assert.False(seat1.IsIppatsu);
+            Assert.True(seat1.IsIppatsuInterruptedByCallOrKan);
+            Assert.False(seat1.IsFirstTurnUninterrupted);
+            Assert.Contains(
+                round.Events,
+                value => value.Type == RoundEventType.PonDeclared && value.Seat == 0);
+
+            RoundSettlementCalculation calculation = RoundSettlementCalculator.CalculateRon(round, 1, facts);
+            Assert.Equal("DOUBLE_RIICHI", calculation.Breakdown!.Yaku[0].Code);
+            Assert.DoesNotContain(calculation.Breakdown.Yaku, y => y.Code == "IPPATSU");
+            Assert.Equal(4, calculation.Breakdown.TotalYakuHan);
+            Assert.Equal(40, calculation.Breakdown.Fu.FinalFu);
+            Assert.Equal(9000L, calculation.Breakdown.TotalPoints);
+            Assert.Equal(
+                new[] { "DOUBLE_RIICHI", "TANYAO", "IIPEIKO" },
+                calculation.Breakdown.Yaku.Select(y => y.Code).ToArray());
+        }
+
         private static CheatState GetCheat(TableActor actor)
         {
             FieldInfo field = typeof(TableActor).GetField("_cheat", BindingFlags.Instance | BindingFlags.NonPublic)!;
@@ -903,6 +930,64 @@ namespace Mahjong.TableRuntime.Tests
             Assert.Equal(before.StateVersion, after.StateVersion);
             Assert.Equal(before.Phase, after.Phase);
             Assert.Equal(before.Scores.ToArray(), after.Scores.ToArray());
+        }
+
+        [Fact]
+        public async Task DurableTerminalUsesOneCoherentUtcCaptureWhenClockAdvances()
+        {
+            RoundStateMachine round = SettlementFixture.ExhaustiveDraw();
+            var clock = new AdvancingUtcClock();
+            await using N2DurableHarness harness = await N2DurableHarness.CreateAsync(
+                round,
+                clockOverride: clock);
+            TableSettlementRequest request = harness.Request(
+                new TableSettlementIntent(round.RoundId, TableSettlementAction.ExhaustiveDraw, round.CurrentSeat),
+                round.Version,
+                "advancing-terminal",
+                "SETTLEMENT_EXHAUSTIVE_DRAW",
+                "advancing-terminal-payload");
+
+            TableOperationResult result = await harness.Actor.SubmitSettlementAsync(
+                request,
+                TestContext.Current.CancellationToken);
+
+            Assert.True(
+                result.Status == TableOperationStatus.Accepted,
+                result.Status + " " + result.ReasonCode + " " + result.Detail);
+            Assert.Contains(result.Events, e => e.Type == RoundEventType.ExhaustiveDraw);
+            Assert.Contains(result.Events, e => e.Type == RoundEventType.RoundEnded);
+            TableCheckpoint? checkpoint = await harness.Store.LoadCheckpointAsync(
+                N2DurableHarness.Room,
+                TestContext.Current.CancellationToken);
+            Assert.NotNull(checkpoint);
+            TableTimingCheckpoint timing =
+                TableTimingCheckpointCodec.Decode(checkpoint!.TimingPayload);
+            Assert.Equal(timing.CapturedAtUtcMs, checkpoint.CreatedAtUtcMs);
+            Assert.Equal(timing.CapturedMonotonicMillis, checkpoint.CapturedMonotonicMillis);
+            Assert.Equal(timing.BootId, checkpoint.BootId);
+
+            int physical = 0;
+            foreach (TilePlacement placement in harness.Actor
+                .GetRoundStateForHost()
+                .Tiles
+                .AsPlacements())
+            {
+                if (placement.Position.Zone != TileZone.Unassigned)
+                {
+                    physical++;
+                }
+            }
+
+            Assert.Equal(136, physical);
+        }
+
+        private sealed class AdvancingUtcClock : ITableClock
+        {
+            private long _reads;
+
+            public long MonotonicMillis => 1000L;
+
+            public long UtcNowMs => DurableHarness.UtcBase + _reads++;
         }
     }
 
@@ -1095,9 +1180,11 @@ namespace Mahjong.TableRuntime.Tests
         public static async Task<N2DurableHarness> CreateAsync(
             RoundStateMachine round,
             ITableSettlementFactsPort? port = null,
-            Action<TableActorOptions>? configure = null)
+            Action<TableActorOptions>? configure = null,
+            ITableClock? clockOverride = null)
         {
             var clock = new ManualTableClock { Now = 1000L };
+            ITableClock actorClock = clockOverride ?? clock;
             var scopes = new InMemoryRequestScopeAuthority();
             TableScopeRecord scope = scopes.Issue(
                 Account,
@@ -1105,7 +1192,7 @@ namespace Mahjong.TableRuntime.Tests
                 Room,
                 (ulong)DurableHarness.UtcBase,
                 (ulong)DurableHarness.UtcBase + 3_600_000UL);
-            var store = new InMemoryTableStore(clock, scopes);
+            var store = new InMemoryTableStore(actorClock, scopes);
             var ledger = DurableHarness.NewLedger();
             TableCheckpoint checkpoint = DurableHarness.InitialCheckpoint(round, ledger, boot: Boot);
             await store.CreateRoomAsync(checkpoint, CancellationToken.None);
@@ -1120,7 +1207,7 @@ namespace Mahjong.TableRuntime.Tests
                 Options(configure),
                 round,
                 commit,
-                clock,
+                actorClock,
                 new RecordingPublicationSink(commit),
                 null,
                 projectionSource,
@@ -1388,6 +1475,94 @@ namespace Mahjong.TableRuntime.Tests
             return Step(
                 afterPass,
                 RoundCommand.Discard(afterPass.RoundId, 2, Tile(22, 3), new[] { 1 }));
+        }
+
+        /// <summary>
+        /// Seat 1 declares riichi, passes on the first Ron chance, then seat 3 discards a tile
+        /// seat 0 really Pons; seat 0's next discard opens a fresh Ron window for seat 1. This
+        /// proves the host fact builder sees a real call as an ippatsu interruption.
+        /// </summary>
+        public static RoundStateMachine RiichiPonThenRonWindow()
+        {
+            RoundStateMachine opening = RonOpening();
+            var plan = new SettlementPlan(RoundPhase.CheatWindow)
+            {
+                FillRemainingIntoWall = true,
+                DrawnSeat = 0,
+                DrawnTile = Tile(22, 1),
+                DrawnSource = DrawSource.Wall
+            };
+            plan.AddDora(39);
+            plan.AddWallTop(Tile(0, 3).Value, Tile(22, 3).Value, Tile(8, 3).Value);
+            plan.AddHand(0, opening.Tiles.TilesInZone(TileZone.Hand, 0).ToArray());
+            plan.AddHand(1, opening.Tiles.TilesInZone(TileZone.Hand, 1).ToArray());
+            RoundStateMachine first = plan.Build(opening.Spec);
+            RoundStateMachine afterDealerDiscard = Step(
+                first,
+                RoundCommand.Discard(first.RoundId, 0, Tile(22, 1)));
+            RoundStateMachine afterRiichi = Step(
+                afterDealerDiscard,
+                RoundCommand.Riichi(afterDealerDiscard.RoundId, 1, Tile(0, 3), new[] { 2 }));
+            RoundStateMachine afterPass = Step(
+                afterRiichi,
+                RoundCommand.Pass(afterRiichi.RoundId, 2));
+            RoundStateMachine ronWindow = Step(
+                afterPass,
+                RoundCommand.Discard(afterPass.RoundId, 2, Tile(22, 3), new[] { 1 }));
+            RoundStateMachine afterFirstPass = Step(
+                ronWindow,
+                RoundCommand.Pass(ronWindow.RoundId, 1));
+            RoundStateMachine ponWindow = Step(
+                afterFirstPass,
+                RoundCommand.Discard(afterFirstPass.RoundId, 3, Tile(8, 3), new[] { 0 }));
+            RoundStateMachine afterPon = Step(
+                ponWindow,
+                RoundCommand.Pon(ponWindow.RoundId, 0, Tile(8, 3), Tile(8, 0), Tile(8, 1)));
+            return Step(
+                afterPon,
+                RoundCommand.Discard(afterPon.RoundId, 0, Tile(22, 0), new[] { 1 }));
+        }
+
+        /// <summary>Same as RiichiPonThenRonWindow, but the interruption is a real OpenKan.</summary>
+        public static RoundStateMachine RiichiKanThenRonWindow()
+        {
+            RoundStateMachine opening = RonOpening();
+            var plan = new SettlementPlan(RoundPhase.CheatWindow)
+            {
+                FillRemainingIntoWall = true,
+                DrawnSeat = 0,
+                DrawnTile = Tile(22, 1),
+                DrawnSource = DrawSource.Wall
+            };
+            plan.AddDora(39);
+            plan.AddWallTop(Tile(0, 3).Value, Tile(22, 3).Value, Tile(8, 3).Value);
+            plan.AddHand(0, opening.Tiles.TilesInZone(TileZone.Hand, 0).ToArray());
+            plan.AddHand(1, opening.Tiles.TilesInZone(TileZone.Hand, 1).ToArray());
+            RoundStateMachine first = plan.Build(opening.Spec);
+            RoundStateMachine afterDealerDiscard = Step(
+                first,
+                RoundCommand.Discard(first.RoundId, 0, Tile(22, 1)));
+            RoundStateMachine afterRiichi = Step(
+                afterDealerDiscard,
+                RoundCommand.Riichi(afterDealerDiscard.RoundId, 1, Tile(0, 3), new[] { 2 }));
+            RoundStateMachine afterPass = Step(
+                afterRiichi,
+                RoundCommand.Pass(afterRiichi.RoundId, 2));
+            RoundStateMachine ronWindow = Step(
+                afterPass,
+                RoundCommand.Discard(afterPass.RoundId, 2, Tile(22, 3), new[] { 1 }));
+            RoundStateMachine afterFirstPass = Step(
+                ronWindow,
+                RoundCommand.Pass(ronWindow.RoundId, 1));
+            RoundStateMachine kanWindow = Step(
+                afterFirstPass,
+                RoundCommand.Discard(afterFirstPass.RoundId, 3, Tile(8, 3), new[] { 0 }));
+            RoundStateMachine afterKan = Step(
+                kanWindow,
+                RoundCommand.OpenKan(kanWindow.RoundId, 0, Tile(8, 3), Tile(8, 0), Tile(8, 1), Tile(8, 2)));
+            return Step(
+                afterKan,
+                RoundCommand.Discard(afterKan.RoundId, 0, Tile(22, 0), new[] { 1 }));
         }
 
         public static RoundStateMachine ChiAfterDiscard()

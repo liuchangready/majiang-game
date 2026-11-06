@@ -1,0 +1,155 @@
+{
+  "schema": "v5-g2-final-ci-binding-v1",
+  "taskId": "G2-FINAL-CI-20261104",
+  "status": "NOT_ACCEPTED",
+  "worktree": "E:/majiang-review/g2-final-ci-luna6-20261104",
+  "branch": "wt/v5-g2-final-ci-luna6-20261104",
+  "baseCommit": "e2accaa0b9647bcb64e0fc3639c4c5bf1eb5a0d8",
+  "candidateCommit": null,
+  "candidateCode": {
+    "path": "dotnet/tests/Mahjong.LocalHost.Tests/C04RoomTicketTests.cs",
+    "gitBlobSha1": "6ed32a8beab4324403469738414791d9ae013fcb",
+    "sha256": "DEC3C9F2879B926B81E1E7BC109F6D942C6D151A0C2F2D38DE6E317F391F3E2C",
+    "state": "uncommitted; exact content hash bound here"
+  },
+  "modifiedTrackedFiles": [
+    "dotnet/tests/Mahjong.LocalHost.Tests/C04RoomTicketTests.cs",
+    "doc/v5-重构/V5-G2-FINAL-CI-DELIVERY-20261104.md",
+    "doc/v5-重构/V5-G2-FINAL-CI-BINDING-20261104.json"
+  ],
+  "unchangedScope": [
+    "dotnet/tests/Mahjong.LocalHost.Tests/LocalHostRecoveryTests.cs",
+    "all production source",
+    "all verifier/workflow files",
+    "Unity/Android"
+  ],
+  "historicalCi": {
+    "sourceCommit": "4a855c3c49e65ec97708784d84a784df9f11c199",
+    "syntheticMergeCommit": "ebc98716b8588d5ff6af774b04674bc4f3dd0e3f",
+    "sourcePushRun": { "id": "41729487041", "result": "SUCCESS" },
+    "pullRequestRun": { "id": "41729493387", "result": "FAILURE", "checkout": "ebc98716b8588d5ff6af774b04674bc4f3dd0e3f" },
+    "historicalSummary": { "passedProjects": 20, "failedProjects": 1, "blockedProjects": 0, "notRunProjects": 0 },
+    "originalFailure": {
+      "test": "Mahjong.LocalHost.Tests.C04RoomTicketTests.RecoveredOpenHumanDecisionRetiresOnOriginalDeadlineWithoutBinding",
+      "expected": "local-human-initial",
+      "actual": "local-human-0-0-CheatWindow",
+      "xmlSha256": "3483424346A8DB5F57065A12C4A3A2D0EB9700C61E75DDB12E54AE37738BF8F3",
+      "path": "build/caller-original-ci-41729493387/verify-v5/unified/direct-xml/Mahjong.LocalHost.Tests/direct-results.xml"
+    }
+  },
+  "preservedPriorFullUnified": {
+    "result": "19 PASS / 2 FAIL",
+    "rerunThisRound": false,
+    "summaryPath": "artifacts/541f2f42-fd58-49e6-b7ac-526c178c9abc/unified/summary.log",
+    "summarySha256": "8EE94AF39ED6525612711940D2C8AA6C1BB8D1177D36BE477444AF946AF0A6F2",
+    "localHost": { "total": 184, "passed": 183, "failed": 1, "errors": 0, "skipped": 0, "notRun": 0, "nativeExit": 1, "xmlSha256": "0B0DFB7806A4583E0EF9FE664A8901A0D9EB17C1057FD8FD9515F15FB7CC7757" },
+    "lobbyService": { "total": 89, "passed": 77, "failed": 12, "errors": 0, "skipped": 0, "notRun": 0, "nativeExit": 1, "xmlSha256": "F8B66D240299BEFCD2A0AC7B7F81A8BBF04DDB09F9F442CEFDD3306E51242EC6" }
+  },
+  "reviewFindings": {
+    "G2-REVIEW-01": {
+      "severity": "MAJOR",
+      "status": "OPEN_SCOPE_GAP_ACCEPTED",
+      "finding": "The recovery capture path defers the autonomous driver; C04 explicitly observes DriverRunning=false and manually ticks the actor. It does not prove the driver's post-retirement human-binding gate.",
+      "scopeRequest": "Internal deterministic driver-iteration completion barrier in dotnet/src/Mahjong.LocalHost/LocalTableDriver.cs, plus accessor plumbing only if needed. No such seam added or attempted in this round."
+    },
+    "G2-REVIEW-02": {
+      "severity": "REVIEWER_REQUIREMENT_WITHDRAWN_AS_MISTAKEN",
+      "status": "CORRECTED_ORACLE; NO_PRODUCTION_DEFECT",
+      "contract": {
+        "configuredFirstRecoveryGraceMillis": 5000,
+        "sourceGraceAppliedFalse": "apply configured grace once",
+        "sourceGraceAppliedTrue": "preserve persisted remaining grace and add none",
+        "base": "source remaining base + configured grace only if source RecoveryGraceApplied is false",
+        "deadline": "recovery monotonic time + independently expected base + source reserve - source overdue"
+      },
+      "authority": [
+        "doc/v5-重构/V5-G2-C04-D05-RECOVERY-LIFECYCLE-DELIVERY-20261102.md:42,56,91,186",
+        "dotnet/src/Mahjong.TableRuntime/TableRecoveryService.cs:20,1238,1833-1838",
+        "dotnet/tests/Mahjong.TableRuntime.Tests/TableDurableTimingRecoveryTests.cs:61-78,93-110"
+      ],
+      "priorMistakenOracle": {
+        "preserved": true,
+        "xml": "build/541f2f42-fd58-49e6-b7ac-526c178c9abc/review-round2/targeted/final-assertion-target.xml",
+        "xmlSha256": "3055A98EC4A249816A7AACDD724A57DFFE62D57D3C5C39763DC4BD7C258801DA",
+        "nativeLog": "build/541f2f42-fd58-49e6-b7ac-526c178c9abc/review-round2/targeted/final-assertion-target.native.log",
+        "nativeLogSha256": "821BACFA5011991E61954D4A6EE23A6B816CB67D7DEC320D613088FD5D9AF1CC",
+        "incorrectExpectation": "source grace 0 must remain 0; expected deadline 24000",
+        "actualLegalRecovery": "configured first grace 5000; deadline 29000",
+        "cause": "The previous round used source grace as the first-recovery configuration instead of the configured 5000ms policy."
+      },
+      "existingTwoRecoveryCoverage": {
+        "path": "build/541f2f42-fd58-49e6-b7ac-526c178c9abc/table-runtime/direct-results.xml",
+        "sha256": "BE56F32AD2AABBA2A831902D2769B2151F73E1F52C8DC5C3A0F945AC7C71C9B8",
+        "casesAlreadyPassed": [
+          "LongCrossBootDowntimeIsExcludedButGraceIsAppliedOnce",
+          "TwoConsecutiveRecoveriesDoNotGrantGraceTwice"
+        ],
+        "rerunThisRound": false
+      }
+    },
+    "G2-REVIEW-03": {
+      "severity": "DELIVERY_GAP",
+      "status": "DELIVERABLES_PRESENT_AND_CORRECTED",
+      "files": [
+        "doc/v5-重构/V5-G2-FINAL-CI-DELIVERY-20261104.md",
+        "doc/v5-重构/V5-G2-FINAL-CI-BINDING-20261104.json"
+      ]
+    }
+  },
+  "boundedVerification": {
+    "build": {
+      "command": "D:/game_dev_tools/dotnet/dotnet.exe build dotnet/tests/Mahjong.LocalHost.Tests/Mahjong.LocalHost.Tests.csproj --configuration Release --no-restore",
+      "nativeExit": 0,
+      "warnings": 0,
+      "errors": 0,
+      "log": "build/541f2f42-fd58-49e6-b7ac-526c178c9abc/review-round3/build.native.log",
+      "logSha256": "906AD74E72B1155DCA07D6E505E6C775FFB7B293E119ECF9D2C114C40FA7B336"
+    },
+    "targeted": {
+      "commandPattern": "D:/game_dev_tools/dotnet/dotnet.exe dotnet/tests/Mahjong.LocalHost.Tests/bin/Release/net8.0/Mahjong.LocalHost.Tests.dll -method Mahjong.LocalHost.Tests.C04RoomTicketTests.RecoveredOpenHumanDecisionRetiresOnOriginalDeadlineWithoutBinding -noLogo -result-xml <unique XML>",
+      "fixedInvocations": 5,
+      "each": { "total": 1, "passed": 1, "failed": 0, "errors": 0, "skipped": 0, "notRun": 0, "nativeExit": 0 },
+      "evidenceDirectory": "build/541f2f42-fd58-49e6-b7ac-526c178c9abc/review-round3/targeted",
+      "results": [
+        { "xml": "direct-target.xml", "xmlSha256": "03F787CA370A00AEC4AF082D28C76499E379B57F26F81E0A397682D81C96AA3A", "nativeLog": "direct-target.native.log", "nativeLogSha256": "B10C60CED2BAAD853A9F6F570B4357780ECA2F560639AF7F62297FC826AD114E" },
+        { "xml": "target-2.xml", "xmlSha256": "693AF7DA44CDB132A06C1481212D7F197C2AACCF74211FB613CE6194E05AEA76", "nativeLog": "target-2.native.log", "nativeLogSha256": "8AEB5E06453F59398A0A980E4EAE5B2E5BD72BB71DA0A93625D59A7D59C2F339" },
+        { "xml": "target-3.xml", "xmlSha256": "4D77F96CB2605410F79D24AF4DBD3FBB2BEDC27013F6268F91C98AA5F449C299", "nativeLog": "target-3.native.log", "nativeLogSha256": "D5A0BDC834CE9C037F287DD8E69A3005E1F031F64117B5BF5C6549FC2A8C0F86" },
+        { "xml": "target-4.xml", "xmlSha256": "4E2427F70C517831AC239C8599915659D29314B9D182E4C08F9E028A4DEAD0E9", "nativeLog": "target-4.native.log", "nativeLogSha256": "1AFEF80BA0E0AE29E72927BFD02CD646894150DA075D20CA42EC90D272FEEE95" },
+        { "xml": "target-5.xml", "xmlSha256": "611F252CB046C6FA3F301194444337B68AC92E6590E8E25FA70AAD0A2D310755", "nativeLog": "target-5.native.log", "nativeLogSha256": "30C2B3536F24CBEDF44941A0D79E749AE032D31F21357934F421032F525D4C23" }
+      ]
+    },
+    "fullLocalHostOrRuntimeMatrixRerun": false,
+    "fullUnifiedRerun": false,
+    "remoteCi": "NOT_RUN",
+    "independentReview": "NOT_RUN"
+  },
+  "outOfScopeFailures": [
+    {
+      "id": "G2-VALIDATION-01",
+      "severity": "MAJOR",
+      "location": "Lobby PG temporary installation/cleanup through verifier",
+      "actual": "missing psql.exe, pg_ctl.exe and timezone resources; 12 LobbyService Npgsql stream-close failures; cleanup failure",
+      "expected": "complete owned PG install/resources, LobbyService 89/89, normal cleanup, no owned process",
+      "evidence": "build/541f2f42-fd58-49e6-b7ac-526c178c9abc/unified-final-diagnostics and artifacts/541f2f42-fd58-49e6-b7ac-526c178c9abc/unified"
+    },
+    {
+      "id": "G2-VALIDATION-02",
+      "severity": "MAJOR",
+      "location": "dotnet/tests/Mahjong.LocalHost.Tests/LocalControlTests.cs:575-690, especially 690",
+      "actual": "expected Ready, actual Synchronizing; preserved LocalHost suite 183/184",
+      "expected": "Ready after receipt reconciliation and zero non-pass suite cases",
+      "evidence": "artifacts/541f2f42-fd58-49e6-b7ac-526c178c9abc/unified/direct-xml/Mahjong.LocalHost.Tests/direct-results.xml and direct-Mahjong.LocalHost.Tests.log",
+      "repairThisRound": false
+    }
+  ],
+  "acceptance": {
+    "accepted": false,
+    "remoteCi": "NOT_RUN",
+    "independentReview": "NOT_RUN",
+    "push": "NOT_RUN",
+    "approval": "NOT_GRANTED",
+    "merge": "NOT_RUN",
+    "deploy": "NOT_RUN",
+    "v4RemainsProduction": true
+  }
+}

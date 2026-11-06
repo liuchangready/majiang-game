@@ -195,18 +195,34 @@ namespace Mahjong.Client
 
     public sealed class TableSnapshotChangedEventArgs : EventArgs
     {
+        /// <summary>
+        /// Legacy constructor retained for compatibility with fake sessions and
+        /// existing consumers. It publishes no visible-event batch.
+        /// </summary>
         public TableSnapshotChangedEventArgs(
             ContractCursor cursor,
             bool isFullBaseline,
             PlayerSnapshot? playerSnapshot,
             PublicSnapshot? publicSnapshot,
             RoomUpdate? roomSnapshot)
+            : this(cursor, isFullBaseline, playerSnapshot, publicSnapshot, roomSnapshot, TableVisibleEventBatch.Empty)
+        {
+        }
+
+        public TableSnapshotChangedEventArgs(
+            ContractCursor cursor,
+            bool isFullBaseline,
+            PlayerSnapshot? playerSnapshot,
+            PublicSnapshot? publicSnapshot,
+            RoomUpdate? roomSnapshot,
+            TableVisibleEventBatch visibleEventBatch)
         {
             Cursor = cursor;
             IsFullBaseline = isFullBaseline;
             PlayerSnapshot = playerSnapshot;
             PublicSnapshot = publicSnapshot;
             RoomSnapshot = roomSnapshot;
+            VisibleEventBatch = visibleEventBatch ?? throw new ArgumentNullException(nameof(visibleEventBatch));
         }
 
         public ContractCursor Cursor { get; }
@@ -218,6 +234,21 @@ namespace Mahjong.Client
         public PublicSnapshot? PublicSnapshot { get; }
 
         public RoomUpdate? RoomSnapshot { get; }
+
+        /// <summary>
+        /// Typed, atomically confirmed visible events for this exact snapshot
+        /// publication. Always non-null; the legacy constructor yields
+        /// <see cref="TableVisibleEventBatch.Empty"/>.
+        /// </summary>
+        public TableVisibleEventBatch VisibleEventBatch { get; }
+
+        /// <summary>
+        /// Convenience view of <see cref="TableVisibleEventBatch.Events"/>. On a
+        /// baseline these events are reconciliation data, not new animation.
+        /// Use <see cref="TableVisibleEventBatch.PlayableEvents"/> for the
+        /// incremental-only feed.
+        /// </summary>
+        public IReadOnlyList<TableVisibleEvent> VisibleEvents => VisibleEventBatch.Events;
     }
 
     public sealed class TableReceiptResolvedEventArgs : EventArgs

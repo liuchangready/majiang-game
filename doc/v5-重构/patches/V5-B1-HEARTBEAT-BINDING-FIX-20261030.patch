@@ -1,0 +1,1622 @@
+diff --git a/dotnet/src/Mahjong.TableService/TableSessionHandler.cs b/dotnet/src/Mahjong.TableService/TableSessionHandler.cs
+index a97655e..39bfce0 100644
+--- a/dotnet/src/Mahjong.TableService/TableSessionHandler.cs
++++ b/dotnet/src/Mahjong.TableService/TableSessionHandler.cs
+@@ -2541,19 +2541,18 @@ private Envelope BuildControlReceipt(Envelope request, Contracts.Wire.ReceiptSta
+             return BuildReceipt(request, receipt);
+         }
+ 
+-        private static Envelope BuildHeartbeatPing()
++        private Envelope BuildHeartbeatPing()
+         {
++            // B1 heartbeat binding: a server-generated PING is liveness control for the
++            // CURRENT admitted connection, so it must carry the same authoritative
++            // session/room/seat/binding identity as every other envelope. The frozen
++            // Client rejects a bound heartbeat whose envelope does not match its WELCOME
++            // (HeartbeatTableChannel.MatchesBinding); a bare envelope therefore faulted
++            // every healthy session at the first server PING. Reuse the one envelope
++            // builder instead of duplicating (and drifting from) the identity fields.
+             string nonce = RandomNumberGenerator.GetHexString(16, lowercase: true);
+             var heartbeat = new Heartbeat { Ping = new Ping { Nonce = nonce } };
+-            return new Envelope
+-            {
+-                ProtocolMajor = ProtocolConstants.Major,
+-                ProtocolMinor = ProtocolConstants.Minor,
+-                RulesetVersion = ProtocolConstants.RulesetVersion,
+-                ProjectionVersion = ProtocolConstants.ProjectionVersion,
+-                MessageType = MessageType.Heartbeat,
+-                Heartbeat = heartbeat
+-            };
++            return BuildEnvelope(MessageType.Heartbeat, heartbeat, correlationId: null);
+         }
+ 
+         private Envelope BuildHeartbeatPong(string nonce)
+diff --git a/dotnet/tests/Mahjong.Client.Wss.Tests/HeartbeatTableChannelTests.cs b/dotnet/tests/Mahjong.Client.Wss.Tests/HeartbeatTableChannelTests.cs
+index bcc3406..bcac1b8 100644
+--- a/dotnet/tests/Mahjong.Client.Wss.Tests/HeartbeatTableChannelTests.cs
++++ b/dotnet/tests/Mahjong.Client.Wss.Tests/HeartbeatTableChannelTests.cs
+@@ -83,6 +83,42 @@ public async Task HeartbeatWithDifferentBindingIdentityIsRejected()
+             Assert.True(ex.Permanent);
+         }
+ 
++        [Fact]
++        public async Task BindinglessServerPingIsRejected()
++        {
++            // Exact regression shape of the server defect: empty session/room, seat 0,
++            // epoch 0 on an otherwise valid PING after a bound WELCOME. The strict client
++            // must keep rejecting it; a server-side fix may never be excused here.
++            var fixture = await OpenBoundAsync();
++            using var channel = fixture.Channel;
++            Envelope ping = TestWire.HeartbeatPing(0, "0123456789abcdef", seatId: 0);
++            ping.SessionId = string.Empty;
++            ping.RoomId = string.Empty;
++            fixture.Inner.Enqueue(ping);
++
++            TableChannelClosedException ex = await Assert.ThrowsAsync<TableChannelClosedException>(
++                () => channel.ReceiveAsync(CancellationToken.None));
++
++            Assert.Equal(ProtocolErrorCode.ProtocolViolation, ex.Code);
++            Assert.True(ex.Permanent);
++        }
++
++        [Fact]
++        public async Task PingWithStaleSessionIdentityIsRejected()
++        {
++            var fixture = await OpenBoundAsync();
++            using var channel = fixture.Channel;
++            Envelope ping = TestWire.HeartbeatPing(11, "0123456789abcdef");
++            ping.SessionId = "session-from-a-previous-binding";
++            fixture.Inner.Enqueue(ping);
++
++            TableChannelClosedException ex = await Assert.ThrowsAsync<TableChannelClosedException>(
++                () => channel.ReceiveAsync(CancellationToken.None));
++
++            Assert.Equal(ProtocolErrorCode.ProtocolViolation, ex.Code);
++            Assert.True(ex.Permanent);
++        }
++
+         [Fact]
+         public async Task InvalidHeartbeatNonceIsRejectedAsMalformed()
+         {
+diff --git a/dotnet/tests/Mahjong.P5.4b.B1.HttpsAdmission.Tests/HeartbeatLivenessGateTests.cs b/dotnet/tests/Mahjong.P5.4b.B1.HttpsAdmission.Tests/HeartbeatLivenessGateTests.cs
+new file mode 100644
+index 0000000..e4d7285
+--- /dev/null
++++ b/dotnet/tests/Mahjong.P5.4b.B1.HttpsAdmission.Tests/HeartbeatLivenessGateTests.cs
+@@ -0,0 +1,253 @@
++using System;
++using Mahjong.P5_4b.B1.HttpsAdmission.Worker;
++using Xunit;
++
++namespace Mahjong.P5_4b.B1.HttpsAdmission.Tests
++{
++    /// <summary>
++    /// Pins the phase-local heartbeat gate: cumulative counters from an earlier phase must
++    /// never satisfy a later phase, and only NEW PING/PONG frames plus monotonic duration
++    /// may make a phase Ready.
++    /// </summary>
++    public sealed class HeartbeatLivenessGateTests
++    {
++        [Fact]
++        public void ZeroNewHeartbeatsNeverSatisfyAPhase()
++        {
++            // Baselines already satisfy six PING/PONGs from an earlier gate. Reusing the
++            // cumulative values (the original defect) would pass immediately; the phase
++            // gate must remain Waiting until six NEW frames arrive.
++            HeartbeatLivenessPhase phase = HeartbeatLivenessPhase.Start(
++                "five admitted sessions",
++                new[] { Sample("0", ready: true, pings: 6, pongs: 6) },
++                6,
++                TimeSpan.FromSeconds(30),
++                DateTimeOffset.UtcNow);
++
++            HeartbeatLivenessResult result = phase.Evaluate(
++                new[] { Sample("0", ready: true, pings: 6, pongs: 6) },
++                TimeSpan.FromSeconds(60));
++
++            Assert.Equal(HeartbeatLivenessStatus.Waiting, result.Status);
++            Assert.False(result.IsReady);
++            Assert.Equal(0, result.NewPingsMin);
++            Assert.Equal(0, result.NewPongsMin);
++        }
++
++        [Fact]
++        public void SixNewPingsAndMatchingPongsOverThirtySecondsAreReady()
++        {
++            HeartbeatLivenessPhase phase = HeartbeatLivenessPhase.Start(
++                "five admitted sessions",
++                new[] { Sample("0", ready: true, pings: 6, pongs: 6) },
++                6,
++                TimeSpan.FromSeconds(30),
++                DateTimeOffset.UtcNow);
++
++            HeartbeatLivenessResult result = phase.Evaluate(
++                new[] { Sample("0", ready: true, pings: 12, pongs: 12) },
++                TimeSpan.FromSeconds(30));
++
++            Assert.True(result.IsReady);
++            Assert.Equal(6, result.NewPingsMin);
++            Assert.Equal(6, result.NewPongsMin);
++        }
++
++        [Fact]
++        public void SixNewPingsWithOnlyThreeNewPongsAreNotReady()
++        {
++            HeartbeatLivenessPhase phase = HeartbeatLivenessPhase.Start(
++                "post-recovery live sessions",
++                new[] { Sample("0", ready: true, pings: 4, pongs: 4) },
++                4,
++                TimeSpan.FromSeconds(20),
++                DateTimeOffset.UtcNow);
++
++            HeartbeatLivenessResult result = phase.Evaluate(
++                new[] { Sample("0", ready: true, pings: 10, pongs: 7) },
++                TimeSpan.FromSeconds(40));
++
++            Assert.Equal(HeartbeatLivenessStatus.Waiting, result.Status);
++            Assert.Equal(6, result.NewPingsMin);
++            Assert.Equal(3, result.NewPongsMin);
++        }
++
++        [Fact]
++        public void OnePrePhasePongIsNotCreditedToAPhasePing()
++        {
++            // Baseline has one in-flight PING (p2). One of the seven phase-observed
++            // PONGs resolves that pre-phase nonce; exactly six belong to the six new
++            // phase PINGs. Nonce-level correlation must still report 6/6, not 6/7.
++            HeartbeatLivenessPhase phase = HeartbeatLivenessPhase.Start(
++                "five admitted sessions",
++                new[] { Sample("0", ready: true, pings: 3, pongs: 2) },
++                6,
++                TimeSpan.FromSeconds(30),
++                DateTimeOffset.UtcNow);
++
++            HeartbeatLivenessResult result = phase.Evaluate(
++                new[] { Sample("0", ready: true, pings: 9, pongs: 9) },
++                TimeSpan.FromSeconds(30));
++
++            Assert.True(result.IsReady);
++            Assert.Equal(6, result.NewPingsMin);
++            Assert.Equal(6, result.NewPongsMin);
++        }
++
++        [Fact]
++        public void CountsReachedBeforeTheMinimumSpanAreNotReady()
++        {
++            HeartbeatLivenessPhase phase = HeartbeatLivenessPhase.Start(
++                "five admitted sessions",
++                new[] { Sample("0", ready: true, pings: 0, pongs: 0) },
++                6,
++                TimeSpan.FromSeconds(30),
++                DateTimeOffset.UtcNow);
++
++            HeartbeatLivenessResult result = phase.Evaluate(
++                new[] { Sample("0", ready: true, pings: 6, pongs: 6) },
++                TimeSpan.FromSeconds(10));
++
++            Assert.Equal(HeartbeatLivenessStatus.Waiting, result.Status);
++            Assert.Equal(6, result.NewPingsMin);
++        }
++
++        [Fact]
++        public void AnUnansweredPhasePingTailIsNotReady()
++        {
++            HeartbeatLivenessPhase phase = HeartbeatLivenessPhase.Start(
++                "five admitted sessions",
++                new[] { Sample("0", ready: true, pings: 0, pongs: 0) },
++                6,
++                TimeSpan.FromSeconds(30),
++                DateTimeOffset.UtcNow);
++
++            HeartbeatLivenessResult result = phase.Evaluate(
++                new[] { Sample("0", ready: true, pings: 9, pongs: 7) },
++                TimeSpan.FromSeconds(45));
++
++            Assert.Equal(HeartbeatLivenessStatus.Waiting, result.Status);
++        }
++
++        [Fact]
++        public void ExactlyOneUnansweredPhasePingIsNotReady()
++        {
++            // Exact off-by-one boundary: 7 phase PINGs, only 6 matched PONGs. One
++            // unanswered tail must keep the phase Waiting even though the count is
++            // already above minimumNewPings=6 and the 30 s span is satisfied.
++            HeartbeatLivenessPhase phase = HeartbeatLivenessPhase.Start(
++                "five admitted sessions",
++                new[] { Sample("0", ready: true, pings: 0, pongs: 0) },
++                6,
++                TimeSpan.FromSeconds(30),
++                DateTimeOffset.UtcNow);
++
++            HeartbeatLivenessResult result = phase.Evaluate(
++                new[] { Sample("0", ready: true, pings: 7, pongs: 6) },
++                TimeSpan.FromSeconds(30));
++
++            Assert.Equal(HeartbeatLivenessStatus.Waiting, result.Status);
++            Assert.False(result.IsReady);
++            Assert.Equal(7, result.NewPingsMin);
++            Assert.Equal(6, result.NewPongsMin);
++            Assert.Contains("!1", result.Summary);
++        }
++
++        [Fact]
++        public void APhaseBindingMismatchIsAViolation()
++        {
++            HeartbeatLivenessPhase phase = HeartbeatLivenessPhase.Start(
++                "five admitted sessions",
++                new[] { Sample("0", ready: true, pings: 0, pongs: 0) },
++                6,
++                TimeSpan.FromSeconds(30),
++                DateTimeOffset.UtcNow);
++
++            HeartbeatLivenessResult result = phase.Evaluate(
++                new[] { Sample("0", ready: true, pings: 6, pongs: 6, pingMismatch: 1) },
++                TimeSpan.FromSeconds(30));
++
++            Assert.Equal(HeartbeatLivenessStatus.Violation, result.Status);
++            Assert.Contains("binding/close defect", result.Failure);
++        }
++
++        [Fact]
++        public void APhaseCloseIsAViolation()
++        {
++            HeartbeatLivenessPhase phase = HeartbeatLivenessPhase.Start(
++                "five admitted sessions",
++                new[] { Sample("0", ready: true, pings: 0, pongs: 0) },
++                6,
++                TimeSpan.FromSeconds(30),
++                DateTimeOffset.UtcNow);
++
++            HeartbeatLivenessResult result = phase.Evaluate(
++                new[] { Sample("0", ready: true, pings: 6, pongs: 6, closeCalls: 1) },
++                TimeSpan.FromSeconds(30));
++
++            Assert.Equal(HeartbeatLivenessStatus.Violation, result.Status);
++        }
++
++        [Fact]
++        public void LeavingReadyIsAViolation()
++        {
++            HeartbeatLivenessPhase phase = HeartbeatLivenessPhase.Start(
++                "five admitted sessions",
++                new[] { Sample("0", ready: true, pings: 0, pongs: 0) },
++                6,
++                TimeSpan.FromSeconds(30),
++                DateTimeOffset.UtcNow);
++
++            HeartbeatLivenessResult result = phase.Evaluate(
++                new[] { Sample("0", ready: false, pings: 6, pongs: 6) },
++                TimeSpan.FromSeconds(30));
++
++            Assert.Equal(HeartbeatLivenessStatus.Violation, result.Status);
++        }
++
++        private static HeartbeatLivenessSample Sample(
++            string label,
++            bool ready,
++            int pings,
++            int pongs,
++            int pingMismatch = 0,
++            int pongMismatch = 0,
++            int emptyIdentity = 0,
++            int unmatchedPong = 0,
++            int closeCalls = 0,
++            int inboundClose = 0,
++            int transportClose = 0)
++        {
++            // Deterministic nonce ledger: PING i has nonce "p<i>", and the first
++            // `pongs` PONGs match those PINGs in order. This lets the tests pin exact
++            // nonce correspondence, including a pre-phase in-flight PING.
++            var pingNonces = new string[pings];
++            for (int i = 0; i < pings; i++)
++            {
++                pingNonces[i] = "p" + i.ToString(System.Globalization.CultureInfo.InvariantCulture);
++            }
++
++            var pongNonces = new string[pongs];
++            for (int i = 0; i < pongs; i++)
++            {
++                pongNonces[i] = "p" + i.ToString(System.Globalization.CultureInfo.InvariantCulture);
++            }
++
++            return new HeartbeatLivenessSample(
++                label,
++                ready,
++                new HeartbeatAuditCounters(
++                    pings,
++                    pongs,
++                    pingMismatch,
++                    pongMismatch,
++                    emptyIdentity,
++                    unmatchedPong,
++                    closeCalls,
++                    inboundClose,
++                    transportClose,
++                    pingNonces,
++                    pongNonces));
++        }
++    }
++}
+diff --git a/dotnet/tests/Mahjong.P5.4b.B1.HttpsAdmission.Worker/B1Models.cs b/dotnet/tests/Mahjong.P5.4b.B1.HttpsAdmission.Worker/B1Models.cs
+index 0c838b4..5a77794 100644
+--- a/dotnet/tests/Mahjong.P5.4b.B1.HttpsAdmission.Worker/B1Models.cs
++++ b/dotnet/tests/Mahjong.P5.4b.B1.HttpsAdmission.Worker/B1Models.cs
+@@ -149,6 +149,42 @@ public sealed class SuiteEvidence
+ 
+         public bool PrivateStreamsIsolated { get; set; }
+ 
++        public bool HeartbeatLivenessAllFive { get; set; }
++
++        public int HeartbeatConfiguredIntervalMs { get; set; }
++
++        public int HeartbeatActualPingIntervalMs { get; set; }
++
++        public string HeartbeatFivePhaseStartUtc { get; set; } = string.Empty;
++
++        public string HeartbeatFivePhaseEndUtc { get; set; } = string.Empty;
++
++        public long HeartbeatFivePhaseElapsedMs { get; set; }
++
++        public int HeartbeatFiveNewPingsMin { get; set; }
++
++        public int HeartbeatFiveNewPongsMin { get; set; }
++
++        public string HeartbeatFivePhaseSummary { get; set; } = string.Empty;
++
++        public int HeartbeatBindingMismatchCount { get; set; }
++
++        public int HeartbeatUnexpectedCloseCount { get; set; }
++
++        public bool PostRecoveryHeartbeatLiveness { get; set; }
++
++        public string HeartbeatPostRecoveryPhaseStartUtc { get; set; } = string.Empty;
++
++        public string HeartbeatPostRecoveryPhaseEndUtc { get; set; } = string.Empty;
++
++        public long HeartbeatPostRecoveryElapsedMs { get; set; }
++
++        public int HeartbeatPostRecoveryNewPingsMin { get; set; }
++
++        public int HeartbeatPostRecoveryNewPongsMin { get; set; }
++
++        public string HeartbeatPostRecoveryPhaseSummary { get; set; } = string.Empty;
++
+         public int NormalActionSeat { get; set; } = -1;
+ 
+         public ulong NormalActionStateVersion { get; set; }
+diff --git a/dotnet/tests/Mahjong.P5.4b.B1.HttpsAdmission.Worker/ClientHandle.cs b/dotnet/tests/Mahjong.P5.4b.B1.HttpsAdmission.Worker/ClientHandle.cs
+index d445375..2a3c0ca 100644
+--- a/dotnet/tests/Mahjong.P5.4b.B1.HttpsAdmission.Worker/ClientHandle.cs
++++ b/dotnet/tests/Mahjong.P5.4b.B1.HttpsAdmission.Worker/ClientHandle.cs
+@@ -19,6 +19,7 @@ public sealed class ClientHandle : IAsyncDisposable
+     {
+         private readonly TableSession _session;
+         private readonly TableSessionOperationQueue _operations;
++        private readonly HeartbeatBindingAuditChannel _heartbeatAudit;
+         private readonly HeartbeatTableChannel _heartbeat;
+         private readonly ReceiptLossChannel _loss;
+         private readonly RealWssTableChannel _transport;
+@@ -48,7 +49,8 @@ public ClientHandle(
+                 TargetRequestId = lossRequestId,
+                 DropTargetReceipts = dropTargetReceipts
+             };
+-            _heartbeat = new HeartbeatTableChannel(_loss);
++            _heartbeatAudit = new HeartbeatBindingAuditChannel(_loss);
++            _heartbeat = new HeartbeatTableChannel(_heartbeatAudit);
+             var outbox = new FileOutboxStore(outboxDirectory);
+             _session = new TableSession(_heartbeat, outbox);
+             _operations = new TableSessionOperationQueue(_session);
+@@ -66,6 +68,11 @@ public ClientHandle(
+ 
+         public ReceiptLossChannel Loss => _loss;
+ 
++        public HeartbeatBindingAuditChannel HeartbeatAudit => _heartbeatAudit;
++
++        /// <summary>The configured WELCOME heartbeat interval (not the /2 send period).</summary>
++        public int NegotiatedHeartbeatIntervalMs => _heartbeat.Snapshot?.NegotiatedIntervalMs ?? 0;
++
+         public RealWssTableChannel Transport => _transport;
+ 
+         public TableConnectionState State => _operations.State;
+diff --git a/dotnet/tests/Mahjong.P5.4b.B1.HttpsAdmission.Worker/HeartbeatBindingAuditChannel.cs b/dotnet/tests/Mahjong.P5.4b.B1.HttpsAdmission.Worker/HeartbeatBindingAuditChannel.cs
+new file mode 100644
+index 0000000..f9fd985
+--- /dev/null
++++ b/dotnet/tests/Mahjong.P5.4b.B1.HttpsAdmission.Worker/HeartbeatBindingAuditChannel.cs
+@@ -0,0 +1,330 @@
++using System;
++using System.Collections.Generic;
++using System.Threading;
++using System.Threading.Tasks;
++using Mahjong.Client;
++using Mahjong.Contracts.Wire;
++
++namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
++{
++    /// <summary>
++    /// TEST-ONLY observation point inside the production heartbeat decorator.
++    ///
++    /// It wraps the real transport (ReceiptLossChannel -> RealWssTableChannel) and
++    /// never creates, answers, drops, reorders or rewrites a frame. It only decodes
++    /// a copy of each passing frame so the B1 suite can prove, over multiple real
++    /// server heartbeat periods, that:
++    ///
++    /// - every server PING carries the WELCOME-admitted session/room/seat/epoch;
++    /// - every client PONG echoes a nonce the server actually sent; and
++    /// - neither side closed the connection unexpectedly.
++    ///
++    /// The production Client still performs the strict accept/reject decision; this
++    /// tap exists to make the correlation observable, not to relax it.
++    /// </summary>
++    public sealed class HeartbeatBindingAuditChannel : ITableChannel
++    {
++        private readonly ITableChannel _inner;
++        private readonly object _gate = new object();
++        private readonly HashSet<string> _pendingPings = new HashSet<string>(StringComparer.Ordinal);
++        private readonly List<string> _serverPingNonces = new List<string>();
++        private readonly List<string> _matchedPongNonces = new List<string>();
++
++        private bool _bound;
++        private string? _boundSessionId;
++        private string? _boundRoomId;
++        private int _boundSeatId;
++        private ulong _boundBindingEpoch;
++
++        private int _serverPingCount;
++        private int _matchedPongCount;
++        private int _unmatchedPongCount;
++        private int _pingBindingMismatchCount;
++        private int _pongBindingMismatchCount;
++        private int _emptyIdentityPingCount;
++        private int _inboundCloseEnvelopeCount;
++        private int _closeCallCount;
++        private int _transportCloseCount;
++
++        private string? _lastPingNonce;
++        private string? _lastPongNonce;
++        private string? _lastMismatch;
++        private string? _lastCloseCode;
++
++        public HeartbeatBindingAuditChannel(ITableChannel inner)
++        {
++            _inner = inner ?? throw new ArgumentNullException(nameof(inner));
++        }
++
++        public bool IsOpen => _inner.IsOpen;
++
++        public int ServerPingCount
++        {
++            get { lock (_gate) { return _serverPingCount; } }
++        }
++
++        public int MatchedPongCount
++        {
++            get { lock (_gate) { return _matchedPongCount; } }
++        }
++
++        public int UnmatchedPongCount
++        {
++            get { lock (_gate) { return _unmatchedPongCount; } }
++        }
++
++        public int PingBindingMismatchCount
++        {
++            get { lock (_gate) { return _pingBindingMismatchCount; } }
++        }
++
++        public int PongBindingMismatchCount
++        {
++            get { lock (_gate) { return _pongBindingMismatchCount; } }
++        }
++
++        public int EmptyIdentityPingCount
++        {
++            get { lock (_gate) { return _emptyIdentityPingCount; } }
++        }
++
++        public int InboundCloseEnvelopeCount
++        {
++            get { lock (_gate) { return _inboundCloseEnvelopeCount; } }
++        }
++
++        public int CloseCallCount
++        {
++            get { lock (_gate) { return _closeCallCount; } }
++        }
++
++        public int TransportCloseCount
++        {
++            get { lock (_gate) { return _transportCloseCount; } }
++        }
++
++        /// <summary>
++        /// Atomic snapshot: counts and their ordered nonce ledgers are copied under one
++        /// lock, so a phase baseline can never pair a count from one instant with a nonce
++        /// list from another while a receive/send is being observed.
++        /// </summary>
++        public HeartbeatAuditCounters CaptureCounters()
++        {
++            lock (_gate)
++            {
++                return new HeartbeatAuditCounters(
++                    _serverPingCount,
++                    _matchedPongCount,
++                    _pingBindingMismatchCount,
++                    _pongBindingMismatchCount,
++                    _emptyIdentityPingCount,
++                    _unmatchedPongCount,
++                    _closeCallCount,
++                    _inboundCloseEnvelopeCount,
++                    _transportCloseCount,
++                    _serverPingNonces.ToArray(),
++                    _matchedPongNonces.ToArray());
++            }
++        }
++
++        public string? LastPingNonce
++        {
++            get { lock (_gate) { return _lastPingNonce; } }
++        }
++
++        public string? LastPongNonce
++        {
++            get { lock (_gate) { return _lastPongNonce; } }
++        }
++
++        public string? LastMismatch
++        {
++            get { lock (_gate) { return _lastMismatch; } }
++        }
++
++        public string? LastCloseCode
++        {
++            get { lock (_gate) { return _lastCloseCode; } }
++        }
++
++        public Task OpenAsync(TableChannelConnectRequest request, CancellationToken cancellationToken)
++        {
++            lock (_gate)
++            {
++                _bound = false;
++                _boundSessionId = null;
++                _boundRoomId = null;
++                _boundSeatId = 0;
++                _boundBindingEpoch = 0;
++                _pendingPings.Clear();
++                _serverPingNonces.Clear();
++                _matchedPongNonces.Clear();
++                _serverPingCount = 0;
++                _matchedPongCount = 0;
++                _unmatchedPongCount = 0;
++                _pingBindingMismatchCount = 0;
++                _pongBindingMismatchCount = 0;
++                _emptyIdentityPingCount = 0;
++                _inboundCloseEnvelopeCount = 0;
++                _closeCallCount = 0;
++                _transportCloseCount = 0;
++                _lastPingNonce = null;
++                _lastPongNonce = null;
++                _lastMismatch = null;
++                _lastCloseCode = null;
++            }
++
++            return _inner.OpenAsync(request, cancellationToken);
++        }
++
++        public async Task SendAsync(ReadOnlyMemory<byte> wireEnvelope, CancellationToken cancellationToken)
++        {
++            await _inner.SendAsync(wireEnvelope, cancellationToken).ConfigureAwait(false);
++            ObserveOutbound(wireEnvelope.Span);
++        }
++
++        public async Task<ReadOnlyMemory<byte>> ReceiveAsync(CancellationToken cancellationToken)
++        {
++            ReadOnlyMemory<byte> wireEnvelope;
++            try
++            {
++                wireEnvelope = await _inner.ReceiveAsync(cancellationToken).ConfigureAwait(false);
++            }
++            catch (TableChannelClosedException ex)
++            {
++                lock (_gate)
++                {
++                    _transportCloseCount++;
++                    _lastCloseCode = ex.Code;
++                }
++
++                throw;
++            }
++
++            ObserveInbound(wireEnvelope.Span);
++            return wireEnvelope;
++        }
++
++        public Task CloseAsync(TableChannelCloseReason reason, CancellationToken cancellationToken)
++        {
++            lock (_gate)
++            {
++                _closeCallCount++;
++                _lastCloseCode = reason.Code;
++            }
++
++            return _inner.CloseAsync(reason, cancellationToken);
++        }
++
++        private void ObserveInbound(ReadOnlySpan<byte> wireEnvelope)
++        {
++            WireDecodeResult decoded = WireCodec.Decode(wireEnvelope);
++            if (!decoded.IsOk || decoded.Envelope == null)
++            {
++                return;
++            }
++
++            Envelope envelope = decoded.Envelope;
++            if (envelope.MessageType == MessageType.Welcome && envelope.Welcome != null)
++            {
++                lock (_gate)
++                {
++                    _bound = true;
++                    _boundSessionId = envelope.Welcome.SessionId;
++                    _boundRoomId = envelope.Welcome.RoomId;
++                    _boundSeatId = envelope.Welcome.SeatId;
++                    _boundBindingEpoch = envelope.Welcome.BindingEpoch;
++                }
++
++                return;
++            }
++
++            if (envelope.MessageType == MessageType.Close)
++            {
++                lock (_gate)
++                {
++                    _inboundCloseEnvelopeCount++;
++                    _lastCloseCode = envelope.Close?.Code;
++                }
++
++                return;
++            }
++
++            if (envelope.MessageType != MessageType.Heartbeat ||
++                envelope.Heartbeat == null ||
++                envelope.Heartbeat.BeatCase != Heartbeat.BeatOneofCase.Ping)
++            {
++                return;
++            }
++
++            string nonce = envelope.Heartbeat.Ping.Nonce;
++            lock (_gate)
++            {
++                _serverPingCount++;
++                _serverPingNonces.Add(nonce);
++                _lastPingNonce = nonce;
++                _pendingPings.Add(nonce);
++                if (!_bound ||
++                    string.IsNullOrEmpty(_boundSessionId) ||
++                    string.IsNullOrEmpty(_boundRoomId) ||
++                    !string.Equals(envelope.SessionId, _boundSessionId, StringComparison.Ordinal) ||
++                    !string.Equals(envelope.RoomId, _boundRoomId, StringComparison.Ordinal) ||
++                    envelope.SeatId != _boundSeatId ||
++                    envelope.BindingEpoch != _boundBindingEpoch)
++                {
++                    _pingBindingMismatchCount++;
++                    _lastMismatch = "ping-binding";
++                }
++
++                if (string.IsNullOrEmpty(envelope.SessionId) || string.IsNullOrEmpty(envelope.RoomId))
++                {
++                    _emptyIdentityPingCount++;
++                }
++            }
++        }
++
++        private void ObserveOutbound(ReadOnlySpan<byte> wireEnvelope)
++        {
++            WireDecodeResult decoded = WireCodec.Decode(wireEnvelope);
++            if (!decoded.IsOk || decoded.Envelope == null)
++            {
++                return;
++            }
++
++            Envelope envelope = decoded.Envelope;
++            if (envelope.MessageType != MessageType.Heartbeat ||
++                envelope.Heartbeat == null ||
++                envelope.Heartbeat.BeatCase != Heartbeat.BeatOneofCase.Pong)
++            {
++                return;
++            }
++
++            string nonce = envelope.Heartbeat.Pong.Nonce;
++            lock (_gate)
++            {
++                _lastPongNonce = nonce;
++                if (_pendingPings.Remove(nonce))
++                {
++                    _matchedPongCount++;
++                    _matchedPongNonces.Add(nonce);
++                }
++                else
++                {
++                    _unmatchedPongCount++;
++                }
++
++                if (!_bound ||
++                    string.IsNullOrEmpty(_boundSessionId) ||
++                    string.IsNullOrEmpty(_boundRoomId) ||
++                    !string.Equals(envelope.SessionId, _boundSessionId, StringComparison.Ordinal) ||
++                    !string.Equals(envelope.RoomId, _boundRoomId, StringComparison.Ordinal) ||
++                    envelope.SeatId != _boundSeatId ||
++                    envelope.BindingEpoch != _boundBindingEpoch)
++                {
++                    _pongBindingMismatchCount++;
++                    _lastMismatch = "pong-binding";
++                }
++            }
++        }
++    }
++}
+diff --git a/dotnet/tests/Mahjong.P5.4b.B1.HttpsAdmission.Worker/HeartbeatLivenessGate.cs b/dotnet/tests/Mahjong.P5.4b.B1.HttpsAdmission.Worker/HeartbeatLivenessGate.cs
+new file mode 100644
+index 0000000..e3b560b
+--- /dev/null
++++ b/dotnet/tests/Mahjong.P5.4b.B1.HttpsAdmission.Worker/HeartbeatLivenessGate.cs
+@@ -0,0 +1,433 @@
++using System;
++using System.Collections.Generic;
++using System.Linq;
++
++namespace Mahjong.P5_4b.B1.HttpsAdmission.Worker
++{
++    /// <summary>Immutable, atomically captured copy of the heartbeat audit counters.</summary>
++    public readonly struct HeartbeatAuditCounters
++    {
++        public HeartbeatAuditCounters(
++            int serverPingCount,
++            int matchedPongCount,
++            int pingBindingMismatchCount,
++            int pongBindingMismatchCount,
++            int emptyIdentityPingCount,
++            int unmatchedPongCount,
++            int closeCallCount,
++            int inboundCloseEnvelopeCount,
++            int transportCloseCount,
++            IReadOnlyList<string>? serverPingNonces = null,
++            IReadOnlyList<string>? matchedPongNonces = null)
++        {
++            ServerPingCount = serverPingCount;
++            MatchedPongCount = matchedPongCount;
++            PingBindingMismatchCount = pingBindingMismatchCount;
++            PongBindingMismatchCount = pongBindingMismatchCount;
++            EmptyIdentityPingCount = emptyIdentityPingCount;
++            UnmatchedPongCount = unmatchedPongCount;
++            CloseCallCount = closeCallCount;
++            InboundCloseEnvelopeCount = inboundCloseEnvelopeCount;
++            TransportCloseCount = transportCloseCount;
++            ServerPingNonces = serverPingNonces ?? Array.Empty<string>();
++            MatchedPongNonces = matchedPongNonces ?? Array.Empty<string>();
++        }
++
++        public int ServerPingCount { get; }
++
++        public int MatchedPongCount { get; }
++
++        public int PingBindingMismatchCount { get; }
++
++        public int PongBindingMismatchCount { get; }
++
++        public int EmptyIdentityPingCount { get; }
++
++        public int UnmatchedPongCount { get; }
++
++        public int CloseCallCount { get; }
++
++        public int InboundCloseEnvelopeCount { get; }
++
++        public int TransportCloseCount { get; }
++
++        /// <summary>Ordered server PING nonces; count matches <see cref="ServerPingCount"/>.</summary>
++        public IReadOnlyList<string> ServerPingNonces { get; }
++
++        /// <summary>Ordered matched PONG nonces; count matches <see cref="MatchedPongCount"/>.</summary>
++        public IReadOnlyList<string> MatchedPongNonces { get; }
++
++        public static HeartbeatAuditCounters Capture(HeartbeatBindingAuditChannel audit)
++        {
++            if (audit == null)
++            {
++                throw new ArgumentNullException(nameof(audit));
++            }
++
++            return audit.CaptureCounters();
++        }
++    }
++
++    /// <summary>One client's state at a sampled instant, including cumulative counters.</summary>
++    public sealed class HeartbeatLivenessSample
++    {
++        public HeartbeatLivenessSample(
++            string clientLabel,
++            bool ready,
++            HeartbeatAuditCounters counters)
++        {
++            ClientLabel = clientLabel ?? throw new ArgumentNullException(nameof(clientLabel));
++            Ready = ready;
++            Counters = counters;
++        }
++
++        public string ClientLabel { get; }
++
++        public bool Ready { get; }
++
++        public HeartbeatAuditCounters Counters { get; }
++    }
++
++    public enum HeartbeatLivenessStatus
++    {
++        Ready,
++        Waiting,
++        Violation
++    }
++
++    public sealed class HeartbeatLivenessResult
++    {
++        internal HeartbeatLivenessResult(
++            HeartbeatLivenessStatus status,
++            string failure,
++            string summary,
++            DateTimeOffset startedAtUtc,
++            TimeSpan elapsed,
++            int newPingsMin,
++            int newPongsMin)
++        {
++            Status = status;
++            Failure = failure;
++            Summary = summary;
++            StartedAtUtc = startedAtUtc;
++            Elapsed = elapsed;
++            NewPingsMin = newPingsMin;
++            NewPongsMin = newPongsMin;
++        }
++
++        public HeartbeatLivenessStatus Status { get; }
++
++        public bool IsReady => Status == HeartbeatLivenessStatus.Ready;
++
++        public bool IsViolation => Status == HeartbeatLivenessStatus.Violation;
++
++        public string Failure { get; }
++
++        public string Summary { get; }
++
++        public DateTimeOffset StartedAtUtc { get; }
++
++        public TimeSpan Elapsed { get; }
++
++        public int NewPingsMin { get; }
++
++        public int NewPongsMin { get; }
++    }
++
++    /// <summary>
++    /// A phase-local heartbeat liveness gate.
++    ///
++    /// The counters exposed by <see cref="HeartbeatBindingAuditChannel"/> are cumulative from
++    /// OpenAsync. Evaluating them directly makes a later gate pass immediately because the
++    /// earlier gate already satisfied the count. This type captures per-client baselines at
++    /// phase start and evaluates only frames observed inside the phase, together with a
++    /// monotonic elapsed duration. Zero new PINGs can therefore never satisfy the phase.
++    /// </summary>
++    public sealed class HeartbeatLivenessPhase
++    {
++        private readonly Dictionary<string, HeartbeatAuditCounters> _baselines;
++        private readonly string _context;
++        private readonly int _minimumNewPings;
++        private readonly TimeSpan _minimumElapsed;
++        private readonly DateTimeOffset _startedAtUtc;
++
++        private HeartbeatLivenessPhase(
++            string context,
++            Dictionary<string, HeartbeatAuditCounters> baselines,
++            int minimumNewPings,
++            TimeSpan minimumElapsed,
++            DateTimeOffset startedAtUtc)
++        {
++            _context = context;
++            _baselines = baselines;
++            _minimumNewPings = minimumNewPings;
++            _minimumElapsed = minimumElapsed;
++            _startedAtUtc = startedAtUtc;
++        }
++
++        public static HeartbeatLivenessPhase Start(
++            string context,
++            IReadOnlyList<HeartbeatLivenessSample> initial,
++            int minimumNewPings,
++            TimeSpan minimumElapsed,
++            DateTimeOffset startedAtUtc)
++        {
++            if (context == null)
++            {
++                throw new ArgumentNullException(nameof(context));
++            }
++
++            if (initial == null || initial.Count == 0)
++            {
++                throw new ArgumentException("A heartbeat phase needs at least one client.", nameof(initial));
++            }
++
++            if (minimumNewPings <= 0)
++            {
++                throw new ArgumentOutOfRangeException(nameof(minimumNewPings));
++            }
++
++            if (minimumElapsed < TimeSpan.Zero)
++            {
++                throw new ArgumentOutOfRangeException(nameof(minimumElapsed));
++            }
++
++            var baselines = new Dictionary<string, HeartbeatAuditCounters>(StringComparer.Ordinal);
++            foreach (HeartbeatLivenessSample sample in initial)
++            {
++                if (!sample.Ready)
++                {
++                    throw new InvalidOperationException(
++                        context + ": client " + sample.ClientLabel + " is not Ready at phase start.");
++                }
++
++                HeartbeatAuditCounters counters = sample.Counters;
++                if (counters.ServerPingCount != counters.ServerPingNonces.Count ||
++                    counters.MatchedPongCount != counters.MatchedPongNonces.Count)
++                {
++                    throw new InvalidOperationException(
++                        context + ": client " + sample.ClientLabel +
++                        " produced an inconsistent heartbeat snapshot at phase start.");
++                }
++
++                if (counters.PingBindingMismatchCount != 0 ||
++                    counters.PongBindingMismatchCount != 0 ||
++                    counters.EmptyIdentityPingCount != 0 ||
++                    counters.UnmatchedPongCount != 0 ||
++                    counters.CloseCallCount != 0 ||
++                    counters.InboundCloseEnvelopeCount != 0 ||
++                    counters.TransportCloseCount != 0)
++                {
++                    throw new InvalidOperationException(
++                        context + ": client " + sample.ClientLabel +
++                        " already has a heartbeat/close defect at phase start.");
++                }
++
++                if (baselines.ContainsKey(sample.ClientLabel))
++                {
++                    throw new ArgumentException(
++                        "Duplicate heartbeat client label: " + sample.ClientLabel, nameof(initial));
++                }
++
++                baselines.Add(sample.ClientLabel, counters);
++            }
++
++            return new HeartbeatLivenessPhase(
++                context,
++                baselines,
++                minimumNewPings,
++                minimumElapsed,
++                startedAtUtc);
++        }
++
++        public HeartbeatLivenessResult Evaluate(
++            IReadOnlyList<HeartbeatLivenessSample> samples,
++            TimeSpan elapsed)
++        {
++            if (samples == null || samples.Count != _baselines.Count)
++            {
++                return Violation("client sample set changed during the heartbeat phase", elapsed, 0, 0);
++            }
++
++            int newPingsMin = int.MaxValue;
++            int newPongsMin = int.MaxValue;
++            bool allMatched = true;
++            var parts = new List<string>(samples.Count);
++            foreach (HeartbeatLivenessSample sample in samples)
++            {
++                if (!_baselines.TryGetValue(sample.ClientLabel, out HeartbeatAuditCounters baseline))
++                {
++                    return Violation(
++                        "unknown client '" + sample.ClientLabel + "' during the heartbeat phase",
++                        elapsed,
++                        newPingsMin,
++                        newPongsMin);
++                }
++
++                if (!sample.Ready)
++                {
++                    return Violation(
++                        "client " + sample.ClientLabel + " left Ready during the heartbeat phase",
++                        elapsed,
++                        newPingsMin,
++                        newPongsMin);
++                }
++
++                HeartbeatAuditCounters counters = sample.Counters;
++                if (counters.PingBindingMismatchCount != baseline.PingBindingMismatchCount ||
++                    counters.PongBindingMismatchCount != baseline.PongBindingMismatchCount ||
++                    counters.EmptyIdentityPingCount != baseline.EmptyIdentityPingCount ||
++                    counters.UnmatchedPongCount != baseline.UnmatchedPongCount ||
++                    counters.CloseCallCount != baseline.CloseCallCount ||
++                    counters.InboundCloseEnvelopeCount != baseline.InboundCloseEnvelopeCount ||
++                    counters.TransportCloseCount != baseline.TransportCloseCount)
++                {
++                    return Violation(
++                        "client " + sample.ClientLabel +
++                        " recorded a binding/close defect during the heartbeat phase",
++                        elapsed,
++                        newPingsMin,
++                        newPongsMin);
++                }
++
++                if (counters.ServerPingCount != counters.ServerPingNonces.Count ||
++                    counters.MatchedPongCount != counters.MatchedPongNonces.Count)
++                {
++                    return Violation(
++                        "client " + sample.ClientLabel + " produced an inconsistent heartbeat snapshot",
++                        elapsed,
++                        newPingsMin,
++                        newPongsMin);
++                }
++
++                if (counters.ServerPingNonces.Count < baseline.ServerPingNonces.Count ||
++                    counters.MatchedPongNonces.Count < baseline.MatchedPongNonces.Count)
++                {
++                    return Violation(
++                        "client " + sample.ClientLabel + " heartbeat nonce ledger regressed",
++                        elapsed,
++                        newPingsMin,
++                        newPongsMin);
++                }
++
++                for (int i = 0; i < baseline.ServerPingNonces.Count; i++)
++                {
++                    if (!string.Equals(counters.ServerPingNonces[i], baseline.ServerPingNonces[i], StringComparison.Ordinal))
++                    {
++                        return Violation(
++                            "client " + sample.ClientLabel + " PING nonce ledger changed during the phase",
++                            elapsed,
++                            newPingsMin,
++                            newPongsMin);
++                    }
++                }
++
++                for (int i = 0; i < baseline.MatchedPongNonces.Count; i++)
++                {
++                    if (!string.Equals(counters.MatchedPongNonces[i], baseline.MatchedPongNonces[i], StringComparison.Ordinal))
++                    {
++                        return Violation(
++                            "client " + sample.ClientLabel + " PONG nonce ledger changed during the phase",
++                            elapsed,
++                            newPingsMin,
++                            newPongsMin);
++                    }
++                }
++
++                // Phase PINGs are exactly the append-only suffix after the baseline.
++                // A PONG for a PING that was already in flight at phase start is not in
++                // this suffix, so it cannot be credited to a phase PING. Conversely, a
++                // phase PING without its OWN nonce in the matched-PONG ledger is an
++                // unanswered tail and makes the phase NotReady.
++                var phasePingNonces = new List<string>(
++                    counters.ServerPingNonces.Skip(baseline.ServerPingNonces.Count));
++                var matchedPongNonces = new HashSet<string>(
++                    counters.MatchedPongNonces,
++                    StringComparer.Ordinal);
++                int matchedPongs = 0;
++                int unansweredPings = 0;
++                foreach (string nonce in phasePingNonces)
++                {
++                    if (matchedPongNonces.Contains(nonce))
++                    {
++                        matchedPongs++;
++                    }
++                    else
++                    {
++                        unansweredPings++;
++                    }
++                }
++
++                if (unansweredPings > 0)
++                {
++                    // EXACT boundary: one phase PING without its own PONG is one too many.
++                    allMatched = false;
++                }
++
++                newPingsMin = Math.Min(newPingsMin, phasePingNonces.Count);
++                newPongsMin = Math.Min(newPongsMin, matchedPongs);
++                parts.Add(
++                    sample.ClientLabel + ":" + phasePingNonces.Count + "/" + matchedPongs +
++                    (unansweredPings == 0 ? string.Empty : "!" + unansweredPings));
++            }
++
++            string summary = string.Join(",", parts);
++            if (newPingsMin < _minimumNewPings || newPongsMin < _minimumNewPings)
++            {
++                return Waiting("not enough phase-local PING/PONG frames", elapsed, newPingsMin, newPongsMin, summary);
++            }
++
++            if (!allMatched)
++            {
++                return Waiting("a phase PING is still awaiting its PONG", elapsed, newPingsMin, newPongsMin, summary);
++            }
++
++            if (elapsed < _minimumElapsed)
++            {
++                return Waiting("phase duration below the required monotonic span", elapsed, newPingsMin, newPongsMin, summary);
++            }
++
++            return new HeartbeatLivenessResult(
++                HeartbeatLivenessStatus.Ready,
++                string.Empty,
++                summary,
++                _startedAtUtc,
++                elapsed,
++                newPingsMin,
++                newPongsMin);
++        }
++
++        private HeartbeatLivenessResult Violation(
++            string failure,
++            TimeSpan elapsed,
++            int newPingsMin,
++            int newPongsMin)
++        {
++            return new HeartbeatLivenessResult(
++                HeartbeatLivenessStatus.Violation,
++                _context + ": " + failure,
++                string.Empty,
++                _startedAtUtc,
++                elapsed,
++                newPingsMin == int.MaxValue ? 0 : newPingsMin,
++                newPongsMin == int.MaxValue ? 0 : newPongsMin);
++        }
++
++        private HeartbeatLivenessResult Waiting(
++            string reason,
++            TimeSpan elapsed,
++            int newPingsMin,
++            int newPongsMin,
++            string summary)
++        {
++            return new HeartbeatLivenessResult(
++                HeartbeatLivenessStatus.Waiting,
++                _context + ": " + reason,
++                summary,
++                _startedAtUtc,
++                elapsed,
++                newPingsMin == int.MaxValue ? 0 : newPingsMin,
++                newPongsMin == int.MaxValue ? 0 : newPongsMin);
++        }
++    }
++}
+diff --git a/dotnet/tests/Mahjong.P5.4b.B1.HttpsAdmission.Worker/SuiteRunner.cs b/dotnet/tests/Mahjong.P5.4b.B1.HttpsAdmission.Worker/SuiteRunner.cs
+index c3b7066..34a6b60 100644
+--- a/dotnet/tests/Mahjong.P5.4b.B1.HttpsAdmission.Worker/SuiteRunner.cs
++++ b/dotnet/tests/Mahjong.P5.4b.B1.HttpsAdmission.Worker/SuiteRunner.cs
+@@ -343,6 +343,52 @@ await spectatorClient.OpenAsync(spectatorTicket.Ticket, TimeSpan.FromSeconds(40)
+                 RequirePrivacy(p0Client, p1Client, p2Client, p3Client, spectatorClient);
+                 suite.Assertions.Add("wss_baseline_and_stream_identity");
+ 
++                ClientHandle[] fiveAdmitted =
++                    { p0Client, p1Client, p2Client, p3Client, spectatorClient };
++                // The configured 10 s interval makes LivenessLoopAsync send every
++                // max(250, 10000 / 2) = 5 s, not every 10 s. This early phase requires
++                // three phase-local PING/PONG pairs over at least 15 s: three actual 5 s
++                // send periods. It deliberately does NOT claim three configured 10 s
++                // periods, and it stays inside the 20 s action reserve before the first
++                // business command. The original defect faulted at the FIRST PING.
++                int configuredHeartbeatMs = p0Client.NegotiatedHeartbeatIntervalMs;
++                Require(configuredHeartbeatMs > 0, "The real Client did not negotiate a heartbeat interval.");
++                int actualPingMs = Math.Max(250, configuredHeartbeatMs / 2);
++                HeartbeatLivenessResult fiveHeartbeat = await RequireHeartbeatLivenessAsync(
++                    fiveAdmitted,
++                    3,
++                    TimeSpan.FromSeconds(15),
++                    TimeSpan.FromSeconds(40),
++                    "five admitted sessions").ConfigureAwait(false);
++                suite.HeartbeatLivenessAllFive = true;
++                suite.HeartbeatConfiguredIntervalMs = configuredHeartbeatMs;
++                suite.HeartbeatActualPingIntervalMs = actualPingMs;
++                suite.HeartbeatFivePhaseStartUtc =
++                    fiveHeartbeat.StartedAtUtc.ToString("o", CultureInfo.InvariantCulture);
++                suite.HeartbeatFivePhaseEndUtc =
++                    DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture);
++                suite.HeartbeatFivePhaseElapsedMs =
++                    (long)Math.Round(fiveHeartbeat.Elapsed.TotalMilliseconds, MidpointRounding.AwayFromZero);
++                suite.HeartbeatFiveNewPingsMin = fiveHeartbeat.NewPingsMin;
++                suite.HeartbeatFiveNewPongsMin = fiveHeartbeat.NewPongsMin;
++                suite.HeartbeatFivePhaseSummary = fiveHeartbeat.Summary;
++                suite.HeartbeatBindingMismatchCount = fiveAdmitted.Sum(
++                    client => client.HeartbeatAudit.PingBindingMismatchCount +
++                              client.HeartbeatAudit.PongBindingMismatchCount +
++                              client.HeartbeatAudit.EmptyIdentityPingCount);
++                suite.HeartbeatUnexpectedCloseCount = fiveAdmitted.Sum(
++                    client => client.HeartbeatAudit.CloseCallCount +
++                              client.HeartbeatAudit.InboundCloseEnvelopeCount +
++                              client.HeartbeatAudit.TransportCloseCount);
++                suite.Assertions.Add("heartbeat_liveness_five_sessions");
++                Console.WriteLine(
++                    "B1-HEARTBEAT-OK " + fiveHeartbeat.Summary +
++                    " newPingsMin=" + fiveHeartbeat.NewPingsMin +
++                    " newPongsMin=" + fiveHeartbeat.NewPongsMin +
++                    " elapsedMs=" + suite.HeartbeatFivePhaseElapsedMs +
++                    " configuredMs=" + configuredHeartbeatMs +
++                    " actualPingMs=" + actualPingMs);
++
+                 (PlayerSnapshot normalSnapshot, WireDecisionView normalDecision, WireLegalActionView normalDiscard) =
+                     await B1Actions.WaitForDiscardAsync(p0Client, TimeSpan.FromSeconds(60), CancellationToken.None)
+                         .ConfigureAwait(false);
+@@ -569,6 +615,43 @@ await WaitForFileAsync(recoverOut, TimeSpan.FromSeconds(60), "the recovery evide
+                     "The recovery reused the closed pre-crash session binding.");
+                 suite.Assertions.Add("multi_client_confirmation_after_recovery");
+ 
++                ClientHandle[] stillLive = { p0Client, p2Client, p3Client, spectatorClient };
++                // p1 is intentionally closed by the crash/recover scenario above; the four
++                // sessions that must remain live are re-checked with phase-local baselines:
++                // six NEW PING/PONG pairs over at least 30 s, i.e. six actual 5 s send
++                // periods. No business action deadline is pending here, so this is the
++                // correct place for the 30 s span rather than before the first command.
++                HeartbeatLivenessResult postRecoveryHeartbeat = await RequireHeartbeatLivenessAsync(
++                    stillLive,
++                    6,
++                    TimeSpan.FromSeconds(30),
++                    TimeSpan.FromSeconds(60),
++                    "post-recovery live sessions").ConfigureAwait(false);
++                suite.PostRecoveryHeartbeatLiveness = true;
++                suite.HeartbeatPostRecoveryPhaseStartUtc =
++                    postRecoveryHeartbeat.StartedAtUtc.ToString("o", CultureInfo.InvariantCulture);
++                suite.HeartbeatPostRecoveryPhaseEndUtc =
++                    DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture);
++                suite.HeartbeatPostRecoveryElapsedMs =
++                    (long)Math.Round(postRecoveryHeartbeat.Elapsed.TotalMilliseconds, MidpointRounding.AwayFromZero);
++                suite.HeartbeatPostRecoveryNewPingsMin = postRecoveryHeartbeat.NewPingsMin;
++                suite.HeartbeatPostRecoveryNewPongsMin = postRecoveryHeartbeat.NewPongsMin;
++                suite.HeartbeatPostRecoveryPhaseSummary = postRecoveryHeartbeat.Summary;
++                suite.HeartbeatBindingMismatchCount += stillLive.Sum(
++                    client => client.HeartbeatAudit.PingBindingMismatchCount +
++                              client.HeartbeatAudit.PongBindingMismatchCount +
++                              client.HeartbeatAudit.EmptyIdentityPingCount);
++                suite.HeartbeatUnexpectedCloseCount += stillLive.Sum(
++                    client => client.HeartbeatAudit.CloseCallCount +
++                              client.HeartbeatAudit.InboundCloseEnvelopeCount +
++                              client.HeartbeatAudit.TransportCloseCount);
++                suite.Assertions.Add("heartbeat_liveness_after_recovery");
++                Console.WriteLine(
++                    "B1-HEARTBEAT-POST-RECOVERY-OK " + postRecoveryHeartbeat.Summary +
++                    " newPingsMin=" + postRecoveryHeartbeat.NewPingsMin +
++                    " newPongsMin=" + postRecoveryHeartbeat.NewPongsMin +
++                    " elapsedMs=" + suite.HeartbeatPostRecoveryElapsedMs);
++
+                 // Negative probes run after the positive evidence so a deliberate
+                 // displacement cannot disturb the normal/observer assertions.
+                 await NegativeProbes.RunAsync(
+@@ -759,6 +842,72 @@ private static void RequireBindingIdentity(
+                 "A Client binding epoch is not positive.");
+         }
+ 
++        /// <summary>
++        /// B1 liveness gate: a phase must observe NEW server PINGs and matching PONGs,
++        /// not cumulative counters that a previous phase already satisfied. Baselines are
++        /// captured per client at phase start; only in-phase frames count. The gate also
++        /// requires the phase to span a minimum monotonic duration, every client to stay
++        /// Ready, every PING binding to match the WELCOME, every PONG nonce to match a
++        /// phase PING, and no close. The server sends PING every
++        /// max(250, HeartbeatIntervalMs / 2), so the duration is deliberately evaluated
++        /// separately from the configured interval.
++        /// </summary>
++        private static async Task<HeartbeatLivenessResult> RequireHeartbeatLivenessAsync(
++            ClientHandle[] clients,
++            int minimumNewPings,
++            TimeSpan minimumElapsed,
++            TimeSpan timeout,
++            string context)
++        {
++            DateTimeOffset startedAtUtc = DateTimeOffset.UtcNow;
++            long startTimestamp = Stopwatch.GetTimestamp();
++            HeartbeatLivenessSample[] initial = clients.Select(ToHeartbeatSample).ToArray();
++            HeartbeatLivenessPhase phase = HeartbeatLivenessPhase.Start(
++                context,
++                initial,
++                minimumNewPings,
++                minimumElapsed,
++                startedAtUtc);
++            long deadline = Environment.TickCount64 + (long)timeout.TotalMilliseconds;
++            while (true)
++            {
++                TimeSpan elapsed = Stopwatch.GetElapsedTime(startTimestamp);
++                HeartbeatLivenessResult result = phase.Evaluate(
++                    clients.Select(ToHeartbeatSample).ToArray(),
++                    elapsed);
++                if (result.IsViolation)
++                {
++                    throw new InvalidOperationException(result.Failure);
++                }
++
++                if (result.IsReady)
++                {
++                    return result;
++                }
++
++                if (Environment.TickCount64 >= deadline)
++                {
++                    throw new TimeoutException(
++                        context + ": phase-local heartbeat gate timed out after " +
++                        timeout.TotalSeconds + " s; phase elapsed=" +
++                        elapsed.TotalSeconds.ToString("0.0", CultureInfo.InvariantCulture) +
++                        " s, required=" + minimumNewPings + " new PING/PONG and " +
++                        minimumElapsed.TotalSeconds.ToString("0.0", CultureInfo.InvariantCulture) +
++                        " s monotonic; observed=" + result.Summary + ".");
++                }
++
++                await Task.Delay(200).ConfigureAwait(false);
++            }
++        }
++
++        private static HeartbeatLivenessSample ToHeartbeatSample(ClientHandle client)
++        {
++            return new HeartbeatLivenessSample(
++                client.Seat.ToString(CultureInfo.InvariantCulture),
++                client.State == TableConnectionState.Ready,
++                HeartbeatAuditCounters.Capture(client.HeartbeatAudit));
++        }
++
+         private static bool PublicProjectionIsSafe(ClientHandle client)
+         {
+             if (client.PrivacyViolated)
+diff --git a/dotnet/tests/Mahjong.TableService.Tests/ServerHeartbeatBindingTests.cs b/dotnet/tests/Mahjong.TableService.Tests/ServerHeartbeatBindingTests.cs
+new file mode 100644
+index 0000000..927526f
+--- /dev/null
++++ b/dotnet/tests/Mahjong.TableService.Tests/ServerHeartbeatBindingTests.cs
+@@ -0,0 +1,217 @@
++using System;
++using System.Diagnostics;
++using System.Text.RegularExpressions;
++using System.Threading.Tasks;
++using Mahjong.Contracts;
++using Mahjong.Contracts.Wire;
++using Xunit;
++
++namespace Mahjong.TableService.Tests
++{
++    /// <summary>
++    /// B1 heartbeat binding regression: a server-generated PING is control traffic for
++    /// the CURRENT admitted connection, so its envelope must carry that connection's
++    /// authoritative session/room/seat/binding epoch. Before the fix the server sent a
++    /// bare envelope (empty session/room, seat 0, epoch 0), which the strict frozen
++    /// Client correctly rejected with PROTOCOL_VIOLATION at the first 5 s PING.
++    ///
++    /// These tests pin the server side only: the Client's strict binding validation is
++    /// deliberately NOT relaxed and is covered by HeartbeatTableChannelTests.
++    /// </summary>
++    public sealed class ServerHeartbeatBindingTests
++    {
++        private static readonly Regex NoncePattern = new Regex("^[0-9a-f]{16}$", RegexOptions.CultureInvariant);
++
++        [Fact]
++        public async Task PlayerServerPing_CarriesAdmittedBinding_AndFreshNonce()
++        {
++            await using TableServiceTestHost host = await TableServiceTestHost.StartAsync(
++                options =>
++                {
++                    options.HeartbeatIntervalMs = 500;
++                    options.IdleDeadMs = 60_000;
++                });
++            TableTestClient client = await host.ConnectPlayerAsync("room-hb-player", "acct-hb-player", 2);
++            Welcome welcome = client.Welcome!;
++
++            Envelope first = await ReadServerPingAsync(client, TimeSpan.FromSeconds(10));
++            AssertServerPing(first, welcome, "first player PING");
++            string firstNonce = first.Heartbeat.Ping.Nonce;
++            Assert.False(string.IsNullOrEmpty(first.SessionId));
++            Assert.False(string.IsNullOrEmpty(first.RoomId));
++            Assert.Equal(2, first.SeatId);
++            Assert.Equal(welcome.BindingEpoch, first.BindingEpoch);
++
++            // Echo exactly what the frozen Client echoes. The session must stay bound
++            // and continue producing PINGs with fresh nonces on the same identity.
++            await client.SendAsync(TableWire.HeartbeatPong(welcome, firstNonce));
++            Envelope second = await ReadServerPingAsync(client, TimeSpan.FromSeconds(10));
++            AssertServerPing(second, welcome, "second player PING");
++            Assert.NotEqual(firstNonce, second.Heartbeat.Ping.Nonce);
++
++            // The receive loop is still live after the PONG: a client PING is answered
++            // with its exact nonce, so the PONG was accepted rather than closing the
++            // session.
++            string probe = TableWire.RandomNonce();
++            await client.SendAsync(TableWire.HeartbeatPing(probe));
++            Envelope pong = await client.ReadUntilAsync(
++                envelope => envelope.MessageType == MessageType.Heartbeat &&
++                            envelope.Heartbeat.BeatCase == Heartbeat.BeatOneofCase.Pong,
++                TimeSpan.FromSeconds(10));
++            Assert.Equal(probe, pong.Heartbeat.Pong.Nonce);
++            Assert.Equal(welcome.SessionId, pong.SessionId);
++            Assert.Equal(welcome.RoomId, pong.RoomId);
++            Assert.Equal(welcome.SeatId, pong.SeatId);
++            Assert.Equal(welcome.BindingEpoch, pong.BindingEpoch);
++
++            await client.DisposeAsync();
++        }
++
++        [Fact]
++        public async Task SpectatorServerPing_CarriesAdmittedBindingAndNoSeat()
++        {
++            await using TableServiceTestHost host = await TableServiceTestHost.StartAsync(
++                options =>
++                {
++                    options.HeartbeatIntervalMs = 500;
++                    options.IdleDeadMs = 60_000;
++                });
++            TableTestClient spectator = await host.ConnectSpectatorAsync("room-hb-spec", "acct-hb-spec");
++            Welcome welcome = spectator.Welcome!;
++
++            Envelope first = await ReadServerPingAsync(spectator, TimeSpan.FromSeconds(10));
++            AssertServerPing(first, welcome, "first spectator PING");
++            Assert.Equal(ProtocolConstants.NoSeat, first.SeatId);
++            Assert.Equal(ProtocolConstants.NoSeat, welcome.SeatId);
++            Assert.NotEqual(0, first.SeatId);
++
++            string firstNonce = first.Heartbeat.Ping.Nonce;
++            await spectator.SendAsync(TableWire.HeartbeatPong(welcome, firstNonce));
++            Envelope second = await ReadServerPingAsync(spectator, TimeSpan.FromSeconds(10));
++            AssertServerPing(second, welcome, "second spectator PING");
++            Assert.NotEqual(firstNonce, second.Heartbeat.Ping.Nonce);
++
++            string probe = TableWire.RandomNonce();
++            await spectator.SendAsync(TableWire.HeartbeatPing(probe));
++            Envelope pong = await spectator.ReadUntilAsync(
++                envelope => envelope.MessageType == MessageType.Heartbeat &&
++                            envelope.Heartbeat.BeatCase == Heartbeat.BeatOneofCase.Pong,
++                TimeSpan.FromSeconds(10));
++            Assert.Equal(probe, pong.Heartbeat.Pong.Nonce);
++
++            await spectator.DisposeAsync();
++        }
++
++        [Fact]
++        public async Task ReboundConnection_PingsUseTheNewBinding_AndOldSessionIsRejected()
++        {
++            await using TableServiceTestHost host = await TableServiceTestHost.StartAsync(
++                options =>
++                {
++                    options.HeartbeatIntervalMs = 500;
++                    options.IdleDeadMs = 60_000;
++                });
++            TableTestClient first = await host.ConnectPlayerAsync(
++                "room-hb-rebind",
++                "acct-hb-rebind",
++                0,
++                new TableTestTicket(
++                    "acct-hb-rebind",
++                    "room-hb-rebind",
++                    TableAdmissionRole.Player,
++                    0,
++                    Jti: "jti-hb-rebind-1"));
++            Welcome firstWelcome = first.Welcome!;
++            Envelope firstPing = await ReadServerPingAsync(first, TimeSpan.FromSeconds(10));
++            AssertServerPing(firstPing, firstWelcome, "pre-rebind PING");
++
++            // Same account/room/seat, newest valid ticket consumption wins (顶号).
++            TableTestClient second = await host.ConnectPlayerAsync(
++                "room-hb-rebind",
++                "acct-hb-rebind",
++                0,
++                new TableTestTicket(
++                    "acct-hb-rebind",
++                    "room-hb-rebind",
++                    TableAdmissionRole.Player,
++                    0,
++                    Jti: "jti-hb-rebind-2"));
++            Welcome secondWelcome = second.Welcome!;
++            Assert.NotEqual(firstWelcome.SessionId, secondWelcome.SessionId);
++            Assert.Equal(firstWelcome.RoomId, secondWelcome.RoomId);
++            Assert.Equal(firstWelcome.SeatId, secondWelcome.SeatId);
++            Assert.Equal(firstWelcome.BindingEpoch, secondWelcome.BindingEpoch);
++
++            // The displaced session is rejected with the frozen 4403 directive; it never
++            // receives another PING carrying the NEW session identity.
++            (int code, string reason, TableWireMessage[] drained) =
++                await first.ExpectCloseAsync(TimeSpan.FromSeconds(20));
++            Assert.Equal(4403, code);
++            Assert.Equal(ProtocolErrorCode.DisplacedByNewConnection, reason);
++            foreach (TableWireMessage frame in drained)
++            {
++                Assert.True(
++                    frame.Envelope == null ||
++                    frame.Envelope.MessageType != MessageType.Heartbeat ||
++                    frame.Envelope.SessionId != secondWelcome.SessionId,
++                    "a displaced session received a heartbeat for the rebound identity");
++            }
++
++            Envelope reboundPing = await ReadServerPingAsync(second, TimeSpan.FromSeconds(10));
++            AssertServerPing(reboundPing, secondWelcome, "post-rebind PING");
++            Assert.NotEqual(firstPing.SessionId, reboundPing.SessionId);
++            Assert.Equal(secondWelcome.SessionId, reboundPing.SessionId);
++            string nonce = reboundPing.Heartbeat.Ping.Nonce;
++            await second.SendAsync(TableWire.HeartbeatPong(secondWelcome, nonce));
++            Envelope next = await ReadServerPingAsync(second, TimeSpan.FromSeconds(10));
++            AssertServerPing(next, secondWelcome, "post-rebind second PING");
++            Assert.NotEqual(nonce, next.Heartbeat.Ping.Nonce);
++
++            await first.DisposeAsync();
++            await second.DisposeAsync();
++        }
++
++        private static void AssertServerPing(Envelope ping, Welcome welcome, string context)
++        {
++            Assert.True(
++                ping.MessageType == MessageType.Heartbeat &&
++                ping.Heartbeat != null &&
++                ping.Heartbeat.BeatCase == Heartbeat.BeatOneofCase.Ping,
++                context + " is not a heartbeat PING");
++            Assert.Equal(welcome.SessionId, ping.SessionId);
++            Assert.Equal(welcome.RoomId, ping.RoomId);
++            Assert.Equal(welcome.SeatId, ping.SeatId);
++            Assert.Equal(welcome.BindingEpoch, ping.BindingEpoch);
++            Assert.True(
++                NoncePattern.IsMatch(ping.Heartbeat.Ping.Nonce),
++                context + " nonce is not 16 lowercase hex characters");
++        }
++
++        private static async Task<Envelope> ReadServerPingAsync(TableTestClient client, TimeSpan timeout)
++        {
++            long deadline = Stopwatch.GetTimestamp() +
++                            (long)(timeout.TotalSeconds * Stopwatch.Frequency);
++            while (Stopwatch.GetTimestamp() < deadline)
++            {
++                TimeSpan remaining = TimeSpan.FromSeconds(
++                    Math.Max(0.001, (deadline - Stopwatch.GetTimestamp()) / (double)Stopwatch.Frequency));
++                TableWireMessage message = await client.ReceiveAsync(remaining);
++                if (message.IsClose)
++                {
++                    throw new InvalidOperationException(
++                        "Connection closed before the server PING: " +
++                        message.WsCloseCode + " " + message.WsCloseReason);
++                }
++
++                Envelope envelope = message.Envelope!;
++                if (envelope.MessageType == MessageType.Heartbeat &&
++                    envelope.Heartbeat.BeatCase == Heartbeat.BeatOneofCase.Ping)
++                {
++                    return envelope;
++                }
++            }
++
++            throw new TimeoutException("The server did not emit a heartbeat PING in time.");
++        }
++    }
++}
+diff --git a/dotnet/tests/Mahjong.TableService.Tests/TestSupport/TableTestClient.cs b/dotnet/tests/Mahjong.TableService.Tests/TestSupport/TableTestClient.cs
+index a0e9394..0b5720b 100644
+--- a/dotnet/tests/Mahjong.TableService.Tests/TestSupport/TableTestClient.cs
++++ b/dotnet/tests/Mahjong.TableService.Tests/TestSupport/TableTestClient.cs
+@@ -578,6 +578,25 @@ public static Envelope HeartbeatPing(string nonce)
+             };
+         }
+ 
++        /// <summary>PONG carrying the connection's admitted binding, exactly like the
++        /// production Client's HeartbeatTableChannel sends it.</summary>
++        public static Envelope HeartbeatPong(Welcome welcome, string nonce)
++        {
++            return new Envelope
++            {
++                ProtocolMajor = ProtocolConstants.Major,
++                ProtocolMinor = ProtocolConstants.Minor,
++                RulesetVersion = ProtocolConstants.RulesetVersion,
++                ProjectionVersion = ProtocolConstants.ProjectionVersion,
++                MessageType = MessageType.Heartbeat,
++                SessionId = welcome.SessionId,
++                RoomId = welcome.RoomId,
++                SeatId = welcome.SeatId,
++                BindingEpoch = welcome.BindingEpoch,
++                Heartbeat = new Heartbeat { Pong = new Pong { Nonce = nonce } }
++            };
++        }
++
+         public static Envelope CloseEnvelope()
+         {
+             return new Envelope

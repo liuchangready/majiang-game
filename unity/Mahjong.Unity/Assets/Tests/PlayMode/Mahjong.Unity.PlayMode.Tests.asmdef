@@ -1,0 +1,32 @@
+{
+  "name": "Mahjong.Unity.PlayMode.Tests",
+  "rootNamespace": "Mahjong.Unity.Tests.PlayMode",
+  "references": [
+    "UnityEngine.TestRunner",
+    "Unity.TextMeshPro",
+    "UnityEngine.UI",
+    "Unity.InputSystem",
+    "Mahjong.Unity.App",
+    "Mahjong.Unity.UI",
+    "Mahjong.Unity.Platform",
+    "Mahjong.Unity.Spectator",
+    "Mahjong.Unity.Table"
+  ],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": true,
+  "precompiledReferences": [
+    "nunit.framework.dll",
+    "Mahjong.Client.dll",
+    "Mahjong.Contracts.dll",
+    "Mahjong.Contracts.Wire.dll",
+    "Google.Protobuf.dll"
+  ],
+  "autoReferenced": false,
+  "defineConstraints": [
+    "UNITY_INCLUDE_TESTS"
+  ],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

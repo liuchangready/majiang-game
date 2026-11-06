@@ -1,0 +1,618 @@
+diff --git a/dotnet/src/Mahjong.TableRuntime/TableActor.cs b/dotnet/src/Mahjong.TableRuntime/TableActor.cs
+index de2142b..2b819e7 100644
+--- a/dotnet/src/Mahjong.TableRuntime/TableActor.cs
++++ b/dotnet/src/Mahjong.TableRuntime/TableActor.cs
+@@ -3506,7 +3506,6 @@ namespace Mahjong.TableRuntime
+             TimingConsumption timingConsumption = TimingConsumption.None,
+             CheatState? nextCheat = null)
+         {
+-            RoundResponseWindow? priorWindow = _round.Window;
+             StateVersion evaluated = _stateVersion;
+             StateVersion commandVersion;
+             try
+@@ -3595,7 +3594,7 @@ namespace Mahjong.TableRuntime
+ 
+             List<PendingDecision> nonDurablePending = CopyPendingExcept(consumedSeat);
+             nonDurablePending = TableResponseDecisionReconciliation.FilterAfterTransition(
+-                priorWindow,
++                _round,
+                 nextState,
+                 nonDurablePending,
+                 candidateClock,
+@@ -3737,7 +3736,6 @@ namespace Mahjong.TableRuntime
+             TimingConsumption timingConsumption = TimingConsumption.None,
+             CheatState? nextCheat = null)
+         {
+-            RoundResponseWindow? priorWindow = _round.Window;
+             TableDurableContext durable = _durable!;
+             ulong createdUtc = NowUtc();
+             string accountId = "system";
+@@ -3830,7 +3828,7 @@ namespace Mahjong.TableRuntime
+ 
+             List<PendingDecision> pendingAfter = CopyPendingExcept(consumedSeat);
+             pendingAfter = TableResponseDecisionReconciliation.FilterAfterTransition(
+-                priorWindow,
++                _round,
+                 nextState,
+                 pendingAfter,
+                 candidateClock,
+@@ -4008,7 +4006,6 @@ namespace Mahjong.TableRuntime
+             long now,
+             TimingConsumption timingConsumption = TimingConsumption.Complete)
+         {
+-            RoundResponseWindow? priorWindow = _round.Window;
+             StateVersion evaluated = _stateVersion;
+             StateVersion commandVersion;
+             try
+@@ -4095,7 +4092,7 @@ namespace Mahjong.TableRuntime
+ 
+             List<PendingDecision> cheatPendingAfter = CopyPendingExcept(cheatConsumedSeat);
+             cheatPendingAfter = TableResponseDecisionReconciliation.FilterAfterTransition(
+-                priorWindow,
++                _round,
+                 nextState,
+                 cheatPendingAfter,
+                 cheatClock,
+diff --git a/dotnet/src/Mahjong.TableRuntime/TableResponseDecisionReconciliation.cs b/dotnet/src/Mahjong.TableRuntime/TableResponseDecisionReconciliation.cs
+index 2818057..9fd9060 100644
+--- a/dotnet/src/Mahjong.TableRuntime/TableResponseDecisionReconciliation.cs
++++ b/dotnet/src/Mahjong.TableRuntime/TableResponseDecisionReconciliation.cs
+@@ -5,12 +5,13 @@ using Mahjong.Domain;
+ namespace Mahjong.TableRuntime
+ {
+     /// <summary>
+-    /// P3.3/P3.4 response-decision lifecycle fence.
++    /// P3.3/P3.4 decision-ownership lifecycle fence.
+     ///
+-    /// A response decision is only meaningful while the Domain's exact response window still
+-    /// requires that seat. When a committed transition closes the window, or re-opens it with a
+-    /// different target/identity, every pending decision that belonged to the old window must be
+-    /// removed together with its timing. Decisions that still belong to the open window (the
++    /// A pending decision is only meaningful while the transitioned Domain state still owns it:
++    /// a response while the exact window still requires that seat, and a turn/cheat/settlement
++    /// decision only at the acting seat with turn evidence. A committed transition that moves the
++    /// turn, closes/re-targets the window, or finishes the round removes every no-longer-owned
++    /// decision together with its timing. Decisions that still belong to the current state (the
+     /// ordinary multi-seat submit/priority case) are retained unchanged.
+     ///
+     /// The filter mutates only the supplied candidate clock, which is always a clone of the
+@@ -20,12 +21,17 @@ namespace Mahjong.TableRuntime
+     internal static class TableResponseDecisionReconciliation
+     {
+         internal static List<PendingDecision> FilterAfterTransition(
+-            RoundResponseWindow? priorWindow,
++            RoundStateMachine priorState,
+             RoundStateMachine nextState,
+             IReadOnlyList<PendingDecision> pendingAfter,
+             DecisionClock candidateClock,
+             long now)
+         {
++            if (priorState == null)
++            {
++                throw new ArgumentNullException(nameof(priorState));
++            }
++
+             if (nextState == null)
+             {
+                 throw new ArgumentNullException(nameof(nextState));
+@@ -48,34 +54,29 @@ namespace Mahjong.TableRuntime
+                 return kept;
+             }
+ 
++            RoundResponseWindow? priorWindow = priorState.Window;
+             RoundResponseWindow? nextWindow = nextState.Window;
+             for (int i = 0; i < pendingAfter.Count; i++)
+             {
+                 PendingDecision pending = pendingAfter[i] ??
+                     throw new ArgumentException("Pending decision cannot be null.", nameof(pendingAfter));
+ 
+-                bool wasResponseDecision = priorWindow != null &&
+-                                           ContainsSeat(priorWindow.EligibleSeats, pending.Key.Seat);
+-                if (!wasResponseDecision)
++                if (IsStillOwned(
++                    priorState,
++                    priorWindow,
++                    nextState,
++                    nextWindow,
++                    pending.Key.Seat,
++                    pending.Candidates))
+                 {
+-                    // A turn/cheat/settlement decision is not owned by the response window and
+-                    // must survive an unrelated commit unchanged.
+                     kept.Add(pending);
+                     continue;
+                 }
+ 
+-                if (nextWindow != null &&
+-                    SameWindow(priorWindow!, nextWindow) &&
+-                    ContainsSeat(nextWindow.EligibleSeats, pending.Key.Seat) &&
+-                    !nextWindow.HasResponded(pending.Key.Seat))
+-                {
+-                    kept.Add(pending);
+-                    continue;
+-                }
+-
+-                // The exact window that justified this decision is gone (or this seat already
+-                // responded). Settle the elapsed allowance and drop the timing in the same
+-                // candidate used by the commit, never after the fact.
++                // The transitioned state no longer owns this decision (the turn moved on, the
++                // window closed/re-targeted, or this seat already responded). Settle the elapsed
++                // allowance and drop the timing in the same candidate used by the commit, never
++                // after the fact.
+                 candidateClock.Cancel(pending.Key, now);
+             }
+ 
+@@ -109,7 +110,13 @@ namespace Mahjong.TableRuntime
+             {
+                 TableRecoveredDecision decision = recovered[i] ??
+                     throw new ArgumentException("Recovered decision cannot be null.", nameof(recovered));
+-                if (IsStillValid(round, window, decision))
++                if (IsStillOwned(
++                    round,
++                    window,
++                    round,
++                    window,
++                    decision.Key.Seat,
++                    decision.Candidates))
+                 {
+                     kept.Add(decision);
+                 }
+@@ -118,37 +125,84 @@ namespace Mahjong.TableRuntime
+             return kept;
+         }
+ 
+-        private static bool IsStillValid(
+-            RoundStateMachine round,
+-            RoundResponseWindow? window,
+-            TableRecoveredDecision decision)
++        /// <summary>
++        /// Single ownership predicate shared by the transition and recovery filters, so the two
++        /// paths cannot drift into different answers for the same state.
++        /// </summary>
++        private static bool IsStillOwned(
++            RoundStateMachine priorState,
++            RoundResponseWindow? priorWindow,
++            RoundStateMachine nextState,
++            RoundResponseWindow? nextWindow,
++            int seat,
++            IReadOnlyList<LegalActionOption> candidates)
+         {
+-            if (window != null)
++            if (nextWindow != null)
+             {
+-                return ContainsSeat(window.EligibleSeats, decision.Key.Seat) &&
+-                       !window.HasResponded(decision.Key.Seat);
++                // A window transition only preserves decisions that were actual responses to
++                // the same window identity. A stale turn for an eligible seat (the host-race
++                // case) is still a turn decision and must not become a response merely because
++                // the new window lists that seat.
++                if (priorWindow == null ||
++                    IsTurnDecision(priorState, priorWindow, seat, candidates) ||
++                    !SameWindow(priorWindow, nextWindow))
++                {
++                    return false;
++                }
++
++                return ContainsSeat(nextWindow.EligibleSeats, seat) &&
++                       !nextWindow.HasResponded(seat);
+             }
+ 
+-            // With no response window, only the acting seat can legitimately own a decision.
+-            // Any decision for another seat is a stale response, including a Kan candidate:
+-            // OpenKan is a response call, and there is no window in which it could execute.
+-            if (decision.Key.Seat != round.CurrentSeat)
++            // Once a window has closed, every decision captured before it is stale. A response
++            // cannot become a turn, and a stale turn opened during the window is not the new
++            // turn's decision either.
++            if (priorWindow != null)
+             {
+                 return false;
+             }
+ 
+-            // A current-turn decision can be a normal discard/settlement decision, or a real
+-            // closed/added kan decision whose candidate set is Kan-only. A stale response set
+-            // can also contain Kan (OpenKan) alongside Pass; the Domain state distinguishes the
+-            // two: only a current seat with the actual four-hand-tile closed-kan shape or an
+-            // existing pon plus the fourth tile can execute a turn kan without a window.
+-            return HasTurnAnchor(decision.Candidates) ||
+-                   HasLegalTurnKan(round, decision);
++            return seat == nextState.CurrentSeat &&
++                   IsTurnDecision(nextState, null, seat, candidates);
++        }
++
++        private static bool IsTurnDecision(
++            RoundStateMachine state,
++            RoundResponseWindow? window,
++            int seat,
++            IReadOnlyList<LegalActionOption> candidates)
++        {
++            if (HasTurnAnchor(candidates))
++            {
++                return true;
++            }
++
++            if (window != null)
++            {
++                // A Kan on the window's own tile is an OpenKan response. A Kan on another tile
++                // cannot be a response to this window; if its hand shape supports a turn kan,
++                // it is a stale turn decision.
++                for (int i = 0; i < candidates.Count; i++)
++                {
++                    LegalActionOption candidate = candidates[i];
++                    if (candidate.Kind == LegalActionKind.Kan &&
++                        candidate.Tile.HasValue &&
++                        candidate.Tile.Value == window.TargetTile)
++                    {
++                        return false;
++                    }
++                }
++
++                return HasTurnKanShape(state, seat, candidates);
++            }
++
++            return HasLegalTurnKan(state, seat, candidates);
+         }
+ 
+         private static bool HasLegalTurnKan(
+             RoundStateMachine round,
+-            TableRecoveredDecision decision)
++            int seat,
++            IReadOnlyList<LegalActionOption> candidates)
+         {
+             if (round.Phase != RoundPhase.CheatWindow &&
+                 round.Phase != RoundPhase.Discard)
+@@ -156,11 +210,19 @@ namespace Mahjong.TableRuntime
+                 return false;
+             }
+ 
++            return HasTurnKanShape(round, seat, candidates);
++        }
++
++        private static bool HasTurnKanShape(
++            RoundStateMachine round,
++            int seat,
++            IReadOnlyList<LegalActionOption> candidates)
++        {
+             // A response set normally carries Pass. Real turn decisions do not; keeping a
+             // [Kan,Pass] pair would reintroduce the closed-window OpenKan response.
+-            for (int i = 0; i < decision.Candidates.Count; i++)
++            for (int i = 0; i < candidates.Count; i++)
+             {
+-                if (decision.Candidates[i].Kind == LegalActionKind.Pass)
++                if (candidates[i].Kind == LegalActionKind.Pass)
+                 {
+                     return false;
+                 }
+@@ -173,11 +235,10 @@ namespace Mahjong.TableRuntime
+                 return false;
+             }
+ 
+-            int seat = decision.Key.Seat;
+             IReadOnlyList<TileId> hand = round.Tiles.TilesInZone(TileZone.Hand, seat);
+-            for (int i = 0; i < decision.Candidates.Count; i++)
++            for (int i = 0; i < candidates.Count; i++)
+             {
+-                LegalActionOption candidate = decision.Candidates[i];
++                LegalActionOption candidate = candidates[i];
+                 if (candidate.Kind != LegalActionKind.Kan || !candidate.Tile.HasValue)
+                 {
+                     continue;
+diff --git a/dotnet/tests/Mahjong.LocalHost.Tests/LocalControlTests.cs b/dotnet/tests/Mahjong.LocalHost.Tests/LocalControlTests.cs
+index a4a0620..761a51e 100644
+--- a/dotnet/tests/Mahjong.LocalHost.Tests/LocalControlTests.cs
++++ b/dotnet/tests/Mahjong.LocalHost.Tests/LocalControlTests.cs
+@@ -1000,10 +1000,12 @@ namespace Mahjong.LocalHost.Tests
+             string roundId;
+             string parentPendingDecision;
+             string decisionId;
++            RoundStateMachine parentRound;
+             ulong evaluated;
+             ulong createdAt;
+             ulong expiresAt;
+             ulong stateVersion;
++            ulong parentStateVersion;
+             ulong lastEventSeq;
+             try
+             {
+@@ -1075,7 +1077,16 @@ namespace Mahjong.LocalHost.Tests
+                 // cold process then recovers this same pending decision from the
+                 // disk checkpoint.
+                 await WaitUntilFollowUpsSettleAsync(live.Runtime, "before the cold restart", ct);
++                parentRound = live.Runtime.ActorForTest.GetRoundStateForHost();
++                Assert.Equal(0, parentRound.CurrentSeat);
++                TableSnapshot parentSnapshot = await live.Runtime.ActorForTest.GetSnapshotAsync(ct);
++                parentStateVersion = parentSnapshot.StateVersion.Value;
+                 parentPendingDecision = live.Runtime.ActorForTest.GetPendingDecisionId(0)!;
++                Assert.Equal(
++                    "local-human-" +
++                    parentStateVersion.ToString(System.Globalization.CultureInfo.InvariantCulture) +
++                    "-0-" + parentRound.Phase.ToString(),
++                    parentPendingDecision);
+ 
+                 // The durable row still lags the released cascade (only receipt
+                 // persists flush it), so one more authoritative stale-decision
+@@ -1134,6 +1145,10 @@ namespace Mahjong.LocalHost.Tests
+                 Assert.Equal(0L, baseline.ControlVersionForTest);
+             }
+ 
++            // The cold cut must be the same committed state/seat the parent sampled, not an
++            // older cascade anchor whose version only happens to share a pending id.
++            Assert.Equal(parentStateVersion, stateVersion);
++
+             string workerDll = System.IO.Path.Combine(
+                 P41Harness.FindRepositoryRoot(),
+                 "dotnet",
+@@ -1276,6 +1291,9 @@ namespace Mahjong.LocalHost.Tests
+             Assert.NotEqual(scope.Value, coldScopeValue);
+             Assert.Equal(roundId, MarkerValue("cold_round_id="));
+             Assert.Equal(parentPendingDecision, MarkerValue("cold_pending_decision="));
++            Assert.Equal(
++                "local-human-" + MarkerValue("state_version=") + "-0-" + parentRound.Phase.ToString(),
++                MarkerValue("cold_pending_decision="));
+             Assert.Equal("cold-issued", MarkerValue("replay_key_scope="));
+             Assert.Equal("unreachable", MarkerValue("original_key_cold_command_replay="));
+             Assert.Equal("0", MarkerValue("newkey1_evaluated="));
+@@ -2710,8 +2728,13 @@ namespace Mahjong.LocalHost.Tests
+         private static async Task WaitUntilFollowUpsSettleAsync(LocalTableRuntime runtime, string description, CancellationToken ct)
+         {
+             await WaitUntilAsync(
+-                () => !string.IsNullOrEmpty(runtime.ActorForTest.GetPendingDecisionId(0)) ||
+-                      runtime.ActorForTest.GetRoundStateForHost().IsFinished,
++                () =>
++                {
++                    RoundStateMachine round = runtime.ActorForTest.GetRoundStateForHost();
++                    return (round.CurrentSeat == 0 &&
++                            !string.IsNullOrEmpty(runtime.ActorForTest.GetPendingDecisionId(0))) ||
++                           round.IsFinished;
++                },
+                 "the automatic follow-up commits to settle (" + description + ")",
+                 ct);
+         }
+diff --git a/dotnet/tests/Mahjong.TableRuntime.Tests/TableResponseDecisionInvalidationTests.cs b/dotnet/tests/Mahjong.TableRuntime.Tests/TableResponseDecisionInvalidationTests.cs
+index 4703960..4cb069b 100644
+--- a/dotnet/tests/Mahjong.TableRuntime.Tests/TableResponseDecisionInvalidationTests.cs
++++ b/dotnet/tests/Mahjong.TableRuntime.Tests/TableResponseDecisionInvalidationTests.cs
+@@ -715,6 +715,243 @@ namespace Mahjong.TableRuntime.Tests
+             }
+         }
+ 
++        [Fact]
++        public async Task TurnDecisionIsRemovedAtomicallyWhenCommitAdvancesCurrentSeat()
++        {
++            RoundStateMachine round = BuildTurnRound("r3-turn-advance");
++            TileId discard = round.Tiles.TilesInZone(TileZone.Hand, 0)[0];
++            var key = new DecisionKey(round.RoundId, 0, "turn-0");
++            await using ActorHarness harness = CreateActor(round);
++            Assert.Equal(
++                TableOperationStatus.Configured,
++                (await harness.OpenDecisionAsync(new PendingDecision(
++                    key,
++                    0L,
++                    new[] { new LegalActionOption(LegalActionKind.Discard, 0, discard) },
++                    discard))).Status);
++            TableTimingSnapshot before = await harness.GetTimingSnapshotAsync();
++            Assert.Equal(key, before.Seats[0].PendingKey);
++            Assert.NotNull(before.Seats[0].Timing);
++
++            TableOperationResult applied = await harness.SubmitAsync(P31Fixtures.Command(
++                RoundCommand.Discard(round.RoundId, 0, discard),
++                0,
++                "turn-advance",
++                new DecisionId(key.DecisionId)));
++            Assert.Equal(TableOperationStatus.Accepted, applied.Status);
++            TableSnapshot after = await harness.GetSnapshotAsync();
++            Assert.Equal(1UL, after.StateVersion.Value);
++            Assert.Equal(1, after.CurrentSeat);
++            Assert.Null(harness.Actor.GetRoundStateForHost().Window);
++
++            // The old turn decision and its timing must leave in the same commit; a later tick
++            // must never see a seat that no longer owns the turn.
++            TableTimingSnapshot timing = await harness.GetTimingSnapshotAsync();
++            Assert.All(timing.Seats, seat => Assert.Null(seat.PendingKey));
++            Assert.All(timing.Seats, seat => Assert.Null(seat.Timing));
++        }
++
++        [Fact]
++        public async Task FailedTurnCommitLeavesPendingAndTimingUntouchedThenRetries()
++        {
++            RoundStateMachine round = BuildTurnRound("r3-turn-failed-commit");
++            TileId discard = round.Tiles.TilesInZone(TileZone.Hand, 0)[0];
++            var key = new DecisionKey(round.RoundId, 0, "turn-fail");
++            await using ActorHarness harness = CreateActor(round);
++            Assert.Equal(
++                TableOperationStatus.Configured,
++                (await harness.OpenDecisionAsync(new PendingDecision(
++                    key,
++                    0L,
++                    new[] { new LegalActionOption(LegalActionKind.Discard, 0, discard) },
++                    discard))).Status);
++            TableTimingSnapshot before = await harness.GetTimingSnapshotAsync();
++
++            harness.CommitPort.FailNext();
++            TableOperationResult failed = await harness.SubmitAsync(P31Fixtures.Command(
++                RoundCommand.Discard(round.RoundId, 0, discard),
++                0,
++                "turn-fail",
++                new DecisionId(key.DecisionId)));
++            Assert.Equal(TableOperationStatus.Failed, failed.Status);
++            Assert.Equal(0UL, (await harness.GetSnapshotAsync()).StateVersion.Value);
++            TableTimingSnapshot afterFailure = await harness.GetTimingSnapshotAsync();
++            Assert.Equal(key, afterFailure.Seats[0].PendingKey);
++            Assert.Equal(before.Seats[0].Timing!.DeadlineMillis, afterFailure.Seats[0].Timing!.DeadlineMillis);
++            Assert.Equal(before.Seats[0].RemainingReserveMillis, afterFailure.Seats[0].RemainingReserveMillis);
++
++            TableOperationResult retry = await harness.SubmitAsync(P31Fixtures.Command(
++                RoundCommand.Discard(round.RoundId, 0, discard),
++                0,
++                "turn-retry",
++                new DecisionId(key.DecisionId)));
++            Assert.Equal(TableOperationStatus.Accepted, retry.Status);
++            TableTimingSnapshot afterRetry = await harness.GetTimingSnapshotAsync();
++            Assert.All(afterRetry.Seats, seat => Assert.Null(seat.PendingKey));
++            Assert.All(afterRetry.Seats, seat => Assert.Null(seat.Timing));
++        }
++
++        [Fact]
++        public async Task FinishedRoundClearsEveryPendingAndTimingInTheSameCommit()
++        {
++            RoundStateMachine round = SettlementFixture.Tsumo();
++            TileId drawn = round.Tiles.DrawnTile!.Value.Tile;
++            var key = new DecisionKey(round.RoundId, 0, "terminal-0");
++            var stale = new DecisionKey(round.RoundId, 2, "stale-terminal-2");
++            await using ActorHarness harness = CreateActor(round);
++            Assert.Equal(
++                TableOperationStatus.Configured,
++                (await harness.OpenDecisionAsync(new PendingDecision(
++                    key,
++                    0L,
++                    new[] { new LegalActionOption(LegalActionKind.Tsumo, 0, drawn) },
++                    drawn))).Status);
++            Assert.Equal(
++                TableOperationStatus.Configured,
++                (await harness.OpenDecisionAsync(new PendingDecision(
++                    stale,
++                    0L,
++                    new[] { new LegalActionOption(LegalActionKind.Discard, 2, drawn) },
++                    null))).Status);
++            TableTimingSnapshot before = await harness.GetTimingSnapshotAsync();
++            Assert.NotNull(before.Seats[0].Timing);
++            Assert.NotNull(before.Seats[2].Timing);
++
++            var settlement = new RoundSettlement(
++                "terminal-result",
++                RoundOutcome.Tsumo(0),
++                new long[] { 26000, 24000, 25000, 25000 },
++                0,
++                new PersistedUtcTime(new DateTimeOffset(2026, 10, 29, 0, 0, 0, TimeSpan.Zero)),
++                1234L);
++            TableOperationResult applied = await harness.SubmitAsync(P31Fixtures.Command(
++                RoundCommand.Tsumo(round.RoundId, 0, settlement),
++                0,
++                "terminal-tsumo",
++                new DecisionId(key.DecisionId)));
++            Assert.True(
++                applied.Status == TableOperationStatus.Accepted,
++                "tsumo status=" + applied.Status + " reason=" + applied.ReasonCode +
++                " detail=" + applied.Detail);
++            Assert.True((await harness.GetSnapshotAsync()).IsFinished);
++
++            TableTimingSnapshot after = await harness.GetTimingSnapshotAsync();
++            Assert.All(after.Seats, seat => Assert.Null(seat.PendingKey));
++            Assert.All(after.Seats, seat => Assert.Null(seat.Timing));
++        }
++
++        [Fact]
++        public async Task ReviewerStaleTurnMustNotSurviveNewResponseWindow()
++        {
++            RoundStateMachine round = TableKanRecoveryEvidenceTests.BuildDealt(
++                "review-stale",
++                new Dictionary<int, TileId[]>
++                {
++                    [1] = new[] { Dragon(1, 0), Dragon(1, 1), Dragon(1, 2) }
++                },
++                Dragon(1, 3));
++            TileId target = Dragon(1, 3);
++            await using ActorHarness harness = CreateActor(round);
++            var turn = new DecisionKey(round.RoundId, 0, "turn");
++            var stale = new DecisionKey(round.RoundId, 1, "stale-turn");
++            Assert.Equal(
++                TableOperationStatus.Configured,
++                (await harness.OpenDecisionAsync(new PendingDecision(
++                    turn,
++                    0L,
++                    new[] { new LegalActionOption(LegalActionKind.Discard, 0, target) },
++                    target))).Status);
++            Assert.Equal(
++                TableOperationStatus.Configured,
++                (await harness.OpenDecisionAsync(new PendingDecision(
++                    stale,
++                    0L,
++                    new[] { new LegalActionOption(LegalActionKind.Discard, 1, Dragon(1, 0)) },
++                    null))).Status);
++
++            TableOperationResult result = await harness.SubmitAsync(P31Fixtures.Command(
++                RoundCommand.Discard(round.RoundId, 0, target, new[] { 1 }),
++                0,
++                "discard",
++                new DecisionId("turn")));
++            Assert.Equal(TableOperationStatus.Accepted, result.Status);
++
++            TableTimingSnapshot timing = await harness.GetTimingSnapshotAsync();
++            Assert.Null(timing.Seats[1].PendingKey);
++            Assert.Null(timing.Seats[1].Timing);
++        }
++
++        [Fact]
++        public void ResponseDecisionFromDifferentWindowIdentityIsDroppedDespiteSeatOverlap()
++        {
++            RoundStateMachine prior = BuildWindowRound();
++            Assert.NotNull(prior.Window);
++            Assert.Contains(1, prior.Window!.EligibleSeats);
++
++            RoundStateMachine opening = TableKanRecoveryEvidenceTests.BuildDealt(
++                prior.RoundId,
++                new Dictionary<int, TileId[]>
++                {
++                    [1] = new[] { Dragon(1, 0), Dragon(1, 1), Dragon(1, 2) }
++                },
++                Dragon(1, 3));
++            TileId nextTarget = Dragon(1, 3);
++            RoundTransition transition = opening.Execute(
++                RoundCommand.Discard(opening.RoundId, 0, nextTarget, new[] { 1 }));
++            Assert.True(transition.IsAccepted, transition.Error?.ToString());
++            RoundStateMachine next = transition.State!;
++            Assert.NotNull(next.Window);
++            Assert.Contains(1, next.Window!.EligibleSeats);
++            Assert.NotEqual(prior.Window.TargetTile, next.Window.TargetTile);
++
++            var key = new DecisionKey(prior.RoundId, 1, "old-window-response");
++            var pending = new PendingDecision(
++                key,
++                0L,
++                new[]
++                {
++                    new LegalActionOption(LegalActionKind.Pon, 1, prior.Window.TargetTile),
++                    new LegalActionOption(LegalActionKind.Pass, 1)
++                },
++                null);
++
++            var sameClock = new DecisionClock(new DecisionClockConfig(1000L, 0L, ReserveScope.Round));
++            sameClock.BeginRound(prior.RoundId, 1000L);
++            sameClock.Open(key, 1000L);
++            List<PendingDecision> sameKept = TableResponseDecisionReconciliation.FilterAfterTransition(
++                prior,
++                prior,
++                new[] { pending },
++                sameClock,
++                1100L);
++            Assert.Single(sameKept);
++            Assert.Equal(key, sameKept[0].Key);
++            Assert.NotNull(sameClock.Timing(1));
++
++            var changedClock = new DecisionClock(new DecisionClockConfig(1000L, 0L, ReserveScope.Round));
++            changedClock.BeginRound(prior.RoundId, 1000L);
++            changedClock.Open(key, 1000L);
++            List<PendingDecision> changedKept = TableResponseDecisionReconciliation.FilterAfterTransition(
++                prior,
++                next,
++                new[] { pending },
++                changedClock,
++                1100L);
++            Assert.Empty(changedKept);
++            Assert.Null(changedClock.Timing(1));
++        }
++
++        private static RoundStateMachine BuildTurnRound(string roundId)
++        {
++            RoundStateMachine round = TableKanRecoveryEvidenceTests.BuildDealt(
++                roundId,
++                new Dictionary<int, TileId[]>(),
++                Man(9, 3));
++            Assert.Equal(0, round.CurrentSeat);
++            Assert.Null(round.Window);
++            return round;
++        }
++
+         private static TableRecoveryBaseline RecoveryBaseline(
+             RoundStateMachine round,
+             TableRecoveredDecision decision)

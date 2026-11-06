@@ -1,0 +1,55 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    P5.4b-A durable-host test project: the PostgresTableHostRegistry wiring, its
+    fail-closed build refusals, atomic bootstrap, cold recovery and dual-host fencing,
+    each against a REAL PostgreSQL table_store database. A missing database or key
+    FAILS the run — it never becomes a skip.
+
+    Not registered in Mahjong.sln; tools/ci/verify-v5-durable-table-host.ps1 builds
+    and executes the DLL directly with the xUnit v3 console runner. Test-support
+    sources are link-compiled; the accepted TableService.Tests assembly is never
+    referenced or modified. The TableService -> Infrastructure dependency here is the
+    same single edge the migration plan already defines for the table host.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
+    <LangVersion>12.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <Deterministic>true</Deterministic>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <AssemblyName>Mahjong.TableService.DurableHost.Tests</AssemblyName>
+    <RootNamespace>Mahjong.TableService.DurableHost.Tests</RootNamespace>
+    <!-- These tests drive explicit timing fixtures (lease TTLs, handshake deadlines). -->
+    <NoWarn>$(NoWarn);xUnit1051</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" Version="4.0.2" />
+    <PackageReference Include="Npgsql" Version="8.0.9" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <ProjectReference Include="..\..\src\Mahjong.Infrastructure\Mahjong.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\Mahjong.TableService\Mahjong.TableService.csproj" />
+    <ProjectReference Include="..\..\src\Mahjong.Contracts\Mahjong.Contracts.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Mahjong.TableService.Tests\TestSupport\TableTestClient.cs" LinkBase="TestSupport" />
+    <Compile Include="..\Mahjong.TableService.Tests\TestSupport\TableTestSigner.cs" LinkBase="TestSupport" />
+    <Compile Include="..\Mahjong.TableService.Tests\TestSupport\TableServiceTestHost.cs" LinkBase="TestSupport" />
+    <Compile Include="..\Mahjong.TableService.Tests\TestSupport\N1aRoundSource.cs" LinkBase="TestSupport" />
+  </ItemGroup>
+
+</Project>

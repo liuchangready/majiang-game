@@ -550,7 +550,7 @@ namespace Mahjong.TableRuntime
                 melds.Add(new Meld(
                     ToMeldType(meld.Kind),
                     meld.Tiles,
-                    meld.FromSeat,
+                    meld.Kind == RoundMeldKind.ClosedKan ? -1 : meld.FromSeat,
                     meld.CalledTile));
             }
 

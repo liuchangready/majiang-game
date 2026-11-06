@@ -1,0 +1,102 @@
+diff --git a/dotnet/tests/Mahjong.LocalHost.Tests/LocalHostCandidateAcceptanceTests.cs b/dotnet/tests/Mahjong.LocalHost.Tests/LocalHostCandidateAcceptanceTests.cs
+index d5486ea..0bc67c8 100644
+--- a/dotnet/tests/Mahjong.LocalHost.Tests/LocalHostCandidateAcceptanceTests.cs
++++ b/dotnet/tests/Mahjong.LocalHost.Tests/LocalHostCandidateAcceptanceTests.cs
+@@ -903,6 +903,7 @@ namespace Mahjong.LocalHost.Tests
+         public async Task ClientPassOnRonSetsFuritenAndColdRestartKeepsItUntilTheNextDraw()
+         {
+             await using var harness = new P41Harness();
++            harness.Options.AutoPlay = false;
+             CancellationToken ct = TestContext.Current.CancellationToken;
+ 
+             // Same legal wall as RonCandidateAndSubmissionTest: seat 0 waits on 3p (44) and
+@@ -919,7 +920,11 @@ namespace Mahjong.LocalHost.Tests
+             harness.Options.InitialRound = BuildRoundWithSpecificSlots(specific);
+ 
+             ulong versionAfterPass;
++            ulong passCommandVersion;
+             (ITableChannel channel, TableSession session) = await OpenAsync(harness, ct);
++            LocalTableRuntime? runtime = ((LocalTableChannel)channel).RuntimeForMatch;
++            Assert.NotNull(runtime);
++            runtime!.DriverForTest.Start();
+             try
+             {
+                 using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+@@ -971,6 +976,15 @@ namespace Mahjong.LocalHost.Tests
+                     ronDecision.Actions,
+                     action => action.ActionType == (uint)ProtocolActionType.DeclareRon);
+ 
++                // Freeze the automatic driver while seat 0 has an open human decision. The
++                // response window cannot advance without the pass, and the stop happens before
++                // the pass commits, so no autonomous draw can clear furiten between the pass
++                // receipt and the durable-store read below.
++                ulong versionBeforeStop = session.PlayerSnapshot!.StateVersion;
++                await runtime.DriverForTest.StopAsync();
++                Assert.False(runtime.DriverRunning);
++                Assert.Equal(versionBeforeStop, session.PlayerSnapshot!.StateVersion);
++
+                 var passResolved = new TaskCompletionSource<TableReceiptResolvedEventArgs>(
+                     TaskCreationOptions.RunContinuationsAsynchronously);
+                 session.ReceiptResolved += (_, args) =>
+@@ -1000,6 +1014,8 @@ namespace Mahjong.LocalHost.Tests
+                     passResolved.Task,
+                     pumpCts.Token);
+                 Assert.Equal(ReceiptStatus.Applied, passReceipt.Resolution.ReceiptStatus);
++                Assert.True(passReceipt.Resolution.CommandVersion.HasValue);
++                passCommandVersion = passReceipt.Resolution.CommandVersion!.Value.Value;
+ 
+                 for (int i = 0; i < 50 && session.PlayerSnapshot?.PrivateView?.Furiten != true; i++)
+                 {
+@@ -1009,8 +1025,6 @@ namespace Mahjong.LocalHost.Tests
+                 PlayerSnapshot afterPass = session.PlayerSnapshot!;
+                 Assert.True(afterPass.PrivateView.Furiten, "the owner projection must carry temporary furiten");
+                 versionAfterPass = afterPass.StateVersion;
+-                LocalTableRuntime? runtime = ((LocalTableChannel)channel).RuntimeForMatch;
+-                Assert.NotNull(runtime);
+                 Assert.True(runtime!.ActorForTest.FuritenForHost.IsTemporary(0));
+                 Assert.False(runtime.ActorForTest.FuritenForHost.IsTemporary(1));
+ 
+@@ -1060,6 +1074,9 @@ namespace Mahjong.LocalHost.Tests
+             // latest projection facts; inspect them before any recovery path can normalize them.
+             using (LocalTableStore store = await LocalTableStore.OpenAsync(harness.Options, harness.Clock, null, ct))
+             {
++                TableStateRow savedState = Assert.IsType<TableStateRow>(
++                    await store.LoadStateAsync(P41Harness.RoomId, ct));
++                Assert.Equal(passCommandVersion, savedState.StateVersion.Value);
+                 Assert.True(store.LoadTemporaryFuriten()[0]);
+                 Assert.False(store.LoadRiichiFuriten()[0]);
+                 TableCommittedFactsSnapshot facts = Assert.IsType<TableCommittedFactsSnapshot>(
+@@ -1075,24 +1092,27 @@ namespace Mahjong.LocalHost.Tests
+             }
+ 
+             // Cold restart: the furiten bit must come from the committed projection facts, not
+-            // from process memory, and must survive until seat 0 actually draws.
++            // from process memory, and must survive until seat 0 actually draws. AutoPlay is
++            // still off, so the restored snapshot is inspected before any new draw can commit;
++            // only then is the real driver started to reach the clearing draw.
+             (ITableChannel reopened, TableSession restored) = await OpenAsync(harness, ct);
++            LocalTableRuntime? restoredRuntime = ((LocalTableChannel)reopened).RuntimeForMatch;
++            Assert.NotNull(restoredRuntime);
++            Assert.False(restoredRuntime!.DriverRunning);
+             try
+             {
+                 using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                 pumpCts.CancelAfter(TimeSpan.FromSeconds(30));
+                 Task pump = StartPump(restored, pumpCts.Token);
+-                for (int i = 0; i < 50 && restored.PlayerSnapshot?.PrivateView?.Furiten != true; i++)
+-                {
+-                    await Task.Delay(20, pumpCts.Token);
+-                }
+ 
+                 Assert.True(restored.PlayerSnapshot!.PrivateView.Furiten, "cold restart lost the committed furiten fact");
+-                Assert.True(restored.PlayerSnapshot.StateVersion >= versionAfterPass);
++                Assert.Equal(versionAfterPass, restored.PlayerSnapshot.StateVersion);
+ 
++                restoredRuntime.DriverForTest.Start();
+                 PlayerSnapshot nextTurn = await WaitForDecisionAsync(restored, pumpCts.Token);
+                 Assert.True(nextTurn.StateVersion > versionAfterPass);
+                 Assert.False(nextTurn.PrivateView.Furiten, "the next draw must clear temporary furiten");
++                Assert.False(restoredRuntime.ActorForTest.FuritenForHost.IsTemporary(0));
+ 
+                 pumpCts.Cancel();
+                 await pump;

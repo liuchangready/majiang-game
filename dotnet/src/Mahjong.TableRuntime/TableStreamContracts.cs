@@ -784,7 +784,8 @@ namespace Mahjong.TableRuntime
             long recoveryGeneration,
             long monotonicMillis,
             long utcMillis,
-            IReadOnlyList<TableEventRecord>? committedEvents = null)
+            IReadOnlyList<TableEventRecord>? committedEvents = null,
+            TableFuritenSnapshot? furiten = null)
         {
             if (string.IsNullOrWhiteSpace(roomId))
             {
@@ -818,6 +819,7 @@ namespace Mahjong.TableRuntime
             RecoveryGeneration = recoveryGeneration;
             MonotonicMillis = monotonicMillis;
             UtcMillis = utcMillis;
+            Furiten = furiten;
             _committedEvents = CopyEvents(committedEvents);
         }
 
@@ -838,6 +840,12 @@ namespace Mahjong.TableRuntime
         public long MonotonicMillis { get; }
 
         public long UtcMillis { get; }
+
+        /// <summary>
+        /// Authoritative post-command furiten snapshot computed on the actor consumer for this
+        /// exact commit. A source must use it instead of any host pre-enqueue state.
+        /// </summary>
+        public TableFuritenSnapshot? Furiten { get; }
 
         /// <summary>
         /// Frozen committed event window visible to this capture. The source uses it to bind

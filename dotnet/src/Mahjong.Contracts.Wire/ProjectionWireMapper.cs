@@ -597,6 +597,21 @@ namespace Mahjong.Contracts.Wire
                 view.Cheat = MapPrivateCheat(source.Cheat);
             }
 
+            if (source.Control != null)
+            {
+                if (source.Control.ControlVersion < 0)
+                {
+                    throw Invalid("private.control.control_version cannot be negative.");
+                }
+
+                view.Control = new PlayerControlView
+                {
+                    ControlEpoch = source.Control.ControlEpoch.Value,
+                    ControlledByComputer = source.Control.ControlledByComputer,
+                    ControlVersion = checked((ulong)source.Control.ControlVersion)
+                };
+            }
+
             return view;
         }
 

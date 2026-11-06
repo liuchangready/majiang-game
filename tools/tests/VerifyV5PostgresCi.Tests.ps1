@@ -143,6 +143,55 @@ $Port2 = $BasePort + 1
 $selfTemp = Join-Path ([IO.Path]::GetTempPath()) ("VerifyV5PostgresCi-" + (Get-Date -Format 'yyyyMMdd-HHmmss') + "-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Force -Path $selfTemp | Out-Null
 
+# Exercise the production lobby package-closure guard with filesystem-only
+# incomplete-install fixtures. These contain no server/data directory and can
+# never be used as a database.
+. (Join-Path $repoRoot 'dotnet\scripts\pg-lobby-verify\pg-common.ps1')
+function New-PgClosureFixture([string]$Name, [string[]]$Missing) {
+    $root = Join-Path $selfTemp ('closure-' + $Name)
+    $paths = @(
+        'pgsql\bin\pg_ctl.exe', 'pgsql\bin\initdb.exe', 'pgsql\bin\psql.exe',
+        'pgsql\bin\createdb.exe', 'pgsql\bin\pg_isready.exe', 'pgsql\bin\postgres.exe',
+        'pgsql\share\timezone', 'pgsql\share\timezonesets\Default'
+    )
+    foreach ($relative in $paths) {
+        if ($Missing -contains $relative) { continue }
+        $path = Join-Path $root $relative
+        if ($relative -like '*.*') {
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $path) | Out-Null
+            [IO.File]::WriteAllBytes($path, [byte[]]@())
+        }
+        else {
+            New-Item -ItemType Directory -Force -Path $path | Out-Null
+        }
+    }
+    return New-PgContext -Root $root -Port $BasePort -DbName 'mahjong_lobby_test_closure'
+}
+
+$closureIncomplete = New-PgClosureFixture 'incomplete' @('pgsql\bin\psql.exe')
+$closureIncompleteMessage = ''
+try { Assert-PgInstallationClosure -Context $closureIncomplete }
+catch { $closureIncompleteMessage = $_.Exception.Message }
+Assert-True ($closureIncompleteMessage.Contains('pgsql\bin\psql.exe')) 'incomplete installation with pg_ctl present is rejected with the missing executable named'
+
+$closureMissingTimezone = New-PgClosureFixture 'timezone' @('pgsql\share\timezone')
+$closureTimezoneMessage = ''
+try { Assert-PgInstallationClosure -Context $closureMissingTimezone }
+catch { $closureTimezoneMessage = $_.Exception.Message }
+Assert-True ($closureTimezoneMessage.Contains('pgsql\share\timezone')) 'missing timezone data is rejected before PostgreSQL startup'
+
+$closureMissingSets = New-PgClosureFixture 'timezonesets' @('pgsql\share\timezonesets\Default')
+$closureSetsMessage = ''
+try { Assert-PgInstallationClosure -Context $closureMissingSets }
+catch { $closureSetsMessage = $_.Exception.Message }
+Assert-True ($closureSetsMessage.Contains('pgsql\share\timezonesets\Default')) 'missing timezone-set data is rejected before PostgreSQL startup'
+
+$closureComplete = New-PgClosureFixture 'complete' @()
+$closureCompleteOk = $true
+try { Assert-PgInstallationClosure -Context $closureComplete }
+catch { $closureCompleteOk = $false }
+Assert-True $closureCompleteOk 'complete PostgreSQL runtime closure passes the production guard'
+
 function Write-Utf8File([string]$Path, [string]$Content) {
     $dir = Split-Path $Path -Parent
     if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }

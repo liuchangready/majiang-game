@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    P5.1 test project, registered in Mahjong.sln by the caller after acceptance.
+    The unified verifier discovers this project automatically; run it directly:
+      dotnet test dotnet/tests/Mahjong.TableService.Tests/Mahjong.TableService.Tests.csproj
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
+    <LangVersion>12.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AssemblyName>Mahjong.TableService.Tests</AssemblyName>
+    <RootNamespace>Mahjong.TableService.Tests</RootNamespace>
+    <!-- These tests drive explicit timing fixtures (handshake/idle deadlines). -->
+    <NoWarn>$(NoWarn);xUnit1051</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" Version="4.0.2" />
+  </ItemGroup>
+
+  <!-- Every test here starts a real Kestrel host and drives real sockets; the
+    default processor-count collection parallelism oversubscribes the box and
+    turns scheduling pressure into cross-test starvation flake. 4 keeps the
+    suite parallel and deterministic (the per-test assertions are unchanged). -->
+  <ItemGroup>
+    <Content Include="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <ProjectReference Include="..\..\src\Mahjong.TableService\Mahjong.TableService.csproj" />
+    <ProjectReference Include="..\..\src\Mahjong.Contracts\Mahjong.Contracts.csproj" />
+  </ItemGroup>
+
+</Project>

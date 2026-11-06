@@ -1,0 +1,300 @@
+diff --git a/dotnet/tests/Mahjong.LocalHost.Tests/LocalControlTests.cs b/dotnet/tests/Mahjong.LocalHost.Tests/LocalControlTests.cs
+index 761a51e..e1b9f7a 100644
+--- a/dotnet/tests/Mahjong.LocalHost.Tests/LocalControlTests.cs
++++ b/dotnet/tests/Mahjong.LocalHost.Tests/LocalControlTests.cs
+@@ -1743,8 +1743,10 @@ await WaitUntilAsync(
+             string decision = client.Runtime.ActorForTest.GetPendingDecisionId(0)!;
+             var hold = new AiSubmitHold();
+             hold.Attach(client.Runtime);
++            const string requestId = "probe-unauthorized";
+             TableSnapshot? frozen = null;
+             TableStateRow? parkedBaseline = null;
++            TableStateRow after;
+             try
+             {
+                 if (revoke)
+@@ -1785,73 +1787,107 @@ await SettleRetirementUnderAiHoldAsync(
+                         ct);
+                     parkedBaseline = (await client.Store.LoadStateAsync(P41Harness.RoomId, ct))!;
+                 }
++
++                WireEnvelope rejected;
++                if (control)
++                {
++                    byte[] bytes = client.BuildCommandBytes(
++                        CommandKind.ClaimControl,
++                        0,
++                        requestId,
++                        payloadBytes: null,
++                        decisionId: decision);
++                    rejected = await client.SendRawAsync(bytes, requestId, ct);
++                }
++                else
++                {
++                    RoundStateMachine round = client.Runtime.ActorForTest.GetRoundStateForHost();
++                    TileId handTile = round.Tiles.TilesInZone(TileZone.Hand, 0)[0];
++                    BusinessPayload payload = CommandPayloadFactory.SubmitAction(
++                        round.RoundId,
++                        "probe-unauthorized",
++                        0UL,
++                        ProtocolActionType.DiscardTile,
++                        tileIds: new[] { (uint)handTile.Value });
++                    byte[] bytes = client.BuildCommandBytes(
++                        CommandKind.SubmitAction,
++                        0,
++                        requestId,
++                        payload.CopyBytes(),
++                        decisionId: decision);
++                    rejected = await client.SendRawAsync(bytes, requestId, ct);
++                }
++
++                AssertReceipt(rejected, WireReceiptStatus.Rejected, "the " + cell + " stale-decision command");
++                Assert.Equal(ProtocolErrorCode.RequestScopeExpired, rejected.Receipt.ReasonCode);
++
++                // Transport-only: nothing durable under the request key on either path,
++                // no control movement, no state movement, and the receipt query that a
++                // real outbox entry would send finds nothing. The hold is still attached
++                // here, so the parked valid AI follow-up cannot move StateVersion before
++                // the stillness assertion reads it.
++                Assert.Null(await client.Store.TryGetAsync(SeatAccount, scope, new RequestId(requestId), ct));
++                Assert.Null(client.Store.GetReceiptDigest(SeatAccount, scope, new RequestId(requestId)));
++                Assert.Null(client.Store.GetControlResult(SeatAccount, scope, new RequestId(requestId)));
++                Assert.Equal(0L, client.Store.ControlVersionForTest);
++                after = (await client.Store.LoadStateAsync(P41Harness.RoomId, ct))!;
++                if (frozen != null)
++                {
++                    Assert.Equal(frozen.StateVersion.Value, after.StateVersion.Value);
++                    Assert.Equal(frozen.LastEventSeq.Value, after.LastEventSeq.Value);
++                }
++                else
++                {
++                    Assert.NotNull(parkedBaseline);
++                    Assert.Equal(parkedBaseline!.StateVersion.Value, after.StateVersion.Value);
++                    Assert.Equal(parkedBaseline.LastEventSeq.Value, after.LastEventSeq.Value);
++                }
++
++                WireEnvelope probeLookup = await client.SendReceiptQueryAsync(
++                    scope.Value,
++                    requestId,
++                    "probe-unauthorized-lookup",
++                    ct);
++                Assert.Equal(WireLookupStatus.NotFound, probeLookup.ReceiptLookup!.Status);
+             }
+             finally
+             {
++                // Release only after the probe and every stillness/receipt assertion
++                // above (or on failure). Releasing before them would let the parked,
++                // valid AI follow-up commit one or more versions under the read — the
++                // caller's `Expected: 1 / Actual: 2` ordering defect.
+                 hold.Release();
+                 hold.Detach(client.Runtime);
+             }
+ 
+-            const string requestId = "probe-unauthorized";
+-            WireEnvelope rejected;
+-            if (control)
+-            {
+-                byte[] bytes = client.BuildCommandBytes(
+-                    CommandKind.ClaimControl,
+-                    0,
+-                    requestId,
+-                    payloadBytes: null,
+-                    decisionId: decision);
+-                rejected = await client.SendRawAsync(bytes, requestId, ct);
+-            }
+-            else
++            if (revoke)
+             {
+-                RoundStateMachine round = client.Runtime.ActorForTest.GetRoundStateForHost();
+-                TileId handTile = round.Tiles.TilesInZone(TileZone.Hand, 0)[0];
+-                BusinessPayload payload = CommandPayloadFactory.SubmitAction(
+-                    round.RoundId,
+-                    "probe-unauthorized",
+-                    0UL,
+-                    ProtocolActionType.DiscardTile,
+-                    tileIds: new[] { (uint)handTile.Value });
+-                byte[] bytes = client.BuildCommandBytes(
+-                    CommandKind.SubmitAction,
+-                    0,
+-                    requestId,
+-                    payload.CopyBytes(),
+-                    decisionId: decision);
+-                rejected = await client.SendRawAsync(bytes, requestId, ct);
+-            }
++                await WaitUntilFollowUpsSettleAsync(
++                    client.Runtime,
++                    "the released held-AI follow-ups after the " + cell + " unauthorized-scope probe",
++                    ct);
+ 
+-            AssertReceipt(rejected, WireReceiptStatus.Rejected, "the " + cell + " stale-decision command");
+-            Assert.Equal(ProtocolErrorCode.RequestScopeExpired, rejected.Receipt.ReasonCode);
++                // Release behavior: the held AI is a real, current follow-up, so its
++                // release must land autonomous commits. The unauthorized probe still
++                // owns no durable receipt or control row after those commits.
++                TableStateRow afterRelease = (await client.Store.LoadStateAsync(P41Harness.RoomId, ct))!;
++                Assert.True(
++                    afterRelease.StateVersion.Value > after.StateVersion.Value,
++                    "the released held AI follow-up must advance the state after the " + cell +
++                    " probe (before release v" + after.StateVersion.Value + ", after release v" +
++                    afterRelease.StateVersion.Value + ").");
++            }
+ 
+-            // Transport-only: nothing durable under the request key on either path,
+-            // no control movement, no state movement, and the receipt query that a
+-            // real outbox entry would send finds nothing.
+             Assert.Null(await client.Store.TryGetAsync(SeatAccount, scope, new RequestId(requestId), ct));
+             Assert.Null(client.Store.GetReceiptDigest(SeatAccount, scope, new RequestId(requestId)));
+             Assert.Null(client.Store.GetControlResult(SeatAccount, scope, new RequestId(requestId)));
+             Assert.Equal(0L, client.Store.ControlVersionForTest);
+-            TableStateRow after = (await client.Store.LoadStateAsync(P41Harness.RoomId, ct))!;
+-            if (frozen != null)
+-            {
+-                Assert.Equal(frozen.StateVersion.Value, after.StateVersion.Value);
+-                Assert.Equal(frozen.LastEventSeq.Value, after.LastEventSeq.Value);
+-            }
+-            else
+-            {
+-                Assert.NotNull(parkedBaseline);
+-                Assert.Equal(parkedBaseline!.StateVersion.Value, after.StateVersion.Value);
+-                Assert.Equal(parkedBaseline.LastEventSeq.Value, after.LastEventSeq.Value);
+-            }
+-
+-            WireEnvelope probeLookup = await client.SendReceiptQueryAsync(
++            WireEnvelope postReleaseLookup = await client.SendReceiptQueryAsync(
+                 scope.Value,
+                 requestId,
+-                "probe-unauthorized-lookup",
++                revoke ? "probe-unauthorized-lookup-after-release" : "probe-unauthorized-lookup-after-expiry",
+                 ct);
+-            Assert.Equal(WireLookupStatus.NotFound, probeLookup.ReceiptLookup!.Status);
++            Assert.Equal(WireLookupStatus.NotFound, postReleaseLookup.ReceiptLookup!.Status);
+         }
+ 
+         [Fact]
+diff --git a/dotnet/tests/Mahjong.LocalHost.Tests/LocalHostCandidateAcceptanceTests.cs b/dotnet/tests/Mahjong.LocalHost.Tests/LocalHostCandidateAcceptanceTests.cs
+index d5486ea..e6cf08a 100644
+--- a/dotnet/tests/Mahjong.LocalHost.Tests/LocalHostCandidateAcceptanceTests.cs
++++ b/dotnet/tests/Mahjong.LocalHost.Tests/LocalHostCandidateAcceptanceTests.cs
+@@ -1201,18 +1201,19 @@ public async Task ClientPassFuritenBlocksSecondRealRonUntilTheNextDraw()
+                 "net8.0",
+                 "Mahjong.LocalHost.CrashWorker.dll");
+             Assert.True(File.Exists(workerDll), "CrashWorker was not built: " + workerDll);
+-            var startInfo = new System.Diagnostics.ProcessStartInfo
+-            {
+-                FileName = Environment.ProcessPath ?? "dotnet",
+-                Arguments = "\"" + workerDll + "\" \"" + harness.Options.SaveDirectory + "\" \"" +
+-                            P41Harness.RoomId + "\" \"" + marker + "\" furiten-read " +
+-                            harness.Clock.MonotonicMillis.ToString(System.Globalization.CultureInfo.InvariantCulture) + " " +
+-                            harness.Clock.UtcNowMs.ToString(System.Globalization.CultureInfo.InvariantCulture),
+-                UseShellExecute = false,
+-                CreateNoWindow = true,
+-                RedirectStandardOutput = true,
+-                RedirectStandardError = true
+-            };
++            // Under `dotnet test` the current process is the xUnit apphost
++            // (Mahjong.LocalHost.Tests.exe), which rejects the worker DLL as an
++            // unknown option and exits 3. Resolve the real dotnet host instead;
++            // the worker DLL, argument vector, timeout and assertions stay intact.
++            var startInfo = P41Harness.CreateWorkerStartInfo(
++                workerDll,
++                harness.Options.SaveDirectory,
++                P41Harness.RoomId,
++                marker,
++                "furiten-read");
++            startInfo.Arguments += " " +
++                harness.Clock.MonotonicMillis.ToString(System.Globalization.CultureInfo.InvariantCulture) + " " +
++                harness.Clock.UtcNowMs.ToString(System.Globalization.CultureInfo.InvariantCulture);
+             using (System.Diagnostics.Process process = System.Diagnostics.Process.Start(startInfo)!)
+             {
+                 using var waitCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+diff --git a/dotnet/tests/Mahjong.LocalHost.Tests/P41Harness.cs b/dotnet/tests/Mahjong.LocalHost.Tests/P41Harness.cs
+index 3bbaf7f..273bba4 100644
+--- a/dotnet/tests/Mahjong.LocalHost.Tests/P41Harness.cs
++++ b/dotnet/tests/Mahjong.LocalHost.Tests/P41Harness.cs
+@@ -109,6 +109,86 @@ public static LocalTableHostOptions CloneOptions(LocalTableHostOptions source)
+             };
+         }
+ 
++        /// <summary>
++        /// Resolves the real dotnet host for a child worker process. Under
++        /// <c>dotnet test</c> the current process is the test apphost (for example
++        /// <c>Mahjong.LocalHost.Tests.exe</c>), which cannot execute another
++        /// assembly; only a host whose basename is <c>dotnet</c> may be reused.
++        /// </summary>
++        public static string ResolveDotnetHost()
++        {
++            string? processPath = System.Environment.ProcessPath;
++            if (IsDotnetExecutable(processPath))
++            {
++                return processPath!;
++            }
++
++            string? hostPath = System.Environment.GetEnvironmentVariable("DOTNET_HOST_PATH");
++            if (!string.IsNullOrEmpty(hostPath) && IsDotnetExecutable(hostPath) && File.Exists(hostPath))
++            {
++                return hostPath!;
++            }
++
++            string? dotnetRoot = System.Environment.GetEnvironmentVariable("DOTNET_ROOT");
++            if (!string.IsNullOrEmpty(dotnetRoot))
++            {
++                string candidate = Path.Combine(
++                    dotnetRoot,
++                    OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet");
++                if (File.Exists(candidate))
++                {
++                    return candidate;
++                }
++            }
++
++            // ProcessStartInfo resolves this through PATH; never the test apphost.
++            return "dotnet";
++        }
++
++        public static System.Diagnostics.ProcessStartInfo CreateWorkerStartInfo(
++            string workerDll,
++            string saveDirectory,
++            string roomId,
++            string markerPath,
++            string? mode = null)
++        {
++            string args = "\"" + workerDll + "\" \"" + saveDirectory + "\" \"" + roomId + "\" \"" + markerPath + "\"";
++            if (!string.IsNullOrEmpty(mode))
++            {
++                args += " " + mode;
++            }
++
++            string host = ResolveDotnetHost();
++            var startInfo = new System.Diagnostics.ProcessStartInfo
++            {
++                FileName = host,
++                Arguments = args,
++                UseShellExecute = false,
++                CreateNoWindow = true,
++                RedirectStandardOutput = true,
++                RedirectStandardError = true
++            };
++
++            string dotnetRoot = System.Environment.GetEnvironmentVariable("DOTNET_ROOT") ?? string.Empty;
++            if (string.IsNullOrEmpty(dotnetRoot) && Path.IsPathRooted(host))
++            {
++                dotnetRoot = Path.GetDirectoryName(host) ?? string.Empty;
++            }
++
++            if (!string.IsNullOrEmpty(dotnetRoot))
++            {
++                startInfo.Environment["DOTNET_ROOT"] = dotnetRoot;
++            }
++
++            return startInfo;
++        }
++
++        private static bool IsDotnetExecutable(string? path)
++        {
++            return !string.IsNullOrEmpty(path) &&
++                Path.GetFileNameWithoutExtension(path).Equals("dotnet", StringComparison.OrdinalIgnoreCase);
++        }
++
+         public static string FindRepositoryRoot()
+         {
+             string? current = AppContext.BaseDirectory;

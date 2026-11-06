@@ -2139,6 +2139,84 @@ namespace Mahjong.TableRuntime.Tests
             public long UtcNowMs { get; set; }
         }
 
+        [Fact]
+        public async Task ExhaustiveWallPassExternalEntryDoesNotRequireReservationDelivery()
+        {
+            var spec = new RoundSpec(
+                "exhausted-external",
+                0,
+                1,
+                0,
+                0,
+                new long[] { 25000, 25000, 25000, 25000 },
+                0);
+            RoundStateMachine round = RoundStateMachine.CreateDealt(
+                spec,
+                TilePositionMap.CreateDealt(RecordedRandomDraw.Standard("exhausted-external"), 0));
+            while (round.Tiles.WallRemaining > 0)
+            {
+                RoundTransition discard = round.Execute(
+                    RoundCommand.Discard(
+                        round.RoundId,
+                        round.CurrentSeat,
+                        round.Tiles.DrawnTile!.Value.Tile));
+                Assert.True(discard.IsAccepted);
+                round = discard.State!;
+            }
+
+            int responseSeat = (round.CurrentSeat + 1) % 4;
+            RoundTransition opening = round.Execute(
+                RoundCommand.Discard(
+                    round.RoundId,
+                    round.CurrentSeat,
+                    round.Tiles.DrawnTile!.Value.Tile,
+                    new[] { responseSeat }));
+            Assert.True(opening.IsAccepted);
+            round = opening.State!;
+            Assert.True(round.Window != null);
+
+            CheatState cheat = V32Fixtures.WithRegisteredRound(
+                V32Fixtures.Cheat(InitialPoints),
+                round.RoundId);
+            TileId reserved = round.Tiles.TilesInZone(TileZone.Hand, responseSeat)[0];
+            cheat = cheat.WithSleeveBloom(cheat.SleeveBloom.WithReservation(
+                new SleeveBloomReservation(responseSeat, "exhausted-reservation", reserved, "window", 0)));
+            var clock = new ManualTableClock { Now = 1000L };
+            var commitPort = new RecordingCommitPort();
+            var sink = new RecordingPublicationSink(commitPort);
+            var options = new TableActorOptions
+            {
+                RoomId = "room-1",
+                MailboxCapacity = 16,
+                ControlReserve = 16,
+                DecisionClockConfig = new DecisionClockConfig(1000L, 0L, ReserveScope.Round),
+                InitialControllers = P31Fixtures.Controllers(
+                    SeatControllerKind.LocalHuman,
+                    SeatControllerKind.Computer,
+                    SeatControllerKind.Computer,
+                    SeatControllerKind.Computer),
+                CheatEconomy = V32Fixtures.Economy(InitialPoints),
+                SleeveBloomConfig = V32Fixtures.SleeveConfig(),
+                CheatRequestBindingCapacity = 8192,
+                InitialCheatState = cheat
+            };
+            await using var actor = new TableActor(options, round, commitPort, clock, sink);
+
+            TableOperationResult pass = await actor.SubmitAsync(
+                new TableCommandEnvelope(
+                    RoundCommand.Pass(round.RoundId, responseSeat),
+                    new RequestId("exhausted-pass"),
+                    new StateVersion(0),
+                    new OwnerEpoch(1),
+                    new ControlEpoch(0)),
+                TestContext.Current.CancellationToken);
+
+            Assert.True(
+                pass.Status == TableOperationStatus.Accepted,
+                pass.ReasonCode + ": " + pass.EvaluatedStateVersion);
+            Assert.Contains(pass.Events, e => e.Type == RoundEventType.WallExhausted);
+        }
+
         private static ActorHarness CreateHarness(int cheatRequestBindingCapacity = 8192)
         {
             var clock = new ManualTableClock { Now = 1000L };

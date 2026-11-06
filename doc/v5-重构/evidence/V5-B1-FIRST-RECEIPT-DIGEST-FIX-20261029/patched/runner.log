@@ -1,0 +1,13 @@
+[p54b-b1] stage guard: PASS (exit 0) sdk=8.0.426 head=46e2c018f477f8399d29947af05b264ecfef5bb8 branch=candidate-scratch trackedDirty=no
+[p54b-b1] stage role-separation: PASS (exit 0) lobbyDbOwner=b1_lobby_owner lobbySchemaOwner=b1_lobby_owner lobbyAppAttrs=false/false/false lobbyAppDdl=false lobbyAppDml=true; tableDbOwner=b1_table_owner tableSchemaOwner=b1_table_owner tableAppAttrs=false/false/false tableAppDdl=false tableAppDml=true
+[p54b-b1] stage cluster: PASS (exit 0) postgres=16.10 data_directory=<isolated-patched-tree>/artifacts/b1-pg-patched-59471/data port=59471 lobbyDb=mahjong_b1_lobby tableDb=mahjong_b1_table owners=b1_lobby_owner/b1_table_owner
+[p54b-b1] stage fresh-build: PASS (exit 0) 2 B1 projects built with 8.0.426 (--no-incremental, -nr:false)
+[p54b-b1] stage tests-b1: PASS (exit 0) total=44 passed=44 failed=0 errors=0 skipped=0 notRun=0 xmlSha256=FAB521767D47C18EFE5FD20FE42F886F77E785B29787D48D0B65AA4D2C02E381
+[p54b-b1] stage fresh-build-accepted-helper: PASS (exit 0) accepted keygen/certgen helper rebuilt fresh from frozen source; no A long chain executed
+[p54b-b1] stage keygen-certgen: PASS (exit 0) isolated ES256 ticket key and test TLS chain generated; positive tickets are Lobby-signed only
+[p54b-b1] stage fresh-build-services: PASS (exit 0) LobbyService and TableService built Release with --no-incremental -nr:false; build servers shut down
+[p54b-b1] stage lobby-https: PASS (exit 0) real LobbyService HTTPS Postgres store ready on 127.0.0.1:59472 pid=61968
+[p54b-b1] stage table-wss: PASS (exit 0) real TableService WSS Postgres host ready on 127.0.0.1:59473 pid=48420
+[p54b-b1] stage suite: PASS (exit 0) room=room_01a187973a467b1cbce9ddeb0e63db77 normalVersion=1 crashVersion=2 recovered=True
+[p54b-b1] stage pg-facts: PASS (exit 0) stateVersion=5 events=10 normal=1/APPLIED journal=1 eventRows=2 crash=1/APPLIED journal=1 eventRows=2 negFacts=4 settlementOutbox=0 lobbyConsumption=0 ledger=NOT_RUN
+[p54b-b1] stage cleanup: PASS (exit 0) ownership-verified cluster removed; ports free; no postmaster

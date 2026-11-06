@@ -1,0 +1,688 @@
+diff --git a/dotnet/src/Mahjong.TableRuntime/TableActor.cs b/dotnet/src/Mahjong.TableRuntime/TableActor.cs
+index cf10689..b4107d9 100644
+--- a/dotnet/src/Mahjong.TableRuntime/TableActor.cs
++++ b/dotnet/src/Mahjong.TableRuntime/TableActor.cs
+@@ -1185,6 +1185,7 @@ namespace Mahjong.TableRuntime
+                 command.RequestId,
+                 command.Api!,
+                 command.PayloadSha256!.Value,
++                command.CanonicalPayloadDigest,
+                 result).ConfigureAwait(false);
+         }
+ 
+@@ -2111,6 +2112,7 @@ namespace Mahjong.TableRuntime
+                 command.RequestId,
+                 command.Api!,
+                 command.PayloadSha256!.Value,
++                command.CanonicalPayloadDigest,
+                 result).ConfigureAwait(false);
+         }
+ 
+@@ -3774,7 +3776,8 @@ namespace Mahjong.TableRuntime
+                         commandVersion,
+                         lastEventSeq,
+                         null,
+-                        createdUtc == 0 ? (ulong?)null : createdUtc),
++                        createdUtc == 0 ? (ulong?)null : createdUtc,
++                        envelope.CanonicalPayloadDigest),
+                     string.Empty,
+                     createdUtc,
+                     ReceiptExpiry(createdUtc, durable));
+@@ -4206,8 +4209,21 @@ namespace Mahjong.TableRuntime
+                     api,
+                     digest,
+                     change.Accepted
+-                        ? Receipt.Applied(evaluated, commandVersion, lastEventSeq, null, createdUtc == 0 ? (ulong?)null : createdUtc)
+-                        : Receipt.Rejected(evaluated, reasonCode),
++                        ? Receipt.Applied(
++                            evaluated,
++                            commandVersion,
++                            lastEventSeq,
++                            null,
++                            createdUtc == 0 ? (ulong?)null : createdUtc,
++                            roundEnvelope != null
++                                ? roundEnvelope.CanonicalPayloadDigest
++                                : cheatEnvelope!.CanonicalPayloadDigest)
++                        : Receipt.Rejected(
++                            evaluated,
++                            reasonCode,
++                            roundEnvelope != null
++                                ? roundEnvelope.CanonicalPayloadDigest
++                                : cheatEnvelope!.CanonicalPayloadDigest),
+                     string.Empty,
+                     createdUtc,
+                     ReceiptExpiry(createdUtc, durable));
+@@ -4475,6 +4491,7 @@ namespace Mahjong.TableRuntime
+             RequestId requestId,
+             string api,
+             TablePayloadSha256 payloadSha256,
++            PayloadDigest? canonicalPayloadDigest,
+             TableOperationResult rejection)
+         {
+             TableDurableContext durable = _durable!;
+@@ -4485,7 +4502,10 @@ namespace Mahjong.TableRuntime
+                 requestId,
+                 api,
+                 payloadSha256,
+-                Receipt.Rejected(rejection.EvaluatedStateVersion, rejection.ReasonCode),
++                Receipt.Rejected(
++                    rejection.EvaluatedStateVersion,
++                    rejection.ReasonCode,
++                    canonicalPayloadDigest),
+                 rejection.Detail,
+                 createdUtc,
+                 ReceiptExpiry(createdUtc, durable));
+diff --git a/dotnet/src/Mahjong.TableRuntime/TableRuntimeContracts.cs b/dotnet/src/Mahjong.TableRuntime/TableRuntimeContracts.cs
+index 4d99a60..9f9cbdf 100644
+--- a/dotnet/src/Mahjong.TableRuntime/TableRuntimeContracts.cs
++++ b/dotnet/src/Mahjong.TableRuntime/TableRuntimeContracts.cs
+@@ -202,7 +202,8 @@ namespace Mahjong.TableRuntime
+             long recoveryGeneration = 0L,
+             RequestScopeId? scopeId = null,
+             string? api = null,
+-            TablePayloadSha256? payloadSha256 = null)
++            TablePayloadSha256? payloadSha256 = null,
++            PayloadDigest? canonicalPayloadDigest = null)
+         {
+             Command = command ?? throw new ArgumentNullException(nameof(command));
+             if (requestId.IsEmpty)
+@@ -236,6 +237,9 @@ namespace Mahjong.TableRuntime
+             ScopeId = hasScope ? scopeId : (RequestScopeId?)null;
+             Api = hasApi ? TableDurableReceipt.RequireApi(api!) : null;
+             PayloadSha256 = hasDigest ? payloadSha256 : (TablePayloadSha256?)null;
++            CanonicalPayloadDigest = canonicalPayloadDigest.HasValue && !canonicalPayloadDigest.Value.IsEmpty
++                ? canonicalPayloadDigest
++                : null;
+         }
+ 
+         public RoundCommand Command { get; }
+@@ -266,6 +270,14 @@ namespace Mahjong.TableRuntime
+         /// <summary>SHA-256 over the exact business bytes, computed by the trusted host.</summary>
+         public TablePayloadSha256? PayloadSha256 { get; }
+ 
++        /// <summary>
++        /// Domain-separated MJC1 digest over the exact original wire canonical-payload bytes.
++        /// The trusted host computes it at the wire boundary and carries it alongside the raw
++        /// idempotency hash so a durable receipt can preserve the Client-visible identity.
++        /// It is never parsed from or reconstructed out of protobuf serialization.
++        /// </summary>
++        public PayloadDigest? CanonicalPayloadDigest { get; }
++
+         public bool HasDurableIdentity => ScopeId.HasValue && Api != null && PayloadSha256.HasValue;
+     }
+ 
+@@ -287,7 +299,8 @@ namespace Mahjong.TableRuntime
+             long recoveryGeneration = 0L,
+             RequestScopeId? scopeId = null,
+             string? api = null,
+-            TablePayloadSha256? payloadSha256 = null)
++            TablePayloadSha256? payloadSha256 = null,
++            PayloadDigest? canonicalPayloadDigest = null)
+         {
+             CheatCommand = cheatCommand ?? throw new ArgumentNullException(nameof(cheatCommand));
+             if (requestId.IsEmpty)
+@@ -322,6 +335,9 @@ namespace Mahjong.TableRuntime
+             ScopeId = hasScope ? scopeId : (RequestScopeId?)null;
+             Api = hasApi ? TableDurableReceipt.RequireApi(api!) : null;
+             PayloadSha256 = hasDigest ? payloadSha256 : (TablePayloadSha256?)null;
++            CanonicalPayloadDigest = canonicalPayloadDigest.HasValue && !canonicalPayloadDigest.Value.IsEmpty
++                ? canonicalPayloadDigest
++                : null;
+         }
+ 
+         public RoundCheatCommand CheatCommand { get; }
+@@ -344,6 +360,13 @@ namespace Mahjong.TableRuntime
+ 
+         public TablePayloadSha256? PayloadSha256 { get; }
+ 
++        /// <summary>
++        /// Domain-separated MJC1 digest over the exact original wire canonical-payload bytes,
++        /// carried by the trusted host so a durable cheat receipt preserves the same
++        /// Client-visible identity as the immediate receipt. Never reconstructed from protobuf.
++        /// </summary>
++        public PayloadDigest? CanonicalPayloadDigest { get; }
++
+         public bool HasDurableIdentity => ScopeId.HasValue && Api != null && PayloadSha256.HasValue;
+     }
+ 
+diff --git a/dotnet/src/Mahjong.TableService/TableCommandMapper.cs b/dotnet/src/Mahjong.TableService/TableCommandMapper.cs
+index ec26947..b3aa2c7 100644
+--- a/dotnet/src/Mahjong.TableService/TableCommandMapper.cs
++++ b/dotnet/src/Mahjong.TableService/TableCommandMapper.cs
+@@ -285,12 +285,17 @@ namespace Mahjong.TableService
+             var ownerEpoch = new OwnerEpoch(envelope.OwnerEpoch);
+             var controlEpoch = new ControlEpoch(envelope.ControlEpoch);
+             var digest = TablePayloadSha256.Compute(payload.AsSpan());
++            // B1-BLOCKER-03: compute the Client-visible MJC1 identity from the EXACT original
++            // canonical-payload bytes retained above. Never reserialize the typed command and
++            // never trust a client-supplied digest. The raw TablePayloadSha256 above remains
++            // the durable idempotency/conflict key; this value is durable receipt identity.
++            PayloadDigest canonicalDigest = CanonicalPayloadDigest.Compute(payload.AsSpan());
+ 
+             switch (kind)
+             {
+                 case CommandKind.SubmitAction:
+                     return MapSubmitAction(
+-                        identity, requestId, payload, expectedStateVersion, ownerEpoch, digest,
++                        identity, requestId, payload, expectedStateVersion, ownerEpoch, digest, canonicalDigest,
+                         recoveryGeneration, responseEligibilityResolver);
+ 
+                 case CommandKind.SubmitTileMark:
+@@ -302,7 +307,7 @@ namespace Mahjong.TableService
+                 case CommandKind.SubmitBeamSwapChoice:
+                     return MapCheat(
+                         identity, kind, requestId, payload, expectedStateVersion, ownerEpoch, controlEpoch, digest,
+-                        recoveryGeneration, options, authoritativeRoundId, beamSwapSlotResolver);
++                        canonicalDigest, recoveryGeneration, options, authoritativeRoundId, beamSwapSlotResolver);
+ 
+                 case CommandKind.ClaimControl:
+                 case CommandKind.ReleaseControl:
+@@ -343,6 +348,7 @@ namespace Mahjong.TableService
+             StateVersion expectedStateVersion,
+             OwnerEpoch ownerEpoch,
+             TablePayloadSha256 digest,
++            PayloadDigest canonicalDigest,
+             long recoveryGeneration,
+             Func<int, TileId, ulong, TableCommandRouteResponseEligibility?>? responseEligibilityResolver)
+         {
+@@ -437,7 +443,8 @@ namespace Mahjong.TableService
+                 recoveryGeneration: recoveryGeneration,
+                 new RequestScopeId(identity.ScopeId),
+                 "SUBMIT_ACTION",
+-                digest);
++                digest,
++                canonicalDigest);
+             return new TableCommandRoute.BusinessCommand(envelope);
+         }
+ 
+@@ -450,6 +457,7 @@ namespace Mahjong.TableService
+             OwnerEpoch ownerEpoch,
+             ControlEpoch controlEpoch,
+             TablePayloadSha256 digest,
++            PayloadDigest canonicalDigest,
+             long recoveryGeneration,
+             TableServiceOptions options,
+             string? authoritativeRoundId,
+@@ -611,7 +619,8 @@ namespace Mahjong.TableService
+                 recoveryGeneration: recoveryGeneration,
+                 new RequestScopeId(identity.ScopeId),
+                 ApiFor(kind),
+-                digest);
++                digest,
++                canonicalDigest);
+             return new TableCommandRoute.CheatCommand(envelope);
+         }
+ 
+diff --git a/dotnet/src/Mahjong.TableService/TableSessionHandler.cs b/dotnet/src/Mahjong.TableService/TableSessionHandler.cs
+index 14df43c..07edb18 100644
+--- a/dotnet/src/Mahjong.TableService/TableSessionHandler.cs
++++ b/dotnet/src/Mahjong.TableService/TableSessionHandler.cs
+@@ -1782,6 +1782,15 @@ namespace Mahjong.TableService
+                 case ReceiptLookupStatus.Found:
+                     wire.Status = LookupStatus.Found;
+                     wire.Receipt = MapLookupReceipt(lookup.Receipt!);
++                    // B1-BLOCKER-03: the lookup-level canonical digest must identify the
++                    // same original payload as the inner receipt. It is present only when
++                    // the durable producer actually preserved the MJC1 digest; legacy
++                    // NULL rows stay empty rather than being backfilled with a raw hash.
++                    if (lookup.Digest.HasValue && !lookup.Digest.Value.IsEmpty)
++                    {
++                        wire.CanonicalPayloadSha256 = lookup.Digest.Value.ToHex();
++                    }
++
+                     break;
+                 case ReceiptLookupStatus.Unknown:
+                     wire.Status = LookupStatus.Unknown;
+diff --git a/dotnet/tests/Mahjong.TableRuntime.Tests/B1ReceiptDigestPersistenceTests.cs b/dotnet/tests/Mahjong.TableRuntime.Tests/B1ReceiptDigestPersistenceTests.cs
+new file mode 100644
+index 0000000..b0cf835
+--- /dev/null
++++ b/dotnet/tests/Mahjong.TableRuntime.Tests/B1ReceiptDigestPersistenceTests.cs
+@@ -0,0 +1,105 @@
++using System.Text;
++using System.Threading.Tasks;
++using Mahjong.Contracts;
++using Mahjong.Domain;
++using Xunit;
++
++namespace Mahjong.TableRuntime.Tests
++{
++    /// <summary>
++    /// B1-BLOCKER-03 persistence regression: the MJC1 canonical digest carried by the
++    /// trusted host must reach the durable APPLIED/REJECTED receipt and remain readable by
++    /// a fresh actor after cold recovery from the same durable store. The raw
++    /// TablePayloadSha256 is a separate idempotency identity and is not substituted.
++    /// </summary>
++    public sealed class B1ReceiptDigestPersistenceTests
++    {
++        [Fact]
++        public async Task AppliedAndRejectedLookupDigestsSurviveActorRecovery()
++        {
++            await using DurableHarness harness = await DurableHarness.CreateAsync();
++            RoundStateMachine round = harness.InitialRound;
++
++            // REJECTED first: a wrong-seat discard against the still-initial round.
++            int wrongSeat = (round.CurrentSeat + 1) % 4;
++            TileId wrongTile = round.Tiles.TilesInZone(TileZone.Hand, wrongSeat)[0];
++            string rejectedPayload = "b1-rejected-canonical-payload";
++            PayloadDigest rejectedDigest = CanonicalPayloadDigest.Compute(
++                Encoding.UTF8.GetBytes(rejectedPayload));
++            TableCommandEnvelope rejected = harness.Envelope(
++                RoundCommand.Discard(round.RoundId, wrongSeat, wrongTile),
++                0,
++                "b1-rejected",
++                payloadText: rejectedPayload,
++                canonicalPayloadDigest: rejectedDigest);
++            TableOperationResult rejection = await harness.SubmitAsync(rejected);
++            Assert.Equal(TableOperationStatus.Rejected, rejection.Status);
++            Assert.Equal(rejectedDigest, rejection.DurableReceipt!.Receipt.CanonicalPayloadDigest);
++
++            // APPLIED after the rejection: the rejection did not consume a state version.
++            string appliedPayload = "b1-applied-canonical-payload";
++            PayloadDigest appliedDigest = CanonicalPayloadDigest.Compute(
++                Encoding.UTF8.GetBytes(appliedPayload));
++            TableCommandEnvelope applied = harness.Envelope(
++                P31Fixtures.DiscardCurrent(round),
++                0,
++                "b1-applied",
++                payloadText: appliedPayload,
++                canonicalPayloadDigest: appliedDigest);
++            TableOperationResult accepted = await harness.SubmitAsync(applied);
++            Assert.Equal(TableOperationStatus.Accepted, accepted.Status);
++            Assert.Equal(appliedDigest, accepted.DurableReceipt!.Receipt.CanonicalPayloadDigest);
++
++            ReceiptLookupResult appliedLookup = await harness.Actor.QueryReceiptAsync(
++                DurableHarness.Account,
++                harness.Scope.ScopeId,
++                applied.RequestId,
++                TestContext.Current.CancellationToken);
++            Assert.True(appliedLookup.IsDefinitive);
++            Assert.Equal(appliedDigest, appliedLookup.Receipt!.CanonicalPayloadDigest);
++            Assert.Equal(appliedDigest, appliedLookup.Digest);
++
++            ReceiptLookupResult rejectedLookup = await harness.Actor.QueryReceiptAsync(
++                DurableHarness.Account,
++                harness.Scope.ScopeId,
++                rejected.RequestId,
++                TestContext.Current.CancellationToken);
++            Assert.True(rejectedLookup.IsDefinitive);
++            Assert.Equal(ReceiptStatus.Rejected, rejectedLookup.Receipt!.Status);
++            Assert.Equal(rejectedDigest, rejectedLookup.Receipt.CanonicalPayloadDigest);
++            Assert.Equal(rejectedDigest, rejectedLookup.Digest);
++
++            // Cold recovery through a NEW actor instance reading the same durable store.
++            // This is not a process/PostgreSQL restart; it proves the digest is stored, not
++            // held only in the original actor object.
++            await harness.CloseAsync();
++            await using DurableHarness restarted = DurableHarness.Attach(
++                harness,
++                DurableHarness.Owner,
++                1UL);
++            TableRecoveryResult recovery = await restarted.Actor.RecoverFromStoreAsync(
++                TestContext.Current.CancellationToken);
++            Assert.True(recovery.Recovered, recovery.ReasonCode + ": " + recovery.Detail);
++
++            ReceiptLookupResult recoveredApplied = await restarted.Actor.QueryReceiptAsync(
++                DurableHarness.Account,
++                harness.Scope.ScopeId,
++                applied.RequestId,
++                TestContext.Current.CancellationToken);
++            Assert.True(recoveredApplied.IsDefinitive);
++            Assert.Equal(ReceiptStatus.Applied, recoveredApplied.Receipt!.Status);
++            Assert.Equal(appliedDigest, recoveredApplied.Receipt.CanonicalPayloadDigest);
++            Assert.Equal(appliedDigest, recoveredApplied.Digest);
++
++            ReceiptLookupResult recoveredRejected = await restarted.Actor.QueryReceiptAsync(
++                DurableHarness.Account,
++                harness.Scope.ScopeId,
++                rejected.RequestId,
++                TestContext.Current.CancellationToken);
++            Assert.True(recoveredRejected.IsDefinitive);
++            Assert.Equal(ReceiptStatus.Rejected, recoveredRejected.Receipt!.Status);
++            Assert.Equal(rejectedDigest, recoveredRejected.Receipt.CanonicalPayloadDigest);
++            Assert.Equal(rejectedDigest, recoveredRejected.Digest);
++        }
++    }
++}
+diff --git a/dotnet/tests/Mahjong.TableRuntime.Tests/TableDurableTestSupport.cs b/dotnet/tests/Mahjong.TableRuntime.Tests/TableDurableTestSupport.cs
+index 8c05767..c2187da 100644
+--- a/dotnet/tests/Mahjong.TableRuntime.Tests/TableDurableTestSupport.cs
++++ b/dotnet/tests/Mahjong.TableRuntime.Tests/TableDurableTestSupport.cs
+@@ -364,7 +364,8 @@ namespace Mahjong.TableRuntime.Tests
+             ulong ownerEpoch = 1UL,
+             ulong controlEpoch = 0UL,
+             long recoveryGeneration = 0L,
+-            string? decisionId = null)
++            string? decisionId = null,
++            PayloadDigest? canonicalPayloadDigest = null)
+         {
+             TableScopeRecord actual = scope ?? Scope;
+             byte[] bytes = Encoding.UTF8.GetBytes(
+@@ -379,7 +380,8 @@ namespace Mahjong.TableRuntime.Tests
+                 recoveryGeneration,
+                 actual.ScopeId,
+                 api,
+-                TablePayloadSha256.Compute(bytes));
++                TablePayloadSha256.Compute(bytes),
++                canonicalPayloadDigest);
+         }
+ 
+         public ValueTask<TableOperationResult> SubmitAsync(TableCommandEnvelope command)
+diff --git a/dotnet/tests/Mahjong.TableService.Tests/B1ReceiptDigestTests.cs b/dotnet/tests/Mahjong.TableService.Tests/B1ReceiptDigestTests.cs
+new file mode 100644
+index 0000000..07ad1a2
+--- /dev/null
++++ b/dotnet/tests/Mahjong.TableService.Tests/B1ReceiptDigestTests.cs
+@@ -0,0 +1,272 @@
++using System;
++using System.Threading.Tasks;
++using Mahjong.Contracts;
++using Mahjong.Contracts.Wire;
++using Mahjong.Domain;
++using Xunit;
++
++namespace Mahjong.TableService.Tests
++{
++    /// <summary>
++    /// B1-BLOCKER-03 regression matrix: a durable lookup for an APPLIED or REJECTED
++    /// receipt must return the original MJC1 canonical-payload digest (the same one the
++    /// immediate receipt carried), both on the inner receipt and on the lookup-level
++    /// field. The raw TablePayloadSha256 is a different domain and must never be
++    /// substituted. Same-key conflicts, scope isolation and UNKNOWN/NOT_FOUND semantics
++    /// stay unchanged.
++    /// </summary>
++    public sealed class B1ReceiptDigestTests
++    {
++        [Fact]
++        public async Task AppliedLookup_PreservesOriginalDigest_AndSameKeyConflictKeepsIt()
++        {
++            // A deterministic legal discard from the established claim-free fixture; this
++            // produces a real APPLIED commit and therefore a durable accepted receipt.
++            await using TableServiceTestHost host = await TableServiceTestHost.StartAsync(
++                o => { o.RoomTickIntervalMs = 50; },
++                roundSource: new FixedRoundSource(roomId =>
++                {
++                    var fixture = new N1aTable { Dealer = 0 };
++                    fixture.Hand(0, new[]
++                    {
++                        new TileId(108), new TileId(109), new TileId(110), new TileId(111),
++                        new TileId(112), new TileId(113), new TileId(114), new TileId(115),
++                        new TileId(116), new TileId(117), new TileId(118), new TileId(119),
++                        new TileId(120)
++                    });
++                    fixture.Drawn(0, new TileId(127));
++                    return fixture.Build(roomId + "-r1");
++                }));
++
++            await using TableTestClient client =
++                await host.ConnectPlayerAsync("room-b1-applied", "acct-b1-applied", 0);
++            Welcome welcome = client.Welcome!;
++            PlayerSnapshot snapshot = await ReadPlayerSnapshotAsync(
++                client,
++                value => value.PrivateView?.Decision != null);
++            Contracts.Wire.DecisionView decision = snapshot.PrivateView!.Decision!;
++
++            string requestId = TableWire.RandomId("req-b1-applied");
++            byte[] payload = TableWire.SubmitActionPayload(
++                snapshot.RoundId,
++                decision.DecisionId,
++                decision.ControlEpoch,
++                (uint)ProtocolActionType.DiscardTile,
++                new[] { decision.Actions[0].TileIds[0] });
++            string expectedDigest = CanonicalPayloadDigest.Compute(payload).ToHex();
++
++            await client.SendAsync(TableWire.Command(
++                welcome,
++                requestId,
++                Contracts.CommandKind.SubmitAction,
++                payload,
++                expectedStateVersion: snapshot.StateVersion));
++
++            Envelope immediate = await client.ReadUntilAsync(
++                envelope => envelope.MessageType == MessageType.Receipt &&
++                            envelope.RequestId == requestId,
++                TimeSpan.FromSeconds(20));
++            Assert.Equal(Contracts.Wire.ReceiptStatus.Applied, immediate.Receipt.Status);
++            Assert.Equal(expectedDigest, immediate.Receipt.CanonicalPayloadSha256);
++
++            Envelope lookup = await QueryAsync(client, welcome, welcome.Scope.ScopeId, requestId);
++            Assert.True(lookup.ReceiptLookup.Receipt.Replayed);
++            Assert.Equal(Contracts.Wire.ReceiptStatus.Applied, lookup.ReceiptLookup.Receipt.Status);
++            Assert.Equal(expectedDigest, lookup.ReceiptLookup.Receipt.CanonicalPayloadSha256);
++            Assert.Equal(expectedDigest, lookup.ReceiptLookup.CanonicalPayloadSha256);
++
++            // Same key, different original bytes is still a conflict and must not rewrite
++            // the original receipt or its canonical digest.
++            byte[] differentPayload = TableWire.SubmitActionPayload(
++                snapshot.RoundId,
++                decision.DecisionId,
++                decision.ControlEpoch,
++                (uint)ProtocolActionType.Pass);
++            await client.SendAsync(TableWire.Command(
++                welcome,
++                requestId,
++                Contracts.CommandKind.SubmitAction,
++                differentPayload,
++                expectedStateVersion: snapshot.StateVersion));
++
++            Envelope conflict = await client.ReadUntilAsync(
++                envelope => envelope.MessageType == MessageType.Error,
++                TimeSpan.FromSeconds(20));
++            Assert.Equal(ProtocolErrorCode.RequestIdConflict, conflict.Error.Code);
++            Assert.Equal("request_id", conflict.Error.FieldPath);
++
++            Envelope afterConflict = await QueryAsync(client, welcome, welcome.Scope.ScopeId, requestId);
++            Assert.Equal(Contracts.Wire.ReceiptStatus.Applied, afterConflict.ReceiptLookup.Receipt.Status);
++            Assert.Equal(expectedDigest, afterConflict.ReceiptLookup.Receipt.CanonicalPayloadSha256);
++            Assert.Equal(expectedDigest, afterConflict.ReceiptLookup.CanonicalPayloadSha256);
++        }
++
++        [Fact]
++        public async Task RejectedLookup_PreservesOriginalDigest_AndUnknownResultStaysDigestFree()
++        {
++            await using TableServiceTestHost host = await TableServiceTestHost.StartAsync();
++            await using TableTestClient client =
++                await host.ConnectPlayerAsync("room-b1-rejected", "acct-b1-rejected", 0);
++            Welcome welcome = client.Welcome!;
++
++            string requestId = TableWire.RandomId("req-b1-rejected");
++            // A shape-valid command whose round is not the authoritative round is rejected
++            // before Domain evaluation and persisted as a definitive REJECTED receipt.
++            byte[] payload = TableWire.SubmitActionPayload(
++                "round-b1-does-not-exist",
++                "decision-b1-does-not-exist",
++                0,
++                (uint)ProtocolActionType.DrawTile);
++            string expectedDigest = CanonicalPayloadDigest.Compute(payload).ToHex();
++
++            await client.SendAsync(TableWire.Command(
++                welcome,
++                requestId,
++                Contracts.CommandKind.SubmitAction,
++                payload));
++
++            Envelope immediate = await client.ReadUntilAsync(
++                envelope => envelope.MessageType == MessageType.Receipt &&
++                            envelope.RequestId == requestId,
++                TimeSpan.FromSeconds(20));
++            Assert.Equal(Contracts.Wire.ReceiptStatus.Rejected, immediate.Receipt.Status);
++            Assert.Equal("ROUND_MISMATCH", immediate.Receipt.ReasonCode);
++            Assert.Equal(expectedDigest, immediate.Receipt.CanonicalPayloadSha256);
++
++            Envelope lookup = await QueryAsync(client, welcome, welcome.Scope.ScopeId, requestId);
++            Assert.True(lookup.ReceiptLookup.Receipt.Replayed);
++            Assert.Equal(Contracts.Wire.ReceiptStatus.Rejected, lookup.ReceiptLookup.Receipt.Status);
++            Assert.Equal("ROUND_MISMATCH", lookup.ReceiptLookup.Receipt.ReasonCode);
++            Assert.Equal(expectedDigest, lookup.ReceiptLookup.Receipt.CanonicalPayloadSha256);
++            Assert.Equal(expectedDigest, lookup.ReceiptLookup.CanonicalPayloadSha256);
++
++            // Same key, different bytes remains a conflict; the original REJECTED receipt
++            // and its identity are preserved.
++            byte[] differentPayload = TableWire.SubmitActionPayload(
++                "round-b1-does-not-exist",
++                "decision-b1-does-not-exist",
++                0,
++                (uint)ProtocolActionType.Pass);
++            await client.SendAsync(TableWire.Command(
++                welcome,
++                requestId,
++                Contracts.CommandKind.SubmitAction,
++                differentPayload));
++
++            Envelope conflict = await client.ReadUntilAsync(
++                envelope => envelope.MessageType == MessageType.Error,
++                TimeSpan.FromSeconds(20));
++            Assert.Equal(ProtocolErrorCode.RequestIdConflict, conflict.Error.Code);
++
++            Envelope afterConflict = await QueryAsync(client, welcome, welcome.Scope.ScopeId, requestId);
++            Assert.Equal(Contracts.Wire.ReceiptStatus.Rejected, afterConflict.ReceiptLookup.Receipt.Status);
++            Assert.Equal(expectedDigest, afterConflict.ReceiptLookup.Receipt.CanonicalPayloadSha256);
++
++            // UNKNOWN/NOT_FOUND never prove non-commit and never carry an invented digest.
++            Envelope unknown = await QueryAsync(
++                client,
++                welcome,
++                welcome.Scope.ScopeId,
++                TableWire.RandomId("req-b1-missing"));
++            Assert.Equal(LookupStatus.NotFound, unknown.ReceiptLookup.Status);
++            Assert.Null(unknown.ReceiptLookup.Receipt);
++            Assert.Equal(string.Empty, unknown.ReceiptLookup.CanonicalPayloadSha256);
++        }
++
++        [Fact]
++        public async Task LookupScopeIsolation_AndSameAccountHistoricalScopePreservesDigest()
++        {
++            await using TableServiceTestHost host = await TableServiceTestHost.StartAsync();
++            string oldScope;
++            string requestId;
++            string expectedDigest;
++            await using (TableTestClient owner =
++                await host.ConnectPlayerAsync("room-b1-scope", "acct-b1-scope-a", 0))
++            {
++                oldScope = owner.Welcome!.Scope.ScopeId;
++                requestId = TableWire.RandomId("req-b1-scope");
++                byte[] payload = TableWire.SubmitActionPayload(
++                    "round-b1-scope-missing",
++                    "decision-b1-scope-missing",
++                    0,
++                    (uint)ProtocolActionType.DrawTile);
++                expectedDigest = CanonicalPayloadDigest.Compute(payload).ToHex();
++                await owner.SendAsync(TableWire.Command(
++                    owner.Welcome,
++                    requestId,
++                    Contracts.CommandKind.SubmitAction,
++                    payload));
++                Envelope receipt = await owner.ReadUntilAsync(
++                    envelope => envelope.MessageType == MessageType.Receipt &&
++                                envelope.RequestId == requestId,
++                    TimeSpan.FromSeconds(20));
++                Assert.Equal(Contracts.Wire.ReceiptStatus.Rejected, receipt.Receipt.Status);
++                Assert.Equal(expectedDigest, receipt.Receipt.CanonicalPayloadSha256);
++            }
++
++            // A different account cannot read the historical scope.
++            await using (TableTestClient other =
++                await host.ConnectPlayerAsync("room-b1-scope", "acct-b1-scope-b", 1))
++            {
++                await other.SendAsync(TableWire.ReceiptQuery(
++                    other.Welcome!, oldScope, requestId));
++                Envelope foreign = await other.ReadUntilAsync(
++                    envelope => envelope.MessageType == MessageType.Error,
++                    TimeSpan.FromSeconds(20));
++                Assert.Equal(ProtocolErrorCode.MalformedMessage, foreign.Error.Code);
++                Assert.Equal("SCOPE_MISMATCH", foreign.Error.DetailCode);
++
++                // The other account's OWN scope cannot see the request id by key isolation.
++                Envelope ownScope = await QueryAsync(
++                    other,
++                    other.Welcome!,
++                    other.Welcome!.Scope.ScopeId,
++                    requestId);
++                Assert.Equal(LookupStatus.NotFound, ownScope.ReceiptLookup.Status);
++                Assert.Null(ownScope.ReceiptLookup.Receipt);
++                Assert.Equal(string.Empty, ownScope.ReceiptLookup.CanonicalPayloadSha256);
++            }
++
++            // The same account/room/role reconnecting on a fresh scope may reconcile the
++            // original historical scope, and still receives the original digest.
++            await using TableTestClient reopened =
++                await host.ConnectPlayerAsync("room-b1-scope", "acct-b1-scope-a", 0);
++            Envelope historical = await QueryAsync(
++                reopened,
++                reopened.Welcome!,
++                oldScope,
++                requestId);
++            Assert.Equal(LookupStatus.Found, historical.ReceiptLookup.Status);
++            Assert.Equal(Contracts.Wire.ReceiptStatus.Rejected, historical.ReceiptLookup.Receipt.Status);
++            Assert.Equal(expectedDigest, historical.ReceiptLookup.Receipt.CanonicalPayloadSha256);
++            Assert.Equal(expectedDigest, historical.ReceiptLookup.CanonicalPayloadSha256);
++        }
++
++        private static async Task<Envelope> QueryAsync(
++            TableTestClient client,
++            Welcome welcome,
++            string scopeId,
++            string requestId)
++        {
++            Envelope query = TableWire.ReceiptQuery(welcome, scopeId, requestId);
++            query.CorrelationId = "corr-b1-" + requestId;
++            await client.SendAsync(query);
++            return await client.ReadUntilAsync(
++                envelope => envelope.MessageType == MessageType.ReceiptLookup &&
++                            envelope.RequestId == requestId,
++                TimeSpan.FromSeconds(20));
++        }
++
++        private static async Task<PlayerSnapshot> ReadPlayerSnapshotAsync(
++            TableTestClient client,
++            Func<PlayerSnapshot, bool> predicate)
++        {
++            Envelope envelope = await client.ReadUntilAsync(
++                item => item.MessageType == MessageType.PlayerUpdate &&
++                        item.PlayerUpdate.Snapshot.PrivateView != null &&
++                        predicate(item.PlayerUpdate.Snapshot),
++                TimeSpan.FromSeconds(20));
++            return envelope.PlayerUpdate.Snapshot;
++        }
++    }
++}
+diff --git a/dotnet/tests/Mahjong.TableService.Tests/SessionFlowTests.cs b/dotnet/tests/Mahjong.TableService.Tests/SessionFlowTests.cs
+index 8832b3c..3754c8b 100644
+--- a/dotnet/tests/Mahjong.TableService.Tests/SessionFlowTests.cs
++++ b/dotnet/tests/Mahjong.TableService.Tests/SessionFlowTests.cs
+@@ -146,14 +146,11 @@ namespace Mahjong.TableService.Tests
+                 TimeSpan.FromSeconds(15));
+             Assert.Equal("request_id", conflict.Error.FieldPath);
+ 
+-            // Durable lookup within the session scope. The frozen actor's QueryReceiptAsync
+-            // converts the stored TableDurableReceipt (whose PayloadSha256 is mandatory) into
+-            // a wire receipt via Receipt.AsReplay() WITHOUT forwarding the digest and without
+-            // ever passing one into Receipt.Applied/Rejected — so CanonicalPayloadSha256 is
+-            // always empty on actor-backed lookups (frozen-contract boundary, recorded in the
+-            // delivery report). Payload binding is verifiable on the immediate receipt above;
+-            // what is contractual on the lookup path: the same request id resolves as Found,
+-            // marked as a replay, with the authoritative status, reason and state version.
++            // B1-BLOCKER-03: the durable lookup must preserve the SAME original MJC1 identity
++            // as the immediate receipt, both on the inner receipt and on the lookup-level
++            // field. It must never substitute the actor's raw TablePayloadSha256 (a different
++            // domain). The same request id still resolves as Found, marked as a replay, with
++            // the authoritative status, reason and state version.
+             Envelope query = TableWire.ReceiptQuery(
+                 welcome, welcome.Scope.ScopeId, requestId);
+             query.CorrelationId = "corr-lookup";
+@@ -167,13 +164,8 @@ namespace Mahjong.TableService.Tests
+             // A lookup may target a HISTORICAL scope: never fabricate this connection's
+             // current scope onto the answer as if it owned the queried old scope.
+             Assert.Null(lookup.Scope);
+-            // The durable receipt stores the actor's raw TablePayloadSha256, not the Client's
+-            // MJC1 idempotency digest. Forwarding that raw value would make the Client resolve
+-            // every lookup as a Conflict, so the lookup carries no digest and the Client binds
+-            // the answer to its own retained expected digest (the frozen history contract).
+-            Assert.True(
+-                string.IsNullOrEmpty(lookup.ReceiptLookup.Receipt.CanonicalPayloadSha256),
+-                "a lookup must not forward the actor's raw digest under the Client digest field");
++            Assert.Equal(body.CanonicalPayloadSha256, lookup.ReceiptLookup.Receipt.CanonicalPayloadSha256);
++            Assert.Equal(body.CanonicalPayloadSha256, lookup.ReceiptLookup.CanonicalPayloadSha256);
+             Assert.True(lookup.ReceiptLookup.Receipt.Replayed, "a durable lookup answers with the replayed receipt");
+             Assert.Equal(body.Status, lookup.ReceiptLookup.Receipt.Status);
+             Assert.Equal(body.ReasonCode, lookup.ReceiptLookup.Receipt.ReasonCode);

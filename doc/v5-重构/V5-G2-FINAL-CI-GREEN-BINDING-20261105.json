@@ -1,0 +1,672 @@
+{
+    "schema":  "v5-g2-final-ci-green-binding-v1",
+    "taskId":  "G2-FINAL-CI-GREEN-20261105",
+    "status":  "LOCAL_INDEPENDENT_ACCEPTED_REMOTE_CI_PENDING",
+    "worktree":  "E:/majiang-review/g2-final-ci-green-luna6-20261105",
+    "branch":  "wt/v5-g2-final-ci-green-luna6-20261105",
+    "dispatchHead":  "8b084f0c4a6b60f17f32fe79ce8f59af0698a583",
+    "acceptedUpstream":  "4a855c3c49e65ec97708784d84a784df9f11c199",
+    "taskCard":  {
+                     "path":  "doc/v5-重构/V5-G2-FINAL-CI-GREEN-TASK-20261105.md",
+                     "sha256":  "3266B1BC9231494E924286E95E3E0D4118CE5AD07FE21DDF3EE8DDE05ECE1F53"
+                 },
+    "candidateCommit":  "6850fcc1913301c9d58d473a447dfc3c5dbb7856",
+    "codeScope":  [
+                      {
+                          "path":  "dotnet/scripts/pg-lobby-verify/pg-common.ps1",
+                          "sha256":  "F3E0C0657C69911A87F0875D9036B1FF161E040D7AA1813DB53550CCEA2E13FC",
+                          "gitBlob":  "c907246e30b327e68173ff67037e5098c9388687"
+                      },
+                      {
+                          "path":  "dotnet/scripts/pg-lobby-verify/start-postgres.ps1",
+                          "sha256":  "A3870DBC90CA0CE67F79E113F63BD5FFA36F72D79B518B188D7CA0B907E1363F",
+                          "gitBlob":  "fb5f3da0b61a097115d0d26de9f6f57cd8f9543d"
+                      },
+                      {
+                          "path":  "dotnet/src/Mahjong.LocalHost/LocalTableDriver.cs",
+                          "sha256":  "AD4FBD01727E3AFEE2EE031C0D59F1CD49FF01CB7D698917CAD27B548AB593DD",
+                          "gitBlob":  "c080dee8da382b102b1f49b4f8d7e0aa1f3f2fd5"
+                      },
+                      {
+                          "path":  "dotnet/tests/Mahjong.LocalHost.Tests/C04RoomTicketTests.cs",
+                          "sha256":  "E8480CC8286B83DE62E26822EB2C50DC386B41571612FF02FE6C16587A1C2BA7",
+                          "gitBlob":  "626aae855d9d4bc506634eb2c3c41adb57fd3e46"
+                      },
+                      {
+                          "path":  "dotnet/tests/Mahjong.LocalHost.Tests/LocalControlTests.cs",
+                          "sha256":  "F23E76991217BCA3E216A8940C32610934EF1D041DFC0D233132ACB9E26D762D",
+                          "gitBlob":  "ee270d578de86622157edf8212e3c3165146c323"
+                      },
+                      {
+                          "path":  "tools/ci/verify-v5-table-postgres.ps1",
+                          "sha256":  "FAEBBB42D3C7590196222F2023886E700314F0E9474FD27EB991E0DCCEFCC0EC",
+                          "gitBlob":  "e284d688ec68803dd4e1375405eeaf7dc24db52a"
+                      },
+                      {
+                          "path":  "tools/tests/VerifyV5PostgresCi.Tests.ps1",
+                          "sha256":  "C484BA462651CCCDD8DDD962710805A24C845B37FA3CF1A0E0A3F13FCB1DC5BD",
+                          "gitBlob":  "886b0bb4034ec1f609f11fbfe9614a546680e2bf"
+                      },
+                      {
+                          "path":  "tools/tests/VerifyV5TablePostgresStartup.Tests.ps1",
+                          "sha256":  "4D5D30EEE9B9CA50A2C9C6082AD2A93D3D1B85F1B985B0E6701D5EFC0DC8AB5F",
+                          "gitBlob":  "ab139cf961e9cb7d6215aa5543e6f9590fcaf890"
+                      }
+                  ],
+    "evidenceRoot":  "build/b1118ef0-4f4b-4fa8-aea6-c59523dc1368",
+    "runId":  "c19a633f17c74f4d9ab376bdf0a48a23",
+    "environment":  {
+                        "os":  "Windows 10.0.19045",
+                        "powershell":  "5.1.19041.3803",
+                        "dotnetSdk":  "8.0.426",
+                        "dotnetRuntime":  "8.0.32",
+                        "postgres":  "16.10",
+                        "machineConfigChanged":  false
+                    },
+    "postgresPackage":  {
+                            "path":  "E:/majiang-review/g2-final-ci-green-luna6-20261105/artifacts/g2-final-ci-green-luna6-20261105-table-retry2/download/postgresql-binaries.zip",
+                            "bytes":  322530154,
+                            "sha256":  "EBB3B6AF4FA69DEA9951B66855BC4D42DC04E56CCB9AA7024CE3C58BD89D6B0C",
+                            "runtimeClosureExpected":  1631,
+                            "runtimeClosurePresent":  1631,
+                            "runtimeClosureMissing":  0,
+                            "runtimeClosureSizeMismatch":  0,
+                            "closureSelftest":  {
+                                                    "checks":  153,
+                                                    "passed":  153,
+                                                    "failed":  0,
+                                                    "skipped":  0,
+                                                    "notRun":  0,
+                                                    "path":  "build/ci-pg-startup-selftest/20261105-033556-dcc74ab4/selftest-summary.json"
+                                                }
+                        },
+    "knownFindings":  [
+                          {
+                              "id":  "G2-VALIDATION-02",
+                              "severity":  "MAJOR",
+                              "status":  "FIXED_PENDING_REVIEW",
+                              "location":  "dotnet/tests/Mahjong.LocalHost.Tests/LocalControlTests.cs:575-690",
+                              "originalExpected":  "Ready",
+                              "originalActual":  "Synchronizing",
+                              "originalXmlSha256":  "0B0DFB7806A4583E0EF9FE664A8901A0D9EB17C1057FD8FD9515F15FB7CC7757",
+                              "repair":  "Bind reconciliation baseline to live session/room/scope/epochs/seat/role; retain original request scope and unique side effect; reject four invalid SYNCs plus stale incremental.",
+                              "fixedTarget":  {
+                                                  "invocations":  5,
+                                                  "total":  5,
+                                                  "passed":  5,
+                                                  "failed":  0,
+                                                  "xmls":  [
+                                                               {
+                                                                   "case":  "LocalControl",
+                                                                   "invocation":  "1",
+                                                                   "total":  1,
+                                                                   "passed":  1,
+                                                                   "failed":  0,
+                                                                   "skipped":  0,
+                                                                   "xml":  "build\\b1118ef0-4f4b-4fa8-aea6-c59523dc1368\\targeted-03\\LocalControl-1.xml",
+                                                                   "xmlSha256":  "2F1C8F0360E77BD3F2A4FB2CF6CF5624E2788696CA19C5C72DB6C2E52E5C0A3A"
+                                                               },
+                                                               {
+                                                                   "case":  "LocalControl",
+                                                                   "invocation":  "2",
+                                                                   "total":  1,
+                                                                   "passed":  1,
+                                                                   "failed":  0,
+                                                                   "skipped":  0,
+                                                                   "xml":  "build\\b1118ef0-4f4b-4fa8-aea6-c59523dc1368\\targeted-03\\LocalControl-2.xml",
+                                                                   "xmlSha256":  "DD193CA9DCFAC2B5E72F7BF2C7BE4C3D377FD12CF01239FFD21DB2E663217BBF"
+                                                               },
+                                                               {
+                                                                   "case":  "LocalControl",
+                                                                   "invocation":  "3",
+                                                                   "total":  1,
+                                                                   "passed":  1,
+                                                                   "failed":  0,
+                                                                   "skipped":  0,
+                                                                   "xml":  "build\\b1118ef0-4f4b-4fa8-aea6-c59523dc1368\\targeted-03\\LocalControl-3.xml",
+                                                                   "xmlSha256":  "0C309A65359CF9C02AF18240F72EEA597945B918E13855DAEAA739439FA41AA7"
+                                                               },
+                                                               {
+                                                                   "case":  "LocalControl",
+                                                                   "invocation":  "4",
+                                                                   "total":  1,
+                                                                   "passed":  1,
+                                                                   "failed":  0,
+                                                                   "skipped":  0,
+                                                                   "xml":  "build\\b1118ef0-4f4b-4fa8-aea6-c59523dc1368\\targeted-03\\LocalControl-4.xml",
+                                                                   "xmlSha256":  "50AADD17E46AB6D0ACBDE6ACA3882E3CB698860B9D2C306C773F91A27B8F69B4"
+                                                               },
+                                                               {
+                                                                   "case":  "LocalControl",
+                                                                   "invocation":  "5",
+                                                                   "total":  1,
+                                                                   "passed":  1,
+                                                                   "failed":  0,
+                                                                   "skipped":  0,
+                                                                   "xml":  "build\\b1118ef0-4f4b-4fa8-aea6-c59523dc1368\\targeted-03\\LocalControl-5.xml",
+                                                                   "xmlSha256":  "F30F56F37842F27986B61B2DF77DB5301FF3131D10378A94A0CF1FEFA9EBBC1C"
+                                                               }
+                                                           ]
+                                              }
+                          },
+                          {
+                              "id":  "G2-VALIDATION-01",
+                              "severity":  "MAJOR",
+                              "status":  "FIXED_AND_REAL_PG_PASS_PENDING_REVIEW",
+                              "location":  "dotnet/scripts/pg-lobby-verify/pg-common.ps1,start-postgres.ps1",
+                              "originalLobby":  {
+                                                    "total":  89,
+                                                    "passed":  77,
+                                                    "failed":  12,
+                                                    "xmlSha256":  "F8B66D240299BEFCD2A0AC7B7F81A8BBF04DDB09F9F442CEFDD3306E51242EC6",
+                                                    "missing":  [
+                                                                    "psql.exe",
+                                                                    "pg_ctl.exe",
+                                                                    "pgsql/share/timezone",
+                                                                    "pgsql/share/timezonesets"
+                                                                ]
+                                                },
+                              "repair":  "Fail closed before start unless pinned PostgreSQL runtime closure is complete; test missing executable/resources and complete package.",
+                              "finalLobby":  {
+                                                 "total":  89,
+                                                 "passed":  89,
+                                                 "failed":  0,
+                                                 "skipped":  0,
+                                                 "errors":  0,
+                                                 "xmlSha256":  "71DE1C4E016748B60051953E45D1C12DB54848DF954FBB0813069CEEB33AD005"
+                                             },
+                              "finalUnifiedWrapper":  {
+                                                          "verifierRan":  true,
+                                                          "verifierExit":  0,
+                                                          "failedStages":  [
+
+                                                                           ],
+                                                          "rootDeleted":  true,
+                                                          "envRestored":  true
+                                                      }
+                          },
+                          {
+                              "id":  "G2-REVIEW-01",
+                              "severity":  "MAJOR",
+                              "previousStatus":  "OPEN_SCOPE_GAP",
+                              "status":  "IMPLEMENTED_PENDING_INDEPENDENT_REVIEW",
+                              "location":  "dotnet/src/Mahjong.LocalHost/LocalTableDriver.cs; dotnet/tests/Mahjong.LocalHost.Tests/C04RoomTicketTests.cs",
+                              "repair":  "Internal driver iteration completion barrier; C04 observes real driver deadline and unbound-human gate, preserving 5000ms first recovery grace only once when source RecoveryGraceApplied=false.",
+                              "fixedTarget":  {
+                                                  "invocations":  5,
+                                                  "total":  5,
+                                                  "passed":  5,
+                                                  "failed":  0,
+                                                  "xmls":  [
+                                                               {
+                                                                   "case":  "RecoveredDriver",
+                                                                   "invocation":  "1",
+                                                                   "total":  1,
+                                                                   "passed":  1,
+                                                                   "failed":  0,
+                                                                   "skipped":  0,
+                                                                   "xml":  "build\\b1118ef0-4f4b-4fa8-aea6-c59523dc1368\\targeted-03\\RecoveredDriver-1.xml",
+                                                                   "xmlSha256":  "A0CF44C6DF8FEE2BC9875023D8D38634441E741380FF04A1653B81E0DBE2D2EE"
+                                                               },
+                                                               {
+                                                                   "case":  "RecoveredDriver",
+                                                                   "invocation":  "2",
+                                                                   "total":  1,
+                                                                   "passed":  1,
+                                                                   "failed":  0,
+                                                                   "skipped":  0,
+                                                                   "xml":  "build\\b1118ef0-4f4b-4fa8-aea6-c59523dc1368\\targeted-03\\RecoveredDriver-2.xml",
+                                                                   "xmlSha256":  "0BDB761CD7045D94A67BA2D417F4809D1D262B88A5DCBC93827DD55FC2A59E16"
+                                                               },
+                                                               {
+                                                                   "case":  "RecoveredDriver",
+                                                                   "invocation":  "3",
+                                                                   "total":  1,
+                                                                   "passed":  1,
+                                                                   "failed":  0,
+                                                                   "skipped":  0,
+                                                                   "xml":  "build\\b1118ef0-4f4b-4fa8-aea6-c59523dc1368\\targeted-03\\RecoveredDriver-3.xml",
+                                                                   "xmlSha256":  "8DA697A3139727709CEEC3B0BCC2B6721BF8AD7CBD66D331E7F770EED7EC733A"
+                                                               },
+                                                               {
+                                                                   "case":  "RecoveredDriver",
+                                                                   "invocation":  "4",
+                                                                   "total":  1,
+                                                                   "passed":  1,
+                                                                   "failed":  0,
+                                                                   "skipped":  0,
+                                                                   "xml":  "build\\b1118ef0-4f4b-4fa8-aea6-c59523dc1368\\targeted-03\\RecoveredDriver-4.xml",
+                                                                   "xmlSha256":  "47159F02127C6FB0684BE569E4259250D626D723A1EEAE8C26AE0A40CF30C68B"
+                                                               },
+                                                               {
+                                                                   "case":  "RecoveredDriver",
+                                                                   "invocation":  "5",
+                                                                   "total":  1,
+                                                                   "passed":  1,
+                                                                   "failed":  0,
+                                                                   "skipped":  0,
+                                                                   "xml":  "build\\b1118ef0-4f4b-4fa8-aea6-c59523dc1368\\targeted-03\\RecoveredDriver-5.xml",
+                                                                   "xmlSha256":  "E9362FFEF4C21D1433E5CB55DC5D3957A0EC34B13E8BC2317C408BB0FE8B1DEE"
+                                                               }
+                                                           ]
+                                              }
+                          }
+                      ],
+    "componentSuites":  [
+                            {
+                                "suite":  "Client",
+                                "total":  182,
+                                "passed":  182,
+                                "failed":  0,
+                                "skipped":  0,
+                                "nativeExit":  0,
+                                "xml":  "build\\b1118ef0-4f4b-4fa8-aea6-c59523dc1368\\component-full\\Client.xml",
+                                "xmlSha256":  "A5C5611C8C99C9322F48A03B4FD54C930FED541CE9F888B368C5285476203171"
+                            },
+                            {
+                                "suite":  "LocalHost",
+                                "total":  184,
+                                "passed":  184,
+                                "failed":  0,
+                                "skipped":  0,
+                                "nativeExit":  0,
+                                "xml":  "build\\b1118ef0-4f4b-4fa8-aea6-c59523dc1368\\component-full\\LocalHost.xml",
+                                "xmlSha256":  "3662C66AD044E50D9BC28AB7D6A22CD46F66542C0FF56EC0847176BA171CC67A"
+                            },
+                            {
+                                "suite":  "Runtime",
+                                "total":  483,
+                                "passed":  483,
+                                "failed":  0,
+                                "skipped":  0,
+                                "nativeExit":  0,
+                                "xml":  "build\\b1118ef0-4f4b-4fa8-aea6-c59523dc1368\\component-full\\Runtime.xml",
+                                "xmlSha256":  "ABD4AD3C9BF0E03C8B574CE068400F51ED074943567215B606553982A1B5C9A5"
+                            }
+                        ],
+    "tablePostgres":  {
+                          "status":  "PASS",
+                          "nativeExitFromWrapper":  0,
+                          "summarySha256":  "FB2552BDD03EF8D395BBA84C2B5413A9483DF97E3D5D7115007A7E641F61865A",
+                          "fullTests":  {
+                                            "total":  42,
+                                            "passed":  42,
+                                            "failed":  0,
+                                            "skipped":  0,
+                                            "notRun":  0,
+                                            "xmlSha256":  "046F153A66961597105036BFAD764160946E7E2A0FFE862AD65912BB140126E9"
+                                        },
+                          "targetedTests":  {
+                                                "total":  13,
+                                                "passed":  13,
+                                                "failed":  0,
+                                                "skipped":  0,
+                                                "notRun":  0,
+                                                "xmlSha256":  "8B719F78E2DCCB94BAFD4960018564F61CE03913D4817D21FE8EF52CD56D00DD"
+                                            },
+                          "stages":  [
+                                         {
+                                             "stage":  "port-preflight",
+                                             "status":  "PASS",
+                                             "exitCode":  0,
+                                             "killed":  null,
+                                             "detail":  "mode=explicit port=127.0.0.1:55592 candidateIndex=0 candidates=[55592=Bindable]"
+                                         },
+                                         {
+                                             "stage":  "pg-start",
+                                             "status":  "PASS",
+                                             "exitCode":  0,
+                                             "killed":  null,
+                                             "detail":  "pg_ctl native exit=0; server log=E:\\majiang-review\\g2-final-ci-green-luna6-20261105\\artifacts\\g2-final-ci-green-luna6-20261105-c19a633f17c74f4d9ab376bdf0a48a23\\table-root\\logs\\postgres.log"
+                                         },
+                                         {
+                                             "stage":  "cluster",
+                                             "status":  "PASS",
+                                             "exitCode":  0,
+                                             "killed":  null,
+                                             "detail":  "server=16.10 data_directory=E:/majiang-review/g2-final-ci-green-luna6-20261105/artifacts/g2-final-ci-green-luna6-20261105-c19a633f17c74f4d9ab376bdf0a48a23/table-root/data port=55592 database=mahjong_p52_test markerSha256=30F4EAC2BF028AA8C6789787C8238902F6FDDA051A215B18BB39D0E996C657B6"
+                                         },
+                                         {
+                                             "stage":  "xml-gating-selfcheck",
+                                             "status":  "PASS",
+                                             "exitCode":  0,
+                                             "killed":  null,
+                                             "detail":  "negative XML cases=7"
+                                         },
+                                         {
+                                             "stage":  "fresh-build",
+                                             "status":  "PASS",
+                                             "exitCode":  0,
+                                             "killed":  null,
+                                             "detail":  "tests and crash worker built with 8.0.426"
+                                         },
+                                         {
+                                             "stage":  "tests",
+                                             "status":  "PASS",
+                                             "exitCode":  0,
+                                             "killed":  null,
+                                             "detail":  "dll=E:\\majiang-review\\g2-final-ci-green-luna6-20261105\\dotnet\\tests\\Mahjong.Infrastructure.Tests\\bin\\Release\\net8.0\\Mahjong.Infrastructure.Tests.dll sha256=861A058E295FB5490EF78266CA0B31CEF885AD2EF458C393875FF1A16783CA65 total=42 passed=42 failed=0 skipped=0 notRun=0 nodes=42 collections=1"
+                                         },
+                                         {
+                                             "stage":  "tests-targeted",
+                                             "status":  "PASS",
+                                             "exitCode":  0,
+                                             "killed":  null,
+                                             "detail":  "class=PostgresTableStoreTests total=13 passed=13 failed=0 skipped=0 nodes=13 collections=1"
+                                         },
+                                         {
+                                             "stage":  "crash-writer",
+                                             "status":  "PASS",
+                                             "exitCode":  -1,
+                                             "killed":  true,
+                                             "detail":  "pid=27944, committed state=1 seq=2, killed before publication"
+                                         },
+                                         {
+                                             "stage":  "postgres-crash-restart",
+                                             "status":  "PASS",
+                                             "exitCode":  0,
+                                             "killed":  null,
+                                             "detail":  "postmaster start changed 2026-11-05 03:56:03.718585+00 -\u003e 2026-11-05 03:57:46.836632+00; recovery lines=3"
+                                         },
+                                         {
+                                             "stage":  "crash-reader",
+                                             "status":  "PASS",
+                                             "exitCode":  0,
+                                             "killed":  null,
+                                             "detail":  "state=1 seq=2 terminal=True receipt=Applied cheatVersion=1 outbox=c0b108923986..."
+                                         },
+                                         {
+                                             "stage":  "backup-restore",
+                                             "status":  "PASS",
+                                             "exitCode":  0,
+                                             "killed":  null,
+                                             "detail":  "pg_dump/pg_restore into verified-empty DB; events=2 receipts=1 outbox=1 tables=13; reader eventCount=2 ownerEpoch=3"
+                                         },
+                                         {
+                                             "stage":  "unified-verification",
+                                             "status":  "PASS",
+                                             "exitCode":  0,
+                                             "killed":  null,
+                                             "detail":  "unchanged verifier; real table and lobby PostgreSQL; project discovery and plugin copy enabled"
+                                         },
+                                         {
+                                             "stage":  "result",
+                                             "status":  "PASS",
+                                             "exitCode":  0,
+                                             "killed":  null,
+                                             "detail":  "all P5.2 real-PostgreSQL stages passed"
+                                         },
+                                         {
+                                             "stage":  "cleanup",
+                                             "status":  "PASS",
+                                             "exitCode":  0,
+                                             "killed":  null,
+                                             "detail":  "marker verified; stop=0; rootDeleted=true; root=E:\\majiang-review\\g2-final-ci-green-luna6-20261105\\artifacts\\g2-final-ci-green-luna6-20261105-c19a633f17c74f4d9ab376bdf0a48a23\\table-root"
+                                         }
+                                     ]
+                      },
+    "unified":  {
+                    "command":  "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/ci/verify-v5-table-postgres.ps1 -Configuration Release -DotnetPath D:/game_dev_tools/dotnet/dotnet.exe -RunUnifiedVerification -Port 55592 -LobbyPort 55593 -Root E:/majiang-review/g2-final-ci-green-luna6-20261105/artifacts/g2-final-ci-green-luna6-20261105-c19a633f17c74f4d9ab376bdf0a48a23/table-root -LobbyRoot D:/g2-final-ci-green-luna6-20261105/lobby-c19a633f17c74f4d9ab376bdf0a48a23 -PgZipPath E:/majiang-review/g2-final-ci-green-luna6-20261105/artifacts/g2-final-ci-green-luna6-20261105-table-retry2/download/postgresql-binaries.zip -LogDir build/b1118ef0-4f4b-4fa8-aea6-c59523dc1368/final-c19a633f17c74f4d9ab376bdf0a48a23/table -UnifiedLogDir build/b1118ef0-4f4b-4fa8-aea6-c59523dc1368/final-c19a633f17c74f4d9ab376bdf0a48a23/unified",
+                    "durationSeconds":  1434,
+                    "result":  "PASS",
+                    "monitorProcessExit":  "UNKNOWN",
+                    "tableWrapperExit":  0,
+                    "tableSummarySha256":  "FB2552BDD03EF8D395BBA84C2B5413A9483DF97E3D5D7115007A7E641F61865A",
+                    "tableXmlSha256":  "046F153A66961597105036BFAD764160946E7E2A0FFE862AD65912BB140126E9",
+                    "tableTargetedXmlSha256":  "8B719F78E2DCCB94BAFD4960018564F61CE03913D4817D21FE8EF52CD56D00DD",
+                    "tableManifestSha256":  "BE15096815ECD6C304D4894746080857BAFB8300D0FB5E31D97C818EAE6F8D8C",
+                    "projectRows":  {
+                                        "total":  21,
+                                        "passed":  21,
+                                        "failed":  0,
+                                        "blocked":  0,
+                                        "notRun":  0,
+                                        "testProjects":  14,
+                                        "helperProjects":  7,
+                                        "testCases":  2872,
+                                        "passedCases":  2872,
+                                        "failedCases":  0,
+                                        "errors":  0,
+                                        "skipped":  0,
+                                        "notRunCases":  0
+                                    },
+                    "projects":  [
+                                     {
+                                         "project":  "Mahjong.Ai.Tests",
+                                         "total":  444,
+                                         "passed":  444,
+                                         "failed":  0,
+                                         "skipped":  0,
+                                         "errors":  0,
+                                         "notRun":  0,
+                                         "xml":  "build/b1118ef0-4f4b-4fa8-aea6-c59523dc1368/final-c19a633f17c74f4d9ab376bdf0a48a23/unified/direct-xml/Mahjong.Ai.Tests/direct-results.xml",
+                                         "xmlSha256":  "BB2BB1ADC897FE7EEB73BC0BBEF72FB7B6E6B59CA72F4974E70689406651FE99"
+                                     },
+                                     {
+                                         "project":  "Mahjong.Architecture.Tests",
+                                         "total":  132,
+                                         "passed":  132,
+                                         "failed":  0,
+                                         "skipped":  0,
+                                         "errors":  0,
+                                         "notRun":  0,
+                                         "xml":  "build/b1118ef0-4f4b-4fa8-aea6-c59523dc1368/final-c19a633f17c74f4d9ab376bdf0a48a23/unified/direct-xml/Mahjong.Architecture.Tests/direct-results.xml",
+                                         "xmlSha256":  "E2D11C770F2632DA94C88C9A2CD1412F8327D3301920E298036284AF8815CFAE"
+                                     },
+                                     {
+                                         "project":  "Mahjong.Client.Tests",
+                                         "total":  182,
+                                         "passed":  182,
+                                         "failed":  0,
+                                         "skipped":  0,
+                                         "errors":  0,
+                                         "notRun":  0,
+                                         "xml":  "build/b1118ef0-4f4b-4fa8-aea6-c59523dc1368/final-c19a633f17c74f4d9ab376bdf0a48a23/unified/direct-xml/Mahjong.Client.Tests/direct-results.xml",
+                                         "xmlSha256":  "7FF7B6E5F2D930799B99928044FFB4F47F21E6B949095459780AE378D81ED747"
+                                     },
+                                     {
+                                         "project":  "Mahjong.Client.Wss.Tests",
+                                         "total":  82,
+                                         "passed":  82,
+                                         "failed":  0,
+                                         "skipped":  0,
+                                         "errors":  0,
+                                         "notRun":  0,
+                                         "xml":  "build/b1118ef0-4f4b-4fa8-aea6-c59523dc1368/final-c19a633f17c74f4d9ab376bdf0a48a23/unified/direct-xml/Mahjong.Client.Wss.Tests/direct-results.xml",
+                                         "xmlSha256":  "250FF6A1D8CA4BD6F271B7805DC73938E06669BC75256D162740D1716127EB3D"
+                                     },
+                                     {
+                                         "project":  "Mahjong.Contracts.Tests",
+                                         "total":  152,
+                                         "passed":  152,
+                                         "failed":  0,
+                                         "skipped":  0,
+                                         "errors":  0,
+                                         "notRun":  0,
+                                         "xml":  "build/b1118ef0-4f4b-4fa8-aea6-c59523dc1368/final-c19a633f17c74f4d9ab376bdf0a48a23/unified/direct-xml/Mahjong.Contracts.Tests/direct-results.xml",
+                                         "xmlSha256":  "9F8B164C9B4408CFC0F192A8097DD74A03F8CEBF57AAE623F233BEE96CEAD08E"
+                                     },
+                                     {
+                                         "project":  "Mahjong.Domain.Tests",
+                                         "total":  529,
+                                         "passed":  529,
+                                         "failed":  0,
+                                         "skipped":  0,
+                                         "errors":  0,
+                                         "notRun":  0,
+                                         "xml":  "build/b1118ef0-4f4b-4fa8-aea6-c59523dc1368/final-c19a633f17c74f4d9ab376bdf0a48a23/unified/direct-xml/Mahjong.Domain.Tests/direct-results.xml",
+                                         "xmlSha256":  "653DF9875167220F43556611BB9B9431BF18EAB84A401EB9DA354A589696B59E"
+                                     },
+                                     {
+                                         "project":  "Mahjong.Infrastructure.Tests",
+                                         "total":  42,
+                                         "passed":  42,
+                                         "failed":  0,
+                                         "skipped":  0,
+                                         "errors":  0,
+                                         "notRun":  0,
+                                         "xml":  "build/b1118ef0-4f4b-4fa8-aea6-c59523dc1368/final-c19a633f17c74f4d9ab376bdf0a48a23/unified/direct-xml/Mahjong.Infrastructure.Tests/direct-results.xml",
+                                         "xmlSha256":  "B5AB4368C9E1B36D998522B8AE93C63F8DE5E75498ED22B74302229BD3A15F79"
+                                     },
+                                     {
+                                         "project":  "Mahjong.LobbyService.Tests",
+                                         "total":  89,
+                                         "passed":  89,
+                                         "failed":  0,
+                                         "skipped":  0,
+                                         "errors":  0,
+                                         "notRun":  0,
+                                         "xml":  "build/b1118ef0-4f4b-4fa8-aea6-c59523dc1368/final-c19a633f17c74f4d9ab376bdf0a48a23/unified/direct-xml/Mahjong.LobbyService.Tests/direct-results.xml",
+                                         "xmlSha256":  "71DE1C4E016748B60051953E45D1C12DB54848DF954FBB0813069CEEB33AD005"
+                                     },
+                                     {
+                                         "project":  "Mahjong.LocalHost.Tests",
+                                         "total":  184,
+                                         "passed":  184,
+                                         "failed":  0,
+                                         "skipped":  0,
+                                         "errors":  0,
+                                         "notRun":  0,
+                                         "xml":  "build/b1118ef0-4f4b-4fa8-aea6-c59523dc1368/final-c19a633f17c74f4d9ab376bdf0a48a23/unified/direct-xml/Mahjong.LocalHost.Tests/direct-results.xml",
+                                         "xmlSha256":  "F2F0687952ECB6A2DAA719C59456AEA29982A4028A7E8C8D433BCF4401616AC1"
+                                     },
+                                     {
+                                         "project":  "Mahjong.P5.4b.B1.HttpsAdmission.Tests",
+                                         "total":  54,
+                                         "passed":  54,
+                                         "failed":  0,
+                                         "skipped":  0,
+                                         "errors":  0,
+                                         "notRun":  0,
+                                         "xml":  "build/b1118ef0-4f4b-4fa8-aea6-c59523dc1368/final-c19a633f17c74f4d9ab376bdf0a48a23/unified/direct-xml/Mahjong.P5.4b.B1.HttpsAdmission.Tests/direct-results.xml",
+                                         "xmlSha256":  "C294698E4ACCE511068E1D98A441F3B7D2C3505DE132D042DFB5DC164FB83203"
+                                     },
+                                     {
+                                         "project":  "Mahjong.TableRuntime.Tests",
+                                         "total":  483,
+                                         "passed":  483,
+                                         "failed":  0,
+                                         "skipped":  0,
+                                         "errors":  0,
+                                         "notRun":  0,
+                                         "xml":  "build/b1118ef0-4f4b-4fa8-aea6-c59523dc1368/final-c19a633f17c74f4d9ab376bdf0a48a23/unified/direct-xml/Mahjong.TableRuntime.Tests/direct-results.xml",
+                                         "xmlSha256":  "9C9420B9692A1BB80158814C5AA090A63DFB9EA70B92BABE54F0DB60481F547C"
+                                     },
+                                     {
+                                         "project":  "Mahjong.TableService.DurableHost.Tests",
+                                         "total":  59,
+                                         "passed":  59,
+                                         "failed":  0,
+                                         "skipped":  0,
+                                         "errors":  0,
+                                         "notRun":  0,
+                                         "xml":  "build/b1118ef0-4f4b-4fa8-aea6-c59523dc1368/final-c19a633f17c74f4d9ab376bdf0a48a23/unified/direct-xml/Mahjong.TableService.DurableHost.Tests/direct-results.xml",
+                                         "xmlSha256":  "BF50A3E5A59E6F8C537FCB04B4EC1BE6CDDF9183857713E4E38DB5A5FDDF3C33"
+                                     },
+                                     {
+                                         "project":  "Mahjong.TableService.Tests",
+                                         "total":  204,
+                                         "passed":  204,
+                                         "failed":  0,
+                                         "skipped":  0,
+                                         "errors":  0,
+                                         "notRun":  0,
+                                         "xml":  "build/b1118ef0-4f4b-4fa8-aea6-c59523dc1368/final-c19a633f17c74f4d9ab376bdf0a48a23/unified/direct-xml/Mahjong.TableService.Tests/direct-results.xml",
+                                         "xmlSha256":  "A01F7C30B26078CB7B368CB189DBF07057FB703AA80BA7D6F9758997ECB18E4D"
+                                     },
+                                     {
+                                         "project":  "Mahjong.Unity.TableModel.Tests",
+                                         "total":  236,
+                                         "passed":  236,
+                                         "failed":  0,
+                                         "skipped":  0,
+                                         "errors":  0,
+                                         "notRun":  0,
+                                         "xml":  "build/b1118ef0-4f4b-4fa8-aea6-c59523dc1368/final-c19a633f17c74f4d9ab376bdf0a48a23/unified/direct-xml/Mahjong.Unity.TableModel.Tests/direct-results.xml",
+                                         "xmlSha256":  "331387A6035077E8F351C6CEF579A09C4BB3AC83DFCBB1E897AB514E41005B8B"
+                                     }
+                                 ],
+                    "summaryLog":  {
+                                       "path":  "build/b1118ef0-4f4b-4fa8-aea6-c59523dc1368/final-c19a633f17c74f4d9ab376bdf0a48a23/unified/summary.log",
+                                       "sha256":  "9A00777CB615526430FA7699D8E0E22555462D9C23F77919B2249E116D7E2C7A",
+                                       "overall":  "PASS",
+                                       "line":  "OVERALL: PASS (project rows: 21 PASS, 0 FAIL, 0 BLOCKED, 0 NOT_RUN; companion gate: PASS)"
+                                   },
+                    "wrapper":  {
+                                    "summaryPath":  "build/b1118ef0-4f4b-4fa8-aea6-c59523dc1368/final-c19a633f17c74f4d9ab376bdf0a48a23/unified/pg/wrapper-summary.json",
+                                    "summarySha256":  "6004FD5BC335C32A29D15471444154048D24C5E24E358BAC6BF37BCA4341ADCD",
+                                    "verifierExit":  0,
+                                    "failedStages":  [
+
+                                                     ],
+                                    "rootDeleted":  true,
+                                    "envRestored":  true
+                                }
+                },
+    "firstDAttempt":  {
+                          "status":  "FAIL",
+                          "verifier":  "NOT_RUN",
+                          "details":  "start-postgres exit 1; evidence writer OutOfMemoryException",
+                          "cause":  "UNKNOWN",
+                          "evidence":  "build/b1118ef0-4f4b-4fa8-aea6-c59523dc1368/formal/retry2/table/unified.log",
+                          "preserved":  true
+                      },
+    "historical":  {
+                       "priorUnified":  "19 PASS / 2 FAIL",
+                       "remainsFail":  true,
+                       "sourcePushRun":  "41729487041 SUCCESS",
+                       "prMergeRun":  "41729493387 FAILURE",
+                       "differentIdentity":  true,
+                       "FU02":  "UNKNOWN",
+                       "SYNC03":  "INTERMITTENT_UNEXPLAINED"
+                   },
+    "independentReview":  {
+                              "status":  "PASS",
+                              "threadId":  "thread_20261105_101301_c651",
+                              "bridgeStatus":  "COMPLETED",
+                              "testedHead":  "8b51a2a529b277112567a627d9de304acde6323f",
+                              "codeCommit":  "6850fcc1913301c9d58d473a447dfc3c5dbb7856",
+                              "evidenceRoot":  "E:\\majiang-review\\g2-final-ci-green-luna6-20261105\\build\\reviewer-g2-03e51a6d23b2437f91b0343ba92f72b8",
+                              "buildNativeExit":  0,
+                              "focusedInvocations":  10,
+                              "focusedPassed":  10,
+                              "lobbySelftestChecks":  193,
+                              "tableStartupChecks":  153,
+                              "fullNativeExit":  0,
+                              "fullSeconds":  1268,
+                              "projectRows":  21,
+                              "testProjects":  14,
+                              "cases":  2872,
+                              "passed":  2872,
+                              "failed":  0,
+                              "errors":  0,
+                              "skipped":  0,
+                              "notRun":  0,
+                              "tableCleanup":  "PASS",
+                              "lobbyCleanup":  "PASS",
+                              "environmentRestore":  "PASS",
+                              "ownedResidualProcesses":  0,
+                              "sealedManifestRows":  217,
+                              "sealedManifestMismatches":  0,
+                              "summarySha256":  "F941B8A48A8789BEDF89D593BE477FCAFD01317BD114D1E533CECEA4EF99AEEF",
+                              "firstReviewerPgAttempt":  "FAIL: insufficient C TEMP extraction capacity; retained",
+                              "retryChange":  "only process TEMP/TMP moved to unique D directory",
+                              "optionalPs7DualHost":  "NOT_RUN",
+                              "applicationPackageRebind":  "REQUIRED for future LocalHost-dependent application candidate; old package evidence retains old identity"
+                          },
+    "remoteCi":  {
+                     "status":  "NOT_RUN",
+                     "push":  "NOT_RUN",
+                     "prUpdate":  "NOT_RUN",
+                     "merge":  "NOT_RUN",
+                     "deploy":  "NOT_RUN",
+                     "requiresCallerAction":  true
+                 },
+    "acceptance":  {
+                       "localValidationPassed":  true,
+                       "independentlyAccepted":  true,
+                       "remoteCiGreen":  false,
+                       "g2StageApproved":  false,
+                       "v4RemainsProduction":  true
+                   }
+}

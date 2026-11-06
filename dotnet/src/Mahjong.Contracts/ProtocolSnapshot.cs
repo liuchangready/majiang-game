@@ -1073,6 +1073,34 @@ namespace Mahjong.Contracts
         public ShufflePreparationView? Preparation { get; }
     }
 
+    /// <summary>
+    /// Minimal owner-private seat control authority. The field is optional:
+    /// absence means the authoritative control state is unknown and callers must
+    /// fail closed rather than treat it as epoch 0 or guess a controller.
+    /// </summary>
+    public sealed class PlayerControlView
+    {
+        public PlayerControlView(ControlEpoch controlEpoch, bool controlledByComputer, long controlVersion)
+        {
+            if (controlVersion < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(controlVersion), controlVersion, "Control version must be non-negative.");
+            }
+
+            ControlEpoch = controlEpoch;
+            ControlledByComputer = controlledByComputer;
+            ControlVersion = controlVersion;
+        }
+
+        public ControlEpoch ControlEpoch { get; }
+
+        /// <summary>True for the automated (Computer/Takeover) controller kinds.</summary>
+        public bool ControlledByComputer { get; }
+
+        /// <summary>Independent control-event sequence captured with this snapshot.</summary>
+        public long ControlVersion { get; }
+    }
+
     public sealed class PrivatePlayerView
     {
         private readonly IReadOnlyList<uint> _closedTiles;
@@ -1097,7 +1125,8 @@ namespace Mahjong.Contracts
                 decision,
                 cheat,
                 Array.Empty<uint>(),
-                Array.Empty<MeldView>())
+                Array.Empty<MeldView>(),
+                null)
         {
         }
 
@@ -1110,7 +1139,8 @@ namespace Mahjong.Contracts
             DecisionView? decision,
             PrivateCheatView? cheat,
             IReadOnlyList<uint>? sleeveTiles,
-            IReadOnlyList<MeldView>? ownerMelds)
+            IReadOnlyList<MeldView>? ownerMelds,
+            PlayerControlView? control = null)
         {
             SnapshotValidation.Seat(seat, nameof(seat));
             _closedTiles = SnapshotValidation.CopyTileIds(closedTiles, nameof(closedTiles), 14);
@@ -1163,6 +1193,7 @@ namespace Mahjong.Contracts
             Furiten = furiten;
             Decision = decision;
             Cheat = cheat;
+            Control = control;
         }
 
         public int Seat { get; }
@@ -1179,6 +1210,12 @@ namespace Mahjong.Contracts
         public DecisionView? Decision { get; }
 
         public PrivateCheatView? Cheat { get; }
+
+        /// <summary>
+        /// Owner-private control authority at the same committed capture as this
+        /// snapshot; null means unavailable. It is never part of a public board.
+        /// </summary>
+        public PlayerControlView? Control { get; }
 
         /// <summary>Owner-only sleeve-zone identities; never part of a public board.</summary>
         public IReadOnlyList<uint> SleeveTiles => _sleeveTiles;

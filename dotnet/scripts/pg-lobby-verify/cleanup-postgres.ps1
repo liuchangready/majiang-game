@@ -83,8 +83,13 @@ else {
 }
 
 Write-Section 'Deleting the disposable PostgreSQL instance'
-Remove-Item -LiteralPath $resolved -Recurse -Force
-if (Test-Path -LiteralPath $resolved) {
+$deletePath = if ($resolved.StartsWith('\\')) {
+    '\\?\UNC\' + $resolved.TrimStart('\')
+} else {
+    '\\?\' + $resolved
+}
+[System.IO.Directory]::Delete($deletePath, $true)
+if ([System.IO.Directory]::Exists($deletePath)) {
     throw "Cleanup failed; $resolved still exists."
 }
 Write-Host "Deleted $resolved"

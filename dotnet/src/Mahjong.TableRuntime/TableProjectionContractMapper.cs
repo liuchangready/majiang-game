@@ -284,7 +284,8 @@ namespace Mahjong.TableRuntime
             PrivateCheatView cheat = MapOwnerCheat(
                 owner.Cheat,
                 time,
-                source.Private.Cheat != null && source.Private.Cheat.HasPreparation);
+                source.Private.Cheat != null && source.Private.Cheat.HasPreparation,
+                OwnerSelectableTileIds(owner));
             var ownerMelds = new List<MeldView>(owner.Melds.Count);
             for (int i = 0; i < owner.Melds.Count; i++)
             {
@@ -301,7 +302,8 @@ namespace Mahjong.TableRuntime
                 source.Private.Decision,
                 cheat,
                 owner.SleeveTiles,
-                ownerMelds);
+                ownerMelds,
+                source.Private.Control);
 
             PublicMatchView publicView = RebuildPublicMatchView(
                 source.Public,
@@ -349,7 +351,8 @@ namespace Mahjong.TableRuntime
         public static PrivateCheatView MapOwnerCheat(
             TableOwnerCheatView owner,
             TableProjectionTimeContext time,
-            bool hasPreparation = false)
+            bool hasPreparation = false,
+            IReadOnlyList<uint>? selectableTileIds = null)
         {
             if (owner == null)
             {
@@ -373,7 +376,9 @@ namespace Mahjong.TableRuntime
                     entry.ReasonCode));
             }
 
-            TileMarkView? tileMark = owner.MarkGroups.Count == 0 ? null : MapTileMark(owner.MarkGroups);
+            TileMarkView? tileMark = owner.MarkGroups.Count == 0 && (selectableTileIds == null || selectableTileIds.Count == 0)
+                ? null
+                : MapTileMark(owner.MarkGroups, selectableTileIds ?? Array.Empty<uint>());
             SleeveBloomView? immediate = owner.ImmediateOffer == null
                 ? null
                 : MapSleeveBloom(owner.ImmediateOffer, time);
@@ -787,7 +792,29 @@ namespace Mahjong.TableRuntime
                 source.Paused);
         }
 
-        private static TileMarkView MapTileMark(IReadOnlyList<TableOwnerMarkGroupView> groups)
+        /// <summary>
+        /// The owner's real hand identities for the first-tile-mark selection contract.
+        /// Closed tiles plus the drawn tile are always exactly the owner's 13/14 physical
+        /// hand entities; no other seat, wall order or seed enters this list.
+        /// </summary>
+        private static IReadOnlyList<uint> OwnerSelectableTileIds(TableOwnerPrivateView owner)
+        {
+            var ids = new List<uint>(owner.ClosedTiles.Count + (owner.DrawnTileId.HasValue ? 1 : 0));
+            for (int i = 0; i < owner.ClosedTiles.Count; i++)
+            {
+                ids.Add(owner.ClosedTiles[i]);
+            }
+
+            if (owner.DrawnTileId.HasValue && !ids.Contains(owner.DrawnTileId.Value))
+            {
+                ids.Add(owner.DrawnTileId.Value);
+            }
+
+            return ids;
+        }
+        private static TileMarkView MapTileMark(
+            IReadOnlyList<TableOwnerMarkGroupView> groups,
+            IReadOnlyList<uint> selectableTileIds)
         {
             var mapped = new List<TileMarkGroupView>(groups.Count);
             for (int i = 0; i < groups.Count; i++)
@@ -810,7 +837,7 @@ namespace Mahjong.TableRuntime
                     group.ExpiresAfterRoundOrdinal));
             }
 
-            return new TileMarkView(Array.Empty<uint>(), mapped);
+            return new TileMarkView(selectableTileIds, mapped);
         }
 
         private static SleeveBloomView MapSleeveBloom(
@@ -900,16 +927,52 @@ namespace Mahjong.TableRuntime
                 throw Missing(source.Type, "meld");
             }
 
-            if (meld.TileIds.Count != source.TileIds.Count)
+            ProtocolMeldType requiredType = source.Type == ProtocolEventType.PonDeclared
+                ? ProtocolMeldType.Pon
+                : ProtocolMeldType.Chi;
+            if (meld.Type != requiredType || meld.TileIds.Count != 3)
             {
-                throw Invalid("Supplemental meld tiles do not match the projected " + source.Type + " tiles.");
+                throw Invalid("Supplemental " + source.Type + " facts require the matching three-tile meld type.");
             }
 
+            var seen = new HashSet<uint>();
+            bool containsCalled = false;
             for (int i = 0; i < meld.TileIds.Count; i++)
             {
-                if (meld.TileIds[i] != source.TileIds[i])
+                if (!seen.Add(meld.TileIds[i]))
                 {
-                    throw Invalid("Supplemental meld tile differs from the projected event tile at index " + i + ".");
+                    throw Invalid("Supplemental " + source.Type + " meld repeats a physical tile.");
+                }
+
+                if (meld.CalledTileId.HasValue && meld.TileIds[i] == meld.CalledTileId.Value)
+                    containsCalled = true;
+            }
+
+            if (!meld.CalledTileId.HasValue || !containsCalled || meld.FromSeat != facts!.FromSeat)
+            {
+                throw Invalid("Supplemental " + source.Type + " meld has inconsistent called tile/fromSeat facts.");
+            }
+
+            if (source.TileIds.Count == 1)
+            {
+                if (source.TileIds[0] != meld.CalledTileId.Value)
+                {
+                    throw Invalid("Supplemental called tile differs from the committed " + source.Type + " event.");
+                }
+            }
+            else
+            {
+                if (source.TileIds.Count != 3)
+                {
+                    throw Invalid("A public " + source.Type + " event requires its complete three-tile source or meld.");
+                }
+
+                for (int i = 0; i < meld.TileIds.Count; i++)
+                {
+                    if (meld.TileIds[i] != source.TileIds[i])
+                    {
+                        throw Invalid("Supplemental meld tile differs from the projected event tile at index " + i + ".");
+                    }
                 }
             }
 

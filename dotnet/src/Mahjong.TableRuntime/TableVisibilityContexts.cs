@@ -246,18 +246,28 @@ namespace Mahjong.TableRuntime
             int seat,
             bool furiten,
             bool hasPreparation,
-            IReadOnlyList<uint>? discardHistory)
+            IReadOnlyList<uint>? discardHistory,
+            bool temporaryFuriten = false,
+            bool riichiFuriten = false)
         {
             TableProjectionCopy.Seat(seat, nameof(seat));
             _discardHistory = TableProjectionCopy.Tiles(discardHistory, nameof(discardHistory), 200);
             Seat = seat;
             Furiten = furiten;
             HasPreparation = hasPreparation;
+            TemporaryFuriten = temporaryFuriten;
+            RiichiFuriten = riichiFuriten;
         }
 
         public int Seat { get; }
 
         public bool Furiten { get; }
+
+        /// <summary>Pass-on-ron furiten that lasts until the owner's next draw.</summary>
+        public bool TemporaryFuriten { get; }
+
+        /// <summary>Riichi pass-on-ron furiten that lasts until the round ends.</summary>
+        public bool RiichiFuriten { get; }
 
         public bool HasPreparation { get; }
 

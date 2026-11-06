@@ -178,7 +178,8 @@ namespace Mahjong.TableRuntime.Tests
             RoundStateMachine round,
             IReadOnlyDictionary<int, IReadOnlyList<uint>>? discardHistories = null,
             bool[]? furiten = null,
-            bool[]? preparation = null)
+            bool[]? preparation = null,
+            TableFuritenSnapshot? furitenSnapshot = null)
         {
             var result = new List<TableSeatPrivateFacts>(4);
             for (int seat = 0; seat < 4; seat++)
@@ -200,11 +201,18 @@ namespace Mahjong.TableRuntime.Tests
                     history = derived;
                 }
 
+                bool temporaryFuriten = furitenSnapshot != null && furitenSnapshot.IsTemporary(seat);
+                bool riichiFuriten = furitenSnapshot != null && furitenSnapshot.IsRiichi(seat);
+                bool combinedFuriten = furitenSnapshot != null
+                    ? temporaryFuriten || riichiFuriten
+                    : furiten != null && furiten[seat];
                 result.Add(new TableSeatPrivateFacts(
                     seat,
-                    furiten != null && furiten[seat],
+                    combinedFuriten,
                     preparation != null && preparation[seat],
-                    history));
+                    history,
+                    temporaryFuriten,
+                    riichiFuriten));
             }
 
             return result;

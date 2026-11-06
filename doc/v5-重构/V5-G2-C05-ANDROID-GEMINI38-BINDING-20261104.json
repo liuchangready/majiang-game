@@ -1,0 +1,906 @@
+{
+    "schemaVersion":  10,
+    "kind":  "V5_G2_C05_ANDROID_GEMINI38_BINDING",
+    "generatedAtUtc":  "2026-11-06T04:36:24.2165670Z",
+    "status":  "REWORK_REQUIRED",
+    "phase":  "ROUND16_REWORK_REQUIRED",
+    "notFinalC05":  true,
+    "notG2":  true,
+    "notArm64Device":  true,
+    "reviewRound":  16,
+    "reviewedRequest":  {
+                            "reviewRound":  9,
+                            "conclusion":  "REWORK_REQUIRED",
+                            "defectGroups":  [
+                                                 "D-R9-01",
+                                                 "D-R9-02",
+                                                 "D-R10-01"
+                                             ]
+                        },
+    "candidate":  {
+                      "worktreeHead":  "4a855c3c49e65ec97708784d84a784df9f11c199",
+                      "branch":  "wt/v5-g2-android-gemini38-20261104",
+                      "worktreeRoot":  "D:\\majiang\\build\\bridge-dispatch-20261104\\android"
+                  },
+    "trackedScope":  {
+                         "expectedFilesCount":  4,
+                         "files":  [
+                                       "tools/unity/run-c05-android-emulator.ps1",
+                                       "tools/tests/C05AndroidEmulator.Tests.ps1",
+                                       "doc/v5-重构/V5-G2-C05-ANDROID-GEMINI38-DELIVERY-20261104.md",
+                                       "doc/v5-重构/V5-G2-C05-ANDROID-GEMINI38-BINDING-20261104.json"
+                                   ],
+                         "gitStatus":  "4 files only (2 modified + 2 authored docs)",
+                         "gitDiffCheckExit":  0
+                     },
+    "toolSourceSha256":  {
+                             "tools/unity/build-c05-android-emulator.ps1":  "2EA5435DB668D6B91817F0BD58808EF0B14A6829B40D2F7E22F9E03AD19C3769",
+                             "tools/unity/run-c05-android-emulator.ps1":  "F71A35419324AADDDF99D721474A9262E2C1687265CA81AC6D6FEE1D19678DB3",
+                             "tools/tests/C05AndroidEmulator.Tests.ps1":  "590B613B004F9CA365F23F72450D2000DAAB4651759942D2B3561FA7491A1A3E",
+                             "unity/Mahjong.Unity/Assets/Editor/C05EmulatorAndroidBuild.cs":  "4A5C880C8B781DF47FDDEF64FA8E12BA1269ACC10B548B820779937D4612F46D",
+                             "unity/Mahjong.Unity/Assets/Editor/C05EmulatorAndroidBuild.cs.meta":  "66B2073981A0D74A75204EAD3C912E2B17A76C9F62A960A7B9DCEF858E0A6D07",
+                             "build/g2-c05-codex-round10-b01cfe923f954492a44836a773d3e5f5/resumed-pipeline.ps1":  "EAA87BD8A95DA14CF9EC78A1F9672C92D5E16C6E3D059D73DE2D736FA1A3BA91"
+                         },
+    "reviewFixes":  {
+                        "D-R7-01":  {
+                                        "severity":  "BLOCKER",
+                                        "status":  "FIXED",
+                                        "summary":  "Eliminated MockSequence stub and comments in Invoke-C05OPipeline; replaced with full sequential production step runner calls (Run-C05OStep for 01-start-emulator, 02-device-info, candidate provenance check, 03-install, 04-start, Capture-C05OScreen \u0026 Dump-C05OLogcat, halts at CAPTURED_REQUIRES_REVIEW, 06-stop, and finally 99-shutdown). Enforces candidate provenance check (rejecting staged diagnostic packages from candidate pipeline unless explicitly permitted). In finally block, executes real Run-C05OStep for 99-shutdown and strictly propagates shutdown failures to non-zero pipeline exit code. Verified by reviewer probe-entry-v2.ps1 catching actualStepCalls=[\u0027STEP\u0027] and entryError=\u0027Reviewer blocked actual device entry\u0027.",
+                                        "evidence":  [
+                                                         "build/g2-c05-gemini38-20261105-round8-8c14d9b2/resumed-pipeline/resumed-pipeline.ps1",
+                                                         "build/g2-c05-gemini38-20261105-round8-8c14d9b2/fixture-matrix/fixture-result.json",
+                                                         "build/g2-c05-gemini38-20261105-round8-8c14d9b2/probe-sandbox-verification/entry-audit-result-v2.json"
+                                                     ],
+                                        "assertions":  [
+                                                           "Invoke-C05OPipeline executes real Run-C05OStep for all pipeline stages",
+                                                           "Shutdown native failure in boundary runner produces non-zero exit and 99-shutdown.log (fixture Case 3: PASS)",
+                                                           "Unassigned state file recovered in finally block and shutdown executed (fixture Case 4: PASS)",
+                                                           "Candidate provenance check rejects staged diagnostic APK (resumed-pipeline: PASS)",
+                                                           "Reviewer probe-entry-v2 records actualStepCalls=[\u0027STEP\u0027] and catches entryError without entering device"
+                                                       ]
+                                    },
+                        "D-R7-02":  {
+                                        "severity":  "MAJOR",
+                                        "status":  "FIXED",
+                                        "summary":  "Repaired native descendant tracking and drain cleanup in Capture-C05OScreen and Dump-C05OLogcat. Both functions continuously query live descendants (using verified parent PID and StartUtcTicks) and read parent-record.json when provided by the tool runner. In the event of a drain timeout (e.g. child process keeping stdout/stderr open), Stop-C05OProcessTree is invoked with all recorded descendants before throwing, ensuring childAliveAfterReturn=false and 0 residual orphans. Both root-wait timeout, drain timeout, native failure, and success paths cleanly stop recorded trees. Verified against reviewer drain-helper.exe in all 4 modes (native7 exits 7 with C05_NATIVE_SEVEN, flood drains 1MiB in 0.16s, timeout terminates in 1.7s with 0 orphans, child terminates child process with childAliveAfterReturn=false).",
+                                        "evidence":  [
+                                                         "build/g2-c05-gemini38-20261105-round8-8c14d9b2/resumed-pipeline/resumed-pipeline.ps1",
+                                                         "build/g2-c05-gemini38-20261105-round8-8c14d9b2/fixture-matrix/fixture-result.json",
+                                                         "build/g2-c05-gemini38-20261105-round8-8c14d9b2/probe-sandbox-verification/native-io-result.json"
+                                                     ],
+                                        "assertions":  [
+                                                           "Drain timeout terminates surviving child process (native-io childAliveAfterReturn: false)",
+                                                           "Native 7 exit code cleanly reported with C05_NATIVE_SEVEN (native-io native7: PASS)",
+                                                           "1MiB flood output asynchronously drained without deadlock (native-io flood: PASS)",
+                                                           "Timeout enforced in 1.7s with 0 residual orphans (native-io timeout: PASS)",
+                                                           "0 unowned or orphan processes remain after execution"
+                                                       ]
+                                    },
+                        "D-R8-01":  {
+                                        "severity":  "MAJOR",
+                                        "status":  "FIXED",
+                                        "summary":  "Removed all fake-green fallback branches (else { $true }) in test-wait-fixture.ps1; compilation of mock adb helper is fully self-contained in authorized build/c05-emulator-argv-fixtures directory, completely removing external dependencies on reviewer directories. When helper is absent, test strictly fails (missingHelperPngAssert=false, missingHelperLogAssert=false). Case 1 \u0026 2 test real Run-C05OStep launcher exit and timeout cancellation. Case 3 \u0026 4 test real step invocation and shutdown failure propagation via boundary mock runner. Case 5 strictly verifies PID and StartUtcTicks before killing in finally. Case 6 tests candidate descendant tick protection. Absolute and relative -OutputRoot paths properly handled via [IO.Path]::IsPathRooted. Full immutable source snapshots of test-wait-fixture.ps1, mock-adb-fixture-source.cs, test-probe8-verify.ps1, drain-helper-source.cs, and fake-adb-source.cs sealed into Round 8 evidence package.",
+                                        "evidence":  [
+                                                         "build/g2-c05-gemini38-20261105-round8-8c14d9b2/fixture-matrix/test-wait-fixture.ps1",
+                                                         "build/g2-c05-gemini38-20261105-round8-8c14d9b2/fixture-matrix/mock-adb-fixture-source.cs",
+                                                         "build/g2-c05-gemini38-20261105-round8-8c14d9b2/fixture-matrix/fixture-result.json",
+                                                         "build/g2-c05-gemini38-20261105-round8-8c14d9b2/probe-sandbox-verification/fixture-probe-result-v2.json",
+                                                         "build/g2-c05-gemini38-20261105-round8-8c14d9b2/probe-sandbox-verification/test-probe8-verify.ps1"
+                                                     ],
+                                        "assertions":  [
+                                                           "Reviewer probe-fixture-v2 yields missingHelperPngAssert=false and missingHelperLogAssert=false",
+                                                           "All 11 cases in fixture matrix pass with real assertions (fixture-result.json: 11/11 PASS)",
+                                                           "Output directory reuse strictly refused with exit 1 and sentinel preserved",
+                                                           "Absolute and relative output paths supported without path format error",
+                                                           "Every fixture and probe script source snapshot sealed in manifest with exact hashes"
+                                                       ]
+                                    },
+                        "D-R9-01":  {
+                                        "severity":  "BLOCKER",
+                                        "status":  "FIXED",
+                                        "summary":  "Corrected the caller parameter/receipt contract, added pre-device candidate validation, SDK and EvidenceDir binding, real serial/game-PID receipt consumption, reachable Stop/Shutdown, and a same-instance visual-review then Input(back)/BackgroundResume review checkpoint. Fake-runner test executes both review continuations and proves exact PID+start-tick identity. No licensed production artifact or real device run was available.",
+                                        "evidence":  [
+                                                         "tools/unity/run-c05-android-emulator.ps1",
+                                                         "build/g2-c05-gemini38-20261105-round9-aa8d729f236a44539247894bfcd22e56/resumed-pipeline.ps1",
+                                                         "build/g2-c05-gemini38-20261105-round9-aa8d729f236a44539247894bfcd22e56/pipeline-invalid-candidate-3",
+                                                         "build/g2-c05-gemini38-20261105-round9-aa8d729f236a44539247894bfcd22e56/resume-fixture-final3/result.json"
+                                                     ],
+                                        "assertions":  [
+                                                           "invalid artifact fails before StartEmulator",
+                                                           "real runner parameters and receipt names used",
+                                                           "device serial/state and launch PID are receipt-derived",
+                                                           "same-instance Input and BackgroundResume resume chain reachable",
+                                                           "Stop/Shutdown reached after second explicit review",
+                                                           "mock receipt chain passes; hardware not run"
+                                                       ]
+                                    },
+                        "D-R9-02":  {
+                                        "severity":  "BLOCKER",
+                                        "status":  "PARTIALLY_FIXED",
+                                        "summary":  "Round9 caller delegates capture/logcat to production Capture, has no parent-record reader, and uses ancestry+PID/start-tick records for its own subprocess timeout. Fake-runner native7, held-pipe timeout cleanup (0 residual) and unrelated-process-record preservation pass. Production Capture native7/empty/invalid-PNG matrix and device receipts remain unrun.",
+                                        "evidence":  [
+                                                         "build/g2-c05-gemini38-20261105-round9-aa8d729f236a44539247894bfcd22e56/pipeline-native7-final3/01-start-emulator/stderr.txt",
+                                                         "build/g2-c05-gemini38-20261105-round9-aa8d729f236a44539247894bfcd22e56/pipeline-process-timeout-final2/01-start-emulator/cleanup-receipt.json",
+                                                         "build/g2-c05-gemini38-20261105-round9-aa8d729f236a44539247894bfcd22e56/foreign-record-probe-2/result.json"
+                                                     ],
+                                        "assertions":  [
+                                                           "foreign recorded process survives caller timeout",
+                                                           "owned child held-pipe timeout returns with residual 0",
+                                                           "native exit 7 and stderr preserved",
+                                                           "production Capture native7/empty-output/invalid-PNG matrix remains required"
+                                                       ]
+                                    },
+                        "D-R9-03":  {
+                                        "severity":  "BLOCKER",
+                                        "status":  "FIXED",
+                                        "summary":  "New round9 assembler performs no deletion, refuses reuse, rejects repo/build parent destinations, and sealed 17 source/result inputs in a manifest. Round8 remains read-only and its observed file hash is corrected.",
+                                        "evidence":  [
+                                                         "build/g2-c05-gemini38-20261105-round9-aa8d729f236a44539247894bfcd22e56/assemble-review.ps1",
+                                                         "build/g2-c05-gemini38-20261105-round9-aa8d729f236a44539247894bfcd22e56/assembled-review-final5/manifest.json",
+                                                         "build/g2-c05-gemini38-20261105-round9-aa8d729f236a44539247894bfcd22e56/assembler-boundary-probe/result.json"
+                                                     ],
+                                        "assertions":  [
+                                                           "unique output only",
+                                                           "existing output and sentinel preserved",
+                                                           "repository/build-parent destination rejected",
+                                                           "15-entry manifest rehash matches",
+                                                           "historical round8 files remain read-only"
+                                                       ]
+                                    },
+                        "D-R9-04":  {
+                                        "severity":  "MAJOR",
+                                        "status":  "FIXED",
+                                        "newInformation":  "Introduced by the round9 caller, which did not exist in round8.",
+                                        "location":  "round9 resumed-pipeline.ps1 Invoke-Step StepArgs",
+                                        "reproduction":  "Run the invalid-candidate pipeline probe with a fake/nonexistent APK; before fix the child defaulted to Action Probe.",
+                                        "actual":  "Default Probe created an output directory and ran adb devices -l; list was empty.",
+                                        "expected":  "Explicit ValidateArtifact action, exit 1 before device actions.",
+                                        "fix":  "Renamed Args to StepArgs.",
+                                        "evidence":  [
+                                                         "build/c05-android-emulator-device/20261105-230301-probe-ff0f5f8c/probe.json",
+                                                         "build/g2-c05-gemini38-20261105-round9-aa8d729f236a44539247894bfcd22e56/pipeline-invalid-candidate-3/00-validate-artifact/stderr.txt"
+                                                     ],
+                                        "assertions":  [
+                                                           "post-fix native exit 1",
+                                                           "no Probe output in post-fix pipeline root"
+                                                       ]
+                                    },
+                        "D-R9-05":  {
+                                        "severity":  "MAJOR",
+                                        "status":  "FIXED",
+                                        "newInformation":  "Introduced by the round9 assembler script, which did not exist in round8.",
+                                        "location":  "round9 assemble-review.ps1 RepoRoot parameter default",
+                                        "reproduction":  "Invoke assembler with only OutputRoot under Windows PowerShell 5.1.",
+                                        "actual":  "PSScriptRoot was empty during parameter binding.",
+                                        "expected":  "Resolve default repo root after parameter binding.",
+                                        "fix":  "RepoRoot is now optional and resolved in script body.",
+                                        "evidence":  [
+                                                         "build/g2-c05-gemini38-20261105-round9-aa8d729f236a44539247894bfcd22e56/assembled-review-final3/manifest.json"
+                                                     ],
+                                        "assertions":  [
+                                                           "first assembly exit 0",
+                                                           "seven entries",
+                                                           "duplicate invocation exit 1",
+                                                           "sentinel preserved"
+                                                       ]
+                                    },
+                        "D-R9-06":  {
+                                        "severity":  "MAJOR",
+                                        "status":  "FIXED",
+                                        "newInformation":  "Introduced by round9 subprocess wrapper; not present in round8.",
+                                        "location":  "round9 resumed-pipeline.ps1 Invoke-Step process exit capture",
+                                        "reproduction":  "Run pipeline with fake runner returning native exit 7.",
+                                        "actual":  "Initial wrapper treated null ExitCode as 0 and later failed on missing state.",
+                                        "expected":  "Preserve exact nonzero native exit and stderr, fail before next stage.",
+                                        "fix":  "Use direct ProcessStartInfo, bounded asynchronous raw file drains, refreshed ExitCode.",
+                                        "evidence":  [
+                                                         "build/g2-c05-gemini38-20261105-round9-aa8d729f236a44539247894bfcd22e56/pipeline-native7-final3/01-start-emulator/stderr.txt"
+                                                     ],
+                                        "assertions":  [
+                                                           "pipeline exit 1",
+                                                           "exit 7 appears in failure",
+                                                           "C05_NATIVE_SEVEN preserved",
+                                                           "no step success receipt"
+                                                       ]
+                                    }
+                    },
+    "matrix":  {
+                   "E1":  {
+                              "status":  "PASS",
+                              "detail":  "Round16 bounded environment probes: Unity-bundled dotnet/csc help, serial tiny compile and two-way tiny compile all native exit 0; Android toolchain identity was previously verified in Round14. This is a toolchain preflight only, not a production Android build."
+                          },
+                   "B1":  {
+                              "status":  "FAIL",
+                              "detail":  "Latest production candidate attempt is Round15: Unity native exit 1, BuildReport Failed with 10 errors/229 warnings, no APK. Round16 did not rerun the full build. Long-path access failure is reproduced for 3 exact logged package paths; shader/CoreCLR errors are not all attributed to it."
+                          },
+                   "D1":  {
+                              "status":  "NOT_RUN",
+                              "detail":  "No current-candidate AVD boot or online/boot_completed evidence."
+                          },
+                   "R1":  {
+                              "status":  "NOT_RUN",
+                              "detail":  "No current-candidate install/foreground runtime evidence."
+                          },
+                   "V1":  {
+                              "status":  "NOT_RUN",
+                              "detail":  "No current-candidate game screenshots/video reviewed."
+                          },
+                   "I1":  {
+                              "status":  "NOT_RUN",
+                              "detail":  "No current-candidate legal input/action feedback evidence."
+                          },
+                   "L1":  {
+                              "status":  "NOT_RUN",
+                              "detail":  "No current-candidate lifecycle matrix evidence."
+                          },
+                   "F1":  {
+                              "status":  "NOT_RUN",
+                              "detail":  "Final device-chain writer stop/cleanup not run. Round15 evidence sealing is separately recorded and is not device F1."
+                          }
+               },
+    "round8Evidence":  {
+                           "root":  "build/g2-c05-gemini38-20261105-round8-8c14d9b2",
+                           "manifest":  {
+                                            "path":  "build/g2-c05-gemini38-20261105-round8-8c14d9b2/manifest.json",
+                                            "entries":  59,
+                                            "bytes":  16104,
+                                            "sha256":  "4B9AA078811C9E4476B13EA6391B825B03B8CE792545734022170682BE690B13"
+                                        },
+                           "resumedPipeline":  {
+                                                   "path":  "build/g2-c05-gemini38-20261105-round8-8c14d9b2/resumed-pipeline/resumed-pipeline.ps1",
+                                                   "bytes":  30800,
+                                                   "sha256":  "DA45235B9DE7D8381F65582D5D52BF22ED4714D7653236FFF25A5DDFC515B36D"
+                                               },
+                           "fixtureMatrix":  {
+                                                 "path":  "build/g2-c05-gemini38-20261105-round8-8c14d9b2/fixture-matrix/fixture-result.json",
+                                                 "fixtureScriptSnapshot":  "build/g2-c05-gemini38-20261105-round8-8c14d9b2/fixture-matrix/test-wait-fixture.ps1",
+                                                 "fixtureScriptBytes":  28042,
+                                                 "fixtureScriptSha256":  "04130E7D36086273A02720091443ED4F17B1F1B3FCABD80AF4504590B800BD94",
+                                                 "totalCases":  11,
+                                                 "passedCases":  11,
+                                                 "bytes":  2347,
+                                                 "sha256":  "DFD6DE3BF559B09804EC802E0312870C18AAB4479F26B79650E4DFC2F664738F"
+                                             },
+                           "testSuiteBaseline":  {
+                                                     "path":  "build/g2-c05-gemini38-20261105-round8-8c14d9b2/test-suite-baseline/test-summary.json",
+                                                     "assertions":  100,
+                                                     "fixtures":  15,
+                                                     "bytes":  6531,
+                                                     "sha256":  "BBA972E2CA68C5F287C356973EF03915B62DB53D7CE3AC46227339492A9C1F2C"
+                                                 },
+                           "probeVerification":  {
+                                                     "directory":  "build/g2-c05-gemini38-20261105-round8-8c14d9b2/probe-sandbox-verification",
+                                                     "entryAudit":  {
+                                                                        "path":  "build/g2-c05-gemini38-20261105-round8-8c14d9b2/probe-sandbox-verification/entry-audit-result-v2.json",
+                                                                        "bytes":  404,
+                                                                        "sha256":  "7B6F2790ABF10E0AD1FFE211FCF16A9909660B4CC0344D2AD62B3B194080BBAD"
+                                                                    },
+                                                     "fixtureProbe":  {
+                                                                          "path":  "build/g2-c05-gemini38-20261105-round8-8c14d9b2/probe-sandbox-verification/fixture-probe-result-v2.json",
+                                                                          "bytes":  1258,
+                                                                          "sha256":  "71A64EF09F02BFF0A261C5E36CB6AD6144BC4A4D17418F90EDE62F7F8538576F"
+                                                                      },
+                                                     "nativeIo":  {
+                                                                      "path":  "build/g2-c05-gemini38-20261105-round8-8c14d9b2/probe-sandbox-verification/native-io-result.json",
+                                                                      "bytes":  1787,
+                                                                      "sha256":  "AEC958F7C5175E421947B7CCD6422BCC95582FDC4DC7EC8719900DBCA1A1AF0D"
+                                                                  },
+                                                     "ownership":  {
+                                                                       "path":  "build/g2-c05-gemini38-20261105-round8-8c14d9b2/probe-sandbox-verification/ownership-result.json",
+                                                                       "bytes":  111,
+                                                                       "sha256":  "CB9F90DF63967381F71EE07530931207B9CE96D9457056B3E324224025D2419C"
+                                                                   },
+                                                     "nativeContent":  {
+                                                                           "path":  "build/g2-c05-gemini38-20261105-round8-8c14d9b2/probe-sandbox-verification/native-content-result.json",
+                                                                           "bytes":  851,
+                                                                           "sha256":  "B8DF83BDA66A9A8E53C3BD5E13075D6ADBEE2422F580FBC91EE58A972B0E92F3"
+                                                                       }
+                                                 },
+                           "heartbeatProof":  {
+                                                  "path":  "build/g2-c05-gemini38-20261105-round8-8c14d9b2/heartbeat-proof/heartbeat-summary.json",
+                                                  "eventsPath":  "build/g2-c05-gemini38-20261105-round8-8c14d9b2/heartbeat-proof/heartbeat-events.jsonl",
+                                                  "elapsedSec":  32.51,
+                                                  "heartbeatsEmitted":  4,
+                                                  "bytes":  671,
+                                                  "sha256":  "7297317B4C5D2B0A223C0DAB5D1970E178A5EE004425FF457E73EE713944BC31"
+                                              },
+                           "previousSealedEvidence":  {
+                                                          "round7":  "build/g2-c05-gemini38-20261105-round7-9f3c2a17",
+                                                          "round6":  "build/g2-c05-gemini38-20261105-round6-d6e4b857",
+                                                          "diagnostic170000":  "build/g2-c05-gemini38-20261105-170000-perfect"
+                                                      }
+                       },
+    "diagnosticRun":  {
+                          "evidenceRoot":  "build/g2-c05-gemini38-20261105-170000-perfect",
+                          "stagedApk":  {
+                                            "path":  "E:\\majiang-review\\g2-c05-android-validation-ds-20261103\\build\\c05-emulator-build-staged-20261104-030443\\Mahjong-emulator-x86_64.apk",
+                                            "bytes":  54031339,
+                                            "sha256":  "1E57F07C6961886407F41C7CFAAE583ABCEE7BA8674E0CF7834581DB4272E2A9"
+                                        },
+                          "manifest":  {
+                                           "path":  "build/g2-c05-gemini38-20261105-170000-perfect/manifest.json",
+                                           "bytes":  40996,
+                                           "sha256":  "080490F13D2A5853199A5895C8375A219FF827FD68DB10527BD28B9814169B0D"
+                                       },
+                          "logcat":  {
+                                         "path":  "build/g2-c05-gemini38-20261105-170000-perfect/app-logcat.txt",
+                                         "bytes":  6653679,
+                                         "sha256":  "431EEEA01ED6A38561EA72B811DD2805E2A8AD27A4C9FF38EFCB6E658AA28C80"
+                                     },
+                          "launchPid":  2848,
+                          "relaunchPid":  5293,
+                          "screenshots":  {
+                                              "menu":  {
+                                                           "path":  "05-capture-menu/20261105-165200-capture-733967ef/20261105-165204-440-screen.png",
+                                                           "bytes":  505264,
+                                                           "sha256":  "A1466AA43FC607ABCB9EB14F4855162FC348F776D76DE8B849C4FE287E95A0C7",
+                                                           "visualSemantic":  "SystemUI ANR dialog overlay (\u0027System UI isn\u0027t responding\u0027)"
+                                                       },
+                                              "quitModal":  {
+                                                                "path":  "07-capture-quit-modal/20261105-165233-capture-b0a34744/20261105-165239-081-screen.png",
+                                                                "bytes":  916718,
+                                                                "sha256":  "377191C747FFF919A528C955827DDDE2F637BE39EF89C1119B49B9270F0B672B",
+                                                                "visualSemantic":  "Unshaded Menu after ANR overlay cleared"
+                                                            },
+                                              "menuRestored":  {
+                                                                   "path":  "09-capture-menu-restored/20261105-165313-capture-c146c06c/20261105-165319-093-screen.png",
+                                                                   "bytes":  492152,
+                                                                   "sha256":  "63239AE3CD7E1B80658C13DC442E6FD5CB2973E8026AA153FEAD68797A730162",
+                                                                   "visualSemantic":  "Quit confirmation modal dialog (\u0027缂傚倸鍊搁崐鎼佸磹閹间礁纾归柟闂寸绾惧綊鏌熼梻瀵割槮缁炬儳缍婇弻鐔兼⒒鐎靛壊妲紒鐐劤缂嶅﹪寮婚悢鍏尖拻閻庨潧澹婂Σ顔剧磼閻愵剙鍔ょ紓宥咃躬瀵鎮㈤崗灏栨嫽闁诲酣娼ф竟濠偽ｉ鍓х＜闁绘劦鍓欓崝銈囩磽瀹ュ拑韬€殿喖顭烽弫鎰緞婵犲嫷鍚呴梻浣瑰缁诲倿骞夊☉銏犵缂備焦顭囬崢閬嶆⒑闂堟稓澧曢柟鍐查叄椤㈡棃顢橀姀锛勫幐闁诲繒鍋涙晶钘壝虹€涙ǜ浜滈柕蹇婂墲缁€瀣煛娴ｇ懓濮嶇€规洖宕埢搴∥熼幁宥囧仱濮婂宕掑▎鎰偘濡炪倖娲橀悧鐘茬暦瑜版帒绠柦妯侯槺閿涙盯姊洪棃娑氬妞わ箑宕悾鍨瑹閳ь剟寮婚垾鎰佸悑閹艰揪绲肩划鎾绘煙閸忓吋鍎楅柣鎾崇墦瀵偊宕卞☉娆戝帗閻熸粍绮撳畷婊冾潩椤撶姭鏀虫繝鐢靛Т閸熶即姊介崟顖涚厱婵炴垶锕崝鐔兼煕濡寧顥夋い顏勫暣婵″爼宕卞Ο鐑樻闂備線娼荤徊濠氬磿闁秴鐓濋柟鐐墯閻撱儵鏌涢弴鐐典粵妞ゆ梹妫冨铏圭磼濡搫顫屽銈嗘处閸樹粙寮查崼鏇ㄦ晜闁割偆鍠庡▓銊╂⒑瑜版帒浜伴柛妯款潐缁傚秴顭ㄩ崼鐔哄幍闂佸憡绻傜€氼參藟濠婂厾鐟邦煥閸涱厺澹曠紓浣虹帛缁诲倿顢氶妷鈺佸嚑妞ゆ劏鎳囬崑鎾诲即閻斾警娲搁梺闈╁瘜閸樺墽澹曟總绋跨骇闁割偅绋戞俊鍏肩箾閹碱厼鏋熸い銊ｅ劦閹瑩宕ｆ径濠冪亷婵＄偑鍊戦崹娲€﹂崼銉嬪洭骞庨懞銉у幗闂侀潧鐗嗙€氼喚绮ｉ弮鈧幈銊︾節閸愨斂浠㈤悗瑙勬处閸嬪﹤鐣烽悢纰辨晝妞ゆ劧鍙婇敐澶嬧拻濞撴埃鍋撻柍褜鍓涢崑娑㈡嚐椤栨稒娅犳い鏍仦閻撴洟鏌熼悙顒佺稇闁告繆娅ｉ埀顒冾潐濞插繘宕曢幎钘夌劦妞ゆ帒锕︾粔鐢告煕閻樺磭澧辩紒顔碱煼瀹曠兘顢橀悩纰夌床婵＄偑鍊栧濠氬储瑜忛弫顕€濡搁埡鍌滃幈闁诲函缍嗛崑鍛焊椤撱垺鐓熼柨婵嗘搐閸樺鈧娲栨晶搴ㄥ箲閸曨垱鍊绘俊顖濆吹瑜版瑩姊婚崒姘偓鎼佸磹閹间礁纾归柟闂寸绾惧綊鏌ｉ幋锝呅撻柛銈呭閺屾盯顢曢敐鍡欙紩闂侀€炲苯澧剧紒鐘虫尭閻ｉ攱绺界粙璇俱劍銇勯弮鍥撴繛鍛墦濮婄粯鎷呮笟顖滃姼闂佹椿鍓欓妶绋跨暦閹存績妲堥柕蹇娾偓鍏呯棯濠德板€х徊浠嬪疮椤栫偞鍋傞柣鏃堟櫜缁诲棙銇勯弽銊ょ繁闁稿簺鍎甸弻娑㈠Χ閸℃瑦鍣伴梺鍝勭焿缁犳挸鐣峰鈧、鏃堝礋椤掑倵鍋撻崜褏纾藉ù锝堟鐢盯鏌ｉ埡濠傜仸闁绘侗鍠氶埀顒婄秵娴滄牠寮告惔銊у彄闁搞儯鍔嶇壕濠氭煙椤曞棛鎮肩紒杈ㄦ崌瀹曟帒鈻庨幒鎴濆腐濠电姵顔栭崳锝壦夐幘璇茬闁圭儤顨忛弫宥嗙箾閹寸偛鐒归柡鈧搹顐ょ瘈闁汇垽娼у瓭濠电偛鐪伴崐鏇灻洪崸妤佲拻濞达絼璀﹂悞楣冩煛閸偄澧撮柟顖氱焸椤㈡瑩鎮惧畝鈧ぐ楣冩⒑閸濆嫭鍌ㄩ柛銊︽そ閸╂盯骞嬮敂钘変化闂佹悶鍎崝宀€寰婄紒妯镐簻闁瑰搫顑呴悘鏌ユ煛鐏炲墽娲存鐐差儏閳规垿宕奸埗瑁ゅ姂閹鎲撮崟顒傤槰缂備緡鍠楅幑鍥嵁閸愵喖顫呴柨娑樺濡绢喗绻濋姀锝嗙【闁挎洏鍎甸、姗€宕稿Δ浣叉嫽婵炶揪绲块崕銈夊吹閳ь剚绻濋埛鈧崘顔煎及闂佽鍠楀钘夘嚕椤曗偓瀹曠厧鈹戦崶鈹惧亾椤掑嫭鈷戦柛娑橈工婵箓鏌涢悩鎰佹疁闁诡噯绻濇俊鐑芥晜閸撗呮闂傚倸鍊搁悧濠勭矙閹烘澶愭倷绾版ê浜鹃柣鐔哄閸熺偟绱掔拠鎻掓殻濠碉紕鏁诲畷鐔碱敍濮樿京娼夐梻渚€鈧偛鑻晶顕€鎮￠妶澶嬬厽闁哄倹顑欏▓鐘崇箾閸忚偐澧紒缁樼☉椤斿繘顢欓懡銈囨晨闂備礁婀遍、濠囧春閺嶎厼桅闁告洦鍨扮粻濠氭偣妤︽寧銆冪紒顔ㄥ嫮绡€闁靛骏缍嗗鎰箾閸欏澧甸柛鈺冨仱楠炲鏁傞挊澶嗗亾閻戣姤鐓欑紓浣姑粭姘舵煕婵犲骸鐏︽慨濠冩そ閹筹繝濡堕崨顔界槪闂備礁鎼幊鎰箾閳ь剟鏌ｅ☉鍗炴珝鐎规洘锕㈤、娆撴寠婢跺棗浜鹃柣鎴ｅГ椤ュ﹥銇勯幒鎴濇殭缂佹唻闄勯幈銊ф喆閸曞灚鐤佸┑顔硷攻濡炶棄鐣烽悜绛嬫晣闁绘劖褰冮‖鍡涙⒒娴ｇ瓔娼愰柟顔煎€荤划濠氬冀瑜忛弳锕傛煏韫囧鈧牠鎮為懖鈹惧亾楠炲灝鍔氭俊顐ｇ洴瀹曘垺绂掔€ｎ偆鍘甸梺绋跨箰閸氬宕曞Δ鍛厱闁靛鍎抽敍宥囩磼椤旇姤顥堥柟顔荤矙瀹曘劍绻濋崟顐㈢疄闂備浇顕ч崙鐣岀礊閸℃顩叉繝闈涱儏闂傤垳鎲搁悧鍫濈瑲闁绘挾鍠栭弻銊モ攽閸℃ê娅ｅ┑鈩冨絻椤兘寮婚敐澶嬫櫜闁糕剝鐟ч悿鍕倵鐟欏嫭绀堥柛鐘崇墵閵嗕礁螖閸涱厾锛滃┑顔斤供閸撴盯顢欓崶顒佲拻闁稿本鐟︾粊鐗堛亜閺囧棗鎳忓畷鏌ユ煙閻戞﹩娈旂痪鎯ь煼閺岋綁寮崒姘粯闂佹眹鍊楅崑鎾诲Φ閸曨垰绠涢柍杞拌兌娴犳儳鈹戦鍡欏埌閻庢凹鍓熼崺鐐哄箣閿旇姤娅栭梺鍛婃处閸嬪倿寮堕鐔虹閻庣數顭堢敮鑸电箾瀹割喖骞栭柣锝囧厴楠炴帡骞嬮鐘插汲闂備礁鎲℃笟妤呭垂閻楀牊鍎熷┑鐘叉处閳锋帡鏌涚仦鍓ф噮妞わ讣绠撻弻鐔哄枈閸楃偘鍠婇悗娈垮枤閺佸銆佸Δ鍛＜婵犲﹤鎳愰崢顖炴⒒娴ｅ憡鎯堢紒瀣╃窔瀹曟垿宕卞Ο灏栨灃閻庡箍鍎卞Λ娑氱不妤ｅ啯鐓欓悗娑欘焽閹冲啴鏌ｈ箛濠冩珖缂佽鲸甯￠、鏇㈠閳跺灕鍥ㄧ厸鐎光偓閳ь剟宕伴弽顓犲祦闁糕剝鍑瑰Σ濠氭煟閵忊晛鐏涢柛鏃€鍨垮璇测槈濮橈絽浜鹃柨婵嗛娴滄繈鎮樿箛鏇熸毈闁哄瞼鍠栭幃鐑藉级濞嗗彞绱斿┑鐘殿暯閸撴繈骞冮崒娑欏弿闁逞屽墴閺岋絽螣閸濆嫯鍩炲銈冨劜瀹€绋款潖濞差亝鍤掗柕鍫濇噺閻庨箖姊洪懡銈呮瀭闁稿孩濞婇崺鈧い鎺嶇閸ゎ剟鏌涘Ο鍝勨挃闁告帗甯″畷濂稿Ψ閵壯屾О婵＄偑鍊栧濠氬疾椤愶箑鍌ㄩ梺顒€绉甸埛鎴︽⒒閸喍绶遍柣鎺楃畺閺屾稒鎯旈姀銏犲绩閻庤娲橀崹鎸庝繆閻戣棄鐓涢柛灞剧矊楠炴绻濋悽闈涗沪闁搞劑娼ч悾鐑筋敆閸曨偄鍤戝┑鐐村灟閸ㄦ椽骞婂鑸电叆婵犻潧妫Σ褰掓煟閹捐泛校缂佺粯鐩鍫曞箣椤撶偛澹夋繝鐢靛仜閹冲骸煤椤撱垹钃熼柕濞垮劗濡插牊绻涢崱妯虹仼闁绘挴鍋撻梻鍌欑閻ゅ洭锝炴径鎰瀭闁秆勵殔閺勩儵鏌曟径鍡樻珔妤犵偑鍨烘穱濠囧Χ閸涱厽娈ㄩ梺鍛婄墬閻楃姴顫忕紒妯诲闁告稑锕ら弳鍫濐渻閵堝骸骞栨俊顐ｇ箓閻ｇ兘宕奸弴鐐靛幐婵炶揪绲炬禍浠嬪磻婵犲洦鈷掗柛灞剧懅椤︼箑顭块悷甯含鐎规洘鍨剁粭鐔煎焵椤掆偓閻ｇ兘寮撮姀鐘烘憰闂侀潧顦崕鎶藉储闁秵鈷戦柛锔诲幖閸斿鏌涢妶鍡曚孩闁靛洦鍔欓獮鎺楀箻鐎涙褰搁梻鍌欑劍閹爼宕曞鍫濈妞ゎ厽鍨归埀顒勪憾濮婂宕掑▎鎴濆闂佽鍠栭悥鐓庣暦閹版澘绠涢柡澶庢硶閿涙盯姊洪悷鏉库挃缂侇噮鍨堕崺娑㈠箳閹炽劌缍婇弫鎰板川椤撗勵棏闂備礁鎲＄喊宥呂涢崘顔艰摕闁斥晛鍟欢鐐测攽閻樻彃顏ч柧蹇撻椤啴濡舵惔鈥愁潻濡炪倖鍨甸ˇ顖烇綖韫囨拋娲敂閸涱厺鐢婚梻浣筋潐椤旀牠宕板璺烘辈婵炴垯鍨洪埛鎴︽煙閼测晛浠滃┑顔瑰亾婵犵妲呴崑鍕偓姘嵆楠炲啴骞嗚閺嗗姊洪銊╂鐎点倖妞藉娲焻閻愯尪瀚板褎鎸抽弻鏇㈠幢閺囩媭妲梺瀹狀嚙闁帮綁鐛鈧鍫曞箣閻愬灚娈堕梻鍌氬€风粈渚€宕崸妤€绠规い鎰剁畱閻ゎ喗銇勯弽顭戝毀闁圭儤鎸婚崕鐔兼煏婵犲繗鍚傞柟宄邦煼濮婅櫣绮欓幐搴㈡嫳闂佽崵鍟欓崶浣告喘閺佸啴鍩€椤掑嫧鈧箓宕稿Δ浣镐画闁汇埄鍨奸崰娑㈠触椤愶附鍊甸悷娆忓缁€鍐煕閵娿儲鍋ョ€规洘妞介崺鈧い鎺嶉檷娴滄粓鏌熼悜妯虹仴妞ゅ浚浜弻锝夊箻鐎靛憡鍣伴梺鍝勬湰閻╊垶鐛崶顒夋晢闁逞屽墰閻ヮ亣顦归柡灞剧洴閹晠骞囨担鍝勫Ш闂備線鈧偛鑻晶鍙夈亜椤愩埄妲搁悡銈嗘叏濡炶浜鹃悗瑙勬礀缂嶅﹤鐣风粙璇炬棃宕橀妸褋鍋婂┑鐘愁問閸犳濡靛☉銏犵；闁瑰墽绮悡娆撴煣韫囷絽浜為柣顓熷笚娣囧﹪顢曢姀鐘虫闂佸疇妫勯ˇ顖炲煝鎼淬劌绠ｉ柡鍌氥仒婢规洖顪冮妶鍡樺蔼闁搞劍妞介崺娑㈠箳閹炽劌缍婇弫鎰板川椤斿吋娈橀梻浣告憸閸犳捇宕戦悙鍨床婵炴垶纰嶇€氭氨鎲歌箛娑欏仼闁汇垻顣介崑鎾舵喆閸曨剛顦ㄧ紓渚囧枛閻倿宕洪妷锕€绶為柟閭﹀墰閸橆剟姊洪崨濠勭畵閻庢凹鍙冨畷鏉课熺悰鈩冩杸闂佹寧绋戠€氼剟宕㈤幘顔界厱闁冲搫顑囩弧鈧悗瑙勬礃鐢帟鐏冩繛杈剧到婢瑰﹥瀵奸弽顐ょ＝闁稿本鑹鹃埀顒佹倐瀹曟劙骞栨担鍝ワ紮闂佺粯鍨兼慨銈夊磹閸ф鐓ラ柡鍥╁仜閳ь剙缍婂鎻掆攽鐎ｎ偆鍘撻柡澶屽仦婵粙顢欐径鎰厸閻庯綆鍋呴ˉ鍫ユ煛瀹€瀣瘈鐎规洖鐖兼俊鐑藉Ψ瑜岄惀顏堟⒒娴ｈ櫣甯涢柟绋款煼閹兘鍩￠崨顓℃憰濠电偞鍨惰彜婵℃彃鐗婇幈銊ノ旈埀顒勬偋婵犲洤鏋佸Δ锝呭暞閳锋垹绱掔€ｎ亜鐨￠柡鈧繝姘厱闁哄啠鍋撻柣妤冨У娣囧﹪鎮界粙璺槹濡炪倖鐗楅崙鐟邦焽婵犲洦鈷戦柣鎰閸旀岸鏌涢悢閿嬪仴妤犵偞顨婇幃浠嬪川婵炵偓瀚奸梺鍝勵槺閸嬬偞绔熼崱娑樼鐎广儱顦伴悡鏇㈡煛閸愶絽浜鹃梺缁橆殕濞茬喖銆佸璺何ㄩ柍杞拌兌椤︽澘顪冮妶鍡樺鞍缂佸鍨剁粋宥嗐偅閸愨晝鍙嗗┑鐘绘涧濡盯宕欓崷顓犵＜闁靛ň鏅╁Λ鎴犵磼鏉堛劍宕岀€规洘甯掗埥澶娾枎韫囨洩绱﹀┑鐘愁問閸犳牠鏁冮敂鎯у灊妞ゆ牜鍋涚粻顖炴煕濞戞瑦缍戠€瑰憡绻傞埞鎴︽偐閹绘巻鍋撻悷鎵虫灁婵せ鍋撴慨濠勭帛閹峰懘鎮滃Ο鐑樼暚闂備胶顢婃慨銈囧垝閹捐鐏抽柨鏇炲€搁柋鍥煏婢舵ê鏋熼柡鍜佷邯濮婃椽骞愭惔锝囩暤濡炪倧瀵岄崹鍫曞蓟鐎ｎ喖鐐婃い鎺嶈兌閸樻悂姊洪幖鐐插姉闁哄懏绋掔粋鎺曨樄闁哄矉绱曟禒锕傛偄瀹勭増鐏撳┑鐐存尭椤兘寮婚弴銏犻唶婵犻潧娴傚Λ鐐电磽娴ｈ娈曢悽顖ょ節楠炲啫螖閳ь剟锝炲┑瀣亗閹艰揪绱曢惈鍕⒒娴ｈ櫣銆婇柡鍛矒閹嫰顢涢悙闈涚ウ闁诲函缍嗛崰妤呭磻閹扮増鐓熼柕蹇嬪焺閺嗘粎绱掗崡鐐叉毐闁宠鍨块幃娆撴嚋闂堟稒閿紓鍌欐祰瀵挾鍒掑▎鎾存櫜闁绘劕鎼崘鈧銈嗘寙閸曨剚鐝曢梻鍌欑閹测剝绗熷Δ鍛獥闁哄诞灞芥闂佺鍕垫畷闁抽攱鍨块弻鐔兼嚃閳轰椒绮堕梺鍛婃⒐閹告娊寮诲☉銏犵闁哄鍨甸幗鐢告⒑鐠団€虫珯缂佺粯绻堥獮鍐閵堝懐顔愰梺缁樺姈婢瑰棝鎯勬惔銊︹拻濠电姴楠告禍婊勭箾鐠囇呯暤妤犵偞鍔栫换婵喰掔粙娆炬Ц妞ゎ厹鍔戝畷鐔煎煛閳ь剛鑺辨繝姘拺闁圭娴风粻鎾绘煟濡も偓濡瑧绮嬪澶婃嵍妞ゆ挾濮烽敍婊堟煛婢跺﹦澧戦柛鏂胯嫰闇夋い鏃堟暜閸嬫挾鎲撮崟顒傤槰闁汇埄鍨辩敮锟犳晲閻愭祴鏀介柛鐘靛鐢帡鍩㈠鍥ㄥ珰闁圭粯甯╂导灞解攽閻愯尙澧旂紒顔界懇瀵鏁愭径濠勭杸濡炪倖甯掗ˇ顖氣枔閼哥數绡€闁冲皝鍋撻悘鐐舵閳峰姊洪崫鍕伇闁哥姴閰ｉ幃楣冩晸閻樺啿浜遍梺鍓插亝缁诲啴鎮炬繝姘厽閹兼番鍊ゅ鎰箾閸欏鐭掔€规洘顨呴～婊堝焵椤掑嫬违濞达絽澹婂銊╂煃瑜滈崜鐔肩嵁閸愩劉鏋庨柟鐐綑濞堛倕顪冮妶鍡楃瑨妞わ富鍨跺鏌ュΨ閳哄倵鎷婚梺绋挎湰閼归箖鍩€椤掍焦鍊愮€规洘鍔欓獮鏍ㄦ媴閸濄儻绱梻浣哥秺濡法鎷嬮弻銉ョ劦妞ゆ帒锕﹂悾鍨亜閵忊槅娈滅€规洜鍠栭、鏇㈠Χ韫囨洖鑰块梻鍌氬€风粈渚€骞夐垾瓒佹椽鏁冮崒姘憋紮闁诲函缍嗛埀顑惧灪濡炰粙銆侀弮鍫濆窛妞ゆ梻鏅ぐ鍥⒒閸屾瑨鍏屾い顓炵墦瀵敻顢楅埀顒勶綖濠靛惟闁冲搫锕ラ弲鈺呮⒑閹肩偛鍔撮柛鎾村哺閸╂盯骞嬮敂鐣屽幈濠电偞鍨堕敃顐﹀绩婵犳碍鍊甸柛顭戝亞閹冲洭鏌＄仦鍓р槈闁宠棄顦靛畷锟犳倷瀹割喗楠勯梻鍌欐祰瀹曠敻宕伴幇顔藉床闁割偅绻嶅鏍磽娴ｈ偂鎴炲垔閹绢喗鐓ｉ煫鍥ㄦ礃閸も偓缂備焦銇涢埀顒佸墯濞撳鏌曢崼婵嗘殭濠碘€炽偢閺岀喖鎼归顒冣偓鎸庮殽閻愭彃鏆㈡い锕€婀遍埀顒冾潐濞插繘宕濋幋锔衡偓浣糕槈濡攱顫嶅┑鈽嗗灥濞咃綁宕惔銊︹拻闁稿本鐟ㄩ崗宀€鐥鐐靛煟鐎规洘绮岄埞鎴炵節閸屾粎鈽夊┑鐘垫暩閸嬫盯鎮洪妸褍鍨濈€广儱娲ら崹婵嬫煙閹规劦鍤欓柦鍐枛閺岋綁寮崒姘粯缂備胶瀚忛崶銊у幈濡炪値鍘介崹闈涒枍濮椻偓閺岋繝宕遍幇顒備紕缂備浇椴搁幐濠氬箯閸涙潙绀堥柛娆忥紞閿曞倹鈷戦悹鍥皺缁犲弶鎱ㄥΟ绋垮妤犵偞鍨挎慨鈧柣姗嗗亝椤秹姊洪棃娑氱濠电偐鍋撻梺鍝ュ仜閻栫厧顫忛搹鍦＜婵☆垱妞垮鍨攽閻愬弶瀚呯紓宥勭窔楠炲啴鍩勯崘鈺侇€撻梺鍛婃尭瀵墎鈧潧鐭傚娲濞戞艾顣洪梺鍝ュ櫏閸嬪懏绌辨繝鍥х濞达絽婀遍崢閬嶆煙閼圭増褰х紒鏌ョ畺瀵娊顢楁笟鍥啍闂佺粯鍔栬ぐ鍐汲濞嗘挻鐓冮悹鍥ㄧ叀閸欏嫭顨ラ悙鐤殿亪鎮鹃悜钘夌倞閻犺櫣鍎ら弶鎼佹⒒閸屾艾鈧绮堟担闈╄€块梺顒€绉寸壕鍧楁煏閸繍妲哥紒鐘虫緲閳规垿鎮╅崘鎻掓瘓闂佽桨绀侀敃顏堝蓟閻旇　鍋撻悽娈跨劸濞寸姵甯炵槐鎺旀嫚閸欏妫﹂梺鍝勭焿缂嶄線鐛崶顒€绀傞柛婵勫劤濞夊潡姊绘笟鈧埀顒傚仜閼活垶宕濋鐐寸厱婵炴垵宕悘鐔虹磼濡も偓椤﹂潧顫忓ú顏呭仭闂侇叏绠戝▓鑸电節濞堝灝娅嶆い銉︽尵閸掓帡宕奸悢铏圭槇闂佺鏈〃鍡涘棘閳ь剟姊绘担铏瑰笡闁挎氨鈧鍠栭悥濂哥嵁閺嶎厼绠涢柣妤€鐗忛崣?)"
+                                                               },
+                                              "lobby":  {
+                                                            "path":  "11-capture-lobby/20261105-165352-capture-a8aff3c5/20261105-165358-156-screen.png",
+                                                            "bytes":  486965,
+                                                            "sha256":  "57570E6CEBD37CFBF0B9582A03C40DD49694C8743A52C63D5F63A0EEE5116DD7",
+                                                            "visualSemantic":  "Persistent Quit modal dialog (Cancel tap did not dismiss)"
+                                                        },
+                                              "table":  {
+                                                            "path":  "13-capture-table/20261105-165427-capture-573346fe/20261105-165433-779-screen.png",
+                                                            "bytes":  486965,
+                                                            "sha256":  "57570E6CEBD37CFBF0B9582A03C40DD49694C8743A52C63D5F63A0EEE5116DD7",
+                                                            "visualSemantic":  "Persistent Quit modal dialog (Start tap consumed by modal)"
+                                                        },
+                                              "c1Home":  {
+                                                             "path":  "15-lifecycle-c1-home/c1-home.png",
+                                                             "bytes":  1445082,
+                                                             "sha256":  "65A29BA934EC770D39FB26FF8A89EDC84302E1AED89C591F679D702EC93D7F31",
+                                                             "visualSemantic":  "Android Home screen wallpaper"
+                                                         },
+                                              "c1Resumed":  {
+                                                                "path":  "16-lifecycle-c1-resumed/c1-resumed.png",
+                                                                "bytes":  486965,
+                                                                "sha256":  "57570E6CEBD37CFBF0B9582A03C40DD49694C8743A52C63D5F63A0EEE5116DD7",
+                                                                "visualSemantic":  "Persistent Quit modal dialog on app resume"
+                                                            },
+                                              "c2Exit":  {
+                                                             "path":  "17-lifecycle-c2-exit/c2-exit.png",
+                                                             "bytes":  1450571,
+                                                             "sha256":  "A15F551EA4B2ABD67269E7DC1F08D3734A0FDB2E68E4E8F0F150F8242D1D5C03",
+                                                             "visualSemantic":  "Android launcher desktop wallpaper after Application.Quit() process termination"
+                                                         },
+                                              "c2Relaunched":  {
+                                                                   "path":  "18-lifecycle-c2-relaunched/c2-relaunched.png",
+                                                                   "bytes":  12638,
+                                                                   "sha256":  "192EE66D1B94B905930F0D1E5C8968DA83E1697417CEBCAFEF91EAA2B206253D",
+                                                                   "visualSemantic":  "Early blank launch frame under cold start PID 5293"
+                                                               }
+                                          },
+                          "lifecycle":  {
+                                            "chain1":  "PARTIAL",
+                                            "chain2":  {
+                                                           "status":  "PASS",
+                                                           "quitModalConfirmed":  true,
+                                                           "processTerminated":  true,
+                                                           "relaunchColdState":  true,
+                                                           "newPid":  5293
+                                                       },
+                                            "chain3":  {
+                                                           "status":  "PASS",
+                                                           "dumpsysDisplaysSha256":  "810E7E58ECBFA4652CAA505D6547E92D92CA18534BD5061017515EDAA8C97425",
+                                                           "dumpsysInputSha256":  "C9D54C60ED8E28E4691F37F5D83B4B4B11177695EE2E2705EA7077A3543D6942"
+                                                       }
+                                        }
+                      },
+    "limitations":  [
+                        "Current latest production candidate attempt is Round15: Unity native exit 1, BuildReport 10 errors/229 warnings, and no APK. Round16 reproduced ordinary-path access failures for three exact logged package assets; shader and CoreCLR errors are not all attributed to this path issue.",
+                        "Round16 Unity-bundled csc help, serial tiny compile, and two-way tiny compiles exited native 0; these bounded probes do not reproduce full Unity package import or peak concurrency.",
+                        "Current-candidate D1/R1/V1/I1/L1/F1 device rows are NOT_RUN; the Round15 519-entry integrity seal is separate evidenceSeal=PASS, not device F1.",
+                        "V4 remains the sole production baseline; V5 G2-G5 not approved."
+                    ],
+    "externalLicenseCheckpoint":  {
+                                      "status":  "HISTORICAL_ROUND11_EXIT198_SUPERSEDED_BY_ROUND16",
+                                      "blocker":  "B1",
+                                      "exitCode":  198,
+                                      "detail":  "Round11 old Unity path exit 198 is historical. Round14 selected Unity path passed the entitlement preflight and later AndroidPlayer module paths were observed restored. The current production failure is Round15 Unity native exit 1 with 10 BuildReport errors/229 warnings and no APK; it is not classified as a current license or missing-module blocker.",
+                                      "handoverAction":  "NONE"
+                                  },
+    "round9Evidence":  {
+                           "root":  "build/g2-c05-gemini38-20261105-round9-aa8d729f236a44539247894bfcd22e56",
+                           "sourceRunnerSha256":  "3D2AE33577F3B15BDB78FCD41B1D14CC93C65FEB952F277EA54D7FDF24308781",
+                           "testSuite":  {
+                                             "assertions":  101,
+                                             "status":  "PASS",
+                                             "fixtures":  15,
+                                             "summary":  "build/g2-c05-gemini38-20261105-round9-aa8d729f236a44539247894bfcd22e56/test-suite-final/test-summary.json",
+                                             "summarySha256":  "B050BD5814C3E4FBB130877063D9168DB1A2EB8415714A3C81A9CE7A3CB85C37"
+                                         },
+                           "invalidArtifactProbe":  "build/g2-c05-gemini38-20261105-round9-aa8d729f236a44539247894bfcd22e56/pipeline-invalid-candidate-3",
+                           "assemblerProbe":  {
+                                                  "duplicateExit":  1,
+                                                  "path":  "build/g2-c05-gemini38-20261105-round9-aa8d729f236a44539247894bfcd22e56/assembled-review-final7/manifest.json",
+                                                  "firstExit":  0,
+                                                  "sentinelPreserved":  true,
+                                                  "entries":  17,
+                                                  "manifestSha256":  "2D2E67846BBABACC402FA1C78A6E92A05F8D3A66ECDCA4B14F7969723C7B0477"
+                                              },
+                           "hardware":  "NOT_RUN",
+                           "backgroundTaskAndPIDState":  "UNKNOWN",
+                           "reviewStatus":  "REWORK_REQUIRED",
+                           "resumedPipelineSha256":  "68E8C545847B7554E67581689334C79BC782C361F8E05BB6CB8DCFCA871D5976",
+                           "assemblerSha256":  "CE2DB6426C93EB273A05D5F4C6DB38C4D17291FE388EC1E8873DF14139C21A5D",
+                           "invalidArtifactStderrSha256":  "EC28A677822C7DF019282A4DD167052A1E573D142F737CB8130C264147F05978",
+                           "accidentalProbe":  {
+                                                   "path":  "build/c05-android-emulator-device/20261105-230301-probe-ff0f5f8c/probe.json",
+                                                   "bytes":  4217,
+                                                   "sha256":  "D209932F17CA0210A6517B5E1647CAEDF3B6628D08E20BD63AEC53BED20E89E4",
+                                                   "adbDevicesExit":  0,
+                                                   "devices":  "empty",
+                                                   "observedAdbPid":  31540,
+                                                   "pidStartLocal":  "2026-11-05 23:00:48",
+                                                   "ownership":  "UNKNOWN_LEFT_UNTOUCHED"
+                                               },
+                           "native7StderrSha256":  "8E557553F92C596F344F4BECD6554AD20DD3895B944E2CF6B5B9071A0E358F6A",
+                           "processTimeoutCleanup":  "PASS residual=0",
+                           "foreignRecord":  "PASS foreign alive after caller; fixture process later cleaned by matching pid+ticks",
+                           "sameInstanceResume":  "PASS: visual review -\u003e Input(back) -\u003e BackgroundResume -\u003e lifecycle review -\u003e Stop -\u003e Shutdown; final checkpoint FINISHED; fixture process cleaned by matching PID+ticks"
+                       },
+    "round10Rework":  {
+                          "executor":  "codex/gpt-6-luna",
+                          "receiverSessionId":  "01a1ac33-0184-7041-b5d4-61030a71092d",
+                          "reviewConclusion":  "CODE_BLOCKERS_REPAIRED_DEVICE_ACCEPTANCE_PARTIAL",
+                          "licenseStatus":  "BLOCKED_LICENSE_EXIT_198",
+                          "finalR_V_I_L":  "NOT_RUN",
+                          "diagnostics":  "PARTIAL",
+                          "defects":  [
+                                          {
+                                              "id":  "D-R9-01",
+                                              "severity":  "BLOCKER",
+                                              "status":  "FIXED_COMPONENT_LEVEL",
+                                              "evidence":  [
+                                                               "build/review-round10-b01cfe923f954492a44836a773d3e5f5/preflight-round10-v4.json",
+                                                               "build/review-round10-b01cfe923f954492a44836a773d3e5f5/receipt-contract-matrix-round10-v4.json",
+                                                               "build/review-round10-closure-negative-1c3f5ae37eff42a5a8fb1e2721af7c06/closure-negative-4f4c5525c1e644f08d45712082479ea9.json"
+                                                           ]
+                                          },
+                                          {
+                                              "id":  "D-R9-02",
+                                              "severity":  "BLOCKER",
+                                              "status":  "FIXED_COMPONENT_LEVEL",
+                                              "evidence":  [
+                                                               "build/review-round10-b01cfe923f954492a44836a773d3e5f5/capture-matrix-round10.json",
+                                                               "build/review-round10-b01cfe923f954492a44836a773d3e5f5/drain-v3-aff3dbd1162c442ab9decdb4eb846135/production-drain-round10.json",
+                                                               "build/review-round10-b01cfe923f954492a44836a773d3e5f5/drain-v3-aff3dbd1162c442ab9decdb4eb846135/rootreuse-v2-7d677d50098044a19e23c640970ac8cc/root-reuse-rejection-v2.json"
+                                                           ]
+                                          },
+                                          {
+                                              "id":  "D-R10-01",
+                                              "severity":  "BLOCKER",
+                                              "status":  "FIXED_CONTROL_FLOW_LEVEL",
+                                              "newInformation":  "ResumeReview branch was added in round 9 outside the initial-run finally; it did not exist in round 8.",
+                                              "evidence":  [
+                                                               "build/review-round10-b01cfe923f954492a44836a773d3e5f5/resume-failure-matrix-round10.json",
+                                                               "build/review-round10-b01cfe923f954492a44836a773d3e5f5/resume-input-round10-final.json",
+                                                               "build/review-round10-resume-cleanup-f46e8825f55c4d1284462e8859e5d730/resume-case-round10m-background-fail-cleanup-fail/failure-and-cleanup.json"
+                                                           ],
+                                              "cleanupFailureReplaySha256":  "ADD7501A80CDE76557C8F19A67198CE257AD05AEF9E4F9FD096718224A76B48B"
+                                          }
+                                      ],
+                          "testSummary":  {
+                                              "assertions":  105,
+                                              "fixtures":  15,
+                                              "sha256":  "3C080E3639AA87E80D17BEA31E186021E617E6E1AA568E04B3044BAD3FA9DF98",
+                                              "path":  "build/c05-emulator-tests-round10-b01cfe923f954492a44836a773d3e5f5-6/test-summary.json"
+                                          },
+                          "historicalAssembler":  {
+                                                      "status":  "FIXED_NOT_REOPENED",
+                                                      "entries":  17,
+                                                      "manifestSha256":  "2D2E67846BBABACC402FA1C78A6E92A05F8D3A66ECDCA4B14F7969723C7B0477"
+                                                  },
+                          "scope":  "Four authorized files only; no product, builder/editor, license, push or release changes.",
+                          "sourceSha256":  {
+                                               "runner":  "13E27850A59B2B8B8F797237D517D9B1330F855EDEE190396D9C188E052DD022",
+                                               "tests":  "FF6873CB282E7C8C08A18BE59E11D1911627DE57B0873D993B5F706E8F7D977A",
+                                               "caller":  "EAA87BD8A95DA14CF9EC78A1F9672C92D5E16C6E3D059D73DE2D736FA1A3BA91"
+                                           },
+                          "evidenceManifest":  {
+                                                   "path":  "build/review-round10-sealed-474596f634e944a189d73677466629af/manifest.json",
+                                                   "entries":  814,
+                                                   "sha256":  "AE2DE4BB65252F2783FF4A3ABA40E77E5BC6C146C38908E642219D88548D4455"
+                                               }
+                      },
+    "round11Rework":  {
+                          "executor":  "codex",
+                          "receiverSessionId":  "01a1ac33-0184-7041-b5d4-61030a71092d",
+                          "reviewConclusion":  "REPAIRS_COMPLETE_COMPONENT_VERIFIED_DEVICE_ACCEPTANCE_PARTIAL_NOT_APPROVED",
+                          "diagnostics":  "PARTIAL",
+                          "caller":  "build/g2-c05-codex-round11-e78587502fdf40cb8a0a744edd383bca/resumed-pipeline.ps1",
+                          "sourceSha256":  {
+                                               "runner":  "F71A35419324AADDDF99D721474A9262E2C1687265CA81AC6D6FEE1D19678DB3",
+                                               "tests":  "590B613B004F9CA365F23F72450D2000DAAB4651759942D2B3561FA7491A1A3E",
+                                               "caller":  "6445E4CD23E3585474500CA1FCADE21BED917D00B00796C37345C521FCF8BC27"
+                                           },
+                          "defects":  [
+                                          {
+                                              "status":  "FIXED_COMPONENT_LEVEL",
+                                              "evidence":  [
+                                                               "build/reviewer-round11-rootfix-a3e614a4bae24548a15b92a1646b263c/exited-root-result.json",
+                                                               "build/reviewer-round11-childreuse-75b5312a99ad4654b80665d36d2139ec/child-identity-result.json",
+                                                               "build/reviewer-round11-cleanup-matrix-36df647501144ce5afd8754ab056d920/cleanup-negative-matrix.json",
+                                                               "build/reviewer-round11-native-final-42e7426355be4970888db8b4b8854bb3/native-lifecycle-matrix-round11.json"
+                                                           ],
+                                              "id":  "D-R9-02",
+                                              "severity":  "BLOCKER"
+                                          },
+                                          {
+                                              "status":  "FIXED_CONTROL_FLOW_LEVEL",
+                                              "evidence":  [
+                                                               "build/reviewer-round11-gates-v2-480e8fd8820e4801b7d71a24ac37a027/review-gate-matrix-round11.json",
+                                                               "build/reviewer-round11-resume-inputfail-v4-4e078fe45d3a43ab848667dc702937bb/accepted-failure-case/failure-and-cleanup.json"
+                                                           ],
+                                              "id":  "D-R11-01",
+                                              "severity":  "MAJOR"
+                                          },
+                                          {
+                                              "evidence":  [
+                                                               "build/reviewer-round11-resume-inputfail-v3-7cd4f5b757414492b0d3371a184ffd63/accepted-failure-case/failure-and-cleanup.json",
+                                                               "build/reviewer-round11-resume-inputfail-v4-4e078fe45d3a43ab848667dc702937bb/accepted-failure-case/failure-and-cleanup.json"
+                                                           ],
+                                              "status":  "FIXED_DURING_ROUND11_VALIDATION",
+                                              "newInformation":  "Accepted Resume Input failure exercised a short-lived fake runner whose process exited between CIM enumeration and StartTime retrieval; the missing-review gate did not start a runner, so this race was not observable before the accepted-path probe.",
+                                              "id":  "D-R11-02",
+                                              "severity":  "MAJOR"
+                                          }
+                                      ],
+                          "evidence":  {
+                                           "manifest":  "build/round11-sealed-4e6708a1a9a64fcf864b4b1c370c740d/manifest.json",
+                                           "nativeLifecycle":  "build/round11-sealed-4e6708a1a9a64fcf864b4b1c370c740d/D-R9-02/native-lifecycle/native-lifecycle-matrix-round11.json",
+                                           "rootIdentity":  "build/round11-sealed-4e6708a1a9a64fcf864b4b1c370c740d/D-R9-02/root-identity/exited-root-result.json",
+                                           "childIdentity":  "build/round11-sealed-4e6708a1a9a64fcf864b4b1c370c740d/D-R9-02/child-identity/child-identity-result.json",
+                                           "cleanupNegative":  "build/round11-sealed-4e6708a1a9a64fcf864b4b1c370c740d/D-R9-02/cleanup-state/cleanup-negative-matrix.json",
+                                           "reviewGates":  "build/round11-sealed-4e6708a1a9a64fcf864b4b1c370c740d/D-R11-01/review-gate/review-gate-matrix-round11.json",
+                                           "acceptedFailure":  "build/round11-sealed-4e6708a1a9a64fcf864b4b1c370c740d/D-R11-01/accepted-failure/accepted-failure-case/failure-and-cleanup.json",
+                                           "resumeFailureMatrix":  "build/round11-sealed-4e6708a1a9a64fcf864b4b1c370c740d/D-R11-01/accepted-failure-matrix/resume-failure-matrix-round11.json",
+                                           "newlyDiscoveredRace":  "build/round11-sealed-4e6708a1a9a64fcf864b4b1c370c740d/D-R11-02/observation-race/initial-failure-receipt.json",
+                                           "testSummary":  "build/round11-sealed-4e6708a1a9a64fcf864b4b1c370c740d/tests/test-summary.json"
+                                       },
+                          "testSummary":  {
+                                              "assertions":  113,
+                                              "fixtures":  15,
+                                              "status":  "PASS",
+                                              "path":  "build/round11-sealed-4e6708a1a9a64fcf864b4b1c370c740d/tests/test-summary.json",
+                                              "sha256":  "E27801C3259A4E62523A5D6E8281A3FF3EC1D5FCBFD19C5D08449455E209B8FC"
+                                          },
+                          "licenseStatus":  "BLOCKED_LICENSE_EXIT_198",
+                          "finalR_V_I_L":  "NOT_RUN",
+                          "evidenceManifest":  {
+                                                   "path":  "build/round11-sealed-4e6708a1a9a64fcf864b4b1c370c740d/manifest.json",
+                                                   "entries":  208,
+                                                   "sha256":  "E37A734B26D74EDE43923E7D0D674B5012A1226845F9C8C5CFA1932DAEF6C880"
+                                               }
+                      },
+    "round14Continuation":  {
+                                "executor":  "codex",
+                                "route":  "existing bridge route; no model reroute",
+                                "reviewRound":  14,
+                                "status":  "BLOCKED_ANDROIDPLAYER_COMPONENTS",
+                                "conclusion":  "REWORK_REQUIRED_FINAL_VALIDATION_BLOCKED_NO_COMPONENT_CODE_DEFECT",
+                                "currentUnity":  {
+                                                     "path":  "D:/game_dev_tools/unity/Editor/Unity.exe",
+                                                     "fileVersion":  "6000.3.27.6761814",
+                                                     "sha256":  "CFAF4794DF5B7AD0AE3AFE43EDCB6CCB1E08B422A2D6A768E52CE485E0BBA673",
+                                                     "emptyProjectPreflight":  {
+                                                                                   "nativeExit":  0,
+                                                                                   "entitlementResolutions":  4,
+                                                                                   "noValidLicenseMessage":  false,
+                                                                                   "stdoutStderrDrainComplete":  true,
+                                                                                   "ownedProcessResidual":  false,
+                                                                                   "evidence":  "build\\g2-c05-android-round14-ee6500900b2144a4829d95522034a07f/environment-retry/result.json",
+                                                                                   "log":  "build\\g2-c05-android-round14-ee6500900b2144a4829d95522034a07f/environment-retry/unity.log"
+                                                                               }
+                                                 },
+                                "historicalUnity198":  {
+                                                           "path":  "D:/Unity/Hub/Editor/6000.3.27f1/Editor/Unity.exe",
+                                                           "exitCode":  198,
+                                                           "status":  "HISTORICAL_NOT_CURRENT_VERDICT"
+                                                       },
+                                "builder":  {
+                                                "command":  "tools/unity/build-c05-android-emulator.ps1",
+                                                "unityPath":  "D:/game_dev_tools/unity/Editor/Unity.exe",
+                                                "powershellExit":  1,
+                                                "unityProcessStarted":  false,
+                                                "status":  "BLOCKED",
+                                                "reason":  "BLOCKED: Unity AndroidPlayer component missing: OpenJDK\\bin\\java.exe",
+                                                "outputRootCreated":  false,
+                                                "stagingRootCreated":  false
+                                            },
+                                "androidPlayerComponentAudit":  {
+                                                                    "openJdk":  false,
+                                                                    "bundledSdkPlatformTools":  false,
+                                                                    "ndk":  false,
+                                                                    "il2cppLibunityX8664":  true,
+                                                                    "il2cppLibmainX8664":  true,
+                                                                    "evidence":  "build\\g2-c05-android-round14-ee6500900b2144a4829d95522034a07f/androidplayer-component-audit.json"
+                                                                },
+                                "baseline":  {
+                                                 "head":  "4a855c3c49e65ec97708784d84a784df9f11c199",
+                                                 "runnerSha256":  "F71A35419324AADDDF99D721474A9262E2C1687265CA81AC6D6FEE1D19678DB3",
+                                                 "testsSha256":  "590B613B004F9CA365F23F72450D2000DAAB4651759942D2B3561FA7491A1A3E",
+                                                 "components":  "REUSED_113_ASSERTIONS_15_FIXTURES_INPUTS_UNCHANGED",
+                                                 "componentSummaryPath":  "build/reviewer-independent-round11-ef781b39e4da445f9cf11d5c7b9bb44f/suite/test-summary.json",
+                                                 "componentSummarySha256":  "3055E1A5F1C6D40A4D5E79C0ECA6A81557D4A909EEA8FF61A4193C3E5F260696"
+                                             },
+                                "metadataCorrection":  {
+                                                           "field":  "toolSourceSha256.tests",
+                                                           "previous":  "7BFD29187646769FA3EA9EAD24A4046CF6987E9CDCA5C6A5FDCE37436EC92467",
+                                                           "verifiedCurrent":  "590B613B004F9CA365F23F72450D2000DAAB4651759942D2B3561FA7491A1A3E",
+                                                           "note":  "Corrected source identity metadata only; suite was reused unchanged."
+                                                       },
+                                "currentFinalMatrix":  {
+                                                           "E1":  "PARTIAL",
+                                                           "B1":  "BLOCKED_ANDROIDPLAYER_COMPONENTS",
+                                                           "D1":  "NOT_RUN",
+                                                           "R1":  "NOT_RUN",
+                                                           "V1":  "NOT_RUN",
+                                                           "I1":  "NOT_RUN",
+                                                           "L1":  "NOT_RUN",
+                                                           "F1":  "NOT_RUN_DEVICE_CHAIN"
+                                                       },
+                                "restrictions":  {
+                                                     "scope":  "original four files",
+                                                     "sharedAvdTouched":  false,
+                                                     "privateAvdCreated":  false,
+                                                     "packagesManifestTouched":  false,
+                                                     "machineLicenseChanged":  false,
+                                                     "push":  false,
+                                                     "mergeRequest":  false,
+                                                     "deploy":  false
+                                                 },
+                                "evidenceRoot":  "build\\g2-c05-android-round14-ee6500900b2144a4829d95522034a07f",
+                                "evidence":  [
+                                                 "build\\g2-c05-android-round14-ee6500900b2144a4829d95522034a07f/B1-preflight-result.json",
+                                                 "build\\g2-c05-android-round14-ee6500900b2144a4829d95522034a07f/B1-preflight-stderr.txt",
+                                                 "build\\g2-c05-android-round14-ee6500900b2144a4829d95522034a07f/androidplayer-component-audit.json",
+                                                 "build\\g2-c05-android-round14-ee6500900b2144a4829d95522034a07f/environment-retry/result.json",
+                                                 "build\\g2-c05-android-round14-ee6500900b2144a4829d95522034a07f/environment-retry/unity.log",
+                                                 "build\\g2-c05-android-round14-ee6500900b2144a4829d95522034a07f/stage-ledger.json"
+                                             ],
+                                "evidenceManifest":  {
+                                                         "path":  "build/g2-c05-android-round14-ee6500900b2144a4829d95522034a07f/manifest.json",
+                                                         "entries":  104,
+                                                         "sha256":  "0F076CCEDBB4E8321E818B0312734F8052C6AAB2D883994F4CABAED9ABC6EB52"
+                                                     },
+                                "supersededByRound16":  true
+                            },
+    "round15Continuation":  {
+                                "status":  "REWORK_REQUIRED_FINAL_VALIDATION_INCOMPLETE",
+                                "conclusion":  "D-R13-ANDROID-01 remains BLOCKER; production build failed after Unity launch, no APK and no device run",
+                                "executor":  "codex (current fixed bridge route)",
+                                "thread":  "thread_20261104_181451_ad90",
+                                "receiverSessionId":  "01a1ac33-0184-7041-b5d4-61030a71092d",
+                                "evidenceRoot":  "build/g2-c05-android-round15-cd6532f88c0e4dd1b6b27e094aed24ed",
+                                "summaryPath":  "build/g2-c05-android-round15-cd6532f88c0e4dd1b6b27e094aed24ed/round15-final-observation.json",
+                                "summarySha256":  "AEB259743731A887FCC2BD20B6EFB09FE41F71F006495564788367A47F1FA6F3",
+                                "statuses":  {
+                                                 "E1":  "PASS",
+                                                 "B1":  "FAIL",
+                                                 "D1":  "NOT_RUN",
+                                                 "R1":  "NOT_RUN",
+                                                 "V1":  "NOT_RUN",
+                                                 "I1":  "NOT_RUN",
+                                                 "L1":  "NOT_RUN",
+                                                 "F1":  "NOT_RUN"
+                                             },
+                                "unityNativeExit":  1,
+                                "buildReportErrors":  10,
+                                "apkExists":  false,
+                                "apkSha256":  null,
+                                "failedCompile":  "CoreCLR creation failure includes HRESULT 0x8007000E",
+                                "otherBuildErrors":  "URP shader/urtshader host type import errors",
+                                "componentEvidence":  "113 assertions / 15 fixtures reused unchanged",
+                                "newComponentCodeDefects":  0,
+                                "emulatorStarted":  false,
+                                "ownedProcessesRemaining":  0,
+                                "deviceListeners":  0,
+                                "bindingPriorRound14Status":  "historical only; superseded for current toolchain by Round15 native probes",
+                                "nextAction":  "Do not retry until CoreCLR allocation and package asset import causes are identified or prerequisites change.",
+                                "manifestPath":  "build/g2-c05-android-round15-cd6532f88c0e4dd1b6b27e094aed24ed/round15-manifest-v2.json",
+                                "manifestSha256":  "D071C690F6F74B52FBF649DDB106BF0B9ED7BDE9ABBBC80F037CC0D0909ADB10",
+                                "auditPath":  "build/g2-c05-android-round15-cd6532f88c0e4dd1b6b27e094aed24ed/round15-seal-audit-v2.json",
+                                "auditSha256":  "512881E9C6FEBCD171B1D7514F9053788374D503BEA9734E7BEF43BE8F0E10EE",
+                                "manifestEntryCount":  519,
+                                "postBuildStageDifferences":  {
+                                                                  "count":  16,
+                                                                  "pluginDllPdbProvenanceAttested":  14,
+                                                                  "stageOnlyUnclassified":  [
+                                                                                                "Assets/Art/UI/Fonts/NotoSansSC-Regular SDF.asset",
+                                                                                                "Assets/Resources/PerformanceTestRunInfo.json"
+                                                                                            ],
+                                                                  "sourceClosureBeforeAfterUnchanged":  true
+                                                              },
+                                "evidenceSeal":  {
+                                                     "status":  "PASS",
+                                                     "meaning":  "Evidence integrity seal only; not device-chain F1 and not G2 acceptance.",
+                                                     "manifestPath":  "build/g2-c05-android-round15-cd6532f88c0e4dd1b6b27e094aed24ed/round15-manifest-v2.json",
+                                                     "manifestSha256":  "D071C690F6F74B52FBF649DDB106BF0B9ED7BDE9ABBBC80F037CC0D0909ADB10",
+                                                     "entryCount":  519,
+                                                     "verified":  "All 519 entries bytes/hash matched in Round15 independent audit."
+                                                 }
+                            },
+    "round14Historical":  {
+                              "status":  "C05_FINAL_VALIDATION_BLOCKED_ANDROIDPLAYER_COMPONENTS",
+                              "phase":  "ROUND14_FINAL_VALIDATION_CONTINUATION",
+                              "reviewRound":  14,
+                              "matrix":  {
+                                             "E1":  {
+                                                        "status":  "PARTIAL",
+                                                        "detail":  "Round14 current Unity entitlement preflight native exit 0; selected AndroidPlayer OpenJDK, SDK/platform-tools and NDK are absent. Earlier JDK/NDK/SDK/AEHD/AVD observations are historical diagnostic evidence."
+                                                    },
+                                             "B1":  {
+                                                        "status":  "BLOCKED_ANDROIDPLAYER_COMPONENTS",
+                                                        "detail":  "Current explicit Unity path builder exits 1 before launching Unity: AndroidPlayer OpenJDK/bin/java.exe missing; SDK/platform-tools and NDK also missing. Historical exit198 is not the current blocker."
+                                                    },
+                                             "D1":  {
+                                                        "status":  "NOT_RUN",
+                                                        "detail":  "Current final candidate not built; no current AVD started. Historical diagnostic emulator-5580 booted medium_phone in 55.7s with accel=on, unbound to current candidate."
+                                                    },
+                                             "R1":  {
+                                                        "status":  "NOT_RUN",
+                                                        "diagnosticSubResult":  "PARTIAL",
+                                                        "detail":  "Candidate APK blocked by B1. Diagnostic staged APK installed in 40.8s, launched PID 2848; hit SystemUI ANR dialog overlay."
+                                                    },
+                                             "V1":  {
+                                                        "status":  "NOT_RUN",
+                                                        "diagnosticSubResult":  "PARTIAL",
+                                                        "detail":  "Candidate APK blocked by B1. Diagnostic capture shows: 05 SystemUI ANR overlay, 07 unshaded Menu, 09/11/13 Quit modal, 17 desktop wallpaper (1,450,571B), 18 blank launch frame (12,638B)."
+                                                    },
+                                             "I1":  {
+                                                        "status":  "NOT_RUN",
+                                                        "diagnosticSubResult":  "PARTIAL",
+                                                        "detail":  "Candidate APK blocked by B1. Diagnostic native input opened Quit modal at 09; Cancel tap at (1410, 660) did not dismiss modal; subsequent taps consumed by modal; Confirm exit tap at (990, 660) succeeded."
+                                                    },
+                                             "L1":  {
+                                                        "status":  "NOT_RUN",
+                                                        "diagnosticSubResult":  "PARTIAL",
+                                                        "detail":  "Candidate APK blocked by B1. Diagnostic Chain 1 retained modal; Chain 2 true process exit verified and cold restart new PID 5293 verified; Chain 3 orientation dump PASS."
+                                                    },
+                                             "F1":  {
+                                                        "status":  "NOT_RUN",
+                                                        "detail":  "Final candidate device chain not run. Round14 preflight Unity process exited/drained; historical diagnostic Stop/Shutdown and cleanup do not establish current device-chain F1."
+                                                    }
+                                         }
+                          },
+    "evidenceSeal":  {
+                         "status":  "PASS",
+                         "meaning":  "Evidence integrity seal only; not device-chain F1 and not G2 acceptance.",
+                         "manifestPath":  "build/g2-c05-android-round15-cd6532f88c0e4dd1b6b27e094aed24ed/round15-manifest-v2.json",
+                         "manifestSha256":  "D071C690F6F74B52FBF649DDB106BF0B9ED7BDE9ABBBC80F037CC0D0909ADB10",
+                         "entryCount":  519,
+                         "verified":  "All 519 entries bytes/hash matched in Round15 independent audit."
+                     },
+    "round16Continuation":  {
+                                "verdict":  "REWORK_REQUIRED",
+                                "executor":  "codex on unchanged bridge route",
+                                "receiverSessionId":  "01a1ac33-0184-7041-b5d4-61030a71092d",
+                                "evidenceRoot":  "build/reviewer-round16-99e02738c61f4d70b7c44557a9316d7e",
+                                "findings":  {
+                                                 "D-R13-ANDROID-01":  "OPEN_BLOCKER; three exact package asset paths fail ordinary File.Exists but succeed with extended path; Unity production result remains failed from Round15; builder/editor change not authorized.",
+                                                 "D-R15-METADATA-01":  "FIXED_IN_CURRENT_DELIVERY_METADATA; root status/phase/reviewRound/matrix now match latest evidence and device F1 is distinct from evidenceSeal."
+                                             },
+                                "longPath":  {
+                                                 "script":  "build/reviewer-round16-99e02738c61f4d70b7c44557a9316d7e/probe-long-path.ps1",
+                                                 "result":  "build/reviewer-round16-99e02738c61f4d70b7c44557a9316d7e/long-path-result.json",
+                                                 "resultSha256":  "E451C09496073FE26F588E912C427541E77B85C4FE050E9BE0014C77D7A26BC3",
+                                                 "reproducedCases":  3,
+                                                 "lengths":  [
+                                                                 268,
+                                                                 283,
+                                                                 307
+                                                             ],
+                                                 "allOrdinaryFalseExtendedTrue":  true
+                                             },
+                                "stagePathAudit":  {
+                                                       "source":  "build/reviewer-round15-b7186f0981fc41eb8aaae2f847905ec8/staging-path-length-audit.json",
+                                                       "files":  29771,
+                                                       "pathsAtLeast260":  6192,
+                                                       "maxChars":  337,
+                                                       "shortLeafStillOverLimit":  289,
+                                                       "proposedShortRoot":  "D:\\c05s",
+                                                       "predictedMax":  251
+                                                   },
+                                "coreClrProbe":  {
+                                                     "script":  "build/reviewer-round16-99e02738c61f4d70b7c44557a9316d7e/probe-csc-bounded.ps1",
+                                                     "result":  "build/reviewer-round16-99e02738c61f4d70b7c44557a9316d7e/csc-probe-result.json",
+                                                     "resultSha256":  "5691E88B56FE64C46465EC743528EC09CA3C72BE44CF3F5B61A60A1C2350578D",
+                                                     "helpNativeExit":  0,
+                                                     "serialTinyCompileNativeExit":  0,
+                                                     "twoParallelTinyCompileNativeExit":  [
+                                                                                              0,
+                                                                                              0
+                                                                                          ],
+                                                     "limit":  "Tiny compiler probes do not reproduce Unity package import or full Unity peak concurrency; no memory-root-cause claim."
+                                                 },
+                                "productionBuild":  {
+                                                        "round":  15,
+                                                        "nativeExit":  1,
+                                                        "buildReportErrors":  10,
+                                                        "warnings":  229,
+                                                        "apkExists":  false,
+                                                        "unityLogSha256":  "4CED4B2D281D477D85CB207EF106704296FFB24FB8C25A0F357CEE95A6945E0C",
+                                                        "failureSummarySha256":  "C2F7EAF3B5BB225CF86B3C02447968455241E014ADEDFE5F8EB22B0EC61A69BD",
+                                                        "round16FullBuildRerun":  false
+                                                    },
+                                "stageOnlyDifferences":  [
+                                                             "Assets/Art/UI/Fonts/NotoSansSC-Regular SDF.asset",
+                                                             "Assets/Resources/PerformanceTestRunInfo.json"
+                                                         ],
+                                "scopeProposal":  {
+                                                      "path":  "build/reviewer-round16-99e02738c61f4d70b7c44557a9316d7e/D-R13-minimal-scope-proposal.md",
+                                                      "sha256":  "8259740FC71A5500AD98FA99D338DC21529E4FE2A84EADCE265AF0AA156E3A02",
+                                                      "patchPath":  "build/reviewer-round16-99e02738c61f4d70b7c44557a9316d7e/D-R13-proposed-builder-short-stage.patch",
+                                                      "patchSha256":  "A1C3476862F1848B04FADBAB9F0EC6E86CCE6AF8E7BFDAFC25E0DFB67E4263AB",
+                                                      "patchApplyCheckExit":  0,
+                                                      "patchApplied":  false,
+                                                      "applied":  false,
+                                                      "needs":  "Review/authorization for tools/unity/build-c05-android-emulator.ps1 staging/dirty-path guard changes; no such change was applied."
+                                                  },
+                                "reusedComponents":  {
+                                                         "assertions":  113,
+                                                         "fixtures":  15,
+                                                         "runnerSha256":  "F71A35419324AADDDF99D721474A9262E2C1687265CA81AC6D6FEE1D19678DB3",
+                                                         "testsSha256":  "590B613B004F9CA365F23F72450D2000DAAB4651759942D2B3561FA7491A1A3E",
+                                                         "rerun":  false
+                                                     },
+                                "deviceRows":  {
+                                                   "E1":  {
+                                                              "status":  "PASS",
+                                                              "detail":  "Round16 bounded environment probes: Unity-bundled dotnet/csc help, serial tiny compile and two-way tiny compile all native exit 0; Android toolchain identity was previously verified in Round14. This is a toolchain preflight only, not a production Android build."
+                                                          },
+                                                   "B1":  {
+                                                              "status":  "FAIL",
+                                                              "detail":  "Latest production candidate attempt is Round15: Unity native exit 1, BuildReport Failed with 10 errors/229 warnings, no APK. Round16 did not rerun the full build. Long-path access failure is reproduced for 3 exact logged package paths; shader/CoreCLR errors are not all attributed to it."
+                                                          },
+                                                   "D1":  {
+                                                              "status":  "NOT_RUN",
+                                                              "detail":  "No current-candidate AVD boot or online/boot_completed evidence."
+                                                          },
+                                                   "R1":  {
+                                                              "status":  "NOT_RUN",
+                                                              "detail":  "No current-candidate install/foreground runtime evidence."
+                                                          },
+                                                   "V1":  {
+                                                              "status":  "NOT_RUN",
+                                                              "detail":  "No current-candidate game screenshots/video reviewed."
+                                                          },
+                                                   "I1":  {
+                                                              "status":  "NOT_RUN",
+                                                              "detail":  "No current-candidate legal input/action feedback evidence."
+                                                          },
+                                                   "L1":  {
+                                                              "status":  "NOT_RUN",
+                                                              "detail":  "No current-candidate lifecycle matrix evidence."
+                                                          },
+                                                   "F1":  {
+                                                              "status":  "NOT_RUN",
+                                                              "detail":  "Final device-chain writer stop/cleanup not run. Round15 evidence sealing is separately recorded and is not device F1."
+                                                          }
+                                               },
+                                "relevantProcessesAndListeners":  0,
+                                "oldEvidenceModified":  false
+                            },
+    "round14HistoricalLimitations":  [
+                                         "Current production candidate APK build is blocked by missing AndroidPlayer OpenJDK/SDK/platform-tools/NDK; current entitlement preflight native exit 0. Historical license exit198 is retained only as history. Final candidate R1/V1/I1/L1 remain NOT_RUN.",
+                                         "Diagnostic run conducted using external staged APK with sub-results PARTIAL due to SystemUI ANR overlay and undismissed Quit modal.",
+                                         "Historical run-pipeline.ps1 in 170000 is marked as historically flawed; minimal repaired resume orchestrator entry provided in build/g2-c05-gemini38-20261105-round8-8c14d9b2/resumed-pipeline/resumed-pipeline.ps1.",
+                                         "V4 remains the sole production baseline; V5 G2-G5 not approved."
+                                     ]
+}
