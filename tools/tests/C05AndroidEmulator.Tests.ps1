@@ -34,6 +34,20 @@ function Run-Fixture([string]$Name, [string]$Script, [string]$Switch, [int]$Expe
   Check "fixture:$Name count" ($count -eq $ExpectedCount) "actual=$count expected=$ExpectedCount"
   $script:fixtures.Add([pscustomobject]@{ name=$Name; script=$Script; switch=$Switch; nativeExit=$code; count=$count; log=(Split-Path $log -Leaf) })
 }
+function Run-SourceEncodingFixture([string]$Name, [string]$EncodingMode) {
+  $builder = Join-Path $root 'tools/unity/build-c05-android-emulator.ps1'
+  $log = Join-Path $OutputRoot ($Name + '.log')
+  $encodingLine = if ($EncodingMode -eq 'utf8') { '[Console]::OutputEncoding=New-Object System.Text.UTF8Encoding($false);' } else { '[Console]::OutputEncoding=[System.Text.Encoding]::GetEncoding(936);' }
+  $command = "$encodingLine & '$builder' -SourceFixtureTest"
+  $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+  $previous = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+  try { $output = @(& powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $encoded 2>&1) } finally { $ErrorActionPreference = $previous }
+  $code = $LASTEXITCODE; $text = $output -join ' '
+  [IO.File]::WriteAllText($log,($output -join "`r`n"),(New-Object Text.UTF8Encoding($false)))
+  Check "fixture:$Name exit0" ($code -eq 0) "nativeExit=$code log=$log"
+  Check "fixture:$Name exact-source-marker" ($text -match 'SOURCE_FIXTURE PASS') $text.Trim()
+  $script:fixtures.Add([pscustomobject]@{name=$Name;script='tools/unity/build-c05-android-emulator.ps1';switch='-SourceFixtureTest';encoding=$EncodingMode;nativeExit=$code;log=(Split-Path $log -Leaf)})
+}
 
 # 1. Syntax: all three scripts must parse under Windows PowerShell 5.1.
 foreach ($script in @('tools/unity/build-c05-android-emulator.ps1','tools/unity/run-c05-android-emulator.ps1','tools/tests/C05AndroidEmulator.Tests.ps1')) {
@@ -51,7 +65,8 @@ $expected = @(
   'unity/Mahjong.Unity/Assets/Editor/C05EmulatorAndroidBuild.cs',
   'unity/Mahjong.Unity/Assets/Editor/C05EmulatorAndroidBuild.cs.meta'
 )
-$docPattern = '^doc/[^/]+/V5-G2-C05-ANDROID-GEMINI38-(DELIVERY|BINDING)-20261104\.(md|json)$'
+$docDirectory = 'doc/v5-' + [string][char]0x91cd + [string][char]0x6784
+$docPattern = '^(?:' + [regex]::Escape("$docDirectory/V5-G2-C05-ANDROID-GEMINI38-DELIVERY-20261104.md") + '|' + [regex]::Escape("$docDirectory/V5-G2-C05-ANDROID-GEMINI38-BINDING-20261104.json") + ')$'
 $requiredNow = $expected
 foreach ($p in $requiredNow) { Check "exists:$p" (Test-Path -LiteralPath (Join-Path $root $p) -PathType Leaf) }
 $docDelivery = @(Get-ChildItem (Join-Path $root 'doc') -Recurse -File -Filter 'V5-G2-C05-ANDROID-GEMINI38-DELIVERY-20261104.md' -ErrorAction SilentlyContinue)
@@ -144,13 +159,26 @@ Check 'run:capture-native-exit' ($run -match '\$Capture\.screencap\.exit -eq 0' 
 Check 'build:step-errors' (($build -match 'stepErrors') -and ($build -match 'stepExceptions'))
 Check 'build:staging' (($build -match 'Copy-C05EStagingProject') -and ($build -match 'sourceInputsUnchanged'))
 Check 'build:no-source-restore' (-not ($build -match 'git -C \$RepoRoot checkout'))
+Check 'build:source-exact-reports' (($build -match 'V5-G2-C05-ANDROID-GEMINI38-DELIVERY-20261104\.md') -and ($build -match 'V5-G2-C05-ANDROID-GEMINI38-BINDING-20261104\.json') -and ($build -match '\$expectedReports') -and ($build -match '\$expectedReports -cnotcontains'))
+Check 'build:git-paths-independent-of-console-encoding' (($build -match 'core\.quotepath=true') -and ($build -match 'ConvertFrom-C05EGitQuotedPath') -and ($build -match 'UTF8Encoding\(\$false,\$true\)'))
+Check 'fixture:source-boundary-tests-gb2312-and-utf8' (($build -match "name='gb2312'") -and ($build -match "name='utf8'") -and ($build -match 'staged-and-untracked-exact-paths'))
+Check 'build:short-stage-fresh-guid-only' (($build -match 'Resolve-C05EStagingRoot') -and ($build -match '\[0-9a-f\]\{32\}') -and ($build -match 'external short staging is always fresh') -and ($build -match 'external short staging already exists'))
+Check 'build:short-stage-bound-to-one-fresh-root' (($build -match '\$allowed = \$full') -and ($build -match 'sibling external GUID root accepted by current owner boundary'))
+Check 'build:path-budget-audit-before-unity' (($build -match 'function Get-C05EPathBudgetAudit') -and ($build.IndexOf('$pathBudgetAudit.status -ne ''PASS''') -ge 0) -and ($build.IndexOf('$pathBudgetAudit.status -ne ''PASS''') -lt $build.IndexOf('Start-C05EHiddenProcess $unity')))
+Check 'build:path-budget-incomplete-inventory-fails-closed' (($build -match 'INCOMPLETE_INVENTORY') -and ($build -match 'registry-package-inventory') -and ($build -match '\[IO\.File\]::Exists\('))
+Check 'build:registry-package-lock-identity-and-hashes' (($build -match 'Get-C05ERegistryPackageInventory') -and ($build -match 'package-identity-mismatch') -and ($build -match 'inventorySha256') -and ($build -match 'packageJsonSha256'))
+Check 'build:fresh-package-cache-copy-before-path-gate' (($build -match '\$RegistryCacheSource') -and ($build -match 'Copy-C05EVerifiedRegistryCache') -and ($build.IndexOf('Copy-C05EVerifiedRegistryCache $RegistryCacheSource $project') -lt $build.IndexOf('$pathBudgetAudit.status -ne ''PASS''')) -and ($build.IndexOf('$pathBudgetAudit.status -ne ''PASS''') -lt $build.IndexOf('Start-C05EHiddenProcess $unity')))
+Check 'build:bounded-unity-job-workers' (($build -match "'-job-worker-count','1'") -and ($build -match 'unityJobWorkerCount=1'))
 
 # 6. Real deterministic fixtures through the actual entry points.
 Run-Fixture 'build-verdict' 'tools/unity/build-c05-android-emulator.ps1' '-VerdictFixtureTest' 27
 Run-Fixture 'build-process' 'tools/unity/build-c05-android-emulator.ps1' '-ProcessFixtureTest' 0
 Run-Fixture 'build-output' 'tools/unity/build-c05-android-emulator.ps1' '-OutputFixtureTest' 0
-Run-Fixture 'build-source' 'tools/unity/build-c05-android-emulator.ps1' '-SourceFixtureTest' 0
-Run-Fixture 'build-staging-guard' 'tools/unity/build-c05-android-emulator.ps1' '-StagingGuardFixtureTest' 6
+Run-Fixture 'build-source' 'tools/unity/build-c05-android-emulator.ps1' '-SourceFixtureTest' 4
+Run-SourceEncodingFixture 'build-source-encoding-gb2312' 'gb2312'
+Run-SourceEncodingFixture 'build-source-encoding-utf8' 'utf8'
+Run-Fixture 'build-staging-guard' 'tools/unity/build-c05-android-emulator.ps1' '-StagingGuardFixtureTest' 18
+Run-Fixture 'build-path-budget' 'tools/unity/build-c05-android-emulator.ps1' '-PathBudgetFixtureTest' 8
 Run-Fixture 'build-argv' 'tools/unity/build-c05-android-emulator.ps1' '-ArgumentFixtureTest' 0
 Run-Fixture 'run-artifact' 'tools/unity/run-c05-android-emulator.ps1' '-ArtifactFixtureTest' 24 -ScriptHasAction
 Run-Fixture 'run-state' 'tools/unity/run-c05-android-emulator.ps1' '-StateFixtureTest' 5 -ScriptHasAction

@@ -4,6 +4,7 @@ param(
   [string]$UnityPath = 'D:\Unity\Hub\Editor\6000.3.27f1\Editor\Unity.exe',
   [string]$OutputRoot,
   [string]$StagingRoot,
+  [string]$RegistryCacheSource,
   [switch]$ReuseStaging,
   [string]$AndroidSdkRoot = 'D:\Android\Sdk',
   [string]$AvdHome = 'D:\Android\avd',
@@ -16,7 +17,8 @@ param(
   [switch]$OutputFixtureTest,
   [switch]$SourceFixtureTest,
   [switch]$StagingGuardFixtureTest,
-  [switch]$ArgumentFixtureTest
+  [switch]$ArgumentFixtureTest,
+  [switch]$PathBudgetFixtureTest
 )
 $ErrorActionPreference = 'Stop'
 $script:AllowedPaths = @(
@@ -128,15 +130,44 @@ function Invoke-C05EToFiles([string]$FilePath, [string[]]$Arguments, [int]$Timeo
     killedOwnedProcess=$killed; stdout=$stdout; stderr=$stderr }
 }
 function Invoke-C05EGit([string]$RepoRoot, [string[]]$GitArgs) {
-  $output = @(& git -C $RepoRoot -c core.quotepath=false @GitArgs 2>&1); $code = $LASTEXITCODE
-  if ($code -ne 0) { throw "FAIL: git $($GitArgs -join ' ') exited ${code}: $($output -join ' ')" }
-  return ,$output
+  # Keep native Git path output ASCII-escaped so PowerShell 5.1's OEM decoder cannot corrupt UTF-8 path bytes.
+  $git = (Get-Command git.exe -ErrorAction Stop).Source
+  $native = Invoke-C05ENative $git (@('-C',$RepoRoot,'-c','core.quotepath=true') + $GitArgs) 30
+  if ($native.timedOut -or -not $native.drainComplete -or $null -eq $native.exit) { throw "FAIL: git $($GitArgs -join ' ') timed out or did not drain completely." }
+  if ($native.exit -ne 0) { throw "FAIL: git $($GitArgs -join ' ') exited $($native.exit): $($native.stderr)" }
+  return @(([string]$native.stdout -split "`r?`n") | Where-Object { $_ -ne '' })
+}
+function ConvertFrom-C05EGitQuotedPath([string]$Line) {
+  if (-not $Line.StartsWith('"')) { return $Line }
+  if ($Line.Length -lt 2 -or -not $Line.EndsWith('"')) { throw 'FAIL: malformed Git C-quoted path.' }
+  $bytes = New-Object System.Collections.Generic.List[byte]
+  for ($i=1; $i -lt ($Line.Length-1); $i++) {
+    $ch = $Line[$i]
+    if ($ch -ne [char]92) {
+      if ([int]$ch -gt 127) { throw 'FAIL: Git quoted path contained non-ASCII output.' }
+      $bytes.Add([byte][int]$ch); continue
+    }
+    $i++; if ($i -ge ($Line.Length-1)) { throw 'FAIL: malformed Git C-quoted escape.' }
+    $escaped = $Line[$i]
+    if ($escaped -ge '0' -and $escaped -le '7') {
+      if ($i+2 -ge ($Line.Length-1)) { throw 'FAIL: truncated Git octal path escape.' }
+      $octal = [string]$escaped + [string]$Line[$i+1] + [string]$Line[$i+2]
+      if ($octal -notmatch '^[0-7]{3}$') { throw 'FAIL: malformed Git octal path escape.' }
+      $bytes.Add([Convert]::ToByte($octal,8)); $i += 2; continue
+    }
+    if ($escaped -eq [char]34) { $value=34 }
+    elseif ($escaped -eq [char]92) { $value=92 }
+    else { $value = switch ([string]$escaped) { 't' { 9 } 'n' { 10 } 'r' { 13 } 'b' { 8 } 'f' { 12 } 'v' { 11 } default { throw "FAIL: unsupported Git C-quoted escape: $escaped" } } }
+    $bytes.Add([byte]$value)
+  }
+  try { return (New-Object System.Text.UTF8Encoding($false,$true)).GetString($bytes.ToArray()) }
+  catch { throw "FAIL: Git path was not valid UTF-8: $($_.Exception.Message)" }
 }
 function Get-C05ESourceBoundary([string]$RepoRoot, [string[]]$AllowedPaths) {
   $headLines = Invoke-C05EGit $RepoRoot @('rev-parse','HEAD'); $head = ([string]($headLines | Select-Object -First 1)).Trim()
-  $staged = @(Invoke-C05EGit $RepoRoot @('diff','--cached','--name-only')) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-  $unstaged = @(Invoke-C05EGit $RepoRoot @('diff','--name-only')) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-  $untracked = @(Invoke-C05EGit $RepoRoot @('ls-files','--others','--exclude-standard')) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+  $staged = @(Invoke-C05EGit $RepoRoot @('diff','--cached','--name-only') | ForEach-Object { ConvertFrom-C05EGitQuotedPath ([string]$_) }) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+  $unstaged = @(Invoke-C05EGit $RepoRoot @('diff','--name-only') | ForEach-Object { ConvertFrom-C05EGitQuotedPath ([string]$_) }) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+  $untracked = @(Invoke-C05EGit $RepoRoot @('ls-files','--others','--exclude-standard') | ForEach-Object { ConvertFrom-C05EGitQuotedPath ([string]$_) }) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
   # Unity/IL2CPP and the Gradle build create generated intermediates below the project
   # (e.g. .utmp, Library, Temp) that are not authored source and are not gitignored in
   # this repository. They are build outputs, not task inputs, so exclude them explicitly
@@ -144,7 +175,12 @@ function Get-C05ESourceBoundary([string]$RepoRoot, [string[]]$AllowedPaths) {
   $generatedPattern = '^unity/Mahjong\.Unity/(?:\.utmp|Library|Temp|obj|Logs|UserSettings)/'
   $untracked = @($untracked | Where-Object { $_ -notmatch $generatedPattern })
   $all = @(@($staged) + @($unstaged) + @($untracked) | Select-Object -Unique)
-  $unexpected = @($all | Where-Object { ($AllowedPaths -notcontains [string]$_) -and -not ([string]$_ -match '^doc/[^/]+/V5-G2-C05-ANDROID-EMULATOR-(DELIVERY|BINDING)-20261103\.(md|json)$') })
+  $docDirectory = 'doc/v5-' + [string][char]0x91cd + [string][char]0x6784
+  $expectedReports = @(
+    "$docDirectory/V5-G2-C05-ANDROID-GEMINI38-DELIVERY-20261104.md",
+    "$docDirectory/V5-G2-C05-ANDROID-GEMINI38-BINDING-20261104.json"
+  )
+  $unexpected = @($all | Where-Object { ($AllowedPaths -cnotcontains [string]$_) -and ($expectedReports -cnotcontains [string]$_) })
   if ($unexpected.Count) { throw ('FAIL: staged/unstaged/untracked inputs outside C05 emulator expectedFiles: ' + ($unexpected -join '; ')) }
   $hashes = @{}
   foreach ($path in $all) {
@@ -248,6 +284,186 @@ function Test-C05EStagingDestination([string]$Path) {
   if (-not $full.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { return $false }
   if (-not (Test-C05ENoReparse $full)) { return $false }
   return $true
+}
+function Resolve-C05EStagingRoot([string]$RepoRoot, [string]$Path, [bool]$Reuse) {
+  if ([string]::IsNullOrWhiteSpace($Path)) { throw 'BLOCKED: StagingRoot is empty.' }
+  if ($Path -match '(^|[\\/])\.{1,2}([\\/]|$)') { throw 'BLOCKED: StagingRoot traversal segments are forbidden.' }
+  $full = [IO.Path]::GetFullPath($Path).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+  $repoBase = [IO.Path]::GetFullPath((Join-Path $RepoRoot 'build\c05-emulator-staging')).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+  $shortBase = if ($script:C05EShortStagingRoot) { [IO.Path]::GetFullPath($script:C05EShortStagingRoot) } else { [IO.Path]::GetFullPath('D:\c05s') }
+  $repoPrefix = $repoBase + [IO.Path]::DirectorySeparatorChar
+  $shortPrefix = $shortBase + [IO.Path]::DirectorySeparatorChar
+  $external = $false
+  if ($full.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase)) { $allowed = $repoBase }
+  elseif ($full.StartsWith($shortPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+    $external = $true
+    $runId = $full.Substring($shortPrefix.Length)
+    if ($runId -notmatch '^[0-9a-f]{32}$') { throw 'BLOCKED: external staging must be one direct 32-hex GUID child of the approved short base.' }
+    if ($Reuse) { throw 'BLOCKED: external short staging is always fresh and cannot use -ReuseStaging.' }
+    if (Test-Path -LiteralPath $full) { throw 'BLOCKED: external short staging already exists; it is never reused.' }
+    $allowed = $full
+  } else { throw "BLOCKED: StagingRoot '$full' is outside the repository staging root and approved short base." }
+  if (-not $external -and (Test-Path -LiteralPath $full) -and -not $Reuse) { throw "BLOCKED: staging root already exists and must not be reused without -ReuseStaging: $full" }
+  if (-not (Test-C05ENoReparse $full)) { throw "BLOCKED: StagingRoot '$full' traverses a reparse point." }
+  $script:C05EAllowedStagingRoot = $allowed
+  $script:C05EExternalStaging = $external
+  return $full
+}
+function Get-C05ERegistryPackageInventory([string]$PackageRoot, [string]$ExpectedName, [string]$ExpectedVersion) {
+  $manifestPath = Join-Path $PackageRoot 'package.json'
+  if (-not (Test-C05ETreeNoReparse $PackageRoot)) { throw "package-tree-reparse:$ExpectedName" }
+  if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw "missing-package-json:$ExpectedName" }
+  $manifest = Get-Content -Encoding UTF8 -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+  if ([string]$manifest.name -cne $ExpectedName -or [string]$manifest.version -cne $ExpectedVersion) { throw "package-identity-mismatch:${ExpectedName}:$($manifest.name):$($manifest.version)" }
+  $files = @(Get-ChildItem -LiteralPath $PackageRoot -File -Recurse -Force -ErrorAction Stop | Sort-Object FullName)
+  if ($files.Count -eq 0) { throw "empty-package-inventory:$ExpectedName" }
+  $inventory = New-Object System.Collections.Generic.List[object]
+  $canonical = New-Object Text.StringBuilder
+  foreach ($file in $files) {
+    if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "package-file-is-reparse:$($file.FullName)" }
+    $relative = $file.FullName.Substring($PackageRoot.Length).TrimStart([char]92,[char]47).Replace('\','/')
+    $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256 -ErrorAction Stop).Hash
+    $inventory.Add([pscustomobject]@{ path=$relative; bytes=[long]$file.Length; sha256=$hash })
+    [void]$canonical.Append($relative).Append("`0").Append([string]$file.Length).Append("`0").Append($hash).Append("`n")
+  }
+  return [pscustomobject]@{ name=$ExpectedName; version=$ExpectedVersion; packageJsonSha256=(Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash;
+    fileCount=$inventory.Count; files=@($inventory.ToArray()); inventorySha256=(Get-C05ESha256Text $canonical.ToString()) }
+}
+function Get-C05ESha256Text([string]$Text) {
+  $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes($Text)
+  $sha = [Security.Cryptography.SHA256]::Create()
+  try { return ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-','') } finally { $sha.Dispose() }
+}
+function Copy-C05EVerifiedRegistryCache([string]$SourceCache, [string]$DestinationProject) {
+  $source = [IO.Path]::GetFullPath($SourceCache); $destinationProject = [IO.Path]::GetFullPath($DestinationProject)
+  $sourceProject = Split-Path (Split-Path $source -Parent) -Parent
+  $sourceLock = Join-Path $sourceProject 'Packages\packages-lock.json'; $destinationLock = Join-Path $destinationProject 'Packages\packages-lock.json'
+  if (-not (Test-Path -LiteralPath $source -PathType Container) -or -not (Test-Path -LiteralPath $sourceLock -PathType Leaf)) { throw 'BLOCKED: registry cache source or source lock is missing.' }
+  if (-not (Test-Path -LiteralPath $destinationLock -PathType Leaf)) { throw 'BLOCKED: staged package lock is missing before registry cache preparation.' }
+  $sourceLockHash = (Get-FileHash -LiteralPath $sourceLock -Algorithm SHA256).Hash
+  $destinationLockHash = (Get-FileHash -LiteralPath $destinationLock -Algorithm SHA256).Hash
+  if ($sourceLockHash -ne $destinationLockHash) { throw 'BLOCKED: registry cache source lock differs from frozen staged lock.' }
+  $lock = Get-Content -Encoding UTF8 -LiteralPath $destinationLock -Raw | ConvertFrom-Json
+  $registry = @($lock.dependencies.PSObject.Properties | Where-Object { [string]$_.Value.source -eq 'registry' })
+  if ($registry.Count -eq 0) { throw 'BLOCKED: current lock contains no registry packages to prepare.' }
+  $target = Join-Path $destinationProject 'Library\PackageCache'
+  if (Test-Path -LiteralPath $target) { throw 'BLOCKED: refusing to merge a registry cache into an existing staging PackageCache.' }
+  $copyRows = New-Object System.Collections.Generic.List[object]
+  foreach ($dependency in $registry) {
+    $name = [string]$dependency.Name; $version = [string]$dependency.Value.version
+    $pattern = '^' + [regex]::Escape($name) + '@[0-9a-f]{12}$'
+    $matches = @(Get-ChildItem -LiteralPath $source -Directory -ErrorAction Stop | Where-Object { $_.Name -match $pattern })
+    if ($matches.Count -ne 1) { throw "BLOCKED: registry cache inventory for '$name' found $($matches.Count) exact package roots." }
+    $sourceRoot = $matches[0].FullName
+    $manifestPath = Join-Path $sourceRoot 'package.json'
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw "BLOCKED: registry cache package '$name' has no package.json." }
+    $manifest = Get-Content -Encoding UTF8 -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    if ([string]$manifest.name -cne $name -or [string]$manifest.version -cne $version) { throw "BLOCKED: registry cache package identity/version mismatch for '$name'." }
+    if (-not (Test-C05ETreeNoReparse $sourceRoot)) { throw "BLOCKED: registry cache package '$name' contains a reparse point." }
+    $copyRows.Add([pscustomobject]@{ name=$name; version=$version; source=$sourceRoot; packageJsonSha256=(Get-FileHash $manifestPath -Algorithm SHA256).Hash })
+  }
+  New-Item -ItemType Directory -Path $target | Out-Null
+  $verified = New-Object System.Collections.Generic.List[object]
+  foreach ($row in $copyRows) {
+    $destination = Join-Path $target (Split-Path $row.source -Leaf)
+    $log = Join-Path $script:C05EActiveRun ('registry-cache-' + $row.name + '.log')
+    $result = Invoke-C05EToFiles 'robocopy' @($row.source,$destination,'/E','/XJ','/NFL','/NDL','/NJH','/NJS','/NP','/R:1','/W:1') 1800 $log ($log + '.err')
+    if ($result.timedOut -or $null -eq $result.exit -or $result.exit -ge 8) { throw "BLOCKED: registry cache copy failed for '$($row.name)' (native=$($result.exit) timeout=$($result.timedOut))." }
+    $inventory = Get-C05ERegistryPackageInventory $destination $row.name $row.version
+    if ($inventory.packageJsonSha256 -ne $row.packageJsonSha256) { throw "BLOCKED: copied package.json hash differs for '$($row.name)'." }
+    $verified.Add([pscustomobject]@{ name=$row.name; version=$row.version; source=$row.source; sourcePackageJsonSha256=$row.packageJsonSha256;
+      robocopyNative=$result.exit; destinationInventorySha256=$inventory.inventorySha256; destinationFileCount=$inventory.fileCount; files=$inventory.files })
+  }
+  return [pscustomobject]@{ status='COPIED_AND_HASHED'; source=$source; destination=$target; packageLockSha256=$destinationLockHash; packageCount=$verified.Count; packages=@($verified.ToArray()) }
+}
+function Get-C05EPathBudgetAudit([string]$ProjectPath, [string]$UnityPath, [string[]]$ProjectedPaths = @(), [string]$ExpectedConsumerRoot = '') {
+  $fullProject = [IO.Path]::GetFullPath($ProjectPath)
+  $consumerRoot = if ([string]::IsNullOrWhiteSpace($ExpectedConsumerRoot)) { $fullProject } else { [IO.Path]::GetFullPath($ExpectedConsumerRoot) }
+  $incomplete = New-Object System.Collections.Generic.List[string]
+  $overLimit = New-Object System.Collections.Generic.List[string]
+  $inaccessible = New-Object System.Collections.Generic.List[string]
+  $packageInventory = New-Object System.Collections.Generic.List[object]
+  $observed = New-Object System.Collections.Generic.List[object]
+  $lockPath = Join-Path $fullProject 'Packages\packages-lock.json'
+  if (-not (Test-Path -LiteralPath $lockPath -PathType Leaf)) { $incomplete.Add("missing-lock:$lockPath") }
+  else {
+    $lock = $null
+    try { $lock = Get-Content -Encoding UTF8 -LiteralPath $lockPath -Raw | ConvertFrom-Json }
+    catch { $incomplete.Add("invalid-lock:${lockPath}:$($_.Exception.Message)") }
+    if ($lock) {
+      $packageCache = Join-Path $fullProject 'Library\PackageCache'
+      $unityEditor = Split-Path ([IO.Path]::GetFullPath($UnityPath)) -Parent
+      $builtinRoot = Join-Path $unityEditor 'Data\Resources\PackageManager\BuiltInPackages'
+      foreach ($property in $lock.dependencies.PSObject.Properties) {
+        $name = [string]$property.Name; $dependency = $property.Value; $source = [string]$dependency.source; $sourceRoot = $null
+        if ($source -eq 'registry') {
+          $pattern = '^' + [regex]::Escape($name) + '@[0-9a-f]{12}$'
+          $matches = if (Test-Path -LiteralPath $packageCache -PathType Container) { @(Get-ChildItem -LiteralPath $packageCache -Directory -ErrorAction Stop | Where-Object { $_.Name -match $pattern }) } else { @() }
+          if ($matches.Count -eq 1) {
+            $sourceRoot = $matches[0].FullName
+            try {
+              $manifestPath = Join-Path $sourceRoot 'package.json'
+              if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw 'missing-package-json' }
+              $manifest = Get-Content -Encoding UTF8 -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+              if ([string]$manifest.name -cne $name -or [string]$manifest.version -cne [string]$dependency.version) { throw "package-identity-mismatch:$($manifest.name):$($manifest.version)" }
+            } catch { $incomplete.Add("registry-package-metadata:${name}:$($_.Exception.Message)"); $sourceRoot=$null }
+          } else { $incomplete.Add("registry-package-inventory:${name}:found=$($matches.Count)") }
+        } elseif ($source -eq 'builtin') {
+          $cacheMatches = if (Test-Path -LiteralPath $packageCache -PathType Container) { @(Get-ChildItem -LiteralPath $packageCache -Directory -ErrorAction Stop | Where-Object { $_.Name.StartsWith(($name + '@'), [StringComparison]::OrdinalIgnoreCase) }) } else { @() }
+          if ($cacheMatches.Count -eq 1) { $sourceRoot = $cacheMatches[0].FullName }
+          else { $candidate = Join-Path $builtinRoot $name; if (Test-Path -LiteralPath $candidate -PathType Container) { $sourceRoot = $candidate } else { $incomplete.Add("builtin-package-inventory:$name") } }
+        } elseif ($source -eq 'embedded') {
+          $candidate = Join-Path (Join-Path $fullProject 'Packages') $name
+          if (Test-Path -LiteralPath $candidate -PathType Container) { $sourceRoot = $candidate } else { $incomplete.Add("embedded-package-inventory:$name") }
+        } elseif ($source -eq 'local' -and ([string]$dependency.url).StartsWith('file:', [StringComparison]::OrdinalIgnoreCase)) {
+          $local = ([string]$dependency.url).Substring(5).Replace('/', [IO.Path]::DirectorySeparatorChar)
+          $candidate = if ([IO.Path]::IsPathRooted($local)) { $local } else { Join-Path $fullProject $local }
+          $candidate = [IO.Path]::GetFullPath($candidate)
+          if (Test-Path -LiteralPath $candidate -PathType Container) { $sourceRoot = $candidate } else { $incomplete.Add("local-package-inventory:$name") }
+        } else { $incomplete.Add("unsupported-package-source:${name}:$source") }
+        if ($sourceRoot) {
+          try {
+            $registryFiles = $null
+            if ($source -eq 'registry') { $registryFiles = Get-C05ERegistryPackageInventory $sourceRoot $name ([string]$dependency.version); $sourceFiles = @($registryFiles.files) }
+            else { $sourceFiles = @(Get-ChildItem -LiteralPath $sourceRoot -File -Recurse -Force -ErrorAction Stop) }
+            if ($sourceFiles.Count -eq 0) { $incomplete.Add("empty-package-inventory:$name") }
+            foreach ($file in $sourceFiles) {
+              $sourceFilePath = if ($source -eq 'registry') { Join-Path $sourceRoot ([string]$file.path.Replace('/', [IO.Path]::DirectorySeparatorChar)) } else { $file.FullName }
+              $observed.Add([pscustomobject]@{ path=$sourceFilePath; kind="package:$name"; exists=$true })
+              $relative = if ($source -eq 'registry') { [string]$file.path } else { $file.FullName.Substring($sourceRoot.Length).TrimStart([char]92,[char]47) }
+              $cacheLeaf = if ($source -eq 'registry' -or ($source -eq 'builtin' -and $sourceRoot.StartsWith($packageCache,[StringComparison]::OrdinalIgnoreCase))) { Split-Path $sourceRoot -Leaf } else { $name + '@000000000000' }
+              $target = Join-Path (Join-Path (Join-Path $consumerRoot 'Library\PackageCache') $cacheLeaf) $relative
+              $observed.Add([pscustomobject]@{ path=$target; kind="projected-package-cache:$name"; exists=$false })
+            }
+            $packageInventory.Add([pscustomobject]@{ name=$name; version=$(if($source -eq 'registry'){[string]$dependency.version}else{$null}); source=$source; root=$sourceRoot;
+              fileCount=$sourceFiles.Count; packageJsonSha256=$(if($registryFiles){$registryFiles.packageJsonSha256}else{$null}); inventorySha256=$(if($registryFiles){$registryFiles.inventorySha256}else{$null}); files=$(if($registryFiles){$registryFiles.files}else{@()}) })
+          } catch { $incomplete.Add("package-enumeration:${name}:$($_.Exception.Message)") }
+        }
+      }
+    }
+  }
+  try {
+    foreach ($file in @(Get-ChildItem -LiteralPath $fullProject -File -Recurse -Force -ErrorAction Stop)) {
+      $observed.Add([pscustomobject]@{ path=$file.FullName; kind='staged-project'; exists=$true })
+    }
+  } catch { $inaccessible.Add("project-enumeration:$($_.Exception.Message)") }
+  $futurePaths = @(
+    (Join-Path $consumerRoot 'Library\PackageCache'),
+    (Join-Path $consumerRoot 'Library\ScriptAssemblies\Assembly-CSharp.dll'),
+    (Join-Path $consumerRoot 'Library\Bee\Android\Prj\IL2CPP\Gradle\unityLibrary\src\main\AndroidManifest.xml'),
+    (Join-Path $consumerRoot 'Temp\StagingArea')
+  ) + @($ProjectedPaths)
+  foreach ($path in $futurePaths) { $observed.Add([pscustomobject]@{ path=[IO.Path]::GetFullPath($path); kind='future-output-budget'; exists=(Test-Path -LiteralPath $path) }) }
+  $unique = @($observed | Sort-Object path,kind -Unique)
+  $maxLength = 0
+  foreach ($entry in $unique) {
+    $length = $entry.path.Length; if ($length -gt $maxLength) { $maxLength = $length }
+    if ($length -ge 260) { $overLimit.Add("$($entry.kind):${length}:$($entry.path)"); continue }
+    if ($entry.exists -and -not [IO.File]::Exists($entry.path) -and -not [IO.Directory]::Exists($entry.path)) { $inaccessible.Add("ordinary-consumer-inaccessible:$($entry.path)") }
+  }
+  $complete = ($incomplete.Count -eq 0 -and $inaccessible.Count -eq 0)
+  $status = if ($overLimit.Count) { 'FAIL_PATH_BUDGET' } elseif (-not $complete) { 'INCOMPLETE_INVENTORY' } else { 'PASS' }
+  return [pscustomobject]@{ status=$status; completeInventory=$complete; project=$fullProject; packageLock=$lockPath; packageLockSha256=$(if(Test-Path -LiteralPath $lockPath){(Get-FileHash $lockPath -Algorithm SHA256).Hash}else{$null}); packageInventory=@($packageInventory.ToArray()); packagesMissing=@($incomplete.ToArray()); inaccessible=@($inaccessible.ToArray()); overLimit=@($overLimit.ToArray()); fileAndProjectedPathCount=$unique.Count; maxPathChars=$maxLength; ordinaryPathLimitExclusive=260; futureOutputRoots=$futurePaths }
 }
 function Assert-C05EBuildDestination([string]$Path, [string]$Kind) {
   $full = [IO.Path]::GetFullPath($Path)
@@ -555,10 +771,75 @@ if ($SourceFixtureTest) {
     if ($rejected -ne 3 -or $result.dirtyPaths.Count -ne 1 -or $result.inputHashes['allowed-input.txt'] -ne (Get-FileHash $allowedFile -Algorithm SHA256).Hash) {
       throw 'source fixture failed to reject all states/bind permitted dirty bytes'
     }
+    & git -C $fixture reset --hard -q HEAD
+    $reportFolder = 'doc/v5-' + [string][char]0x91cd + [string][char]0x6784
+    $deliveryRel = "$reportFolder/V5-G2-C05-ANDROID-GEMINI38-DELIVERY-20261104.md"
+    $bindingRel = "$reportFolder/V5-G2-C05-ANDROID-GEMINI38-BINDING-20261104.json"
+    $deliveryFile = Join-Path $fixture $deliveryRel; $bindingFile = Join-Path $fixture $bindingRel
+    New-Item -ItemType Directory -Force -Path (Split-Path $deliveryFile -Parent) | Out-Null
+    [IO.File]::WriteAllText((Join-Path $fixture "$reportFolder/V5-G2-C05-ANDROID-GEMINI38-DELIVERY-20261104.json"),'baseline-delivery-json')
+    [IO.File]::WriteAllText((Join-Path $fixture "$reportFolder/V5-G2-C05-ANDROID-GEMINI38-BINDING-20261104.md"),'baseline-binding-md')
+    & git -C $fixture add --all; & git -C $fixture commit -qm report-baseline
+    [IO.File]::WriteAllText($deliveryFile,'approved-delivery-md'); & git -C $fixture add -- $deliveryRel
+    [IO.File]::WriteAllText($bindingFile,'approved-binding-json')
+    $reportCases = New-Object System.Collections.Generic.List[object]
+    $approvedHash=@{}; $approvedHash[$deliveryRel]=(Get-FileHash $deliveryFile -Algorithm SHA256).Hash; $approvedHash[$bindingRel]=(Get-FileHash $bindingFile -Algorithm SHA256).Hash
+    $savedConsoleEncoding = [Console]::OutputEncoding
+    try {
+      foreach ($mode in @(@{ name='gb2312'; encoding=[Text.Encoding]::GetEncoding(936) },@{ name='utf8'; encoding=(New-Object Text.UTF8Encoding($false)) })) {
+        [Console]::OutputEncoding = $mode.encoding
+        $approved = Get-C05ESourceBoundary $fixture $allowed
+        if ($approved.inputHashes[$deliveryRel] -ne $approvedHash[$deliveryRel] -or $approved.inputHashes[$bindingRel] -ne $approvedHash[$bindingRel]) { throw "exact report paths failed $($mode.name) hash binding" }
+        $reportCases.Add([pscustomobject]@{ case='staged-and-untracked-exact-paths'; environment=$mode.name; accepted=$true; deliverySha256=$approvedHash[$deliveryRel]; bindingSha256=$approvedHash[$bindingRel] })
+      }
+    } finally { [Console]::OutputEncoding = $savedConsoleEncoding }
+    $reportCases.Add([pscustomobject]@{ path=$deliveryRel; state='staged'; accepted=$true; sha256=$approvedHash[$deliveryRel]; bytes=(Get-Item $deliveryFile).Length })
+    $reportCases.Add([pscustomobject]@{ path=$bindingRel; state='untracked'; accepted=$true; sha256=$approvedHash[$bindingRel]; bytes=(Get-Item $bindingFile).Length })
+    & git -C $fixture add -- $bindingRel; & git -C $fixture commit -qm exact-report-paths
+    [IO.File]::WriteAllText($deliveryFile,'approved-delivery-unstaged'); [IO.File]::WriteAllText($bindingFile,'approved-binding-unstaged')
+    $unstagedHashes = @{ $deliveryRel=(Get-FileHash $deliveryFile -Algorithm SHA256).Hash; $bindingRel=(Get-FileHash $bindingFile -Algorithm SHA256).Hash }
+    $savedConsoleEncoding = [Console]::OutputEncoding
+    try {
+      foreach ($mode in @(@{ name='gb2312'; encoding=[Text.Encoding]::GetEncoding(936) },@{ name='utf8'; encoding=(New-Object Text.UTF8Encoding($false)) })) {
+        [Console]::OutputEncoding = $mode.encoding
+        $approvedUnstaged = Get-C05ESourceBoundary $fixture $allowed
+        if ($approvedUnstaged.inputHashes[$deliveryRel] -ne $unstagedHashes[$deliveryRel] -or $approvedUnstaged.inputHashes[$bindingRel] -ne $unstagedHashes[$bindingRel]) { throw "exact unstaged report paths failed $($mode.name) hash binding" }
+        $reportCases.Add([pscustomobject]@{ case='unstaged-exact-paths'; environment=$mode.name; accepted=$true; deliverySha256=$unstagedHashes[$deliveryRel]; bindingSha256=$unstagedHashes[$bindingRel] })
+      }
+    } finally { [Console]::OutputEncoding = $savedConsoleEncoding }
+    $reportCases.Add([pscustomobject]@{ path=$deliveryRel; state='unstaged'; accepted=$true; sha256=(Get-FileHash $deliveryFile -Algorithm SHA256).Hash; bytes=(Get-Item $deliveryFile).Length })
+    $reportCases.Add([pscustomobject]@{ path=$bindingRel; state='unstaged'; accepted=$true; sha256=(Get-FileHash $bindingFile -Algorithm SHA256).Hash; bytes=(Get-Item $bindingFile).Length })
+    $reportRejected = 0; $reportStates = New-Object System.Collections.Generic.List[string]
+    $rejectReportPath = {
+      param([string]$Relative,[string]$Content,[string]$State)
+      $target=Join-Path $fixture $Relative; New-Item -ItemType Directory -Force -Path (Split-Path $target -Parent) | Out-Null
+      [IO.File]::WriteAllText($target,$Content); $before=(Get-FileHash $target -Algorithm SHA256).Hash
+      if ($State -eq 'staged') { & git -C $fixture add -- $Relative }
+      if ($State -eq 'unstaged') { & git -C $fixture add -- $Relative; & git -C $fixture commit -qm bad-path-baseline; [IO.File]::WriteAllText($target,($Content+'-modified')) ; $before=(Get-FileHash $target -Algorithm SHA256).Hash }
+      $didReject=$false; try { Get-C05ESourceBoundary $fixture $allowed | Out-Null } catch { if ($_.Exception.Message -like 'FAIL: staged/unstaged/untracked*') { $didReject=$true } else { throw } }
+      if (-not $didReject) { throw "unauthorized report path accepted state=$State path=$Relative" }
+      $after=(Get-FileHash $target -Algorithm SHA256).Hash
+      if ($after -ne $before) { throw "guard modified rejected input state=$State path=$Relative" }
+      $reportCases.Add([pscustomobject]@{ path=$Relative; state=$State; accepted=$false; sha256Before=$before; sha256After=$after; unchanged=($before -eq $after) })
+      $reportStates.Add($State); $script:reportRejected++
+      & git -C $fixture reset --hard -q HEAD
+      if ($State -ne 'unstaged' -and (Test-Path -LiteralPath $target)) { Remove-Item -LiteralPath $target -Force }
+    }
+    $script:reportRejected=0
+    & $rejectReportPath 'doc/other/V5-G2-C05-ANDROID-GEMINI38-DELIVERY-20261104.md' 'wrong-directory' 'staged'
+    & $rejectReportPath "$reportFolder/V5-G2-C05-ANDROID-GEMINI38-DELIVERY-20261104.json" 'wrong-extension' 'unstaged'
+    & $rejectReportPath "$reportFolder/V5-G2-C05-ANDROID-GEMINI38-BINDING-20261104.md" 'wrong-extension' 'untracked'
+    & $rejectReportPath "$reportFolder/UNRELATED-NOTE.md" 'unrelated-doc' 'untracked'
+    $reportRejected=$script:reportRejected
+    if ($reportRejected -ne 4 -or ($reportStates -join ',') -ne 'staged,unstaged,untracked,untracked') { throw "exact report allowlist matrix rejected=$reportRejected states=$($reportStates -join ',')" }
     $nonGit = Join-Path $fixture 'missing-repo-path'; $gitFailed = $false
     try { Get-C05ESourceBoundary $nonGit $allowed | Out-Null } catch { $gitFailed = $true }
     if (-not $gitFailed) { throw 'git native failure was not rejected' }
-    Write-Output 'SOURCE_FIXTURE PASS staged-unstaged-untracked-rejected allowed-bytes-bound git-failure-rejected'
+    $nativeGitFailureRejected=$false
+    try { [void](Invoke-C05EGit $fixture @('rev-parse','C05-NO-SUCH-REVISION')) } catch { if ($_.Exception.Message -match 'exited 128') { $nativeGitFailureRejected=$true } else { throw } }
+    if (-not $nativeGitFailureRejected) { throw 'nonzero Git native result was treated as an empty successful path list' }
+    $reportCases.Add([pscustomobject]@{ case='git-native-nonzero'; expected='REJECT'; actual='REJECT'; emptyListAccepted=$false })
+    Write-Output ("SOURCE_FIXTURE PASS exact-two-report-paths both-console-encodings-native-failure-rejected wrong-dir-extension-unrelated rejected count={0} cases={1}" -f $reportRejected, (ConvertTo-Json -InputObject $reportCases.ToArray() -Compress -Depth 5))
     exit 0
   } finally {
     $full = [IO.Path]::GetFullPath($fixture); $base = [IO.Path]::GetFullPath((Join-Path $fixtureRoot 'build')) + [IO.Path]::DirectorySeparatorChar
@@ -572,6 +853,7 @@ if ($ArgumentFixtureTest) {
   $dir = Join-Path $fixtureRoot ('build\c05-emulator-argv-fixtures\' + [guid]::NewGuid().ToString('N'))
   New-Item -ItemType Directory -Force -Path $dir | Out-Null
   try {
+    $script:stagingFixtureCase='setup'
     $exe = Join-Path $dir 'argv recorder.exe'; $record = Join-Path $dir 'args.json'; $env:C05E_ARGV_RECORD = $record
     $source = 'using System;using System.IO;using System.Linq;using System.Text;public static class R{public static int Main(){var a=Environment.GetCommandLineArgs().Skip(1).Select(x=>Convert.ToBase64String(Encoding.UTF8.GetBytes(x))).ToArray();File.WriteAllLines(Environment.GetEnvironmentVariable("C05E_ARGV_RECORD"),a);return 0;}}'
     $sourceFile = Join-Path $dir 'Recorder.cs'; [IO.File]::WriteAllText($sourceFile, $source, (New-Object Text.UTF8Encoding($false)))
@@ -603,11 +885,14 @@ if ($StagingGuardFixtureTest) {
   try {
     $script:C05ERepoRoot = $fixtureRoot
     $script:C05EAllowedStagingRoot = [IO.Path]::GetFullPath((Join-Path $fixtureRoot 'build\c05-emulator-staging'))
+    $script:C05EShortStagingRoot = Join-Path $dir 'short-stage'
+    New-Item -ItemType Directory -Force -Path $script:C05EShortStagingRoot | Out-Null
     $allowed = Join-Path $script:C05EAllowedStagingRoot ('owned-' + [guid]::NewGuid().ToString('N') + '\project')
     if (-not (Test-C05EStagingDestination $allowed)) { throw 'valid owned staging destination rejected' }
-    $rejected = 0
+    $rejected = 0; $stagingCases = New-Object System.Collections.Generic.List[object]
     foreach ($bad in @('C:\c05-unapproved-target', $fixtureRoot, (Join-Path $fixtureRoot 'unity\Mahjong.Unity'), $script:C05EAllowedStagingRoot)) {
       if (Test-C05EStagingDestination $bad) { throw "foreign staging destination accepted: $bad" }
+      $stagingCases.Add([pscustomobject]@{ path=$bad; expected='REJECT'; actual='REJECT' })
       $rejected++
     }
     $src = Join-Path $dir 'source'; $dst = Join-Path $dir 'foreign-project'
@@ -617,22 +902,162 @@ if ($StagingGuardFixtureTest) {
     $sentinel = Join-Path $dst 'Assets\foreign-sentinel.txt'; [IO.File]::WriteAllText($sentinel, 'PRESERVE')
     $syncResult = Sync-C05EStagingAuthored $src $dst
     if ($syncResult -ne $false -or -not (Test-Path -LiteralPath $sentinel)) { throw 'foreign mirror destination was modified or not rejected' }
+    $stagingCases.Add([pscustomobject]@{ path=$dst; operation='sync'; expected='REJECT'; actual='REJECT'; sentinelPreserved=$true })
     $rejected++
-    $nestedDest = Join-Path $allowed 'nested-project'
-    $nestedOutside = Join-Path $dir 'nested-outside'
-    New-Item -ItemType Directory -Force -Path $nestedDest, $nestedOutside | Out-Null
-    $nestedSentinel = Join-Path $nestedOutside 'sentinel.txt'; [IO.File]::WriteAllText($nestedSentinel, 'PRESERVE')
-    New-Item -ItemType Junction -Path (Join-Path $nestedDest 'Assets') -Target $nestedOutside | Out-Null
-    $syncNested = Sync-C05EStagingAuthored $src $nestedDest
-    if ($syncNested -ne $false -or -not (Test-Path -LiteralPath $nestedSentinel)) { throw 'nested junction target was modified or not rejected' }
+    $shortGuid = [guid]::NewGuid().ToString('N'); $shortCandidate = Join-Path $script:C05EShortStagingRoot $shortGuid
+    $script:stagingFixtureCase='fresh-short-guid'
+    $resolvedShort = Resolve-C05EStagingRoot $fixtureRoot $shortCandidate $false
+    if ($resolvedShort -ne [IO.Path]::GetFullPath($shortCandidate) -or -not (Test-C05EStagingDestination (Join-Path $resolvedShort 'project'))) { throw 'fresh short GUID root was not accepted' }
+    $stagingCases.Add([pscustomobject]@{ path=$shortCandidate; reuse=$false; expected='ACCEPT_FRESH_GUID'; actual='ACCEPT'; ownerRoot=$script:C05EAllowedStagingRoot })
+    if (Test-C05EStagingDestination (Join-Path (Join-Path $script:C05EShortStagingRoot ([guid]::NewGuid().ToString('N'))) 'project')) { throw 'sibling external GUID root accepted by current owner boundary' }
+    $stagingCases.Add([pscustomobject]@{ path='sibling-short-GUID'; expected='REJECT_OWNER_MISMATCH'; actual='REJECT' })
     $rejected++
-    if ($rejected -ne 6) { throw "staging guard rejected=$rejected expected=6" }
-    Write-Output 'STAGING_GUARD_FIXTURE PASS valid-owned-accepted C-root-repo-source-staging-root-and-nested-junction-rejected foreign-mirrors-preserved count=6'
+    $shortAccepted = 1
+    $invalidShort = @(
+      $script:C05EShortStagingRoot,
+      'D:\',
+      ($script:C05EShortStagingRoot + '-adjacent\' + [guid]::NewGuid().ToString('N')),
+      (Join-Path $script:C05EShortStagingRoot 'not-a-guid'),
+      (Join-Path $shortCandidate 'child'),
+      (Join-Path $script:C05EShortStagingRoot ('..\escape-' + [guid]::NewGuid().ToString('N'))),
+      $fixtureRoot,
+      (Join-Path $fixtureRoot 'unity\Mahjong.Unity')
+    )
+    foreach ($badShort in $invalidShort) {
+      $script:stagingFixtureCase="invalid-short:$badShort"
+      $rejected++
+      $reason=$null
+      try { [void](Resolve-C05EStagingRoot $fixtureRoot $badShort $false); throw "invalid short root accepted: $badShort" } catch { if ($_.Exception.Message -like 'invalid short root accepted:*') { throw }; $reason=$_.Exception.Message }
+      $stagingCases.Add([pscustomobject]@{ path=$badShort; reuse=$false; expected='REJECT'; actual='REJECT'; reason=$reason })
+    }
+    $script:stagingFixtureCase='external-reuse'
+    $reuseReason=$null; try { [void](Resolve-C05EStagingRoot $fixtureRoot $shortCandidate $true); throw 'external reuse accepted' } catch { if ($_.Exception.Message -eq 'external reuse accepted') { throw }; $reuseReason=$_.Exception.Message }
+    $stagingCases.Add([pscustomobject]@{ path=$shortCandidate; reuse=$true; expected='REJECT_EXTERNAL_REUSE'; actual='REJECT'; reason=$reuseReason })
+    $rejected++
+    $existingShort = Join-Path $script:C05EShortStagingRoot ([guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Path $existingShort | Out-Null
+    $sentinel = Join-Path $existingShort 'sentinel.bin'; [IO.File]::WriteAllBytes($sentinel,[byte[]]@(9,8,7,6)); $sentinelHash=(Get-FileHash $sentinel -Algorithm SHA256).Hash
+    [IO.File]::WriteAllText((Join-Path $existingShort '.c05-owned-staging.json'),'{"owner":"FOREIGN"}')
+    [IO.File]::WriteAllText((Join-Path $existingShort '.c05-active-writer.json'),'{"pid":999999,"startUtcTicks":1}')
+    foreach ($reuse in @($false,$true)) {
+      $script:stagingFixtureCase="existing-external-reuse:$reuse"
+      $beforeHash=(Get-FileHash $sentinel -Algorithm SHA256).Hash; $reason=$null
+      try { [void](Resolve-C05EStagingRoot $fixtureRoot $existingShort $reuse); throw "pre-existing external root accepted reuse=$reuse" } catch { if ($_.Exception.Message -like 'pre-existing external root accepted*') { throw }; $reason=$_.Exception.Message }
+      $rejected++
+      if ((Get-FileHash $sentinel -Algorithm SHA256).Hash -ne $sentinelHash) { throw 'pre-existing external sentinel changed' }
+      $afterHash=(Get-FileHash $sentinel -Algorithm SHA256).Hash
+      $stagingCases.Add([pscustomobject]@{ path=$existingShort; reuse=$reuse; expected='REJECT_PREEXISTING'; actual='REJECT'; reason=$reason; sentinelSha256Before=$beforeHash; sentinelSha256After=$afterHash; unchanged=($beforeHash -eq $afterHash) })
+    }
+    $script:stagingFixtureCase='reparse-short-root'
+    $reparseBase='D:\game_dev_tools\unity\Editor\Data\PlaybackEngines\AndroidPlayer\OpenJDK'
+    $reparseInfo=Get-Item -LiteralPath $reparseBase -Force -ErrorAction Stop
+    if (($reparseInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) { throw 'known read-only Unity OpenJDK path is no longer a reparse point' }
+    $previousShortRoot=$script:C05EShortStagingRoot; $script:C05EShortStagingRoot=$reparseBase
+    $reparsePath=Join-Path $reparseBase ([guid]::NewGuid().ToString('N')); $reparseReason=$null
+    try { [void](Resolve-C05EStagingRoot $fixtureRoot $reparsePath $false); throw 'reparse short root accepted' } catch { if ($_.Exception.Message -eq 'reparse short root accepted') { throw }; $reparseReason=$_.Exception.Message } finally { $script:C05EShortStagingRoot=$previousShortRoot }
+    if ($reparseReason -notlike '*reparse point*') { throw "reparse short root did not fail on reparse guard: $reparseReason" }
+    $stagingCases.Add([pscustomobject]@{ path=$reparsePath; expected='REJECT_REPARSE'; actual='REJECT'; reason=$reparseReason; createdOrWritten=$false })
+    $rejected++
+    $script:stagingFixtureCase='repo-reuse'
+    $repoBase=[IO.Path]::GetFullPath((Join-Path $fixtureRoot 'build\c05-emulator-staging'))
+    $repoReuse=Join-Path $repoBase ('owned-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $repoReuse | Out-Null
+    if ((Resolve-C05EStagingRoot $fixtureRoot $repoReuse $true) -ne [IO.Path]::GetFullPath($repoReuse)) { throw 'repository reuse behavior changed' }
+    $stagingCases.Add([pscustomobject]@{ path=$repoReuse; reuse=$true; expected='ACCEPT_REPOSITORY_REUSE'; actual='ACCEPT' })
+    if ($shortAccepted -ne 1 -or $rejected -lt 16) { throw "short staging matrix accepted=$shortAccepted rejected=$rejected" }
+    Write-Output ("STAGING_GUARD_FIXTURE PASS repo-default-preserved short-fresh-guid-accepted rejected count={0} cases={1}" -f $rejected,(ConvertTo-Json -InputObject $stagingCases.ToArray() -Compress -Depth 5))
     exit 0
+  } catch {
+    Write-Output "STAGING_GUARD_CASE_FAIL case=$script:stagingFixtureCase error=$($_.Exception.Message)"
+    throw
   } finally {
     if (Test-Path -LiteralPath $dir) {
       $full = [IO.Path]::GetFullPath($dir); $base = [IO.Path]::GetFullPath((Join-Path $fixtureRoot 'build')) + [IO.Path]::DirectorySeparatorChar
       if (-not $full.StartsWith($base,[StringComparison]::OrdinalIgnoreCase)) { throw 'unsafe staging guard fixture cleanup' }
+      [IO.Directory]::Delete($full,$true)
+    }
+  }
+}
+if ($PathBudgetFixtureTest) {
+  $fixtureRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+  $dir = Join-Path $fixtureRoot ('build\b\' + [guid]::NewGuid().ToString('N'))
+  New-Item -ItemType Directory -Force -Path $dir | Out-Null
+  try {
+    $expectedRoot = 'D:\c05s\' + [guid]::NewGuid().ToString('N') + '\project'
+    $pathCases=New-Object System.Collections.Generic.List[object]; $accepted=0; $rejected=0
+    $project = Join-Path $dir 'single-project'; $cache = Join-Path $project 'Library\PackageCache\com.fixture.registry@0123456789ab'
+    New-Item -ItemType Directory -Force -Path $cache,(Join-Path $project 'Packages') | Out-Null
+    $singleLock='{"dependencies":{"com.fixture.registry":{"version":"1.0.0","source":"registry"}}}'
+    [IO.File]::WriteAllText((Join-Path $project 'Packages\packages-lock.json'),$singleLock,(New-Object Text.UTF8Encoding($false)))
+    $consumerFile = Join-Path $cache 'Readable.cs'; [IO.File]::WriteAllText($consumerFile,'class Fixture {}')
+    [IO.File]::WriteAllText((Join-Path $cache 'package.json'),'{"name":"com.fixture.registry","version":"1.0.0"}',(New-Object Text.UTF8Encoding($false)))
+    $valid = Get-C05EPathBudgetAudit $project 'C:\Unity\Editor\Unity.exe' @() $expectedRoot
+    if ($valid.status -ne 'PASS' -or -not $valid.completeInventory -or -not [IO.File]::Exists($consumerFile) -or -not $valid.packageInventory[0].inventorySha256) { throw "short ordinary consumer path rejected: $($valid|ConvertTo-Json -Compress -Depth 5)" }
+    $pathCases.Add([pscustomobject]@{ case='matching-package-metadata-and-hashed-file-inventory'; expected='PASS'; actual=$valid.status; completeInventory=$valid.completeInventory; ordinaryConsumerFileExists=[IO.File]::Exists($consumerFile); inventory=$valid.packageInventory; packageLockSha256=$valid.packageLockSha256 })
+    $accepted++
+    $longProjected = Join-Path (Join-Path $expectedRoot 'Library\PackageCache\com.fixture.registry@0123456789ab') ((('segment-' + ('x' * 180)) + '.asset'))
+    $longAudit = Get-C05EPathBudgetAudit $project 'C:\Unity\Editor\Unity.exe' @($longProjected) $expectedRoot
+    if ($longAudit.status -ne 'FAIL_PATH_BUDGET' -or $longAudit.overLimit.Count -eq 0) { throw 'over-limit prospective consumer path was not rejected' }
+    $pathCases.Add([pscustomobject]@{ case='projected-over-limit-consumer-path'; expected='FAIL_PATH_BUDGET'; actual=$longAudit.status; completeInventory=$longAudit.completeInventory; overLimit=$longAudit.overLimit; maxPathChars=$longAudit.maxPathChars })
+    $rejected++
+    foreach ($case in @(@{name='missing-package-json'; json=$null},@{name='wrong-package-name'; json='{"name":"com.wrong.package","version":"1.0.0"}'},@{name='wrong-package-version'; json='{"name":"com.fixture.registry","version":"99.0.0"}'})) {
+      $badProject = Join-Path $dir $case.name; $badCache = Join-Path $badProject 'Library\PackageCache\com.fixture.registry@0123456789ab'
+      New-Item -ItemType Directory -Force -Path $badCache,(Join-Path $badProject 'Packages') | Out-Null
+      [IO.File]::WriteAllText((Join-Path $badProject 'Packages\packages-lock.json'),$singleLock,(New-Object Text.UTF8Encoding($false)))
+      [IO.File]::WriteAllText((Join-Path $badCache 'marker.txt'),'marker')
+      if ($null -ne $case.json) { [IO.File]::WriteAllText((Join-Path $badCache 'package.json'),$case.json,(New-Object Text.UTF8Encoding($false))) }
+      $audit = Get-C05EPathBudgetAudit $badProject 'C:\Unity\Editor\Unity.exe' @() $expectedRoot
+      if ($audit.status -ne 'INCOMPLETE_INVENTORY' -or $audit.completeInventory) { throw "$($case.name) was treated as complete: $($audit|ConvertTo-Json -Compress -Depth 5)" }
+      $pathCases.Add([pscustomobject]@{ case=$case.name; expected='INCOMPLETE_INVENTORY'; actual=$audit.status; completeInventory=$audit.completeInventory; packagesMissing=$audit.packagesMissing })
+      $rejected++
+    }
+    $missingProject = Join-Path $dir 'missing-cache-project'; New-Item -ItemType Directory -Force -Path (Join-Path $missingProject 'Packages') | Out-Null
+    [IO.File]::WriteAllText((Join-Path $missingProject 'Packages\packages-lock.json'),$singleLock,(New-Object Text.UTF8Encoding($false)))
+    $missing = Get-C05EPathBudgetAudit $missingProject 'C:\Unity\Editor\Unity.exe' @() $expectedRoot
+    if ($missing.status -ne 'INCOMPLETE_INVENTORY' -or $missing.completeInventory -or -not ($missing.packagesMissing -match 'registry-package-inventory')) { throw 'absent first-import PackageCache was treated as complete' }
+    $pathCases.Add([pscustomobject]@{ case='first-import-packagecache-absent'; expected='INCOMPLETE_INVENTORY'; actual=$missing.status; completeInventory=$missing.completeInventory; packagesMissing=$missing.packagesMissing })
+    $rejected++
+    $liveLock = [IO.Path]::GetFullPath((Join-Path $fixtureRoot 'unity\Mahjong.Unity\Packages\packages-lock.json'))
+    $live = Get-Content -Encoding UTF8 -LiteralPath $liveLock -Raw | ConvertFrom-Json
+    $registry = @($live.dependencies.PSObject.Properties | Where-Object { [string]$_.Value.source -eq 'registry' })
+    if ($registry.Count -ne 19) { throw "current packages-lock registry denominator changed: $($registry.Count)" }
+    $registryLock = [ordered]@{ dependencies=[ordered]@{} }
+    foreach ($dependency in $registry) { $registryLock.dependencies[$dependency.Name]=$dependency.Value }
+    $lockText = $registryLock | ConvertTo-Json -Depth 12
+    $sourceProject = Join-Path $dir 's'; $targetProject = Join-Path $dir 't'
+    foreach ($candidateProject in @($sourceProject,$targetProject)) { New-Item -ItemType Directory -Force -Path (Join-Path $candidateProject 'Packages') | Out-Null; [IO.File]::WriteAllText((Join-Path $candidateProject 'Packages\packages-lock.json'),$lockText,(New-Object Text.UTF8Encoding($false))) }
+    $sourceCache = Join-Path $sourceProject 'Library\PackageCache'; New-Item -ItemType Directory -Force -Path $sourceCache | Out-Null
+    foreach ($dependency in $registry) {
+      $packageRoot = Join-Path $sourceCache ($dependency.Name + '@0123456789ab'); New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
+      $manifest = [ordered]@{ name=$dependency.Name; version=[string]$dependency.Value.version }
+      [IO.File]::WriteAllText((Join-Path $packageRoot 'package.json'),($manifest|ConvertTo-Json -Compress),(New-Object Text.UTF8Encoding($false)))
+      [IO.File]::WriteAllText((Join-Path $packageRoot 'Fixture.txt'),('fixture:' + $dependency.Name),(New-Object Text.UTF8Encoding($false)))
+    }
+    $script:C05EActiveRun = Join-Path $dir 'evidence'; New-Item -ItemType Directory -Force -Path $script:C05EActiveRun | Out-Null
+    $prepared = Copy-C05EVerifiedRegistryCache $sourceCache $targetProject
+    $preparedAudit = Get-C05EPathBudgetAudit $targetProject 'C:\Unity\Editor\Unity.exe' @() $expectedRoot
+    if ($prepared.packageCount -ne 19 -or $preparedAudit.status -ne 'PASS' -or $preparedAudit.packageInventory.Count -ne 19 -or -not $preparedAudit.completeInventory) { throw "current lock-package preparation failed: $($preparedAudit|ConvertTo-Json -Compress -Depth 5)" }
+    $copyRows = New-Object System.Collections.Generic.List[object]
+    foreach ($package in $preparedAudit.packageInventory) {
+      $readable = [IO.File]::Exists((Join-Path $package.root 'Fixture.txt'))
+      if (-not $readable) { throw "ordinary package consumer could not read copied package $($package.name)" }
+      $copyRows.Add([pscustomobject]@{ name=$package.name; version=$package.version; fileCount=$package.fileCount; inventorySha256=$package.inventorySha256; ordinaryConsumerReadable=$readable })
+    }
+    $copyNativeCodes=@($prepared.packages | ForEach-Object { [int]$_.robocopyNative })
+    if ($copyNativeCodes.Count -ne 19 -or @($copyNativeCodes | Where-Object { $_ -lt 0 -or $_ -ge 8 }).Count) { throw "registry copy native result matrix invalid: $($copyNativeCodes -join ',')" }
+    $pathCases.Add([pscustomobject]@{ case='current-lock-19-registry-package-fresh-copy-fixture'; expected='PASS'; actual=$preparedAudit.status; lockRegistryCount=$registry.Count; copiedPackageCount=$prepared.packageCount; copyNativeCodes=$copyNativeCodes; inventory=$copyRows.ToArray(); packageLockSha256=$preparedAudit.packageLockSha256 })
+    $accepted++
+    $cacheSentinel=Join-Path $targetProject 'Library\PackageCache\com.unity.2d.animation@0123456789ab\Fixture.txt'; $cacheSentinelHash=(Get-FileHash $cacheSentinel -Algorithm SHA256).Hash
+    $mergeRejected=$false; try { [void](Copy-C05EVerifiedRegistryCache $sourceCache $targetProject) } catch { if ($_.Exception.Message -like '*refusing to merge*') { $mergeRejected=$true } else { throw } }
+    if (-not $mergeRejected -or (Get-FileHash $cacheSentinel -Algorithm SHA256).Hash -ne $cacheSentinelHash) { throw 'preexisting staging PackageCache was merged or modified' }
+    $pathCases.Add([pscustomobject]@{ case='preexisting-staging-packagecache'; expected='REJECT_UNCHANGED'; actual='REJECT'; sentinelSha256Before=$cacheSentinelHash; sentinelSha256After=(Get-FileHash $cacheSentinel -Algorithm SHA256).Hash })
+    $rejected++
+    if ($accepted -ne 2 -or $rejected -ne 6) { throw "path budget counts accepted=$accepted rejected=$rejected expected=2/6" }
+    Write-Output ("PATH_BUDGET_FIXTURE PASS matching-metadata-hashed-copy-19-lock-packages missing-metadata-name-version-absent-preexisting-and-overlimit-rejected count={0} cases={1}" -f $pathCases.Count,(ConvertTo-Json -InputObject $pathCases.ToArray() -Compress -Depth 7))
+    exit 0
+  } finally {
+    if (Test-Path -LiteralPath $dir) {
+      $full=[IO.Path]::GetFullPath($dir); $base=[IO.Path]::GetFullPath((Join-Path $fixtureRoot 'build'))+[IO.Path]::DirectorySeparatorChar
+      if (-not $full.StartsWith($base,[StringComparison]::OrdinalIgnoreCase)) { throw 'unsafe path budget fixture cleanup' }
       [IO.Directory]::Delete($full,$true)
     }
   }
@@ -653,15 +1078,11 @@ foreach ($required in @('OpenJDK\bin\java.exe','SDK\platform-tools\adb.exe','NDK
 }
 if (-not $OutputRoot) { $OutputRoot = Join-Path $root ('build\c05-android-emulator-apk\' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0,8)) }
 $run = Assert-C05EFreshOutputDirectory $OutputRoot
+$script:C05EShortStagingRoot = [IO.Path]::GetFullPath('D:\c05s')
 if (-not $StagingRoot) { $StagingRoot = Join-Path $root ('build\c05-emulator-staging\' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0,8)) }
-$stagingRoot = [IO.Path]::GetFullPath($StagingRoot)
 $guardRoot = if ($root) { $root } else { [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..')) }
 $script:C05ERepoRoot = $guardRoot
-$script:C05EAllowedStagingRoot = [IO.Path]::GetFullPath((Join-Path $guardRoot 'build\c05-emulator-staging'))
-$stagingRootPrefix = $script:C05EAllowedStagingRoot + [IO.Path]::DirectorySeparatorChar
-if (-not $stagingRoot.StartsWith($stagingRootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
-  throw "BLOCKED: StagingRoot '$stagingRoot' is outside the owned E staging root '$($script:C05EAllowedStagingRoot)'."
-}
+$stagingRoot = Resolve-C05EStagingRoot $guardRoot $StagingRoot ([bool]$ReuseStaging)
 if (-not (Test-C05ENoReparse $stagingRoot)) { throw "BLOCKED: StagingRoot '$stagingRoot' traverses a reparse/junction point." }
 if (-not (Test-Path -LiteralPath $run)) { [void](Assert-C05EBuildDestination $run 'OutputRoot') }
 if ((Test-Path -LiteralPath $stagingRoot) -and -not $ReuseStaging) { throw "BLOCKED: staging root already exists and must not be reused without -ReuseStaging: $stagingRoot" }
@@ -789,6 +1210,17 @@ try {
     if (-not (Copy-C05EStagingProject $sourceProject $project)) { throw "BLOCKED: $script:C05EStagingViolation" }
     [IO.File]::WriteAllText($stagingDigestPath, $sourceClosureDigest, (New-Object Text.UTF8Encoding($false)))
   }
+  $packageCache = Join-Path $project 'Library\PackageCache'
+  if ($RegistryCacheSource) {
+    $registryCacheReceipt = Copy-C05EVerifiedRegistryCache $RegistryCacheSource $project
+    Save-C05EJson (Join-Path $run 'registry-cache-copy-receipt.json') $registryCacheReceipt
+  } elseif (-not (Test-Path -LiteralPath $packageCache -PathType Container)) {
+    throw 'BLOCKED: fresh staging has no materialized registry PackageCache; pass a lock-matched -RegistryCacheSource or provide a source-project Library cache.'
+  }
+  $pathBudgetAudit = Get-C05EPathBudgetAudit $project $unity
+  $pathBudgetAuditPath = Join-Path $run 'staging-path-budget.json'
+  Save-C05EJson $pathBudgetAuditPath $pathBudgetAudit
+  if ($pathBudgetAudit.status -ne 'PASS') { throw "BLOCKED: staging path budget=$($pathBudgetAudit.status); see $pathBudgetAuditPath" }
   # The Editor guard walks up from Assets to the first tools/unity/check-shared-plugins.ps1.
   # Give the staging tree its own checker wrapper so it validates the staged plugin closure
   # (the source tree remains untouched and is validated separately by the frozen closure).
@@ -857,7 +1289,7 @@ exit `$LASTEXITCODE
   if (-not $provenanceCopies.Count) { throw 'FAIL: no shared-plugin provenance record was produced; cannot bind the APK inputs.' }
   Save-C05EJson (Join-Path $provenanceDir 'provenance-manifest.json') ([pscustomobject]@{ schema=1; records=$provenanceCopies.ToArray() })
 
-  $arguments = @('-batchmode','-quit','-projectPath',$project,'-buildTarget','Android',
+  $arguments = @('-batchmode','-quit','-job-worker-count','1','-projectPath',$project,'-buildTarget','Android',
     '-executeMethod','C05EmulatorAndroidBuild.Build','-c05EmuOutput',$apk,'-c05EmuMarker',$marker,
     '-c05EmuEditorLog',$editorLog,'-c05EmuSourceRoot',$sourceProject,'-c05EmuSourceHead',$head,
     '-c05EmuResolvedTargetSdk',[string]$resolvedAutoTarget,'-logFile',$unityLog)
@@ -930,7 +1362,7 @@ exit `$LASTEXITCODE
     status='PASS'; variant='ANDROID_EMULATOR'; abi='x86_64'; sourceHead=$head; dirtyPaths=@($sourceState.dirtyPaths);
     buildCacheMode=$(if ($ReuseBuildCache) { 'REUSE' } else { 'CLEAN' });
     sourceProject=$sourceProject.Replace('\','/'); stagingProject=$project.Replace('\','/');
-    stagingRoot=$stagingRoot.Substring($root.Length + 1).Replace('\','/');
+    stagingRoot=$(if ($stagingRoot.StartsWith(([IO.Path]::GetFullPath($root) + [IO.Path]::DirectorySeparatorChar), [StringComparison]::OrdinalIgnoreCase)) { $stagingRoot.Substring($root.Length + 1).Replace('\','/') } else { $stagingRoot.Replace('\','/') });
     sourceInputFreezeSha256=$sourceFreezeSha; sourceInputFileCount=$sourceFreezeBefore.Count;
     sourceInputsUnchanged=$true; sourcePluginsUnchanged=$true; sourcePluginBeforeHashes=$sourcePluginBeforeHashes;
     stagingReused=$stagingReused; stagingAuthoredInputsSynced=$stagingReused; stagingAuthoredClosureMatchesSource=$true;
@@ -940,7 +1372,7 @@ exit `$LASTEXITCODE
     androidPlayer=[pscustomobject]@{ path=$androidPlayer; jdkVersion='17.0.20.1'; ndkVersion=(Get-Content (Join-Path $androidPlayer 'NDK\source.properties') -Raw).Trim();
       x86_64Il2cppLibs=$true }; androidSdkRoot=$AndroidSdkRoot; androidAvdHome=$AvdHome;
     adbPath=(Join-Path $AndroidSdkRoot 'platform-tools\adb.exe'); aapt2Path=$aapt2; emulatorPath=(Join-Path $AndroidSdkRoot 'emulator\emulator.exe');
-    storageBudget=$budget; apk=(Split-Path $apk -Leaf); apkBytes=$apkInfo.Length; apkSha256=$hash; nativeExit=$native;
+    storageBudget=$budget; unityJobWorkerCount=1; apk=(Split-Path $apk -Leaf); apkBytes=$apkInfo.Length; apkSha256=$hash; nativeExit=$native;
     privateToolchain=$toolchain;
     buildReport=$report; buildReportSha256=$reportSha; metadataSha256=$metadataSha;
     activity=(Get-C05EBadgingContract ([string]$badging.stdout)).activity;
