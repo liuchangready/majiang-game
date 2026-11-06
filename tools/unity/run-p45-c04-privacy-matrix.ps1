@@ -12,6 +12,9 @@ param(
   [string]$ExpectedSourceHead = '',
   [string]$PlayerBuildMarker = '',
   [string]$ReuseLibraryCacheFrom = '',
+  [switch]$Fast,
+  [string]$StagingRoot = '',
+  [switch]$ReuseStaging,
   [switch]$PreflightOnly,
   [switch]$CompileOnly,
   [switch]$BuildPlayer,
@@ -273,6 +276,27 @@ function Copy-C04UnityInputs {
   [IO.Directory]::CreateDirectory($Destination) | Out-Null
   foreach ($name in $relativeRoots) { Copy-C04DirectoryContents (Join-Path $unityRoot $name) (Join-Path $Destination $name) }
   $after = Get-C04SelectedManifest -Base $Destination -RelativeRoots $relativeRoots
+  Assert-C04ManifestEqual $before $after 'Unity staged input'
+  return [pscustomobject]@{ source = $before; staged = $after }
+}
+
+function Sync-C04StagingAuthored {
+  param(
+    [Parameter(Mandatory = $true)][string]$SourceProject,
+    [Parameter(Mandatory = $true)][string]$DestinationProject
+  )
+  $relativeRoots = @('Assets', 'Packages', 'ProjectSettings')
+  [IO.Directory]::CreateDirectory($DestinationProject) | Out-Null
+  foreach ($name in $relativeRoots) {
+    $src = Join-Path $SourceProject $name
+    $dst = Join-Path $DestinationProject $name
+    if (-not (Test-Path -LiteralPath $src -PathType Container)) { continue }
+    [IO.Directory]::CreateDirectory($dst) | Out-Null
+    $rc = Start-Process -FilePath 'robocopy.exe' -ArgumentList @('"' + $src + '"', '"' + $dst + '"', '/MIR', '/NFL', '/NDL', '/NJH', '/NJS', '/NP', '/R:1', '/W:1') -Wait -WindowStyle Hidden -PassThru
+    if ($rc.ExitCode -ge 8) { throw "Robocopy failed mirroring '$name' with exit code $($rc.ExitCode)" }
+  }
+  $before = Get-C04SelectedManifest -Base $SourceProject -RelativeRoots $relativeRoots
+  $after = Get-C04SelectedManifest -Base $DestinationProject -RelativeRoots $relativeRoots
   Assert-C04ManifestEqual $before $after 'Unity staged input'
   return [pscustomobject]@{ source = $before; staged = $after }
 }
@@ -1661,8 +1685,12 @@ function Invoke-C04RunnerMain {
       break
     }
 
-    $staging = Join-Path $script:RunRoot 'staging-project'
-    $copied = Copy-C04UnityInputs -Repo $repo -Destination $staging
+    $staging = if ($StagingRoot) { [IO.Path]::GetFullPath($StagingRoot) } else { Join-Path $script:RunRoot 'staging-project' }
+    if ($Fast -or $ReuseStaging) {
+      $copied = Sync-C04StagingAuthored (Join-Path $repo 'unity/Mahjong.Unity') $staging
+    } else {
+      $copied = Copy-C04UnityInputs -Repo $repo -Destination $staging
+    }
     if (-not [string]::IsNullOrWhiteSpace($ReuseLibraryCacheFrom)) {
       $cachePath = [IO.Path]::GetFullPath($ReuseLibraryCacheFrom)
       $buildRoot = [IO.Path]::GetFullPath((Join-Path $repo 'build')) + [IO.Path]::DirectorySeparatorChar
@@ -1708,7 +1736,7 @@ function Invoke-C04RunnerMain {
       }
     }
     if (-not $script:StageDrive) { throw 'No unused drive letter is available for the short Unity staging path.' }
-    $unityProject = Join-Path ($script:StageDrive + '\') 'staging-project'
+    $unityProject = if ($StagingRoot) { $staging } else { Join-Path ($script:StageDrive + '\') 'staging-project' }
     if (-not (Test-Path -LiteralPath (Join-Path $staging 'Assets/Scripts/App/AppComposition.cs') -PathType Leaf) -or
         -not (Test-Path -LiteralPath (Join-Path $staging 'Assets/Tests/PlayMode/C04PrivacyRoleSwitchPlayModeTests.cs') -PathType Leaf)) {
       throw 'Staged Unity project layout lacks AppComposition or the C04 PlayMode test under Assets/.'
@@ -1720,10 +1748,12 @@ function Invoke-C04RunnerMain {
     [IO.Directory]::CreateDirectory($wrapperDir) | Out-Null
     $checker = Join-Path $repo 'tools/unity/check-shared-plugins.ps1'
     $manifestPath = Join-Path $pluginDir 'shared-plugin-provenance.json'
+    $checkerArgs = "-ProjectRoot '$repo' -PluginDir '$pluginDir' -EvidencePath '$manifestPath' -Configuration Release -Quiet:`$Quiet"
+    if (-not $Fast) { $checkerArgs += ' -RequireForcedRebuild' }
     $wrapper = @"
 param([string]`$ProjectRoot,[switch]`$Quiet)
 `$ErrorActionPreference='Stop'
-& '$checker' -ProjectRoot '$repo' -PluginDir '$pluginDir' -EvidencePath '$manifestPath' -Configuration Release -Quiet:`$Quiet
+& '$checker' $checkerArgs
 exit `$LASTEXITCODE
 "@
     Write-C04Utf8 (Join-Path $wrapperDir 'check-shared-plugins.ps1') $wrapper
@@ -1763,7 +1793,9 @@ exit `$LASTEXITCODE
     Log "MUTEX_ACQUIRED name=$($script:C04MutexName) waited=$($script:MutexHandle.waitedSeconds)s"
 
     $sharedBuilder = Join-Path $repo 'tools/unity/build-shared.ps1'
-    $sharedResult = Start-C04Owned 'shared-plugin-build-and-provenance' 'powershell.exe' @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $sharedBuilder, '-Configuration', 'Release', '-DotnetPath', $DotnetPath, '-PluginOutputDir', $pluginDir) $repo 1200
+    $sharedArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $sharedBuilder, '-Configuration', 'Release', '-DotnetPath', $DotnetPath, '-PluginOutputDir', $pluginDir)
+    if ($Fast) { $sharedArgs += '-Fast' } else { $sharedArgs += '-ForcedRebuild' }
+    $sharedResult = Start-C04Owned 'shared-plugin-build-and-provenance' 'powershell.exe' $sharedArgs $repo 1200
     Assert-C04NativeSuccess $sharedResult 'shared-plugin-build-and-provenance'
     if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw 'Fresh shared plugin provenance manifest is missing.' }
     Copy-Item -LiteralPath $manifestPath -Destination (Join-Path $script:RunRoot 'shared-plugin-provenance.json') -Force
@@ -1787,9 +1819,10 @@ exit `$LASTEXITCODE
       if (-not (Test-Path -LiteralPath $appAssembly -PathType Leaf)) { throw 'Unity did not produce Mahjong.Unity.App.dll during compile-only validation.' }
       $summary.compile = [ordered]@{ log = $compileLog; logSha256 = Get-C04Sha256File $compileLog; appAssembly = $appAssembly; appAssemblyBytes = (Get-Item -LiteralPath $appAssembly).Length; appAssemblySha256 = Get-C04Sha256File $appAssembly }
     } elseif ($BuildPlayer -or $WindowsAppMatrix) {
-      $unityArgs = @('-batchmode', '-quit', '-projectPath', $unityProject, '-executeMethod', 'C04PrivacyBuild.Build', '-logFile', $unityLog,
+      $unityArgs = @('-batchmode', '-quit', '-job-worker-count', '2', '-projectPath', $unityProject, '-executeMethod', 'C04PrivacyBuild.Build', '-logFile', $unityLog,
         '-c04PrivacyOutput', $player, '-c04PrivacyMarker', $marker, '-c04PrivacyBuildLog', $buildLog,
         '-c04PrivacySourceHead', $identity.head, '-c04PrivacyBuildCommit', $identity.head, '-upmCachePath', $upm)
+      if ($Fast) { $unityArgs += '-c04PrivacyFastProfile' }
       $unityResult = Start-C04Owned 'unity-player-build' $UnityPath $unityArgs $unityProject $TimeoutSeconds
       Assert-C04NativeSuccess $unityResult 'unity-player-build'
       $summary.marker = Assert-C04BuildMarker -MarkerPath $marker -ExpectedSourceHead $identity.head -ExpectedBuildCommit $identity.head

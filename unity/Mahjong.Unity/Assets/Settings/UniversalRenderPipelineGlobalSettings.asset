@@ -251,7 +251,7 @@ MonoBehaviour:
       type: {class: URPTerrainShaderSetting, ns: UnityEngine.Rendering.Universal, asm: Unity.RenderPipelines.Universal.Runtime}
       data:
         m_Version: 0
-        m_IncludeTerrainShaders: 1
+        m_IncludeTerrainShaders: 0
     - rid: 3297423790781497355
       type: {class: ScreenSpaceAmbientOcclusionDynamicResources, ns: UnityEngine.Rendering.Universal, asm: Unity.RenderPipelines.Universal.Runtime}
       data:

@@ -63,13 +63,30 @@ param(
 
     [string]$DotnetPath,
 
-    [string]$PluginOutputDir
+    [string]$PluginOutputDir,
+
+    [switch]$ForcedRebuild,
+
+    [switch]$Fast
 )
 
 $ErrorActionPreference = 'Stop'
 $env:DOTNET_NOLOGO = '1'
 $env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'
 $env:DOTNET_CLI_UI_LANGUAGE = 'en'
+
+if (-not $DotnetPath) {
+    if ($env:DOTNET_ROOT) {
+        $DotnetPath = Join-Path $env:DOTNET_ROOT 'dotnet.exe'
+    }
+    elseif (Test-Path 'D:\Unity\dotnet\dotnet.exe') {
+        $DotnetPath = 'D:\Unity\dotnet\dotnet.exe'
+    }
+    else {
+        $DotnetPath = (Get-Command dotnet -ErrorAction Stop).Source
+    }
+}
+$DotnetPath = [System.IO.Path]::GetFullPath($DotnetPath)
 
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $solution = Join-Path $root 'dotnet\Mahjong.sln'
@@ -93,9 +110,13 @@ else {
     Join-Path $pluginDirFull 'shared-plugin-provenance.json'
 }
 
-# A record only describes a completed successful sync. Remove any previous
-# record up front so a failed/aborted build can never leave an apparently green
-# (but stale) PASS behind.
+# A record only describes a completed successful sync. Read any previous
+# record up front for reuse inspection, but remove it immediately from disk
+# so that any failure/abort during this run leaves no stale evidence behind.
+$previousRecord = if (Test-Path -LiteralPath $evidencePath -PathType Leaf) {
+    Read-SharedPluginProvenance -Path $evidencePath
+} else { $null }
+
 if (Test-Path -LiteralPath $evidencePath -PathType Leaf) {
     Remove-Item -LiteralPath $evidencePath -Force
 }
@@ -103,6 +124,134 @@ if (Test-Path -LiteralPath $evidencePath -PathType Leaf) {
 $inputSnapshotBefore = @(Get-SharedPluginInputClosure -RepoRoot $root)
 $toolIdentity = @(Get-SharedPluginToolIdentity -RepoRoot $root)
 $buildStartedAtUtc = [DateTime]::UtcNow
+
+# --- Check for reuse if not forcing rebuild -----------------------------------
+$canReuse = $false
+$reusedOutputs = @()
+
+if ($Fast -and -not $ForcedRebuild -and $null -ne $previousRecord -and $previousRecord.Ok) {
+    $prevData = $previousRecord.Data
+    $prevConfig = [string]$prevData.configuration
+    $prevScope = [string]$prevData.evidenceScope
+    $expectedScope = if ($isDefaultTarget) { 'default-synced' } else { 'scratch' }
+
+    if ($prevConfig -ieq $Configuration -and $prevScope -ieq $expectedScope) {
+        $toolsMatch = $true
+        $prevTool = $prevData.tool
+        $prevBuildTool = $prevTool.buildShared
+        $prevSharedTool = $prevTool.sharedDefinition
+        $currBuildTool = $toolIdentity | Where-Object { $_.Path -eq 'tools/unity/build-shared.ps1' } | Select-Object -First 1
+        $currSharedTool = $toolIdentity | Where-Object { $_.Path -eq 'tools/unity/shared-plugin-provenance-lib.ps1' } | Select-Object -First 1
+        if (-not $currBuildTool -or $currBuildTool.Sha256 -ine [string]$prevBuildTool.Sha256) { $toolsMatch = $false }
+        if (-not $currSharedTool -or $currSharedTool.Sha256 -ine [string]$prevSharedTool.Sha256) { $toolsMatch = $false }
+        if ([string]$prevTool.dotnetPath -ine $DotnetPath) { $toolsMatch = $false }
+
+        if ($toolsMatch) {
+            $prevInputs = @($prevData.inputs)
+            $drift = Compare-SharedPluginInputClosure -Expected $prevInputs -Actual $inputSnapshotBefore
+            if ($drift.IsEqual) {
+                $prevOutputs = @($prevData.outputs)
+                $outputsValid = ($prevOutputs.Count -gt 0)
+                foreach ($outEntry in $prevOutputs) {
+                    $outName = [string]$outEntry.Name
+                    $expectedSha = [string]$outEntry.Sha256
+                    $expectedLen = [long]$outEntry.Length
+
+                    $destPath = Join-Path $pluginDirFull $outName
+                    if (-not (Test-Path -LiteralPath $destPath -PathType Leaf)) {
+                        $outputsValid = $false; break
+                    }
+                    $destItem = Get-Item -LiteralPath $destPath
+                    if ($destItem.Length -ne $expectedLen -or (Get-SharedPluginFileSha256 $destPath) -ine $expectedSha) {
+                        $outputsValid = $false; break
+                    }
+
+                    $outKind = [string]$outEntry.SourceKind
+                    if ($outKind -eq 'project') {
+                        $projName = [string]$outEntry.Project
+                        $binPath = Join-Path $root "dotnet\src\$projName\bin\$Configuration\netstandard2.1\$outName"
+                        if (-not (Test-Path -LiteralPath $binPath -PathType Leaf)) {
+                            $outputsValid = $false; break
+                        }
+                        $binItem = Get-Item -LiteralPath $binPath
+                        if ($binItem.Length -ne $expectedLen -or (Get-SharedPluginFileSha256 $binPath) -ine $expectedSha) {
+                            $outputsValid = $false; break
+                        }
+                    }
+                }
+                if ($outputsValid) {
+                    $canReuse = $true
+                    $reusedOutputs = $prevOutputs
+                }
+            }
+        }
+    }
+}
+
+if ($canReuse) {
+    Write-Host "inputs unchanged and outputs verified: reusing shared plugin closure ($($reusedOutputs.Count) files)."
+    $toolEntries = @{}
+    foreach ($item in $toolIdentity) { $toolEntries[$item.Path] = $item }
+
+    $dotnetVersion = 'unknown'
+    try {
+        $versionOutput = & $DotnetPath --version 2>$null
+        if ($LASTEXITCODE -eq 0 -and $versionOutput) {
+            $dotnetVersion = ([string]($versionOutput | Select-Object -First 1)).Trim()
+        }
+    }
+    catch { }
+
+    $prevPackages = @($prevData.packages)
+    $manifest = [ordered]@{
+        schemaVersion    = $script:SharedPluginEvidenceSchemaVersion
+        kind             = $script:SharedPluginEvidenceKind
+        generatedAtUtc   = [DateTime]::UtcNow.ToString('o')
+        configuration    = $Configuration
+        targetFramework  = 'netstandard2.1'
+        langVersionFloor = '9.0'
+        project          = 'unity/Mahjong.Unity'
+        evidenceScope    = if ($isDefaultTarget) { 'default-synced' } else { 'scratch' }
+        pluginDir        = $pluginDirFull
+        pluginDirRelative = Get-SharedPluginDisplayPath -Root $root -Path $pluginDirFull
+        inputBoundary    = $prevData.inputBoundary
+        tool             = [ordered]@{
+            buildShared      = $toolEntries['tools/unity/build-shared.ps1']
+            sharedDefinition = $toolEntries['tools/unity/shared-plugin-provenance-lib.ps1']
+            dotnetPath       = $DotnetPath
+            dotnetVersion    = $dotnetVersion
+            solution         = 'dotnet/Mahjong.sln'
+        }
+        build            = [ordered]@{
+            startedAtUtc   = $buildStartedAtUtc.ToString('o')
+            completedAtUtc = [DateTime]::UtcNow.ToString('o')
+            elapsedSeconds = [math]::Round(([DateTime]::UtcNow - $buildStartedAtUtc).TotalSeconds, 3)
+            exitCode       = 0
+            mode           = 'reused-validated-inputs'
+            forcedRebuild  = $false
+            reused         = $true
+            cleanedOutputs = @()
+            copiedFileCount = $reusedOutputs.Count
+            inputCount     = $inputSnapshotBefore.Count
+        }
+        requiredOwnAssemblies = @($prevData.requiredOwnAssemblies)
+        inputs           = @($prevData.inputs)
+        packages         = @($prevPackages)
+        outputs          = @($reusedOutputs)
+    }
+
+    $writtenEvidence = Write-SharedPluginProvenanceAtomic -Path $evidencePath -Data $manifest
+    Write-Host "provenance: $writtenEvidence"
+    Write-Host "inputs    : $($inputSnapshotBefore.Count) files (reused)"
+    Write-Host "outputs   : $($reusedOutputs.Count) files (reused)"
+    Write-Host "Unity plugins ready (reused): $pluginDir"
+    exit 0
+}
+
+# If not reusing, invalidate existing evidence before building.
+if (Test-Path -LiteralPath $evidencePath -PathType Leaf) {
+    Remove-Item -LiteralPath $evidencePath -Force
+}
 
 # Assemblies the Unity client consumes (own plugin projects, dependency order).
 $pluginProjects = @(
@@ -125,18 +274,6 @@ $forbiddenPatterns = @(
     'Grpc.*',
     'Google.Protobuf.Tools.*'
 )
-
-if (-not $DotnetPath) {
-    if ($env:DOTNET_ROOT) {
-        $DotnetPath = Join-Path $env:DOTNET_ROOT 'dotnet.exe'
-    }
-    elseif (Test-Path 'D:\Unity\dotnet\dotnet.exe') {
-        $DotnetPath = 'D:\Unity\dotnet\dotnet.exe'
-    }
-    else {
-        $DotnetPath = (Get-Command dotnet -ErrorAction Stop).Source
-    }
-}
 
 if (-not (Test-Path $solution)) {
     throw "Solution not found: $solution"
@@ -190,7 +327,7 @@ foreach ($project in $pluginProjects) {
 
 # A successful dotnet build alone is not enough: MSBuild may reuse an old DLL
 # when a source's timestamp was preserved. Remove this configuration's outputs
-# for all seven projects so the recorded source set is actually compiled.
+# for all seven projects whenever compiling so the recorded source set is actually compiled.
 $cleanedOutputs = @()
 foreach ($project in $pluginProjects) {
     foreach ($relative in @("dotnet\src\$project\bin\$Configuration", "dotnet\src\$project\obj\$Configuration")) {
@@ -293,9 +430,24 @@ foreach ($name in $candidates.Keys | Sort-Object) {
 New-Item -ItemType Directory -Force -Path $pluginDir | Out-Null
 
 $copied = @()
+$copiedBytesWritten = 0
 foreach ($name in $candidates.Keys | Sort-Object) {
     $entry = $candidates[$name][0]
-    Copy-Item -LiteralPath $entry.Path -Destination $pluginDir -Force
+    $destFile = Join-Path $pluginDirFull $name
+    $needCopy = $true
+    if (Test-Path -LiteralPath $destFile -PathType Leaf) {
+        $destItem = Get-Item -LiteralPath $destFile
+        if ($destItem.Length -eq (Get-Item -LiteralPath $entry.Path).Length) {
+            $destHash = Get-SharedPluginFileSha256 $destFile
+            if ($destHash -ieq $entry.Sha256) {
+                $needCopy = $false
+            }
+        }
+    }
+    if ($needCopy) {
+        Copy-Item -LiteralPath $entry.Path -Destination $pluginDir -Force
+        $copiedBytesWritten++
+    }
     $copied += $name
 }
 
@@ -440,8 +592,9 @@ $manifest = [ordered]@{
         completedAtUtc = [DateTime]::UtcNow.ToString('o')
         elapsedSeconds = [math]::Round(([DateTime]::UtcNow - $buildStartedAtUtc).TotalSeconds, 3)
         exitCode       = 0
-        mode           = 'forced-clean-outputs'
-        forcedRebuild  = $true
+        mode           = if ($Fast) { 'incremental-compile' } else { 'forced-clean-outputs' }
+        forcedRebuild  = [bool](-not $Fast -or $ForcedRebuild)
+        reused         = $false
         cleanedOutputs = @($cleanedOutputs | Sort-Object)
         copiedFileCount = $copied.Count
         inputCount     = $inputSnapshotAfter.Count

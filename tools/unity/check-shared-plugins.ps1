@@ -63,6 +63,7 @@ param(
     [string]$EvidencePath,
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
+    [switch]$RequireForcedRebuild,
     [switch]$Json,
     [switch]$Quiet,
     [int]$MaxDifferences = 40
@@ -270,11 +271,22 @@ try {
             elseif ([int]$buildExit -ne 0) {
                 Add-Failure 'EVIDENCE_BUILD_FAILED' "Provenance record describes a failed build (exitCode=$buildExit)."
             }
-            if ($buildMode -ne 'forced-clean-outputs') {
-                Add-Failure 'EVIDENCE_BUILD_MODE_INVALID' "Provenance record build.mode '$buildMode' is not forced-clean-outputs."
+            $allowedModes = @('forced-clean-outputs', 'reused-validated-inputs', 'incremental-compile')
+            if ($buildMode -notin $allowedModes) {
+                Add-Failure 'EVIDENCE_BUILD_MODE_INVALID' "Provenance record build.mode '$buildMode' is not a recognized build mode ($($allowedModes -join ', '))."
             }
-            if ($forcedRebuild -ne $true) {
-                Add-Failure 'EVIDENCE_BUILD_NOT_FORCED' 'Provenance record does not prove a forced build.'
+            if ($RequireForcedRebuild) {
+                if ($buildMode -ne 'forced-clean-outputs' -or $forcedRebuild -ne $true) {
+                    Add-Failure 'EVIDENCE_BUILD_NOT_FORCED' 'Provenance record does not prove a forced build.'
+                }
+            }
+            else {
+                if ($buildMode -eq 'forced-clean-outputs' -and $forcedRebuild -ne $true) {
+                    Add-Failure 'EVIDENCE_BUILD_NOT_FORCED' 'Provenance record mode is forced-clean-outputs but forcedRebuild is not true.'
+                }
+                elseif ($buildMode -eq 'reused-validated-inputs' -and $forcedRebuild -eq $true) {
+                    Add-Failure 'EVIDENCE_BUILD_REUSED_MISMARKED' 'Provenance record mode is reused-validated-inputs but forcedRebuild was incorrectly marked true.'
+                }
             }
             if ($null -eq $startedAt -or $null -eq $completedAt) {
                 Add-Failure 'EVIDENCE_BUILD_TIME_INVALID' 'Provenance record build start/complete timestamps are missing or invalid.'

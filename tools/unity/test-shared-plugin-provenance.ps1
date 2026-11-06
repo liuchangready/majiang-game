@@ -61,7 +61,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$UnityExe = 'D:\Unity\Hub\Editor\6000.3.27f1\Editor\Unity.exe',
+    [string]$UnityExe = $(if (Test-Path 'D:\game_dev_tools\unity\Editor\Unity.exe') { 'D:\game_dev_tools\unity\Editor\Unity.exe' } else { 'D:\Unity\Hub\Editor\6000.3.27f1\Editor\Unity.exe' }),
+    [string]$DotnetPath = $(if (Test-Path 'D:\game_dev_tools\dotnet\dotnet.exe') { 'D:\game_dev_tools\dotnet\dotnet.exe' } else { 'D:\Unity\dotnet\dotnet.exe' }),
     [string]$EvidenceRoot,
     [switch]$SkipUnity,
     [switch]$SkipFixtureBuild,
@@ -116,8 +117,8 @@ function Assert-NoReparsePointInPath {
 }
 
 if (-not $EvidenceRoot) {
-    $suffix = [guid]::NewGuid().ToString('N').Substring(0, 16)
-    $EvidenceRoot = Join-Path $buildRoot "shared-plugin-provenance-ds-20261028-$suffix"
+    $suffix = [guid]::NewGuid().ToString('N').Substring(0, 8)
+    $EvidenceRoot = Join-Path $buildRoot "prv-$suffix"
 }
 $EvidenceRoot = Resolve-SharedPluginFullPath $EvidenceRoot
 # Fault injection and deletion are only allowed in this repository's ignored
@@ -613,7 +614,9 @@ try {
     # -----------------------------------------------------------------------
     $watch = [System.Diagnostics.Stopwatch]::StartNew()
     $junction = Join-Path $EvidenceRoot 'repo with spaces'
-    if (Test-Path -LiteralPath $junction) { Remove-Item -LiteralPath $junction -Force }
+    if (Test-Path -LiteralPath $junction) {
+        try { (Get-Item -LiteralPath $junction -Force).Delete() } catch { Remove-Item -LiteralPath $junction -Force -ErrorAction SilentlyContinue }
+    }
     $mklinkCommand = 'mklink /J "' + $junction + '" "' + $repoRoot + '"'
     $null = & "$env:SystemRoot\System32\cmd.exe" /c $mklinkCommand 2>&1
     if (-not (Test-Path -LiteralPath $junction -PathType Container)) {
@@ -777,7 +780,7 @@ try {
     # -----------------------------------------------------------------------
     if (-not $SkipFixtureBuild) {
         $watch = [System.Diagnostics.Stopwatch]::StartNew()
-        $fixtureRepo = Join-Path $EvidenceRoot "fixture-repo-$runId"
+        $fixtureRepo = Join-Path $EvidenceRoot "fx-$($runId.Substring(0,6))"
         if (-not (Test-SharedPluginPathWithin -Path $fixtureRepo -Root $EvidenceRoot) -or (Test-Path -LiteralPath $fixtureRepo)) {
             throw "Refusing to use a fixture directory that is outside this run's evidence root or already exists: $fixtureRepo"
         }
@@ -804,7 +807,7 @@ try {
         $fixtureBuild = Invoke-CapturedProcess -FilePath $powershell -Arguments @(
             '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
             '-File', (Join-Path $fixtureRepo 'tools\unity\build-shared.ps1'),
-            '-Configuration', 'Release', '-DotnetPath', 'D:\Unity\dotnet\dotnet.exe'
+            '-Configuration', 'Release', '-DotnetPath', $DotnetPath
         ) -LogPath (Join-Path $logsDir 'P14a-fixture-build.log') -TimeoutSeconds $BuildTimeoutSeconds
         $fixtureEvidence = Join-Path $fixtureRepo 'unity\Mahjong.Unity\Library\SharedPluginProvenance\provenance.json'
         $fixtureCheck = Invoke-CapturedProcess -FilePath $powershell -Arguments @(
@@ -832,7 +835,7 @@ try {
             param([string]$id)
             Invoke-CapturedProcess -FilePath $powershell -Arguments @(
                 '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-                '-File', $fixtureBuildScript, '-Configuration', 'Release', '-DotnetPath', 'D:\Unity\dotnet\dotnet.exe'
+                '-File', $fixtureBuildScript, '-Configuration', 'Release', '-DotnetPath', $DotnetPath
             ) -LogPath (Join-Path $logsDir "$id.log") -TimeoutSeconds $BuildTimeoutSeconds
         }
         $fixtureCheckRun = {
@@ -1053,7 +1056,7 @@ try {
         # Mid-build drift: the wrapper changes a real compile input, then builds.
         $driftWrapper = Join-Path $EvidenceRoot 'fake-dotnet-drift.cmd'
         $driftSource = Join-Path $fixtureRepo 'dotnet\src\Mahjong.Ai\AiDecision.cs'
-        $wrapperText = "@echo off`r`n>>`"$driftSource`" echo // provenance-drift-injected`r`n`"D:\Unity\dotnet\dotnet.exe`" %*`r`nexit /b %ERRORLEVEL%`r`n"
+        $wrapperText = "@echo off`r`n>>`"$driftSource`" echo // provenance-drift-injected`r`n`"$DotnetPath`" %*`r`nexit /b %ERRORLEVEL%`r`n"
         [System.IO.File]::WriteAllText($driftWrapper, $wrapperText, (New-Object System.Text.UTF8Encoding($false)))
         $driftBuild = Invoke-CapturedProcess -FilePath $powershell -Arguments @(
             '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
@@ -1257,14 +1260,19 @@ finally {
     }
 
     if ($cleanupJunction -and (Test-Path -LiteralPath $cleanupJunction)) {
-        try { Remove-Item -LiteralPath $cleanupJunction -Force } catch { }
+        try { (Get-Item -LiteralPath $cleanupJunction -Force).Delete() } catch { Remove-Item -LiteralPath $cleanupJunction -Force -ErrorAction SilentlyContinue }
     }
     if ($fixtureRepo -and (Test-Path -LiteralPath $fixtureRepo)) {
         $resolvedFixture = Resolve-SharedPluginFullPath $fixtureRepo
         if (Test-SharedPluginPathWithin -Path $resolvedFixture -Root $EvidenceRoot) {
             try {
                 Assert-NoReparsePointInPath -Path $resolvedFixture -Root $EvidenceRoot
-                Remove-Item -LiteralPath $resolvedFixture -Recurse -Force -ErrorAction Stop
+                try {
+                    Remove-Item -LiteralPath $resolvedFixture -Recurse -Force -ErrorAction Stop
+                }
+                catch {
+                    [System.IO.Directory]::Delete($resolvedFixture, $true)
+                }
             }
             catch {
                 # Long MSBuild paths can defeat Remove-Item. Leave the evidence in

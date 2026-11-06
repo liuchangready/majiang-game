@@ -181,16 +181,55 @@ public static class C05EmulatorAndroidBuild
             // A normal run is a cold build. A wrapper-validation rerun may reuse the cache only
             // when the caller explicitly asks for it; player inputs are still hashed and bound.
             bool reuseCache = Environment.GetCommandLineArgs().Contains("-c05EmuReuseCache");
+            bool fastProfile = Environment.GetCommandLineArgs().Contains("-c05EmuFastProfile");
+
+            UnityEditor.Build.NamedBuildTarget androidTarget = UnityEditor.Build.NamedBuildTarget.Android;
+            UnityEditor.Build.Il2CppCodeGeneration codeGenBefore = PlayerSettings.GetIl2CppCodeGeneration(androidTarget);
+            notes.Add("il2cppCodeGenBefore=" + codeGenBefore);
+            if (fastProfile)
+            {
+                PlayerSettings.SetIl2CppCodeGeneration(androidTarget, UnityEditor.Build.Il2CppCodeGeneration.OptimizeSize);
+                notes.Add("il2cppCodeGenApplied=OptimizeSize");
+            }
+
+            BuildOptions buildOptions = BuildOptions.None;
+            if (!reuseCache)
+            {
+                buildOptions |= BuildOptions.CleanBuildCache;
+            }
+            if (fastProfile)
+            {
+                buildOptions |= BuildOptions.CompressWithLz4;
+                notes.Add("compression=LZ4");
+            }
+            else
+            {
+                notes.Add("compression=DEFAULT");
+            }
+
             var options = new BuildPlayerOptions
             {
                 scenes = scenes,
                 locationPathName = outputFull,
                 target = BuildTarget.Android,
-                options = reuseCache ? BuildOptions.None : BuildOptions.CleanBuildCache
+                options = buildOptions
             };
             notes.Add("buildCacheMode=" + (reuseCache ? "REUSE" : "CLEAN"));
+            notes.Add("fastProfile=" + fastProfile);
+            notes.Add("buildOptions=" + buildOptions);
 
-            BuildReport report = BuildPipeline.BuildPlayer(options);
+            BuildReport report;
+            try
+            {
+                report = BuildPipeline.BuildPlayer(options);
+            }
+            finally
+            {
+                if (fastProfile)
+                {
+                    PlayerSettings.SetIl2CppCodeGeneration(androidTarget, codeGenBefore);
+                }
+            }
             if (report == null) throw new InvalidOperationException("C05 emulator BuildPipeline returned no BuildReport.");
             BuildSummary summary = report.summary;
 

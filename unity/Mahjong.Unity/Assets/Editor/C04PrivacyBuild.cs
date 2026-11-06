@@ -73,8 +73,14 @@ public static class C04PrivacyBuild
         string errorMessagesJson = errorMessages.Length == 0
             ? String.Empty
             : "\"" + String.Join("\",\"", errorMessages.Select(Escape)) + "\"";
+        bool fastProfile = HasArg("-c04PrivacyFastProfile");
+        if (fastProfile)
+        {
+            Debug.Log("C04_PRIVACY_FAST_PROFILE: profile=FAST scriptingBackend=Mono");
+        }
         string json = "{\"schemaVersion\":1,\"kind\":\"c04-privacy-player-build\",\"result\":\"" + summary.result +
-            "\",\"errors\":" + summary.totalErrors + ",\"warnings\":" + summary.totalWarnings +
+            "\",\"profile\":\"" + (fastProfile ? "FAST" : "FORMAL") + "\",\"scriptingBackend\":\"Mono\"" +
+            ",\"errors\":" + summary.totalErrors + ",\"warnings\":" + summary.totalWarnings +
             ",\"target\":\"" + summary.platform + "\",\"output\":\"" + Escape(fullOutput) +
             "\",\"playerSha256\":\"" + playerSha + "\",\"playerBytes\":" + playerBytes +
             ",\"packageFileCount\":" + packageFiles.Length + ",\"packageBytes\":" + packageBytes +
@@ -94,6 +100,12 @@ public static class C04PrivacyBuild
         string[] args = Environment.GetCommandLineArgs();
         int index = Array.IndexOf(args, name);
         return index >= 0 && index + 1 < args.Length ? args[index + 1] : String.Empty;
+    }
+
+    private static bool HasArg(string name)
+    {
+        string[] args = Environment.GetCommandLineArgs();
+        return Array.IndexOf(args, name) >= 0;
     }
 
     private static string Sha256(string path)

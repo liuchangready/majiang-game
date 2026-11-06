@@ -13,6 +13,7 @@ param(
   [int]$UnityTimeoutSeconds = 7200,
   [int]$HeartbeatSeconds = 30,
   [switch]$ReuseBuildCache,
+  [switch]$Fast,
   [switch]$ProcessFixtureTest,
   [switch]$VerdictFixtureTest,
   [switch]$OutputFixtureTest,
@@ -300,11 +301,22 @@ function Resolve-C05EStagingRoot([string]$RepoRoot, [string]$Path, [bool]$Reuse)
     $external = $true
     $runId = $full.Substring($shortPrefix.Length)
     if ($runId -notmatch '^[0-9a-f]{32}$') { throw 'BLOCKED: external staging must be one direct 32-hex GUID child of the approved short base.' }
-    if ($Reuse) { throw 'BLOCKED: external short staging is always fresh and cannot use -ReuseStaging.' }
-    if (Test-Path -LiteralPath $full) { throw 'BLOCKED: external short staging already exists; it is never reused.' }
+    if ((Test-Path -LiteralPath $full) -and -not $Reuse) { throw 'BLOCKED: external short staging already exists; external short staging is always fresh and cannot use -ReuseStaging without explicit reuse flag.' }
     $allowed = $full
   } else { throw "BLOCKED: StagingRoot '$full' is outside the repository staging root and approved short base." }
-  if (-not $external -and (Test-Path -LiteralPath $full) -and -not $Reuse) { throw "BLOCKED: staging root already exists and must not be reused without -ReuseStaging: $full" }
+  if ((Test-Path -LiteralPath $full) -and -not $Reuse) { throw "BLOCKED: staging root already exists and must not be reused without -ReuseStaging: $full" }
+  if ($external -and $Reuse -and (Test-Path -LiteralPath $full)) {
+    $ownerMarker = Join-Path $full '.c05-owned-staging.json'
+    if (-not (Test-Path -LiteralPath $ownerMarker -PathType Leaf)) { throw "BLOCKED: reused staging '$full' has no ownership marker." }
+    $owner = Get-Content -LiteralPath $ownerMarker -Raw | ConvertFrom-Json
+    if ([string]$owner.owner -cne 'DSH-C05') { throw 'BLOCKED: reused staging ownership marker belongs to another owner.' }
+    $writerPath = Join-Path $full '.c05-active-writer.json'
+    if (Test-Path -LiteralPath $writerPath -PathType Leaf) {
+      $writer = Get-Content -LiteralPath $writerPath -Raw | ConvertFrom-Json
+      $wp = Get-Process -Id ([int]$writer.pid) -ErrorAction SilentlyContinue
+      if ($wp -and $wp.StartTime.ToUniversalTime().Ticks -eq [long]$writer.startUtcTicks) { throw 'BLOCKED_RESOURCE_BUSY: reused staging still has an active writer.' }
+    }
+  }
   if (-not (Test-C05ENoReparse $full)) { throw "BLOCKED: StagingRoot '$full' traverses a reparse point." }
   $script:C05EAllowedStagingRoot = $allowed
   $script:C05EExternalStaging = $external
@@ -931,9 +943,10 @@ if ($StagingGuardFixtureTest) {
       try { [void](Resolve-C05EStagingRoot $fixtureRoot $badShort $false); throw "invalid short root accepted: $badShort" } catch { if ($_.Exception.Message -like 'invalid short root accepted:*') { throw }; $reason=$_.Exception.Message }
       $stagingCases.Add([pscustomobject]@{ path=$badShort; reuse=$false; expected='REJECT'; actual='REJECT'; reason=$reason })
     }
-    $script:stagingFixtureCase='external-reuse'
-    $reuseReason=$null; try { [void](Resolve-C05EStagingRoot $fixtureRoot $shortCandidate $true); throw 'external reuse accepted' } catch { if ($_.Exception.Message -eq 'external reuse accepted') { throw }; $reuseReason=$_.Exception.Message }
-    $stagingCases.Add([pscustomobject]@{ path=$shortCandidate; reuse=$true; expected='REJECT_EXTERNAL_REUSE'; actual='REJECT'; reason=$reuseReason })
+    $script:stagingFixtureCase='external-reuse-missing-marker'
+    $unmarkedShort = Join-Path $script:C05EShortStagingRoot ([guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Path $unmarkedShort | Out-Null
+    $reuseReason=$null; try { [void](Resolve-C05EStagingRoot $fixtureRoot $unmarkedShort $true); throw 'unmarked external reuse accepted' } catch { if ($_.Exception.Message -like '*accepted*') { throw }; $reuseReason=$_.Exception.Message }
+    $stagingCases.Add([pscustomobject]@{ path=$unmarkedShort; reuse=$true; expected='REJECT_UNMARKED_REUSE'; actual='REJECT'; reason=$reuseReason })
     $rejected++
     $existingShort = Join-Path $script:C05EShortStagingRoot ([guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Path $existingShort | Out-Null
     $sentinel = Join-Path $existingShort 'sentinel.bin'; [IO.File]::WriteAllBytes($sentinel,[byte[]]@(9,8,7,6)); $sentinelHash=(Get-FileHash $sentinel -Algorithm SHA256).Hash
@@ -948,6 +961,10 @@ if ($StagingGuardFixtureTest) {
       $afterHash=(Get-FileHash $sentinel -Algorithm SHA256).Hash
       $stagingCases.Add([pscustomobject]@{ path=$existingShort; reuse=$reuse; expected='REJECT_PREEXISTING'; actual='REJECT'; reason=$reason; sentinelSha256Before=$beforeHash; sentinelSha256After=$afterHash; unchanged=($beforeHash -eq $afterHash) })
     }
+    $validShort = Join-Path $script:C05EShortStagingRoot ([guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Path $validShort | Out-Null
+    [IO.File]::WriteAllText((Join-Path $validShort '.c05-owned-staging.json'),'{"owner":"DSH-C05"}')
+    if ((Resolve-C05EStagingRoot $fixtureRoot $validShort $true) -ne [IO.Path]::GetFullPath($validShort)) { throw 'valid external reuse was rejected' }
+    $stagingCases.Add([pscustomobject]@{ path=$validShort; reuse=$true; expected='ACCEPT_EXTERNAL_REUSE'; actual='ACCEPT' })
     $script:stagingFixtureCase='reparse-short-root'
     $reparseBase='D:\game_dev_tools\unity\Editor\Data\PlaybackEngines\AndroidPlayer\OpenJDK'
     $reparseInfo=Get-Item -LiteralPath $reparseBase -Force -ErrorAction Stop
@@ -1076,6 +1093,10 @@ $unityVersion = if (Test-Path $versionFile) { (Get-Content $versionFile -Raw).Tr
 $androidPlayer = Join-Path (Split-Path $unity -Parent) 'Data\PlaybackEngines\AndroidPlayer'
 foreach ($required in @('OpenJDK\bin\java.exe','SDK\platform-tools\adb.exe','NDK','Variations\il2cpp\Release\Libs\x86_64\libunity.so','Variations\il2cpp\Release\Libs\x86_64\libmain.so')) {
   if (-not (Test-Path -LiteralPath (Join-Path $androidPlayer $required))) { throw "BLOCKED: Unity AndroidPlayer component missing: $required" }
+}
+if ($Fast) {
+  $ReuseStaging = $true
+  $ReuseBuildCache = $true
 }
 if (-not $OutputRoot) { $OutputRoot = Join-Path $root ('build\c05-android-emulator-apk\' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0,8)) }
 $run = Assert-C05EFreshOutputDirectory $OutputRoot
@@ -1264,13 +1285,17 @@ exit `$LASTEXITCODE
   $env:PATH = (Split-Path $ninjaExe -Parent) + ';' + (Join-Path $androidPlayer 'OpenJDK\bin') + ';' + (Join-Path $AndroidSdkRoot 'platform-tools') + ';' + $oldPath
 
   $sharedLog = Join-Path $run 'shared-build.log'
-  $sharedRun = Invoke-C05EToFiles 'powershell.exe' @('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $PSScriptRoot 'build-shared.ps1'),'-Configuration','Release','-PluginOutputDir',$pluginDir) 1200 (Join-Path $run 'shared-build.out') (Join-Path $run 'shared-build.err')
+  $sharedArgs = @('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $PSScriptRoot 'build-shared.ps1'),'-Configuration','Release','-PluginOutputDir',$pluginDir)
+  if ($Fast) { $sharedArgs += '-Fast' } else { $sharedArgs += '-ForcedRebuild' }
+  $sharedRun = Invoke-C05EToFiles 'powershell.exe' $sharedArgs 1200 (Join-Path $run 'shared-build.out') (Join-Path $run 'shared-build.err')
   [IO.File]::WriteAllText($sharedLog, ([string]$sharedRun.stdout + "`n[stderr]`n" + [string]$sharedRun.stderr), (New-Object Text.UTF8Encoding($false)))
   if ($sharedRun.timedOut -or $sharedRun.exit -ne 0) { throw "BLOCKED: shared plugin forced build failed exit=$($sharedRun.exit) timedOut=$($sharedRun.timedOut) log=$sharedLog" }
   $sharedBuilt = $true
   $provenanceLog = Join-Path $run 'plugin-provenance.log'
   $provenancePath = Join-Path $pluginDir 'shared-plugin-provenance.json'
-  $provRun = Invoke-C05EToFiles 'powershell.exe' @('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $PSScriptRoot 'check-shared-plugins.ps1'),'-ProjectRoot',$root,'-PluginDir',$pluginDir,'-EvidencePath',$provenancePath,'-Configuration','Release') 300 (Join-Path $run 'provenance.out') (Join-Path $run 'provenance.err')
+  $provArgs = @('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $PSScriptRoot 'check-shared-plugins.ps1'),'-ProjectRoot',$root,'-PluginDir',$pluginDir,'-EvidencePath',$provenancePath,'-Configuration','Release')
+  if (-not $Fast) { $provArgs += '-RequireForcedRebuild' }
+  $provRun = Invoke-C05EToFiles 'powershell.exe' $provArgs 300 (Join-Path $run 'provenance.out') (Join-Path $run 'provenance.err')
   [IO.File]::WriteAllText($provenanceLog, ([string]$provRun.stdout + "`n[stderr]`n" + [string]$provRun.stderr), (New-Object Text.UTF8Encoding($false)))
   if ($provRun.timedOut -or $provRun.exit -ne 0) { throw "BLOCKED: shared plugin provenance verification failed exit=$($provRun.exit) timedOut=$($provRun.timedOut)" }
   $pluginsAfter = @{}
@@ -1295,6 +1320,7 @@ exit `$LASTEXITCODE
     '-c05EmuEditorLog',$editorLog,'-c05EmuSourceRoot',$sourceProject,'-c05EmuSourceHead',$head,
     '-c05EmuResolvedTargetSdk',[string]$resolvedAutoTarget,'-logFile',$unityLog)
   if ($ReuseBuildCache) { $arguments += '-c05EmuReuseCache' }
+  if ($Fast) { $arguments += '-c05EmuFastProfile' }
   $start = Get-Date
   $proc = Start-C05EHiddenProcess $unity $arguments $project
   $ownedPid = $proc.Id; $ownedStart = $proc.StartTime.ToUniversalTime().Ticks
