@@ -41,6 +41,17 @@ function Get-C05ResourceSample {
   }
 }
 
+function Clear-DanglingSubst {
+  foreach ($line in @(subst)) {
+    if ($line -match '^([A-Z]:)\\: => (.*)') {
+      $d = $Matches[1]; $p = $Matches[2].Trim()
+      if ($p.StartsWith($script:BenchmarkRoot, [StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $p)) {
+        & subst.exe $d /D 2>$null
+      }
+    }
+  }
+}
+
 function Format-DurationSeconds([double]$Seconds) {
   if ([double]::IsNaN($Seconds) -or [double]::IsInfinity($Seconds) -or $Seconds -lt 0) { return 'N/A' }
   return ("{0:F2}s" -f $Seconds)
@@ -59,6 +70,7 @@ function Invoke-CellWindows {
   Write-Host "[START] $CellId (Version=$Version Platform=Windows64 Scenario=$Scenario)" -ForegroundColor Cyan
   Write-Host "========================================================" -ForegroundColor Cyan
 
+  Clear-DanglingSubst
   $buildDir = Join-Path $RepoPath 'build'
   [IO.Directory]::CreateDirectory($buildDir) | Out-Null
   $runGuid = [guid]::NewGuid().ToString('N')
@@ -203,6 +215,7 @@ function Invoke-CellAndroid {
   Write-Host "[START] $CellId (Version=$Version Platform=Android-x86_64 Scenario=$Scenario)" -ForegroundColor Cyan
   Write-Host "========================================================" -ForegroundColor Cyan
 
+  Clear-DanglingSubst
   $buildDir = Join-Path $RepoPath 'build'
   [IO.Directory]::CreateDirectory($buildDir) | Out-Null
   $runGuid = [guid]::NewGuid().ToString('N')
@@ -455,7 +468,8 @@ $bindingOutput = [ordered]@{
   cells = @($results)
 }
 
-$bindingJsonPath = Join-Path $script:BenchmarkRoot 'doc\v5-重构\G2-FAST-BUILD-BINDING-20261107.json'
+$docV5Dir = (Get-ChildItem -LiteralPath (Join-Path $script:BenchmarkRoot 'doc') -Directory | Where-Object { $_.Name -like '*v5*' })[0].FullName
+$bindingJsonPath = Join-Path $docV5Dir 'G2-FAST-BUILD-BINDING-20261107.json'
 [IO.File]::WriteAllText($bindingJsonPath, ($bindingOutput | ConvertTo-Json -Depth 5), (New-Object Text.UTF8Encoding($false)))
 Write-Host "`nSaved Matrix Binding JSON to: $bindingJsonPath" -ForegroundColor Green
 
