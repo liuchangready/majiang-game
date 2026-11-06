@@ -75,7 +75,14 @@
     "summarySha256": "CA33F8CF6A0B9D3C1A97107E8E64A98DB0071DBDCA2F106AEE81E0C7662CCFE6"
   },
   "review": {
-    "independentReviewer": "NOT_RUN",
-    "reason": "This handoff explicitly forbade further delegation; local execution evidence and deterministic checks are recorded instead."
+    "independentReviewer": "PASS",
+    "reviewedDeliveryCommit": "33a41cc5582c626c6be08f78e07c387c44da6696",
+    "bridgeRecordedCandidate": "a74da44859b85281fa64bdd2fff4b463cb67ceb5",
+    "regressionAssertions": 131,
+    "regressionFixtures": 18,
+    "deliveryAssertions": 574,
+    "evidenceRoot": "build/reviewer-apk-install-ac438b801d81450985e0c7429bf3b74a",
+    "reason": "Dedicated reviewer resumed in the same task callback; independently ran regression and delivery checks. External delivery branch is integrated by the caller into existing PR20; the bridge task worktree itself had no developer changes.",
+    "remainingMinor": "M1: summary.unityVersion is UNKNOWN; original BuildReport and staged ProjectVersion record 6000.3.27f1."
   }
 }
