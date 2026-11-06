@@ -76,6 +76,10 @@ function Invoke-CellWindows {
   $runGuid = [guid]::NewGuid().ToString('N')
   $runRoot = Join-Path $buildDir $runGuid
 
+  if ($IsCandidate -and -not $ReuseStaging -and (Test-Path -LiteralPath $script:CandidateWinStaging)) {
+    Remove-Item -LiteralPath $script:CandidateWinStaging -Recurse -Force
+  }
+
   $resBefore = Get-C05ResourceSample
   $sw = [Diagnostics.Stopwatch]::StartNew()
   $status = 'UNKNOWN'
@@ -152,14 +156,30 @@ function Invoke-CellWindows {
   if ($summary -and $summary.processes) {
     foreach ($p in $summary.processes) {
       if ($p.name -match 'shared-plugin|build-shared') {
-        $sharedDll += [double]$p.durationSeconds
-      } elseif ($p.name -eq 'unity-build-player') {
-        $unityImportCompile += [double]$p.durationSeconds
+        $sharedDll += [double]$p.elapsedSeconds
+      } elseif ($p.name -match 'unity-player-build|unity-build-player') {
+        $unityImportCompile += [double]$p.elapsedSeconds
       }
     }
   }
   if ($summary -and $summary.mutex) {
     $lockWait = [double]$summary.mutex.waitedSeconds
+  }
+
+  $editorLog = Join-Path $runRoot 'unity-editor.log'
+  if (Test-Path -LiteralPath $editorLog) {
+    $utpMatch = Select-String -LiteralPath $editorLog -Pattern '##utp:\{"type":"PlayerBuildInfo".*' | Select-Object -Last 1
+    if ($utpMatch) {
+      try {
+        $utpJson = $utpMatch.Line.Substring(6) | ConvertFrom-Json
+        foreach ($st in $utpJson.steps) {
+          $d = [double]$st.duration / 1000.0
+          if ($st.description -match 'ProducePlayerScriptAssemblies|Build scripts DLLs') { $csharp += $d }
+          elseif ($st.description -match 'Writing asset files|Building Resources') { $shader += $d }
+          elseif ($st.description -match 'Postprocess built player') { $packageSign += $d }
+        }
+      } catch { }
+    }
   }
 
   $playerExe = Join-Path $runRoot 'player\Mahjong.exe'
@@ -223,6 +243,10 @@ function Invoke-CellAndroid {
 
   $stagingRoot = if ($IsCandidate) { $script:CandidateAndStaging } else { $script:BaselineAndStaging }
 
+  if ($IsCandidate -and -not $ReuseStaging -and (Test-Path -LiteralPath $stagingRoot)) {
+    Remove-Item -LiteralPath $stagingRoot -Recurse -Force
+  }
+
   $resBefore = Get-C05ResourceSample
   $sw = [Diagnostics.Stopwatch]::StartNew()
   $status = 'UNKNOWN'
@@ -273,15 +297,18 @@ function Invoke-CellAndroid {
     $nativeExit = $proc.ExitCode
     $sw.Stop()
 
-    $buildReportJson = Join-Path $runRoot 'build-report.json'
-    if (Test-Path -LiteralPath $buildReportJson) {
-      $report = Get-Content -LiteralPath $buildReportJson -Raw | ConvertFrom-Json
-      $status = if ($report.result -eq 'Succeeded') { 'PASS' } else { 'FAIL' }
+    $summaryPath = Join-Path $runRoot 'summary.json'
+    if (Test-Path -LiteralPath $summaryPath) {
+      $summary = Get-Content -LiteralPath $summaryPath -Raw | ConvertFrom-Json
+      $status = [string]$summary.status
+      if ($status -ne 'PASS') {
+        $errorMsg = [string]$summary.error
+      }
     } else {
       if ($nativeExit -eq 0) {
         $status = 'PASS'
       } else {
-        $errContent = Get-Content -LiteralPath (Join-Path $cellDir "$runGuid-stderr.log") -Raw -ErrorAction SilentlyContinue
+        $errContent = Get-Content -LiteralPath $runnerErr -Raw -ErrorAction SilentlyContinue
         if ($errContent -match 'BLOCKED') {
           $status = 'BLOCKED'
           $errorMsg = ($errContent -split "`r?`n" | Where-Object { $_ -match 'BLOCKED' }) -join '; '

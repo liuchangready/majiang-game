@@ -91,9 +91,9 @@ function Get-C04StableFiles([string]$Root, [string[]]$ExcludeDirectoryNames = @(
     $dir = $stack.Pop()
     foreach ($entry in [IO.Directory]::EnumerateFileSystemEntries($dir)) {
       $name = [IO.Path]::GetFileName($entry)
+      if ($excluded.Contains($name)) { continue }
       $attributes = [IO.File]::GetAttributes($entry)
       if (($attributes -band [IO.FileAttributes]::Directory) -ne 0) {
-        if ($excluded.Contains($name)) { continue }
         if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Stable file traversal encountered a directory reparse point: $entry" }
         $stack.Push($entry)
       } else {
@@ -107,7 +107,7 @@ function Get-C04StableFiles([string]$Root, [string[]]$ExcludeDirectoryNames = @(
 function Get-C04FileManifest {
   param(
     [Parameter(Mandatory = $true)][string]$Root,
-    [string[]]$ExcludeDirectoryNames = @('.git', 'Library', 'Temp', 'obj', 'bin', 'Logs', 'UserSettings', 'upm-cache'),
+    [string[]]$ExcludeDirectoryNames = @('.git', 'Library', 'Temp', 'obj', 'bin', 'Logs', 'UserSettings', 'upm-cache', 'nuget', 'dotnet-home'),
     [string[]]$ExcludeFileNames = @()
   )
   $rootFull = [IO.Path]::GetFullPath($Root)
@@ -1210,7 +1210,7 @@ function Write-C04SealedEvidence {
   $summaryPath = Join-Path $root 'summary.json'
   if (Test-Path -LiteralPath $summaryPath) { throw 'Evidence is already sealed; refusing to overwrite summary.json.' }
   Write-C04Json $summaryPath $Summary
-  $manifest = Get-C04FileManifest -Root $root -ExcludeDirectoryNames @('.git', 'Library', 'Temp', 'obj', 'bin', 'Logs', 'UserSettings', 'upm-cache') -ExcludeFileNames @('manifest.sha256', 'seal.json')
+  $manifest = Get-C04FileManifest -Root $root -ExcludeDirectoryNames @('.git', 'Library', 'Temp', 'obj', 'bin', 'Logs', 'UserSettings', 'upm-cache', 'nuget', 'dotnet-home') -ExcludeFileNames @('manifest.sha256', 'seal.json')
   $manifestPath = Join-Path $root 'manifest.sha256'
   Write-C04Utf8 $manifestPath $manifest.canonical
   $manifestSha = Get-C04Sha256File $manifestPath
