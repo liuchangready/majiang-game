@@ -1328,6 +1328,8 @@ exit `$LASTEXITCODE
     '-c05EmuResolvedTargetSdk',[string]$resolvedAutoTarget,'-logFile',$unityLog)
   if ($ReuseBuildCache) { $arguments += '-c05EmuReuseCache' }
   if ($Fast) { $arguments += '-c05EmuFastProfile' }
+  $prevBeeThreads = $env:BEE_BUILD_THREADS
+  $env:BEE_BUILD_THREADS = '4'
   $start = Get-Date
   $proc = Start-C05EHiddenProcess $unity $arguments $project
   $ownedPid = $proc.Id; $ownedStart = $proc.StartTime.ToUniversalTime().Ticks
@@ -1451,6 +1453,7 @@ finally {
   $env:TEMP = $oldTemp; $env:TMP = $oldTmp; $env:JAVA_HOME = $oldJava
   $env:ANDROID_HOME = $oldHome; $env:ANDROID_SDK_ROOT = $oldRoot; $env:ANDROID_AVD_HOME = $oldAvd
   $env:ANDROID_CLI_BIN = $oldCli; $env:PATH = $oldPath
+  if ($null -ne $prevBeeThreads) { $env:BEE_BUILD_THREADS = $prevBeeThreads } else { [Environment]::SetEnvironmentVariable('BEE_BUILD_THREADS', $null) }
   if ($held -and $null -ne $mutex) { try { $mutex.ReleaseMutex() } catch { } }
   if ($null -ne $mutex) { $mutex.Dispose() }
 }
