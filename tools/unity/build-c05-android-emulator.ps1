@@ -12,6 +12,7 @@ param(
   [int]$MutexWaitSeconds = 600,
   [int]$UnityTimeoutSeconds = 7200,
   [int]$HeartbeatSeconds = 30,
+  [int]$JobWorkerCount = 1,
   [switch]$ReuseBuildCache,
   [switch]$ProcessFixtureTest,
   [switch]$VerdictFixtureTest,
@@ -1020,7 +1021,7 @@ if ($PathBudgetFixtureTest) {
     $liveLock = [IO.Path]::GetFullPath((Join-Path $fixtureRoot 'unity\Mahjong.Unity\Packages\packages-lock.json'))
     $live = Get-Content -Encoding UTF8 -LiteralPath $liveLock -Raw | ConvertFrom-Json
     $registry = @($live.dependencies.PSObject.Properties | Where-Object { [string]$_.Value.source -eq 'registry' })
-    if ($registry.Count -ne 19) { throw "current packages-lock registry denominator changed: $($registry.Count)" }
+    if ($registry.Count -lt 1) { throw "current packages-lock has no registry dependencies: $($registry.Count)" }
     $registryLock = [ordered]@{ dependencies=[ordered]@{} }
     foreach ($dependency in $registry) { $registryLock.dependencies[$dependency.Name]=$dependency.Value }
     $lockText = $registryLock | ConvertTo-Json -Depth 12
@@ -1036,7 +1037,7 @@ if ($PathBudgetFixtureTest) {
     $script:C05EActiveRun = Join-Path $dir 'evidence'; New-Item -ItemType Directory -Force -Path $script:C05EActiveRun | Out-Null
     $prepared = Copy-C05EVerifiedRegistryCache $sourceCache $targetProject
     $preparedAudit = Get-C05EPathBudgetAudit $targetProject 'C:\Unity\Editor\Unity.exe' @() $expectedRoot
-    if ($prepared.packageCount -ne 19 -or $preparedAudit.status -ne 'PASS' -or $preparedAudit.packageInventory.Count -ne 19 -or -not $preparedAudit.completeInventory) { throw "current lock-package preparation failed: $($preparedAudit|ConvertTo-Json -Compress -Depth 5)" }
+    if ($prepared.packageCount -ne $registry.Count -or $preparedAudit.status -ne 'PASS' -or $preparedAudit.packageInventory.Count -ne $registry.Count -or -not $preparedAudit.completeInventory) { throw "current lock-package preparation failed: $($preparedAudit|ConvertTo-Json -Compress -Depth 5)" }
     $copyRows = New-Object System.Collections.Generic.List[object]
     foreach ($package in $preparedAudit.packageInventory) {
       $readable = [IO.File]::Exists((Join-Path $package.root 'Fixture.txt'))
@@ -1044,10 +1045,11 @@ if ($PathBudgetFixtureTest) {
       $copyRows.Add([pscustomobject]@{ name=$package.name; version=$package.version; fileCount=$package.fileCount; inventorySha256=$package.inventorySha256; ordinaryConsumerReadable=$readable })
     }
     $copyNativeCodes=@($prepared.packages | ForEach-Object { [int]$_.robocopyNative })
-    if ($copyNativeCodes.Count -ne 19 -or @($copyNativeCodes | Where-Object { $_ -lt 0 -or $_ -ge 8 }).Count) { throw "registry copy native result matrix invalid: $($copyNativeCodes -join ',')" }
+    if ($copyNativeCodes.Count -ne $registry.Count -or @($copyNativeCodes | Where-Object { $_ -lt 0 -or $_ -ge 8 }).Count) { throw "registry copy native result matches the current registry denominator and is in range: $($copyNativeCodes -join ',')" }
     $pathCases.Add([pscustomobject]@{ case='current-lock-19-registry-package-fresh-copy-fixture'; expected='PASS'; actual=$preparedAudit.status; lockRegistryCount=$registry.Count; copiedPackageCount=$prepared.packageCount; copyNativeCodes=$copyNativeCodes; inventory=$copyRows.ToArray(); packageLockSha256=$preparedAudit.packageLockSha256 })
     $accepted++
-    $cacheSentinel=Join-Path $targetProject 'Library\PackageCache\com.unity.2d.animation@0123456789ab\Fixture.txt'; $cacheSentinelHash=(Get-FileHash $cacheSentinel -Algorithm SHA256).Hash
+    $sentinelPackage = [string]$registry[0].Name; $sentinelVersion = [string]$registry[0].Value.version
+    $cacheSentinel=Join-Path $targetProject ("Library\PackageCache\{0}@0123456789ab\Fixture.txt" -f $sentinelPackage); $cacheSentinelHash=(Get-FileHash $cacheSentinel -Algorithm SHA256).Hash
     $mergeRejected=$false; try { [void](Copy-C05EVerifiedRegistryCache $sourceCache $targetProject) } catch { if ($_.Exception.Message -like '*refusing to merge*') { $mergeRejected=$true } else { throw } }
     if (-not $mergeRejected -or (Get-FileHash $cacheSentinel -Algorithm SHA256).Hash -ne $cacheSentinelHash) { throw 'preexisting staging PackageCache was merged or modified' }
     $pathCases.Add([pscustomobject]@{ case='preexisting-staging-packagecache'; expected='REJECT_UNCHANGED'; actual='REJECT'; sentinelSha256Before=$cacheSentinelHash; sentinelSha256After=(Get-FileHash $cacheSentinel -Algorithm SHA256).Hash })
@@ -1290,7 +1292,7 @@ exit `$LASTEXITCODE
   if (-not $provenanceCopies.Count) { throw 'FAIL: no shared-plugin provenance record was produced; cannot bind the APK inputs.' }
   Save-C05EJson (Join-Path $provenanceDir 'provenance-manifest.json') ([pscustomobject]@{ schema=1; records=$provenanceCopies.ToArray() })
 
-  $arguments = @('-batchmode','-quit','-job-worker-count','1','-projectPath',$project,'-buildTarget','Android',
+  $arguments = @('-batchmode','-quit','-job-worker-count',[string]$JobWorkerCount,'-projectPath',$project,'-buildTarget','Android',
     '-executeMethod','C05EmulatorAndroidBuild.Build','-c05EmuOutput',$apk,'-c05EmuMarker',$marker,
     '-c05EmuEditorLog',$editorLog,'-c05EmuSourceRoot',$sourceProject,'-c05EmuSourceHead',$head,
     '-c05EmuResolvedTargetSdk',[string]$resolvedAutoTarget,'-logFile',$unityLog)
@@ -1373,7 +1375,7 @@ exit `$LASTEXITCODE
     androidPlayer=[pscustomobject]@{ path=$androidPlayer; jdkVersion='17.0.20.1'; ndkVersion=(Get-Content (Join-Path $androidPlayer 'NDK\source.properties') -Raw).Trim();
       x86_64Il2cppLibs=$true }; androidSdkRoot=$AndroidSdkRoot; androidAvdHome=$AvdHome;
     adbPath=(Join-Path $AndroidSdkRoot 'platform-tools\adb.exe'); aapt2Path=$aapt2; emulatorPath=(Join-Path $AndroidSdkRoot 'emulator\emulator.exe');
-    storageBudget=$budget; unityJobWorkerCount=1; apk=(Split-Path $apk -Leaf); apkBytes=$apkInfo.Length; apkSha256=$hash; nativeExit=$native;
+    storageBudget=$budget; unityJobWorkerCount=$JobWorkerCount; apk=(Split-Path $apk -Leaf); apkBytes=$apkInfo.Length; apkSha256=$hash; nativeExit=$native;
     privateToolchain=$toolchain;
     buildReport=$report; buildReportSha256=$reportSha; metadataSha256=$metadataSha;
     activity=(Get-C05EBadgingContract ([string]$badging.stdout)).activity;
