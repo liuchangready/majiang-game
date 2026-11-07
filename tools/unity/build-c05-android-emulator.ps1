@@ -12,7 +12,7 @@ param(
   [int]$MutexWaitSeconds = 600,
   [int]$UnityTimeoutSeconds = 7200,
   [int]$HeartbeatSeconds = 30,
-  [int]$JobWorkerCount = 1,
+  [int]$JobWorkerCount = 8,
   [switch]$ReuseBuildCache,
   [switch]$ProcessFixtureTest,
   [switch]$VerdictFixtureTest,
@@ -1166,6 +1166,35 @@ try {
   [IO.File]::WriteAllText((Join-Path $run 'storage-budget.json'), ($budget | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
   if ($diskE -lt 16GB) { throw "BLOCKED_STORAGE: E free=$diskE bytes is below the 16 GiB build/evidence floor." }
   if ($diskD -lt 8GB) { throw "BLOCKED_STORAGE: D free=$diskD bytes is below the 8 GiB AVD floor." }
+
+  # Memory admission. Measured on this machine at -job-worker-count 8: the
+  # build starts near 5.7 GB free physical, dips to ~1.09 GB free physical and
+  # ~1.32 GB commit headroom while eight UnityShaderCompiler processes plus
+  # clang++ (~760 MB) run, and still completes. The draw is dominated by
+  # reclaimable page cache, so extrapolating a per-worker cost from it would
+  # wrongly refuse a configuration that is known to work. What actually kills
+  # the build is starting with no room for the first spike, so the gate is a
+  # floor on the free headroom at launch. The historical failure
+  # (D12_01 OPEN_ORDINARY_SHADER_BUILD_OOM) had a non-owned 4.26 GB QEMU
+  # competing with the build.
+  $osMemory = Get-CimInstance Win32_OperatingSystem
+  $freePhysicalBytes = [long]$osMemory.FreePhysicalMemory * 1KB
+  $commitHeadroomBytes = [long]$osMemory.FreeVirtualMemory * 1KB
+  $requiredBytes = [long]2.5GB
+  $memorySample = [pscustomobject]@{
+    measuredUtc = (Get-Date).ToUniversalTime().ToString('o')
+    jobWorkerCount = $JobWorkerCount
+    freePhysicalBytes = $freePhysicalBytes
+    commitHeadroomBytes = $commitHeadroomBytes
+    requiredFreePhysicalBytes = $requiredBytes
+    observedPeakFreePhysicalBytes = 1170161664
+    observedPeakCommitHeadroomBytes = 1417670656
+    status = $(if ($freePhysicalBytes -ge $requiredBytes -and $commitHeadroomBytes -ge $requiredBytes) { 'PASS' } else { 'BLOCKED_MEMORY' })
+  }
+  [IO.File]::WriteAllText((Join-Path $run 'memory-budget.json'), ($memorySample | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
+  if ($memorySample.status -ne 'PASS') {
+    throw ("BLOCKED_MEMORY: -job-worker-count {0} needs at least {1} bytes free physical and commit headroom; only {2} physical / {3} commit are free. Free memory first (an idle emulator holds ~4 GiB) or lower -JobWorkerCount." -f $JobWorkerCount, $requiredBytes, $freePhysicalBytes, $commitHeadroomBytes)
+  }
 
   $sourceState = Get-C05ESourceBoundary $root $script:AllowedPaths
   $head = $sourceState.head
