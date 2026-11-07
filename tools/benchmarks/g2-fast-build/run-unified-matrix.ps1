@@ -339,6 +339,40 @@ function Invoke-CellAndroid {
   $packageSign = 0.0
   $seal = 0.0
 
+  $reportPath = Join-Path $runRoot 'build-report.json'
+  if (Test-Path -LiteralPath $reportPath) {
+    try {
+      $rep = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
+      if ($rep.durationSeconds) {
+        $unityImportCompile = [double]$rep.durationSeconds
+      }
+    } catch { }
+  }
+
+  $unityLog = Join-Path $runRoot 'unity.log'
+  if (Test-Path -LiteralPath $unityLog) {
+    $utpMatch = Select-String -LiteralPath $unityLog -Pattern '##utp:\{"type":"PlayerBuildInfo".*' | Select-Object -Last 1
+    $postprocessDuration = 0.0
+    if ($utpMatch) {
+      try {
+        $utpJson = $utpMatch.Line.Substring(6) | ConvertFrom-Json
+        foreach ($st in $utpJson.steps) {
+          $d = [double]$st.duration / 1000.0
+          if ($st.description -match 'ProducePlayerScriptAssemblies|Build scripts DLLs') { $csharp += $d }
+          elseif ($st.description -match 'Writing asset files|Building Resources') { $shader += $d }
+          elseif ($st.description -match 'Postprocess built player') { $postprocessDuration += $d }
+        }
+      } catch { }
+    }
+    $gradleMatch = Select-String -LiteralPath $unityLog -Pattern 'Android PostProcess task "Building Gradle project" took ([\d\.]+) ms' | Select-Object -Last 1
+    if ($gradleMatch) {
+      $gradle = [double]$gradleMatch.Matches[0].Groups[1].Value / 1000.0
+    }
+    if ($postprocessDuration -gt 0) {
+      $il2cpp = [math]::Max(0.0, $postprocessDuration - $gradle)
+    }
+  }
+
   $detailJson = Join-Path $runRoot 'build-report-detail.json'
   if (Test-Path -LiteralPath $detailJson) {
     try {
@@ -347,10 +381,10 @@ function Invoke-CellAndroid {
         foreach ($st in $detail.steps) {
           $name = [string]$st.name
           $dur = [double]$st.durationSeconds
-          if ($name -match 'Compile scripts') { $csharp += $dur }
-          elseif ($name -match 'IL2CPP|il2cpp') { $il2cpp += $dur }
-          elseif ($name -match 'Gradle|gradle') { $gradle += $dur }
-          elseif ($name -match 'ProcessResources|Shader') { $shader += $dur }
+          if ($name -match 'Compile scripts' -and $csharp -eq 0.0) { $csharp += $dur }
+          elseif ($name -match 'IL2CPP|il2cpp' -and $il2cpp -eq 0.0) { $il2cpp += $dur }
+          elseif ($name -match 'Gradle|gradle' -and $gradle -eq 0.0) { $gradle += $dur }
+          elseif ($name -match 'ProcessResources|Shader' -and $shader -eq 0.0) { $shader += $dur }
         }
       }
     } catch { }
@@ -398,20 +432,22 @@ function Invoke-CellAndroid {
 # ----------------- Execution Driver -----------------
 $results = New-Object System.Collections.ArrayList
 
-# Prepare short staging clean state
-if ($Platform -in @('All', 'Windows') -and $Version -in @('All', 'Candidate')) {
-  if (Test-Path -LiteralPath (Split-Path $script:CandidateWinStaging -Parent)) {
-    Remove-Item -Recurse -Force (Split-Path $script:CandidateWinStaging -Parent) -ErrorAction SilentlyContinue
+# Prepare short staging clean state (only when running full matrix from scratch without CellFilter)
+if (-not $CellFilter) {
+  if ($Platform -in @('All', 'Windows') -and $Version -in @('All', 'Candidate')) {
+    if (Test-Path -LiteralPath (Split-Path $script:CandidateWinStaging -Parent)) {
+      Remove-Item -Recurse -Force (Split-Path $script:CandidateWinStaging -Parent) -ErrorAction SilentlyContinue
+    }
   }
-}
-if ($Platform -in @('All', 'Android') -and $Version -in @('All', 'Candidate')) {
-  if (Test-Path -LiteralPath $script:CandidateAndStaging) {
-    Remove-Item -Recurse -Force $script:CandidateAndStaging -ErrorAction SilentlyContinue
+  if ($Platform -in @('All', 'Android') -and $Version -in @('All', 'Candidate')) {
+    if (Test-Path -LiteralPath $script:CandidateAndStaging) {
+      Remove-Item -Recurse -Force $script:CandidateAndStaging -ErrorAction SilentlyContinue
+    }
   }
-}
-if ($Platform -in @('All', 'Android') -and $Version -in @('All', 'Baseline')) {
-  if (Test-Path -LiteralPath $script:BaselineAndStaging) {
-    Remove-Item -Recurse -Force $script:BaselineAndStaging -ErrorAction SilentlyContinue
+  if ($Platform -in @('All', 'Android') -and $Version -in @('All', 'Baseline')) {
+    if (Test-Path -LiteralPath $script:BaselineAndStaging) {
+      Remove-Item -Recurse -Force $script:BaselineAndStaging -ErrorAction SilentlyContinue
+    }
   }
 }
 
