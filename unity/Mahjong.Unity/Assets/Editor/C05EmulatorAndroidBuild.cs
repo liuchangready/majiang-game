@@ -186,11 +186,10 @@ public static class C05EmulatorAndroidBuild
             UnityEditor.Build.NamedBuildTarget androidTarget = UnityEditor.Build.NamedBuildTarget.Android;
             UnityEditor.Build.Il2CppCodeGeneration codeGenBefore = PlayerSettings.GetIl2CppCodeGeneration(androidTarget);
             notes.Add("il2cppCodeGenBefore=" + codeGenBefore);
-            if (fastProfile)
-            {
-                PlayerSettings.SetIl2CppCodeGeneration(androidTarget, UnityEditor.Build.Il2CppCodeGeneration.OptimizeSize);
-                notes.Add("il2cppCodeGenApplied=OptimizeSize");
-            }
+            // Empirical testing proved that CodeGen=OptimizeSize (-Os) triggers clang++ LLVM OOM in NDK 18.0.3
+            // on large generated async state machines (RunReleasedControlScenarioAsync).
+            // Retaining safe OptimizeSpeed per task card constraint ("需实测不恶化且安全").
+            notes.Add("il2cppCodeGenApplied=" + codeGenBefore);
 
             BuildOptions buildOptions = BuildOptions.None;
             if (!reuseCache)
@@ -219,17 +218,7 @@ public static class C05EmulatorAndroidBuild
             notes.Add("buildOptions=" + buildOptions);
 
             BuildReport report;
-            try
-            {
-                report = BuildPipeline.BuildPlayer(options);
-            }
-            finally
-            {
-                if (fastProfile)
-                {
-                    PlayerSettings.SetIl2CppCodeGeneration(androidTarget, codeGenBefore);
-                }
-            }
+            report = BuildPipeline.BuildPlayer(options);
             if (report == null) throw new InvalidOperationException("C05 emulator BuildPipeline returned no BuildReport.");
             BuildSummary summary = report.summary;
 
