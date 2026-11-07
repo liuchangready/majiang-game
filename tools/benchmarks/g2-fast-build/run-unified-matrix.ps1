@@ -278,6 +278,8 @@ function Invoke-CellAndroid {
   $runnerLog = Join-Path $buildDir "$CellId-$runGuid-stdout.log"
   $runnerErr = Join-Path $buildDir "$CellId-$runGuid-stderr.log"
 
+  $prevBee = $env:BEE_BUILD_THREADS
+  $env:BEE_BUILD_THREADS = '4'
   try {
     Write-Host "Running Android build in $RepoPath..."
     $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $args -RedirectStandardOutput $runnerLog -RedirectStandardError $runnerErr -PassThru -WindowStyle Hidden
@@ -323,6 +325,8 @@ function Invoke-CellAndroid {
     $status = 'FAIL'
     $errorMsg = $_.Exception.Message
     Write-Host "ERROR: $errorMsg" -ForegroundColor Red
+  } finally {
+    if ($null -ne $prevBee) { $env:BEE_BUILD_THREADS = $prevBee } else { [Environment]::SetEnvironmentVariable('BEE_BUILD_THREADS', $null) }
   }
 
   $resAfter = Get-C05ResourceSample
