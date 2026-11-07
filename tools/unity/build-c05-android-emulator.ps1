@@ -1233,9 +1233,16 @@ try {
     [IO.File]::WriteAllText($stagingDigestPath, $sourceClosureDigest, (New-Object Text.UTF8Encoding($false)))
   }
   $packageCache = Join-Path $project 'Library\PackageCache'
-  if ($RegistryCacheSource) {
+  $stagingReceipt = Join-Path $stagingRoot 'registry-cache-copy-receipt.json'
+  if ($RegistryCacheSource -and (-not $stagingReused -or -not (Test-Path -LiteralPath $packageCache -PathType Container))) {
+    if (Test-Path -LiteralPath $packageCache) {
+      Remove-Item -LiteralPath $packageCache -Recurse -Force
+    }
     $registryCacheReceipt = Copy-C05EVerifiedRegistryCache $RegistryCacheSource $project
     Save-C05EJson (Join-Path $run 'registry-cache-copy-receipt.json') $registryCacheReceipt
+    Save-C05EJson $stagingReceipt $registryCacheReceipt
+  } elseif ($stagingReused -and (Test-Path -LiteralPath $stagingReceipt)) {
+    Copy-Item -LiteralPath $stagingReceipt -Destination (Join-Path $run 'registry-cache-copy-receipt.json') -Force
   } elseif (-not (Test-Path -LiteralPath $packageCache -PathType Container)) {
     throw 'BLOCKED: fresh staging has no materialized registry PackageCache; pass a lock-matched -RegistryCacheSource or provide a source-project Library cache.'
   }
