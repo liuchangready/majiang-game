@@ -467,9 +467,6 @@ public sealed class C05EmulatorGradleBuildDirRedirect : UnityEditor.Android.IPos
         sb.Append("gradle.beforeProject { p ->\n");
         sb.Append("    if (p.path == ':unityLibrary') {\n");
         sb.Append("        p.buildDir = new File(c05ShortBuildRoot, 'unityLibrary')\n");
-        sb.Append("    } else if (p.path == ':launcher') {\n");
-        sb.Append("        p.layout.buildDirectory.dir('intermediates').set(")
-          .Append("new File(c05ShortBuildRoot, 'launcher-intermediates'))\n");
         sb.Append("    }\n");
         sb.Append("}\n");
         File.WriteAllText(settings, sb.ToString(), new UTF8Encoding(false));
