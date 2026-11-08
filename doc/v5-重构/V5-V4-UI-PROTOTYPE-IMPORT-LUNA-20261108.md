@@ -121,3 +121,59 @@ Unity 日志和 Player 不放入交付树；截图是从真实运行 Player 捕�
 - 只验证了 Windows Editor 和 Player；未验证 Android 真机、移动触控、任意窗口连续拖拽缩放、正式 V5 桌面流程与前序 G2 任务。
 - V4 源码中其他没有已落地设计的功能没有擅自拓展。现有桌面预览不应当作 G2 或 V5 产品验收证据。
 - 交付仍在本隔离工作树，等待桥接生命周期创建提交并按 V5 复核协议独立审查；此处没有人工 `approve_task`、合并、发布或提交操作。
+
+## 本轮独立复核及返修（候选 dff511e → 当前工作树）
+
+本节是返修验收记录；上文原交付和 27 张截图属于旧候选历史。基线仍为 `4523485cfd4ec2b32185a7da5c13f6cbaf54a1e1`，本轮起始候选为 `dff511ea134d051a8995d55969609cc19a3a2a77`；无提交。范围仅 V4 UI 资产与原型，G2 线程未触及。
+
+### 缺陷修复映射与断言
+
+| ID / 级别 | 修复映射 | 复现/验收断言与证据 |
+| --- | --- | --- |
+| D-1-01 MAJOR | `V4UiPrototype.cs` 允许仅看破无目标确认10点，0点放弃独立清除看破。 | `SeenThroughOnlyCanConfirmTenPoints`；新增矩阵回归覆盖0/10/30/40、卡片选择/取消/再选、确认与返回。运行图 `playmode-drawer-10-640x480.png`。 |
+| D-1-02 MAJOR | 新增 `PrototypeNineSliceImage.cs`；meta切片按V4 manifest源像素，图像网格独立映射44px及32/18px逻辑边，旧Prefab刷新元数据。源PNG不变。 | `NineSliceKeepsManifestSourceBorder`；断言panel源340、按钮源248/120及目标44、32/18。运行状态图检查边框未拉伸穿字。 |
+| D-1-03 MAJOR | Prefab序列化Canvas及可编辑菜单、准备、抽屉、回执、牌桌页；导航切换已有页，不再运行时整体销毁重建。Builder只升级旧空Prefab，现存页仅刷新九宫格数据。 | `PrefabContainsEditableUiLayers`；断言非空RectTransform页层与可导航状态。**本轮未单独执行“人工改Prefab文本/按钮→保存重开→再次点Builder”的完整手工操作；代码有保留分支，勿将其写成已人工验证。** |
+| D-1-04 MAJOR | 四席公开HUD/罗盘保留在准备/抽屉/回执；准备无实体手牌；发牌样例拉开头像、名牌和手牌；主菜单恢复2朱红主入口+4翡翠次入口，章鱼位于安全区。 | `PreparationHasNoHandButKeepsPublicHud`；运行图 `playmode-preparation-640x480.png`、`playmode-playing-640x480.png`、`player-menu-*`。 |
+| D-1-05 MAJOR | 按钮焦点使用Tint；目标卡保留原Sprite，业务选择使用金色Outline和“已选”标记。 | `TargetFocusPreservesTargetArtwork`；断言焦点前后target sprite相同，卡图不被菜单focus覆盖。 |
+| D-1-06 MINOR | 尺寸变化时按实际窗口更新居中16:9舞台和背景cover裁剪。 | 同一最终Player窗口日志实测1280×720、960×540、1600×600，舞台offset分别0,0/0,0/160,0。三尺寸运行图覆盖主菜单；**其余状态本轮只在640×480 PlayMode图验证，未声称完成所有状态×三尺寸矩阵，F6/F7快捷键也未单独验证。** |
+| D-2-07 MAJOR（本轮新发现） | `BindSerializedActions` 从序列化菜单页子层级恢复六个Button引用并绑定六个入口；此前静态Prefab字段为空导致主菜单点击无动作。 | 新增 `SinglePlayerButtonNavigatesFromSerializedPrefab` 和 `PointerPositionOnMenuButtonNavigatesToPreparation`：断言六入口齐全、屏幕坐标Raycast命中同一按钮、pointer down/up/click进入准备。此缺陷由本轮首次真实Player主菜单点击发现；首轮只有静态结构及非菜单控件测试，无法发现。 |
+
+统一负例/状态矩阵：无目标且未看破→0点可确认；无目标仅看破→10点可确认；目标单选→30点，取消回0，再选回30；目标+看破→40点；四费用确认回执一致；返回准备/回执返回与发牌/发牌返回可切换。PlayMode点击测试无skip/空测试/放宽断言。
+
+### 当前候选真实执行
+
+原样复核命令（Unity 6000.3.27f1；共享锁 `Local\MahjongV5P45UnityValidation`；先按仓库脚本构建共享DLL，未关闭provenance守卫）：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File C:/Windows/TEMP/v4-ui-review-3fc9b71a636f431183b838e0cc24b4f6/run-review.ps1 -Project C:/Users/sncdc/.agent-mesh-bridge/worktrees/thread_20261108_193839_c801/unity/Mahjong.Unity -Evidence C:/Windows/TEMP/v4-ui-rework-20261109-30f56e83cda14bc9921c0a3d1af07e09/review-final
+```
+
+复核运行器Unity native exit=0：7 passed、0 failed、0 skipped。XML SHA256 `F4B73D2AB0413D857E19BBEDA232DB356B1AE9839F75318584BE898DA34DA3B6`；日志SHA256 `9DB9EF35405EB31E531DFE19290406008131B92210103A68095244AA94E88D61`。原复核源码SHA256为用户提供的 `10D5A0BCC7B2041F437996F17461FD1B45892529BB977F329B85B398A83D4183`。
+
+新增原型回归过滤器 `V4UiMenuClickRegressionTests` native exit=0：3 passed、0 failed、0 skipped。覆盖费用与取消矩阵、六个序列化菜单按钮、真实EventSystem屏幕坐标Raycast及pointer事件。XML SHA256 `B727519C2D0D0499DBA6982B0A4D2CE92CB373DB0C61543FFFFE40565A4E9708`；日志SHA256 `272F14FC51418C93330B5F69B6852F2AC0D9E5B53AE22D340C6F9EEBE0BCB45E`；测试源码SHA256 `69434173E139D810FF5B2DE2B668D75DC3FF6EFC66FF00B879BA45D330E390FF`。
+
+同候选Player构建native exit=0，日志有 `V4_UI_PROTOTYPE_PLAYER_PASS`，可执行文件SHA256 `F083B0E879A9298CDCF9931A8F3B4F2B013E13F7D3E51221FC0D756B79E28807`，包内 `Mahjong.Unity.UI.dll` SHA256 `33E48BFEABE13558B5DBC4741A71D49BAE8D4B384D66FE9C4199D3F8C75C947A`。Player正常退出；窗口尺寸日志SHA256 `836EB1796D75858A454F0F1B8EF58558C963AD8F7A3509849DE791C7E0957BFD`。最终共享DLL构建脚本exit=0。测试生成的共享DLL/PDB及Unity设置已还原到候选原值，provenance临时文件已移除；重测前须重新执行正式build-shared脚本。
+
+### 当前运行截图
+
+以下均为当前候选真实Unity运行捕获，不是V4静态参考或拼图；SHA256：
+
+| 文件 | 尺寸 | SHA256 |
+| --- | --- | --- |
+| `player-menu-1280.png` | 1280×720 | `9EC7870C4F730EF2AEF7189A78189283F3D02B931C30D662A1FA6C918316B004` |
+| `player-menu-960.png` | 960×540 | `A03BB6C586F07EC84571C49F62B8266B059D534E322A79E153A5F67C382E12AA` |
+| `player-menu-1600x600.png` | 1600×600 | `16779AC267C40F2D283FCDC2513F4C7C32D9B69FAD4E82C4328598AD2F6AC693` |
+| `player-preparation-1280x720-click.png` | 1280×720 | `D5D74CCDA0406E45F2B7487EEC0C1DCE8B0E2D190B78615C21F6A73516362069` |
+| `playmode-preparation-640x480.png` | 640×480 | `C482C2A57D4A4E9F6D79E6E4DB40B018AA3C991411F6C5CFDD1044FCB259BDE7` |
+| `playmode-drawer-0-640x480.png` | 640×480 | `B92731379DA04BF301FBE9704EA1FFABDC97BC4441BBBE41A9CB4A357EC3D39F` |
+| `playmode-drawer-10-640x480.png` | 640×480 | `320D4C40A9DA955FC086F5C9D6FA379D5B73E6036694FA11EA125FD2F3E37EA8` |
+| `playmode-drawer-30-640x480.png` | 640×480 | `D86D629E0C8103A6DEEA3429B0267B8BA7B902156A989E974210493A75B1598D` |
+| `playmode-drawer-40-640x480.png` | 640×480 | `D8261314CDA89CF8FA0433D0DDE626478CD91C2A09FDAAB7978961B9113C1D44` |
+| `playmode-receipt-40-640x480.png` | 640×480 | `35DF7C4AB1965DBD4A40070EFFFFA67D2A77593492B1880D3E653799C7777CBD` |
+| `playmode-playing-640x480.png` | 640×480 | `092866924B935D3E55C820FF47BEEF5E2AC50425B3608176B86B39DCAEC0E071` |
+
+证据目录：`ui-prototype-evidence-review/`。独立Player截图覆盖三种比例的菜单和1280下实际点击进入准备；PlayMode截图覆盖各主要状态但为640×480。**尚缺准备/抽屉/回执/发牌在960×540与1600×600的独立运行截图，也未单独人工验证Prefab改文案保存重开后重复Builder保留改动。** 这些边界不作为通过项。
+
+### 复核边界
+
+除D-2-07外，本轮无其他新发现。D-2-07此前不可发现的原因是旧检查没有真实点击序列化主菜单按钮；其余六组均按首轮清单修复。未修改正式Boot/导航、C04、.NET共享DLL源码、engine/client/server或G2线程；不提交、不推送、不合并、不发布。

@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using UnityEditor;
 using UnityEditor.Build.Reporting;
 using UnityEditor.SceneManagement;
@@ -46,6 +47,8 @@ namespace Mahjong.Unity.EditorTools
             bool prefabExists = AssetDatabase.LoadAssetAtPath<GameObject>(PrefabPath) != null;
             if (sceneExists && prefabExists)
             {
+                ConfigurePrototypeSprites();
+                UpgradeLegacyEmptyPrefab();
                 EditorSceneManager.OpenScene(ScenePath, OpenSceneMode.Single);
                 Debug.Log("V4_UI_PROTOTYPE_OPENED existing scene=" + ScenePath + " prefab=" + PrefabPath);
                 return;
@@ -53,14 +56,7 @@ namespace Mahjong.Unity.EditorTools
             if (sceneExists || prefabExists)
                 throw new InvalidOperationException("Prototype scene/prefab pair is incomplete; refusing to overwrite either asset.");
 
-            ConfigureSingleSprite(TableRoot + "club-environment.png");
-            ConfigureSingleSprite(TableRoot + "jade-table-board.png");
-            ConfigureSingleSprite(TableRoot + "jade-panel-skin.png", new Vector4(44, 44, 44, 44));
-            ConfigureSingleSprite(TableRoot + "round-compass.png");
-            foreach (string tile in OrderedTilePaths()) ConfigureSingleSprite(tile);
-            ConfigureSpriteSheet(TableRoot + "button-skins.png", ButtonRects, new Vector4(32, 18, 32, 18));
-            ConfigureSpriteSheet(TableRoot + "animal-medallions.png", PortraitRects, Vector4.zero);
-            ConfigureSpriteSheet(TableRoot + "target-card-scenes.png", TargetRects, Vector4.zero);
+            ConfigurePrototypeSprites();
             AssetDatabase.SaveAssets();
             AssetDatabase.Refresh();
 
@@ -91,6 +87,7 @@ namespace Mahjong.Unity.EditorTools
             Assign(component, "_targetCards", TargetRects.Select(x => RequireSprite(TableRoot + "target-card-scenes.png", x.name)).ToArray());
             Assign(component, "_compass", RequireSprite(TableRoot + "round-compass.png"));
             Assign(component, "_tiles", OrderedTilePaths().Select(p => RequireSprite(p)).ToArray());
+            prototypeType.GetMethod("BuildSerializedPreviewPages")!.Invoke(component, null);
 
             PrefabUtility.SaveAsPrefabAsset(root, PrefabPath);
             UnityEngine.Object.DestroyImmediate(root);
@@ -142,6 +139,20 @@ namespace Mahjong.Unity.EditorTools
             importer.spriteBorder = border;
             EditorUtility.SetDirty(importer);
             importer.SaveAndReimport();
+        }
+
+        private static void ConfigurePrototypeSprites()
+        {
+            ConfigureSingleSprite(TableRoot + "club-environment.png");
+            ConfigureSingleSprite(TableRoot + "jade-table-board.png");
+            ConfigureSingleSprite(TableRoot + "jade-panel-skin.png", new Vector4(340, 340, 340, 340));
+            ConfigureSingleSprite(TableRoot + "round-compass.png");
+            foreach (string tile in OrderedTilePaths()) ConfigureSingleSprite(tile);
+            ConfigureSpriteSheet(TableRoot + "button-skins.png", ButtonRects, new Vector4(248, 120, 248, 120));
+            ConfigureSpriteSheet(TableRoot + "animal-medallions.png", PortraitRects, Vector4.zero);
+            ConfigureSpriteSheet(TableRoot + "target-card-scenes.png", TargetRects, Vector4.zero);
+            AssetDatabase.SaveAssets();
+            AssetDatabase.Refresh();
         }
 
         private static void ConfigureSpriteSheet(string path, (string name, Rect rect)[] sprites, Vector4 border)
@@ -213,6 +224,63 @@ namespace Mahjong.Unity.EditorTools
             string name = path.Substring(path.LastIndexOf('/') + 1);
             if (!AssetDatabase.IsValidFolder(parent)) EnsureFolder(parent);
             AssetDatabase.CreateFolder(parent, name);
+        }
+
+        private static void UpgradeLegacyEmptyPrefab()
+        {
+            GameObject root = PrefabUtility.LoadPrefabContents(PrefabPath);
+            try
+            {
+                Type prototypeType = Type.GetType("Mahjong.Unity.UI.Prototype.V4UiPrototype, Mahjong.Unity.UI");
+                var prototype = prototypeType != null ? root.GetComponent(prototypeType) : null;
+                if (prototype == null) throw new InvalidOperationException("Existing prototype prefab has no V4 UI component.");
+                bool hasPages = (bool)(prototypeType!.GetProperty("HasSerializedPreviewPages")!.GetValue(prototype) ?? false);
+                if (hasPages)
+                {
+                    if (RefreshNineSliceBorderMetadata(root))
+                    {
+                        PrefabUtility.SaveAsPrefabAsset(root, PrefabPath);
+                        AssetDatabase.SaveAssets();
+                        Debug.Log("V4_UI_PROTOTYPE_NINESLICE_METADATA_REFRESHED prefab=" + PrefabPath);
+                    }
+                    return;
+                }
+                if (root.transform.childCount != 0)
+                    throw new InvalidOperationException("Existing prefab has hand-authored children but no serialized page references; refusing to overwrite it.");
+                prototypeType.GetMethod("BuildSerializedPreviewPages")!.Invoke(prototype, null);
+                PrefabUtility.SaveAsPrefabAsset(root, PrefabPath);
+                AssetDatabase.SaveAssets();
+                Debug.Log("V4_UI_PROTOTYPE_UPGRADED legacy empty prefab=" + PrefabPath);
+            }
+            finally
+            {
+                PrefabUtility.UnloadPrefabContents(root);
+            }
+        }
+
+        private static bool RefreshNineSliceBorderMetadata(GameObject root)
+        {
+            bool changed = false;
+            foreach (MonoBehaviour component in root.GetComponentsInChildren<MonoBehaviour>(true))
+            {
+                if (component == null || component.GetType().FullName != "Mahjong.Unity.UI.Prototype.PrototypeNineSliceImage") continue;
+                var image = component as UnityEngine.UI.Image;
+                if (image == null || image.sprite == null) continue;
+                Sprite sprite = image.sprite;
+                Vector4 source = sprite.border.sqrMagnitude > 0f ? sprite.border
+                    : sprite.name.StartsWith("button-", StringComparison.Ordinal) ? new Vector4(18f, 18f, 18f, 18f) : Vector4.zero;
+                Vector4 target = sprite.name == "jade-panel-skin" ? new Vector4(44f, 44f, 44f, 44f)
+                    : sprite.name.StartsWith("prototype_button_", StringComparison.Ordinal) ? new Vector4(32f, 18f, 32f, 18f)
+                    : new Vector4(18f, 18f, 18f, 18f);
+                var sourceProperty = component.GetType().GetProperty("SourceBorder");
+                var targetProperty = component.GetType().GetProperty("TargetBorder");
+                Vector4 currentSource = sourceProperty != null ? (Vector4)sourceProperty.GetValue(component) : Vector4.zero;
+                Vector4 currentTarget = targetProperty != null ? (Vector4)targetProperty.GetValue(component) : Vector4.zero;
+                if (currentSource == source && currentTarget == target) continue;
+                component.GetType().GetMethod("Configure")?.Invoke(component, new object[] { source, target });
+                changed = true;
+            }
+            return changed;
         }
     }
 }

@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using TMPro;
 using UnityEngine;
@@ -35,19 +36,37 @@ namespace Mahjong.Unity.UI.Prototype
 
         private Canvas? _canvas;
         private RectTransform? _content;
+        [SerializeField] private RectTransform? _canvasRoot;
+        [SerializeField] private RectTransform? _stageRoot;
+        [SerializeField] private GameObject? _menuPage;
+        [SerializeField] private GameObject? _preparationPage;
+        [SerializeField] private GameObject? _drawerPage;
+        [SerializeField] private GameObject? _receiptPage;
+        [SerializeField] private GameObject? _playingPage;
+        [SerializeField] private GameObject? _noticePage;
+        [SerializeField] private RawImage? _menuBackgroundImage;
+        [SerializeField] private RawImage? _tableBackgroundImage;
+        [SerializeField] private Text? _noticeTitle;
+        [SerializeField] private Text? _noticeMessage;
+        private List<Button> _menuButtons = new List<Button>();
+        private float _designOffsetY;
+        private int _lastScreenWidth;
+        private int _lastScreenHeight;
+        private bool _buildingPages;
         private float _designOffsetX;
         private Vector2Int _requestedResolution = new Vector2Int(1280, 720);
-        private readonly List<Button> _menuButtons = new List<Button>();
         private bool _seenThrough;
         private int _selectedTarget = -1;
         private bool _drawerOpen;
-        private readonly List<Sprite> _runtimeSprites = new List<Sprite>();
         private string _previewStage = "menu";
 
         private static readonly string[] TargetNames =
         {
             "清一色（万）", "清一色（条）", "清一色（筒）", "大三元", "国士无双", "大四喜"
         };
+
+        public bool HasSerializedPreviewPages => _canvasRoot != null && _stageRoot != null && _menuPage != null
+            && _preparationPage != null && _drawerPage != null && _receiptPage != null && _playingPage != null && _noticePage != null;
 
         private void Awake()
         {
@@ -58,8 +77,66 @@ namespace Mahjong.Unity.UI.Prototype
             }
             Debug.Log("V4_UI_PROTOTYPE_STARTED requested=" + _requestedResolution.x + "x" + _requestedResolution.y
                 + " initial=" + Screen.width + "x" + Screen.height);
-            BuildCanvas();
+            if (_canvasRoot == null || _stageRoot == null || _menuPage == null)
+            {
+                Debug.LogError("V4_UI_PROTOTYPE_SCENE_MISSING_SERIALIZED_PAGES");
+                enabled = false;
+                return;
+            }
+            BindSerializedActions();
             ShowMenu();
+            ApplyScreenLayout(true);
+        }
+
+        private void BindSerializedActions()
+        {
+            // Unity does not persist references to the page children created while building the prefab.
+            // Rebind from the serialized page hierarchy so the six menu entries remain clickable.
+            _menuButtons = _menuPage != null
+                ? _menuPage.GetComponentsInChildren<Button>(true)
+                    .Where(button => button.transform.parent == _menuPage.transform)
+                    .ToList()
+                : new List<Button>();
+            BindMenuAction(0, () => ShowPreparation());
+            BindMenuAction(1, () => OnMenuAction(1));
+            BindMenuAction(2, () => OnMenuAction(2));
+            BindMenuAction(3, () => OnMenuAction(3));
+            BindMenuAction(4, () => OnMenuAction(4));
+            BindMenuAction(5, () => OnMenuAction(5));
+            BindNamedButton(_preparationPage, "偷梁换柱", () => ShowDrawer());
+            BindNamedButton(_preparationPage, "看破：", () => { _seenThrough = !_seenThrough; ShowPreparation(); });
+            BindNamedButton(_preparationPage, "开始本局", () => ShowReceipt());
+            BindNamedButton(_preparationPage, "确认看破", () => ShowReceipt());
+            BindNamedButton(_drawerPage, "返回", () => ReturnToPreparation());
+            Button[] cards = _drawerPage != null
+                ? _drawerPage.GetComponentsInChildren<Button>(true).Where(b => b.name == "Button · ").ToArray()
+                : Array.Empty<Button>();
+            for (int i = 0; i < cards.Length; i++)
+            {
+                int index = i;
+                cards[i].onClick.AddListener(() => { _selectedTarget = _selectedTarget == index ? -1 : index; ShowDrawer(); });
+            }
+            BindNamedButton(_drawerPage, "看破：", () => { _seenThrough = !_seenThrough; ShowDrawer(); });
+            BindNamedButton(_drawerPage, "直接开局", () => { _selectedTarget = -1; _seenThrough = false; ShowReceipt(); });
+            BindNamedButton(_drawerPage, "确认施术", () => { if (_selectedTarget >= 0 || _seenThrough) ShowReceipt(); });
+            BindNamedButton(_drawerPage, "确认看破", () => { if (_seenThrough) ShowReceipt(); });
+            BindNamedButton(_receiptPage, "发牌预览", () => ShowPlaying());
+            BindNamedButton(_receiptPage, "返回准备", () => ShowPreparation());
+            BindNamedButton(_playingPage, "准备阶段预览", () => ShowPreparation());
+            BindNamedButton(_noticePage, "返回主菜单", () => ShowMenu());
+        }
+
+        private void BindMenuAction(int index, Action action)
+        {
+            if (index < 0 || index >= _menuButtons.Count || _menuButtons[index] == null) return;
+            _menuButtons[index].onClick.AddListener(() => action());
+        }
+
+        private static void BindNamedButton(GameObject? page, string namePart, Action action)
+        {
+            if (page == null) return;
+            Button? button = page.GetComponentsInChildren<Button>(true).FirstOrDefault(b => b.name.Contains(namePart, StringComparison.Ordinal));
+            if (button != null) button.onClick.AddListener(() => action());
         }
 
         private void Update()
@@ -71,10 +148,11 @@ namespace Mahjong.Unity.UI.Prototype
                 if (Keyboard.current.f3Key.wasPressedThisFrame) ShowDrawer();
                 if (Keyboard.current.f4Key.wasPressedThisFrame) ShowReceipt();
                 if (Keyboard.current.f5Key.wasPressedThisFrame) ShowPlaying();
-                if (Keyboard.current.f6Key.wasPressedThisFrame) Screen.SetResolution(960, 540, false);
-                if (Keyboard.current.f7Key.wasPressedThisFrame) Screen.SetResolution(1600, 600, false);
+                if (!Application.isEditor && Keyboard.current.f6Key.wasPressedThisFrame) Screen.SetResolution(960, 540, false);
+                if (!Application.isEditor && Keyboard.current.f7Key.wasPressedThisFrame) Screen.SetResolution(1600, 600, false);
                 if (Keyboard.current.f8Key.wasPressedThisFrame) CapturePreviewFrame();
             }
+            ApplyScreenLayout(false);
             if (Keyboard.current != null && Keyboard.current.escapeKey.wasPressedThisFrame)
             {
                 if (_drawerOpen) ReturnToPreparation();
@@ -83,11 +161,10 @@ namespace Mahjong.Unity.UI.Prototype
             }
         }
 
-        private void BuildCanvas()
+        public void BuildSerializedPreviewPages()
         {
-            _primaryButton = CreateNineSlice(_primaryButton);
-            _secondaryButton = CreateNineSlice(_secondaryButton);
-            _focusButton = CreateNineSlice(_focusButton);
+            if (_canvasRoot != null || _stageRoot != null || _menuPage != null)
+                throw new InvalidOperationException("Refusing to replace an existing serialized UI hierarchy.");
             var canvasObject = new GameObject("Prototype Canvas", typeof(RectTransform), typeof(Canvas), typeof(CanvasScaler), typeof(GraphicRaycaster));
             canvasObject.transform.SetParent(transform, false);
             _canvas = canvasObject.GetComponent<Canvas>();
@@ -95,55 +172,202 @@ namespace Mahjong.Unity.UI.Prototype
             var scaler = canvasObject.GetComponent<CanvasScaler>();
             scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
             scaler.referenceResolution = new Vector2(1280, 720);
-            scaler.screenMatchMode = CanvasScaler.ScreenMatchMode.MatchWidthOrHeight;
-            scaler.matchWidthOrHeight = _requestedResolution.x / (float)_requestedResolution.y > 2f ? 1f : 0.5f;
-            float logWidth = Mathf.Log(_requestedResolution.x / 1280f);
-            float logHeight = Mathf.Log(_requestedResolution.y / 720f);
-            float scaleFactor = Mathf.Exp(Mathf.Lerp(logWidth, logHeight, scaler.matchWidthOrHeight));
-            _designOffsetX = Mathf.Max(0f, (_requestedResolution.x / scaleFactor - 1280f) * 0.5f);
             var root = new GameObject("Prototype Content", typeof(RectTransform));
             root.transform.SetParent(canvasObject.transform, false);
-            _content = root.GetComponent<RectTransform>();
-            Stretch(_content);
-            if (EventSystem.current == null)
+            _canvasRoot = root.GetComponent<RectTransform>();
+            Stretch(_canvasRoot);
+            _menuBackgroundImage = CreateBackground("Menu background", _mainBackground);
+            _tableBackgroundImage = CreateBackground("Table environment", _environment);
+            var stage = new GameObject("Design stage · 1280×720", typeof(RectTransform), typeof(RectMask2D));
+            stage.transform.SetParent(_canvasRoot, false);
+            _stageRoot = stage.GetComponent<RectTransform>();
+            _stageRoot.anchorMin = _stageRoot.anchorMax = _stageRoot.pivot = new Vector2(0f, 1f);
+            _stageRoot.sizeDelta = new Vector2(1280f, 720f);
+            _menuPage = CreatePage("Main menu");
+            _preparationPage = CreatePage("Preparation");
+            _drawerPage = CreatePage("Target drawer");
+            _receiptPage = CreatePage("Confirmation receipt");
+            _playingPage = CreatePage("Dealt table");
+            _noticePage = CreatePage("Menu preview notice");
+            var eventObject = new GameObject("Prototype EventSystem", typeof(EventSystem), typeof(UnityEngine.InputSystem.UI.InputSystemUIInputModule));
+            eventObject.transform.SetParent(transform, false);
+            eventObject.GetComponent<UnityEngine.InputSystem.UI.InputSystemUIInputModule>().AssignDefaultActions();
+
+            _buildingPages = true;
+            _content = _menuPage.GetComponent<RectTransform>(); ShowMenu();
+            _content = _preparationPage.GetComponent<RectTransform>(); ShowPreparation();
+            _content = _drawerPage.GetComponent<RectTransform>(); ShowDrawer();
+            _content = _receiptPage.GetComponent<RectTransform>(); ShowReceipt();
+            _content = _playingPage.GetComponent<RectTransform>(); ShowPlaying();
+            _content = _noticePage.GetComponent<RectTransform>(); ShowNotice("预览入口", "此页面展示菜单入口的原型提示，不连接业务流程。");
+            _buildingPages = false;
+            ShowMenu();
+            ApplyScreenLayout(true);
+        }
+
+        private GameObject CreatePage(string name)
+        {
+            var page = new GameObject(name, typeof(RectTransform));
+            page.transform.SetParent(_stageRoot, false);
+            var rect = page.GetComponent<RectTransform>();
+            rect.anchorMin = Vector2.zero;
+            rect.anchorMax = Vector2.one;
+            rect.offsetMin = Vector2.zero;
+            rect.offsetMax = Vector2.zero;
+            return page;
+        }
+
+        private RawImage CreateBackground(string name, Sprite? sprite)
+        {
+            var go = new GameObject(name, typeof(RectTransform), typeof(CanvasRenderer), typeof(RawImage));
+            go.transform.SetParent(_canvasRoot, false);
+            var image = go.GetComponent<RawImage>();
+            image.texture = sprite != null ? sprite.texture : null;
+            image.raycastTarget = false;
+            Stretch(go.GetComponent<RectTransform>());
+            return image;
+        }
+
+        private void ApplyScreenLayout(bool force)
+        {
+            if (_canvasRoot == null || _stageRoot == null || Screen.width <= 0 || Screen.height <= 0) return;
+            if (!force && _lastScreenWidth == Screen.width && _lastScreenHeight == Screen.height) return;
+            _lastScreenWidth = Screen.width;
+            _lastScreenHeight = Screen.height;
+            var canvas = _canvasRoot.GetComponentInParent<Canvas>();
+            var scaler = canvas != null ? canvas.GetComponent<CanvasScaler>() : null;
+            if (scaler == null) return;
+            scaler.matchWidthOrHeight = Screen.width / 1280f <= Screen.height / 720f ? 0f : 1f;
+            Canvas.ForceUpdateCanvases();
+            float logicalWidth = Screen.width / Mathf.Max(0.0001f, scaler.scaleFactor);
+            float logicalHeight = Screen.height / Mathf.Max(0.0001f, scaler.scaleFactor);
+            _designOffsetX = Mathf.Max(0f, (logicalWidth - 1280f) * 0.5f);
+            _designOffsetY = Mathf.Max(0f, (logicalHeight - 720f) * 0.5f);
+            _stageRoot.anchoredPosition = new Vector2(_designOffsetX, -_designOffsetY);
+            UpdateBackgroundCrop(_menuBackgroundImage, _mainBackground);
+            UpdateBackgroundCrop(_tableBackgroundImage, _environment);
+            Debug.Log("V4_UI_PROTOTYPE_LAYOUT screen=" + Screen.width + "x" + Screen.height
+                + " offset=" + _designOffsetX + "," + _designOffsetY);
+        }
+
+        private void UpdateBackgroundCrop(RawImage? image, Sprite? sprite)
+        {
+            if (image == null || sprite == null || sprite.rect.height <= 0f) return;
+            float imageAspect = sprite.rect.width / sprite.rect.height;
+            float screenAspect = Screen.width / (float)Screen.height;
+            Rect uv = new Rect(sprite.rect.x / sprite.texture.width, sprite.rect.y / sprite.texture.height,
+                sprite.rect.width / sprite.texture.width, sprite.rect.height / sprite.texture.height);
+            if (screenAspect > imageAspect)
             {
-                var eventObject = new GameObject("Prototype EventSystem", typeof(EventSystem));
-                var inputModule = eventObject.AddComponent<UnityEngine.InputSystem.UI.InputSystemUIInputModule>();
-                inputModule.AssignDefaultActions();
-                DontDestroyOnLoad(eventObject);
+                float visibleHeight = imageAspect / screenAspect;
+                uv.y += uv.height * (1f - visibleHeight) * 0.5f;
+                uv.height *= visibleHeight;
+            }
+            else
+            {
+                float visibleWidth = screenAspect / imageAspect;
+                uv.x += uv.width * (1f - visibleWidth) * 0.5f;
+                uv.width *= visibleWidth;
+            }
+            image.uvRect = uv;
+        }
+
+        private void ActivatePage(GameObject? active, bool menuBackground)
+        {
+            if (_buildingPages) return;
+            if (_menuPage != null) _menuPage.SetActive(active == _menuPage);
+            if (_preparationPage != null) _preparationPage.SetActive(active == _preparationPage);
+            if (_drawerPage != null) _drawerPage.SetActive(active == _drawerPage);
+            if (_receiptPage != null) _receiptPage.SetActive(active == _receiptPage);
+            if (_playingPage != null) _playingPage.SetActive(active == _playingPage);
+            if (_noticePage != null) _noticePage.SetActive(active == _noticePage);
+            if (_menuBackgroundImage != null) _menuBackgroundImage.gameObject.SetActive(menuBackground);
+            if (_tableBackgroundImage != null) _tableBackgroundImage.gameObject.SetActive(!menuBackground);
+        }
+
+        private static void SetPageText(GameObject? page, string namePrefix, string value)
+        {
+            if (page == null) return;
+            var text = page.GetComponentsInChildren<Text>(true).FirstOrDefault(t => t.name.StartsWith(namePrefix, StringComparison.Ordinal));
+            if (text != null) text.text = value;
+        }
+
+        private void RefreshPreparation()
+        {
+            SetPageText(_preparationPage, "Text · 看破：", _seenThrough ? "看破：已开启 · 10点" : "看破：未开启 · 10点");
+            SetPageText(_preparationPage, "Text · 当前预览消耗：", "当前预览消耗：" + (_seenThrough ? "10" : "0") + " 点");
+            SetPageText(_preparationPage, "Text · 开始本局", _seenThrough ? "确认看破 · 10点" : "开始本局 · 0点");
+        }
+
+        private void RefreshDrawer()
+        {
+            if (_drawerPage == null) return;
+            Button[] cards = _drawerPage.GetComponentsInChildren<Button>(true).Where(b => b.name == "Button · ").ToArray();
+            for (int i = 0; i < cards.Length; i++)
+            {
+                var outline = cards[i].GetComponent<Outline>();
+                if (outline != null) outline.enabled = i == _selectedTarget;
+                var marker = cards[i].transform.Find("Selected marker");
+                if (marker != null) marker.gameObject.SetActive(i == _selectedTarget);
+            }
+            SetPageText(_drawerPage, "Text · 看破：", _seenThrough ? "看破：已开启 · 10点" : "看破：未开启 · 10点");
+            int cost = (_selectedTarget >= 0 ? 30 : 0) + (_seenThrough ? 10 : 0);
+            SetPageText(_drawerPage, "Text · 本次消耗", "本次消耗 " + cost + " 点");
+            Button? confirm = _drawerPage.GetComponentsInChildren<Button>(true).FirstOrDefault(b => b.name.Contains("确认施术") || b.name.Contains("确认看破"));
+            if (confirm != null)
+            {
+                confirm.interactable = _selectedTarget >= 0 || _seenThrough;
+                Text? label = confirm.GetComponentInChildren<Text>(true);
+                if (label != null) label.text = _seenThrough && _selectedTarget < 0 ? "确认看破 · 10点"
+                    : _selectedTarget < 0 ? "先选择目标牌型" : "确认施术 · " + (_seenThrough ? "40" : "30") + "点";
             }
         }
 
-        private Sprite? CreateNineSlice(Sprite? source)
+        private void RefreshReceipt()
         {
-            if (source == null) return null;
-            var sliced = Sprite.Create(source.texture, source.rect, new Vector2(.5f, .5f), source.pixelsPerUnit, 0,
-                SpriteMeshType.FullRect, new Vector4(18, 18, 18, 18));
-            sliced.name = source.name + " · prototype 9-slice";
-            _runtimeSprites.Add(sliced);
-            return sliced;
+            string selection = _selectedTarget >= 0 ? TargetNames[_selectedTarget] : (_seenThrough ? "看破" : "不使用千术");
+            int cost = (_selectedTarget >= 0 ? 30 : 0) + (_seenThrough ? 10 : 0);
+            SetPageText(_receiptPage, "Text · 预览确认", selection + "\n预览费用：" + cost + " 点\n（静态样例，不写入游戏经济）");
         }
 
-        private void OnDestroy()
+        private void StartMenuEntrance()
         {
-            foreach (var sprite in _runtimeSprites) Destroy(sprite);
-            _runtimeSprites.Clear();
+            for (int i = 0; i < _menuButtons.Count; i++)
+            {
+                Button button = _menuButtons[i];
+                Vector3 target = button.transform.localPosition;
+                button.transform.localPosition = target + new Vector3(96f, 0f, 0f);
+                button.interactable = false;
+                if (Application.isPlaying) StartCoroutine(EnterMenuButton(button, i * .07f));
+                else { button.transform.localPosition = target; button.interactable = true; }
+            }
         }
 
         private void Clear()
         {
-            if (_content == null) return;
-            for (int i = _content.childCount - 1; i >= 0; i--) Destroy(_content.GetChild(i).gameObject);
+            if (!_buildingPages || _content == null) return;
+            for (int i = _content.childCount - 1; i >= 0; i--)
+            {
+                if (Application.isPlaying) Destroy(_content.GetChild(i).gameObject);
+                else DestroyImmediate(_content.GetChild(i).gameObject);
+            }
             _menuButtons.Clear();
         }
 
         private void ShowMenu()
         {
+            if (!_buildingPages)
+            {
+                _previewStage = "menu";
+                _drawerOpen = false;
+                ActivatePage(_menuPage, true);
+                StartMenuEntrance();
+                return;
+            }
             _previewStage = "menu";
             _drawerOpen = false;
             Clear();
-            ImageFullScreen("Background", _mainBackground);
-            MaskedMascot();
+            ImageRect("Octopus mascot", _octopus, new Rect(24, 150, 620, 560), _content!, false, true);
             Label("疯狂动物麻将", new Rect(64, 32, 620, 76), 54, new Color(1f, .86f, .52f), TextAlignmentOptions.Left);
             Label("三大千术 · 牌桌心战", new Rect(72, 112, 600, 38), 24, new Color(1f, .83f, .49f), TextAlignmentOptions.Left);
             string[] labels = { "单机对局", "联机对战", "牌面皮肤", "千术秘籍", "游戏设置", "退出游戏" };
@@ -157,7 +381,7 @@ namespace Mahjong.Unity.UI.Prototype
                 int ix = i;
                 bool major = i < 2;
                 Rect itemRect = menuRects[i];
-                bool redButton = i == 1 || i == 3 || i == 5;
+                bool redButton = major;
                 var button = ButtonRect(labels[i], itemRect, redButton ? _primaryButton : _secondaryButton,
                     () => OnMenuAction(ix), major ? 29 : 23);
                 var text = button.GetComponentInChildren<Text>();
@@ -168,8 +392,12 @@ namespace Mahjong.Unity.UI.Prototype
                 }
                 AddMenuIcon(button.transform, i, major ? 58 : 44, major ? 7 : 7);
                 _menuButtons.Add(button);
-                button.transform.localPosition += new Vector3(96, 0, 0);
-                StartCoroutine(EnterMenuButton(button, i * .07f));
+                if (Application.isPlaying)
+                {
+                    button.transform.localPosition += new Vector3(96, 0, 0);
+                    button.interactable = false;
+                    StartCoroutine(EnterMenuButton(button, i * .07f));
+                }
             }
             Label("V4 视觉原型 · 按钮可点击预览", new Rect(752, 624, 440, 28), 16, new Color(1f, .86f, .56f), TextAlignmentOptions.Center);
             QueuePreviewCapture();
@@ -191,7 +419,11 @@ namespace Mahjong.Unity.UI.Prototype
                 button.transform.localPosition = Vector3.LerpUnclamped(start, target, eased);
                 yield return null;
             }
-            if (button != null) button.transform.localPosition = target;
+            if (button != null)
+            {
+                button.transform.localPosition = target;
+                button.interactable = true;
+            }
         }
 
         private void OnMenuAction(int action)
@@ -209,16 +441,32 @@ namespace Mahjong.Unity.UI.Prototype
 
         private void ShowNotice(string title, string message)
         {
+            if (!_buildingPages)
+            {
+                _previewStage = "notice";
+                if (_noticeTitle != null) _noticeTitle.text = title;
+                if (_noticeMessage != null) _noticeMessage.text = message;
+                ActivatePage(_noticePage, true);
+                return;
+            }
             Clear();
-            ImageFullScreen("Background", _mainBackground);
-            ImageRect("Notice panel", _panel, new Rect(360, 210, 560, 300), _content!, true, false);
-            Label(title, new Rect(400, 235, 480, 52), 34, new Color(1f, .82f, .42f), TextAlignmentOptions.Center);
-            Label(message, new Rect(410, 310, 460, 72), 22, Color.white, TextAlignmentOptions.Center);
+            ImageRect("Notice panel", _panel, new Rect(360, 210, 560, 300), _content!, false, false);
+            _noticeTitle = Label(title, new Rect(400, 235, 480, 52), 34, new Color(1f, .82f, .42f), TextAlignmentOptions.Center);
+            _noticeMessage = Label(message, new Rect(410, 310, 460, 72), 22, Color.white, TextAlignmentOptions.Center);
             ButtonRect("返回主菜单", new Rect(500, 420, 280, 64), _redButton, ShowMenu, 24);
         }
 
         private void ShowPreparation()
         {
+            if (!_buildingPages)
+            {
+                _previewStage = "preparation";
+                _drawerOpen = false;
+                _selectedTarget = -1;
+                ActivatePage(_preparationPage, false);
+                RefreshPreparation();
+                return;
+            }
             _previewStage = "preparation";
             _drawerOpen = false;
             _selectedTarget = -1;
@@ -241,6 +489,14 @@ namespace Mahjong.Unity.UI.Prototype
 
         private void ShowDrawer()
         {
+            if (!_buildingPages)
+            {
+                _previewStage = "targets";
+                _drawerOpen = true;
+                ActivatePage(_drawerPage, false);
+                RefreshDrawer();
+                return;
+            }
             _previewStage = "targets";
             _drawerOpen = true;
             Clear();
@@ -259,10 +515,15 @@ namespace Mahjong.Unity.UI.Prototype
                 int index = i;
                 var card = ButtonRect("", cards[i], _targetCards.Length > i ? _targetCards[i] : _secondaryButton,
                     () => { _selectedTarget = _selectedTarget == index ? -1 : index; ShowDrawer(); }, 17);
-                if (_selectedTarget == i) card.transform.localScale = Vector3.one * 1.035f;
+                var outline = card.gameObject.AddComponent<Outline>();
+                outline.effectColor = new Color(1f, .79f, .28f, 1f);
+                outline.effectDistance = new Vector2(4f, 4f);
+                outline.enabled = _selectedTarget == i;
                 Label(TargetNames[i], new Rect(cards[i].x + 8, cards[i].y + 82, cards[i].width - 16, 32), 19,
                     _selectedTarget == i ? new Color(1f, .83f, .35f) : Color.white, TextAlignmentOptions.Center);
-                if (_selectedTarget == i) Label("已选", new Rect(cards[i].x + cards[i].width - 52, cards[i].y + 4, 44, 30), 16, Color.yellow, TextAlignmentOptions.Center);
+                var marker = Label("已选", new Rect(cards[i].x + cards[i].width - 52, cards[i].y + 4, 44, 30), 16, Color.yellow, TextAlignmentOptions.Center);
+                marker.name = "Selected marker";
+                marker.gameObject.SetActive(_selectedTarget == i);
             }
             ButtonRect(_seenThrough ? "看破：已开启 · 10点" : "看破：未开启 · 10点", new Rect(708, 548, 252, 54), _jadeButton,
                 () => { _seenThrough = !_seenThrough; ShowDrawer(); }, 18);
@@ -270,9 +531,12 @@ namespace Mahjong.Unity.UI.Prototype
                 new Color(1f, .85f, .48f), TextAlignmentOptions.Center);
             ButtonRect("直接开局 · 0点", new Rect(708, 616, 252, 48), _jadeButton,
                 () => { _selectedTarget = -1; _seenThrough = false; ShowReceipt(); }, 17);
-            var confirm = ButtonRect(_selectedTarget >= 0 ? "确认施术 · " + (_seenThrough ? "40" : "30") + "点" : "先选择目标牌型",
+            var confirm = ButtonRect(_selectedTarget >= 0 ? "确认施术 · " + (_seenThrough ? "40" : "30") + "点" : (_seenThrough ? "确认看破 · 10点" : "先选择目标牌型"),
                 new Rect(976, 616, 252, 48), _redButton, () => { if (_selectedTarget >= 0) ShowReceipt(); }, 17);
-            confirm.interactable = _selectedTarget >= 0;
+            confirm.name = "Button · 确认施术";
+            confirm.onClick.RemoveAllListeners();
+            confirm.onClick.AddListener(() => { if (_selectedTarget >= 0 || _seenThrough) ShowReceipt(); });
+            confirm.interactable = _selectedTarget >= 0 || _seenThrough;
             QueuePreviewCapture();
         }
 
@@ -284,6 +548,14 @@ namespace Mahjong.Unity.UI.Prototype
 
         private void ShowReceipt()
         {
+            if (!_buildingPages)
+            {
+                _previewStage = "receipt";
+                _drawerOpen = false;
+                ActivatePage(_receiptPage, false);
+                RefreshReceipt();
+                return;
+            }
             _previewStage = "receipt";
             _drawerOpen = false;
             Clear();
@@ -292,7 +564,8 @@ namespace Mahjong.Unity.UI.Prototype
             Label("方案已确认", new Rect(960, 180, 272, 46), 28, new Color(1f, .83f, .48f), TextAlignmentOptions.Center);
             string selection = _selectedTarget >= 0 ? TargetNames[_selectedTarget] : (_seenThrough ? "看破" : "不使用千术");
             int cost = (_selectedTarget >= 0 ? 30 : 0) + (_seenThrough ? 10 : 0);
-            Label(selection + "\n预览费用：" + cost + " 点\n（静态样例，不写入游戏经济）", new Rect(962, 242, 268, 104), 19, Color.white, TextAlignmentOptions.Center);
+            var receiptText = Label(selection + "\n预览费用：" + cost + " 点\n（静态样例，不写入游戏经济）", new Rect(962, 242, 268, 104), 19, Color.white, TextAlignmentOptions.Center);
+            receiptText.name = "Text · 预览确认";
             ButtonRect("发牌预览", new Rect(964, 360, 128, 48), _redButton, ShowPlaying, 17);
             ButtonRect("返回准备", new Rect(1094, 360, 132, 48), _jadeButton, ShowPreparation, 17);
             QueuePreviewCapture();
@@ -300,6 +573,13 @@ namespace Mahjong.Unity.UI.Prototype
 
         private void ShowPlaying()
         {
+            if (!_buildingPages)
+            {
+                _previewStage = "playing";
+                _drawerOpen = false;
+                ActivatePage(_playingPage, false);
+                return;
+            }
             _previewStage = "playing";
             _drawerOpen = false;
             Clear();
@@ -308,10 +588,10 @@ namespace Mahjong.Unity.UI.Prototype
             DrawRiver(new Vector2(490, 470), false, 4);
             DrawRiver(new Vector2(270, 286), true, 8);
             DrawRiver(new Vector2(978, 286), true, 12);
-            DrawSeat(0, "P0 · 东", new Rect(18, 564, 142, 112), new Rect(106, 620, 142, 46));
-            DrawSeat(1, "P1 · 南", new Rect(1136, 260, 122, 112), new Rect(1096, 370, 164, 46));
-            DrawSeat(2, "P2 · 西", new Rect(360, 10, 120, 110), new Rect(480, 28, 164, 50));
-            DrawSeat(3, "P3 · 北", new Rect(18, 260, 122, 112), new Rect(20, 370, 164, 46));
+            DrawSeat(0, "P0 · 东", new Rect(18, 568, 104, 104), new Rect(18, 674, 174, 38));
+            DrawSeat(1, "P1 · 南", new Rect(1144, 228, 112, 112), new Rect(1084, 344, 184, 60));
+            DrawSeat(2, "P2 · 西", new Rect(308, 4, 112, 112), new Rect(132, 22, 176, 60));
+            DrawSeat(3, "P3 · 北", new Rect(16, 228, 112, 112), new Rect(12, 344, 176, 60));
             ImageRect("Wind compass", _compass, new Rect(544, 252, 192, 192), _content!, true, false);
             Label("東1局\n本0 供0\n牌山 69", new Rect(577, 300, 126, 100), 20, new Color(1f, .86f, .56f), TextAlignmentOptions.Center);
             var tray = ImageRect("Sample hand tray", _panel, new Rect(204, 596, 858, 108), _content!, true, false);
@@ -328,8 +608,20 @@ namespace Mahjong.Unity.UI.Prototype
 
         private void DrawTableBase(bool playing)
         {
-            ImageFullScreen("Club environment", _environment);
             ImageRect("Jade table board", _board, new Rect(32, 76, 1216, 620), _content!, true, false);
+            if (!playing) DrawTableHud(_previewStage == "targets");
+        }
+
+        private void DrawTableHud(bool drawer)
+        {
+            DrawSeat(0, "P0 · 东", new Rect(16, 470, 144, 144), new Rect(16, 622, 176, 60));
+            DrawSeat(1, "P1 · 南", drawer ? new Rect(544, 160, 124, 124) : new Rect(16, 184, 144, 144),
+                drawer ? new Rect(536, 288, 140, 60) : new Rect(16, 332, 176, 60));
+            DrawSeat(2, "P2 · 西", new Rect(368, 8, 120, 120), new Rect(496, 30, 176, 60));
+            DrawSeat(3, "P3 · 北", new Rect(800, 178, 128, 128), new Rect(796, 310, 140, 60));
+            ImageRect("Wind compass", _compass, new Rect(328, 254, 204, 204), _content!, false, true);
+            Label("東1局\n本0 供0\n牌山 69", new Rect(366, 300, 128, 108), 19,
+                new Color(1f, .86f, .56f), TextAlignmentOptions.Center);
         }
 
         private void ImageFullScreen(string name, Sprite? sprite)
@@ -393,13 +685,23 @@ namespace Mahjong.Unity.UI.Prototype
 
         private Image ImageRect(string name, Sprite? sprite, Rect rect, Transform parent, bool raycast, bool preserve)
         {
-            var go = new GameObject(name, typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
+            var go = new GameObject(name, typeof(RectTransform), typeof(CanvasRenderer));
             go.transform.SetParent(parent, false);
-            var image = go.GetComponent<Image>();
+            Image image;
+            if (sprite != null && (sprite.border.sqrMagnitude > 0f || sprite.name.StartsWith("button-", StringComparison.Ordinal)))
+            {
+                var sliced = go.AddComponent<PrototypeNineSliceImage>();
+                Vector4 sourceBorder = sprite.border.sqrMagnitude > 0f ? sprite.border : new Vector4(18f, 18f, 18f, 18f);
+                Vector4 targetBorder = sprite.name == "jade-panel-skin" ? new Vector4(44f, 44f, 44f, 44f)
+                    : sprite.name.StartsWith("prototype_button_", StringComparison.Ordinal) ? new Vector4(32f, 18f, 32f, 18f)
+                    : new Vector4(18f, 18f, 18f, 18f);
+                sliced.Configure(sourceBorder, targetBorder);
+                image = sliced;
+            }
+            else image = go.AddComponent<Image>();
             image.sprite = sprite;
             image.preserveAspect = preserve;
             image.raycastTarget = raycast;
-            if (sprite != null && sprite.border.sqrMagnitude > 0f) image.type = Image.Type.Sliced;
             if (sprite == null) image.color = new Color(.02f, .16f, .12f, .95f);
             SetRect(go.GetComponent<RectTransform>(), rect);
             return image;
@@ -456,13 +758,16 @@ namespace Mahjong.Unity.UI.Prototype
             var image = ImageRect("Button · " + label, sprite, rect, _content!, true, false);
             var button = image.gameObject.AddComponent<Button>();
             button.targetGraphic = image;
-            button.transition = Selectable.Transition.SpriteSwap;
-            button.spriteState = new SpriteState
+            button.transition = Selectable.Transition.ColorTint;
+            button.colors = new ColorBlock
             {
-                highlightedSprite = _focusButton,
-                pressedSprite = _focusButton,
-                selectedSprite = _focusButton,
-                disabledSprite = sprite
+                normalColor = Color.white,
+                highlightedColor = new Color(1f, .94f, .76f, 1f),
+                pressedColor = new Color(.82f, .72f, .54f, 1f),
+                selectedColor = new Color(1f, .91f, .61f, 1f),
+                disabledColor = new Color(.62f, .62f, .62f, 1f),
+                colorMultiplier = 1f,
+                fadeDuration = .08f
             };
             button.onClick.AddListener(() => action());
             if (!string.IsNullOrEmpty(label))
@@ -475,8 +780,7 @@ namespace Mahjong.Unity.UI.Prototype
             rt.anchorMin = new Vector2(0, 1);
             rt.anchorMax = new Vector2(0, 1);
             rt.pivot = new Vector2(0, 1);
-            float offsetX = rt.parent == _content ? _designOffsetX : 0f;
-            rt.anchoredPosition = new Vector2(rect.x + offsetX, -rect.y);
+            rt.anchoredPosition = new Vector2(rect.x, -rect.y);
             rt.sizeDelta = new Vector2(rect.width, rect.height);
         }
 
@@ -518,7 +822,7 @@ namespace Mahjong.Unity.UI.Prototype
 
         private void QueuePreviewCapture()
         {
-            if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("V4_UI_PROTOTYPE_CAPTURE_DIR")))
+            if (Application.isPlaying && !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("V4_UI_PROTOTYPE_CAPTURE_DIR")))
                 StartCoroutine(CaptureAfterRender());
         }
 
