@@ -107,7 +107,7 @@ Check 'cs:x86_64' ($cs -match 'X86_64')
 Check 'cs:il2cpp-gate' ($cs -match 'ScriptingImplementation\.IL2CPP')
 Check 'cs:clean-cache' ($cs -match 'BuildOptions\.CleanBuildCache')
 Check 'cs:source-rewrite-gate' ($cs -match 'production-input-rewritten-by-build')
-Check 'cs:gradle-builddir-redirect-only-unitylibrary' (($cs -match 'IPostGenerateGradleAndroidProject') -and ($cs -match "p\.path == ':unityLibrary'") -and ($cs -notmatch 'launcher.*buildDir'))
+Check 'cs:gradle-builddir-redirect' (($cs -match 'IPostGenerateGradleAndroidProject') -and ($cs -match "p\.path == ':unityLibrary'") -and ($cs -match "p\.path == ':launcher'") -and ($cs -match "buildDirectory\.dir\('intermediates'\)") -and ($cs -notmatch 'launcher[^\n]*p\.buildDir'))
 Check 'cs:no-mono-fallback' ($cs -notmatch 'ScriptingImplementation\.Mono2x')
 $build = Get-Content -LiteralPath (Join-Path $root 'tools/unity/build-c05-android-emulator.ps1') -Raw
 Check 'build:mutex-name' ($build -match 'Local\\MahjongV5P45UnityValidation')
