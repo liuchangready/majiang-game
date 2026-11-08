@@ -18,6 +18,8 @@ namespace Mahjong.LocalHost
     /// </summary>
     internal sealed class LocalTableStore : ITableStore, IReceiptStore, ITableLease, ISettlementOutbox, IDisposable
     {
+        private const int UnableToRemoveReplacedHResult = unchecked((int)0x80070497);
+        private const int MaxBackupRotationRetries = 4;
         private const string SaveSuffix = ".save";
         private const string BackupSuffix = ".save.prev";
         private const string TempSuffix = ".save.tmp.";
@@ -1792,26 +1794,76 @@ namespace Mahjong.LocalHost
                     : string.Empty);
             }
 
+            int backupRotationRetries = 0;
+            while (true)
+            {
+                try
+                {
+                    _files.Replace(tmp, _primaryPath, _backupPath);
+                    return LocalWriteResult.Committed(false, string.Empty);
+                }
+                catch (Exception exception)
+                {
+                    if (ProbeCandidateBytes(bytes))
+                    {
+                        return LocalWriteResult.Committed(false, "Replace reported an error but the committed file is present.");
+                    }
+
+                    // Windows ReplaceFile reports ERROR_UNABLE_TO_REMOVE_REPLACED (1175)
+                    // when a short-lived reader still holds the previous backup. Retry only
+                    // this pre-commit error, only while the old primary is readable and the
+                    // flushed candidate is unchanged. The commit remains a single atomic replace.
+                    if (exception.HResult == UnableToRemoveReplacedHResult &&
+                        backupRotationRetries < MaxBackupRotationRetries &&
+                        ProbeAnyReadable() &&
+                        TemporaryMatches(tmp, bytes))
+                    {
+                        Thread.Sleep(25 << backupRotationRetries);
+                        backupRotationRetries++;
+                        continue;
+                    }
+
+                    string detail = exception.GetType().Name + " (HRESULT 0x" + exception.HResult.ToString("X8", CultureInfo.InvariantCulture) + "): " + exception.Message;
+                    TryDelete(tmp);
+                    if (ProbeAnyReadable())
+                    {
+                        return LocalWriteResult.Aborted("Atomic replace failed before commit: " + detail);
+                    }
+
+                    _faulted = true;
+                    return LocalWriteResult.Unknown("Atomic replace left the primary unreadable: " + detail);
+                }
+            }
+        }
+
+        private bool TemporaryMatches(string path, byte[] expected)
+        {
             try
             {
-                _files.Replace(tmp, _primaryPath, _backupPath);
-                return LocalWriteResult.Committed(false, string.Empty);
+                if (!_files.FileExists(path))
+                {
+                    return false;
+                }
+
+                byte[] actual = _files.ReadAllBytes(path);
+                if (actual.Length != expected.Length)
+                {
+                    return false;
+                }
+
+                for (int index = 0; index < actual.Length; index++)
+                {
+                    if (actual[index] != expected[index])
+                    {
+                        return false;
+                    }
+                }
+
+                return true;
             }
-            catch (Exception exception)
+            catch (Exception)
             {
-                if (ProbeCandidateBytes(bytes))
-                {
-                    return LocalWriteResult.Committed(false, "Replace reported an error but the committed file is present.");
-                }
-
-                TryDelete(tmp);
-                if (ProbeAnyReadable())
-                {
-                    return LocalWriteResult.Aborted("Atomic replace failed before commit: " + exception.Message);
-                }
-
-                _faulted = true;
-                return LocalWriteResult.Unknown("Atomic replace left the primary unreadable: " + exception.Message);
+                return false;
             }
         }
 

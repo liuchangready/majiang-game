@@ -422,7 +422,8 @@ namespace Mahjong.LocalHost
             string decisionId = prefix +
                                 snapshot.StateVersion.Value.ToString(System.Globalization.CultureInfo.InvariantCulture) + "-" +
                                 seat.ToString(System.Globalization.CultureInfo.InvariantCulture) + "-" +
-                                snapshot.Phase.ToString();
+                                snapshot.Phase.ToString() + "-" +
+                                Guid.NewGuid().ToString("N");
             var pending = new PendingDecision(
                 new DecisionKey(snapshot.RoundId, seat, decisionId),
                 ControlEpoch(snapshot, seat),

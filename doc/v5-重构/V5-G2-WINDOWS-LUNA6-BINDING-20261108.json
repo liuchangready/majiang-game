@@ -571,14 +571,17 @@
                       "initialFixture":  "Actual built final Player, fixed resolution/device info and captured full-frame PNG; record scaling/display settings.",
                       "assertion":  "No clipped/overlapping controls/text/tiles; table fits supported bounds; safe-area content remains visible; screenshots are non-black and visually reviewed by caller.",
                       "contractBindings":  "Player binary/package SHA, source/build SHA, OS/display resolution/DPI/aspect, scene, time and screenshot SHA.",
-                      "execution":  "EXECUTED_FAIL",
-                      "verdict":  "FAIL",
-                      "reason":  "Fresh bridge-HEAD build and scene diagnostics no longer show missing-script/InputModule errors, but the ordinary Player still renders only a cropped title/background. At DPI 240 the requested 1280x720 window became 525x323 (512x288 client); visual acceptance remains failed.",
+                      "execution":  "EXECUTED_PARTIAL",
+                      "verdict":  "PARTIAL",
+                      "reason":  "Round 2 crop diagnosis is superseded: independent DPI-aware capture on the same Player showed a complete baseline Menu at client 1280x720; 512x288 came from capture-thread DPI virtualization. Fresh Player.log had no missing-script/InputModule/NRE. Full supported-ratio screens and physical input gameplay remain unexecuted.",
                       "evidence":  [
                                        "build/g2-win-visual-luna6-20261108/player-fullscreen-startup.png",
                                        "build/g2-win-visual-luna6-20261108/player-windowed-1280x720.png",
                                        "build/g2-win-visual-luna6-20261108/player-windowed-1280x720.log",
-                                       "build/l6-r1-c00350e8c86f4ad3ad8e377ffff0d4f0/ui-observation/manifest.json"
+                                       "build/l6-r1-c00350e8c86f4ad3ad8e377ffff0d4f0/ui-observation/manifest.json",
+                                       "build/review-r2-a198409d/ui2/client-dpi-aware.png",
+                                       "build/review-r2-a198409d/ui2/capture.log",
+                                       "build/review-r2-a198409d/ui2/player.log"
                                    ]
                   },
                   {
@@ -643,5 +646,28 @@
                                                 "summary":"build/g2-runner-test-0771255ce47743c298dc03ccf37c0927/test-summary.json",
                                                 "sha256":"BBAE3989455EB5188471DEBCCDCC99EC8EDEF4BA3E1D45908EA6EC3E44E3F237"
                                             }
-                     }
+                     },
+    "reviewRound3": {
+      "startHead": "7f3942490eab8000e731f94049b48c10850a2257",
+      "parent": "bda5e039f920a939003eea847758928300d75fd1",
+      "mergeBase": "4523485cfd4ec2b32185a7da5c13f6cbaf54a1e1",
+      "candidateStatus": "dirty; bridge checkpoint required; no manual commit",
+      "conclusion": "NOT_APPROVED_SCOPE_INCOMPLETE",
+      "windowsDenominator": 32,
+      "androidRowsNotRun": 9,
+      "caseCounts": {"PASS":18,"PARTIAL":6,"FAIL":0,"NOT_RUN":8},
+      "defects": [
+        {"id":"D-1-01","severity":"MAJOR","status":"PARTIAL; full G8 coverage remains open","evidence":"build/review-r2-a198409d/ui2/client-dpi-aware.png"},
+        {"id":"D-1-02","severity":"MAJOR","status":"OPEN; frozen WindowsActions PlayMode/Player and G1/G2/G4/G7-02 coverage remain","evidence":"E:/g2-r3-evidence-thread_20261108_190230_2b67/508260b3991f44cea1c374e5c8688019/failure.json"},
+        {"id":"D-1-04","severity":"MAJOR","status":"OPEN; G7-01 remains NOT_RUN pending real offline evidence","evidence":"C04-G7-01 and previous FullMatch summary"},
+        {"id":"D-1-05","severity":"MAJOR","status":"OPEN; no same-candidate final package matrix","evidence":"packages/runs; Round 3 final matrix absent"},
+        {"id":"D-2-01","severity":"MAJOR","status":"confirmed 1175 lock-competition mechanism fixed/tested; original lock owner unknown; frozen Actions rerun pending","evidence":"build/review-r2-a198409d/Release.xml; E:/g2-r3-release-LocalHost.xml"}
+      ],
+      "actionsRun": {"head":"7f3942490eab8000e731f94049b48c10850a2257","nativeExit":1,"freshReleaseBuildExit":0,"total":187,"passed":186,"failed":1,"skipped":0,"notRun":0,"failure":"Recovered stale decision ID was accepted after reopen; Player/PlayMode did not start","firstFailurePreserved":true,"relocatedEvidence":"E:/g2-r3-evidence-thread_20261108_190230_2b67/508260b3991f44cea1c374e5c8688019","failureSha256":"899060EA0DD486EC2A101E41D5B661B9AF8EE6C3E948A5C30D9F9342972B85E2","summarySha256":"B7782FDACAF7BC34CE0BD75057D62B3B6524EEA9C42A58CDB52782D05FB8AB26"},
+      "componentRuns": [
+        {"configuration":"Release","buildExit":0,"testExit":0,"total":189,"passed":189,"failed":0,"skipped":0,"notRun":0,"buildLog":"E:/g2-r3-release-build.log","buildLogSha256":"9A48DAACD2C8044C918DAC0CED4A0C75099032930C003FDF72D0D81FB6F1F17D","testLog":"E:/g2-r3-release-LocalHost.log","testLogSha256":"967650E5421BA1F6C1A9BEAE63DB9713DDC281BB0CE39DAC0D5E51F07C9F5B34","resultXml":"E:/g2-r3-release-LocalHost.xml","resultXmlSha256":"675F3A84B33F8BCF09A33626EFF1EF149D81B195072076AF3E2FDBBA99A8A697"},
+        {"configuration":"Debug","buildExit":0,"testExit":0,"total":189,"passed":189,"failed":0,"skipped":0,"notRun":0,"buildLog":"E:/g2-r3-debug-build.log","buildLogSha256":"B3CD5F6ABA1FB45B3252F3BF01DDE370C2AD4E9E3D1E11971736D33CDBB19005","testLog":"E:/g2-r3-debug-linked2-LocalHost.log","testLogSha256":"C1E97F506B3E170A2E229025F607CB576417F0E23CC2D494DC973ACD727E2A59","resultXml":"E:/g2-r3-debug-linked2-LocalHost.xml","resultXmlSha256":"657BAAD1DAB7674F15DB2E4C5FB577149B65F287D5F96F908E84606A9BEF6480"}
+      ],
+      "uiCorrection": {"captureDpiContext":-4,"clientPixels":"1280x720","windowPixels":"1312x808","verdict":"baseline Menu complete; no production UI scaling change"}
+     }
 }

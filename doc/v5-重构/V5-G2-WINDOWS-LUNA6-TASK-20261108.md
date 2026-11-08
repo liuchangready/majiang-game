@@ -1,4 +1,4 @@
-﻿# G2 Windows Luna6 执行任务卡（2026-11-08）
+# G2 Windows Luna6 执行任务卡（2026-11-08）
 
 ## 任务与身份
 
@@ -93,3 +93,15 @@ Delivery 必含实际基线与候选 commit/dirty inputs、Unity Windows 包绝�
 - D-1-02/D-1-05：保留原行状态；没有可用的桥接冻结/提交检查点工具，本执行者不得手工提交，也不得移动/藏起 dirty 输入绕过 WindowsActions clean guard。故本轮未声称 Actions Player 已运行、32 项已闭合、同一最终候选/同包矩阵已建立。现有各套件各自包仍只能作支持证据。
 - G7-01 独立复核前 binding 原有 PASS 已按 D-1-04 改为 NOT_RUN；因此目前 32 个 Windows 行为 18 PASS、5 PARTIAL、1 FAIL、8 NOT_RUN（原复核批次的 7 NOT_RUN 计数未包含被纠正的 G7-01）。
 - 返修负例矩阵：Debug/Release artifacts 根与配置交叉检查；在隔离 Debug 目标依赖缺失、但仓库旧 Release DLL 存在时必须失败；保留初次失败日志证明补丁最初错误识别路径；实际 Release/Debug 两套件均 187 项、0 skip。其他 D-1-01/02/04/05 的产品级负例/完整验收尚未完成，不得用本矩阵代替。
+
+## 2026-11-08 独立复核第 3 轮接续
+
+- 本轮候选起点：桥接已自动提供干净 HEAD `7f3942490eab8000e731f94049b48c10850a2257`（父 `bda5e039f920a939003eea847758928300d75fd1`），与原始基线 `4523485cfd4ec2b32185a7da5c13f6cbaf54a1e1` 的关系保留。先在未改源码 clean candidate 实际运行 WindowsActions；不可把该前置失败后的 PlayMode/Player 缺项写成 PASS。
+- 首次真实 Actions 前置：fresh Release build exit 0；LocalHost 187/186/1/0/0（total/pass/fail/skip/not-run）。唯一失败是恢复后旧 decisionId 复用并被接受。该首次 failure/summary/frozen-source 原件完整副本位于 `E:/g2-r3-evidence-thread_20261108_190230_2b67/508260b3991f44cea1c374e5c8688019`；复制前后 3,783 文件、960,194,469 bytes，关键 archive/failure/manifest/summary 的 SHA256 已核对。
+- Windows 文件系统失败机制已通过 Win32 真实文件句柄负例复现：`File.Replace` 在 backup 目标被无 delete-share 句柄占用时 HRESULT `0x80070497` / error 1175。独立首败具体持有进程/句柄未知，因失败清理已移除现场，未归因到杀毒或其他外因。最小修复仅对该异常做最多四次有界退避；每次重试先验证原存档/临时候选/目标提交字节，持续锁仍返回 UNKNOWN。恢复后决策 ID 加唯一 nonce；新负例覆盖瞬时真实 backup lock 的成功重试、持续 lock 下原 envelope 不变且 UNKNOWN、重开后旧 decision 被拒绝。
+- 采集更正：同一 Player/context `-4` 的真实 client 为 1280×720、window 为 1312×808，基线菜单完整；context `-1` 的 512×288 是采集线程 DPI 虚拟化。Runtime Player.log 无 missing-script/InputModule/NRE。撤销上一轮“产品裁切”判断；不改 Canvas、机器 DPI。G8 仅基线菜单证据，完整宽高比例与键鼠请求闭环仍缺。
+- 当前 dirty 源码组件 Release/Debug 分别 build exit 0、0 warning/error，完整 LocalHost 各 189/189、0 skip/not-run。Release XML `E:/g2-r3-release-LocalHost.xml` SHA `675F3A84B33F8BCF09A33626EFF1EF149D81B195072076AF3E2FDBBA99A8A697`；Debug XML `E:/g2-r3-debug-linked2-LocalHost.xml` SHA `657BAAD1DAB7674F15DB2E4C5FB577149B65F287D5F96F908E84606A9BEF6480`。`G2TestRunner.Tests.ps1` exit 0，30 assertions，摘要 SHA `94F629AC18365827BD689C1EF0BC3B7C888C38F78B180BCF1597908FF77A29BD`（仅工具证据）。完整逐 ID 首败/修复/断言见 Delivery 第 3 轮及 Binding.reviewRound3。
+- C 盘阶段性无剩余空间；组件 Debug 第一次因为不能写入 repo build fixture 而失败，未作为产品 FAIL。其后把构建/临时/结果 XML 放 E 盘，经仓库 `R:` junction 让测试仍从仓库路径发现 fixture，完整 Debug/Release 全量通过。Actions 冻结产物副本在 E 盘；原 C 盘根仍留少量被占用文件，未覆盖清除。后续 runner 按现存空间使用短输出目录并记录 30 秒心跳/有界超时。
+- 范围变更文件：`dotnet/src/Mahjong.LocalHost/LocalFileSystem.cs`、`LocalTableStore.cs`、`LocalTableDriver.cs`；`dotnet/tests/Mahjong.LocalHost.Tests/LocalTableStoreTests.cs`、`C04RoomTicketTests.cs`、`LocalControlTests.cs`；任务卡、Delivery、Binding。保持改动最小，不改 Unity 生产 UI/验证器/历史 Census 或 G2 阈值。
+- 本轮五组全量结论：D-1-01 改为 MAJOR/G8 PARTIAL；D-1-02、D-1-04、D-1-05 仍 OPEN；D-2-01 的代码和组件验收 PASS，但仍需冻结 Actions 候选前置。当前 Windows 32 项为 18 PASS、6 PARTIAL、0 FAIL、8 NOT_RUN；Android 九行 NOT_RUN。
+- 接续：先待桥接按同一 thread 生命周期为本轮 dirty 修复生成合法 clean candidate，再跑 WindowsActions；不得手工提交、藏改动或放松 clean/fresh guard。随后完成 G1/G2/G4/G7-02、G8、G7-01 离线与同包 32 行闭包。未完成项保持 OPEN/NOT_RUN；本轮不签署 G2、不更改 V4 生产地位。
