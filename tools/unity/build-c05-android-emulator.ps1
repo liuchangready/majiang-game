@@ -1102,6 +1102,20 @@ if ($stagingReused) {
     $wp = Get-Process -Id ([int]$writer.pid) -ErrorAction SilentlyContinue
     if ($wp -and $wp.StartTime.ToUniversalTime().Ticks -eq [long]$writer.startUtcTicks) { throw 'BLOCKED_RESOURCE_BUSY: reused staging still has an active writer.' }
   }
+  # The path budget runs before Unity, but the AGP transform cache is redirected
+  # only once the Gradle project is generated (C05EmulatorGradleBuildDirRedirect).
+  # A staging built before that redirect still holds .transforms/<hex>/... at 262
+  # characters, which the budget would reject. Gradle regenerates this module
+  # output anyway, so drop it here; robocopy (not Remove-Item) is required because
+  # those paths are already past the Win32 limit.
+  $staleModuleBuild = Join-Path $stagingRoot 'project\Library\Bee\Android\Prj\IL2CPP\Gradle\unityLibrary\build'
+  if (Test-Path -LiteralPath $staleModuleBuild -PathType Container) {
+    $purgeEmpty = Join-Path $run 'purge-empty'
+    New-Item -ItemType Directory -Force -Path $purgeEmpty | Out-Null
+    & robocopy $purgeEmpty $staleModuleBuild /MIR /NFL /NDL /NJH /NJS /NP /R:0 /W:0 2>&1 | Out-Null
+    Remove-Item -LiteralPath $staleModuleBuild -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $purgeEmpty -Recurse -Force -ErrorAction SilentlyContinue
+  }
 }
 New-Item -ItemType Directory -Force -Path $run | Out-Null
 $script:C05EActiveRun = $run
