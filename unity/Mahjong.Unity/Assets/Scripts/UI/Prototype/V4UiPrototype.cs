@@ -49,6 +49,9 @@ namespace Mahjong.Unity.UI.Prototype
         [SerializeField] private Text? _noticeTitle;
         [SerializeField] private Text? _noticeMessage;
         private List<Button> _menuButtons = new List<Button>();
+        private readonly Dictionary<Button, Vector3> _menuButtonHomePositions = new Dictionary<Button, Vector3>();
+        private readonly Dictionary<Button, Coroutine> _menuEntranceCoroutines = new Dictionary<Button, Coroutine>();
+        private int _menuEntranceGeneration;
         private float _designOffsetY;
         private int _lastScreenWidth;
         private int _lastScreenHeight;
@@ -97,6 +100,8 @@ namespace Mahjong.Unity.UI.Prototype
                     .Where(button => button.transform.parent == _menuPage.transform)
                     .ToList()
                 : new List<Button>();
+            _menuButtonHomePositions.Clear();
+            foreach (Button button in _menuButtons) RememberMenuButton(button);
             BindMenuAction(0, () => ShowPreparation());
             BindMenuAction(1, () => OnMenuAction(1));
             BindMenuAction(2, () => OnMenuAction(2));
@@ -239,15 +244,17 @@ namespace Mahjong.Unity.UI.Prototype
             if (scaler == null) return;
             scaler.matchWidthOrHeight = Screen.width / 1280f <= Screen.height / 720f ? 0f : 1f;
             Canvas.ForceUpdateCanvases();
-            float logicalWidth = Screen.width / Mathf.Max(0.0001f, scaler.scaleFactor);
-            float logicalHeight = Screen.height / Mathf.Max(0.0001f, scaler.scaleFactor);
+            float actualScale = Mathf.Max(0.0001f, canvas.scaleFactor);
+            float logicalWidth = canvas.pixelRect.width / actualScale;
+            float logicalHeight = canvas.pixelRect.height / actualScale;
             _designOffsetX = Mathf.Max(0f, (logicalWidth - 1280f) * 0.5f);
             _designOffsetY = Mathf.Max(0f, (logicalHeight - 720f) * 0.5f);
             _stageRoot.anchoredPosition = new Vector2(_designOffsetX, -_designOffsetY);
             UpdateBackgroundCrop(_menuBackgroundImage, _mainBackground);
             UpdateBackgroundCrop(_tableBackgroundImage, _environment);
             Debug.Log("V4_UI_PROTOTYPE_LAYOUT screen=" + Screen.width + "x" + Screen.height
-                + " offset=" + _designOffsetX + "," + _designOffsetY);
+                + " offset=" + _designOffsetX + "," + _designOffsetY + " canvasScale=" + actualScale
+                + " logical=" + logicalWidth + "x" + logicalHeight);
         }
 
         private void UpdateBackgroundCrop(RawImage? image, Sprite? sprite)
@@ -275,6 +282,7 @@ namespace Mahjong.Unity.UI.Prototype
         private void ActivatePage(GameObject? active, bool menuBackground)
         {
             if (_buildingPages) return;
+            if (active != _menuPage) StopMenuEntrance(true);
             if (_menuPage != null) _menuPage.SetActive(active == _menuPage);
             if (_preparationPage != null) _preparationPage.SetActive(active == _preparationPage);
             if (_drawerPage != null) _drawerPage.SetActive(active == _drawerPage);
@@ -332,26 +340,59 @@ namespace Mahjong.Unity.UI.Prototype
 
         private void StartMenuEntrance()
         {
+            StopMenuEntrance(true);
+            int generation = _menuEntranceGeneration;
             for (int i = 0; i < _menuButtons.Count; i++)
             {
                 Button button = _menuButtons[i];
-                Vector3 target = button.transform.localPosition;
-                button.transform.localPosition = target + new Vector3(96f, 0f, 0f);
+                if (button == null) continue;
+                RememberMenuButton(button);
+                Vector3 target = _menuButtonHomePositions[button];
                 button.interactable = false;
-                if (Application.isPlaying) StartCoroutine(EnterMenuButton(button, i * .07f));
-                else { button.transform.localPosition = target; button.interactable = true; }
+                if (Application.isPlaying)
+                {
+                    button.transform.localPosition = target + new Vector3(96f, 0f, 0f);
+                    _menuEntranceCoroutines[button] = StartCoroutine(EnterMenuButton(button, target, i * .07f, generation));
+                }
+                else
+                {
+                    button.transform.localPosition = target;
+                    button.interactable = true;
+                }
+            }
+        }
+
+        private void RememberMenuButton(Button button)
+        {
+            if (button != null && !_menuButtonHomePositions.ContainsKey(button))
+                _menuButtonHomePositions.Add(button, button.transform.localPosition);
+        }
+
+        private void StopMenuEntrance(bool restoreHomePositions)
+        {
+            _menuEntranceGeneration++;
+            foreach (Coroutine coroutine in _menuEntranceCoroutines.Values)
+                if (coroutine != null) StopCoroutine(coroutine);
+            _menuEntranceCoroutines.Clear();
+            foreach (KeyValuePair<Button, Vector3> entry in _menuButtonHomePositions)
+            {
+                if (entry.Key == null) continue;
+                if (restoreHomePositions) entry.Key.transform.localPosition = entry.Value;
+                entry.Key.interactable = true;
             }
         }
 
         private void Clear()
         {
             if (!_buildingPages || _content == null) return;
+            StopMenuEntrance(true);
             for (int i = _content.childCount - 1; i >= 0; i--)
             {
                 if (Application.isPlaying) Destroy(_content.GetChild(i).gameObject);
                 else DestroyImmediate(_content.GetChild(i).gameObject);
             }
             _menuButtons.Clear();
+            _menuButtonHomePositions.Clear();
         }
 
         private void ShowMenu()
@@ -392,37 +433,33 @@ namespace Mahjong.Unity.UI.Prototype
                 }
                 AddMenuIcon(button.transform, i, major ? 58 : 44, major ? 7 : 7);
                 _menuButtons.Add(button);
-                if (Application.isPlaying)
-                {
-                    button.transform.localPosition += new Vector3(96, 0, 0);
-                    button.interactable = false;
-                    StartCoroutine(EnterMenuButton(button, i * .07f));
-                }
+                RememberMenuButton(button);
             }
             Label("V4 视觉原型 · 按钮可点击预览", new Rect(752, 624, 440, 28), 16, new Color(1f, .86f, .56f), TextAlignmentOptions.Center);
+            if (Application.isPlaying) StartMenuEntrance();
             QueuePreviewCapture();
         }
 
-        private System.Collections.IEnumerator EnterMenuButton(Button button, float delay)
+        private System.Collections.IEnumerator EnterMenuButton(Button button, Vector3 target, float delay, int generation)
         {
             yield return new WaitForSeconds(delay);
-            if (button == null) yield break;
-            Vector3 start = button.transform.localPosition;
-            Vector3 target = start - new Vector3(96, 0, 0);
+            if (button == null || generation != _menuEntranceGeneration) yield break;
+            Vector3 start = target + new Vector3(96f, 0f, 0f);
             float elapsed = 0f;
             while (elapsed < .42f)
             {
-                if (button == null) yield break;
+                if (button == null || generation != _menuEntranceGeneration) yield break;
                 elapsed += Time.unscaledDeltaTime;
                 float p = Mathf.Clamp01(elapsed / .42f);
                 float eased = 1f - Mathf.Pow(1f - p, 3f);
                 button.transform.localPosition = Vector3.LerpUnclamped(start, target, eased);
                 yield return null;
             }
-            if (button != null)
+            if (button != null && generation == _menuEntranceGeneration)
             {
                 button.transform.localPosition = target;
                 button.interactable = true;
+                _menuEntranceCoroutines.Remove(button);
             }
         }
 
@@ -615,10 +652,10 @@ namespace Mahjong.Unity.UI.Prototype
         private void DrawTableHud(bool drawer)
         {
             DrawSeat(0, "P0 · 东", new Rect(16, 470, 144, 144), new Rect(16, 622, 176, 60));
-            DrawSeat(1, "P1 · 南", drawer ? new Rect(544, 160, 124, 124) : new Rect(16, 184, 144, 144),
-                drawer ? new Rect(536, 288, 140, 60) : new Rect(16, 332, 176, 60));
+            DrawSeat(1, "P1 · 南", drawer ? new Rect(544, 160, 124, 124) : new Rect(800, 178, 128, 128),
+                drawer ? new Rect(536, 288, 140, 60) : new Rect(796, 310, 140, 60));
             DrawSeat(2, "P2 · 西", new Rect(368, 8, 120, 120), new Rect(496, 30, 176, 60));
-            DrawSeat(3, "P3 · 北", new Rect(800, 178, 128, 128), new Rect(796, 310, 140, 60));
+            DrawSeat(3, "P3 · 北", new Rect(16, 184, 144, 144), new Rect(16, 332, 176, 60));
             ImageRect("Wind compass", _compass, new Rect(328, 254, 204, 204), _content!, false, true);
             Label("東1局\n本0 供0\n牌山 69", new Rect(366, 300, 128, 108), 19,
                 new Color(1f, .86f, .56f), TextAlignmentOptions.Center);

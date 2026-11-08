@@ -177,3 +177,66 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:/Windows/TEMP/v4-ui-review
 ### 复核边界
 
 除D-2-07外，本轮无其他新发现。D-2-07此前不可发现的原因是旧检查没有真实点击序列化主菜单按钮；其余六组均按首轮清单修复。未修改正式Boot/导航、C04、.NET共享DLL源码、engine/client/server或G2线程；不提交、不推送、不合并、不发布。
+
+## 第三轮独立复核返修（候选 a3b45e66352c95570c1740ed8679333a5b4d5f04）
+
+本轮只处理独立复核仍未关闭的 D-1-04、D-1-06、D-2-08。基线仍为 `4523485cfd4ec2b32185a7da5c13f6cbaf54a1e1`；不改正式流程、共享 DLL 源码、G2 线程或资源原件。第二轮已通过项（D-1-01/02/03/05、D-2-07、人工编辑持久性）保持原断言，本轮完整复核集重跑；第三轮新测试仅覆盖本次受影响布局、窗口比例与动画重入。
+
+### 缺陷、修复映射与验收
+
+| ID / 级别 / 位置 | 复现方式与原实际/期望 | 统一修复与验收断言 | 本轮结果与证据 |
+| --- | --- | --- | --- |
+| D-1-04 / MAJOR / `Assets/Scripts/UI/Prototype/V4UiPrototype.cs` 的 `DrawTableHud`；`Assets/Editor/V4UiPrototypeBuilder.cs` 的旧 Prefab 迁移；序列化 `Assets/Prefabs/Prototypes/V4UiPrototype.prefab` | `DrawerDoesNotOccludeAnyPublicSeatPortrait`，再依序切换 preparation/drawer/receipt/playing。旧抽屉页面右席 P3 头像与名牌落在抽屉面板后，座位还会在准备与发牌阶段交换。期望四席 HUD/罗盘在准备、抽屉、回执均可见；抽屉仅按响应式参考移动避让的右席，阶段间座位不交换。 | 固定 P3 在左、P1 在右；抽屉只将 P1 移至左侧避让位。运行时 HUD 坐标与 Builder 序列化迁移同步；迁移只匹配已知旧坐标，保留其他用户编辑。验收要求头像、名牌、文字及罗盘均在安全区且不被抽屉盖住，未发牌手牌仍为空。 | 13 项完整复核中针对性用例通过；第三轮矩阵覆盖三尺寸五页面并逐页断言头像、名牌、文字、罗盘与抽屉不相交；15 张实际 PlayMode 渲染截图见下方索引。Builder 的编辑持久性另以 Editor 1/1 验证。 |
+| D-1-06 / MINOR / `V4UiPrototype.cs` 的 `ApplyScreenLayout` | `StageIsCenteredInWideGameView`，实际选择 1600×600 GameView。旧代码用 `CanvasScaler.scaleFactor` 配置值 1 推算逻辑宽度，舞台屏幕中心落在 x=666.67 而非 800；640×480 也会垂直偏移。期望按当前 Canvas 实际缩放和像素矩形计算 16:9 舞台居中，背景仍 cover。 | 改用生效后的 `canvas.scaleFactor` 与 `canvas.pixelRect` 计算逻辑尺寸和偏移，不改设计锚点。负例矩阵为 1280×720、960×540、1600×600；通过条件分别为舞台屏幕中心 (640,360)、(480,270)、(800,300)，误差不超过 1px，主要页面均可点击且未裁切。 | 三种真实 Editor GameView 的 PlayMode 均通过；日志实际中心精确为上述三点，缩放分别 1、0.75、0.8333333。该证据是 Unity PlayMode/GameView，不宣称 Player F6/F7 或 Android 验证。 |
+| D-2-08 / MAJOR / `V4UiPrototype.cs` 的 `StartMenuEntrance`、`ShowMenu`、`EnterMenuButton` | `ReenteringMenuDuringEntranceDoesNotAccumulateOffsets`：入场中快速重复进入菜单、离开后返回。旧动画从正在变化的位置反推终位，多个协程同时写同一按钮，联机按钮会永久偏移并被裁切。期望动画中断/重入后仍恢复序列化设计终位，入场期间输入门控可靠。 | 每个序列化按钮缓存稳定终位及当前协程代次；离开/重入时取消旧协程并从稳定终位重新开始，只有当前有效动画可写位置；保留 420ms 入场。统一负例矩阵覆盖快速重复 ShowMenu、动画中离开再返回、稳定后正常返回；六入口最后均须等于 Prefab 终位且完整位于舞台内。 | 13 项复核的重入用例及第三轮回归通过；日志记录六入口终位均回到序列化位置，无旧协程重写。此项是本轮新增动画重入路径；旧版 ShowMenu 销毁重建子层，因此此前没有此累积路径。 |
+
+### 本轮统一负例矩阵
+
+| 负例/状态 | 修复前观察 | 修复后验收 | 证据 |
+| --- | --- | --- | --- |
+| 抽屉覆盖右席、座位阶段交换 | 右席头像/名牌矩形被面板遮挡；P1/P3 对调 | 五页面三尺寸均检查公开 HUD；抽屉只移动 P1，P3 始终在左 | `review-complete1/tests.xml`；15 张 `r3-final-*` 图片 |
+| 超宽或非 16:9 GameView | 1600×600 舞台中心 x=666.67；640×480 垂直偏移 | 1280×720、960×540、1600×600 中心分别等于屏幕中心，按钮坐标与点击一致 | `screen-matrix-verified/tests.xml` 与 `unity.log`；测试日志含 `ROUND3_SCREENSHOT` 和三个中心值 |
+| 菜单动画重入 | 多协程持续写 Transform，按钮终位偏移 | 快速重入/中断/返回后六按钮坐标复原且可见，仅最新协程生效 | `review-complete1/tests.xml`、`screen-matrix-verified/tests.xml` |
+| Prefab 人工编辑与 Builder/导航 | 检查 Builder 可能覆盖手工调整 | 改文案和按钮位置、保存卸载、重新打开、调用 Builder、切页后编辑保留 | `edit-persistence-final/tests.xml`，1/1 |
+
+### 同候选真实验证与命令
+
+Unity 为 `6000.3.27f1`，共享锁 `Local\MahjongV5P45UnityValidation`；Unity 导入/测试由任务运行器在锁内执行，等待上限 600 秒、心跳 30 秒、Unity 阶段上限 900 秒。三次实际运行均 native exit=0，计数如下，均 skipped=0：
+
+1. 原复核完整集（原 7 项 + 已有 3 项菜单点击回归 + R2 针对性 3 项）：`13 passed / 0 failed / 0 skipped`。运行器：`C:/Windows/TEMP/v4-ui-review2-6a8281bd12ae44898617e3ed1dee8eda/run-review.ps1 -Project <工作树>/unity/Mahjong.Unity -Evidence D:/v4-ui-review3-c801-20261109-01/review-complete1`。XML SHA256 `AF820CDDDD2F99BC473819B4E7ADA7B1DBEB186AC49575CE83D7713F6B418BD3`；日志 SHA256 `86DBCD24EF69EA4DC5C2492C603BB8563F5A49042CCE07A5D013630E2717DFD0`。复核源码保存在独立证据根：R1 `V4UiReviewerTests.cs` SHA256 `10D5A0BCC7B2041F437996F17461FD1B45892529BB977F329B85B398A83D4183`；R2 `V4UiRound2ReviewerTests.cs` SHA256 `5043B8F2C5F29235729C1ACCC06D24A0AF7A64ED27FD611F5AB144A62C48045F`。临时注入源码在复测后已从 Unity 项目移除。
+2. 三尺寸五页面与动画专测：真实 Unity 命令参数记录于 `screen-matrix-verified/unity.log`，核心为 `Unity.exe -batchmode -projectPath <工作树>/unity/Mahjong.Unity -runTests -testPlatform PlayMode -testFilter V4UiRound3ReviewTests -testResults <证据目录>/tests.xml -logFile <证据目录>/unity.log`；`2 passed / 0 failed / 0 skipped`，native exit=0。XML SHA256 `4E36A02E01F753E8359183707670FF26F27D9083536B7972F8AD368FADEAE33F`；日志 SHA256 `47ECED3452A8269F8893C6C9E350BF28F16F78C9A67A0B1A0C2D48915FEFA79C`。持久回归源 `Assets/Tests/PlayMode/V4UiRound3ReviewTests.cs` SHA256 `143E48E28E69EF90FEAB067354F35A97FAC9938BDEF6153E6F2108B82FEDD20E`，共两项有真实交互与画面断言，不是空测试。
+3. Builder 编辑持久性：`C:/Windows/TEMP/v4-ui-review2-6a8281bd12ae44898617e3ed1dee8eda/run-edit.ps1 -Project <工作树>/unity/Mahjong.Unity -Evidence D:/v4-ui-review3-c801-20261109-01/edit-persistence-final`，`1 passed / 0 failed / 0 skipped`，native exit=0。XML SHA256 `EC092C12600DD23F48CEF0687579BDD619E5D289BA6CE993B1F36230AF18365B`；日志 SHA256 `B86D3C06B7D5146E3685220C89440E5A0BA4DD7D73EB10FA9C857249E59463D3`。测试源与临时文件已移除。
+
+构建/Prefab 检查：使用仓库 `tools/unity/build-shared.ps1 -Configuration Release -DotnetPath D:/game_dev_tools/dotnet/dotnet.exe` 重建共享 DLL，exit=0（`D:/v4-ui-review3-c801-20261109-01/build-shared.log`）。Unity Builder 首次导入因 URP/Input System 重导入超过阶段限时，保留在 `prefab-migration-retry1/unity.log`；使用已热缓存再运行，Builder 成功打开原场景并保存已迁移 Prefab（`prefab-migration-retry2/unity.log`，native exit=0）。未构建 Player，也不宣称 F6/F7 Player 验证通过。复核产生的 DLL/PDB、Unity 设置和临时测试已恢复/移除；共享缓存 junction 保留，provenance 守卫未关闭，下一次验证须按正式脚本重新构建共享 DLL。
+
+### 当前候选文件身份与实际运行截图
+
+运行测试及截图绑定到本节所列当前文件哈希；场景引用的 Prefab GUID 未改变。截图由 Unity PlayMode 中实际选择的 GameView 分辨率运行状态捕获，覆盖菜单、准备、抽屉、回执、发牌五页 × 三尺寸，共 15 张；超宽图为 1600×600。图片位于 [`ui-prototype-evidence-review/`](ui-prototype-evidence-review/)，不是静态设计稿或 EditMode 拼图。
+
+| 文件 | SHA256 |
+| --- | --- |
+| `Assets/Scripts/UI/Prototype/V4UiPrototype.cs` | `8535F7FB17411CD75651DB546CFED569BF5DB3E032BB7E4643B2D9F0E73CEC7B` |
+| `Assets/Editor/V4UiPrototypeBuilder.cs` | `FE1AD56A0C4FB4906A1CFED7A800446FF5F1E529C2B909FFD7DB08AD6A1772D1` |
+| `Assets/Prefabs/Prototypes/V4UiPrototype.prefab` | `A1A1CEE411169DB9D067850B8796B0A2F4B1C1A1BFE9EE5D25F9DF6F4F0176E1` |
+| `Assets/Scenes/Prototypes/V4UiPrototype.unity`（保留现有引用） | `1BE503F90225BB53351F427305FA7082F595085E974026889860B54D47903EB7` |
+| `Assets/Tests/PlayMode/V4UiRound3ReviewTests.cs` | `143E48E28E69EF90FEAB067354F35A97FAC9938BDEF6153E6F2108B82FEDD20E` |
+
+| 截图文件 | SHA256 |
+| --- | --- |
+| `r3-final-1280x720-menu.png` | `5813488D7F46853C98DEBBADCE36C19F3B7A1493A6F1814116E04F9A57704B86` |
+| `r3-final-1280x720-preparation.png` | `886E9564DE1812239C5A96AD255AB05EED33A95FF7A9CB14B6AE92CD694D63D4` |
+| `r3-final-1280x720-drawer.png` | `DBD8F5C604F5B72464202E86B7A136BDE01FF5812BEF4FA2C0DF6A65EB7DE1D3` |
+| `r3-final-1280x720-receipt.png` | `B0A3516F8AF3BAC2BB6F0EED13898FD341CB3B68A7408D9B5A935C81E42F3180` |
+| `r3-final-1280x720-playing.png` | `52C50BAE9B5309F3AED1931844ECF301B6031E1E0C1FC13974583E753A199268` |
+| `r3-final-960x540-menu.png` | `07BCC0E22E25BC3D6DC90C0EF170398601065697A4FAD16B9FAE53D459E9BBCA` |
+| `r3-final-960x540-preparation.png` | `F4F1C00310E4AE960BE23BE4D8B6ACC383B0B185D64A0FB775BB2E300307A6D0` |
+| `r3-final-960x540-drawer.png` | `7A1E77291E0DC541098EAC3254E77620EACB8DAA1B225BD3450E654B54D8926E` |
+| `r3-final-960x540-receipt.png` | `006DC6632F645206A17E7BE5261BBEC5665878FCA1BA8DF7DBEB24AF010F61F7` |
+| `r3-final-960x540-playing.png` | `8274DAB4E97CBC085AAB71F307F740D6A1449405A97E9578489E7654F217A2D4` |
+| `r3-final-1600x600-menu.png` | `AD1C31B5DC7B7D2B912A43DB6B468300E11FB1984C09A18C4078FF14FC23FAF2` |
+| `r3-final-1600x600-preparation.png` | `BD7F972F357210E8FF3C2570B8A8605F0EF7FF097A67F03211BA30E618250CDC` |
+| `r3-final-1600x600-drawer.png` | `D03FBA90E04D07BF1740F1F1117D6A5622BD1D0FBC865431E719217314B09E53` |
+| `r3-final-1600x600-receipt.png` | `AEF20E1E494F6A84E0B292AB6E34938E9974B7D2C0A67B49AC06A73700A70577` |
+| `r3-final-1600x600-playing.png` | `FA6850D6FDB2A67AB83BCD2731E0E38AE8D452CAA77C67C899785A8109B3E408` |
+
+本轮未追加其他缺陷。前述已知环境/测试脚手架失败均已保留独立日志，修复后的正式运行全部通过，不将旧脚手架失败计为产品缺陷或覆盖旧证据。未验证边界仍为 Android、正式 V5 对局与本线程之外的 G2 验收；不代表本次原型具有生产业务功能。工作树保持未提交，交由桥接生命周期创建候选提交；未推送、合并或发布。

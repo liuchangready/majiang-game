@@ -7,6 +7,7 @@ using UnityEditor;
 using UnityEditor.Build.Reporting;
 using UnityEditor.SceneManagement;
 using UnityEngine;
+using UnityEngine.UI;
 using UnityEngine.SceneManagement;
 
 namespace Mahjong.Unity.EditorTools
@@ -237,7 +238,9 @@ namespace Mahjong.Unity.EditorTools
                 bool hasPages = (bool)(prototypeType!.GetProperty("HasSerializedPreviewPages")!.GetValue(prototype) ?? false);
                 if (hasPages)
                 {
-                    if (RefreshNineSliceBorderMetadata(root))
+                    bool changed = RefreshNineSliceBorderMetadata(root);
+                    changed |= RefreshLegacyHudPositions(root);
+                    if (changed)
                     {
                         PrefabUtility.SaveAsPrefabAsset(root, PrefabPath);
                         AssetDatabase.SaveAssets();
@@ -256,6 +259,62 @@ namespace Mahjong.Unity.EditorTools
             {
                 PrefabUtility.UnloadPrefabContents(root);
             }
+        }
+
+        private static bool RefreshLegacyHudPositions(GameObject root)
+        {
+            Transform? stage = root.GetComponentsInChildren<Transform>(true)
+                .FirstOrDefault(t => t.name == "Design stage · 1280×720");
+            if (stage == null) return false;
+            bool changed = false;
+            changed |= MoveSeatIfLegacy(stage.Find("Preparation"), 1,
+                new Rect(16, 184, 144, 144), new Rect(16, 332, 176, 60),
+                new Rect(800, 178, 128, 128), new Rect(796, 310, 140, 60),
+                new Rect(22, 336, 164, 52), new Rect(802, 314, 128, 52));
+            changed |= MoveSeatIfLegacy(stage.Find("Preparation"), 3,
+                new Rect(800, 178, 128, 128), new Rect(796, 310, 140, 60),
+                new Rect(16, 184, 144, 144), new Rect(16, 332, 176, 60),
+                new Rect(802, 314, 128, 52), new Rect(22, 336, 164, 52));
+            changed |= MoveSeatIfLegacy(stage.Find("Target drawer"), 3,
+                new Rect(800, 178, 128, 128), new Rect(796, 310, 140, 60),
+                new Rect(16, 184, 144, 144), new Rect(16, 332, 176, 60),
+                new Rect(802, 314, 128, 52), new Rect(22, 336, 164, 52));
+            changed |= MoveSeatIfLegacy(stage.Find("Confirmation receipt"), 1,
+                new Rect(16, 184, 144, 144), new Rect(16, 332, 176, 60),
+                new Rect(800, 178, 128, 128), new Rect(796, 310, 140, 60),
+                new Rect(22, 336, 164, 52), new Rect(802, 314, 128, 52));
+            changed |= MoveSeatIfLegacy(stage.Find("Confirmation receipt"), 3,
+                new Rect(800, 178, 128, 128), new Rect(796, 310, 140, 60),
+                new Rect(16, 184, 144, 144), new Rect(16, 332, 176, 60),
+                new Rect(802, 314, 128, 52), new Rect(22, 336, 164, 52));
+            return changed;
+        }
+
+        private static bool MoveSeatIfLegacy(Transform? page, int index, Rect oldPortrait, Rect oldPlate,
+            Rect newPortrait, Rect newPlate, Rect oldLabel, Rect newLabel)
+        {
+            if (page == null) return false;
+            RectTransform? portrait = page.GetComponentsInChildren<RectTransform>(true)
+                .FirstOrDefault(t => t.name == "Animal portrait " + index);
+            RectTransform? plate = page.GetComponentsInChildren<RectTransform>(true)
+                .FirstOrDefault(t => t.name == "Seat plate " + index);
+            Text? label = page.GetComponentsInChildren<Text>(true)
+                .FirstOrDefault(t => t.text.StartsWith(index == 1 ? "P1 · 南" : "P3 · 北", StringComparison.Ordinal));
+            bool changed = false;
+            changed |= MoveTopLeftIfExact(portrait, oldPortrait, newPortrait);
+            changed |= MoveTopLeftIfExact(plate, oldPlate, newPlate);
+            changed |= MoveTopLeftIfExact(label != null ? label.rectTransform : null, oldLabel, newLabel);
+            return changed;
+        }
+
+        private static bool MoveTopLeftIfExact(RectTransform? rect, Rect oldRect, Rect newRect)
+        {
+            if (rect == null || Mathf.Abs(rect.anchoredPosition.x - oldRect.x) > 0.01f
+                || Mathf.Abs(-rect.anchoredPosition.y - oldRect.y) > 0.01f
+                || (rect.sizeDelta - new Vector2(oldRect.width, oldRect.height)).sqrMagnitude > 0.01f) return false;
+            rect.anchoredPosition = new Vector2(newRect.x, -newRect.y);
+            rect.sizeDelta = new Vector2(newRect.width, newRect.height);
+            return true;
         }
 
         private static bool RefreshNineSliceBorderMetadata(GameObject root)
