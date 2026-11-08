@@ -1111,7 +1111,15 @@ if (-not $PSBoundParameters.ContainsKey('StagingRoot')) {
     Write-Host ("AUTO staging: reusing '{0}' (IL2CPP outputs present); pass -ReuseStaging:`$false for a cold build." -f $autoStaging)
   } else {
     if (Test-Path -LiteralPath $autoStaging) {
-      Write-Host ("AUTO staging: '{0}' exists without usable IL2CPP outputs; rebuilding cold." -f $autoStaging)
+      # A staging without usable IL2CPP output is the residue of an interrupted
+      # run. It cannot be reused, and a cold build refuses to start on top of an
+      # existing staging, so drop it here instead of failing on the next guard.
+      Write-Host ("AUTO staging: '{0}' exists without usable IL2CPP outputs; discarding it for a cold build." -f $autoStaging)
+      $emptyForPurge = Join-Path $autoStaging '..\_purge-empty'
+      New-Item -ItemType Directory -Force -Path $emptyForPurge | Out-Null
+      & robocopy $emptyForPurge $autoStaging /MIR /NFL /NDL /NJH /NJS /NP /R:0 /W:0 2>&1 | Out-Null
+      Remove-Item -LiteralPath $emptyForPurge -Recurse -Force -ErrorAction SilentlyContinue
+      Remove-Item -LiteralPath $autoStaging -Recurse -Force -ErrorAction SilentlyContinue
     } else {
       Write-Host ("AUTO staging: '{0}' absent; building cold." -f $autoStaging)
     }
