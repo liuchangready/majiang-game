@@ -61,6 +61,7 @@ foreach ($script in @('tools/unity/build-c05-android-emulator.ps1','tools/unity/
 $expected = @(
   'tools/unity/build-c05-android-emulator.ps1',
   'tools/unity/run-c05-android-emulator.ps1',
+  'tools/unity/run-p45-c04-privacy-matrix.ps1',
   'tools/tests/C05AndroidEmulator.Tests.ps1',
   'unity/Mahjong.Unity/Assets/Editor/C05EmulatorAndroidBuild.cs',
   'unity/Mahjong.Unity/Assets/Editor/C05EmulatorAndroidBuild.cs.meta'
