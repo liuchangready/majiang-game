@@ -254,6 +254,8 @@ Release `LocalHost` 完整 suite：native exit 0，196/196 passed，0 failed/ski
 
 Round 6 implementation, command results, artifacts, and current full known finding set: [Round 6 execution supplement](V5-G2-WINDOWS-LUNA6-R6-EXECUTION-SUPPLEMENT-20261109.md). The original Binding remains unchanged.
 
+Round 7 scope correction, preserved generated-file manifest, correct-root Unity compile, and complete known finding set including newly confirmed D-6-01: [Round 7 execution supplement](V5-G2-WINDOWS-LUNA6-R7-EXECUTION-SUPPLEMENT-20261109.md). `33173f61..ba3da037` contained 536 root-generated files; all physical bytes are preserved and hash-verified after index-only removal. This scope correction is staged for the bridge lifecycle; no clean final candidate or task acceptance is claimed.
+
 ### D-1-02 — MAJOR — G1/G2/G4/G7-02 scenario coverage
 
 - Location: Binding C04-G1-01/02/03, G2-01..04, G4-01..03, G7-02; `C04PlayerActionProbe`, `LocalControlPlayerProbe`, `LocalFullMatchPlayerDriver`, and TableService ingress tests.
