@@ -596,7 +596,7 @@ function Write-SourceRecord {
     [System.IO.File]::WriteAllText($stagedPatchPath, $stagedPatchText, (New-Object System.Text.UTF8Encoding($false)))
 
     $untracked = New-Object System.Collections.Generic.List[object]
-    $untrackedLines = @(& git -C $script:RepoRoot ls-files --others --exclude-standard)
+    $untrackedLines = @(& git -c core.quotepath=false -C $script:RepoRoot ls-files --others --exclude-standard)
     foreach ($relative in $untrackedLines) {
         if ([string]::IsNullOrWhiteSpace($relative)) { continue }
         $full = Join-Path $script:RepoRoot $relative

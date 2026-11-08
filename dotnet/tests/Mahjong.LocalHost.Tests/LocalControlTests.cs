@@ -894,14 +894,8 @@ namespace Mahjong.LocalHost.Tests
                 await live.DisposeAsync();
             }
 
-            string workerDll = System.IO.Path.Combine(
-                P41Harness.FindRepositoryRoot(),
-                "dotnet",
-                "tests",
+            string workerDll = P41Harness.FindBuiltProjectAssembly(
                 "Mahjong.LocalHost.CrashWorker",
-                "bin",
-                "Release",
-                "net8.0",
                 "Mahjong.LocalHost.CrashWorker.dll");
             Assert.True(File.Exists(workerDll), "CrashWorker was not built: " + workerDll);
             string marker = System.IO.Path.Combine(harness.Root, "control-process-marker.txt");
@@ -1539,14 +1533,8 @@ namespace Mahjong.LocalHost.Tests
             // older cascade anchor whose version only happens to share a pending id.
             Assert.Equal(parentStateVersion, stateVersion);
 
-            string workerDll = System.IO.Path.Combine(
-                P41Harness.FindRepositoryRoot(),
-                "dotnet",
-                "tests",
+            string workerDll = P41Harness.FindBuiltProjectAssembly(
                 "Mahjong.LocalHost.CrashWorker",
-                "bin",
-                "Release",
-                "net8.0",
                 "Mahjong.LocalHost.CrashWorker.dll");
             Assert.True(File.Exists(workerDll), "CrashWorker was not built: " + workerDll);
             string marker = System.IO.Path.Combine(harness.Root, "stale-rejection-marker.txt");

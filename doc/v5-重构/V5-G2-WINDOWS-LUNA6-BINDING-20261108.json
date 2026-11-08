@@ -1,0 +1,583 @@
+{
+    "schemaVersion":  1,
+    "task":  "G2 Windows Luna6",
+    "createdUtc":  "2026-11-08T12:20:35.9233389+00:00",
+    "baseline":  {
+                     "sourceHead":  "4523485cfd4ec2b32185a7da5c13f6cbaf54a1e1",
+                     "actualMergeBase":  "4523485cfd4ec2b32185a7da5c13f6cbaf54a1e1",
+                     "baseline":  "g2_base"
+                 },
+    "plan":  {
+                 "sha256":  "9871A8D3D06C496DBE3E7BBBAF45156B26D09507B829887FD2FBD22D6F1ACC22",
+                 "c04Rows":  33,
+                 "windowsDenominator":  32,
+                 "path":  "build/g2-win-plan-8d5065e9/plan.json",
+                 "totalRows":  41,
+                 "androidRowsNotRun":  9
+             },
+    "candidate":  {
+                      "sourceCommit":  "4523485cfd4ec2b32185a7da5c13f6cbaf54a1e1",
+                      "dirtyInputs":  [
+                                          "dotnet/tests/Mahjong.LocalHost.Tests/*.cs",
+                                          "tools/unity/run-p45-full-match.ps1",
+                                          "doc/v5-閲嶆瀯/V5-G2-WINDOWS-LUNA6-TASK-20261108.md"
+                                      ]
+                  },
+    "packages":  [
+                     {
+                         "suite":  "WindowsFullMatch",
+                         "sha256":  "AC85D5A23E351C011A251AC24730F7956DDF8DA4C2B799F56F33BEA24456DF73",
+                         "playerSha256":  "F083B0E879A9298CDCF9933A8F3B4F2B013E13F7D3E51221FC0D756B79E28807",
+                         "fileCount":  192
+                     },
+                     {
+                         "suite":  "WindowsCheats",
+                         "playerSha256":  "F083B0E879A9298CDCF9933A8F3B4F2B013E13F7D3E51221FC0D756B79E28807",
+                         "manifestSha256":  "8179CE91C82FDE31C6AD5D645991C32B5A7B4528DE4BE58AB87F25650385B401",
+                         "fileCount":  192
+                     },
+                     {
+                         "suite":  "WindowsRecovery",
+                         "playerSha256":  "F083B0E879A9298CDCF9933A8F3B4F2B013E13F7D3E51221FC0D756B79E28807",
+                         "manifestSha256":  "539E113AE8859D7430CB6D4B22D898C912B243ACC40C17987F5066D481BA153D",
+                         "fileCount":  192
+                     },
+                     {
+                         "suite":  "WindowsAppMatrix",
+                         "playerSha256":  "F083B0E879A9298CDCF9933A8F3B4F2B013E13F7D3E51221FC0D756B79E28807",
+                         "manifestSha256":  "54dab661015ae6f260477796a259434df5abde87a5b7d6db2919c55d186257a6",
+                         "fileCount":  192
+                     }
+                 ],
+    "runs":  [
+                 {
+                     "wrapper":  "build/g2-win-fullmatch-2e85604a",
+                     "wrapperManifestSha256":  "D065ADE0DBF8F1D3013237C5C7FCC3B112ACF24595DF487C28B797D98592750B",
+                     "suite":  "WindowsFullMatch",
+                     "runnerVerdict":  "RUNNER_COMPLETED",
+                     "rawEvidenceSha256":  "2AB89F92D297F0F687255FCD0A0F132C1D80200E47D5DD4A5B1D2494DF9FFF56",
+                     "raw":  "build/4091659e35504e70849026b37de28d0c",
+                     "nativeExit":  0
+                 },
+                 {
+                     "wrapper":  "build/g2-win-cheats-16e9b5af",
+                     "wrapperManifestSha256":  "DB156F215E87EC8EC0946021108272D747B2AC6B7DFC4E977C406321E566B8B2",
+                     "suite":  "WindowsCheats",
+                     "runnerVerdict":  "PASS authorized+negative; FULL_D04=NOT_PASSED",
+                     "rawEvidenceSha256":  "F4D352E798D8936BF0BF1CAB55222DE4DA35E16FFFEBB07F431B2649A4A53097",
+                     "raw":  "build/f2661164058e4d8bb89c62cda564a73c",
+                     "nativeExit":  0
+                 },
+                 {
+                     "wrapper":  "build/g2-win-recovery-luna6-20261108",
+                     "wrapperManifestSha256":  "6E5FB40BB0FBF23FCBB569D1C0B556160025157F190C7E39E6053F444FF806DE",
+                     "suite":  "WindowsRecovery",
+                     "runnerVerdict":  "8/8 case PASS",
+                     "rawEvidenceSha256":  "88950C827E26092C1E53D1AC20E5B16D5A96AE7C4A5EAD35DCD7F49282E39B1E",
+                     "raw":  "build/ea220144afac47018211497446d09ad2",
+                     "nativeExit":  0
+                 },
+                 {
+                     "wrapper":  "build/g2-win-privacy-luna6-20261108",
+                     "wrapperManifestSha256":  "CD383C66F1383D7691066A9CDB413E7785E2BAB8BE471A73F95138DC36029C33",
+                     "suite":  "WindowsPrivacy",
+                     "runnerVerdict":  "7/7 PlayMode PASS",
+                     "rawEvidenceSha256":  "44E430285DA402F1260ECB8561B7F64E173400DB7F7EEF28D3D9111562AAFF59",
+                     "raw":  "build/57682b7e70fa4bd59b7431611cf2eb65",
+                     "nativeExit":  0
+                 },
+                 {
+                     "wrapper":  "build/g2-win-appmatrix-luna6-20261108",
+                     "wrapperManifestSha256":  "47415A0C36F501F952B3E3F24F4978942B049A06314D1E47381027DBE644D0F1",
+                     "suite":  "WindowsAppMatrix",
+                     "runnerVerdict":  "7/7 Windows Player cases PASS and P2 PASS",
+                     "rawEvidenceSha256":  "050C8C291CC0EA3083AA8FB07A132432EC7DE6A6F599AD6DBAB658D3495D762C",
+                     "raw":  "build/5f60c821e46044969eb301d59ccfb859",
+                     "nativeExit":  0
+                 }
+             ],
+    "cases":  [
+                  {
+                      "id":  "C04-G1-01",
+                      "platform":  "Windows",
+                      "title":  "Menu to local room, ready/wall setup and first turn",
+                      "trigger":  "Launch final Player offline; Menu \u003e local game; complete wall preparation; submit one legal discard from current decision.",
+                      "initialFixture":  "Fresh isolated local save/outbox; source/build/player manifest from final C03 candidate; deterministic seed not exposed by Player entry閳ユ敂ecord actual seed/command or mark seed-source gap.",
+                      "assertion":  "Menu/lobby/table scenes transition; authoritative initial snapshot has 4 seats, wall/hand physical inventory 136; one canonical discard gets Applied + matching TileDiscarded visible event and advances exactly one version.",
+                      "contractBindings":  "Common binding plus seat0, actual requestId/scopeId/payloadSha256, decisionId and controlEpoch.",
+                      "execution":  "EXECUTED",
+                      "verdict":  "PARTIAL",
+                      "reason":  "FullMatch entered production Menu/Lobby/Table and applied real opening action; inventory/initial snapshot binding was not separately asserted.",
+                      "evidence":  [
+                                       "build/4091659e35504e70849026b37de28d0c/executions/p45-20261108-191351-2636b2d1/driver/summary.json",
+                                       "build/4091659e35504e70849026b37de28d0c/evidence/artifacts.json"
+                                   ]
+                  },
+                  {
+                      "id":  "C04-G1-02",
+                      "platform":  "Windows",
+                      "title":  "Real round completion by win and exhaustive draw",
+                      "trigger":  "From legal live-round Player state, complete one Tsumo/Ron round and a separate exhaustive-draw round using documented actual gameplay inputs.",
+                      "initialFixture":  "Actual game state/seed or pre-existing recorded real fixture; must preserve authority origin, do not inject snapshot/result by reflection.",
+                      "assertion":  "RoundEnded has matching current round/version and result; scores/riichi sticks/honba/accounting and 136 entities reconcile; terminal round cannot accept later actions.",
+                      "contractBindings":  "Per action request/scope/payload SHA, roundId/version/event sequence, seat/role/control epoch; terminal result identity.",
+                      "execution":  "NOT_RUN",
+                      "verdict":  "NOT_RUN",
+                      "reason":  "FullMatch exercised exhaustive draws only; no real win evidence.",
+                      "evidence":  [
+                                       "build/4091659e35504e70849026b37de28d0c/executions/p45-20261108-191351-2636b2d1/driver/summary.json",
+                                       "build/4091659e35504e70849026b37de28d0c/evidence/artifacts.json"
+                                   ]
+                  },
+                  {
+                      "id":  "C04-G1-03",
+                      "platform":  "Windows",
+                      "title":  "Renchan and next round creation",
+                      "trigger":  "Complete a dealer-retaining round then a non-retaining round through actual Player decisions.",
+                      "initialFixture":  "Continuation from G1-02 actual run; no test-only state write.",
+                      "assertion":  "Renchan rules and honba advance correctly; next roundId and state machine are new; old round terminal remains immutable; sticks and scores carry forward exactly once.",
+                      "contractBindings":  "Round IDs, terminal event versions, next-round baseline cursor, score/ledger and request scopes.",
+                      "execution":  "NOT_RUN",
+                      "verdict":  "NOT_RUN",
+                      "reason":  "12 unique round ids appeared, but no dealer renchan continuation assertion.",
+                      "evidence":  [
+                                       "build/4091659e35504e70849026b37de28d0c/executions/p45-20261108-191351-2636b2d1/driver/summary.json",
+                                       "build/4091659e35504e70849026b37de28d0c/evidence/artifacts.json"
+                                   ]
+                  },
+                  {
+                      "id":  "C04-G1-04",
+                      "platform":  "Windows",
+                      "title":  "Whole match settlement and final rankings",
+                      "trigger":  "Drive east/half match to authority terminal via full-match driver on final Player.",
+                      "initialFixture":  "Fresh isolated Player run; use only declared strategy/seed in driver and preserve whole run artifacts.",
+                      "assertion":  "All submitted actions have proper receipts/visible confirmations; matchFinished true, match terminal commit once, final scores/rankings/riichi sticks/honba reconcile, no pending outbox.",
+                      "contractBindings":  "Every request identity/scope, each roundId/version/event, seat/role/control epoch, final match ID and settlement commit ID.",
+                      "execution":  "EXECUTED",
+                      "verdict":  "PASS",
+                      "reason":  "Real Player completed 12 rounds to WestCompletion and emitted scores/rankings/sticks.",
+                      "evidence":  [
+                                       "build/4091659e35504e70849026b37de28d0c/executions/p45-20261108-191351-2636b2d1/driver/summary.json",
+                                       "build/4091659e35504e70849026b37de28d0c/evidence/artifacts.json"
+                                   ]
+                  },
+                  {
+                      "id":  "C04-G2-01",
+                      "platform":  "Windows",
+                      "title":  "Pon from a live response window",
+                      "trigger":  "Reach a legal discard that offers Pon; accept from responding seat through Player input.",
+                      "initialFixture":  "Real legal state via actual run/declared seed; do not call authority internals to set hand.",
+                      "assertion":  "Applied request has exactly one matching PonDeclared/visible event; meld/called tile/from-seat and hand update correct; wall and entity set remain 136; stale/illegal Pon rejected without mutation.",
+                      "contractBindings":  "Response decisionId, requestId/scope, seat/role/controlEpoch, round/version/event cursor and canonical payload SHA.",
+                      "execution":  "NOT_RUN",
+                      "verdict":  "NOT_RUN",
+                      "reason":  "WindowsActions stopped at LocalHost test failure before PlayMode/Player cases.",
+                      "evidence":  [
+                                       "build/03df57915be94225a3aec489dc03a072/failure.json",
+                                       "build/luna6-clean-run-20261108/localhost-rework-4b351fab/LocalHost.xml"
+                                   ]
+                  },
+                  {
+                      "id":  "C04-G2-02",
+                      "platform":  "Windows",
+                      "title":  "Chi from a live response window",
+                      "trigger":  "Reach a legal discard and accept an available Chi sequence from the responding seat.",
+                      "initialFixture":  "Actual live round and candidate options from Player, record real seed/state provenance.",
+                      "assertion":  "One Applied + matching ChiDeclared visible event; correct ordered tile IDs/called source; conservation 136; unavailable sequence rejected without version change.",
+                      "contractBindings":  "DecisionId, request/scope/payload SHA, seat, round/version/cursor/control epoch.",
+                      "execution":  "NOT_RUN",
+                      "verdict":  "NOT_RUN",
+                      "reason":  "WindowsActions stopped at LocalHost test failure before PlayMode/Player cases.",
+                      "evidence":  [
+                                       "build/03df57915be94225a3aec489dc03a072/failure.json",
+                                       "build/luna6-clean-run-20261108/localhost-rework-4b351fab/LocalHost.xml"
+                                   ]
+                  },
+                  {
+                      "id":  "C04-G2-03",
+                      "platform":  "Windows",
+                      "title":  "Riichi declaration and double-riichi facts",
+                      "trigger":  "Reach a valid tenpai discard state and declare Riichi; include first-turn/double-riichi where the live fixture permits.",
+                      "initialFixture":  "Legal Player state with actual candidates; record whether first-turn condition is naturally met.",
+                      "assertion":  "Riichi declaration event and stick debit occur once, reach/ippatsu facts are projected, invalid/non-tenpai declaration rejects unchanged; next settlement includes correct sticks.",
+                      "contractBindings":  "Turn decision, request/scope, seat/round/version, event cursor, ledger balance and control epoch.",
+                      "execution":  "NOT_RUN",
+                      "verdict":  "NOT_RUN",
+                      "reason":  "WindowsActions stopped at LocalHost test failure before PlayMode/Player cases.",
+                      "evidence":  [
+                                       "build/03df57915be94225a3aec489dc03a072/failure.json",
+                                       "build/luna6-clean-run-20261108/localhost-rework-4b351fab/LocalHost.xml"
+                                   ]
+                  },
+                  {
+                      "id":  "C04-G2-04",
+                      "platform":  "Windows",
+                      "title":  "Kan declaration, replacement draw and chankan window",
+                      "trigger":  "Use one legal open/added/concealed Kan available in live play, then exercise replacement draw and a chankan response if offered.",
+                      "initialFixture":  "Real legal state; record exact Kan kind and whether chankan branch was available.",
+                      "assertion":  "KanCommitted/declared and replacement wall movement reconcile; chankan window resolves exactly once; impossible Kan rejected; physical set stays 136.",
+                      "contractBindings":  "Decision/request/scope/payload SHA, round/version/event cursor, seat/control epoch, replacement wall and terminal response identity.",
+                      "execution":  "NOT_RUN",
+                      "verdict":  "NOT_RUN",
+                      "reason":  "WindowsActions stopped at LocalHost test failure before PlayMode/Player cases.",
+                      "evidence":  [
+                                       "build/03df57915be94225a3aec489dc03a072/failure.json",
+                                       "build/luna6-clean-run-20261108/localhost-rework-4b351fab/LocalHost.xml"
+                                   ]
+                  },
+                  {
+                      "id":  "C04-G3-01",
+                      "platform":  "Windows",
+                      "title":  "TileMark (閽€鑺ョ潖) successful authorized execution",
+                      "trigger":  "At legal cheat window, purchase/activate TileMark through normal Player UI, mark an existing physical tile, then use authorized observation.",
+                      "initialFixture":  "Actual game wall/hand; no seeded/private reflection write. Record entity ID before/after.",
+                      "assertion":  "Only authorized seat receives mark insight; exact fee debited once; same entity remains among unique IDs 0..135; later locate action correlates to the marked entity.",
+                      "contractBindings":  "Cheat requestId/scope/payload, seat/role, round/version, control epoch, ledger sequence, physical entity ID and event cursor.",
+                      "execution":  "EXECUTED",
+                      "verdict":  "PASS",
+                      "reason":  "WindowsCheats authorized Player evidence includes TileMark, SleeveBloom and BeamSwap success assertions.",
+                      "evidence":  [
+                                       "build/f2661164058e4d8bb89c62cda564a73c/authorized/case-authorized.json",
+                                       "build/f2661164058e4d8bb89c62cda564a73c/negative/case-negative.json"
+                                   ]
+                  },
+                  {
+                      "id":  "C04-G3-02",
+                      "platform":  "Windows",
+                      "title":  "SleeveBloom (鐞氭牠鍣烽挊蹇氬С) successful authorized execution",
+                      "trigger":  "Purchase/activate sleeve concealment, then perform the allowed hidden swap through normal controls.",
+                      "initialFixture":  "Real legal hand and wall from live Player; record tile IDs and zones before.",
+                      "assertion":  "Only authorized hand view sees sleeve data; cost charged exactly once; swap preserves unique 136 physical entities and legal hand size; opponent/spectator/public snapshots omit concealed identities and private fee.",
+                      "contractBindings":  "Request/scope/payload, owner seat/role, round/version/control epoch, private ledger event and public cursor.",
+                      "execution":  "EXECUTED",
+                      "verdict":  "PASS",
+                      "reason":  "WindowsCheats authorized Player evidence includes TileMark, SleeveBloom and BeamSwap success assertions.",
+                      "evidence":  [
+                                       "build/f2661164058e4d8bb89c62cda564a73c/authorized/case-authorized.json",
+                                       "build/f2661164058e4d8bb89c62cda564a73c/negative/case-negative.json"
+                                   ]
+                  },
+                  {
+                      "id":  "C04-G3-03",
+                      "platform":  "Windows",
+                      "title":  "BeamSwap (閸嬮攱顣﹂幑銏＄叴) successful authorized execution",
+                      "trigger":  "Purchase/activate equal-count hand and wall/dead-wall exchange at an allowed window.",
+                      "initialFixture":  "Real live physical entities and legal zone state.",
+                      "assertion":  "Before/after multiset exactly equals all 136 physical IDs; source/destination zones and hand size match contract; fee once; unauthorized seat or invalid window rejected unchanged.",
+                      "contractBindings":  "Request/scope/payload, seat/role, round/version, control epoch, ledger seq, entity IDs/zones, visible event cursor.",
+                      "execution":  "EXECUTED",
+                      "verdict":  "PASS",
+                      "reason":  "WindowsCheats authorized Player evidence includes TileMark, SleeveBloom and BeamSwap success assertions.",
+                      "evidence":  [
+                                       "build/f2661164058e4d8bb89c62cda564a73c/authorized/case-authorized.json",
+                                       "build/f2661164058e4d8bb89c62cda564a73c/negative/case-negative.json"
+                                   ]
+                  },
+                  {
+                      "id":  "C04-G3-04",
+                      "platform":  "Windows",
+                      "title":  "Exact fee debit and private ledger change for each successful cheat",
+                      "trigger":  "For TileMark, SleeveBloom, and BeamSwap on eligible turns, submit each authorized action through the actual Player UI once; record before/after cheat balance and private ledger entry against the same receipt.",
+                      "initialFixture":  "Actual ledger and eligibility from Player; no direct ledger mutation.",
+                      "assertion":  "Each successful action has exactly its configured fee once, private balance/ledger updates only for the owning player, receipt and visible outcome bind to the same request; no other seat/public stream exposes the fee.",
+                      "contractBindings":  "Command request/scope/payload, account/seat/role, ledger before-after sequence, round/version/control epoch.",
+                      "execution":  "EXECUTED",
+                      "verdict":  "PASS",
+                      "reason":  "29 authorized Player assertions verified exact costs and private ledger updates.",
+                      "evidence":  [
+                                       "build/f2661164058e4d8bb89c62cda564a73c/authorized/case-authorized.json",
+                                       "build/f2661164058e4d8bb89c62cda564a73c/negative/case-negative.json"
+                                   ]
+                  },
+                  {
+                      "id":  "C04-G3-05",
+                      "platform":  "Windows",
+                      "title":  "136 physical entity invariant across all three cheats",
+                      "trigger":  "Record complete physical zone assignment immediately before/after each cheat and subsequent draw/discard.",
+                      "initialFixture":  "Same live Player runs as G3-01..03, persisted raw authority export or trusted structured record.",
+                      "assertion":  "Sorted physical IDs equal 0..135 with one occurrence each, zone totals reconcile and state hash changes only as expected.",
+                      "contractBindings":  "Each cheat request/scope/receipt and version; export/build identity and entity digest.",
+                      "execution":  "EXECUTED",
+                      "verdict":  "PASS",
+                      "reason":  "Authorized and negative Player paths asserted 136 unique physical entities.",
+                      "evidence":  [
+                                       "build/f2661164058e4d8bb89c62cda564a73c/authorized/case-authorized.json",
+                                       "build/f2661164058e4d8bb89c62cda564a73c/negative/case-negative.json"
+                                   ]
+                  },
+                  {
+                      "id":  "C04-G3-06",
+                      "platform":  "Windows",
+                      "title":  "Unauthorized and insufficient-balance cheat rejection",
+                      "trigger":  "At a real Player cheat prompt, repeat one authorized action with authorization absent and one action with balance below its configured cost; do not inject results through reflection or test-only channel.",
+                      "initialFixture":  "Actual Player authority state with a seat that lacks the required cheat authorization for one attempt and a separately established insufficient cheat balance for another; establish both through supported game/session setup, never reflection or private ledger writes.",
+                      "assertion":  "Both distinct requests receive the authority rejection and correlated receipt/visible rejection result; stateVersion, events, hand/wall 136-ID multiset and private ledger balance remain unchanged. A separate valid authorized/adequately funded control changes only the expected action result and configured fee.",
+                      "contractBindings":  "For each negative request independently bind account/session/room/seat/role/round/scope/controlEpoch/stateVersion/requestId/API/canonical payload SHA and returned receipt; do not reuse one requestId for different payload bytes.",
+                      "execution":  "EXECUTED",
+                      "verdict":  "PASS",
+                      "reason":  "15 negative Player assertions verified unauthorized and insufficient-balance rejection without mutation.",
+                      "evidence":  [
+                                       "build/f2661164058e4d8bb89c62cda564a73c/authorized/case-authorized.json",
+                                       "build/f2661164058e4d8bb89c62cda564a73c/negative/case-negative.json"
+                                   ]
+                  },
+                  {
+                      "id":  "C04-G4-01",
+                      "platform":  "Windows",
+                      "title":  "Disconnect takeover and stale AI decision rejection",
+                      "trigger":  "During an active decision disconnect owned human channel, wait declared grace/policy, allow takeover action; submit old decision response after control epoch advances.",
+                      "initialFixture":  "Actual live local session, deterministic ManualClock available only in .NET tests; Player case uses documented wait and real process.",
+                      "assertion":  "Takeover shown; authoritative owner/control epoch changes; stale old decision rejected without state/version/event mutation.",
+                      "contractBindings":  "Seat/session/binding, old/new controlEpoch, decisionId, request scope and version.",
+                      "execution":  "EXECUTED",
+                      "verdict":  "PARTIAL",
+                      "reason":  "AppMatrix exercised released-seat AI/deadline scenarios; explicit stale-decision rejection is not bound to this row.",
+                      "evidence":  [
+                                       "build/57682b7e70fa4bd59b7431611cf2eb65/summary.json",
+                                       "build/5f60c821e46044969eb301d59ccfb859/summary.json"
+                                   ]
+                  },
+                  {
+                      "id":  "C04-G4-02",
+                      "platform":  "Windows",
+                      "title":  "Leave/re-enter same room and data without unsafe duplicate action",
+                      "trigger":  "Leave table/menu during live room, re-enter through actual UI, read authoritative full snapshot and reconcile pending outbox.",
+                      "initialFixture":  "Same run, room and durable data root; real channel lifecycle.",
+                      "assertion":  "Old view binding unsubscribed; new snapshot baseline is current; old pending action is not blindly replayed; room identity/data continuity is explicit.",
+                      "contractBindings":  "Room/session ID, binding epoch, snapshot cursor/stateVersion, outbox request/scope identity.",
+                      "execution":  "EXECUTED",
+                      "verdict":  "PARTIAL",
+                      "reason":  "Player cold-reopen/outbox reconciliation passed; same-room leave/re-enter flow was not asserted.",
+                      "evidence":  [
+                                       "build/57682b7e70fa4bd59b7431611cf2eb65/summary.json",
+                                       "build/5f60c821e46044969eb301d59ccfb859/summary.json"
+                                   ]
+                  },
+                  {
+                      "id":  "C04-G4-03",
+                      "platform":  "Windows",
+                      "title":  "Explicit claim reclaims control and clears prior epoch",
+                      "trigger":  "Reconnect same authenticated human, invoke explicit claim, then attempt any captured older-owner command.",
+                      "initialFixture":  "Actual seat identity/control history from G4-01; claim only through supported UI/API.",
+                      "assertion":  "Reconnect alone leaves takeover; explicit claim increments epoch; older command rejected and no stale callback updates view; no double charge/action.",
+                      "contractBindings":  "Authentication/session, seat, old/new owner/controlEpoch, request/scope, decision/version and binding epoch.",
+                      "execution":  "EXECUTED",
+                      "verdict":  "PARTIAL",
+                      "reason":  "Role-switch and closed-binding PlayMode passed; explicit claimControl epoch increment was not asserted.",
+                      "evidence":  [
+                                       "build/57682b7e70fa4bd59b7431611cf2eb65/summary.json",
+                                       "build/5f60c821e46044969eb301d59ccfb859/summary.json"
+                                   ]
+                  },
+                  {
+                      "id":  "C04-G5-01",
+                      "platform":  "Windows",
+                      "title":  "Four player seats see own hand and not opponent private state",
+                      "trigger":  "Open four authenticated player views for one table; advance private hand updates and scan every seat snapshot and visible event.",
+                      "initialFixture":  "Four real sessions/roles; actual stream from authority, not only hand-authored DTO fixture.",
+                      "assertion":  "Each seat sees only its hand/authorized preview; scan for opponent concealed tile IDs, sleeve contents, shuffle seed and private fees; none leak in snapshot/event/log/public stream.",
+                      "contractBindings":  "Each identity/scope, seat/role, session/binding epoch, stateVersion and independent cursor.",
+                      "execution":  "EXECUTED",
+                      "verdict":  "PASS",
+                      "reason":  "Privacy PlayMode and Windows Player four-owner cases passed.",
+                      "evidence":  [
+                                       "build/57682b7e70fa4bd59b7431611cf2eb65/summary.json",
+                                       "build/5f60c821e46044969eb301d59ccfb859/summary.json"
+                                   ]
+                  },
+                  {
+                      "id":  "C04-G5-02",
+                      "platform":  "Windows",
+                      "title":  "Spectator public stream excludes hidden and private values",
+                      "trigger":  "Join active table as spectator and capture public stream throughout initial snapshot and each private update/cheat.",
+                      "initialFixture":  "Same live run; separate spectator identity and public cursor.",
+                      "assertion":  "No concealed hand, sleeve tile IDs, random seed, private fees or receipt payloads; public cursor independent and round/settlement presentation uses only public projection.",
+                      "contractBindings":  "Spectator account/scope/session, public cursor, (sessionId,sync epoch), source hash and role.",
+                      "execution":  "EXECUTED",
+                      "verdict":  "PASS",
+                      "reason":  "Privacy PlayMode and Windows Player four-owner/spectator cases passed.",
+                      "evidence":  [
+                                       "build/57682b7e70fa4bd59b7431611cf2eb65/summary.json",
+                                       "build/5f60c821e46044969eb301d59ccfb859/summary.json"
+                                   ]
+                  },
+                  {
+                      "id":  "C04-G5-03",
+                      "platform":  "Windows",
+                      "title":  "Role switch clears caches and old binding cannot publish",
+                      "trigger":  "Switch player to spectator and spectator to player or rebind to another seat; inject delayed old-stream delivery after switch.",
+                      "initialFixture":  "Actual sessions with distinct roles/bindings and delayed real transport event.",
+                      "assertion":  "Old private hand/ledger/sleeve cache cleared before new role render; old binding epoch event dropped; new public/player baseline correct; no secret survives scene transition.",
+                      "contractBindings":  "Old/new bindingEpoch, role, session, seat, cursor/stateVersion and scope.",
+                      "execution":  "EXECUTED",
+                      "verdict":  "PASS",
+                      "reason":  "Role-switch and closed-binding PlayMode/Player tests passed with real raw frames and verifiers.",
+                      "evidence":  [
+                                       "build/57682b7e70fa4bd59b7431611cf2eb65/summary.json",
+                                       "build/5f60c821e46044969eb301d59ccfb859/summary.json"
+                                   ]
+                  },
+                  {
+                      "id":  "C04-G6-01",
+                      "platform":  "Windows",
+                      "title":  "Normal restart from valid primary",
+                      "trigger":  "Exit the exact Player process normally after the real Discard was Applied but its receipt delivery was withheld; reopen the same final Player data root.",
+                      "initialFixture":  "Start from a real legal Discard fixture; commit its canonical request into the primary and persist the matching Applied receipt plus post-discard authority state. Persist the client outbox request but withhold only receipt delivery at the actual channel boundary. Record exact request bytes and pre/post save hashes.",
+                      "assertion":  "After restart, ReconcilePendingAsync must find the exact original requestId/scope/API/payload digest and matching Applied receipt persisted with restored state. Original Discard effect vector: one TileDiscarded event, one hand-to-river entity move, stateVersion +1 at original commit, ledger delta 0; physical IDs remain exactly 0..135. Reconciliation/repeated query adds zero version/event/ledger/entity deltas. RetryPendingAsync is allowed only after Unknown and only if same original scope/key/action remains eligible; receipt/state mismatch fails closed without Submit.",
+                      "contractBindings":  "Bind pre-fault exact canonical command bytes/payload SHA, API, original requestId/scope, owner account, room/session/seat/round, source/build/player and process identity, save/backup hashes and manifest. On recovery bind resulting scope/room/version, receipt lookup and event/ledger/entity observation.",
+                      "execution":  "EXECUTED",
+                      "verdict":  "PASS",
+                      "reason":  "WindowsRecovery real Player/verifier case 01 passed.",
+                      "evidence":  "build/ea220144afac47018211497446d09ad2/cases/C04-G6-01/result.json build/ea220144afac47018211497446d09ad2/cases/C04-G6-01/verification.json"
+                  },
+                  {
+                      "id":  "C04-G6-02",
+                      "platform":  "Windows",
+                      "title":  "Strong kill and cold restart",
+                      "trigger":  "After actual Discard Applied and receipt delivery withheld, collector pauses at its real first snapshot, force-terminates the exact owned Player process, then relaunches the same data root.",
+                      "initialFixture":  "Start from a real legal Discard fixture; commit its canonical request into the primary and persist the matching Applied receipt plus post-discard authority state. Persist the client outbox request but withhold only receipt delivery at the actual channel boundary. Record exact request bytes and pre/post save hashes.",
+                      "assertion":  "After restart, ReconcilePendingAsync must find the exact original requestId/scope/API/payload digest and matching Applied receipt persisted with restored state. Original Discard effect vector: one TileDiscarded event, one hand-to-river entity move, stateVersion +1 at original commit, ledger delta 0; physical IDs remain exactly 0..135. Reconciliation/repeated query adds zero version/event/ledger/entity deltas. RetryPendingAsync is allowed only after Unknown and only if same original scope/key/action remains eligible; receipt/state mismatch fails closed without Submit.",
+                      "contractBindings":  "Bind pre-fault exact canonical command bytes/payload SHA, API, original requestId/scope, owner account, room/session/seat/round, source/build/player and process identity, save/backup hashes and manifest. On recovery bind resulting scope/room/version, receipt lookup and event/ledger/entity observation.",
+                      "execution":  "EXECUTED",
+                      "verdict":  "PASS",
+                      "reason":  "WindowsRecovery real Player case included owned-process forced termination and cold restart; passed.",
+                      "evidence":  "build/ea220144afac47018211497446d09ad2/cases/C04-G6-02/result.json build/ea220144afac47018211497446d09ad2/cases/C04-G6-02/verification.json"
+                  },
+                  {
+                      "id":  "C04-G6-03",
+                      "platform":  "Windows",
+                      "title":  "Truncated primary plus valid backup",
+                      "trigger":  "Collector applies TruncatePrimary after authenticated BEFORE capture, then cold starts.",
+                      "initialFixture":  "Use a real legal Discard request whose Applied receipt and post-discard authority state are present in the valid `.save.prev` backup; persist same request in client outbox and withhold only receipt delivery at the real channel boundary. Record exact request bytes and both storage hashes before fault.",
+                      "assertion":  "After restart, ReconcilePendingAsync must find the exact original requestId/scope/API/payload digest and matching Applied receipt persisted with restored state. Original Discard effect vector: one TileDiscarded event, one hand-to-river entity move, stateVersion +1 at original commit, ledger delta 0; physical IDs remain exactly 0..135. Reconciliation/repeated query adds zero version/event/ledger/entity deltas. RetryPendingAsync is allowed only after Unknown and only if same original scope/key/action remains eligible; receipt/state mismatch fails closed without Submit.",
+                      "contractBindings":  "Bind pre-fault exact canonical command bytes/payload SHA, API, original requestId/scope, owner account, room/session/seat/round, source/build/player and process identity, save/backup hashes and manifest. On recovery bind resulting scope/room/version, receipt lookup and event/ledger/entity observation.",
+                      "execution":  "EXECUTED",
+                      "verdict":  "PASS",
+                      "reason":  "WindowsRecovery real Player/verifier case 03 passed.",
+                      "evidence":  "build/ea220144afac47018211497446d09ad2/cases/C04-G6-03/result.json build/ea220144afac47018211497446d09ad2/cases/C04-G6-03/verification.json"
+                  },
+                  {
+                      "id":  "C04-G6-04",
+                      "platform":  "Windows",
+                      "title":  "Bad checksum primary plus valid backup",
+                      "trigger":  "Collector applies BadChecksumPrimary after BEFORE capture, then cold starts.",
+                      "initialFixture":  "Use a real legal Discard request whose Applied receipt and post-discard authority state are present in the valid `.save.prev` backup; persist same request in client outbox and withhold only receipt delivery at the real channel boundary. Record exact request bytes and both storage hashes before fault.",
+                      "assertion":  "After restart, ReconcilePendingAsync must find the exact original requestId/scope/API/payload digest and matching Applied receipt persisted with restored state. Original Discard effect vector: one TileDiscarded event, one hand-to-river entity move, stateVersion +1 at original commit, ledger delta 0; physical IDs remain exactly 0..135. Reconciliation/repeated query adds zero version/event/ledger/entity deltas. RetryPendingAsync is allowed only after Unknown and only if same original scope/key/action remains eligible; receipt/state mismatch fails closed without Submit.",
+                      "contractBindings":  "Bind pre-fault exact canonical command bytes/payload SHA, API, original requestId/scope, owner account, room/session/seat/round, source/build/player and process identity, save/backup hashes and manifest. On recovery bind resulting scope/room/version, receipt lookup and event/ledger/entity observation.",
+                      "execution":  "EXECUTED",
+                      "verdict":  "PASS",
+                      "reason":  "WindowsRecovery real Player/verifier case 04 passed.",
+                      "evidence":  "build/ea220144afac47018211497446d09ad2/cases/C04-G6-04/result.json build/ea220144afac47018211497446d09ad2/cases/C04-G6-04/verification.json"
+                  },
+                  {
+                      "id":  "C04-G6-05",
+                      "platform":  "Windows",
+                      "title":  "Missing primary plus valid backup",
+                      "trigger":  "Collector removes primary only inside isolated owned case after BEFORE; cold starts with valid `.save.prev`.",
+                      "initialFixture":  "Use a real legal Discard request whose Applied receipt and post-discard authority state are present in the valid `.save.prev` backup; persist same request in client outbox and withhold only receipt delivery at the real channel boundary. Record exact request bytes and both storage hashes before fault.",
+                      "assertion":  "After restart, ReconcilePendingAsync must find the exact original requestId/scope/API/payload digest and matching Applied receipt persisted with restored state. Original Discard effect vector: one TileDiscarded event, one hand-to-river entity move, stateVersion +1 at original commit, ledger delta 0; physical IDs remain exactly 0..135. Reconciliation/repeated query adds zero version/event/ledger/entity deltas. RetryPendingAsync is allowed only after Unknown and only if same original scope/key/action remains eligible; receipt/state mismatch fails closed without Submit.",
+                      "contractBindings":  "Bind pre-fault exact canonical command bytes/payload SHA, API, original requestId/scope, owner account, room/session/seat/round, source/build/player and process identity, save/backup hashes and manifest. On recovery bind resulting scope/room/version, receipt lookup and event/ledger/entity observation.",
+                      "execution":  "EXECUTED",
+                      "verdict":  "PASS",
+                      "reason":  "WindowsRecovery real Player/verifier case 05 passed.",
+                      "evidence":  "build/ea220144afac47018211497446d09ad2/cases/C04-G6-05/result.json build/ea220144afac47018211497446d09ad2/cases/C04-G6-05/verification.json"
+                  },
+                  {
+                      "id":  "C04-G6-06",
+                      "platform":  "Windows",
+                      "title":  "Both primary and backup missing",
+                      "trigger":  "Collector applies BothMissing in an isolated owned directory then cold starts the final Player.",
+                      "initialFixture":  "The primary and backup are absent after fault; retain pre-fault request identity and directory inventory. FRESH_START must establish a distinct room/session/scope; do not carry old pending command into it.",
+                      "assertion":  "Expected FRESH_START per Get-ExpectedOutcome(BothMissing). New session can become Ready only as a fresh room; no old-command Submit/Retry/query is sent to new scope. Preserve old/new identities and zero old-request-induced new-room version/event/ledger/entity deltas.",
+                      "contractBindings":  "Bind pre-fault exact canonical command bytes/payload SHA, API, original requestId/scope, owner account, room/session/seat/round, source/build/player and process identity, save/backup hashes and manifest. On recovery bind resulting scope/room/version, receipt lookup and event/ledger/entity observation.",
+                      "execution":  "EXECUTED",
+                      "verdict":  "PASS",
+                      "reason":  "WindowsRecovery real Player/verifier case 06 passed.",
+                      "evidence":  "build/ea220144afac47018211497446d09ad2/cases/C04-G6-06/result.json build/ea220144afac47018211497446d09ad2/cases/C04-G6-06/verification.json"
+                  },
+                  {
+                      "id":  "C04-G6-07",
+                      "platform":  "Windows",
+                      "title":  "Both files bad",
+                      "trigger":  "Collector applies BothBad to isolated primary and backup then cold starts.",
+                      "initialFixture":  "Owned primary and backup copies are both invalid; retain each pre-fault byte length/SHA and fault operation record. Keep valid-backup control in G6-05.",
+                      "assertion":  "Expected REJECTED per Get-ExpectedOutcome(BothBad); no Ready session and no client action/receipt query; both inputs remain unchanged after classifier observation; authority/outbox/event/ledger/entity deltas are zero. G6-05 is the recovered positive control.",
+                      "contractBindings":  "Bind pre-fault exact canonical command bytes/payload SHA, API, original requestId/scope, owner account, room/session/seat/round, source/build/player and process identity, save/backup hashes and manifest. On recovery bind resulting scope/room/version, receipt lookup and event/ledger/entity observation.",
+                      "execution":  "EXECUTED",
+                      "verdict":  "PASS",
+                      "reason":  "WindowsRecovery real Player/verifier case 07 passed.",
+                      "evidence":  "build/ea220144afac47018211497446d09ad2/cases/C04-G6-07/result.json build/ea220144afac47018211497446d09ad2/cases/C04-G6-07/verification.json"
+                  },
+                  {
+                      "id":  "C04-G6-08",
+                      "platform":  "Windows",
+                      "title":  "Incompatible primary is rejected per frozen recovery policy",
+                      "trigger":  "Collector applies IncompatiblePrimary and cold starts under the frozen collector policy; do not add/assume a serviceable backup in this fixed row.",
+                      "initialFixture":  "Owned primary has an incompatible schema/ruleset marker. Preserve exact input bytes/SHA and fault operation record; no valid backup is part of this row.",
+                      "assertion":  "Expected REJECTED exactly as Get-ExpectedOutcome(IncompatiblePrimary); no fallback-to-backup branch; no Ready gameplay session or client action/receipt query. Preserve input bytes and prove zero authority/outbox/event/ledger/entity deltas.",
+                      "contractBindings":  "Bind pre-fault exact canonical command bytes/payload SHA, API, original requestId/scope, owner account, room/session/seat/round, source/build/player and process identity, save/backup hashes and manifest. On recovery bind resulting scope/room/version, receipt lookup and event/ledger/entity observation.",
+                      "execution":  "EXECUTED",
+                      "verdict":  "PASS",
+                      "reason":  "WindowsRecovery real Player/verifier case 08 passed.",
+                      "evidence":  "build/ea220144afac47018211497446d09ad2/cases/C04-G6-08/result.json build/ea220144afac47018211497446d09ad2/cases/C04-G6-08/verification.json"
+                  },
+                  {
+                      "id":  "C04-G7-01",
+                      "platform":  "Windows",
+                      "title":  "Offline complete match remains playable without network",
+                      "trigger":  "Disable network before launch; play local match from menu through settlement and inspect outbound traffic/channel type.",
+                      "initialFixture":  "Fresh isolated offline Player data; no network topology emulator; OS network disabled for actual manual run.",
+                      "assertion":  "Full match can complete offline; no remote channel is attempted; normal score/rank/ledger results hold.",
+                      "contractBindings":  "Local transport kind, run/player/build identity, match/round/action IDs and local request scopes.",
+                      "execution":  "EXECUTED",
+                      "verdict":  "PASS",
+                      "reason":  "FullMatch local Player reached WestCompletion without a remote service process; 12 draw rounds completed.",
+                      "evidence":  "build/4091659e35504e70849026b37de28d0c/executions/p45-20261108-191351-2636b2d1/driver/summary.json"
+                  },
+                  {
+                      "id":  "C04-G7-02",
+                      "platform":  "Windows",
+                      "title":  "Service/settlement authority rejects LOCAL assets",
+                      "trigger":  "Take a valid LOCAL settlement asset/result and submit it through the actual service-side settlement/commit entry intended for online authority.",
+                      "initialFixture":  "TableServiceTestHost with DealerTsumoRound; current negative constructs a caller-supplied RoundSettlement and raw SUBMIT_ACTION envelope. It is not a real LOCAL save/outbox asset and does not traverse ITableChannel.",
+                      "assertion":  "Through an actual TableSession/ITableChannel request into TableSessionHandler, submit a LOCAL-origin/caller-supplied settlement payload and require rejection before actor/store commit; assert stateVersion unchanged and zero outbox/settlement records. Submit a valid server-derived settlement control through the supported typed path.",
+                      "contractBindings":  "Service room/session, origin/transport provenance, match/round/version, request scope/ID, receipt and durable commit ID.",
+                      "execution":  "NOT_RUN",
+                      "verdict":  "NOT_RUN",
+                      "reason":  "No real service/settlement authority rejection of LOCAL assets was executed.",
+                      "evidence":  "build/4091659e35504e70849026b37de28d0c/executions/p45-20261108-191351-2636b2d1/driver/summary.json"
+                  },
+                  {
+                      "id":  "C04-G8-01",
+                      "platform":  "Windows",
+                      "title":  "Effective final visual quality and layout at supported aspect ratios",
+                      "trigger":  "Capture actual final Player screen at declared baseline/wide/tall ratios and compare table/menu/settlement safe bounds and text readability.",
+                      "initialFixture":  "Actual built final Player, fixed resolution/device info and captured full-frame PNG; record scaling/display settings.",
+                      "assertion":  "No clipped/overlapping controls/text/tiles; table fits supported bounds; safe-area content remains visible; screenshots are non-black and visually reviewed by caller.",
+                      "contractBindings":  "Player binary/package SHA, source/build SHA, OS/display resolution/DPI/aspect, scene, time and screenshot SHA.",
+                      "execution":  "EXECUTED_FAIL",
+                      "verdict":  "FAIL",
+                      "reason":  "Normal Windows Player screenshots show cropped title/blank menu layout; player log records missing-script warnings and InputModule NullReferenceException.",
+                      "evidence":  [
+                                       "build/g2-win-visual-luna6-20261108/player-fullscreen-startup.png",
+                                       "build/g2-win-visual-luna6-20261108/player-windowed-1280x720.png",
+                                       "build/g2-win-visual-luna6-20261108/player-windowed-1280x720.log"
+                                   ]
+                  },
+                  {
+                      "id":  "C04-G8-02",
+                      "platform":  "Windows",
+                      "title":  "Mouse and keyboard controls across critical gameplay flow",
+                      "trigger":  "Use mouse and keyboard to navigate, select discard/calls/cheats, cancel dialogs and leave/re-enter at least one live table.",
+                      "initialFixture":  "Final Player with actual input devices and known display; record input bindings/version.",
+                      "assertion":  "Each physical input yields at most one intended action; invalid/stale input does not submit; focus/back/pause transitions do not leak delayed click; all required actions reachable.",
+                      "contractBindings":  "Input action/device, UI scene, resulting request/scope and authoritative receipt/event if game action.",
+                      "execution":  "EXECUTED",
+                      "verdict":  "PARTIAL",
+                      "reason":  "Production route/action was driven by FullMatch; no end-to-end mouse/keyboard legal gameplay assertion.",
+                      "evidence":  "build/4091659e35504e70849026b37de28d0c/executions/p45-20261108-191351-2636b2d1/driver/summary.json"
+                  }
+              ],
+    "g2Stage":  "NOT_ASSESSED",
+    "android":  "NOT_RUN"
+}

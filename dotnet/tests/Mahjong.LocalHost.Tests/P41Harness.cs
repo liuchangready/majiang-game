@@ -205,6 +205,38 @@ namespace Mahjong.LocalHost.Tests
             throw new InvalidOperationException("Repository root was not found from " + AppContext.BaseDirectory);
         }
 
+        public static string FindBuiltProjectAssembly(string projectName, string assemblyName)
+        {
+            DirectoryInfo? current = new DirectoryInfo(AppContext.BaseDirectory);
+            while (current != null)
+            {
+                string artifactPath = Path.Combine(
+                    current.FullName,
+                    "bin",
+                    projectName,
+                    "release",
+                    assemblyName);
+                if (File.Exists(artifactPath))
+                {
+                    return artifactPath;
+                }
+
+                current = current.Parent;
+            }
+
+            string projectRoot = Path.Combine(FindRepositoryRoot(), "dotnet", "tests", projectName, "bin");
+            foreach (string configuration in new[] { "Release", "Debug" })
+            {
+                string path = Path.Combine(projectRoot, configuration, "net8.0", assemblyName);
+                if (File.Exists(path))
+                {
+                    return path;
+                }
+            }
+
+            return Path.Combine(projectRoot, "Release", "net8.0", assemblyName);
+        }
+
         public async ValueTask DisposeAsync()
         {
             await Task.CompletedTask.ConfigureAwait(false);
