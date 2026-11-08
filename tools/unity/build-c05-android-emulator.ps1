@@ -13,6 +13,7 @@ param(
   [int]$UnityTimeoutSeconds = 7200,
   [int]$HeartbeatSeconds = 30,
   [int]$JobWorkerCount = 8,
+  [int]$BeeBuildThreads = 0,
   [switch]$ReuseBuildCache,
   [switch]$ProcessFixtureTest,
   [switch]$VerdictFixtureTest,
@@ -1326,8 +1327,18 @@ exit `$LASTEXITCODE
     '-c05EmuEditorLog',$editorLog,'-c05EmuSourceRoot',$sourceProject,'-c05EmuSourceHead',$head,
     '-c05EmuResolvedTargetSdk',[string]$resolvedAutoTarget,'-logFile',$unityLog)
   if ($ReuseBuildCache) { $arguments += '-c05EmuReuseCache' }
-  $start = Get-Date
-  $proc = Start-C05EHiddenProcess $unity $arguments $project
+  # Bee (the build backend behind IL2CPP) reads its worker count from
+  # BEE_BUILD_THREADS; Unity has no command-line switch for it. The variable is
+  # set only for this child and restored immediately, so a caller's environment
+  # is never mutated.
+  $previousBeeThreads = $env:BEE_BUILD_THREADS
+  if ($BeeBuildThreads -gt 0) { $env:BEE_BUILD_THREADS = [string]$BeeBuildThreads }
+  try {
+    $start = Get-Date
+    $proc = Start-C05EHiddenProcess $unity $arguments $project
+  } finally {
+    $env:BEE_BUILD_THREADS = $previousBeeThreads
+  }
   $ownedPid = $proc.Id; $ownedStart = $proc.StartTime.ToUniversalTime().Ticks
   $lastBeat = Get-Date
   while (-not $proc.HasExited) {
@@ -1404,7 +1415,7 @@ exit `$LASTEXITCODE
     androidPlayer=[pscustomobject]@{ path=$androidPlayer; jdkVersion='17.0.20.1'; ndkVersion=(Get-Content (Join-Path $androidPlayer 'NDK\source.properties') -Raw).Trim();
       x86_64Il2cppLibs=$true }; androidSdkRoot=$AndroidSdkRoot; androidAvdHome=$AvdHome;
     adbPath=(Join-Path $AndroidSdkRoot 'platform-tools\adb.exe'); aapt2Path=$aapt2; emulatorPath=(Join-Path $AndroidSdkRoot 'emulator\emulator.exe');
-    storageBudget=$budget; unityJobWorkerCount=$JobWorkerCount; apk=(Split-Path $apk -Leaf); apkBytes=$apkInfo.Length; apkSha256=$hash; nativeExit=$native;
+    storageBudget=$budget; unityJobWorkerCount=$JobWorkerCount; beeBuildThreads=$BeeBuildThreads; apk=(Split-Path $apk -Leaf); apkBytes=$apkInfo.Length; apkSha256=$hash; nativeExit=$native;
     privateToolchain=$toolchain;
     buildReport=$report; buildReportSha256=$reportSha; metadataSha256=$metadataSha;
     activity=(Get-C05EBadgingContract ([string]$badging.stdout)).activity;
