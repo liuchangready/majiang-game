@@ -21,6 +21,7 @@ namespace Mahjong.LocalHost
         public const string Chi = "chi";
         public const string Riichi = "riichi";
         public const string ClosedKan = "closed-kan";
+        public const string DealerTsumo = "dealer-tsumo";
 
         public static LocalTableHostOptions ConfigureHostOptions(LocalTableHostOptions options, string scenarioId)
         {
@@ -36,6 +37,7 @@ namespace Mahjong.LocalHost
             if (string.Equals(scenarioId, Chi, StringComparison.Ordinal)) return BuildCallWindow(Chi);
             if (string.Equals(scenarioId, Riichi, StringComparison.Ordinal)) return BuildRiichiTurn();
             if (string.Equals(scenarioId, ClosedKan, StringComparison.Ordinal)) return BuildClosedKanTurn();
+            if (string.Equals(scenarioId, DealerTsumo, StringComparison.Ordinal)) return BuildDealerTsumoTurn();
             throw new ArgumentOutOfRangeException(nameof(scenarioId), scenarioId, "Unknown fixed C04 Player action scenario.");
         }
 
@@ -285,6 +287,19 @@ namespace Mahjong.LocalHost
             for (int i = 0; i < hand.Length; i++) fixedOrder.Add(slots[i], hand[i]);
             fixedOrder.Add(122, 73); // dead-wall replacement draw physical entity
             return BuildDealt("c04-closed-kan-seed-4404", fixedOrder);
+        }
+
+        private static RoundStateMachine BuildDealerTsumoTurn()
+        {
+            // Seat 0's thirteen tiles plus drawn 4m complete a Haku triplet,
+            // 23m/4m, 345p, 678s and 55m. This fixture is used only by explicit
+            // C04 validation and still enters LocalHost through its real host API.
+            int[] hand = { 124, 125, 126, 4, 8, 48, 52, 56, 92, 96, 100, 16, 17 };
+            int[] wallSlots = { 0, 1, 2, 3, 16, 17, 18, 19, 32, 33, 34, 35, 48 };
+            var fixedOrder = new Dictionary<int, int>();
+            for (int i = 0; i < hand.Length; i++) fixedOrder.Add(wallSlots[i], hand[i]);
+            fixedOrder.Add(52, 12);
+            return BuildDealt("c04-local-dealer-tsumo-seed-4405", fixedOrder);
         }
 
         private static RoundStateMachine BuildDealt(string roundId, IDictionary<int, int> fixedOrder)

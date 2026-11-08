@@ -136,6 +136,15 @@ namespace Mahjong.Unity.App
                                                           view.Control.ControlledByComputer &&
                                                           view.Control.ControlEpoch == initialEpoch + 1UL,
                 "automated control after reconnect", fail);
+            PlayerTableViewState automated = presenter.LatestView!;
+            if (automated.Identity.RoundId != initialRound || automated.Identity.StateVersion < initial.Identity.StateVersion ||
+                automated.Own?.Decision == null || automated.Own.Decision.ControlEpoch != initialEpoch + 1UL)
+            {
+                fail("REENTRY_RECONCILIATION_DIVERGED");
+                complete(false);
+                yield break;
+            }
+            PlayerDecisionState oldAiDecision = automated.Own.Decision;
             yield return ClickAndWait(root, presenter, "_claimControlButton",
                 CommandKind.ClaimControl, "claim", fail);
             if (!IsRecorded(_lastReceipt))
@@ -151,6 +160,14 @@ namespace Mahjong.Unity.App
                                                           !view.Control.ControlledByComputer &&
                                                           view.Control.ControlEpoch == initialEpoch + 2UL,
                 "human control after reclaim", fail);
+            PlayerTableViewState reclaimedControl = presenter.LatestView!;
+            if (reclaimedControl.Identity.RoundId != initialRound ||
+                reclaimedControl.Identity.StateVersion < automated.Identity.StateVersion)
+            {
+                fail("CLAIM_REENTRY_RECONCILIATION_DIVERGED");
+                complete(false);
+                yield break;
+            }
 
             yield return WaitForView(presenter, view => view.Own?.Decision != null,
                 "decision after reclaim", fail);
@@ -206,11 +223,67 @@ namespace Mahjong.Unity.App
                 yield break;
             }
 
+            PlayerLegalActionState? oldAiAction = null;
+            for (int i = 0; i < oldAiDecision.Candidates.Count; i++)
+            {
+                if (oldAiDecision.Candidates[i].Action == PlayerActionKind.DiscardTile)
+                {
+                    oldAiAction = oldAiDecision.Candidates[i];
+                    break;
+                }
+            }
+            if (oldAiAction == null)
+            {
+                fail("OLD_AI_DECISION_HAS_NO_DISCARD");
+                complete(false);
+                yield break;
+            }
+            var staleAiResult = new ProtocolCommand(
+                CommandKind.SubmitAction,
+                CommandPayloadFactory.SubmitAction(
+                    initialRound,
+                    oldAiDecision.DecisionId,
+                    initialEpoch + 1UL,
+                    ProtocolActionType.DiscardTile,
+                    string.IsNullOrEmpty(oldAiAction.OptionId) ? null : oldAiAction.OptionId,
+                    oldAiAction.TileIds),
+                new RequestId("probe-stale-ai-" + Guid.NewGuid().ToString("N")),
+                new RequestScopeId(reclaimedControl.Identity.ScopeId),
+                new StateVersion(reclaimedControl.Identity.StateVersion),
+                new RoundId(initialRound),
+                new DecisionId(oldAiDecision.DecisionId),
+                new ControlEpoch(initialEpoch + 1UL),
+                new OwnerEpoch(reclaimedControl.Identity.OwnerEpoch));
+            _lastReceipt = null;
+            Task<CommandSubmission> staleAiSubmit = root.Composition.SessionCoordinator!.SubmitAsync(
+                staleAiResult,
+                CancellationToken.None);
+            while (!staleAiSubmit.IsCompleted) yield return null;
+            if (staleAiSubmit.IsFaulted || staleAiSubmit.IsCanceled || !staleAiSubmit.Result.Sent)
+            {
+                fail("STALE_AI_RESULT_NOT_SENT");
+                complete(false);
+                yield break;
+            }
+            yield return WaitForReceipt(CommandKind.SubmitAction, "stale ai result receipt", fail);
+            if (_lastReceipt == null ||
+                _lastReceipt.Command.RequestId != staleAiResult.RequestId.Value ||
+                _lastReceipt.Command.LastReceipt != ReceiptStatus.Rejected ||
+                _lastReceipt.Resolution.ReasonCode != ProtocolErrorCode.StaleControlEpoch)
+            {
+                fail("STALE_AI_RESULT_NOT_REJECTED_AS_STALE_CONTROL_EPOCH reason=" +
+                     (_lastReceipt?.Resolution.ReasonCode ?? "<none>"));
+                complete(false);
+                yield break;
+            }
+
             Record("RESULT initialEpoch=" + initialEpoch +
                    " releaseEpoch=" + (initialEpoch + 1UL) +
                    " claimEpoch=" + (initialEpoch + 2UL) +
                    " oldEpoch=" + oldEpoch +
-                   " staleReason=" + _lastReceipt.Resolution.ReasonCode +
+                   " stalePlayerReason=" + ProtocolErrorCode.StaleControlEpoch +
+                   " oldAiDecision=" + oldAiDecision.DecisionId +
+                   " staleAiReason=" + _lastReceipt.Resolution.ReasonCode +
                    " round=" + initialRound);
             complete(true);
         }

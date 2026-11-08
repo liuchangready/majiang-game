@@ -157,6 +157,7 @@ internal static class Program
         byte[] afterCheatBytes = Convert.FromBase64String(afterCheat);
         LocalTableRecoveryFacts baselineFacts = LocalTableRecoveryFactsReader.ReadPersistedFacts(baselineSaveBytes, baselineCheatBytes);
         LocalTableRecoveryFacts afterFacts = LocalTableRecoveryFactsReader.ReadPersistedFacts(afterSaveBytes, afterCheatBytes);
+        if (evidenceSource == "GAME") VerifyRejectedActionEvidence(evidence, baselineFacts);
         Dictionary<int, string> baselinePositions = ReadPhysicalPositions(LocalPlayerActionScenario.ReadPhysicalAudit(baselineSaveBytes, baselineCheatBytes));
         string exactActionAudit = LocalPlayerActionScenario.ReadCommittedActionPhysicalAudit(
             afterSaveBytes,
@@ -567,9 +568,54 @@ internal static class Program
         {
             if (JsonUInt64(action, "TileId") != 124U || JsonUInt64(JsonRequired(action, "Payload"), "DiscardTileId") != 124U)
                 throw new InvalidDataException("Raw RiichiDeclared event does not carry the exact discarded physical entity 124.");
+            if (!JsonRequired(JsonRequired(action, "Payload"), "DoubleRiichi").GetBoolean() ||
+                JsonRequired(evidence, "DoubleRiichiEvent").ValueKind != JsonValueKind.True)
+                throw new InvalidDataException("First uninterrupted Riichi event does not preserve the authoritative double-riichi fact.");
         }
         if (baseline.SessionId != after.SessionId || baseline.RoundId != after.RoundId)
             throw new InvalidDataException("Accepted publication changed the captured Player session/round identity.");
+    }
+
+    private static void VerifyRejectedActionEvidence(JsonElement evidence, LocalTableRecoveryFacts baselineFacts)
+    {
+        byte[] payloadBytes = Convert.FromBase64String(RequiredString(evidence, "RejectedPayloadBase64"));
+        string payloadDigest = RequiredString(evidence, "RejectedPayloadSha256");
+        ValidateCanonicalPayload(payloadBytes, payloadDigest);
+        var payload = CanonicalPayloadParser.Parse(payloadBytes);
+        if (payload.CommandKind != (ushort)CommandKind.SubmitAction ||
+            payload.RequireUInt32(CommandPayloadFields.ActionType, "actionType") != RequiredUInt64(evidence, "PayloadActionType") ||
+            ReadCanonicalString(payload, CommandPayloadFields.RoundIdField, "roundId") != RequiredString(evidence, "BaselineRoundId") ||
+            ReadCanonicalString(payload, CommandPayloadFields.DecisionIdField, "decisionId") != RequiredString(evidence, "BaselineDecisionId") ||
+            payload.RequireUInt64(CommandPayloadFields.ControlEpochField, "controlEpoch") != RequiredUInt64(evidence, "BaselineControlEpoch"))
+            throw new InvalidDataException("Rejected action payload does not bind to the same real Player decision and control epoch.");
+        Equal(RequiredString(evidence, "RejectedScopeId"), RequiredString(evidence, "BaselineScopeId"), "rejected action scope");
+        Equal("Rejected", RequiredString(evidence, "RejectedReceiptStatus"), "negative typed receipt status");
+        Equal("Rejected", RequiredString(evidence, "RejectedReceiptDisposition"), "negative typed receipt disposition");
+        Equal(payloadDigest, RequiredString(evidence, "RejectedReceiptDigest"), "negative receipt canonical payload digest");
+        if (string.IsNullOrWhiteSpace(RequiredString(evidence, "RejectedReceiptReasonCode")) ||
+            JsonRequired(evidence, "RejectedHasCommandVersion").ValueKind != JsonValueKind.False ||
+            JsonRequired(evidence, "RejectedHasEventSeq").ValueKind != JsonValueKind.False)
+            throw new InvalidDataException("Rejected action has no definitive reason or unexpectedly claims an applied version/event.");
+        using JsonDocument rawReceipt = ParseEmbeddedJson(evidence, "RejectedRawReceiptJsonBase64");
+        Equal("Rejected", JsonString(rawReceipt.RootElement, "Status"), "raw rejected receipt status");
+        Equal("Rejected", JsonString(rawReceipt.RootElement, "Disposition"), "raw rejected receipt disposition");
+        Equal(RequiredString(evidence, "RejectedRequestId"), JsonString(rawReceipt.RootElement, "RequestId"), "raw rejected receipt request");
+        Equal(RequiredString(evidence, "RejectedScopeId"), JsonString(rawReceipt.RootElement, "ScopeId"), "raw rejected receipt scope");
+        Equal(payloadDigest, JsonString(rawReceipt.RootElement, "CanonicalPayloadSha256"), "raw rejected receipt digest");
+        Equal("0", JsonNumber(rawReceipt.RootElement, "CommandVersion"), "raw rejected receipt command version");
+        Equal("0", JsonNumber(rawReceipt.RootElement, "EventSeq"), "raw rejected receipt event sequence");
+
+        byte[] afterSave = Convert.FromBase64String(RequiredString(evidence, "RejectedAuthoritySaveBase64"));
+        byte[] afterCheat = Convert.FromBase64String(RequiredString(evidence, "RejectedAuthorityCheatStateBase64"));
+        LocalTableRecoveryFacts afterFacts = LocalTableRecoveryFactsReader.ReadPersistedFacts(afterSave, afterCheat);
+        Equal(RequiredString(evidence, "RejectedStateVersionBefore"), RequiredString(evidence, "RejectedStateVersionAfter"), "negative state version");
+        Equal(RequiredString(evidence, "RejectedEventSeqBefore"), RequiredString(evidence, "RejectedEventSeqAfter"), "negative event sequence");
+        Equal(baselineFacts.StateVersion, afterFacts.StateVersion, "negative authority state version");
+        Equal(baselineFacts.EventSeq, afterFacts.EventSeq, "negative authority event sequence");
+        Equal(RequiredString(evidence, "RejectedPhysicalTilesSha256Before"), RequiredString(evidence, "RejectedPhysicalTilesSha256After"), "negative physical image hash");
+        Equal(baselineFacts.Physical.TilesSha256, afterFacts.Physical.TilesSha256, "negative authority physical image");
+        if (afterFacts.Physical.TileCount != 136 || afterFacts.Physical.UniqueCount != 136)
+            throw new InvalidDataException("Rejected action did not preserve all 136 physical entities.");
     }
 
     private static JsonDocument ParseEmbeddedJson(JsonElement evidence, string name)
