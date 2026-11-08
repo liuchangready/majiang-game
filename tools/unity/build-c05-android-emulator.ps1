@@ -1301,7 +1301,10 @@ try {
     [IO.File]::WriteAllText($stagingDigestPath, $sourceClosureDigest, (New-Object Text.UTF8Encoding($false)))
   }
   $packageCache = Join-Path $project 'Library\PackageCache'
-  if ($RegistryCacheSource -and -not $stagingReused) {
+  # The staging already carries a PackageCache whenever Copy-C05EStagingProject
+  # copied the source project's Library, so a seed would find the target occupied
+  # and refuse. Only seed when the staging genuinely has none.
+  if ($RegistryCacheSource -and -not $stagingReused -and -not (Test-Path -LiteralPath $packageCache -PathType Container)) {
     $registryCacheReceipt = Copy-C05EVerifiedRegistryCache $RegistryCacheSource $project
     Save-C05EJson (Join-Path $run 'registry-cache-copy-receipt.json') $registryCacheReceipt
   } elseif (-not (Test-Path -LiteralPath $packageCache -PathType Container)) {
