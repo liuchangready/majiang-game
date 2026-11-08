@@ -74,9 +74,20 @@ internal static class Program
         bool wrongDigestRejected = false;
         try { ValidateCanonicalPayload(payload.CopyBytes(), wrongDigest); } catch (InvalidDataException) { wrongDigestRejected = true; }
         if (!wrongDigestRejected) throw new InvalidDataException("Canonical payload digest verifier accepted the unprefixed raw SHA-256.");
-        Console.WriteLine("C04_PROTOBUF_FIXTURE_PASS valid=1 invalid=2 canonicalDigest=PASS wrongDigestRejected=1");
+        if (RequiresRejectedActionEvidence("C04-G1-02") ||
+            !RequiresRejectedActionEvidence("C04-G2-01") || !RequiresRejectedActionEvidence("C04-G2-02") ||
+            !RequiresRejectedActionEvidence("C04-G2-03") || !RequiresRejectedActionEvidence("C04-G2-04") ||
+            RequiresRejectedActionEvidence("C04-G2-05"))
+            throw new InvalidDataException("GAME rejected-action evidence contract does not match the fixed G2 action cases.");
+        Console.WriteLine("C04_PROTOBUF_FIXTURE_PASS valid=1 invalid=2 canonicalDigest=PASS wrongDigestRejected=1 caseNegativeContract=G2-only");
         return 0;
     }
+
+    private static bool RequiresRejectedActionEvidence(string caseId) => caseId switch
+    {
+        "C04-G2-01" or "C04-G2-02" or "C04-G2-03" or "C04-G2-04" => true,
+        _ => false
+    };
 
     private static int MakeMutationFixtures(string sourcePath, string outputDirectory)
     {
@@ -157,7 +168,8 @@ internal static class Program
         byte[] afterCheatBytes = Convert.FromBase64String(afterCheat);
         LocalTableRecoveryFacts baselineFacts = LocalTableRecoveryFactsReader.ReadPersistedFacts(baselineSaveBytes, baselineCheatBytes);
         LocalTableRecoveryFacts afterFacts = LocalTableRecoveryFactsReader.ReadPersistedFacts(afterSaveBytes, afterCheatBytes);
-        if (evidenceSource == "GAME") VerifyRejectedActionEvidence(evidence, baselineFacts);
+        if (evidenceSource == "GAME" && RequiresRejectedActionEvidence(RequiredString(evidence, "CaseId")))
+            VerifyRejectedActionEvidence(evidence, baselineFacts);
         Dictionary<int, string> baselinePositions = ReadPhysicalPositions(LocalPlayerActionScenario.ReadPhysicalAudit(baselineSaveBytes, baselineCheatBytes));
         string exactActionAudit = LocalPlayerActionScenario.ReadCommittedActionPhysicalAudit(
             afterSaveBytes,

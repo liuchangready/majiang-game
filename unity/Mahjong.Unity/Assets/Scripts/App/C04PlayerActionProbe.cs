@@ -206,13 +206,20 @@ namespace Mahjong.Unity.App
                 yield break;
             }
 
+            bool requiresRejectedAction = _caseId == "C04-G2-01" || _caseId == "C04-G2-02" ||
+                _caseId == "C04-G2-03" || _caseId == "C04-G2-04";
+            BusinessPayload? rejectedPayload = null;
+            LocalTableRecoveryFacts? rejectedFacts = null;
+            LocalTableRecoveryCapture? rejectedAuthorityCapture = null;
+            if (requiresRejectedAction)
+            {
             ProtocolActionType rejectedAction = (ProtocolActionType)(uint)ActionForCase(_caseId);
             uint[] rejectedTiles = rejectedAction == ProtocolActionType.DeclareRiichi
                 ? new uint[] { 135 }
                 : rejectedAction == ProtocolActionType.DeclareKan
                     ? new uint[] { 130, 131, 132, 133 }
                     : new uint[] { 130, 131 };
-            BusinessPayload rejectedPayload = CommandPayloadFactory.SubmitAction(
+            rejectedPayload = CommandPayloadFactory.SubmitAction(
                 baselineRound,
                 candidate.DecisionId,
                 candidate.ControlEpoch ?? 0UL,
@@ -259,7 +266,8 @@ namespace Mahjong.Unity.App
                 Fail("NEGATIVE_AUTHORITY_CAPTURE_FAILED", "Could not read the authority image after the rejected action.");
                 yield break;
             }
-            LocalTableRecoveryFacts rejectedFacts = rejectedAuthorityTask.Result.Facts;
+            rejectedAuthorityCapture = rejectedAuthorityTask.Result;
+            rejectedFacts = rejectedAuthorityCapture.Facts;
             if (rejectedFacts.RoundId != baselineAuthority.RoundId ||
                 rejectedFacts.StateVersion != baselineAuthority.StateVersion ||
                 rejectedFacts.EventSeq != baselineAuthority.EventSeq ||
@@ -271,6 +279,7 @@ namespace Mahjong.Unity.App
                 coordinator.ReceiptResolved -= receiptHandler;
                 Fail("NEGATIVE_ACTION_MUTATED_AUTHORITY", "Rejected action changed version, event sequence, or the 136-entity image.");
                 yield break;
+            }
             }
             observer.BeginAction(coordinator.Current, requestId, view.Identity.ScopeId, candidate.Action);
             byte[] coordinatorBaselineBytes = coordinator.Current.PlayerSnapshot!.ToByteArray();
@@ -520,16 +529,16 @@ namespace Mahjong.Unity.App
                 ReceiptScopeId = view.Identity.ScopeId,
                 ReceiptCommandVersion = observer.AppliedCommandVersion ?? 0UL,
                 ReceiptEventSeq = confirmation.ReceiptEventSeq,
-                RejectedRequestId = rejectedRequestId,
-                RejectedReceiptStatus = rejectedReceipt!.Resolution.ReceiptStatus.ToString(),
-                RejectedReceiptReasonCode = rejectedReceipt.Resolution.ReasonCode,
-                RejectedPayloadSha256 = rejectedPayload.Digest.ToHex(),
-                RejectedStateVersionBefore = baselineVersion,
-                RejectedStateVersionAfter = rejectedFacts.StateVersion == baselineAuthority.StateVersion ? baselineVersion : 0UL,
-                RejectedEventSeqBefore = baselineEventSeq,
-                RejectedEventSeqAfter = rejectedFacts.EventSeq == baselineAuthority.EventSeq ? baselineEventSeq : 0UL,
-                RejectedPhysicalTilesSha256Before = baselineAuthority.Physical.TilesSha256,
-                RejectedPhysicalTilesSha256After = rejectedFacts.Physical.TilesSha256,
+                RejectedRequestId = requiresRejectedAction ? rejectedRequestId : string.Empty,
+                RejectedReceiptStatus = rejectedReceipt?.Resolution.ReceiptStatus.ToString() ?? string.Empty,
+                RejectedReceiptReasonCode = rejectedReceipt?.Resolution.ReasonCode ?? string.Empty,
+                RejectedPayloadSha256 = rejectedPayload?.Digest.ToHex() ?? string.Empty,
+                RejectedStateVersionBefore = requiresRejectedAction ? baselineVersion : 0UL,
+                RejectedStateVersionAfter = rejectedFacts != null && rejectedFacts.StateVersion == baselineAuthority.StateVersion ? baselineVersion : 0UL,
+                RejectedEventSeqBefore = requiresRejectedAction ? baselineEventSeq : 0UL,
+                RejectedEventSeqAfter = rejectedFacts != null && rejectedFacts.EventSeq == baselineAuthority.EventSeq ? baselineEventSeq : 0UL,
+                RejectedPhysicalTilesSha256Before = requiresRejectedAction ? baselineAuthority.Physical.TilesSha256 : string.Empty,
+                RejectedPhysicalTilesSha256After = rejectedFacts?.Physical.TilesSha256 ?? string.Empty,
                 EventType = confirmation.Event.Type.ToString(),
                 DoubleRiichiEvent = doubleRiichiEvent,
                 EventSeat = confirmation.Event.Seat,
@@ -588,25 +597,25 @@ namespace Mahjong.Unity.App
                 BaselineBindingJsonBase64 = EncodeRawBinding(view.Identity, baselineTableId, coordinator.Current.Binding?.AccountId ?? string.Empty),
                 BaselineAuthoritySaveBase64 = Convert.ToBase64String(baselineAuthorityTask.Result.AuthoritySaveBytes),
                 BaselineAuthorityCheatStateBase64 = Convert.ToBase64String(baselineAuthorityTask.Result.CheatStatePayload),
-                RejectedPayloadBase64 = Convert.ToBase64String(rejectedPayload.CopyBytes()),
-                RejectedPayloadSha256 = rejectedPayload.Digest.ToHex(),
-                RejectedRequestId = rejectedRequestId,
-                RejectedScopeId = view.Identity.ScopeId,
-                RejectedReceiptStatus = rejectedReceipt.Resolution.ReceiptStatus.ToString(),
-                RejectedReceiptDisposition = rejectedReceipt.Resolution.Disposition.ToString(),
-                RejectedReceiptReasonCode = rejectedReceipt.Resolution.ReasonCode,
-                RejectedReceiptDigest = rejectedReceipt.Resolution.CanonicalPayloadSha256,
+                RejectedPayloadBase64 = rejectedPayload == null ? string.Empty : Convert.ToBase64String(rejectedPayload.CopyBytes()),
+                RejectedPayloadSha256 = rejectedPayload?.Digest.ToHex() ?? string.Empty,
+                RejectedRequestId = requiresRejectedAction ? rejectedRequestId : string.Empty,
+                RejectedScopeId = requiresRejectedAction ? view.Identity.ScopeId : string.Empty,
+                RejectedReceiptStatus = rejectedReceipt?.Resolution.ReceiptStatus.ToString() ?? string.Empty,
+                RejectedReceiptDisposition = rejectedReceipt?.Resolution.Disposition.ToString() ?? string.Empty,
+                RejectedReceiptReasonCode = rejectedReceipt?.Resolution.ReasonCode ?? string.Empty,
+                RejectedReceiptDigest = rejectedReceipt?.Resolution.CanonicalPayloadSha256 ?? string.Empty,
                 RejectedRawReceiptJsonBase64 = EncodeRawReceipt(rejectedReceipt),
-                RejectedHasCommandVersion = rejectedReceipt.Resolution.CommandVersion.HasValue,
-                RejectedHasEventSeq = rejectedReceipt.Resolution.EventSeq.HasValue,
-                RejectedStateVersionBefore = baselineVersion,
-                RejectedStateVersionAfter = baselineVersion,
-                RejectedEventSeqBefore = baselineEventSeq,
-                RejectedEventSeqAfter = baselineEventSeq,
-                RejectedPhysicalTilesSha256Before = baselineAuthority.Physical.TilesSha256,
-                RejectedPhysicalTilesSha256After = rejectedFacts.Physical.TilesSha256,
-                RejectedAuthoritySaveBase64 = Convert.ToBase64String(rejectedAuthorityTask.Result.AuthoritySaveBytes),
-                RejectedAuthorityCheatStateBase64 = Convert.ToBase64String(rejectedAuthorityTask.Result.CheatStatePayload),
+                RejectedHasCommandVersion = rejectedReceipt?.Resolution.CommandVersion.HasValue ?? false,
+                RejectedHasEventSeq = rejectedReceipt?.Resolution.EventSeq.HasValue ?? false,
+                RejectedStateVersionBefore = requiresRejectedAction ? baselineVersion : 0UL,
+                RejectedStateVersionAfter = requiresRejectedAction ? baselineVersion : 0UL,
+                RejectedEventSeqBefore = requiresRejectedAction ? baselineEventSeq : 0UL,
+                RejectedEventSeqAfter = requiresRejectedAction ? baselineEventSeq : 0UL,
+                RejectedPhysicalTilesSha256Before = requiresRejectedAction ? baselineAuthority.Physical.TilesSha256 : string.Empty,
+                RejectedPhysicalTilesSha256After = rejectedFacts?.Physical.TilesSha256 ?? string.Empty,
+                RejectedAuthoritySaveBase64 = rejectedAuthorityCapture == null ? string.Empty : Convert.ToBase64String(rejectedAuthorityCapture.AuthoritySaveBytes),
+                RejectedAuthorityCheatStateBase64 = rejectedAuthorityCapture == null ? string.Empty : Convert.ToBase64String(rejectedAuthorityCapture.CheatStatePayload),
                 DoubleRiichiEvent = doubleRiichiEvent,
                 BaselinePhysicalTileCount = baselineAuthority.Physical.TileCount,
                 BaselinePhysicalUniqueCount = baselineAuthority.Physical.UniqueCount,

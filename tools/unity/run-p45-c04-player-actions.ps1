@@ -519,6 +519,23 @@ function Test-C04CaseSummary {
     return $true
 }
 
+function Assert-C04ExactVerifierFixtureSet([string]$root,[string[]]$expectedCases) {
+    if (-not (Test-Path -LiteralPath $root -PathType Container) -or $expectedCases.Count -eq 0) { throw 'C04 verifier fixture root or expected case set is missing.' }
+    $files = @(Get-ChildItem -LiteralPath $root -File -Filter '*.json' | Sort-Object Name)
+    $names = @($files | ForEach-Object { [IO.Path]::GetFileNameWithoutExtension($_.Name) })
+    if ($names.Count -ne $expectedCases.Count -or @($names | Select-Object -Unique).Count -ne $expectedCases.Count -or
+        (($names | Sort-Object) -join '|') -cne (($expectedCases | Sort-Object) -join '|')) {
+        throw 'C04 verifier fixtures do not match the exact expected case set.'
+    }
+    foreach ($file in $files) {
+        $evidence = Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($evidence.EvidenceSource -cne 'TOOL_FIXTURE_LOCALHOST_CHANNEL' -or $evidence.CaseId -cne [IO.Path]::GetFileNameWithoutExtension($file.Name)) {
+            throw 'C04 verifier fixture source or case identity does not match its filename.'
+        }
+    }
+    return $files
+}
+
 function Test-C04ActionEvidence {
     param($Summary,$Evidence,[string]$ExpectedCase,[string]$EvidencePathForVerifier)
     if ($null -eq $Evidence) { throw 'Raw Player action evidence is missing.' }
@@ -588,7 +605,7 @@ function Test-C04ActionEvidence {
         if ($verify.exitCode -ne 0 -or -not (Get-Content -LiteralPath $verify.stdout -Raw).Contains('C04_PROTOBUF_AND_AUTHORITY_IMAGE_PASS')) {
             throw "Generated protobuf/LocalHost authority image verifier rejected $ExpectedCase evidence; nativeExit=$($verify.exitCode)."
         }
-        if ($Evidence.EvidenceSource -ceq 'GAME' -and $ExpectedCase -in @('C04-G1-02','C04-G2-01')) {
+        if ($Evidence.EvidenceSource -ceq 'GAME' -and $ExpectedCase -in @('C04-G2-01','C04-G2-02','C04-G2-03','C04-G2-04')) {
             $negativeRoot = Join-Path (Split-Path -Parent $EvidencePathForVerifier) 'game-verifier-negative'
             New-Item -ItemType Directory -Path $negativeRoot -Force | Out-Null
             $mutations = @(
@@ -678,7 +695,7 @@ Start-Sleep -Seconds 25
 '@
     [IO.File]::WriteAllText($ownedChildPath,$ownedScript,(New-Object Text.UTF8Encoding($false)))
     $env:C04_NESTED_PID_FILE = $nestedPidPath
-    $timeoutRecord = Invoke-OwnedNative -Name 'FixtureOwnedTimeoutTree' -FilePath 'powershell.exe' -Arguments ('-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' + (Quote-Arg $ownedChildPath)) -WorkingDirectory $RunRoot -StdoutPath (Join-Path $logs 'owned-timeout.stdout.txt') -StderrPath (Join-Path $logs 'owned-timeout.stderr.txt') -Timeout 1
+    $timeoutRecord = Invoke-OwnedNative -Name 'FixtureOwnedTimeoutTree' -FilePath 'powershell.exe' -Arguments ('-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' + (Quote-Arg $ownedChildPath)) -WorkingDirectory $RunRoot -StdoutPath (Join-Path $logs 'owned-timeout.stdout.txt') -StderrPath (Join-Path $logs 'owned-timeout.stderr.txt') -Timeout 8
     Remove-Item Env:C04_NESTED_PID_FILE -ErrorAction SilentlyContinue
     if ($timeoutRecord.exitCode -ne 124 -or -not $timeoutRecord.timedOut -or -not $timeoutRecord.outputDrained -or
         (Get-Content -LiteralPath $timeoutRecord.stdout -Raw) -notmatch 'OWNED_TIMEOUT_CHILD_STARTED' -or
@@ -715,10 +732,32 @@ Start-Sleep -Seconds 25
     [IO.File]::WriteAllText((Join-Path $gitPointerFixture '.git'),'gitdir: E:/foreign/repository/.git' + "`n",(New-Object Text.UTF8Encoding($false)))
     $pointerRejected = $false; try { Assert-C04ArchiveHasNoGitMetadata $gitPointerFixture | Out-Null } catch { $pointerRejected = $true }
     if (-not $pointerRejected) { throw 'Archive gate accepted a .git pointer to a foreign worktree.' }
-    $goodPlayXml = [xml]'<test-run><test-case name="A.Pon_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="A.Chi_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="A.Riichi_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="A.ClosedKan_FixedPlayerActionAndReplacementDrawAreApplied" result="Passed"/></test-run>'
+    $goodPlayXml = [xml]'<test-run><test-case name="A.DealerTsumo_FixedPlayerActionAndTerminalWinAreApplied" result="Passed"/><test-case name="A.Pon_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="A.Chi_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="A.Riichi_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="A.ClosedKan_FixedPlayerActionAndReplacementDrawAreApplied" result="Passed"/></test-run>'
     Test-C04ExactPlayModeXml $goodPlayXml | Out-Null
+    $fixtureCases = @('C04-G1-02','C04-G2-01','C04-G2-02','C04-G2-03','C04-G2-04')
+    $fixtureSetRoot = Join-Path $RunRoot 'fixture-verifier-case-set'
+    New-Item -ItemType Directory -Path $fixtureSetRoot | Out-Null
+    foreach ($caseId in $fixtureCases) {
+        [IO.File]::WriteAllText((Join-Path $fixtureSetRoot ($caseId + '.json')),(@{ EvidenceSource='TOOL_FIXTURE_LOCALHOST_CHANNEL'; CaseId=$caseId } | ConvertTo-Json -Compress) + "`n",(New-Object Text.UTF8Encoding($false)))
+    }
+    if (@(Assert-C04ExactVerifierFixtureSet $fixtureSetRoot $fixtureCases).Count -ne 5) { throw 'Five-case verifier fixture set did not validate.' }
+    foreach ($mutation in @('Missing','Extra','DuplicateIdentity')) {
+        $badRoot = Join-Path $RunRoot ('fixture-verifier-case-set-' + $mutation)
+        Copy-Item -LiteralPath $fixtureSetRoot -Destination $badRoot -Recurse
+        if ($mutation -eq 'Missing') { Remove-Item -LiteralPath (Join-Path $badRoot 'C04-G2-04.json') }
+        elseif ($mutation -eq 'Extra') {
+            [IO.File]::WriteAllText((Join-Path $badRoot 'C04-G2-05.json'),(@{ EvidenceSource='TOOL_FIXTURE_LOCALHOST_CHANNEL'; CaseId='C04-G2-05' } | ConvertTo-Json -Compress) + "`n",(New-Object Text.UTF8Encoding($false)))
+        }
+        else {
+            [IO.File]::WriteAllText((Join-Path $badRoot 'C04-G2-02.json'),(@{ EvidenceSource='TOOL_FIXTURE_LOCALHOST_CHANNEL'; CaseId='C04-G2-01' } | ConvertTo-Json -Compress) + "`n",(New-Object Text.UTF8Encoding($false)))
+        }
+        $rejected = $false; try { Assert-C04ExactVerifierFixtureSet $badRoot $fixtureCases | Out-Null } catch { $rejected = $true }
+        if (-not $rejected) { throw "Verifier fixture-set gate accepted $mutation case mutation." }
+    }
     foreach ($xmlCase in @(
         @{name='MissingPlayMode';xml=[xml]'<test-run><test-case name="A.Pon_FixedPlayerActionIsAppliedAndVisible" result="Passed"/></test-run>'},
+        @{name='WrongPlayModeCase';xml=[xml]'<test-run><test-case name="A.DealerTsumo_FixedPlayerActionAndTerminalWinAreApplied" result="Passed"/><test-case name="A.Pon_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="A.Chi_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="A.Riichi_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="A.OtherCase" result="Passed"/></test-run>'},
+        @{name='ExtraPlayMode';xml=[xml]'<test-run><test-case name="A.DealerTsumo_FixedPlayerActionAndTerminalWinAreApplied" result="Passed"/><test-case name="A.Pon_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="A.Chi_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="A.Riichi_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="A.ClosedKan_FixedPlayerActionAndReplacementDrawAreApplied" result="Passed"/><test-case name="A.ExtraCase" result="Passed"/></test-run>'},
         @{name='DuplicatePlayMode';xml=[xml]'<test-run><test-case name="A.Pon_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="B.Pon_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="A.Chi_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="A.Riichi_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="A.ClosedKan_FixedPlayerActionAndReplacementDrawAreApplied" result="Passed"/></test-run>'},
         @{name='SkippedPlayMode';xml=[xml]'<test-run><test-case name="A.Pon_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="A.Chi_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="A.Riichi_FixedPlayerActionIsAppliedAndVisible" result="Skipped"/><test-case name="A.ClosedKan_FixedPlayerActionAndReplacementDrawAreApplied" result="Passed"/></test-run>'}
     )) {
@@ -1160,10 +1199,7 @@ EditorUserSettings:
     $verifierSelfTest = Invoke-OwnedNative -Name 'C04GeneratedProtobufVerifierSelfTest' -FilePath $DotnetPath -Arguments ('exec ' + (Quote-Arg $script:C04VerifierPath) + ' selftest') -WorkingDirectory $dotnetResults -StdoutPath (Join-Path $logs 'c04-verifier-selftest.stdout.txt') -StderrPath (Join-Path $logs 'c04-verifier-selftest.stderr.txt') -Timeout 30
     if ($verifierSelfTest.exitCode -ne 0 -or (Get-Content -LiteralPath $verifierSelfTest.stdout -Raw) -notmatch 'C04_PROTOBUF_FIXTURE_PASS valid=1 invalid=2') { throw 'Generated PlayerSnapshot.Parser positive/malformed-byte fixture failed.' }
     $expectedVerifierCases = @('C04-G1-02','C04-G2-01','C04-G2-02','C04-G2-03','C04-G2-04')
-    $channelFiles = @(Get-ChildItem -LiteralPath $channelFixtureRoot -File -Filter '*.json' | Sort-Object Name)
-    if ($channelFiles.Count -ne 4 -or @($channelFiles | ForEach-Object { [IO.Path]::GetFileNameWithoutExtension($_.Name) } | Where-Object { $_ -notin $expectedVerifierCases }).Count -ne 0) {
-        throw 'Fresh LocalHost evidence did not produce exactly one fixed verifier fixture for each C04 case.'
-    }
+    $channelFiles = @(Assert-C04ExactVerifierFixtureSet $channelFixtureRoot $expectedVerifierCases)
     $verifierMatrix = New-Object System.Collections.Generic.List[object]
     foreach ($casePath in $channelFiles) {
         $caseEvidence = Get-Content -LiteralPath $casePath.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
