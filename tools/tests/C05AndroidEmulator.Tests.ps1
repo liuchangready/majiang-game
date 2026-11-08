@@ -169,6 +169,8 @@ Check 'build:path-budget-audit-before-unity' (($build -match 'function Get-C05EP
 Check 'build:path-budget-incomplete-inventory-fails-closed' (($build -match 'INCOMPLETE_INVENTORY') -and ($build -match 'registry-package-inventory') -and ($build -match '\[IO\.File\]::Exists\('))
 Check 'build:registry-package-lock-identity-and-hashes' (($build -match 'Get-C05ERegistryPackageInventory') -and ($build -match 'package-identity-mismatch') -and ($build -match 'inventorySha256') -and ($build -match 'packageJsonSha256'))
 Check 'build:fresh-package-cache-copy-before-path-gate' (($build -match '\$RegistryCacheSource') -and ($build -match 'Copy-C05EVerifiedRegistryCache') -and ($build.IndexOf('Copy-C05EVerifiedRegistryCache $RegistryCacheSource $project') -lt $build.IndexOf('$pathBudgetAudit.status -ne ''PASS''')) -and ($build.IndexOf('$pathBudgetAudit.status -ne ''PASS''') -lt $build.IndexOf('Start-C05EHiddenProcess $unity')))
+Check 'build:auto-staging-reuse' (($build -match 'AUTO staging') -and ($build -match 'autoHasBuild') -and ($build -match 'staging-source-closure\.sha256'))
+Check 'build:auto-staging-short-name' ($build -match 'c05-emulator-staging\\a')
 Check 'build:bounded-unity-job-workers' (($build -match "'-job-worker-count',\[string\]") -and ($build -match 'unityJobWorkerCount=') -and ($build -match 'BLOCKED_MEMORY'))
 Check 'build:task-owned-toolchain-root' (($build -match '\$PrivateToolchainRoot') -and ($build -match '\[IO\.Path\]::GetFullPath\(\$PrivateToolchainRoot\)'))
 

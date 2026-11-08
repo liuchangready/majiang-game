@@ -1083,14 +1083,44 @@ foreach ($required in @('OpenJDK\bin\java.exe','SDK\platform-tools\adb.exe','NDK
 if (-not $OutputRoot) { $OutputRoot = Join-Path $root ('build\c05-android-emulator-apk\' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0,8)) }
 $run = Assert-C05EFreshOutputDirectory $OutputRoot
 $script:C05EShortStagingRoot = [IO.Path]::GetFullPath('D:\c05s')
-if (-not $StagingRoot) { $StagingRoot = Join-Path $root ('build\c05-emulator-staging\' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0,8)) }
+if (-not $StagingRoot) {
+  # An automatically managed staging lives at a fixed short name so this call can
+  # reuse it on the next run. The name must stay short: the JDK file API limits
+  # paths to 260 characters, and launcher/build/intermediates/desugar_graph/...
+  # already consumes most of that budget inside the staging tree.
+  $StagingRoot = Join-Path $root 'build\c05-emulator-staging\a'
+}
 $guardRoot = if ($root) { $root } else { [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..')) }
 $script:C05ERepoRoot = $guardRoot
+if (-not $PSBoundParameters.ContainsKey('StagingRoot')) {
+  # Caller did not name a staging: pick reuse vs. cold from what is on disk.
+  $autoStaging = [IO.Path]::GetFullPath($StagingRoot)
+  $autoProject = Join-Path $autoStaging 'project'
+  $autoMarker = Join-Path $autoStaging '.c05-owned-staging.json'
+  $autoDigest = Join-Path $autoStaging 'staging-source-closure.sha256'
+  $autoIl2cpp = Join-Path $autoProject 'Library\Bee\Android\Prj\IL2CPP'
+  $autoHasBuild = (Test-Path -LiteralPath $autoMarker -PathType Leaf) -and
+                  (Test-Path -LiteralPath $autoDigest -PathType Leaf) -and
+                  (Test-Path -LiteralPath $autoProject -PathType Container) -and
+                  (Test-Path -LiteralPath $autoIl2cpp -PathType Container)
+  if ($autoHasBuild) {
+    $ReuseStaging = [switch]$true
+    $ReuseBuildCache = [switch]$true
+    Write-Host ("AUTO staging: reusing '{0}' (IL2CPP outputs present); pass -ReuseStaging:`$false for a cold build." -f $autoStaging)
+  } else {
+    if (Test-Path -LiteralPath $autoStaging) {
+      Write-Host ("AUTO staging: '{0}' exists without usable IL2CPP outputs; rebuilding cold." -f $autoStaging)
+    } else {
+      Write-Host ("AUTO staging: '{0}' absent; building cold." -f $autoStaging)
+    }
+  }
+}
 $stagingRoot = Resolve-C05EStagingRoot $guardRoot $StagingRoot ([bool]$ReuseStaging)
 if (-not (Test-C05ENoReparse $stagingRoot)) { throw "BLOCKED: StagingRoot '$stagingRoot' traverses a reparse/junction point." }
 if (-not (Test-Path -LiteralPath $run)) { [void](Assert-C05EBuildDestination $run 'OutputRoot') }
 if ((Test-Path -LiteralPath $stagingRoot) -and -not $ReuseStaging) { throw "BLOCKED: staging root already exists and must not be reused without -ReuseStaging: $stagingRoot" }
 $stagingReused = [bool]($ReuseStaging -and (Test-Path -LiteralPath $stagingRoot))
+$stagingSourceChanged = $false
 if ($stagingReused) {
   $ownerMarker = Join-Path $stagingRoot '.c05-owned-staging.json'
   if (-not (Test-Path -LiteralPath $ownerMarker -PathType Leaf)) { throw "BLOCKED: reused staging '$stagingRoot' has no ownership marker." }
@@ -1244,12 +1274,15 @@ try {
     if (-not (Test-Path -LiteralPath $project -PathType Container)) { throw 'BLOCKED: reuse staging project is missing.' }
     # Authored inputs are reset from the frozen source before any build; the post-sync
     # closure comparison below is the authority, not a possibly stale creation-time digest.
+    $previousDigest = (Get-Content -LiteralPath $stagingDigestPath -Raw).Trim()
+    $sourceChanged = -not [string]::Equals($previousDigest, $sourceClosureDigest, [StringComparison]::OrdinalIgnoreCase)
     if (-not (Sync-C05EStagingAuthored $sourceProject $project)) { throw "BLOCKED: $script:C05EStagingViolation" }
     $stagingClosure = @(Get-C05ESourceClosure $project)
     $stagingAuthoredDiff = @(Compare-C05ESourceClosure $sourceFreezeBefore $stagingClosure)
     if ($stagingAuthoredDiff.Count) { throw ('BLOCKED: reused staging authored inputs differ from source after sync: ' + ($stagingAuthoredDiff -join '; ')) }
     [IO.File]::WriteAllText($stagingDigestPath, $sourceClosureDigest, (New-Object Text.UTF8Encoding($false)))
-    Write-Host ("STAGE reuse-staging {0:o} sourceFiles={1} digest={2} staging={3}" -f (Get-Date), $sourceFreezeBefore.Count, $sourceClosureDigest, $stagingRoot)
+    $stagingSourceChanged = [bool]$sourceChanged
+    Write-Host ("STAGE reuse-staging {0:o} sourceFiles={1} digest={2} sourceChanged={3} staging={4}" -f (Get-Date), $sourceFreezeBefore.Count, $sourceClosureDigest, $sourceChanged, $stagingRoot)
   }
   else {
     Write-Host ("STAGE copy-staging {0:o} sourceFiles={1} staging={2}" -f (Get-Date), $sourceFreezeBefore.Count, $stagingRoot)
@@ -1422,7 +1455,7 @@ exit `$LASTEXITCODE
     stagingRoot=$(if ($stagingRoot.StartsWith(([IO.Path]::GetFullPath($root) + [IO.Path]::DirectorySeparatorChar), [StringComparison]::OrdinalIgnoreCase)) { $stagingRoot.Substring($root.Length + 1).Replace('\','/') } else { $stagingRoot.Replace('\','/') });
     sourceInputFreezeSha256=$sourceFreezeSha; sourceInputFileCount=$sourceFreezeBefore.Count;
     sourceInputsUnchanged=$true; sourcePluginsUnchanged=$true; sourcePluginBeforeHashes=$sourcePluginBeforeHashes;
-    stagingReused=$stagingReused; stagingAuthoredInputsSynced=$stagingReused; stagingAuthoredClosureMatchesSource=$true;
+    stagingReused=$stagingReused; stagingSourceChanged=$stagingSourceChanged; stagingAuthoredInputsSynced=$stagingReused; stagingAuthoredClosureMatchesSource=$true;
     inputSha256=$inputHashes; sharedPluginsAfterBuild=$pluginsAfter;
     sharedProvenance=@($provenanceCopies.ToArray());
     unityPath=$unity; unityVersion=$unityVersion; projectVersion=(Get-Content (Join-Path $project 'ProjectSettings\ProjectVersion.txt') -Raw).Trim();
