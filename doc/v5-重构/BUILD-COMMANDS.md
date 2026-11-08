@@ -75,15 +75,6 @@ BLOCKED: staging path budget=FAIL_PATH_BUDGET
 
 ### 2.2 常用命令（自动冷/增量）
 
-**冷构建不要传 `-RegistryCacheSource`。** `Copy-C05EStagingProject` 会把源工程的
-`Library`（含 `PackageCache`）一起复制进 staging，再传种子会因为目标已存在而被拒绝：
-
-```
-BLOCKED: refusing to merge a registry cache into an existing staging PackageCache
-```
-
-只有源工程没有 `Library/PackageCache` 时才需要种子。
-
 ```powershell
 $g = [guid]::NewGuid().ToString('N')
 powershell -NoProfile -ExecutionPolicy Bypass `
@@ -95,11 +86,23 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -AvdHome "D:\Android\avd"
 ```
 
+**关于 `-RegistryCacheSource`（几乎总是不需要）**
+
+`Copy-C05EStagingProject` 会把**源工程**的 `Library`（含 `PackageCache`）复制进 staging。
+因此只有当源工程 `unity/Mahjong.Unity/Library/PackageCache` **不存在**时才需要种子：
+
+```powershell
+# 仅当上一条命令报 "fresh staging has no materialized registry PackageCache" 时追加
+  -RegistryCacheSource "D:\c05s\bd368e8a85ca4581851171d9e61083bc\project\Library\PackageCache"
+```
+
+脚本已自动判断：staging 里已经有 `PackageCache` 时会跳过种子复制，不会因重复而失败。
+
 - `-OutputRoot` 必须位于本仓库 `build/` 下，且**必须是尚不存在的目录**（脚本拒绝复用已有输出目录）
 - 产物：`build/<guid>/Mahjong-emulator-x86_64.apk`（约 40 MB）
 - 证据：同目录下 `summary.json`、`build-report.json`、`unity.log`
 
-> 已完成冷构建后，再次执行同一条命令会自动走增量（staging `a` 保留在 `build/c05-emulator-staging/a`）。
+> 冷构建完成后再次执行同一条命令会自动走增量（staging 保留在 `build/c05-emulator-staging/a`）。
 
 ### 2.3 私有工具链
 
