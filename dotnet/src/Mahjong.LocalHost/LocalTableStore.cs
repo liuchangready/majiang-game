@@ -1797,6 +1797,12 @@ namespace Mahjong.LocalHost
             int backupRotationRetries = 0;
             while (true)
             {
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    TryDelete(tmp);
+                    return LocalWriteResult.Aborted("Local save was cancelled before its commit point.");
+                }
+
                 try
                 {
                     _files.Replace(tmp, _primaryPath, _backupPath);

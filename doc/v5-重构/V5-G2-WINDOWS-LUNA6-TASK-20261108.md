@@ -105,3 +105,22 @@ Delivery 必含实际基线与候选 commit/dirty inputs、Unity Windows 包绝�
 - 范围变更文件：`dotnet/src/Mahjong.LocalHost/LocalFileSystem.cs`、`LocalTableStore.cs`、`LocalTableDriver.cs`；`dotnet/tests/Mahjong.LocalHost.Tests/LocalTableStoreTests.cs`、`C04RoomTicketTests.cs`、`LocalControlTests.cs`；任务卡、Delivery、Binding。保持改动最小，不改 Unity 生产 UI/验证器/历史 Census 或 G2 阈值。
 - 本轮五组全量结论：D-1-01 改为 MAJOR/G8 PARTIAL；D-1-02、D-1-04、D-1-05 仍 OPEN；D-2-01 的代码和组件验收 PASS，但仍需冻结 Actions 候选前置。当前 Windows 32 项为 18 PASS、6 PARTIAL、0 FAIL、8 NOT_RUN；Android 九行 NOT_RUN。
 - 接续：先待桥接按同一 thread 生命周期为本轮 dirty 修复生成合法 clean candidate，再跑 WindowsActions；不得手工提交、藏改动或放松 clean/fresh guard。随后完成 G1/G2/G4/G7-02、G8、G7-01 离线与同包 32 行闭包。未完成项保持 OPEN/NOT_RUN；本轮不签署 G2、不更改 V4 生产地位。
+# 第4轮执行增补（2026-11-08）
+
+桥接复核起点为干净候选 `cf477a7497c8c016e540917dab24f7a2d4318c46`，父提交 `7f3942490eab8000e731f94049b48c10850a2257`，merge-base 仍为 `4523485cfd4ec2b32185a7da5c13f6cbaf54a1e1`。源码修复后当前树为 dirty；不得绕过 clean/fresh guard。WindowsActions 已在修改前、以该干净候选实际完成冻结归档、前置、PlayMode 和四案 Windows Player；详见 Delivery 第4轮。后续需要候选冻结时走桥接生命周期，不手工提交。
+
+## 第4轮实测与门禁
+
+- D-3-01 已在 `LocalTableStore.Persist` 每次原子替换重试前检查取消；预提交取消通过既有 `CompleteWrite` 转为安全 `OutcomeUnknown`/fencing，不从内存写路径直接抛取消；已提交候选仍以候选字节核验保留 `Committed`。
+- Release 与 Debug 都从本轮 dirty 源在 `E:\g2-r4-release`、`E:\g2-r4-debug` 独立构建并通过，完整 191 项/191 通过/0 失败/0 跳过/0 未运行。D-3 定向四案 4/4 通过；取消探针对修复后当前 Release DLL 输出 `replaceAttempts=1`、`verdict=Aborted`、`primaryChanged=False`。命令、XML 与 SHA256 见 Delivery 第4轮证据表。
+- WindowsActions 在 clean `cf477...` 的四个 PlayMode 正例 4/4 通过；普通 Windows Player 的 Pon、Chi、Riichi、ClosedKan 四个正例各 exit 0，汇总 `C04_PLAYER_ACTIONS_PASS`。Riichi 原件只证明普通立直，不证明双立直；ClosedKan 原件证明岭上替换摸牌，不证明抢杠；逐 Census 负例仍缺。因此 G2 行仅将实际正例绑定并保持 `PARTIAL`，不得将它们计为完整合同 PASS。
+- 当前 32 行总判定仍不通过。G1 真实牌局分支、G2 缺少的负例/双立直/抢杠、G4 玩家 Player 控制代次与重入、G7 权威入口与离线隔离、G8 完整布局与真实输入、同一最终候选/同包闭包仍须完成。WindowsActions 的旧 clean 包只作本轮实际支持证据；因 LocalHost 源已修改，它不是本轮最终候选包。Android 9 行继续排除并为 `NOT_RUN`。
+- G7-01 离线隔离只做了只读预检，未执行离线 Player：WLAN 与 Meta Tunnel 均为 Up；Windows Defender Firewall 三 profile 为 Enabled 但 DefaultOutboundAction=NotConfigured；找不到 `WindowsSandbox.exe`，而按程序配置防火墙会修改主机安全配置，超出本轮安全环境条件。预检原件 `E:\g2-r4-offline-preflight.txt` SHA256 `6E7C9555727E4092C5FB33529ABC2AE960724C0C61E556C35E76C76DF51DB340`。没有改适配器、防火墙或安全设置；该环境条件不阻止其他可做场景继续。
+- G7-02 另运行真实 TableService Kestrel/WebSocket 结算正例及 raw settlement envelope 拒绝负例各一项，2/2、0 skip；这只证明服务端有权威结算边界，不等于指定 LOCAL 资产请求及其零版本/事件/账本/outbox 增量断言。原件/hash 在 Delivery 与 Binding，G7-02 保持 PARTIAL。
+- WindowsActions 原件已从 C 盘完整复制到 `E:\g2-r4-actions` 并逐文件校验 4,267 个文件/1,093,417,431 字节；原 `build/4f8760efef9c45d0b585c9c2fbfb5ee8` 稳定路径是指向该 E 盘副本的 junction。文件级 SHA256 清单 `E:\g2-r4-actions-files.sha256.json` SHA256 `91B14CD9BD29B8CF232B1B1E04095BC682F255A9ED4510EA4C1BA66C93E68069`。长路径导致跨卷移时留下的 37 个文件另存于 `build/4f8760efef9c45d0b585c9c2fbfb5ee8-source-remnant-r4`，其余残留副本在 `E:\g2-r4-actions-source-original`；两者未删除，完整可引用证据以 E 盘校验副本为准。迁移后 C 盘可用空间约 1.09 GB，E 盘约 247 GB。
+
+### 当前变更文件范围
+
+- `dotnet/src/Mahjong.LocalHost/LocalTableStore.cs`：取消检查，仅在重试边界。
+- `dotnet/tests/Mahjong.LocalHost.Tests/LocalTableStoreTests.cs`：预提交取消无第二次替换与双 envelope 不变；提交后异常仍 Committed；覆盖既有瞬时/持续锁案。
+- 本任务 Task、Delivery 与 Binding 文档：追加第4轮事实与原件绑定；不修改 Census、统一 verifier 或验收标准。

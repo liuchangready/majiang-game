@@ -158,3 +158,82 @@ AppMatrix 8 个共享 DLL 闭包（文件 SHA-256）为：`Google.Protobuf.dll` 
 本轮逐 ID 状态：D-1-01 为 MAJOR、G8 仅 PARTIAL；D-1-02 OPEN；D-1-04 OPEN/NOT_RUN；D-1-05 OPEN；D-2-01 已完成根因修复并通过当前源码 Release/Debug 组件层，但待冻结候选 Actions 复验。Binding 当前 Windows 计数 18 PASS、6 PARTIAL、0 FAIL、8 NOT_RUN；Android 九行继续排除并为 NOT_RUN。没有普通 Player 最终同包 32 项证据，不 approve、不签署 G2，不改变 V4 地位。
 
 桥接在本轮开始时已提供干净 `7f394249...`，故先实际运行 Actions，而没有以“无 checkpoint”跳过可运行前置。源码修复后工作树 dirty。当前工具面没有可调用的 bridge checkpoint/freeze 操作；不得手工提交或藏起输入。下一可执行检查点是桥接按既有线程生命周期为本 dirty 修复生成合法 clean candidate；生成后首先重跑 WindowsActions，若前置通过继续 PlayMode/Player 与同包矩阵。真实离线环境需单独确认安全可用；不得将此资源/输入尚未取得写成 PASS。
+# 第4轮返修与完整缺陷状态（2026-11-08）
+
+## 本轮结论
+
+本任务范围仍未通过，未签署 G2、未提交/推送/合并。桥接当前候选起点为 `cf477a7497c8c016e540917dab24f7a2d4318c46`（父 `7f3942490eab8000e731f94049b48c10850a2257`，merge-base `4523485cfd4ec2b32185a7da5c13f6cbaf54a1e1`）。D-3 修复使工作树 dirty；当前任何 WindowsActions 旧包或 R3 分套件包都不是修复后最终同包矩阵。
+
+## 首次失败、修复与复验
+
+| ID | 严重级别 | 位置 | 首次实际结果/证据 | 本轮修复与映射 | 本轮复验和剩余验收 |
+|---|---|---|---|---|---|
+| D-3-01 | MAJOR | `dotnet/src/Mahjong.LocalHost/LocalTableStore.cs` 的 `Persist` 有界 backup replace 重试边界；`LocalTableStoreTests.cs` | R3 确定性注入原件 `E:\g2-review-r3-8303bbb83a284eb88cb92a7f554eac4e\probe.log`（SHA256 `5934C4CB7BC06CEF44833F1758CF5C97DA834F96FE59B358DBA1182EC8578FB4`）：首次 0x80070497 替换前失败时 token 已取消，但再试一次且提交。 | 每次下一次替换前检查取消；清理候选临时文件并返回 Aborted，让现有 `CompleteWrite` 负责 Unknown/fencing；候选字节已显示线性化提交时仍返回 Committed。新增 `CancellationAfterTransientReplaceFailureDoesNotRetryOrChangeEitherEnvelope` 与 `CancellationAfterAtomicReplaceErrorStillInstallsCommittedFactsOnce`。 | 定向4案 exit 0、4/4（两条新案+`AtomicReplaceRetriesOnceAfterARealTransientBackupLock`+持续锁案）；完整 Release/Debug 各 exit 0、191/191、0 skip。修复后独立探针 `E:\g2-r4-D3-probe-after.log`：tokenCancelled=True、replaceAttempts=1、verdict=Aborted、primaryChanged=False。完整 hash 列见下。 |
+| D-1-02 | MAJOR | G1/G2/G4/G7-02 真实场景及 WindowsActions | R3 Actions 先前 187/186/1/0，未启动 Player；失败原件路径与 hash 保留于前轮。 | 首先在 clean `cf477...` 上运行 Actions，没有先改源码。冻结归档/Release 前置/脚本正负例/PlayMode/Player 全部实际到达。 | 四个 PlayMode 正例与四个普通 Player 动作正例 PASS；G2 census 的非法负例、双立直事实、抢杠分支尚未覆盖；G1、G4 玩家场景和 G7-02 服务入口仍缺，故相应行 PARTIAL/NOT_RUN。本任务尚未完成。不得以当前 dirty DLL 重跑要求 clean 的 runner。 |
+| D-1-01 | MAJOR | G8-01/02 | R2 生产 UI 裁切/缺脚本判断已按 DPI-aware 原件纠正；不重开生产 UI 缩放缺陷。 | 无生产 UI 修改。保留正确 DPI context 的采集方法与旧原件。 | Actions 普通包仅有四个动作案例，没有覆盖菜单→完整对局→结算、多比例完整帧及真实鼠标/键盘输入绑定。G8 仍 PARTIAL；须最终包完整复验。 |
+| D-1-04 | MAJOR | G7-01 | 旧 FullMatch“无远端服务进程”证据不足；本轮无真实网络隔离/进程出站观察。 | 无过度结论或改全局网络。 | G7-01 非 PASS。仍须在安全受控离线环境绑定本地 transport、进程身份/出站观察、Player 同包与完整结算。 |
+| D-1-05 | MAJOR | 最终 candidate/package/runs 闭包 | 以前套件各自 fresh 构建，不能合并成一个 Player。 | 无摘要刷新或拼包。Actions clean 包只保留为其起点 `cf477...` 的支持证据。 | D-3 修改 LocalHost 输入后，尚未经桥接冻结的新候选构建；无 32 行同一最终包完整文件/8 DLL/资源插件/BuildReport 闭包。该项 OPEN。 |
+
+## 第4轮真实命令与封存证据
+
+WindowsActions 在修改 D-3 源码之前，候选 `cf477a7497c8c016e540917dab24f7a2d4318c46`、源码 clean。原命令为：
+
+```powershell
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File R:\thread_20261108_190230_2b67\tools\unity\run-p45-c04-player-actions.ps1 -RunRoot R:\thread_20261108_190230_2b67\build\4f8760efef9c45d0b585c9c2fbfb5ee8 -UnityPath D:\game_dev_tools\unity\Editor\Unity.exe -DotnetPath D:\game_dev_tools\dotnet\dotnet.exe -NugetSeedRoot C:\Users\sncdc\.nuget\packages -NugetSeedAuditPath R:\thread_20261108_190230_2b67\build\g2-r3-nuget-seed-audit.json -ExpectedCandidate cf477a7497c8c016e540917dab24f7a2d4318c46 -MutexTimeoutSeconds 600 -MutexHeartbeatSeconds 30 -TimeoutSeconds 1800
+```
+
+结果：归档/抽取通过；LocalHost 与 TableRuntime 前置 exit 0；Unity PlayMode XML 原生 exit 0，4/4、0 skip、0 inconclusive，`build/4f8760efef9c45d0b585c9c2fbfb5ee8/logs/playmode.xml` SHA256 `5ADD627B9CC3AE6BFD775D2E25B2627EC0126FE0308B7BDF4BE4C3CCE5DBBC30`；普通 Player 构建 exit 0；Pon/Chi/Riichi/ClosedKan 四个 Player 进程及 authority verifier 各 exit 0。Runner summary PASS，PlayMode 实际计数 4；封存 `summary.json` SHA256 `14B212BA80C1070172E5B84863059EB58BE9F551D6F96F5679DF3D69EBC9E526`、`manifest.json` SHA256 `6DD9FF192AB675D86D69F2C0AD56CA3B831A3D44549DB8012B5B891660CFCA04`、`player-package.json` SHA256 `2E8A5CAA16F68C89102BA21ADA4FDCDCD83E8623DA50498E0DB0CF3187688629`。四案逐行原始 JSONL、摘要、execution、Player log 及 hash 由 summary 绑定。该 run 不覆盖 Census 全部非法分支，也不属于 D-3 修复后的最终候选。
+
+证据目录原稳定路径仍是 `build/4f8760efef9c45d0b585c9c2fbfb5ee8`（junction），完整副本在 `E:\g2-r4-actions`。共 4,267 个文件、1,093,417,431 字节；迁移前后逐文件 SHA256 一致。独立文件 SHA256 清单 `E:\g2-r4-actions-files.sha256.json` SHA256 `91B14CD9BD29B8CF232B1B1E04095BC682F255A9ED4510EA4C1BA66C93E68069`。因长路径跨卷 Move 失败的残余未丢弃：37 个文件留在 `build/4f8760efef9c45d0b585c9c2fbfb5ee8-source-remnant-r4`，4,230 个在 `E:\g2-r4-actions-source-original`；完整封存证据只从稳定 junction / E 盘校验副本读取。C 盘释放后约 1.09 GB 可用，E 盘约 247 GB。
+
+D-3 定向命令（Release DLL 经 `build/r4-release-link` junction 回到本仓库，避免 `P41Harness` 在 E 盘路径找不到仓库根）：
+
+```powershell
+D:\game_dev_tools\dotnet\dotnet.exe exec build\r4-release-link\bin\Mahjong.LocalHost.Tests\release\Mahjong.LocalHost.Tests.dll -noLogo -automated -failSkips -method Mahjong.LocalHost.Tests.LocalTableStoreTests.CancellationAfterTransientReplaceFailureDoesNotRetryOrChangeEitherEnvelope -method Mahjong.LocalHost.Tests.LocalTableStoreTests.CancellationAfterAtomicReplaceErrorStillInstallsCommittedFactsOnce -method Mahjong.LocalHost.Tests.LocalTableStoreTests.AtomicReplaceRetriesOnceAfterARealTransientBackupLock -method Mahjong.LocalHost.Tests.LocalTableStoreTests.PersistentBackupLockLeavesOldEnvelopeAndOutcomeUnknown -result-xml E:\g2-r4-D3-targeted2.xml
+```
+
+结果 native exit 0，XML `4/4/0/0/0`；XML SHA256 `0A425E5CF83AEC0A05866727B1D06FE227D9B33C4C4671854E73024BA4C95D4B`，机器输出 SHA256 `43DE09ECB5ED91D518871D092AE8B155A955D0952257D2299D7180994FC160F9`。取消探针对修复后 DLL 的独立复测命令为 `D:\game_dev_tools\dotnet\dotnet.exe exec build\review-r3-8303bbb8\probe-artifacts\bin\ReviewCancel\release\ReviewCancel.dll build\r4-release-link\bin\Mahjong.LocalHost.Tests\release\Mahjong.LocalHost.Tests.dll`，exit 0，原始输出 `E:\g2-r4-D3-probe-after.log` SHA256 `8D7BBFD1E2D3D84CBD370DFE822F9214AA235183C1D5930940E19390178D7744`。
+
+完整组件命令：
+
+```powershell
+D:\game_dev_tools\dotnet\dotnet.exe build dotnet\tests\Mahjong.LocalHost.Tests\Mahjong.LocalHost.Tests.csproj -c Release --artifacts-path E:\g2-r4-release
+D:\game_dev_tools\dotnet\dotnet.exe exec build\r4-release-link\bin\Mahjong.LocalHost.Tests\release\Mahjong.LocalHost.Tests.dll -noLogo -automated -failSkips -result-xml E:\g2-r4-Release.xml
+D:\game_dev_tools\dotnet\dotnet.exe build dotnet\tests\Mahjong.LocalHost.Tests\Mahjong.LocalHost.Tests.csproj -c Debug --artifacts-path E:\g2-r4-debug --disable-build-servers -nodeReuse:false
+D:\game_dev_tools\dotnet\dotnet.exe exec build\r4-debug-link\bin\Mahjong.LocalHost.Tests\debug\Mahjong.LocalHost.Tests.dll -noLogo -automated -failSkips -result-xml E:\g2-r4-Debug.xml
+```
+
+Release 与 Debug build/test 原生 exit 均为 0；Release build log SHA256 `331AE0292F04A59E5B830F58C48CF8C3E520D88EF4FB46F1D91CA463EFDCD5B5`（0 warnings/0 errors），两配置各 `191 total, 191 passed, 0 failed, 0 skipped, 0 not-run`。Release XML SHA256 `C0E29D5245C349C7768A7FFAA2F46D18F336304E6872F21277D46CB6D44CFF23`；Debug XML SHA256 `5CDC1A514ED5966CB22C6148109B333894736CD761CA2FE94A6FFF94F1D0B246`；Debug build log SHA256 `01EE0F3313F17E7D71622BEF9AB901161D1CD47B32788864B104F13EA5DA0BDE`；Debug test log SHA256 `9042836FC8B17014E1C7818DF29BE9C0B406D4804537B716BAC4D4A5D7DFC27D`。Release build 终端记载 0 warnings/0 errors、exit 0；Release XML 封存于 E 盘；Release test 的 stdout/stderr 保留在本轮工具执行记录中，未另存独立文本文件。结果仅是 LocalHost 组件证据，不是完整 G2。
+
+### G7-02 服务侧支持证据（不等于 LOCAL 资产行关闭）
+
+```powershell
+D:\game_dev_tools\dotnet\dotnet.exe build dotnet\tests\Mahjong.TableService.Tests\Mahjong.TableService.Tests.csproj -c Release --artifacts-path E:\g2-r4-tableservice --disable-build-servers -nodeReuse:false
+D:\game_dev_tools\dotnet\dotnet.exe exec E:\g2-r4-tableservice\bin\Mahjong.TableService.Tests\release\Mahjong.TableService.Tests.dll -noLogo -automated -failSkips -method Mahjong.TableService.Tests.B2TerminalSettlementTests.DealerTsumo_GoesThroughRealMapperActorAndRoundEnd_WithResultAndNoClientSettlementBody -method Mahjong.TableService.Tests.B2TerminalSettlementTests.RawSettlementBearingEnvelope_IsRejectedBeforeAnyScoring -result-xml E:\g2-r4-TableService-focused.xml
+```
+
+构建 exit 0、0 warnings/errors；两个真实 Kestrel/WebSocket 服务用例 exit 0，XML 2/2、0 skip：server-derived Dealer Tsumo 正例，以及 raw settlement-bearing envelope 经 TableSessionHandler 拒绝的负例。Build log SHA256 `2B7CD6093B6AA28F20B9ECDAFDB09AAB78DB1C3FC30CDD0A34F4761B8C4DA166`；XML SHA256 `FCE1CCFC7876DDE14F9151AD9F4C489E3391550BF787049A0A5C3CF8801A794A`；test log SHA256 `0789A1A66815A6B7B1329529D3111E2FA68FDA9A6E74C25DB639EF0970008C26`。这是 G7-02 的权威服务正负侧支持证据，不是用户指定的 LOCAL 资产请求，也没有证明拒绝前后账本/outbox/版本零增量，因此 binding 只记 `PARTIAL`。
+
+## 缺陷卡（本轮全部五组）
+
+| ID / 严重级别 / 位置 | 复现命令或脚本 | 实际 vs 期望 | 证据路径 | 修复要求 | 验收断言 |
+|---|---|---|---|---|---|
+| D-3-01 / MAJOR / `LocalTableStore.Persist` 重试循环及 `LocalTableStoreTests.cs` | 原复现：`D:/game_dev_tools/dotnet/dotnet.exe exec build/review-r3-8303bbb8/probe-artifacts/bin/ReviewCancel/release/ReviewCancel.dll build/review-r3-8303bbb8/Release/bin/Mahjong.LocalHost.Tests/release/Mahjong.LocalHost.Tests.dll`；探针在首次 replace 前取消并注入 0x80070497。 | 原实际 token 已取消仍第二次 replace，Primary 改变并 Committed；期望未线性化取消后不得再替换并走安全 Unknown/fencing；已线性化的提交仍 Committed。 | 原首败 `E:\g2-review-r3-8303bbb83a284eb88cb92a7f554eac4e\probe.log` SHA `5934C4CB7BC06CEF44833F1758CF5C97DA834F96FE59B358DBA1182EC8578FB4`；修复后 `E:\g2-r4-D3-probe-after.log` SHA `8D7BBFD1E2D3D84CBD370DFE822F9214AA235183C1D5930940E19390178D7744`。 | 每次新替换前检查 cancellation；预提交取消清除临时文件并经 `CompleteWrite` fencing，先核候选字节以保护已提交结果；保留精确 HRESULT、有界次数、退避与原子替换。 | 定向四案及完整 Release/Debug 套件实际非零计数通过；取消前置负例 `replaceAttempts=1/primaryChanged=False/OutcomeUnknown`；提交后异常正例 Committed 且单次；瞬时/持续锁原案通过。 |
+| D-1-02 / MAJOR / `WindowsActions` 及 G1/G2/G4/G7-02 census 覆盖 | `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File tools/unity/run-p45-c04-player-actions.ps1 ... -ExpectedCandidate cf477a7497c8c016e540917dab24f7a2d4318c46 -MutexTimeoutSeconds 600 -MutexHeartbeatSeconds 30 -TimeoutSeconds 1800`；本轮完整参数见上文。 | R3 clean Actions 首败 187 项中 186 pass/1 fail 且未启动 Player；本轮 clean Actions 四个 Player 正例通过，但 census 负例、G1 和牌/荒牌连庄、G4 旧 AI/claim/reentry、G7-02 服务 LOCAL 负例仍缺。期望每条原 assertion/binding 有真实端到端证据。 | R3 首败 `E:/g2-r3-evidence-thread_20261108_190230_2b67/508260b3991f44cea1c374e5c8688019/failure.json` SHA `899060EA0DD486EC2A101E41D5B661B9AF8EE6C3E948A5C30D9F9342972B85E2`；R4 Actions `build/4f8760efef9c45d0b585c9c2fbfb5ee8/summary.json` 及逐案 evidence。 | 将缺失场景补为最小真实 Player/服务自动化；保留 136、scope/epoch/deadline/幂等/终态断言，非法动作零变更。 | 四个 Player 正例仍绑定；每个 Census 负例/业务结果/状态/请求/回执逐条有原件；G1/G4/G7-02 缺项未关闭前不能标全行 PASS。 |
+| D-1-01 / MAJOR / G8-01/02 与 DPI-aware UI capture | `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File build/review-r2-a198409d/ui/capture.ps1 -OutputRoot <new-exclusive-root> -Player <fresh-Player-absolute-path>`；同一线程 DPI context 用 `-4` 验证 client 实像素。 | 之前“产品 UI 裁切/缺脚本”已被正确 DPI 采集撤回；当前仅基线菜单通过，支持布局/对局/结算完整帧及真实键鼠还未完成。期望保持生产 UI 原样并完成完整 G8。 | `build/review-r2-a198409d/ui2/client-dpi-aware.png`、`capture.log`、`player.log`（R2 修正原件）；当前 Actions 包不是 D-3 修复后最终包。 | 采集测量/capture/input 使用同一 DPI context、绝对 Player `-logFile`、独占 smoke-data；不改生产 Canvas。 | 多比例菜单/牌桌/结算全帧目视；鼠标键盘可达完整关键流程，一输入最多一个合法请求，取消/焦点/旧输入不提交，并绑定包/状态/请求/回执。 |
+| D-1-04 / MAJOR / C04-G7-01 真实离线 | 旧复现入口 `tools/unity/run-p45-full-match.ps1`（真实命令参数保存在 `build/g2-win-fullmatch-2e85604a/command.json`）；当前环境预检见 `E:\g2-r4-offline-preflight.txt`。 | 旧证据仅“不运行远端服务进程”，没有隔离或出站观察；本轮预检发现 WLAN、Meta Tunnel Up，无 Sandbox，防火墙默认出站均 NotConfigured。期望同一普通 Player 在真实隔离中完成一场且无远端尝试。 | 旧 `command.json`/FullMatch summary（不能作离线证明）；本轮预检 SHA `6E7C9555727E4092C5FB33529ABC2AE960724C0C61E556C35E76C76DF51DB340`。 | 不改全局网络/安全配置；需既有安全隔离环境，保留真实本地 transport 和进程出站观察。 | 同候选 Player 从菜单整场到终态，绑定隔离环境、进程、channel、无远端尝试、得分/排名/账本与包 hash；当前仍 NOT_RUN。 |
+| D-1-05 / MAJOR / final candidate 与 `packages/runs` 全包输入闭包 | 对现存各 suite 的 `summary.json`、`player-package.json`/`player-files.json`、`evidence/artifacts.json` 与 candidate/input closure 做 SHA 和路径对照；各 runner 单独 fresh 构建命令列于 task card。 | 旧套件分别生成不同包；即便 `Mahjong.exe` hash 一样，也不能证明场景/资源/插件/8 DLL/BuildReport 一致。D-3 源修改后的最终包尚未构建。期望 32 行绑定同一冻结候选/同一全包。 | 当前 R4 Actions `manifest.json`/`player-package.json` 仅覆盖 clean `cf477...` 起点；R3 分套件 artifacts 与本轮 D3 XML 各自保留。 | 已知改动后经桥接合法冻结候选，遵守 fresh-build/clean guard；不拼包、不 skip、不改 verifier。 | 最终 32 行同候选、同 Player 完整清单，8 DLL、资源/插件、BuildReport、source/generated inputs 与逐行原件 hash 一致；Android 9 仍 NOT_RUN。 |
+
+## 复核人要求的统一负例矩阵及验收映射
+
+| 缺陷组 | 必须负例/边界 | 修复验收 |
+|---|---|---|
+| D-3-01 原子保存 | 第一次精确 0x80070497 替换前失败并取消；替换已发生后报告异常并取消；瞬时锁与持续锁。 | 预提交只尝试一次、primary/backup 不变且进入既有 Unknown/fencing；已线性化仍 Committed 且单副作用；既有重试数和字节校验不变。当前定向4案及完整 LocalHost 两配置已通过。 |
+| D-1-02 玩家/服务覆盖 | Pon/Chi/Riichi/Kan 非法或陈旧动作零变更；双立直条件事实；抢杠窗口；旧 AI decision 被废止；重入请求对账；显式 claim 增 epoch；LOCAL 资产经实际 `ITableChannel → TableSessionHandler` 被拒，版本/事件/账本/outbox 零增量，并有合法 server-derived 正例。 | 每个 census 原断言以真实 PlayMode/Player 或真实服务入口和原始请求/状态/回执证明。当前动作四案只有正向部分；余项仍 OPEN。 |
+| D-1-01 G8 UI | 基线/宽/高支持比例菜单、牌桌、结算完整画面；取消/焦点/旧输入不得提交；重复输入至多一次请求。 | DPI-aware 同上下文测量；绝对 Player log；截图语义人工检查与输入—请求—回执绑定。仅菜单基线此前通过，其余未完成。 |
+| D-1-04 离线 | 同一 Player 在隔离网络中完成完整本地对局；无远端 channel/egress。 | 记录隔离环境、进程身份、transport、出站观察、结算分数/账本/终态。当前未执行，NOT_RUN。 |
+| D-1-05 同包闭包 | 每行必须与相同冻结候选及完整包 manifest 对应；不同 suite 包不得混配。 | 8 DLL、场景/资源/插件、BuildReport、完整文件 SHA 与逐行原件绑定；修复后最终矩阵尚未构建。 |
+
+当前可确认的根因/修复仅 D-3-01；其余四组不宣称修复。最早 Actions 失败、R1/R2/R3 首败、历史错误 DPI 判断与后续更正均保留，不覆盖原件。当前无需等待兄弟任务；应由桥接在源码修复批次完成后产生下一干净检查点，再继续要求 clean 的 Player/fresh 全矩阵。
+
+G7-01 安全环境预检原件：`E:\g2-r4-offline-preflight.txt` SHA256 `6E7C9555727E4092C5FB33529ABC2AE960724C0C61E556C35E76C76DF51DB340`。检查发现物理 WLAN 与 Meta Tunnel 均为 Up，防火墙 profiles 虽启用但出站默认策略均为 `NotConfigured`，当前没有 Windows Sandbox 可执行入口。建立仅针对 Player 的阻断需要添加主机防火墙规则，违反“不改全局机器网络/安全配置”的执行约束，因此未声称本次离线场景通过，也未改机器设置；其他 G1/G4/G7-02/G8 工作仍可继续。

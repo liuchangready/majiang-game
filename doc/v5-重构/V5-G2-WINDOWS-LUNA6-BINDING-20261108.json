@@ -177,9 +177,9 @@
                       "initialFixture":  "Real legal state via actual run/declared seed; do not call authority internals to set hand.",
                       "assertion":  "Applied request has exactly one matching PonDeclared/visible event; meld/called tile/from-seat and hand update correct; wall and entity set remain 136; stale/illegal Pon rejected without mutation.",
                       "contractBindings":  "Response decisionId, requestId/scope, seat/role/controlEpoch, round/version/event cursor and canonical payload SHA.",
-                      "execution":  "NOT_RUN",
-                      "verdict":  "NOT_RUN",
-                      "reason":  "WindowsActions stopped at LocalHost test failure before PlayMode/Player cases.",
+                      "execution":  "EXECUTED",
+                      "verdict":  "PARTIAL",
+                      "reason":  "Real Player positive action is evidenced in reviewRound4; census stale/illegal zero-mutation negative is not run, so this row remains PARTIAL.",
                       "evidence":  [
                                        "build/03df57915be94225a3aec489dc03a072/failure.json",
                                        "build/luna6-clean-run-20261108/localhost-rework-4b351fab/LocalHost.xml"
@@ -193,9 +193,9 @@
                       "initialFixture":  "Actual live round and candidate options from Player, record real seed/state provenance.",
                       "assertion":  "One Applied + matching ChiDeclared visible event; correct ordered tile IDs/called source; conservation 136; unavailable sequence rejected without version change.",
                       "contractBindings":  "DecisionId, request/scope/payload SHA, seat, round/version/cursor/control epoch.",
-                      "execution":  "NOT_RUN",
-                      "verdict":  "NOT_RUN",
-                      "reason":  "WindowsActions stopped at LocalHost test failure before PlayMode/Player cases.",
+                      "execution":  "EXECUTED",
+                      "verdict":  "PARTIAL",
+                      "reason":  "Real Player positive action is evidenced in reviewRound4; census unavailable-sequence zero-mutation negative is not run, so this row remains PARTIAL.",
                       "evidence":  [
                                        "build/03df57915be94225a3aec489dc03a072/failure.json",
                                        "build/luna6-clean-run-20261108/localhost-rework-4b351fab/LocalHost.xml"
@@ -209,9 +209,9 @@
                       "initialFixture":  "Legal Player state with actual candidates; record whether first-turn condition is naturally met.",
                       "assertion":  "Riichi declaration event and stick debit occur once, reach/ippatsu facts are projected, invalid/non-tenpai declaration rejects unchanged; next settlement includes correct sticks.",
                       "contractBindings":  "Turn decision, request/scope, seat/round/version, event cursor, ledger balance and control epoch.",
-                      "execution":  "NOT_RUN",
-                      "verdict":  "NOT_RUN",
-                      "reason":  "WindowsActions stopped at LocalHost test failure before PlayMode/Player cases.",
+                      "execution":  "EXECUTED",
+                      "verdict":  "PARTIAL",
+                      "reason":  "Ordinary Riichi action and one-stick debit are evidenced in reviewRound4; the run did not establish first-turn double-Riichi facts or invalid-riichi zero-mutation negative, so this row remains PARTIAL.",
                       "evidence":  [
                                        "build/03df57915be94225a3aec489dc03a072/failure.json",
                                        "build/luna6-clean-run-20261108/localhost-rework-4b351fab/LocalHost.xml"
@@ -225,9 +225,9 @@
                       "initialFixture":  "Real legal state; record exact Kan kind and whether chankan branch was available.",
                       "assertion":  "KanCommitted/declared and replacement wall movement reconcile; chankan window resolves exactly once; impossible Kan rejected; physical set stays 136.",
                       "contractBindings":  "Decision/request/scope/payload SHA, round/version/event cursor, seat/control epoch, replacement wall and terminal response identity.",
-                      "execution":  "NOT_RUN",
-                      "verdict":  "NOT_RUN",
-                      "reason":  "WindowsActions stopped at LocalHost test failure before PlayMode/Player cases.",
+                      "execution":  "EXECUTED",
+                      "verdict":  "PARTIAL",
+                      "reason":  "ClosedKan and replacement draw are evidenced in reviewRound4; this run did not exercise chankan or illegal-kan zero-mutation, so this row remains PARTIAL.",
                       "evidence":  [
                                        "build/03df57915be94225a3aec489dc03a072/failure.json",
                                        "build/luna6-clean-run-20261108/localhost-rework-4b351fab/LocalHost.xml"
@@ -558,9 +558,9 @@
                       "initialFixture":  "TableServiceTestHost with DealerTsumoRound; current negative constructs a caller-supplied RoundSettlement and raw SUBMIT_ACTION envelope. It is not a real LOCAL save/outbox asset and does not traverse ITableChannel.",
                       "assertion":  "Through an actual TableSession/ITableChannel request into TableSessionHandler, submit a LOCAL-origin/caller-supplied settlement payload and require rejection before actor/store commit; assert stateVersion unchanged and zero outbox/settlement records. Submit a valid server-derived settlement control through the supported typed path.",
                       "contractBindings":  "Service room/session, origin/transport provenance, match/round/version, request scope/ID, receipt and durable commit ID.",
-                      "execution":  "NOT_RUN",
-                      "verdict":  "NOT_RUN",
-                      "reason":  "No real service/settlement authority rejection of LOCAL assets was executed.",
+                      "execution":  "EXECUTED",
+                      "verdict":  "PARTIAL",
+                      "reason":  "Real TableService Kestrel/WebSocket server-derived settlement positive and raw settlement-envelope rejection negative are supporting evidence in reviewRound4. The specific LOCAL asset and zero state/ledger/outbox delta assertion was not executed, so this row remains PARTIAL.",
                       "evidence":  "build/4091659e35504e70849026b37de28d0c/executions/p45-20261108-191351-2636b2d1/driver/summary.json"
                   },
                   {
@@ -669,5 +669,199 @@
         {"configuration":"Debug","buildExit":0,"testExit":0,"total":189,"passed":189,"failed":0,"skipped":0,"notRun":0,"buildLog":"E:/g2-r3-debug-build.log","buildLogSha256":"B3CD5F6ABA1FB45B3252F3BF01DDE370C2AD4E9E3D1E11971736D33CDBB19005","testLog":"E:/g2-r3-debug-linked2-LocalHost.log","testLogSha256":"C1E97F506B3E170A2E229025F607CB576417F0E23CC2D494DC973ACD727E2A59","resultXml":"E:/g2-r3-debug-linked2-LocalHost.xml","resultXmlSha256":"657BAAD1DAB7674F15DB2E4C5FB577149B65F287D5F96F908E84606A9BEF6480"}
       ],
       "uiCorrection": {"captureDpiContext":-4,"clientPixels":"1280x720","windowPixels":"1312x808","verdict":"baseline Menu complete; no production UI scaling change"}
-     }
+     },
+  "reviewRound4":  {
+    "startHead":  "cf477a7497c8c016e540917dab24f7a2d4318c46",
+    "parent":  "7f3942490eab8000e731f94049b48c10850a2257",
+    "mergeBase":  "4523485cfd4ec2b32185a7da5c13f6cbaf54a1e1",
+    "candidateStatus":  "dirty after D-3-01 code/test repair; no manual commit",
+    "conclusion":  "NOT_APPROVED_SCOPE_INCOMPLETE",
+    "windowsDenominator":  32,
+    "androidRowsNotRun":  9,
+    "caseCounts":  {
+                       "PASS":  18,
+                       "PARTIAL":  11,
+                       "FAIL":  0,
+                       "NOT_RUN":  3
+                   },
+    "defects":  [
+                    {
+                        "id":  "D-3-01",
+                        "severity":  "MAJOR",
+                        "status":  "component fix verified; final frozen-candidate retest pending",
+                        "evidence":  "E:/g2-r4-D3-probe-after.log; E:/g2-r4-D3-targeted2.xml; E:/g2-r4-Release.xml; E:/g2-r4-Debug.xml"
+                    },
+                    {
+                        "id":  "D-1-02",
+                        "severity":  "MAJOR",
+                        "status":  "four Player positives plus real service settlement positive/negative executed; remaining census negatives and G1/G4/G7-02 LOCAL-asset contract incomplete",
+                        "evidence":  "build/4f8760efef9c45d0b585c9c2fbfb5ee8/summary.json"
+                    },
+                    {
+                        "id":  "D-1-01",
+                        "severity":  "MAJOR",
+                        "status":  "G8 remains PARTIAL; prior DPI correction stands",
+                        "evidence":  "build/review-r2-a198409d/ui2/client-dpi-aware.png"
+                    },
+                    {
+                        "id":  "D-1-04",
+                        "severity":  "MAJOR",
+                        "status":  "G7-01 NOT_RUN; no safe isolated network evidence",
+                        "evidence":  "C04-G7-01"
+                    },
+                    {
+                        "id":  "D-1-05",
+                        "severity":  "MAJOR",
+                        "status":  "no post-fix frozen same-package matrix",
+                        "evidence":  "Round 4 component and Actions manifests"
+                    }
+                ],
+    "actionsRun":  {
+                       "head":  "cf477a7497c8c016e540917dab24f7a2d4318c46",
+                       "sourceTreeStatus":  "clean at invocation",
+                       "nativeExit":  0,
+                       "playMode":  {
+                                        "total":  4,
+                                        "passed":  4,
+                                        "failed":  0,
+                                        "skipped":  0,
+                                        "xml":  "build/4f8760efef9c45d0b585c9c2fbfb5ee8/logs/playmode.xml",
+                                        "sha256":  "5ADD627B9CC3AE6BFD775D2E25B2627EC0126FE0308B7BDF4BE4C3CCE5DBBC30"
+                                    },
+                       "playerCases":  [
+                                           "C04-G2-01",
+                                           "C04-G2-02",
+                                           "C04-G2-03 ordinary Riichi",
+                                           "C04-G2-04 ClosedKan/replacement"
+                                       ],
+                       "playerPositiveCases":  4,
+                       "caseNegativeCoverage":  "not established; census rows remain PARTIAL",
+                       "summary":  "build/4f8760efef9c45d0b585c9c2fbfb5ee8/summary.json",
+                       "summarySha256":  "14B212BA80C1070172E5B84863059EB58BE9F551D6F96F5679DF3D69EBC9E526",
+                       "manifest":  "build/4f8760efef9c45d0b585c9c2fbfb5ee8/manifest.json",
+                       "manifestSha256":  "6DD9FF192AB675D86D69F2C0AD56CA3B831A3D44549DB8012B5B891660CFCA04",
+                       "playerPackage":  "build/4f8760efef9c45d0b585c9c2fbfb5ee8/player-package.json",
+                       "playerPackageSha256":  "2E8A5CAA16F68C89102BA21ADA4FDCDCD83E8623DA50498E0DB0CF3187688629"
+                   },
+    "componentRuns":  [
+                          {
+                              "configuration":  "Release",
+                              "buildExit":  0,
+                              "testExit":  0,
+                              "total":  191,
+                              "passed":  191,
+                              "failed":  0,
+                              "skipped":  0,
+                              "notRun":  0,
+                              "resultXml":  "E:/g2-r4-Release.xml",
+                              "resultXmlSha256":  "C0E29D5245C349C7768A7FFAA2F46D18F336304E6872F21277D46CB6D44CFF23",
+                              "buildLog":  "E:/g2-r4-Release-build.log",
+                              "buildLogSha256":  "331AE0292F04A59E5B830F58C48CF8C3E520D88EF4FB46F1D91CA463EFDCD5B5"
+                          },
+                          {
+                              "configuration":  "Debug",
+                              "buildExit":  0,
+                              "testExit":  0,
+                              "total":  191,
+                              "passed":  191,
+                              "failed":  0,
+                              "skipped":  0,
+                              "notRun":  0,
+                              "resultXml":  "E:/g2-r4-Debug.xml",
+                              "resultXmlSha256":  "5CDC1A514ED5966CB22C6148109B333894736CD761CA2FE94A6FFF94F1D0B246"
+                          }
+                      ],
+    "cancellationProbeAfter":  {
+                                   "nativeExit":  0,
+                                   "replaceAttempts":  1,
+                                   "verdict":  "Aborted",
+                                   "primaryChanged":  false,
+                                   "log":  "E:/g2-r4-D3-probe-after.log",
+                                   "sha256":  "8D7BBFD1E2D3D84CBD370DFE822F9214AA235183C1D5930940E19390178D7744"
+                               },
+    "playerCaseEvidence":  [
+                               {
+                                   "caseId":  "C04-G2-01",
+                                   "summary":  "R:\\thread_20261108_190230_2b67\\build\\4f8760efef9c45d0b585c9c2fbfb5ee8\\cases\\C04-G2-01\\summary.json",
+                                   "summarySha256":  "65f545d17a509dcd5ca5ecc1d4318a158cd90d395ffda15704dc1ce1666ddb23",
+                                   "actionEvidence":  "R:\\thread_20261108_190230_2b67\\build\\4f8760efef9c45d0b585c9c2fbfb5ee8\\cases\\C04-G2-01\\player-action.jsonl",
+                                   "actionEvidenceSha256":  "d0b4d2f6bf9e60d2ec488590ac7fcdd3f0352ba7324c3dce7b3d3cd55b5dd863",
+                                   "executionEvidence":  "R:\\thread_20261108_190230_2b67\\build\\4f8760efef9c45d0b585c9c2fbfb5ee8\\cases\\C04-G2-01\\execution.json",
+                                   "executionEvidenceSha256":  "61d4ac1023d939fea12dbcc9407bd228ea4f6837d77cf183f0b6b7a6e8c05789",
+                                   "playerLog":  "R:\\thread_20261108_190230_2b67\\build\\4f8760efef9c45d0b585c9c2fbfb5ee8\\cases\\C04-G2-01\\player.log",
+                                   "playerLogSha256":  "e68b61f697b7d9cdbd8c9d64a36cfdcdc4bd31ce5ae0ac9b278828f18886a40b",
+                                   "payloadSha256":  "33e36f8d66bb993650388c9d3848c419d55c1059c85e9f36e38949c2014c3c4d",
+                                   "nativeExit":  0
+                               },
+                               {
+                                   "caseId":  "C04-G2-02",
+                                   "summary":  "R:\\thread_20261108_190230_2b67\\build\\4f8760efef9c45d0b585c9c2fbfb5ee8\\cases\\C04-G2-02\\summary.json",
+                                   "summarySha256":  "7b9d5aa4ebac3c73c7b0a787805f918da6e9ffe3b10009527b4b83bb44a435dc",
+                                   "actionEvidence":  "R:\\thread_20261108_190230_2b67\\build\\4f8760efef9c45d0b585c9c2fbfb5ee8\\cases\\C04-G2-02\\player-action.jsonl",
+                                   "actionEvidenceSha256":  "52d5937ec584ea389efc687c953b42416ace6e6a9965d39c912141934454fa6d",
+                                   "executionEvidence":  "R:\\thread_20261108_190230_2b67\\build\\4f8760efef9c45d0b585c9c2fbfb5ee8\\cases\\C04-G2-02\\execution.json",
+                                   "executionEvidenceSha256":  "d968545db384a03b777bfca4dce9d0ce5b408f7e1964d023eb349cbddeee004c",
+                                   "playerLog":  "R:\\thread_20261108_190230_2b67\\build\\4f8760efef9c45d0b585c9c2fbfb5ee8\\cases\\C04-G2-02\\player.log",
+                                   "playerLogSha256":  "2763ee8873b8530893ae84250e78e62b775eb7f0d175b33125d4c94b531dce45",
+                                   "payloadSha256":  "9742846c87053e0e0792b6aa7dc52e08562c7838d47d360d6cdacc7cf5ec16e7",
+                                   "nativeExit":  0
+                               },
+                               {
+                                   "caseId":  "C04-G2-03",
+                                   "summary":  "R:\\thread_20261108_190230_2b67\\build\\4f8760efef9c45d0b585c9c2fbfb5ee8\\cases\\C04-G2-03\\summary.json",
+                                   "summarySha256":  "ea60af6bdd32c13fe9810dcf2d0e889c7406fe9f1dcbb49af2a75549348db188",
+                                   "actionEvidence":  "R:\\thread_20261108_190230_2b67\\build\\4f8760efef9c45d0b585c9c2fbfb5ee8\\cases\\C04-G2-03\\player-action.jsonl",
+                                   "actionEvidenceSha256":  "b3927b72ebb8cb8f26639e52afd511c4b5d67e1c4c4c10a6a96bfdc45548eaf5",
+                                   "executionEvidence":  "R:\\thread_20261108_190230_2b67\\build\\4f8760efef9c45d0b585c9c2fbfb5ee8\\cases\\C04-G2-03\\execution.json",
+                                   "executionEvidenceSha256":  "009e3aac21ed69b8ef07fd1ba5e5744b1b2a75f8b569b8add5e0f1376f96b2cd",
+                                   "playerLog":  "R:\\thread_20261108_190230_2b67\\build\\4f8760efef9c45d0b585c9c2fbfb5ee8\\cases\\C04-G2-03\\player.log",
+                                   "playerLogSha256":  "51d6df469cf6e0a732b79b39d1af7825211c0e84a0c22495e042cb4931bc6368",
+                                   "payloadSha256":  "ef2c57dd976f6e97fa0e2e4dc5cbe45d127d4b138c53332913613d8ad58866b9",
+                                   "nativeExit":  0
+                               },
+                               {
+                                   "caseId":  "C04-G2-04",
+                                   "summary":  "R:\\thread_20261108_190230_2b67\\build\\4f8760efef9c45d0b585c9c2fbfb5ee8\\cases\\C04-G2-04\\summary.json",
+                                   "summarySha256":  "dad9b31ff27f38d8b49a88a35b5d715861abc0386f9d2053884c636080ce1ff6",
+                                   "actionEvidence":  "R:\\thread_20261108_190230_2b67\\build\\4f8760efef9c45d0b585c9c2fbfb5ee8\\cases\\C04-G2-04\\player-action.jsonl",
+                                   "actionEvidenceSha256":  "3c385108cfa7190b430c33f5c825f9e04fcc833003ab588ed975b0298038c145",
+                                   "executionEvidence":  "R:\\thread_20261108_190230_2b67\\build\\4f8760efef9c45d0b585c9c2fbfb5ee8\\cases\\C04-G2-04\\execution.json",
+                                   "executionEvidenceSha256":  "1fe82f77c5d9bdf984ec90b6bb9f0696e5443ca1e66cdc2283c59e12260dcfc4",
+                                   "playerLog":  "R:\\thread_20261108_190230_2b67\\build\\4f8760efef9c45d0b585c9c2fbfb5ee8\\cases\\C04-G2-04\\player.log",
+                                   "playerLogSha256":  "7890b6c4d4cb0b40831afff4926af36070632406cddcfa728946190d0e16e3bb",
+                                   "payloadSha256":  "60ec7335cda45b950fdf564ad54a19184c2e5c58bc86e7796f6ecdd1bf881653",
+                                   "nativeExit":  0
+                               }
+                           ],
+    "focusedTests":  {
+                         "nativeExit":  0,
+                         "total":  4,
+                         "passed":  4,
+                         "failed":  0,
+                         "skipped":  0,
+                         "notRun":  0,
+                         "xml":  "E:/g2-r4-D3-targeted2.xml",
+                         "xmlSha256":  "0A425E5CF83AEC0A05866727B1D06FE227D9B33C4C4671854E73024BA4C95D4B",
+                         "log":  "E:/g2-r4-D3-targeted2.log",
+                         "logSha256":  "43DE09ECB5ED91D518871D092AE8B155A955D0952257D2299D7180994FC160F9"
+                     },
+    "tableServiceSupport":  {
+                                "buildExit":  0,
+                                "testExit":  0,
+                                "total":  2,
+                                "passed":  2,
+                                "failed":  0,
+                                "skipped":  0,
+                                "notRun":  0,
+                                "positive":  "DealerTsumo_GoesThroughRealMapperActorAndRoundEnd_WithResultAndNoClientSettlementBody",
+                                "negative":  "RawSettlementBearingEnvelope_IsRejectedBeforeAnyScoring",
+                                "buildLog":  "E:/g2-r4-TableService-build.log",
+                                "buildLogSha256":  "2B7CD6093B6AA28F20B9ECDAFDB09AAB78DB1C3FC30CDD0A34F4761B8C4DA166",
+                                "resultXml":  "E:/g2-r4-TableService-focused.xml",
+                                "resultXmlSha256":  "FCE1CCFC7876DDE14F9151AD9F4C489E3391550BF787049A0A5C3CF8801A794A",
+                                "testLog":  "E:/g2-r4-TableService-focused.log",
+                                "testLogSha256":  "0789A1A66815A6B7B1329529D3111E2FA68FDA9A6E74C25DB639EF0970008C26",
+                                "verdict":  "supporting service boundary only; not specific LOCAL asset case closure"
+                            }
+}
 }
