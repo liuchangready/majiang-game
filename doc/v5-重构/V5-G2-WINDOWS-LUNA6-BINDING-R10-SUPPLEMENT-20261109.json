@@ -1,0 +1,36 @@
+{
+  "task": "G2 Windows Luna6",
+  "reviewRound": 10,
+  "status": "NOT_ACCEPTED",
+  "sourceHeadAtRoundStart": "4d277c1f474a0eacd2c93c0c0ed11bea61a1b6bf",
+  "sourceParent": "4caa642ff5f9d184c4cfcb39a315ad3fcd803508",
+  "originalBase": "4523485cfd4ec2b32185a7da5c13f6cbaf54a1e1",
+  "newReviewDefects": 0,
+  "closedDefects": ["D-6-01", "D-8-01", "D-9-01", "D-1-03", "D-2-01", "D-3-01"],
+  "bindingCounts": {
+    "pass": 18,
+    "partial": 11,
+    "fail": 0,
+    "notRun": 3
+  },
+  "round10Change": {
+    "file": "unity/Mahjong.Unity/Assets/Scripts/App/LocalTableChannelFactory.cs",
+    "kind": "comment_only",
+    "description": "C04 deterministic action scenario count clarified as five after D-8-01",
+    "runtimeBehaviorChanged": false
+  },
+  "unexecuted": [
+    "Unity Player and PlayMode",
+    "new GAME five-case Player execution",
+    "G4 LocalControlPlayerProbe on final candidate",
+    "G1 exhaustive draw and dealer continuation with fresh roundId",
+    "G2 chankan/rinshan scenario",
+    "G8 physical UI/input matrix",
+    "single common final Player package matrix",
+    "G7-01 real offline match"
+  ],
+  "openDefects": ["D-1-02", "D-1-01", "D-1-05", "D-1-04"],
+  "androidRows": "9 excluded / NOT_RUN",
+  "submission": "No commit, push, merge, publish, or G2 sign-off",
+  "detail": "See V5-G2-WINDOWS-LUNA6-R10-EXECUTION-SUPPLEMENT-20261109.md; detailed tool evidence is preserved in R9 supplement and manifest."
+}

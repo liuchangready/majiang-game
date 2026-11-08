@@ -143,7 +143,7 @@ namespace Mahjong.Unity.App
 
         /// <summary>
         /// Explicit process-level test opt-in for one frozen C04 Player action.
-        /// Only the four named scenarios are accepted. The default application
+        /// Only the five named scenarios are accepted. The default application
         /// never sets this switch and retains the ordinary random local deal.
         /// </summary>
         public static void EnablePlayerActionScenario(string scenarioId)

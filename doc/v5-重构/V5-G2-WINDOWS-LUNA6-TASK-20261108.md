@@ -159,3 +159,6 @@ The R8 scope correction was rechecked after `git add -A`: all 536 manifest files
 ## Round 9 scope addition
 
 Round 9 adds the D-8-01 case-contract correction and the D-9-01 FixtureOnly timeout correction. The exact in-scope implementation paths are `dotnet/tools/C04PlayerActionVerifier/Program.cs`, `tools/unity/run-p45-c04-player-actions.ps1`, and `unity/Mahjong.Unity/Assets/Scripts/App/C04PlayerActionProbe.cs`; task/delivery/binding supplements are listed below. No Unity Player/PlayMode or final package result is claimed from the dirty working tree. See `V5-G2-WINDOWS-LUNA6-R9-EXECUTION-SUPPLEMENT-20261109.md` and `V5-G2-WINDOWS-LUNA6-BINDING-R9-SUPPLEMENT-20261109.json`.
+## Round 10 scope addition
+
+Round 10 clarifies the five-scenario count comment in `unity/Mahjong.Unity/Assets/Scripts/App/LocalTableChannelFactory.cs` and records the unchanged acceptance gaps in `V5-G2-WINDOWS-LUNA6-R10-EXECUTION-SUPPLEMENT-20261109.md` and `V5-G2-WINDOWS-LUNA6-BINDING-R10-SUPPLEMENT-20261109.json`. No Unity/Player/PlayMode claim is added.
