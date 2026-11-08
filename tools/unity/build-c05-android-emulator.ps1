@@ -1291,7 +1291,7 @@ try {
     [IO.File]::WriteAllText($stagingDigestPath, $sourceClosureDigest, (New-Object Text.UTF8Encoding($false)))
   }
   $packageCache = Join-Path $project 'Library\PackageCache'
-  if ($RegistryCacheSource) {
+  if ($RegistryCacheSource -and -not $stagingReused) {
     $registryCacheReceipt = Copy-C05EVerifiedRegistryCache $RegistryCacheSource $project
     Save-C05EJson (Join-Path $run 'registry-cache-copy-receipt.json') $registryCacheReceipt
   } elseif (-not (Test-Path -LiteralPath $packageCache -PathType Container)) {
