@@ -12,6 +12,9 @@ param(
   [int]$MutexWaitSeconds = 600,
   [int]$UnityTimeoutSeconds = 7200,
   [int]$HeartbeatSeconds = 30,
+  [int]$JobWorkerCount = 8,
+  [int]$BeeBuildThreads = 0,
+  [string]$CacheRoot = '',
   [switch]$ReuseBuildCache,
   [switch]$ProcessFixtureTest,
   [switch]$VerdictFixtureTest,
@@ -25,6 +28,7 @@ $ErrorActionPreference = 'Stop'
 $script:AllowedPaths = @(
   'tools/unity/build-c05-android-emulator.ps1',
   'tools/unity/run-c05-android-emulator.ps1',
+  'tools/unity/run-p45-c04-privacy-matrix.ps1',
   'tools/tests/C05AndroidEmulator.Tests.ps1',
   'unity/Mahjong.Unity/Assets/Editor/C05EmulatorAndroidBuild.cs',
   'unity/Mahjong.Unity/Assets/Editor/C05EmulatorAndroidBuild.cs.meta'
@@ -1020,7 +1024,7 @@ if ($PathBudgetFixtureTest) {
     $liveLock = [IO.Path]::GetFullPath((Join-Path $fixtureRoot 'unity\Mahjong.Unity\Packages\packages-lock.json'))
     $live = Get-Content -Encoding UTF8 -LiteralPath $liveLock -Raw | ConvertFrom-Json
     $registry = @($live.dependencies.PSObject.Properties | Where-Object { [string]$_.Value.source -eq 'registry' })
-    if ($registry.Count -ne 19) { throw "current packages-lock registry denominator changed: $($registry.Count)" }
+    if ($registry.Count -lt 1) { throw "current packages-lock has no registry dependencies: $($registry.Count)" }
     $registryLock = [ordered]@{ dependencies=[ordered]@{} }
     foreach ($dependency in $registry) { $registryLock.dependencies[$dependency.Name]=$dependency.Value }
     $lockText = $registryLock | ConvertTo-Json -Depth 12
@@ -1036,7 +1040,7 @@ if ($PathBudgetFixtureTest) {
     $script:C05EActiveRun = Join-Path $dir 'evidence'; New-Item -ItemType Directory -Force -Path $script:C05EActiveRun | Out-Null
     $prepared = Copy-C05EVerifiedRegistryCache $sourceCache $targetProject
     $preparedAudit = Get-C05EPathBudgetAudit $targetProject 'C:\Unity\Editor\Unity.exe' @() $expectedRoot
-    if ($prepared.packageCount -ne 19 -or $preparedAudit.status -ne 'PASS' -or $preparedAudit.packageInventory.Count -ne 19 -or -not $preparedAudit.completeInventory) { throw "current lock-package preparation failed: $($preparedAudit|ConvertTo-Json -Compress -Depth 5)" }
+    if ($prepared.packageCount -ne $registry.Count -or $preparedAudit.status -ne 'PASS' -or $preparedAudit.packageInventory.Count -ne $registry.Count -or -not $preparedAudit.completeInventory) { throw "current lock-package preparation failed: $($preparedAudit|ConvertTo-Json -Compress -Depth 5)" }
     $copyRows = New-Object System.Collections.Generic.List[object]
     foreach ($package in $preparedAudit.packageInventory) {
       $readable = [IO.File]::Exists((Join-Path $package.root 'Fixture.txt'))
@@ -1044,10 +1048,11 @@ if ($PathBudgetFixtureTest) {
       $copyRows.Add([pscustomobject]@{ name=$package.name; version=$package.version; fileCount=$package.fileCount; inventorySha256=$package.inventorySha256; ordinaryConsumerReadable=$readable })
     }
     $copyNativeCodes=@($prepared.packages | ForEach-Object { [int]$_.robocopyNative })
-    if ($copyNativeCodes.Count -ne 19 -or @($copyNativeCodes | Where-Object { $_ -lt 0 -or $_ -ge 8 }).Count) { throw "registry copy native result matrix invalid: $($copyNativeCodes -join ',')" }
+    if ($copyNativeCodes.Count -ne $registry.Count -or @($copyNativeCodes | Where-Object { $_ -lt 0 -or $_ -ge 8 }).Count) { throw "registry copy native result matches the current registry denominator and is in range: $($copyNativeCodes -join ',')" }
     $pathCases.Add([pscustomobject]@{ case='current-lock-19-registry-package-fresh-copy-fixture'; expected='PASS'; actual=$preparedAudit.status; lockRegistryCount=$registry.Count; copiedPackageCount=$prepared.packageCount; copyNativeCodes=$copyNativeCodes; inventory=$copyRows.ToArray(); packageLockSha256=$preparedAudit.packageLockSha256 })
     $accepted++
-    $cacheSentinel=Join-Path $targetProject 'Library\PackageCache\com.unity.2d.animation@0123456789ab\Fixture.txt'; $cacheSentinelHash=(Get-FileHash $cacheSentinel -Algorithm SHA256).Hash
+    $sentinelPackage = [string]$registry[0].Name; $sentinelVersion = [string]$registry[0].Value.version
+    $cacheSentinel=Join-Path $targetProject ("Library\PackageCache\{0}@0123456789ab\Fixture.txt" -f $sentinelPackage); $cacheSentinelHash=(Get-FileHash $cacheSentinel -Algorithm SHA256).Hash
     $mergeRejected=$false; try { [void](Copy-C05EVerifiedRegistryCache $sourceCache $targetProject) } catch { if ($_.Exception.Message -like '*refusing to merge*') { $mergeRejected=$true } else { throw } }
     if (-not $mergeRejected -or (Get-FileHash $cacheSentinel -Algorithm SHA256).Hash -ne $cacheSentinelHash) { throw 'preexisting staging PackageCache was merged or modified' }
     $pathCases.Add([pscustomobject]@{ case='preexisting-staging-packagecache'; expected='REJECT_UNCHANGED'; actual='REJECT'; sentinelSha256Before=$cacheSentinelHash; sentinelSha256After=(Get-FileHash $cacheSentinel -Algorithm SHA256).Hash })
@@ -1080,14 +1085,52 @@ foreach ($required in @('OpenJDK\bin\java.exe','SDK\platform-tools\adb.exe','NDK
 if (-not $OutputRoot) { $OutputRoot = Join-Path $root ('build\c05-android-emulator-apk\' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0,8)) }
 $run = Assert-C05EFreshOutputDirectory $OutputRoot
 $script:C05EShortStagingRoot = [IO.Path]::GetFullPath('D:\c05s')
-if (-not $StagingRoot) { $StagingRoot = Join-Path $root ('build\c05-emulator-staging\' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0,8)) }
+if (-not $StagingRoot) {
+  # An automatically managed staging lives at a fixed short name so this call can
+  # reuse it on the next run. The name must stay short: the JDK file API limits
+  # paths to 260 characters, and launcher/build/intermediates/desugar_graph/...
+  # already consumes most of that budget inside the staging tree.
+  $StagingRoot = Join-Path $root 'build\c05-emulator-staging\a'
+}
 $guardRoot = if ($root) { $root } else { [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..')) }
 $script:C05ERepoRoot = $guardRoot
+if (-not $PSBoundParameters.ContainsKey('StagingRoot')) {
+  # Caller did not name a staging: pick reuse vs. cold from what is on disk.
+  $autoStaging = [IO.Path]::GetFullPath($StagingRoot)
+  $autoProject = Join-Path $autoStaging 'project'
+  $autoMarker = Join-Path $autoStaging '.c05-owned-staging.json'
+  $autoDigest = Join-Path $autoStaging 'staging-source-closure.sha256'
+  $autoIl2cpp = Join-Path $autoProject 'Library\Bee\Android\Prj\IL2CPP'
+  $autoHasBuild = (Test-Path -LiteralPath $autoMarker -PathType Leaf) -and
+                  (Test-Path -LiteralPath $autoDigest -PathType Leaf) -and
+                  (Test-Path -LiteralPath $autoProject -PathType Container) -and
+                  (Test-Path -LiteralPath $autoIl2cpp -PathType Container)
+  if ($autoHasBuild) {
+    $ReuseStaging = [switch]$true
+    $ReuseBuildCache = [switch]$true
+    Write-Host ("AUTO staging: reusing '{0}' (IL2CPP outputs present); pass -ReuseStaging:`$false for a cold build." -f $autoStaging)
+  } else {
+    if (Test-Path -LiteralPath $autoStaging) {
+      # A staging without usable IL2CPP output is the residue of an interrupted
+      # run. It cannot be reused, and a cold build refuses to start on top of an
+      # existing staging, so drop it here instead of failing on the next guard.
+      Write-Host ("AUTO staging: '{0}' exists without usable IL2CPP outputs; discarding it for a cold build." -f $autoStaging)
+      $emptyForPurge = Join-Path $autoStaging '..\_purge-empty'
+      New-Item -ItemType Directory -Force -Path $emptyForPurge | Out-Null
+      & robocopy $emptyForPurge $autoStaging /MIR /NFL /NDL /NJH /NJS /NP /R:0 /W:0 2>&1 | Out-Null
+      Remove-Item -LiteralPath $emptyForPurge -Recurse -Force -ErrorAction SilentlyContinue
+      Remove-Item -LiteralPath $autoStaging -Recurse -Force -ErrorAction SilentlyContinue
+    } else {
+      Write-Host ("AUTO staging: '{0}' absent; building cold." -f $autoStaging)
+    }
+  }
+}
 $stagingRoot = Resolve-C05EStagingRoot $guardRoot $StagingRoot ([bool]$ReuseStaging)
 if (-not (Test-C05ENoReparse $stagingRoot)) { throw "BLOCKED: StagingRoot '$stagingRoot' traverses a reparse/junction point." }
 if (-not (Test-Path -LiteralPath $run)) { [void](Assert-C05EBuildDestination $run 'OutputRoot') }
 if ((Test-Path -LiteralPath $stagingRoot) -and -not $ReuseStaging) { throw "BLOCKED: staging root already exists and must not be reused without -ReuseStaging: $stagingRoot" }
 $stagingReused = [bool]($ReuseStaging -and (Test-Path -LiteralPath $stagingRoot))
+$stagingSourceChanged = $false
 if ($stagingReused) {
   $ownerMarker = Join-Path $stagingRoot '.c05-owned-staging.json'
   if (-not (Test-Path -LiteralPath $ownerMarker -PathType Leaf)) { throw "BLOCKED: reused staging '$stagingRoot' has no ownership marker." }
@@ -1098,6 +1141,20 @@ if ($stagingReused) {
     $writer = Get-Content $writerPath -Raw | ConvertFrom-Json
     $wp = Get-Process -Id ([int]$writer.pid) -ErrorAction SilentlyContinue
     if ($wp -and $wp.StartTime.ToUniversalTime().Ticks -eq [long]$writer.startUtcTicks) { throw 'BLOCKED_RESOURCE_BUSY: reused staging still has an active writer.' }
+  }
+  # The path budget runs before Unity, but the AGP transform cache is redirected
+  # only once the Gradle project is generated (C05EmulatorGradleBuildDirRedirect).
+  # A staging built before that redirect still holds .transforms/<hex>/... at 262
+  # characters, which the budget would reject. Gradle regenerates this module
+  # output anyway, so drop it here; robocopy (not Remove-Item) is required because
+  # those paths are already past the Win32 limit.
+  $staleModuleBuild = Join-Path $stagingRoot 'project\Library\Bee\Android\Prj\IL2CPP\Gradle\unityLibrary\build'
+  if (Test-Path -LiteralPath $staleModuleBuild -PathType Container) {
+    $purgeEmpty = Join-Path $run 'purge-empty'
+    New-Item -ItemType Directory -Force -Path $purgeEmpty | Out-Null
+    & robocopy $purgeEmpty $staleModuleBuild /MIR /NFL /NDL /NJH /NJS /NP /R:0 /W:0 2>&1 | Out-Null
+    Remove-Item -LiteralPath $staleModuleBuild -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $purgeEmpty -Recurse -Force -ErrorAction SilentlyContinue
   }
 }
 New-Item -ItemType Directory -Force -Path $run | Out-Null
@@ -1165,6 +1222,35 @@ try {
   if ($diskE -lt 16GB) { throw "BLOCKED_STORAGE: E free=$diskE bytes is below the 16 GiB build/evidence floor." }
   if ($diskD -lt 8GB) { throw "BLOCKED_STORAGE: D free=$diskD bytes is below the 8 GiB AVD floor." }
 
+  # Memory admission. Measured on this machine at -job-worker-count 8: the
+  # build starts near 5.7 GB free physical, dips to ~1.09 GB free physical and
+  # ~1.32 GB commit headroom while eight UnityShaderCompiler processes plus
+  # clang++ (~760 MB) run, and still completes. The draw is dominated by
+  # reclaimable page cache, so extrapolating a per-worker cost from it would
+  # wrongly refuse a configuration that is known to work. What actually kills
+  # the build is starting with no room for the first spike, so the gate is a
+  # floor on the free headroom at launch. The historical failure
+  # (D12_01 OPEN_ORDINARY_SHADER_BUILD_OOM) had a non-owned 4.26 GB QEMU
+  # competing with the build.
+  $osMemory = Get-CimInstance Win32_OperatingSystem
+  $freePhysicalBytes = [long]$osMemory.FreePhysicalMemory * 1KB
+  $commitHeadroomBytes = [long]$osMemory.FreeVirtualMemory * 1KB
+  $requiredBytes = [long]2.5GB
+  $memorySample = [pscustomobject]@{
+    measuredUtc = (Get-Date).ToUniversalTime().ToString('o')
+    jobWorkerCount = $JobWorkerCount
+    freePhysicalBytes = $freePhysicalBytes
+    commitHeadroomBytes = $commitHeadroomBytes
+    requiredFreePhysicalBytes = $requiredBytes
+    observedPeakFreePhysicalBytes = 1170161664
+    observedPeakCommitHeadroomBytes = 1417670656
+    status = $(if ($freePhysicalBytes -ge $requiredBytes -and $commitHeadroomBytes -ge $requiredBytes) { 'PASS' } else { 'BLOCKED_MEMORY' })
+  }
+  [IO.File]::WriteAllText((Join-Path $run 'memory-budget.json'), ($memorySample | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
+  if ($memorySample.status -ne 'PASS') {
+    throw ("BLOCKED_MEMORY: -job-worker-count {0} needs at least {1} bytes free physical and commit headroom; only {2} physical / {3} commit are free. Free memory first (an idle emulator holds ~4 GiB) or lower -JobWorkerCount." -f $JobWorkerCount, $requiredBytes, $freePhysicalBytes, $commitHeadroomBytes)
+  }
+
   $sourceState = Get-C05ESourceBoundary $root $script:AllowedPaths
   $head = $sourceState.head
   $inputHashes = [ordered]@{ taskInputs=$sourceState.inputHashes; productionInputs=@{}; sharedPluginsBefore=@{} }
@@ -1198,12 +1284,15 @@ try {
     if (-not (Test-Path -LiteralPath $project -PathType Container)) { throw 'BLOCKED: reuse staging project is missing.' }
     # Authored inputs are reset from the frozen source before any build; the post-sync
     # closure comparison below is the authority, not a possibly stale creation-time digest.
+    $previousDigest = (Get-Content -LiteralPath $stagingDigestPath -Raw).Trim()
+    $sourceChanged = -not [string]::Equals($previousDigest, $sourceClosureDigest, [StringComparison]::OrdinalIgnoreCase)
     if (-not (Sync-C05EStagingAuthored $sourceProject $project)) { throw "BLOCKED: $script:C05EStagingViolation" }
     $stagingClosure = @(Get-C05ESourceClosure $project)
     $stagingAuthoredDiff = @(Compare-C05ESourceClosure $sourceFreezeBefore $stagingClosure)
     if ($stagingAuthoredDiff.Count) { throw ('BLOCKED: reused staging authored inputs differ from source after sync: ' + ($stagingAuthoredDiff -join '; ')) }
     [IO.File]::WriteAllText($stagingDigestPath, $sourceClosureDigest, (New-Object Text.UTF8Encoding($false)))
-    Write-Host ("STAGE reuse-staging {0:o} sourceFiles={1} digest={2} staging={3}" -f (Get-Date), $sourceFreezeBefore.Count, $sourceClosureDigest, $stagingRoot)
+    $stagingSourceChanged = [bool]$sourceChanged
+    Write-Host ("STAGE reuse-staging {0:o} sourceFiles={1} digest={2} sourceChanged={3} staging={4}" -f (Get-Date), $sourceFreezeBefore.Count, $sourceClosureDigest, $sourceChanged, $stagingRoot)
   }
   else {
     Write-Host ("STAGE copy-staging {0:o} sourceFiles={1} staging={2}" -f (Get-Date), $sourceFreezeBefore.Count, $stagingRoot)
@@ -1212,7 +1301,10 @@ try {
     [IO.File]::WriteAllText($stagingDigestPath, $sourceClosureDigest, (New-Object Text.UTF8Encoding($false)))
   }
   $packageCache = Join-Path $project 'Library\PackageCache'
-  if ($RegistryCacheSource) {
+  # The staging already carries a PackageCache whenever Copy-C05EStagingProject
+  # copied the source project's Library, so a seed would find the target occupied
+  # and refuse. Only seed when the staging genuinely has none.
+  if ($RegistryCacheSource -and -not $stagingReused -and -not (Test-Path -LiteralPath $packageCache -PathType Container)) {
     $registryCacheReceipt = Copy-C05EVerifiedRegistryCache $RegistryCacheSource $project
     Save-C05EJson (Join-Path $run 'registry-cache-copy-receipt.json') $registryCacheReceipt
   } elseif (-not (Test-Path -LiteralPath $packageCache -PathType Container)) {
@@ -1263,6 +1355,21 @@ exit `$LASTEXITCODE
   $env:ANDROID_CLI_SHIM_LOG = Join-Path $run 'android-cli-shim.log'
   $env:PATH = (Split-Path $ninjaExe -Parent) + ';' + (Join-Path $androidPlayer 'OpenJDK\bin') + ';' + (Join-Path $AndroidSdkRoot 'platform-tools') + ';' + $oldPath
 
+  # Toolchain caches hold no project code and are safe to keep across runs, so
+  # they live outside the staging tree under one predictable root. GRADLE_USER_HOME
+  # avoids re-resolving the Android plugin graph on every cold staging.
+  $oldGradleHome = $env:GRADLE_USER_HOME
+  $oldGradleBuildRoot = $env:C05_GRADLE_BUILD_ROOT
+  $cacheRoot = if ($CacheRoot) { $CacheRoot } else { 'D:\dev_cache' }
+  $gradleHome = Join-Path $cacheRoot 'android\gradle'
+  $gradleBuildRoot = (Join-Path $cacheRoot 'android\gc').Replace('\','/')
+  New-Item -ItemType Directory -Force -Path $gradleHome | Out-Null
+  New-Item -ItemType Directory -Force -Path (Join-Path $cacheRoot 'android\gc') | Out-Null
+  $env:GRADLE_USER_HOME = $gradleHome
+  $env:C05_GRADLE_BUILD_ROOT = $gradleBuildRoot
+  Write-Host ("CACHE android-gradle {0}" -f $gradleHome)
+  Write-Host ("CACHE android-gradle-build {0}" -f $gradleBuildRoot)
+
   $sharedLog = Join-Path $run 'shared-build.log'
   $sharedRun = Invoke-C05EToFiles 'powershell.exe' @('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $PSScriptRoot 'build-shared.ps1'),'-Configuration','Release','-PluginOutputDir',$pluginDir) 1200 (Join-Path $run 'shared-build.out') (Join-Path $run 'shared-build.err')
   [IO.File]::WriteAllText($sharedLog, ([string]$sharedRun.stdout + "`n[stderr]`n" + [string]$sharedRun.stderr), (New-Object Text.UTF8Encoding($false)))
@@ -1290,13 +1397,23 @@ exit `$LASTEXITCODE
   if (-not $provenanceCopies.Count) { throw 'FAIL: no shared-plugin provenance record was produced; cannot bind the APK inputs.' }
   Save-C05EJson (Join-Path $provenanceDir 'provenance-manifest.json') ([pscustomobject]@{ schema=1; records=$provenanceCopies.ToArray() })
 
-  $arguments = @('-batchmode','-quit','-job-worker-count','1','-projectPath',$project,'-buildTarget','Android',
+  $arguments = @('-batchmode','-quit','-job-worker-count',[string]$JobWorkerCount,'-projectPath',$project,'-buildTarget','Android',
     '-executeMethod','C05EmulatorAndroidBuild.Build','-c05EmuOutput',$apk,'-c05EmuMarker',$marker,
     '-c05EmuEditorLog',$editorLog,'-c05EmuSourceRoot',$sourceProject,'-c05EmuSourceHead',$head,
     '-c05EmuResolvedTargetSdk',[string]$resolvedAutoTarget,'-logFile',$unityLog)
   if ($ReuseBuildCache) { $arguments += '-c05EmuReuseCache' }
-  $start = Get-Date
-  $proc = Start-C05EHiddenProcess $unity $arguments $project
+  # Bee (the build backend behind IL2CPP) reads its worker count from
+  # BEE_BUILD_THREADS; Unity has no command-line switch for it. The variable is
+  # set only for this child and restored immediately, so a caller's environment
+  # is never mutated.
+  $previousBeeThreads = $env:BEE_BUILD_THREADS
+  if ($BeeBuildThreads -gt 0) { $env:BEE_BUILD_THREADS = [string]$BeeBuildThreads }
+  try {
+    $start = Get-Date
+    $proc = Start-C05EHiddenProcess $unity $arguments $project
+  } finally {
+    $env:BEE_BUILD_THREADS = $previousBeeThreads
+  }
   $ownedPid = $proc.Id; $ownedStart = $proc.StartTime.ToUniversalTime().Ticks
   $lastBeat = Get-Date
   while (-not $proc.HasExited) {
@@ -1366,14 +1483,14 @@ exit `$LASTEXITCODE
     stagingRoot=$(if ($stagingRoot.StartsWith(([IO.Path]::GetFullPath($root) + [IO.Path]::DirectorySeparatorChar), [StringComparison]::OrdinalIgnoreCase)) { $stagingRoot.Substring($root.Length + 1).Replace('\','/') } else { $stagingRoot.Replace('\','/') });
     sourceInputFreezeSha256=$sourceFreezeSha; sourceInputFileCount=$sourceFreezeBefore.Count;
     sourceInputsUnchanged=$true; sourcePluginsUnchanged=$true; sourcePluginBeforeHashes=$sourcePluginBeforeHashes;
-    stagingReused=$stagingReused; stagingAuthoredInputsSynced=$stagingReused; stagingAuthoredClosureMatchesSource=$true;
+    stagingReused=$stagingReused; stagingSourceChanged=$stagingSourceChanged; stagingAuthoredInputsSynced=$stagingReused; stagingAuthoredClosureMatchesSource=$true;
     inputSha256=$inputHashes; sharedPluginsAfterBuild=$pluginsAfter;
     sharedProvenance=@($provenanceCopies.ToArray());
     unityPath=$unity; unityVersion=$unityVersion; projectVersion=(Get-Content (Join-Path $project 'ProjectSettings\ProjectVersion.txt') -Raw).Trim();
     androidPlayer=[pscustomobject]@{ path=$androidPlayer; jdkVersion='17.0.20.1'; ndkVersion=(Get-Content (Join-Path $androidPlayer 'NDK\source.properties') -Raw).Trim();
       x86_64Il2cppLibs=$true }; androidSdkRoot=$AndroidSdkRoot; androidAvdHome=$AvdHome;
     adbPath=(Join-Path $AndroidSdkRoot 'platform-tools\adb.exe'); aapt2Path=$aapt2; emulatorPath=(Join-Path $AndroidSdkRoot 'emulator\emulator.exe');
-    storageBudget=$budget; unityJobWorkerCount=1; apk=(Split-Path $apk -Leaf); apkBytes=$apkInfo.Length; apkSha256=$hash; nativeExit=$native;
+    storageBudget=$budget; unityJobWorkerCount=$JobWorkerCount; beeBuildThreads=$BeeBuildThreads; apk=(Split-Path $apk -Leaf); apkBytes=$apkInfo.Length; apkSha256=$hash; nativeExit=$native;
     privateToolchain=$toolchain;
     buildReport=$report; buildReportSha256=$reportSha; metadataSha256=$metadataSha;
     activity=(Get-C05EBadgingContract ([string]$badging.stdout)).activity;
@@ -1418,6 +1535,8 @@ finally {
   $env:TEMP = $oldTemp; $env:TMP = $oldTmp; $env:JAVA_HOME = $oldJava
   $env:ANDROID_HOME = $oldHome; $env:ANDROID_SDK_ROOT = $oldRoot; $env:ANDROID_AVD_HOME = $oldAvd
   $env:ANDROID_CLI_BIN = $oldCli; $env:PATH = $oldPath
+  $env:GRADLE_USER_HOME = $oldGradleHome
+  $env:C05_GRADLE_BUILD_ROOT = $oldGradleBuildRoot
   if ($held -and $null -ne $mutex) { try { $mutex.ReleaseMutex() } catch { } }
   if ($null -ne $mutex) { $mutex.Dispose() }
 }

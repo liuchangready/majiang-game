@@ -72,6 +72,36 @@ flowchart TD
 ./gradlew :android:assembleDebug
 ```
 
+### 4.1 Unity 客户端构建（Windows / Android）
+
+**改 `dotnet/` 后先重建共享 DLL，再跑 Unity 构建。** 两个平台都自动判定冷/增量：缓存不存在就冷构建，存在就增量构建，**同一条命令无需额外参数**。
+
+```powershell
+# 0. 共享 DLL（改 dotnet/ 后必须执行）
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/unity/build-shared.ps1 `
+  -Configuration Release -DotnetPath "D:\game_dev_tools\dotnet\dotnet.exe"
+
+# 1. Android APK（-OutputRoot 必须是 build/ 下尚不存在的目录）
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File tools/unity/build-c05-android-emulator.ps1 `
+  -UnityPath "D:\game_dev_tools\unity\Editor\Unity.exe" `
+  -OutputRoot build/$( [guid]::NewGuid().ToString('N') ) `
+  -PrivateToolchainRoot build/android-toolchain/private `
+  -AndroidSdkRoot "D:\Android\Sdk" -AvdHome "D:\Android\avd"
+
+# 2. Windows Player（-RunRoot 末段必须是 32 位十六进制 GUID）
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File tools/unity/run-p45-c04-privacy-matrix.ps1 `
+  -UnityPath "D:\game_dev_tools\unity\Editor\Unity.exe" `
+  -DotnetPath "D:\game_dev_tools\dotnet\dotnet.exe" `
+  -BuildPlayer -RunRoot build/$( [guid]::NewGuid().ToString('N') )
+```
+
+完整参数、缓存布局、实测耗时与所有守卫报错的排查方法见
+**[`doc/v5-重构/BUILD-COMMANDS.md`](doc/v5-重构/BUILD-COMMANDS.md)**。遇到 `BLOCKED` 类报错先查该文件的第 5 节。
+
+构建前请确认 `git status` 干净：两个 runner 都有源码边界守卫，未声明在 `AllowedPaths` 内的改动会让构建失败。
+
 ---
 
 ## 5. 生命周期、权威队列与数据流动

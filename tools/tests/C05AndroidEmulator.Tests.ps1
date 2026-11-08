@@ -61,6 +61,7 @@ foreach ($script in @('tools/unity/build-c05-android-emulator.ps1','tools/unity/
 $expected = @(
   'tools/unity/build-c05-android-emulator.ps1',
   'tools/unity/run-c05-android-emulator.ps1',
+  'tools/unity/run-p45-c04-privacy-matrix.ps1',
   'tools/tests/C05AndroidEmulator.Tests.ps1',
   'unity/Mahjong.Unity/Assets/Editor/C05EmulatorAndroidBuild.cs',
   'unity/Mahjong.Unity/Assets/Editor/C05EmulatorAndroidBuild.cs.meta'
@@ -107,6 +108,7 @@ Check 'cs:x86_64' ($cs -match 'X86_64')
 Check 'cs:il2cpp-gate' ($cs -match 'ScriptingImplementation\.IL2CPP')
 Check 'cs:clean-cache' ($cs -match 'BuildOptions\.CleanBuildCache')
 Check 'cs:source-rewrite-gate' ($cs -match 'production-input-rewritten-by-build')
+Check 'cs:gradle-builddir-redirect' (($cs -match 'IPostGenerateGradleAndroidProject') -and ($cs -match "p\.path == ':unityLibrary'") -and ($cs -notmatch "p\.path == ':launcher'"))
 Check 'cs:no-mono-fallback' ($cs -notmatch 'ScriptingImplementation\.Mono2x')
 $build = Get-Content -LiteralPath (Join-Path $root 'tools/unity/build-c05-android-emulator.ps1') -Raw
 Check 'build:mutex-name' ($build -match 'Local\\MahjongV5P45UnityValidation')
@@ -168,7 +170,9 @@ Check 'build:path-budget-audit-before-unity' (($build -match 'function Get-C05EP
 Check 'build:path-budget-incomplete-inventory-fails-closed' (($build -match 'INCOMPLETE_INVENTORY') -and ($build -match 'registry-package-inventory') -and ($build -match '\[IO\.File\]::Exists\('))
 Check 'build:registry-package-lock-identity-and-hashes' (($build -match 'Get-C05ERegistryPackageInventory') -and ($build -match 'package-identity-mismatch') -and ($build -match 'inventorySha256') -and ($build -match 'packageJsonSha256'))
 Check 'build:fresh-package-cache-copy-before-path-gate' (($build -match '\$RegistryCacheSource') -and ($build -match 'Copy-C05EVerifiedRegistryCache') -and ($build.IndexOf('Copy-C05EVerifiedRegistryCache $RegistryCacheSource $project') -lt $build.IndexOf('$pathBudgetAudit.status -ne ''PASS''')) -and ($build.IndexOf('$pathBudgetAudit.status -ne ''PASS''') -lt $build.IndexOf('Start-C05EHiddenProcess $unity')))
-Check 'build:bounded-unity-job-workers' (($build -match "'-job-worker-count','1'") -and ($build -match 'unityJobWorkerCount=1'))
+Check 'build:auto-staging-reuse' (($build -match 'AUTO staging') -and ($build -match 'autoHasBuild') -and ($build -match 'staging-source-closure\.sha256'))
+Check 'build:auto-staging-short-name' ($build -match 'c05-emulator-staging\\a')
+Check 'build:bounded-unity-job-workers' (($build -match "'-job-worker-count',\[string\]") -and ($build -match 'unityJobWorkerCount=') -and ($build -match 'BLOCKED_MEMORY'))
 Check 'build:task-owned-toolchain-root' (($build -match '\$PrivateToolchainRoot') -and ($build -match '\[IO\.Path\]::GetFullPath\(\$PrivateToolchainRoot\)'))
 
 # 6. Real deterministic fixtures through the actual entry points.

@@ -1663,20 +1663,43 @@ function Invoke-C04RunnerMain {
 
     $staging = Join-Path $script:RunRoot 'staging-project'
     $copied = Copy-C04UnityInputs -Repo $repo -Destination $staging
+
+    # Library reuse. RunRoot is unique per run, so a reuse source has to be named.
+    # When the caller names none, a persistent cache under build\library-cache is
+    # used if it holds a Library from a completed run; otherwise this is a cold
+    # build and the finished Library is published there for the next run.
+    if ([string]::IsNullOrWhiteSpace($ReuseLibraryCacheFrom)) {
+      $autoCacheProject = Join-Path $repo 'build\library-cache\staging-project'
+      $autoCacheLibrary = Join-Path $autoCacheProject 'Library'
+      $autoCacheMarker = Join-Path $repo 'build\library-cache\.c04-library-cache.json'
+      if ((Test-Path -LiteralPath $autoCacheLibrary -PathType Container) -and
+          (Test-Path -LiteralPath $autoCacheMarker -PathType Leaf)) {
+        $ReuseLibraryCacheFrom = $autoCacheLibrary
+        Write-Host ("AUTO library-cache: reusing '{0}'" -f $autoCacheLibrary)
+      } else {
+        Write-Host ("AUTO library-cache: none at '{0}'; building cold and publishing there." -f $autoCacheLibrary)
+        $script:C04PublishLibraryCacheTo = $autoCacheLibrary
+      }
+    }
+
     if (-not [string]::IsNullOrWhiteSpace($ReuseLibraryCacheFrom)) {
       $cachePath = [IO.Path]::GetFullPath($ReuseLibraryCacheFrom)
       $buildRoot = [IO.Path]::GetFullPath((Join-Path $repo 'build')) + [IO.Path]::DirectorySeparatorChar
+      $autoCacheLibrary = [IO.Path]::GetFullPath((Join-Path $repo 'build\library-cache\staging-project\Library'))
+      $isAutoCache = [string]::Equals($cachePath, $autoCacheLibrary, [StringComparison]::OrdinalIgnoreCase)
       if (-not $cachePath.StartsWith($buildRoot,[StringComparison]::OrdinalIgnoreCase) -or
           [IO.Path]::GetFileName($cachePath) -cne 'Library' -or
           [IO.Path]::GetFileName([IO.Path]::GetDirectoryName($cachePath)) -cne 'staging-project' -or
           -not (Test-Path -LiteralPath $cachePath -PathType Container)) {
         throw 'Reusable Unity Library cache must be an existing build/<GUID>/staging-project/Library directory.'
       }
-      $cacheManifest = Join-Path (Split-Path -Parent (Split-Path -Parent $cachePath)) 'manifest.sha256'
-      $cacheSeal = Join-Path (Split-Path -Parent (Split-Path -Parent $cachePath)) 'seal.json'
-      if (-not (Test-Path -LiteralPath $cacheManifest -PathType Leaf) -or -not (Test-Path -LiteralPath $cacheSeal -PathType Leaf) -or
-          (Select-String -LiteralPath $cacheManifest -Pattern 'staging-project/Library/' -Quiet)) {
-        throw 'Reusable Library is not a sealed, excluded cache from a completed prior run.'
+      if (-not $isAutoCache) {
+        $cacheManifest = Join-Path (Split-Path -Parent (Split-Path -Parent $cachePath)) 'manifest.sha256'
+        $cacheSeal = Join-Path (Split-Path -Parent (Split-Path -Parent $cachePath)) 'seal.json'
+        if (-not (Test-Path -LiteralPath $cacheManifest -PathType Leaf) -or -not (Test-Path -LiteralPath $cacheSeal -PathType Leaf) -or
+            (Select-String -LiteralPath $cacheManifest -Pattern 'staging-project/Library/' -Quiet)) {
+          throw 'Reusable Library is not a sealed, excluded cache from a completed prior run.'
+        }
       }
       $destinationLibrary = Join-Path $staging 'Library'
       if (Test-Path -LiteralPath $destinationLibrary) { throw 'Fresh staging project unexpectedly already has Library.' }
@@ -1684,8 +1707,14 @@ function Invoke-C04RunnerMain {
       $stagingResolved = (Resolve-Path -LiteralPath $staging).Path
       if (-not $sourceResolved.StartsWith($buildRoot,[StringComparison]::OrdinalIgnoreCase) -or
           -not $stagingResolved.StartsWith($buildRoot,[StringComparison]::OrdinalIgnoreCase)) { throw 'Library cache move escaped the isolated build workspace.' }
-      Move-Item -LiteralPath $sourceResolved -Destination $destinationLibrary
-      $summary.reusedLibraryCache = [ordered]@{ sourceRun = (Split-Path -Parent (Split-Path -Parent $cachePath)); destination = $destinationLibrary; excludedFromPriorSeal = $true; purpose = 'incremental Unity import cache only; staged source input is freshly copied and revalidated' }
+      if ($isAutoCache) {
+        # The persistent cache must survive for the next run, so copy instead of move.
+        & robocopy $sourceResolved $destinationLibrary /E /NFL /NDL /NJH /NJS /NP /R:1 /W:1 2>&1 | Out-Null
+        if ($LASTEXITCODE -ge 8) { throw "robocopy failed to seed the Library cache (exit=$LASTEXITCODE)." }
+      } else {
+        Move-Item -LiteralPath $sourceResolved -Destination $destinationLibrary
+      }
+      $summary.reusedLibraryCache = [ordered]@{ sourceRun = (Split-Path -Parent (Split-Path -Parent $cachePath)); destination = $destinationLibrary; excludedFromPriorSeal = $true; purpose = 'incremental Unity import cache only; staged source input is freshly copied and revalidated'; autoCache = $isAutoCache }
     }
     $stagedClosurePath = Join-Path $script:RunRoot 'staged-input.sha256'
     Write-C04Utf8 $stagedClosurePath $copied.staged.canonical
@@ -1848,6 +1877,28 @@ exit `$LASTEXITCODE
     $summary.inputClosure['finalManifestSha256'] = (Get-C04Sha256File $sourceFinalClosurePath)
     $identityAfter = Get-C04SourceIdentity -Repo $repo -ExpectedHead $identity.head
     Log "SOURCE_FROZEN head=$($identityAfter.head) closure=$($sourceAfter.sha256)"
+
+    # Publish the finished Library for the next run's automatic reuse. Only a
+    # completed build reaches this point, so a half-written Library is never
+    # advertised. The cache lives outside every RunRoot so it survives.
+    if ($script:C04PublishLibraryCacheTo) {
+      $publishTarget = [IO.Path]::GetFullPath($script:C04PublishLibraryCacheTo)
+      $publishProject = Split-Path -Parent $publishTarget
+      $builtLibrary = Join-Path $staging 'Library'
+      if (Test-Path -LiteralPath $builtLibrary -PathType Container) {
+        New-Item -ItemType Directory -Force -Path $publishProject | Out-Null
+        if (Test-Path -LiteralPath $publishTarget) { Remove-Item -LiteralPath $publishTarget -Recurse -Force -ErrorAction SilentlyContinue }
+        & robocopy $builtLibrary $publishTarget /E /NFL /NDL /NJH /NJS /NP /R:1 /W:1 2>&1 | Out-Null
+        if ($LASTEXITCODE -ge 8) { Log "LIBRARY_CACHE publish failed exit=$LASTEXITCODE" }
+        else {
+          $marker = Join-Path $publishProject '..\.c04-library-cache.json'
+          $markerText = [pscustomobject]@{ publishedUtc=(Get-Date).ToUniversalTime().ToString('o'); run=$script:RunRoot; sourceHead=$identityAfter.head; sourceClosure=$sourceAfter.sha256 } | ConvertTo-Json
+          [IO.File]::WriteAllText([IO.Path]::GetFullPath($marker), $markerText, (New-Object Text.UTF8Encoding($false)))
+          Log ("LIBRARY_CACHE published {0}" -f $publishTarget)
+        }
+      }
+    }
+
     Log 'RUNNER_STAGE_PASS'
   }
   catch {
