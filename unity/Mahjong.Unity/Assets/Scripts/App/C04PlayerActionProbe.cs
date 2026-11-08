@@ -389,6 +389,12 @@ namespace Mahjong.Unity.App
                 Fail("DOUBLE_RIICHI_FACT_MISSING", "The accepted first uninterrupted Riichi event did not project DoubleRiichi=true.");
                 yield break;
             }
+            if (_caseId == "C04-G1-02" &&
+                (confirmation.Event.Type != ProtocolEventType.TsumoWin || !SameTiles(new uint[] { 12 }, confirmation.Event.Payload.TileIds)))
+            {
+                Fail("TSUMO_WIN_FACT_MISMATCH", "The accepted Player action did not publish the fixed dealer tsumo on physical entity 12.");
+                yield break;
+            }
 
             Task<LocalTableRecoveryCapture> afterAuthorityTask = LocalTableHost.CaptureRecoveryAsync(
                 ((LocalTableChannelFactory)composition.ChannelFactory).SaveDirectory, CancellationToken.None);
@@ -418,7 +424,8 @@ namespace Mahjong.Unity.App
                     confirmedBatch.StateVersion,
                     confirmation.Event.EventSeq,
                     confirmation.Event.Type.ToString(),
-                    0);
+                    0,
+                    payloadHash);
             }
             catch (Exception exception)
             {
@@ -848,6 +855,7 @@ namespace Mahjong.Unity.App
         {
             switch (caseId)
             {
+                case "C04-G1-02": return LocalPlayerActionScenario.DealerTsumo;
                 case "C04-G2-01": return LocalPlayerActionScenario.Pon;
                 case "C04-G2-02": return LocalPlayerActionScenario.Chi;
                 case "C04-G2-03": return LocalPlayerActionScenario.Riichi;
@@ -860,6 +868,7 @@ namespace Mahjong.Unity.App
         {
             switch (caseId)
             {
+                case "C04-G1-02": return PlayerActionKind.DeclareTsumo;
                 case "C04-G2-01": return PlayerActionKind.DeclarePon;
                 case "C04-G2-02": return PlayerActionKind.DeclareChi;
                 case "C04-G2-03": return PlayerActionKind.DeclareRiichi;

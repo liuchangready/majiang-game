@@ -168,7 +168,8 @@ internal static class Program
             RequiredUInt64(evidence, "EventCommandVersion"),
             RequiredUInt64(evidence, "EventSeq"),
             RequiredString(evidence, "EventType"),
-            RequiredInt(evidence, "EventSeat"));
+            RequiredInt(evidence, "EventSeat"),
+            RequiredString(evidence, "PayloadSha256"));
         Dictionary<int, string> afterPositions = ReadPhysicalPositions(exactActionAudit);
         int afterActionDeadWallCount = afterPositions.Values.Count(value => value.StartsWith("DEADWALL/", StringComparison.Ordinal));
 
@@ -236,6 +237,7 @@ internal static class Program
             payload.RequireUInt64(CommandPayloadFields.ControlEpochField, "controlEpoch").ToString(CultureInfo.InvariantCulture), "canonical request control epoch");
         uint expectedAction = RequiredString(evidence, "CaseId") switch
         {
+            "C04-G1-02" => (uint)ProtocolActionType.DeclareTsumo,
             "C04-G2-01" => (uint)ProtocolActionType.DeclarePon,
             "C04-G2-02" => (uint)ProtocolActionType.DeclareChi,
             "C04-G2-03" => (uint)ProtocolActionType.DeclareRiichi,
@@ -246,6 +248,7 @@ internal static class Program
             throw new InvalidDataException("Canonical action kind differs from the fixed C04 case.");
         uint[] expectedTiles = RequiredString(evidence, "CaseId") switch
         {
+            "C04-G1-02" => Array.Empty<uint>(),
             "C04-G2-01" => new uint[] { 0, 1, 2 },
             "C04-G2-02" => new uint[] { 0, 4, 8 },
             "C04-G2-03" => new uint[] { 124 },
@@ -328,6 +331,7 @@ internal static class Program
             string expectedCase = RequiredString(evidence, "CaseId");
             int[] owned = expectedCase switch
             {
+                "C04-G1-02" => new[] { 124, 125, 126, 4, 8, 48, 52, 56, 92, 96, 100, 16, 17 },
                 "C04-G2-01" => new[] { 0, 1 },
                 "C04-G2-02" => new[] { 0, 8 },
                 "C04-G2-03" => Array.Empty<int>(),
@@ -390,6 +394,15 @@ internal static class Program
         string caseId = RequiredString(evidence, "CaseId");
         PlayerPrivateView beforeOwn = baseline.PrivateView!;
         PlayerPrivateView afterOwn = after.PrivateView!;
+        if (caseId == "C04-G1-02")
+        {
+            RequirePosition(beforePositions, 12, "HAND/0/", "baseline dealer tsumo draw");
+            RequirePosition(afterPositions, 12, "HAND/0/", "accepted dealer tsumo winner tile");
+            if (!beforeOwn.ClosedTiles.Contains(124U) || !afterOwn.ClosedTiles.Contains(124U) ||
+                !RequiredString(evidence, "EventTileIds").Equals("12", StringComparison.Ordinal))
+                throw new InvalidDataException("Tsumo evidence is not bound to the frozen dealer hand and winning entity 12.");
+            return;
+        }
         string[] expected = caseId switch
         {
             "C04-G2-01" => new[] { "0", "1", "2" },
@@ -556,6 +569,21 @@ internal static class Program
         Equal(RequiredString(evidence, "EventType"), Enum.GetName(typeof(Mahjong.Contracts.ProtocolEventType), checked((int)JsonUInt64(action, "Type"))) ?? string.Empty, "raw typed event kind");
         string tileIds = string.Join(",", JsonRequired(action, "TileIds").EnumerateArray().Select(value => value.GetUInt32().ToString(CultureInfo.InvariantCulture)));
         Equal(RequiredString(evidence, "EventTileIds", true), tileIds, "raw event physical entity list");
+        string expectedEvent = RequiredString(evidence, "CaseId") switch
+        {
+            "C04-G1-02" => nameof(Mahjong.Contracts.ProtocolEventType.TsumoWin),
+            "C04-G2-01" => nameof(Mahjong.Contracts.ProtocolEventType.PonDeclared),
+            "C04-G2-02" => nameof(Mahjong.Contracts.ProtocolEventType.ChiDeclared),
+            "C04-G2-03" => nameof(Mahjong.Contracts.ProtocolEventType.RiichiDeclared),
+            "C04-G2-04" => nameof(Mahjong.Contracts.ProtocolEventType.KanDeclared),
+            _ => throw new InvalidDataException("Unknown fixed C04 action event case.")
+        };
+        Equal(expectedEvent, RequiredString(evidence, "EventType"), "fixed C04 action event");
+        if (RequiredString(evidence, "CaseId") == "C04-G1-02")
+        {
+            Equal("0", RequiredString(evidence, "EventSeat"), "dealer tsumo winner seat");
+            Equal("12", tileIds, "dealer tsumo winning physical entity");
+        }
         Equal(RequiredString(evidence, "ReceiptCommandVersion"), JsonNumber(action, "CommandVersion"), "raw event receipt command version");
         Equal(RequiredString(evidence, "ReceiptEventSeq"), JsonNumber(batch, "EventSeq"), "accepted publication receipt event high-water");
         Equal(RequiredString(evidence, "AcceptanceSequence"), RequiredString(evidence, "AfterAcceptanceSequence"), "accepted publication/after snapshot acceptance sequence");

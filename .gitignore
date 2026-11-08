@@ -59,3 +59,12 @@ unity/**/crashlytics-build.properties
 # .NET 共享程序集构建输出
 dotnet/**/bin/
 dotnet/**/obj/
+
+# Only the accidental repository-root Unity project created by the R6 wrong-root invocation.
+# The real project is nested under unity/Mahjong.Unity and remains tracked normally.
+/Library/
+/Packages/
+/ProjectSettings/
+/Temp/
+/UserSettings/
+/assets/**/*.meta
