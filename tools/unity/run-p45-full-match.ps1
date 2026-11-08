@@ -208,7 +208,7 @@ function Get-Mutex {
     $script:Mutex = New-Object System.Threading.Mutex($false, $name)
     $start = [DateTimeOffset]::UtcNow
     Write-ToolLog ('MUTEX_WAIT ' + $name)
-    $acquired = $script:Mutex.WaitOne([TimeSpan]::FromSeconds(3600))
+    $acquired = $script:Mutex.WaitOne([TimeSpan]::FromSeconds(600))
     $elapsed = ([DateTimeOffset]::UtcNow - $start).TotalSeconds
     if (-not $acquired) {
         throw ('MUTEX_TIMEOUT ' + $name + ' after ' + [math]::Round($elapsed, 3) + 's')

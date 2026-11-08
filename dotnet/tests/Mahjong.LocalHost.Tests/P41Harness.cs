@@ -191,7 +191,12 @@ namespace Mahjong.LocalHost.Tests
 
         public static string FindRepositoryRoot()
         {
-            string? current = AppContext.BaseDirectory;
+            return FindRepositoryRoot(AppContext.BaseDirectory);
+        }
+
+        private static string FindRepositoryRoot(string startDirectory)
+        {
+            string? current = Path.GetFullPath(startDirectory);
             while (!string.IsNullOrEmpty(current))
             {
                 if (File.Exists(Path.Combine(current, "dotnet", "Mahjong.sln")))
@@ -207,34 +212,74 @@ namespace Mahjong.LocalHost.Tests
 
         public static string FindBuiltProjectAssembly(string projectName, string assemblyName)
         {
-            DirectoryInfo? current = new DirectoryInfo(AppContext.BaseDirectory);
-            while (current != null)
-            {
-                string artifactPath = Path.Combine(
-                    current.FullName,
-                    "bin",
-                    projectName,
-                    "release",
-                    assemblyName);
-                if (File.Exists(artifactPath))
-                {
-                    return artifactPath;
-                }
+            return FindBuiltProjectAssembly(projectName, assemblyName, AppContext.BaseDirectory);
+        }
 
+        internal static string FindBuiltProjectAssembly(string projectName, string assemblyName, string baseDirectory)
+        {
+            var testOutput = new DirectoryInfo(Path.GetFullPath(baseDirectory));
+            string? currentConfiguration = null;
+            string? targetFramework = null;
+            DirectoryInfo? current = testOutput;
+            if (current.Name.StartsWith("net", StringComparison.OrdinalIgnoreCase))
+            {
+                targetFramework = current.Name;
                 current = current.Parent;
             }
 
-            string projectRoot = Path.Combine(FindRepositoryRoot(), "dotnet", "tests", projectName, "bin");
-            foreach (string configuration in new[] { "Release", "Debug" })
+            currentConfiguration = current?.Name;
+            DirectoryInfo? testProjectDirectory = current?.Parent;
+            DirectoryInfo? artifactsBin = testProjectDirectory?.Parent;
+            if (artifactsBin?.Name.Equals("bin", StringComparison.OrdinalIgnoreCase) == true)
             {
-                string path = Path.Combine(projectRoot, configuration, "net8.0", assemblyName);
-                if (File.Exists(path))
+                if (!IsBuildConfiguration(currentConfiguration))
                 {
-                    return path;
+                    throw new InvalidOperationException(
+                        "Cannot determine the configuration of the isolated test artifacts from " + baseDirectory);
                 }
+
+                string relativeOutputPath = Path.GetRelativePath(testProjectDirectory!.FullName, testOutput.FullName);
+                string candidate = Path.Combine(
+                    artifactsBin.Parent!.FullName,
+                    "bin",
+                    projectName,
+                    relativeOutputPath,
+                    assemblyName);
+                if (File.Exists(candidate))
+                {
+                    return candidate;
+                }
+
+                throw new FileNotFoundException(
+                    "The required project assembly is missing from the same isolated artifacts root; repository bin outputs are not used as fallback.",
+                    candidate);
             }
 
-            return Path.Combine(projectRoot, "Release", "net8.0", assemblyName);
+            if (!IsBuildConfiguration(currentConfiguration))
+            {
+                throw new InvalidOperationException(
+                    "Cannot determine the active build configuration from " + baseDirectory);
+            }
+
+            string repositoryRoot = FindRepositoryRoot(baseDirectory);
+            string projectRoot = Path.Combine(repositoryRoot, "dotnet", "tests", projectName, "bin");
+            string frameworkDirectory = targetFramework ?? "net8.0";
+            string repositoryOutput = Path.Combine(projectRoot, currentConfiguration!, frameworkDirectory, assemblyName);
+            if (File.Exists(repositoryOutput))
+            {
+                return repositoryOutput;
+            }
+
+            throw new FileNotFoundException(
+                "The required project assembly is missing from the repository output for the active configuration.",
+                repositoryOutput);
+        }
+
+        private static bool IsBuildConfiguration(string? value)
+        {
+            return value != null &&
+                (value.Equals("Debug", StringComparison.OrdinalIgnoreCase) ||
+                 value.Equals("Release", StringComparison.OrdinalIgnoreCase));
         }
 
         public async ValueTask DisposeAsync()

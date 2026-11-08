@@ -16,11 +16,19 @@
                  "androidRowsNotRun":  9
              },
     "candidate":  {
-                      "sourceCommit":  "4523485cfd4ec2b32185a7da5c13f6cbaf54a1e1",
+                      "sourceCommit":  "bda5e039f920a939003eea847758928300d75fd1",
+                      "mergeBase":  "4523485cfd4ec2b32185a7da5c13f6cbaf54a1e1",
+                      "worktreeStatus":  "dirty; not frozen",
+                      "finalCandidate":  false,
                       "dirtyInputs":  [
-                                          "dotnet/tests/Mahjong.LocalHost.Tests/*.cs",
+                                          "dotnet/tests/Mahjong.LocalHost.Tests/P41Harness.cs",
+                                          "dotnet/tests/Mahjong.LocalHost.Tests/P41HarnessArtifactResolutionTests.cs",
                                           "tools/unity/run-p45-full-match.ps1",
-                                          "doc/v5-閲嶆瀯/V5-G2-WINDOWS-LUNA6-TASK-20261108.md"
+                                          "unity/Mahjong.Unity/Assets/Plugins/Mahjong/*.dll",
+                                          "unity/Mahjong.Unity/Assets/Plugins/Mahjong/*.pdb",
+                                          "doc/v5-重构/V5-G2-WINDOWS-LUNA6-TASK-20261108.md",
+                                          "doc/v5-重构/V5-G2-WINDOWS-LUNA6-DELIVERY-20261108.md",
+                                          "doc/v5-重构/V5-G2-WINDOWS-LUNA6-BINDING-20261108.json"
                                       ]
                   },
     "packages":  [
@@ -529,10 +537,18 @@
                       "initialFixture":  "Fresh isolated offline Player data; no network topology emulator; OS network disabled for actual manual run.",
                       "assertion":  "Full match can complete offline; no remote channel is attempted; normal score/rank/ledger results hold.",
                       "contractBindings":  "Local transport kind, run/player/build identity, match/round/action IDs and local request scopes.",
-                      "execution":  "EXECUTED",
-                      "verdict":  "PASS",
-                      "reason":  "FullMatch local Player reached WestCompletion without a remote service process; 12 draw rounds completed.",
-                      "evidence":  "build/4091659e35504e70849026b37de28d0c/executions/p45-20261108-191351-2636b2d1/driver/summary.json"
+                      "execution":  "PARTIAL",
+                      "verdict":  "NOT_RUN",
+                      "reason":  "No real network isolation, local transport observation, or process egress observation is bound. A missing remote server process is insufficient.",
+                      "evidence":  [
+                                          "build/4091659e35504e70849026b37de28d0c/executions/p45-20261108-191351-2636b2d1/driver/summary.json",
+                                          "build/4091659e35504e70849026b37de28d0c/command.json"
+                                      ],
+                      "reviewRound2":  {
+                                          "previousVerdict":  "PASS",
+                                          "previousReason":  "FullMatch completed 12 draw rounds without a remote service process; this did not prove offline isolation or absence of outbound attempts.",
+                                          "correctedVerdict":  "NOT_RUN"
+                                      }
                   },
                   {
                       "id":  "C04-G7-02",
@@ -557,11 +573,12 @@
                       "contractBindings":  "Player binary/package SHA, source/build SHA, OS/display resolution/DPI/aspect, scene, time and screenshot SHA.",
                       "execution":  "EXECUTED_FAIL",
                       "verdict":  "FAIL",
-                      "reason":  "Normal Windows Player screenshots show cropped title/blank menu layout; player log records missing-script warnings and InputModule NullReferenceException.",
+                      "reason":  "Fresh bridge-HEAD build and scene diagnostics no longer show missing-script/InputModule errors, but the ordinary Player still renders only a cropped title/background. At DPI 240 the requested 1280x720 window became 525x323 (512x288 client); visual acceptance remains failed.",
                       "evidence":  [
                                        "build/g2-win-visual-luna6-20261108/player-fullscreen-startup.png",
                                        "build/g2-win-visual-luna6-20261108/player-windowed-1280x720.png",
-                                       "build/g2-win-visual-luna6-20261108/player-windowed-1280x720.log"
+                                       "build/g2-win-visual-luna6-20261108/player-windowed-1280x720.log",
+                                       "build/l6-r1-c00350e8c86f4ad3ad8e377ffff0d4f0/ui-observation/manifest.json"
                                    ]
                   },
                   {
@@ -579,5 +596,52 @@
                   }
               ],
     "g2Stage":  "NOT_ASSESSED",
-    "android":  "NOT_RUN"
+    "android":  "NOT_RUN",
+    "reviewRound2":  {
+                         "previousBindingSha256":  "5B23D488B14E06037202577E7A4B93344457E07C61D48455F754B6868229EFDE",
+                         "reviewConclusion":  "NOT_APPROVED_SCOPE_INCOMPLETE",
+                         "base":  "4523485cfd4ec2b32185a7da5c13f6cbaf54a1e1",
+                         "bridgeHead":  "bda5e039f920a939003eea847758928300d75fd1",
+                         "mergeBase":  "4523485cfd4ec2b32185a7da5c13f6cbaf54a1e1",
+                         "defects":  [
+                                         {"id":"D-1-01","severity":"BLOCKER","status":"OPEN","evidence":"build/l6-r1-c00350e8c86f4ad3ad8e377ffff0d4f0/ui-observation/windowed-player.png"},
+                                         {"id":"D-1-02","severity":"MAJOR","status":"OPEN","evidence":"WindowsActions Player matrix and missing G1/G2/G4/G7-02 rows not executed"},
+                                         {"id":"D-1-03","severity":"MAJOR","status":"CODE_AND_HELPER_TESTS_FIXED; ACTIONS_PREFLIGHT_PENDING","evidence":"build/rework-d103-focused2-a35641d45ff744ea9451fa34272ecd2c; build/rework-d103-debug-0b1d04c34b6440e5ac1057b084335ef5"},
+                                         {"id":"D-1-04","severity":"MAJOR","status":"CORRECTED_TO_NOT_RUN; OPEN","evidence":"C04-G7-01 reviewRound2; no network isolation evidence"},
+                                         {"id":"D-1-05","severity":"MAJOR","status":"OPEN","evidence":"build/l6-r1-c00350e8c86f4ad3ad8e377ffff0d4f0 is build-only support package, not 32-row matrix"}
+                                     ],
+                         "windowsBuildOnly":  {
+                                                  "run":"build/l6-r1-c00350e8c86f4ad3ad8e377ffff0d4f0",
+                                                  "runnerExit":0,
+                                                  "playerFiles":192,
+                                                  "playerManifestSha256":"C0AAB4D93760B214797687D01795836E448BFAFBB1021C281AA40684DCC9D357",
+                                                  "generatedAssetEvidenceCount":87,
+                                                  "generatedAssetEvidencePatchSha256":"B8923B56A6AE888E751F0B2590B7A1677DE38E851C6474C65E5BBC7C9179AED7",
+                                                  "sharedDlls": {
+                                                      "Google.Protobuf.dll":"16921420D56EE464D4B4C43BA70C7300172E2CF3852F80CB91B71932569D3A5F",
+                                                      "Mahjong.Ai.dll":"FDA4EFCE566D3C9C43EEBA2666AC6D476EE2BA636A93649340B40E1BA2213977",
+                                                      "Mahjong.Client.dll":"02C674013801F0C7F277BC30CAEBDB666D2EDAC166562E21A6AA2416286E7CE8",
+                                                      "Mahjong.Contracts.dll":"5940034BBEADE8E754D2724C3952B099718EC69231E950C31DBEB2733F149AC5",
+                                                      "Mahjong.Contracts.Wire.dll":"7FE388C6B110B676A1572CEA8537A6E21B02510E2CBFB7738FEDEC9E930ED63C",
+                                                      "Mahjong.Domain.dll":"76EBBC20593C3309AAFD01823FC7844BD2158679B3F87DD8986FEA9F55B200D4",
+                                                      "Mahjong.LocalHost.dll":"DCE20F2CFE61E216252D2B866460B8FCAB8B2130E9293CDCFE4F5AAE06677BB2",
+                                                      "Mahjong.TableRuntime.dll":"367CCD50E4E1E0D37312053DA447FE7AEAA7C7A2DA64B0E2832F730D36565368"
+                                                  },
+                                                  "uiObservationManifest":"build/l6-r1-c00350e8c86f4ad3ad8e377ffff0d4f0/ui-observation/manifest.json",
+                                                  "uiObservationManifestSha256":"AD55AE2841C8C4C8178AFA509540A45EF3D5946F08CC5807449153B0391CBCA6",
+                                                  "notFinalMatrix":true
+                                              },
+                         "testRuns":  [
+                                         {"configuration":"Release","nativeExit":0,"total":187,"passed":187,"failed":0,"skipped":0,"log":"build/rework-d103-focused2-a35641d45ff744ea9451fa34272ecd2c/bin/Mahjong.LocalHost.Tests/release/TestResults/Mahjong.LocalHost.Tests_net8.0_x64.log","sha256":"3F3CDF177A5F19B27569D6B61ED1D122153AD9E26148B65742177B569324FA8C"},
+                                         {"configuration":"Debug","nativeExit":0,"total":187,"passed":187,"failed":0,"skipped":0,"log":"build/rework-d103-debug-0b1d04c34b6440e5ac1057b084335ef5/bin/Mahjong.LocalHost.Tests/debug/TestResults/Mahjong.LocalHost.Tests_net8.0_x64.log","sha256":"8A3D5E9A6B889F26FA29CD860DB39A860CF5F221C12DAC5270649FEA4423D700"}
+                                     ],
+                         "toolAssertions":  {
+                                                "command":"powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/tests/G2TestRunner.Tests.ps1",
+                                                "nativeExit":0,
+                                                "checks":30,
+                                                "evidenceClass":"TOOL_FIXTURE",
+                                                "summary":"build/g2-runner-test-0771255ce47743c298dc03ccf37c0927/test-summary.json",
+                                                "sha256":"BBAE3989455EB5188471DEBCCDCC99EC8EDEF4BA3E1D45908EA6EC3E44E3F237"
+                                            }
+                     }
 }
