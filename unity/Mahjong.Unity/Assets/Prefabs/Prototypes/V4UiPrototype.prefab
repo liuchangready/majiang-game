@@ -1,0 +1,109 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!1 &5284112625513900901
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 8227391850749212548}
+  - component: {fileID: 6728639633026176082}
+  m_Layer: 0
+  m_Name: V4UiPrototype
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &8227391850749212548
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 5284112625513900901}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &6728639633026176082
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 5284112625513900901}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: a144c2e2a4bfc484e9f1f0695f3e620c, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Mahjong.Unity.UI::Mahjong.Unity.UI.Prototype.V4UiPrototype
+  _theme: {fileID: 11400000, guid: 186271d17419ea547a3deee97b67abef, type: 2}
+  _mainBackground: {fileID: 21300000, guid: a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3, type: 3}
+  _octopus: {fileID: 21300000, guid: c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5, type: 3}
+  _primaryButton: {fileID: 21300000, guid: e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1, type: 3}
+  _secondaryButton: {fileID: 21300000, guid: f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2, type: 3}
+  _focusButton: {fileID: 21300000, guid: d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0, type: 3}
+  _menuIconAtlas: {fileID: 21300000, guid: b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4, type: 3}
+  _environment: {fileID: 21300000, guid: 33814603bc59c674bbe7775b70161690, type: 3}
+  _board: {fileID: 21300000, guid: ecd92103cb15fe340a44dba62f971862, type: 3}
+  _panel: {fileID: 21300000, guid: a804938269cae7d40933fde0b1d1c916, type: 3}
+  _redButton: {fileID: 7634699034550724907, guid: a51ffa270d3b01d43be9292d58b7e7a2, type: 3}
+  _jadeButton: {fileID: -150136318735908639, guid: a51ffa270d3b01d43be9292d58b7e7a2, type: 3}
+  _portraits:
+  - {fileID: 5453136732961072616, guid: fb5128826e7b849409514a7fa1bad192, type: 3}
+  - {fileID: 5799062651726021789, guid: fb5128826e7b849409514a7fa1bad192, type: 3}
+  - {fileID: 8583572021117536418, guid: fb5128826e7b849409514a7fa1bad192, type: 3}
+  - {fileID: -5001991460845427971, guid: fb5128826e7b849409514a7fa1bad192, type: 3}
+  _targetCards:
+  - {fileID: -724078358709458926, guid: 309630ad4e5babc47b7d147d3f44f1a0, type: 3}
+  - {fileID: 4040749246096092594, guid: 309630ad4e5babc47b7d147d3f44f1a0, type: 3}
+  - {fileID: 5689851363897811756, guid: 309630ad4e5babc47b7d147d3f44f1a0, type: 3}
+  - {fileID: -1984430066900194828, guid: 309630ad4e5babc47b7d147d3f44f1a0, type: 3}
+  - {fileID: 5148417071812654926, guid: 309630ad4e5babc47b7d147d3f44f1a0, type: 3}
+  - {fileID: 1474761204297787399, guid: 309630ad4e5babc47b7d147d3f44f1a0, type: 3}
+  _compass: {fileID: 21300000, guid: 7046da50bf4c8ad49bc862873e3c4d73, type: 3}
+  _tiles:
+  - {fileID: 21300000, guid: 3f69d5376f240fc4daa95581a580adff, type: 3}
+  - {fileID: 21300000, guid: e7d8e42b7538cd44687c4ee07a493b94, type: 3}
+  - {fileID: 21300000, guid: ac7570b88f5d59b44bbb9c3d40dd12ea, type: 3}
+  - {fileID: 21300000, guid: d4f26432b20232d49bfa04bdd9fec945, type: 3}
+  - {fileID: 21300000, guid: 1743909d5614bf144816f27d527a81ba, type: 3}
+  - {fileID: 21300000, guid: 43cd7c4e750e1e249a2a963547952ac7, type: 3}
+  - {fileID: 21300000, guid: ca1829e19d630e64594c0dd4be39d42b, type: 3}
+  - {fileID: 21300000, guid: de86e61eb1c3b234bbe15654064e1a48, type: 3}
+  - {fileID: 21300000, guid: 83ccfeacc24f34d429fb8ae424d092e3, type: 3}
+  - {fileID: 21300000, guid: 8ec9c5c391a0d1740a66340aaf428fdf, type: 3}
+  - {fileID: 21300000, guid: de0811f00a44bb040bf5f3c6d42187e0, type: 3}
+  - {fileID: 21300000, guid: 01ccce7bcc2978b4686b59ee90bf0130, type: 3}
+  - {fileID: 21300000, guid: b28b6b3cb5df66340bf27b3166c982d1, type: 3}
+  - {fileID: 21300000, guid: c7bbfed81f8e7b042b95d6dd7a73ec00, type: 3}
+  - {fileID: 21300000, guid: dd016ca7ff123eb4695277e4149f037c, type: 3}
+  - {fileID: 21300000, guid: 16769cecd89ee614481d8044355bf5a6, type: 3}
+  - {fileID: 21300000, guid: 023a69b70b36fd94eb0987e55c82ca96, type: 3}
+  - {fileID: 21300000, guid: b225c8eedaf9f4d4db318515a1969d8d, type: 3}
+  - {fileID: 21300000, guid: f96709d715421d14e90fd704e131f287, type: 3}
+  - {fileID: 21300000, guid: 7ceb19aa8916fb440ba444b977dc386c, type: 3}
+  - {fileID: 21300000, guid: 8525936cfb0d223429af301175749c22, type: 3}
+  - {fileID: 21300000, guid: eeb786f62ad0ea149a71ec9c69bf3726, type: 3}
+  - {fileID: 21300000, guid: 5348a9dc86a2a6c4d8606b8401d05ec1, type: 3}
+  - {fileID: 21300000, guid: aa49bb42130dc03429258001514b0cdd, type: 3}
+  - {fileID: 21300000, guid: f37b669d8d0e65b4d801f667ddabe44f, type: 3}
+  - {fileID: 21300000, guid: 7fc0cd1f5bcfd1f459ef96485bd25228, type: 3}
+  - {fileID: 21300000, guid: cf3a25fdcf2d62e4a81b229e5be2b0a5, type: 3}
+  - {fileID: 21300000, guid: a92f1f737285aaa45929d68365eaeafd, type: 3}
+  - {fileID: 21300000, guid: 812ea69d6ac989049b473d0b6310061a, type: 3}
+  - {fileID: 21300000, guid: 5eb4bd1c16d7c254fbe80290fb5b7ea9, type: 3}
+  - {fileID: 21300000, guid: 65b3ece948d983a42822e996ee2738ae, type: 3}
+  - {fileID: 21300000, guid: 6be1f52900b17e24d97efaed8b8fc284, type: 3}
+  - {fileID: 21300000, guid: 9a106432d46cd2e4497e00a42ef0b202, type: 3}
+  - {fileID: 21300000, guid: c181c08204b554444b51c28d84269055, type: 3}
+  - {fileID: 21300000, guid: c5e3a19d3a34d4043801ba7776f7b215, type: 3}
+  - {fileID: 21300000, guid: eb3fc1d960c0fd54195120ae4e7db980, type: 3}
+  - {fileID: 21300000, guid: d3d732a739619e5468d6fed93711e8f0, type: 3}
