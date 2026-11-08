@@ -27,6 +27,92 @@ namespace Mahjong.LocalHost.Tests
         [InlineData(LocalPlayerActionScenario.Chi, ProtocolActionType.DeclareChi)]
         [InlineData(LocalPlayerActionScenario.Riichi, ProtocolActionType.DeclareRiichi)]
         [InlineData(LocalPlayerActionScenario.ClosedKan, ProtocolActionType.DeclareKan)]
+        public async Task unavailable_fixed_action_option_is_rejected_without_advancing_authority(
+            string scenario,
+            ProtocolActionType actionType)
+        {
+            await using var harness = new P41Harness();
+            LocalPlayerActionScenario.ConfigureHostOptions(harness.Options, scenario);
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(30));
+
+            ITableChannel channel = await LocalTableHost.CreateChannelAsync(harness.Options, timeout.Token);
+            string ticket = LocalTableHost.IssueTicket(harness.Options);
+            await channel.OpenAsync(new TableChannelConnectRequest(ticket, "c04-player-action-negative", null), timeout.Token);
+            var session = new TableSession(channel, new InMemoryOutboxStore());
+            Task pump = Task.CompletedTask;
+            try
+            {
+                await session.OpenAsync(new TableSessionOpenRequest(ticket, "c04-player-action-negative"), timeout.Token);
+                pump = PumpUntilCancelledAsync(session, timeout.Token);
+                PlayerSnapshot before = await WaitForDecisionAsync(session, timeout.Token);
+                LegalActionView candidate = Assert.Single(before.PrivateView.Decision!.Actions,
+                    value => value.ActionType == (uint)actionType);
+                var localChannel = Assert.IsType<LocalTableChannel>(channel);
+                LocalTableRecoveryCapture beforeCapture = await localChannel.RuntimeForMatch!.CaptureRecoveryAsync(timeout.Token);
+                string requestId = "c04-" + scenario + "-unavailable-option";
+                var receiptTask = new TaskCompletionSource<TableReceiptResolvedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
+                EventHandler<TableReceiptResolvedEventArgs> handler = (_, args) =>
+                {
+                    if (string.Equals(args.Command.Key.RequestId.Value, requestId, StringComparison.Ordinal))
+                        receiptTask.TrySetResult(args);
+                };
+                session.ReceiptResolved += handler;
+                try
+                {
+                    BusinessPayload payload = CommandPayloadFactory.SubmitAction(
+                        before.RoundId,
+                        before.PrivateView.Decision.DecisionId,
+                        before.PrivateView.Decision.ControlEpoch,
+                        actionType,
+                        optionId: "c04-unavailable-option",
+                        tileIds: actionType == ProtocolActionType.DeclareRiichi
+                            ? new uint[] { 135 }
+                            : actionType == ProtocolActionType.DeclareKan
+                                ? new uint[] { 130, 131, 132, 133 }
+                                : new uint[] { 130, 131 },
+                        meldType: actionType == ProtocolActionType.DeclareKan ? 4u : (uint?)null);
+                    var command = new ProtocolCommand(
+                        CommandKind.SubmitAction, payload, new RequestId(requestId), session.Binding!.Scope.ScopeId,
+                        new StateVersion(before.StateVersion), new RoundId(before.RoundId),
+                        decisionId: new DecisionId(before.PrivateView.Decision.DecisionId),
+                        controlEpoch: new ControlEpoch(before.PrivateView.Decision.ControlEpoch));
+                    CommandSubmission sent = await session.SubmitAsync(command, timeout.Token);
+                    Assert.True(sent.Sent);
+                    TableReceiptResolvedEventArgs receipt = await receiptTask.Task.WaitAsync(timeout.Token);
+                    Assert.Equal(ReceiptStatus.Rejected, receipt.Resolution.ReceiptStatus);
+                    Assert.False(receipt.Resolution.CommandVersion.HasValue);
+                    Assert.False(receipt.Resolution.EventSeq.HasValue);
+                    Assert.False(string.IsNullOrWhiteSpace(receipt.Resolution.ReasonCode));
+
+                    LocalTableRecoveryCapture afterCapture = await localChannel.RuntimeForMatch!.CaptureRecoveryAsync(timeout.Token);
+                    Assert.Equal(beforeCapture.Facts.RoundId, afterCapture.Facts.RoundId);
+                    Assert.Equal(beforeCapture.Facts.StateVersion, afterCapture.Facts.StateVersion);
+                    Assert.Equal(beforeCapture.Facts.EventSeq, afterCapture.Facts.EventSeq);
+                    Assert.Equal(beforeCapture.Facts.Physical.TilesSha256, afterCapture.Facts.Physical.TilesSha256);
+                    Assert.Equal(136, afterCapture.Facts.Physical.TileCount);
+                    Assert.Equal(136, afterCapture.Facts.Physical.UniqueCount);
+                    PlayerSnapshot after = session.PlayerSnapshot!;
+                    Assert.Equal(before.RoundId, after.RoundId);
+                    Assert.Equal(before.StateVersion, after.StateVersion);
+                    Assert.Equal(before.EventSeq, after.EventSeq);
+                }
+                finally { session.ReceiptResolved -= handler; }
+            }
+            finally
+            {
+                timeout.Cancel();
+                try { await pump; } catch (OperationCanceledException) { } catch (InvalidOperationException) { }
+                await session.CloseAsync("C04_NEGATIVE_DONE", CancellationToken.None);
+                await channel.CloseAsync(new TableChannelCloseReason("C04_NEGATIVE_DONE", true), CancellationToken.None);
+            }
+        }
+
+        [Theory]
+        [InlineData(LocalPlayerActionScenario.Pon, ProtocolActionType.DeclarePon)]
+        [InlineData(LocalPlayerActionScenario.Chi, ProtocolActionType.DeclareChi)]
+        [InlineData(LocalPlayerActionScenario.Riichi, ProtocolActionType.DeclareRiichi)]
+        [InlineData(LocalPlayerActionScenario.ClosedKan, ProtocolActionType.DeclareKan)]
         public async Task fixed_player_action_scenario_is_legal_and_applies_over_the_real_local_channel(
             string scenario,
             ProtocolActionType actionType)
@@ -228,6 +314,8 @@ namespace Mahjong.LocalHost.Tests
 
                     if (actionType == ProtocolActionType.DeclareRiichi)
                     {
+                        Assert.True(actionEvent.Payload.DoubleRiichi,
+                            "The fixed first uninterrupted discard must publish the authoritative double-riichi fact.");
                         Assert.True(after.PublicView.Board.Players[0].Riichi);
                         Assert.Equal(1u, after.PublicView.Board.RiichiSticks);
                         Assert.Equal(25_000L, before.PublicView.Board.Scores.Single(score => score.Seat == 0).Score);
@@ -316,6 +404,68 @@ namespace Mahjong.LocalHost.Tests
                 session.SnapshotChanged -= snapshotHandler;
                 await session.CloseAsync("C04_DONE", CancellationToken.None);
                 await channel.CloseAsync(new TableChannelCloseReason("C04_DONE", true), CancellationToken.None);
+            }
+        }
+
+        [Fact]
+        public async Task chi_without_a_candidate_is_rejected_without_advancing_authority()
+        {
+            await using var harness = new P41Harness();
+            LocalPlayerActionScenario.ConfigureHostOptions(harness.Options, LocalPlayerActionScenario.Pon);
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(30));
+            ITableChannel channel = await LocalTableHost.CreateChannelAsync(harness.Options, timeout.Token);
+            string ticket = LocalTableHost.IssueTicket(harness.Options);
+            await channel.OpenAsync(new TableChannelConnectRequest(ticket, "c04-no-chi", null), timeout.Token);
+            var session = new TableSession(channel, new InMemoryOutboxStore());
+            Task pump = Task.CompletedTask;
+            try
+            {
+                await session.OpenAsync(new TableSessionOpenRequest(ticket, "c04-no-chi"), timeout.Token);
+                pump = PumpUntilCancelledAsync(session, timeout.Token);
+                PlayerSnapshot before = await WaitForDecisionAsync(session, timeout.Token);
+                Assert.DoesNotContain(before.PrivateView.Decision!.Actions,
+                    value => value.ActionType == (uint)ProtocolActionType.DeclareChi);
+                var local = Assert.IsType<LocalTableChannel>(channel);
+                LocalTableRecoveryCapture beforeCapture = await local.RuntimeForMatch!.CaptureRecoveryAsync(timeout.Token);
+                const string requestId = "c04-no-chi-request";
+                var receiptTask = new TaskCompletionSource<TableReceiptResolvedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
+                EventHandler<TableReceiptResolvedEventArgs> handler = (_, args) =>
+                {
+                    if (args.Command.Key.RequestId.Value == requestId) receiptTask.TrySetResult(args);
+                };
+                session.ReceiptResolved += handler;
+                try
+                {
+                    BusinessPayload payload = CommandPayloadFactory.SubmitAction(
+                        before.RoundId, before.PrivateView.Decision.DecisionId,
+                        before.PrivateView.Decision.ControlEpoch,
+                        ProtocolActionType.DeclareChi,
+                        optionId: "not-advertised",
+                        tileIds: new uint[] { 130, 131 });
+                    var command = new ProtocolCommand(
+                        CommandKind.SubmitAction, payload, new RequestId(requestId), session.Binding!.Scope.ScopeId,
+                        new StateVersion(before.StateVersion), new RoundId(before.RoundId),
+                        decisionId: new DecisionId(before.PrivateView.Decision.DecisionId),
+                        controlEpoch: new ControlEpoch(before.PrivateView.Decision.ControlEpoch));
+                    Assert.True((await session.SubmitAsync(command, timeout.Token)).Sent);
+                    TableReceiptResolvedEventArgs receipt = await receiptTask.Task.WaitAsync(timeout.Token);
+                    Assert.Equal(ReceiptStatus.Rejected, receipt.Resolution.ReceiptStatus);
+                    LocalTableRecoveryCapture afterCapture = await local.RuntimeForMatch!.CaptureRecoveryAsync(timeout.Token);
+                    Assert.Equal(beforeCapture.Facts.StateVersion, afterCapture.Facts.StateVersion);
+                    Assert.Equal(beforeCapture.Facts.EventSeq, afterCapture.Facts.EventSeq);
+                    Assert.Equal(beforeCapture.Facts.Physical.TilesSha256, afterCapture.Facts.Physical.TilesSha256);
+                    Assert.Equal(before.StateVersion, session.PlayerSnapshot!.StateVersion);
+                    Assert.Equal(before.RoundId, session.PlayerSnapshot.RoundId);
+                }
+                finally { session.ReceiptResolved -= handler; }
+            }
+            finally
+            {
+                timeout.Cancel();
+                try { await pump; } catch (OperationCanceledException) { } catch (InvalidOperationException) { }
+                await session.CloseAsync("C04_NO_CHI_DONE", CancellationToken.None);
+                await channel.CloseAsync(new TableChannelCloseReason("C04_NO_CHI_DONE", true), CancellationToken.None);
             }
         }
 

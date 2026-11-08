@@ -237,3 +237,53 @@ D:\game_dev_tools\dotnet\dotnet.exe exec E:\g2-r4-tableservice\bin\Mahjong.Table
 当前可确认的根因/修复仅 D-3-01；其余四组不宣称修复。最早 Actions 失败、R1/R2/R3 首败、历史错误 DPI 判断与后续更正均保留，不覆盖原件。当前无需等待兄弟任务；应由桥接在源码修复批次完成后产生下一干净检查点，再继续要求 clean 的 Player/fresh 全矩阵。
 
 G7-01 安全环境预检原件：`E:\g2-r4-offline-preflight.txt` SHA256 `6E7C9555727E4092C5FB33529ABC2AE960724C0C61E556C35E76C76DF51DB340`。检查发现物理 WLAN 与 Meta Tunnel 均为 Up，防火墙 profiles 虽启用但出站默认策略均为 `NotConfigured`，当前没有 Windows Sandbox 可执行入口。建立仅针对 Player 的阻断需要添加主机防火墙规则，违反“不改全局机器网络/安全配置”的执行约束，因此未声称本次离线场景通过，也未改机器设置；其他 G1/G4/G7-02/G8 工作仍可继续。
+
+## 第5轮返修记录
+
+本轮桥接 clean 起点为 `7f232051d6643c9a6694b437fb30032eb9de3c32`，父 `cf477a7497c8c016e540917dab24f7a2d4318c46`，merge-base `4523485cfd4ec2b32185a7da5c13f6cbaf54a1e1`。仅新增 `dotnet/tests/Mahjong.LocalHost.Tests/C04PlayerActionChannelTests.cs` 的真实 LocalHost 负例：四动作非法实体牌拒绝且版本/事件/136实体不变、无候选 Chi 拒绝零变更；既有真实首次 Riichi 用例新增 `DoubleRiichi=true` 断言。
+
+Release `LocalHost` 完整 suite：native exit 0，196/196 passed，0 failed/skipped/not-run；XML `E:\g2-r5-localhost\LocalHost-final4.xml` SHA-256 `1FE54F2B861BCEA10D1935C0A90E94E04CF14391E894296D7842F4CABD5E4FA6`。Debug 同样 196/196，0 failed/skipped/not-run；XML `E:\g2-r5-debug.xml` SHA-256 `255440A0E74A4E1CE1037D11C58166E84F1D64195137B0E289894A3A6EEB125B`。日志：Release build/test `E:\g2-r5-localhost\build-final3.log`、`E:\g2-r5-localhost\LocalHost-final4.log`；Debug build/test `E:\g2-r5-debug-build.log`、`E:\g2-r5-debug-test.log`。历史负例构造错误/失败 XML 保留在同目录 `LocalHost-linked.xml`、`LocalHost-final.xml`、`LocalHost-final2.xml`，不作为 PASS。
+
+本轮增量并未完成 D-1-02 的全部 Player/Census 合同，也没有覆盖 D-1-01 G8、D-1-04 G7-01离线环境或 D-1-05共同最终包。任务不通过；这些行保持 binding 原判定，不以组件结果升级状态。当前源码已 dirty，桥接 clean/fresh Windows runner 仍须在完成全部可实现 probe 后由合法桥接生命周期取得新的 clean 候选再执行；不得手工提交或把旧候选作为最终包。
+
+证据引用更正：最后一次 Release 完整验证为 `E:\g2-r5-localhost\build-final4.log` 与 `LocalHost-final5.xml`/`LocalHost-final5.log`；native exit 0、196/196、0 skip/not-run，XML SHA-256 `F9B974D363402F0B29E7147B8A9FB1EA27C0FAD085CC018835BD8E5A47AFF2EB`。之前 final4 XML 保留作较早复验，不覆盖。
+
+本轮逐例补充证据见 [Binding 第5轮 supplement](V5-G2-WINDOWS-LUNA6-BINDING-R5-SUPPLEMENT-20261108.json)。原32行 Binding 文件保持原判定与内容。
+
+## Round 5 open findings (complete known set)
+
+### D-1-02 — MAJOR — G1/G2/G4/G7-02 scenario coverage
+
+- Location: Binding C04-G1-01/02/03, G2-01..04, G4-01..03, G7-02; `C04PlayerActionProbe`, `LocalControlPlayerProbe`, `LocalFullMatchPlayerDriver`, and TableService ingress tests.
+- Reproduction: run the WindowsActions frozen Player suite on the next clean bridge candidate, then inspect each `cases/C04-G*` original. Component command this round: `dotnet build dotnet/tests/Mahjong.LocalHost.Tests/Mahjong.LocalHost.Tests.csproj -c Release --artifacts-path E:/g2-r5-localhost/artifacts`, then `dotnet exec build/review-r5-localhost/bin/Mahjong.LocalHost.Tests/release/Mahjong.LocalHost.Tests.dll -noLogo -automated -failSkips -result-xml E:/g2-r5-localhost/LocalHost-final5.xml`.
+- Actual vs expected: four actual LocalHost illegal entity requests, no-candidate Chi, and first-turn double-riichi fact now have component evidence (Release/Debug 196/196). Still absent are real Player G1 win/draw/dealer continuation/new-round binding, G2 chankan and remaining negative cases, G4 stale AI result/re-entry/claim Player chain, and G7-02 actual LOCAL-origin asset refusal with zero side effects. Expected is every original Census assertion and binding on the real Player/service boundary.
+- Evidence: R5 supplement JSON; final Release/Debug XMLs and prior `E:/g2-r4-actions/summary.json` plus existing Binding PARTIAL rows. The earlier optionId-only and malformed payload negative attempts are preserved with hashes in the supplement and are not counted as passes.
+- Repair: finish the missing real probes using the production Player and `ITableChannel -> TableSessionHandler` path; derive an actual LOCAL asset from local settlement, submit it through the real service ingress, and compare version/event/ledger/outbox/settlement storage before/after. Do not substitute mocks or component PASS.
+- Acceptance: exact Census row assertions have non-zero Player/PlayMode or real Kestrel execution evidence, 0 skip, request/receipt/state/screenshot binding, preserved 136 entities, epochs, deadlines, idempotency, terminal state, and privacy.
+
+### D-1-01 — MAJOR — G8 complete layouts and physical input
+
+- Location: C04-G8-01/02 normal Windows Player display and input assertions.
+- Reproduction: run the R2 DPI-aware `build/review-r2-a198409d/ui/capture.ps1` against the next frozen Player at supported base/wide/tall client sizes; then drive the actual window with mouse and keyboard through menu, room, game, settlement, and dialogs.
+- Actual vs expected: only the DPI-aware complete base Menu is verified (`build/review-r2-a198409d/ui2/client-dpi-aware.png`, Player log `ui2/player.log`); no complete table/settlement layouts or physical-input action-to-request-to-receipt evidence exists. Expected is full-frame visibility and the original physical-input assertions.
+- Evidence: R2 UI originals; current Binding G8-01/02 remain PARTIAL. The earlier DPI-unaware crop diagnosis is withdrawn; do not change Canvas scaling.
+- Repair: reuse DPI-aware capture/input coordinate context, absolute `-logFile`, unique smoke data, inspect runtime log and bind each physical action to one request and authoritative receipt.
+- Acceptance: base/wide/tall full frames visually pass; physical keyboard/mouse completes the flow, one input creates at most one valid request, and cancel/focus/old input creates no invalid submission, all tied to the final package.
+
+### D-1-04 — MAJOR — G7-01 real offline match
+
+- Location: C04-G7-01 offline local full-match claim.
+- Reproduction: prior read-only preflight `E:/g2-r4-offline-preflight.txt`; do not repeat without a changed environment. A Player run without a service process does not establish offline isolation.
+- Actual vs expected: WLAN and Meta Tunnel were online, outbound firewall policy was NotConfigured, and Windows Sandbox was unavailable; no safe isolated run or egress observation exists. Expected is a complete same-candidate offline match with local transport and no remote connection attempt.
+- Evidence: preflight SHA-256 `6E7C9555727E4092C5FB33529ABC2AE960724C0C61E556C35E76C76DF51DB340`; Binding G7-01 remains NOT_RUN.
+- Repair: use a pre-existing approved offline environment or sandbox without modifying machine-wide networking/security. Keep NOT_RUN until available; meanwhile complete all other feasible coverage.
+- Acceptance: environment, Player process identity, package, local transport, no-egress observation, final scores/ranking/ledger/terminal state are captured together.
+
+### D-1-05 — MAJOR — final candidate and package closure
+
+- Location: final candidate/packages/runs and 32 Windows Binding rows.
+- Reproduction: compare each existing suite package manifest to the same source commit and complete package hash list; the current worktree has a new dirty test source and no final Player build.
+- Actual vs expected: suites have separate packages, and R5 only changed a LocalHost test. No same-candidate/same-package 32-row evidence exists. Expected is one legally frozen candidate and one complete ordinary Windows Player package/input closure.
+- Evidence: existing per-suite manifests in the Binding, R5 supplement showing source `7f232...` and dirty status, and the current worktree diff.
+- Repair: finish all feasible probes first, use bridge lifecycle for a new clean candidate, run original fresh/clean guards and gather one common Player package closure with 8 DLLs, assets/plugins, BuildReport, and per-row raw originals.
+- Acceptance: each Windows row traces to that final candidate and identical full-package hashes plus request/state/receipt/screenshot artifacts; no package splicing, stale DLL, skip, or refreshed-summary substitution. Android 9 rows remain NOT_RUN.

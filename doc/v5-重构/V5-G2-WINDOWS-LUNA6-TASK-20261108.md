@@ -124,3 +124,14 @@ Delivery 必含实际基线与候选 commit/dirty inputs、Unity Windows 包绝�
 - `dotnet/src/Mahjong.LocalHost/LocalTableStore.cs`：取消检查，仅在重试边界。
 - `dotnet/tests/Mahjong.LocalHost.Tests/LocalTableStoreTests.cs`：预提交取消无第二次替换与双 envelope 不变；提交后异常仍 Committed；覆盖既有瞬时/持续锁案。
 - 本任务 Task、Delivery 与 Binding 文档：追加第4轮事实与原件绑定；不修改 Census、统一 verifier 或验收标准。
+## Round 5 implementation increment (2026-11-08)
+
+The bridge starting candidate was clean `7f232051d6643c9a6694b437fb30032eb9de3c32` (parent `cf477a7497c8c016e540917dab24f7a2d4318c46`, merge-base `4523485cfd4ec2b32185a7da5c13f6cbaf54a1e1`). The only code/test source change is `dotnet/tests/Mahjong.LocalHost.Tests/C04PlayerActionChannelTests.cs`; task/delivery/binding-supplement records were also updated. The worktree is dirty and has not been committed, pushed, or merged.
+
+D-1-02 gained real LocalHost `ITableChannel` component coverage: four illegal entity-tile actions (Pon, Chi, Riichi, Kan) require a Rejected receipt with no command version/event sequence and unchanged authority version/event sequence/136-entity hash; a no-candidate Chi request has the same zero-mutation assertions. The existing first uninterrupted Riichi acceptance now requires the published `DoubleRiichi=true` fact. This does not replace Player/PlayMode evidence or close D-1-02.
+
+Release and Debug full LocalHost suites each passed 196/196 with native exit 0, 0 failed/skipped/not-run. Release XML: `E:\g2-r5-localhost\LocalHost-final5.xml`, SHA-256 `F9B974D363402F0B29E7147B8A9FB1EA27C0FAD085CC018835BD8E5A47AFF2EB`. Debug XML: `E:\g2-r5-debug.xml`, SHA-256 `255440A0E74A4E1CE1037D11C58166E84F1D64195137B0E289894A3A6EEB125B`. Release logs: `E:\g2-r5-localhost\build-final4.log`, `E:\g2-r5-localhost\LocalHost-final5.log`; Debug logs: `E:\g2-r5-debug-build.log`, `E:\g2-r5-debug-test.log`.
+
+Still open: G1 complete Player win/draw/dealer continuation/new-round binding; G2 kan/rinshan/chankan and remaining negative cases; G4 old AI result rejection/re-entry reconciliation/claim epoch in this candidate; G7-02 real LOCAL asset through service with zero side effects; G8 full layouts and physical input; G7-01 safe offline environment; final same-candidate/same-Player 32-row closure. Current Android 9 rows remain NOT_RUN. Overall task remains incomplete.
+
+Per-row supplement: [Binding R5 supplement](V5-G2-WINDOWS-LUNA6-BINDING-R5-SUPPLEMENT-20261108.json). Original 32-row statuses remain unchanged.
