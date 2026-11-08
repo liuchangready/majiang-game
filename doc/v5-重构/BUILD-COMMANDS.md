@@ -43,47 +43,63 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 
 ## 2. Android（x86_64 模拟器 APK）
 
-### 2.1 常用命令（自动冷/增量）
+### 2.1 前置条件：仓库路径必须够短
 
-冷构建需要一个与 `packages-lock.json` 匹配的包种子；复用 staging 时**不能**再传该参数。用下面这段按需拼接：
+**这是最容易踩到的坑，先读这一段。**
+
+Android 构建的 staging 位于 `<repo>/build/c05-emulator-staging/a`，而 Unity 包缓存里存在长路径文件：
+
+```
+<staging>/project/Library/PackageCache/com.unity.collections@88d5bf65ce66/
+  Unity.Collections.LowLevel.ILSupport/source~/
+  Unity.Collections.LowLevel.ILSupport.CodeGen/
+  CollectionsUnsafeUtilityPostProcessor.cs.meta
+```
+
+在 Windows 的 260 字符限制下，这条路径对仓库根长度极其敏感：
+
+| 仓库根 | 该路径长度 | 结果 |
+|---|---|---|
+| `D:\g2t`（6 字符） | 230 | 通过 |
+| `D:\majiang-wt\g2-trim-imports-20261107`（38 字符） | **267** | `FAIL_PATH_BUDGET` |
+
+**结论：Android 构建必须在短路径仓库根下执行。** 建议把工作树放在 `D:\g2t` 之类的短路径，构建通过后再合并。
+
+仓库路径过长时的报错形如：
+
+```
+BLOCKED: staging path budget=FAIL_PATH_BUDGET
+```
+
+详见 `staging-path-budget.json` 里的 `overLimit` 字段，它会直接给出超限的具体路径。
+
+### 2.2 常用命令（自动冷/增量）
+
+**冷构建不要传 `-RegistryCacheSource`。** `Copy-C05EStagingProject` 会把源工程的
+`Library`（含 `PackageCache`）一起复制进 staging，再传种子会因为目标已存在而被拒绝：
+
+```
+BLOCKED: refusing to merge a registry cache into an existing staging PackageCache
+```
+
+只有源工程没有 `Library/PackageCache` 时才需要种子。
 
 ```powershell
 $g = [guid]::NewGuid().ToString('N')
-$seed = "D:\c05s\bd368e8a85ca4581851171d9e61083bc\project\Library\PackageCache"
-$staging = "build\c05-emulator-staging\a"
-
-$args = @(
-  '-NoProfile','-ExecutionPolicy','Bypass',
-  '-File','tools/unity/build-c05-android-emulator.ps1',
-  '-UnityPath','D:\game_dev_tools\unity\Editor\Unity.exe',
-  '-OutputRoot',"build\$g",
-  '-PrivateToolchainRoot','build\android-toolchain\private',
-  '-AndroidSdkRoot','D:\Android\Sdk',
-  '-AvdHome','D:\Android\avd'
-)
-# 只在 staging 尚未建立（即冷构建）时传入种子
-if (-not (Test-Path (Join-Path $staging 'project\Library\Bee\Android\Prj\IL2CPP'))) {
-  $args += @('-RegistryCacheSource', $seed)
-}
-powershell @args
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File tools/unity/build-c05-android-emulator.ps1 `
+  -UnityPath "D:\game_dev_tools\unity\Editor\Unity.exe" `
+  -OutputRoot "build/$g" `
+  -PrivateToolchainRoot build/android-toolchain/private `
+  -AndroidSdkRoot "D:\Android\Sdk" `
+  -AvdHome "D:\Android\avd"
 ```
-
-如果种子路径在你的机器上不存在，任一已完成过的 Android 运行的
-`build/<guid>/staging-project/Library/PackageCache` 也可以充当种子。
 
 - `-OutputRoot` 必须位于本仓库 `build/` 下，且**必须是尚不存在的目录**（脚本拒绝复用已有输出目录）
 - 产物：`build/<guid>/Mahjong-emulator-x86_64.apk`（约 40 MB）
 - 证据：同目录下 `summary.json`、`build-report.json`、`unity.log`
 
-### 2.2 首次运行需要包种子
-
-冷构建的 staging 里没有 `Library/PackageCache`，需要传入一个与本项目 `packages-lock.json` 匹配的种子：
-
-```powershell
--RegistryCacheSource "D:\c05s\bd368e8a85ca4581851171d9e61083bc\project\Library\PackageCache"
-```
-
-种子只是复制来源，不会被写回。复用 staging 时**不要**再传这个参数（脚本会拒绝往已有缓存里合并）。
+> 已完成冷构建后，再次执行同一条命令会自动走增量（staging `a` 保留在 `build/c05-emulator-staging/a`）。
 
 ### 2.3 私有工具链
 
