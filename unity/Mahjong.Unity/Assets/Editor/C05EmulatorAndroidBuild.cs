@@ -430,8 +430,22 @@ public static class C05EmulatorAndroidBuild
 // task may not modify.
 public sealed class C05EmulatorGradleBuildDirRedirect : UnityEditor.Android.IPostGenerateGradleAndroidProject
 {
-    /// <summary>Short root that keeps every generated path inside MAX_PATH.</summary>
-    public const string ShortBuildRoot = "D:/gc";
+    /// <summary>
+    /// Short root that keeps every generated path inside MAX_PATH. The builder
+    /// exports C05_GRADLE_BUILD_ROOT so the cache can be relocated; the default
+    /// matches D:\dev_cache\android\gc.
+    /// </summary>
+    public const string DefaultShortBuildRoot = "D:/dev_cache/android/gc";
+
+    /// <summary>The effective short root: C05_GRADLE_BUILD_ROOT, else the default.</summary>
+    public static string ShortBuildRoot
+    {
+        get
+        {
+            string overridden = Environment.GetEnvironmentVariable("C05_GRADLE_BUILD_ROOT");
+            return String.IsNullOrWhiteSpace(overridden) ? DefaultShortBuildRoot : overridden.Replace('\\', '/');
+        }
+    }
 
     public int callbackOrder { get { return 0; } }
 

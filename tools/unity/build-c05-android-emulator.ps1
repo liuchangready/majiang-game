@@ -14,6 +14,7 @@ param(
   [int]$HeartbeatSeconds = 30,
   [int]$JobWorkerCount = 8,
   [int]$BeeBuildThreads = 0,
+  [string]$CacheRoot = '',
   [switch]$ReuseBuildCache,
   [switch]$ProcessFixtureTest,
   [switch]$VerdictFixtureTest,
@@ -1342,6 +1343,21 @@ exit `$LASTEXITCODE
   $env:ANDROID_CLI_SHIM_LOG = Join-Path $run 'android-cli-shim.log'
   $env:PATH = (Split-Path $ninjaExe -Parent) + ';' + (Join-Path $androidPlayer 'OpenJDK\bin') + ';' + (Join-Path $AndroidSdkRoot 'platform-tools') + ';' + $oldPath
 
+  # Toolchain caches hold no project code and are safe to keep across runs, so
+  # they live outside the staging tree under one predictable root. GRADLE_USER_HOME
+  # avoids re-resolving the Android plugin graph on every cold staging.
+  $oldGradleHome = $env:GRADLE_USER_HOME
+  $oldGradleBuildRoot = $env:C05_GRADLE_BUILD_ROOT
+  $cacheRoot = if ($CacheRoot) { $CacheRoot } else { 'D:\dev_cache' }
+  $gradleHome = Join-Path $cacheRoot 'android\gradle'
+  $gradleBuildRoot = (Join-Path $cacheRoot 'android\gc').Replace('\','/')
+  New-Item -ItemType Directory -Force -Path $gradleHome | Out-Null
+  New-Item -ItemType Directory -Force -Path (Join-Path $cacheRoot 'android\gc') | Out-Null
+  $env:GRADLE_USER_HOME = $gradleHome
+  $env:C05_GRADLE_BUILD_ROOT = $gradleBuildRoot
+  Write-Host ("CACHE android-gradle {0}" -f $gradleHome)
+  Write-Host ("CACHE android-gradle-build {0}" -f $gradleBuildRoot)
+
   $sharedLog = Join-Path $run 'shared-build.log'
   $sharedRun = Invoke-C05EToFiles 'powershell.exe' @('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $PSScriptRoot 'build-shared.ps1'),'-Configuration','Release','-PluginOutputDir',$pluginDir) 1200 (Join-Path $run 'shared-build.out') (Join-Path $run 'shared-build.err')
   [IO.File]::WriteAllText($sharedLog, ([string]$sharedRun.stdout + "`n[stderr]`n" + [string]$sharedRun.stderr), (New-Object Text.UTF8Encoding($false)))
@@ -1507,6 +1523,8 @@ finally {
   $env:TEMP = $oldTemp; $env:TMP = $oldTmp; $env:JAVA_HOME = $oldJava
   $env:ANDROID_HOME = $oldHome; $env:ANDROID_SDK_ROOT = $oldRoot; $env:ANDROID_AVD_HOME = $oldAvd
   $env:ANDROID_CLI_BIN = $oldCli; $env:PATH = $oldPath
+  $env:GRADLE_USER_HOME = $oldGradleHome
+  $env:C05_GRADLE_BUILD_ROOT = $oldGradleBuildRoot
   if ($held -and $null -ne $mutex) { try { $mutex.ReleaseMutex() } catch { } }
   if ($null -ne $mutex) { $mutex.Dispose() }
 }
