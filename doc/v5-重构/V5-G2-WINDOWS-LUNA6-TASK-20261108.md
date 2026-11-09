@@ -162,3 +162,7 @@ Round 9 adds the D-8-01 case-contract correction and the D-9-01 FixtureOnly time
 ## Round 10 scope addition
 
 Round 10 clarifies the five-scenario count comment in `unity/Mahjong.Unity/Assets/Scripts/App/LocalTableChannelFactory.cs` and records the unchanged acceptance gaps in `V5-G2-WINDOWS-LUNA6-R10-EXECUTION-SUPPLEMENT-20261109.md` and `V5-G2-WINDOWS-LUNA6-BINDING-R10-SUPPLEMENT-20261109.json`. No Unity/Player/PlayMode claim is added.
+
+## Round 12 scope addition
+
+Round 12 extends `tools/unity/run-p45-c04-player-actions.ps1` to execute the existing `LocalControlPlayerProbe` against the same newly built ordinary Windows Player package used by the five fixed action cases. It adds strict validation of the control-probe marker, exactly one result line, old player/AI stale-epoch rejection, and the release/claim epoch increments. This remains supporting G4 evidence because the current probe exercises explicit release rather than an actual disconnect policy. The round-specific implementation, FixtureOnly results, hashes, and remaining defects are recorded in `V5-G2-WINDOWS-LUNA6-R12-EXECUTION-SUPPLEMENT-20261109.md`; it does not mark any additional Census row PASS.

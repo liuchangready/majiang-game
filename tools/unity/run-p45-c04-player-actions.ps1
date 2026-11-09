@@ -536,6 +536,23 @@ function Assert-C04ExactVerifierFixtureSet([string]$root,[string[]]$expectedCase
     return $files
 }
 
+function Assert-C04LocalControlProbeResult([string]$probeText) {
+    if ([string]::IsNullOrWhiteSpace($probeText) -or $probeText -notmatch 'CONTROL_PROBE_PASS') { throw 'G4 control Player probe pass marker is missing.' }
+    $lines = @($probeText -split "`r?`n" | Where-Object { $_ -match ' RESULT ' })
+    if ($lines.Count -ne 1) { throw 'G4 control Player probe must emit exactly one result record.' }
+    $match = [regex]::Match($lines[0], 'RESULT initialEpoch=(\d+) releaseEpoch=(\d+) claimEpoch=(\d+) oldEpoch=(\d+) stalePlayerReason=StaleControlEpoch .* staleAiReason=StaleControlEpoch')
+    if (-not $match.Success) { throw 'G4 control result does not bind both stale-decision rejections to StaleControlEpoch.' }
+    $initial = [UInt64]::Parse($match.Groups[1].Value, [Globalization.CultureInfo]::InvariantCulture)
+    $released = [UInt64]::Parse($match.Groups[2].Value, [Globalization.CultureInfo]::InvariantCulture)
+    $claimed = [UInt64]::Parse($match.Groups[3].Value, [Globalization.CultureInfo]::InvariantCulture)
+    $old = [UInt64]::Parse($match.Groups[4].Value, [Globalization.CultureInfo]::InvariantCulture)
+    if ($initial -eq [UInt64]::MaxValue -or $released -ne ($initial + [UInt64]1) -or
+        $released -eq [UInt64]::MaxValue -or $claimed -ne ($released + [UInt64]1) -or $old -ne $initial) {
+        throw 'G4 control epochs do not prove release/claim increments and old-epoch retention.'
+    }
+    return [pscustomobject]@{ InitialEpoch=$initial; ReleaseEpoch=$released; ClaimEpoch=$claimed; OldEpoch=$old }
+}
+
 function Test-C04ActionEvidence {
     param($Summary,$Evidence,[string]$ExpectedCase,[string]$EvidencePathForVerifier)
     if ($null -eq $Evidence) { throw 'Raw Player action evidence is missing.' }
@@ -763,6 +780,17 @@ Start-Sleep -Seconds 25
     )) {
         $rejected = $false; try { Test-C04ExactPlayModeXml $xmlCase.xml | Out-Null } catch { $rejected = $true }
         if (-not $rejected) { throw "Exact PlayMode XML gate accepted invalid fixture: $($xmlCase.name)" }
+    }
+    $goodControlResult = '2026-11-09T00:00:00Z RESULT initialEpoch=4 releaseEpoch=5 claimEpoch=6 oldEpoch=4 stalePlayerReason=StaleControlEpoch oldAiDecision=decision-1 staleAiReason=StaleControlEpoch' + "`n" + 'CONTROL_PROBE_PASS'
+    Assert-C04LocalControlProbeResult $goodControlResult | Out-Null
+    foreach ($badControlResult in @(
+        'CONTROL_PROBE_PASS',
+        ('2026-11-09T00:00:00Z RESULT initialEpoch=4 releaseEpoch=6 claimEpoch=7 oldEpoch=4 stalePlayerReason=StaleControlEpoch oldAiDecision=decision-1 staleAiReason=StaleControlEpoch' + "`n" + 'CONTROL_PROBE_PASS'),
+        ('2026-11-09T00:00:00Z RESULT initialEpoch=4 releaseEpoch=5 claimEpoch=6 oldEpoch=5 stalePlayerReason=StaleControlEpoch oldAiDecision=decision-1 staleAiReason=StaleControlEpoch' + "`n" + 'CONTROL_PROBE_PASS'),
+        ('2026-11-09T00:00:00Z RESULT initialEpoch=4 releaseEpoch=5 claimEpoch=6 oldEpoch=4 stalePlayerReason=StaleControlEpoch oldAiDecision=decision-1 staleAiReason=Applied' + "`n" + 'CONTROL_PROBE_PASS')
+    )) {
+        $rejected = $false; try { Assert-C04LocalControlProbeResult $badControlResult | Out-Null } catch { $rejected = $true }
+        if (-not $rejected) { throw 'G4 control probe gate accepted missing or mismatched epoch/stale-result evidence.' }
     }
     $closureBeforePath = Join-Path $RunRoot 'fixture-input-before.json'; $closureAfterPath = Join-Path $RunRoot 'fixture-input-after.json'; $closureChangesPath = Join-Path $RunRoot 'fixture-input-changes.json'
     $closureBefore = [ordered]@{ entries=@([ordered]@{path='Assets/Scripts/App.cs';bytes=10;sha256=('a'*64)},[ordered]@{path='Packages/manifest.json';bytes=10;sha256=('b'*64)},[ordered]@{path='ProjectSettings/EditorBuildSettings.asset';bytes=10;sha256=('c'*64)},[ordered]@{path='Library/PackageCache/com.unity.test/package.dll';bytes=10;sha256=('d'*64)},[ordered]@{path='Library/ScriptAssemblies/App.dll';bytes=10;sha256=('e'*64)}) }
@@ -1030,7 +1058,7 @@ Start-Sleep -Seconds 25
         throw 'Fixture evidence seal must contain stable owned outputs and exclude volatile process/download roots.'
     }
     [IO.File]::WriteAllText((Join-Path $RunRoot 'fixture-seal.json'), (($fixtureFiles | ConvertTo-Json -Depth 5) + "`n"), (New-Object Text.UTF8Encoding($false)))
-    Write-Host "C04_TOOL_FIXTURES_PASS positive=2 negative=$($negatives.Count + $evidenceNegatives.Count + $markerNegatives.Count + 17) protobuf=PASS malformed=2 timeoutTree=PASS mutexTimeoutSeal=PASS mutexCancellationSeal=PASS outputDrain=PASS outputFiles=$($fixtureFiles.Count)"
+    Write-Host "C04_TOOL_FIXTURES_PASS positive=3 negative=$($negatives.Count + $evidenceNegatives.Count + $markerNegatives.Count + 21) protobuf=PASS malformed=2 timeoutTree=PASS mutexTimeoutSeal=PASS mutexCancellationSeal=PASS outputDrain=PASS outputFiles=$($fixtureFiles.Count)"
     exit 0
 }
 
@@ -1397,7 +1425,30 @@ EditorUserSettings:
         $caseResults.Add([ordered]@{ caseId=$case.id; status='PASS'; layer='WINDOWS_PLAYER'; nativeExitCode=$player.exitCode; summary=$summaryPath; summarySha256=(Get-Sha256 $summaryPath); actionEvidence=$actionEvidencePath; actionEvidenceSha256=(Get-Sha256 $actionEvidencePath); executionEvidence=$executionPath; executionEvidenceSha256=(Get-Sha256 $executionPath); playerLog=$nativeLog; playerLogSha256=(Get-Sha256 $nativeLog); payloadSha256=$summary.payloadSha256 }) | Out-Null
     }
 
-    $final = [ordered]@{ schemaVersion=1; task='G2-C04-D03'; status='PASS'; acceptedBase='8fd7c6cb701dfbb41c28938de4186749bdd1d6c7'; frozenCandidate=$gitHead; sourceTreeStatus=$gitStatus; sourceDiffCheck='PASS'; sourceClosureManifest='source-prebuild-closure.json'; sourceClosureManifestSha256=$sourceClosureSha; stagedRepositoryRoot=$sourceRepo; unityProjectRoot=$project; unityShortPathStaging='unity-short-path-staging.json'; unityShortPathStagingSha256=$shortPathProjectSha; generatedUnityInputs='unity-generated-inputs.json'; generatedUnityInputsSha256=(Get-Sha256 (Join-Path $RunRoot 'unity-generated-inputs.json')); unityResolvedPackageInputClosure='unity-resolved-package-input-closure.json'; unityResolvedPackageInputClosureSha256=$resolvedPackageInputsSha; unityPrebuildInputClosureSha256=$preBuildInputsSha; unityPostbuildInputClosureSha256=$postBuildInputsSha; unityPostbuildInputChanges='unity-postbuild-input-changes.json'; unityPostbuildInputChangesSha256=(Get-Sha256 (Join-Path $RunRoot 'unity-postbuild-input-changes.json')); unityGeneratedDirtyInputs=$inputChanges; upmDownloadCacheVolatility='upm-cache-volatility.json'; upmDownloadCacheVolatilitySha256=$upmCacheClosureSha; postBuildAssetsClosure='source-postbuild-assets-closure.json'; postBuildAssetsClosureSha256=$postBuildClosureSha; sharedPluginClosureSha256=$pluginClosureSha; sharedPluginProvenance=(Join-Path $project 'Library/SharedPluginProvenance/provenance.json'); sharedPluginProvenanceSha256=$provenanceSha; scriptAssembliesClosureSha256=$scriptAssembliesSha; localHostTests=$localHostTestEvidence; commands=$script:stageRecords; playMode=[ordered]@{ testCount=$testNodes.Count; passed=$testNodes.Count; failed=0; skipped=0; exactNames=$actualNames; xml=$playXml; xmlSha256=(Get-Sha256 $playXml) }; buildMarker=$buildMarker; buildMarkerSha256=(Get-Sha256 $buildMarker); playerPackageManifest='player-package.json'; cases=$caseResults; platforms=[ordered]@{ windowsPlayer='actual five fixed cases'; android='NOT_RUN (C05 owner)'; ios='NOT_RUN'; remoteTransport='NOT_IN_SCOPE' } }
+    # G4 owner-control lifecycle is part of this same freshly built Player package.
+    # It uses the production menu/table route and command sink; the probe itself
+    # asserts release, same-room re-entry without auto-claim, explicit claim/epoch
+    # advancement, and stale player/AI decisions rejected by the real LocalHost.
+    $controlDir = Join-Path $RunRoot 'control'; $controlData = Join-Path $dataRoot 'control'
+    New-Item -ItemType Directory -Path $controlDir,$controlData | Out-Null
+    $controlLog = Join-Path $controlDir 'player.log'
+    $controlArgs = @('-batchmode','-runInBackground','-smoke-data',(Quote-Arg $controlData),'-logFile',(Quote-Arg $controlLog),'-local-control-probe',(Quote-Arg $controlDir))
+    $controlPlayer = Invoke-OwnedNative -Name 'Player-G4-ControlLifecycle' -FilePath $exe -Arguments ($controlArgs -join ' ') -WorkingDirectory $playerDir -StdoutPath (Join-Path $controlDir 'stdout.txt') -StderrPath (Join-Path $controlDir 'stderr.txt') -Timeout $TimeoutSeconds
+    $controlProbeLog = Join-Path $controlDir 'probe.log'
+    $controlProbeText = if (Test-Path -LiteralPath $controlProbeLog -PathType Leaf) { Get-Content -LiteralPath $controlProbeLog -Raw -Encoding UTF8 } else { '' }
+    $controlPlayerText = if (Test-Path -LiteralPath $controlLog -PathType Leaf) { Get-Content -LiteralPath $controlLog -Raw -Encoding UTF8 } else { '' }
+    if ($controlPlayer.exitCode -ne 0 -or $controlPlayerText -notmatch 'CONTROL_PROBE_PASS') {
+        throw "Same-package G4 LocalControlPlayerProbe failed; nativeExit=$($controlPlayer.exitCode), probeLog=$controlProbeLog, playerLog=$controlLog."
+    }
+    $controlEpochs = Assert-C04LocalControlProbeResult $controlProbeText
+    $controlResult = [ordered]@{
+        status='PASS'; layer='WINDOWS_PLAYER'; packageManifest='player-package.json';
+        initialEpoch=$controlEpochs.InitialEpoch; releaseEpoch=$controlEpochs.ReleaseEpoch; claimEpoch=$controlEpochs.ClaimEpoch; oldEpoch=$controlEpochs.OldEpoch;
+        nativeExitCode=$controlPlayer.exitCode; probeLog=$controlProbeLog; probeLogSha256=(Get-Sha256 $controlProbeLog);
+        playerLog=$controlLog; playerLogSha256=(Get-Sha256 $controlLog); smokeData=$controlData
+    }
+
+    $final = [ordered]@{ schemaVersion=1; task='G2-C04-D03'; status='PASS'; acceptedBase='8fd7c6cb701dfbb41c28938de4186749bdd1d6c7'; frozenCandidate=$gitHead; sourceTreeStatus=$gitStatus; sourceDiffCheck='PASS'; sourceClosureManifest='source-prebuild-closure.json'; sourceClosureManifestSha256=$sourceClosureSha; stagedRepositoryRoot=$sourceRepo; unityProjectRoot=$project; unityShortPathStaging='unity-short-path-staging.json'; unityShortPathStagingSha256=$shortPathProjectSha; generatedUnityInputs='unity-generated-inputs.json'; generatedUnityInputsSha256=(Get-Sha256 (Join-Path $RunRoot 'unity-generated-inputs.json')); unityResolvedPackageInputClosure='unity-resolved-package-input-closure.json'; unityResolvedPackageInputClosureSha256=$resolvedPackageInputsSha; unityPrebuildInputClosureSha256=$preBuildInputsSha; unityPostbuildInputClosureSha256=$postBuildInputsSha; unityPostbuildInputChanges='unity-postbuild-input-changes.json'; unityPostbuildInputChangesSha256=(Get-Sha256 (Join-Path $RunRoot 'unity-postbuild-input-changes.json')); unityGeneratedDirtyInputs=$inputChanges; upmDownloadCacheVolatility='upm-cache-volatility.json'; upmDownloadCacheVolatilitySha256=$upmCacheClosureSha; postBuildAssetsClosure='source-postbuild-assets-closure.json'; postBuildAssetsClosureSha256=$postBuildClosureSha; sharedPluginClosureSha256=$pluginClosureSha; sharedPluginProvenance=(Join-Path $project 'Library/SharedPluginProvenance/provenance.json'); sharedPluginProvenanceSha256=$provenanceSha; scriptAssembliesClosureSha256=$scriptAssembliesSha; localHostTests=$localHostTestEvidence; commands=$script:stageRecords; playMode=[ordered]@{ testCount=$testNodes.Count; passed=$testNodes.Count; failed=0; skipped=0; exactNames=$actualNames; xml=$playXml; xmlSha256=(Get-Sha256 $playXml) }; buildMarker=$buildMarker; buildMarkerSha256=(Get-Sha256 $buildMarker); playerPackageManifest='player-package.json'; cases=$caseResults; g4ControlProbe=$controlResult; platforms=[ordered]@{ windowsPlayer='five fixed action cases plus same-package G4 control probe'; android='NOT_RUN (C05 owner)'; ios='NOT_RUN'; remoteTransport='NOT_IN_SCOPE' } }
     $summaryOut = Join-Path $RunRoot 'summary.json'
     [IO.File]::WriteAllText($summaryOut, (($final | ConvertTo-Json -Depth 12) + "`n"), (New-Object Text.UTF8Encoding($false)))
     Write-RunLog 'FINAL_SUMMARY_WRITTEN'
