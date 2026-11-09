@@ -67,8 +67,8 @@ namespace Mahjong.Domain.Tests
 
             throw new Xunit.Sdk.XunitException(
                 "Missing real V4 golden file " + RelativePath + " from " + AppContext.BaseDirectory +
-                " or " + Directory.GetCurrentDirectory() + ". Regenerate with: " +
-                "$env:V5_ROUND_GOLDEN_EXPORT='1'; .\\gradlew.bat :engine:test --tests \"com.majiang.rules.V5RoundGoldenExportTest\" --console=plain");
+                " or " + Directory.GetCurrentDirectory() +
+                ". The frozen fixture is part of the repository; consult its historical provenance manifest rather than regenerating it.");
         }
 
         [Fact]

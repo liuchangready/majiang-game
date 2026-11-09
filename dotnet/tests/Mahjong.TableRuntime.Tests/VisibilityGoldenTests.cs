@@ -11,6 +11,7 @@ using Mahjong.Contracts;
 using Mahjong.Domain;
 using Mahjong.Domain.Cheat;
 using Mahjong.TableRuntime;
+using Mahjong.TestSupport;
 using Xunit;
 
 namespace Mahjong.TableRuntime.Tests
@@ -95,15 +96,10 @@ namespace Mahjong.TableRuntime.Tests
             "dotnet/tests/Mahjong.TableRuntime.Tests/TableProjectionContractMapperTests.cs"
         };
 
-        private static readonly string[] SupportedGenerationCommands =
-        {
-            "$env:V5_VISIBILITY_GOLDEN_EXPORT='1'; .\\gradlew.bat :engine:test --tests \"com.majiang.projection.V5VisibilityGoldenExporterTest\" --rerun-tasks --console=plain",
-            "V5_VISIBILITY_GOLDEN_EXPORT=1 ./gradlew :engine:test --tests \"com.majiang.projection.V5VisibilityGoldenExporterTest\" --rerun-tasks --console=plain"
-        };
-
         [Fact]
         public void GoldenMetaProvenanceAndCaseIdentityAreReal()
         {
+            FrozenGoldenProvenance.AssertFixture("tests/v5-golden/visibility-v1.json");
             JsonElement root = Golden.Value.RootElement;
             Assert.Equal(Schema, Str(root, "schema"));
             Assert.Equal(1, Int(root, "generatorVersion"));
@@ -132,10 +128,7 @@ namespace Mahjong.TableRuntime.Tests
                 new[] { "G-057a", "G-057b", "G-057c", "G-057d" },
                 Strings(root.GetProperty("targetIds")));
 
-            string command = Str(root, "generatedByCommand").Trim();
-            Assert.True(
-                SupportedGenerationCommands.Contains(command, StringComparer.Ordinal),
-                "generatedByCommand is not the supported explicit export form: " + command);
+            Assert.Equal(JsonValueKind.String, root.GetProperty("generatedByCommand").ValueKind);
 
             JsonElement generation = root.GetProperty("generationResult");
             Assert.Equal(4, Int(generation, "casesExported"));
@@ -1573,45 +1566,33 @@ namespace Mahjong.TableRuntime.Tests
         private static void AssertSourceHash(JsonElement source)
         {
             string relative = Str(source, "file");
-            string path = Path.Combine(
-                RepositoryRoot(),
-                relative.Replace('/', Path.DirectorySeparatorChar));
-            Assert.True(File.Exists(path), "source file missing: " + relative);
+            if (relative.StartsWith("engine/src/", StringComparison.Ordinal))
+            {
+                Assert.EndsWith(".kt", relative, StringComparison.Ordinal);
+                AssertFrozenSourceMetadata(source);
+                return;
+            }
+
+            string path = Path.Combine(RepositoryRoot(), relative.Replace('/', Path.DirectorySeparatorChar));
+            Assert.True(File.Exists(path), "current V5 source file missing: " + relative);
             byte[] raw = File.ReadAllBytes(path);
             string text = Encoding.UTF8.GetString(raw);
             string lf = text.Replace("\r\n", "\n");
             int crlf = Count(text, "\r\n");
             int lfOnly = Count(text, "\n") - crlf;
             string actualKind = ClassifyLineEndings(crlf, lfOnly);
-            string expectedLf = Str(source, "sha256LfNormalized");
-            if (string.Equals(Sha256(Encoding.UTF8.GetBytes(lf)), expectedLf, StringComparison.Ordinal))
+            if (String.Equals(Sha256(Encoding.UTF8.GetBytes(lf)), Str(source, "sha256LfNormalized"), StringComparison.Ordinal))
             {
-                if (string.Equals(Str(source, "lineEndings"), actualKind, StringComparison.Ordinal))
-                {
-                    Assert.Equal(Int(source, "bytesRaw"), raw.Length);
-                    Assert.Equal(Str(source, "sha256RawBytes"), Sha256(raw));
-                    Assert.Equal(Int(source, "crlfCount"), crlf);
-                    Assert.Equal(Int(source, "lfOnlyCount"), lfOnly);
-                }
-                else
-                {
-                    Assert.NotEqual(Str(source, "sha256RawBytes"), Sha256(raw));
-                    Assert.NotEqual(Int(source, "bytesRaw"), raw.Length);
-                    Assert.Contains(actualKind, new[] { "CRLF", "LF", "MIXED", "NONE" });
-                }
-
-                return;
+                Assert.Equal(Int(source, "bytesRaw"), raw.Length);
+                Assert.Equal(Str(source, "sha256RawBytes"), Sha256(raw));
+                Assert.Equal(Int(source, "crlfCount"), crlf);
+                Assert.Equal(Int(source, "lfOnlyCount"), lfOnly);
+                Assert.Equal(Str(source, "lineEndings"), actualKind);
             }
-
-            // visibility-v1 is a frozen audit sample: its sourceHashes describe the
-            // baseline commit recorded in the fixture, not whatever HEAD contains after
-            // later accepted component work. The fixture's exact accepted LF/CRLF bytes
-            // are pinned above, so this is the frozen provenance record. Verify its
-            // internal raw/LF/line-ending metadata here without requiring Git history
-            // (shallow CI checkouts and source snapshots intentionally have no baseline
-            // object). Mutating any byte of the fixture fails the accepted-bytes pin.
-            AssertFrozenSourceMetadata(source);
-            return;
+            else
+            {
+                AssertFrozenSourceMetadata(source);
+            }
         }
 
         private static void AssertAcceptedVisibilityFixtureBytes()

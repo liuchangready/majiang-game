@@ -55,7 +55,7 @@ namespace Mahjong.TableRuntime.Tests
         private const string FixtureGenerator = "engine/src/test/kotlin/com/majiang/v3/V5CheatGoldenExporterTest.kt";
 
         /// <summary>
-        /// Machine-readable readiness ledger consumed by probe-table-cheat-golden.ps1. It declares
+        /// Machine-readable readiness ledger historically consumed by the V4 probe. It declares
         /// the real eligibility, not just green method names: four bound source-input cases (two of
         /// them fault-injection reproductions) and one explicitly blocked source case.
         /// </summary>

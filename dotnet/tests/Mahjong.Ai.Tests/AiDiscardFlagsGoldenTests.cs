@@ -5,6 +5,7 @@ using System.Linq;
 using System.Text.Json;
 using Mahjong.Domain;
 using Mahjong.Ai;
+using Mahjong.TestSupport;
 using Xunit;
 
 namespace Mahjong.Ai.Tests
@@ -127,6 +128,7 @@ namespace Mahjong.Ai.Tests
         [Fact]
         public void FixtureHasProvenanceAndTheThreeDerivedCases()
         {
+            FrozenGoldenProvenance.AssertFixture("tests/v5-golden/ai-discard-flags-v1.json");
             using JsonDocument document = LoadFixture();
             JsonElement root = document.RootElement;
 

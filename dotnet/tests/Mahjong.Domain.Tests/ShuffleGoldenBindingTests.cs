@@ -6,6 +6,7 @@ using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Mahjong.Domain;
+using Mahjong.TestSupport;
 using Mahjong.Domain.Stacking;
 using Xunit;
 
@@ -112,6 +113,7 @@ namespace Mahjong.Domain.Tests
         [Fact]
         public void GoldenFileShapeInventoryIsCompleteAndProvenanceIsReal()
         {
+            FrozenGoldenProvenance.AssertFixture("tests/v5-golden/shuffle-v1.json");
             JsonElement root = Golden.Value.RootElement;
             AssertExactProperties(root, TopLevelFields, "root");
             Assert.Equal("v5-shuffle-golden-v1", Str(root, "schema"));
@@ -127,24 +129,14 @@ namespace Mahjong.Domain.Tests
 
             string generator = Str(root, "generator");
             Assert.Equal(ExporterPath, generator);
-            string? repositoryRoot = FindRepositoryRoot();
-            if (repositoryRoot != null)
-            {
-                Assert.True(
-                    File.Exists(Path.Combine(repositoryRoot, generator)),
-                    "generator must name the real V4 exporter source: " + generator);
-            }
+            Assert.StartsWith("engine/src/test/", generator, StringComparison.Ordinal);
+            Assert.EndsWith(".kt", generator, StringComparison.Ordinal);
 
             string v4RulesSource = Str(root, "v4RulesSourceNote");
             Assert.Contains(V4RulesSourcePath, v4RulesSource);
             Assert.Contains("V4 production source", v4RulesSource);
             Assert.Contains("v4Commit above is the exact tree used", v4RulesSource);
-            if (repositoryRoot != null)
-            {
-                Assert.True(
-                    Directory.Exists(Path.Combine(repositoryRoot, V4RulesSourcePath)),
-                    "v4RulesSourceNote must name the real V4 production source tree: " + V4RulesSourcePath);
-            }
+            Assert.Contains("engine/src/main/kotlin/com/majiang/stacking", v4RulesSource);
 
             string rngGap = Str(root, "rngGapNote");
             Assert.Contains("D-09", rngGap);
@@ -783,8 +775,7 @@ namespace Mahjong.Domain.Tests
                 var directory = new DirectoryInfo(start);
                 while (directory != null)
                 {
-                    if (File.Exists(Path.Combine(directory.FullName, ExporterPath)) &&
-                        Directory.Exists(Path.Combine(directory.FullName, V4RulesSourcePath)))
+                    if (File.Exists(Path.Combine(directory.FullName, "tests", "v5-golden", "source-provenance-v1.json")))
                     {
                         return directory.FullName;
                     }

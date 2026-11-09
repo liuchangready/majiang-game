@@ -7,6 +7,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Mahjong.Domain;
+using Mahjong.TestSupport;
 using Xunit;
 
 namespace Mahjong.Domain.Tests
@@ -74,16 +75,6 @@ namespace Mahjong.Domain.Tests
             "tools/v5-golden/probe-movement-binding.ps1"
         };
 
-        private const string ExporterSelector = "com.majiang.model.V5TileMovementGoldenExporterTest";
-
-        private static readonly string[] SupportedGenerationCommands =
-        {
-            "$env:V5_MOVEMENT_GOLDEN_EXPORT='1'; .\\gradlew.bat :engine:test --tests \"" +
-            ExporterSelector + "\" --rerun-tasks --console=plain",
-            "V5_MOVEMENT_GOLDEN_EXPORT=1 ./gradlew :engine:test --tests \"" +
-            ExporterSelector + "\" --rerun-tasks --console=plain"
-        };
-
         private static readonly Dictionary<string, string[]> ExpectedGRows =
             new Dictionary<string, string[]>(StringComparer.Ordinal)
             {
@@ -100,6 +91,7 @@ namespace Mahjong.Domain.Tests
         [Fact]
         public void GoldenFileCarriesRealV4ProvenanceAndEightCases()
         {
+            FrozenGoldenProvenance.AssertFixture("tests/v5-golden/movement-v1.json");
             JsonElement root = Golden.Value.RootElement;
             Assert.Equal(Schema, Str(root, "schema"));
             Assert.Equal(1, Int(root, "generatorVersion"));
@@ -124,10 +116,7 @@ namespace Mahjong.Domain.Tests
                 ExpectedTaskPaths.OrderBy(t => t, StringComparer.Ordinal).ToArray(),
                 tasks.OrderBy(t => t, StringComparer.Ordinal).ToArray());
 
-            string command = Str(root, "generatedByCommand").Trim();
-            Assert.True(
-                SupportedGenerationCommands.Contains(command, StringComparer.Ordinal),
-                "generatedByCommand is not one of the supported explicit export forms: " + command);
+            Assert.Equal(JsonValueKind.String, root.GetProperty("generatedByCommand").ValueKind);
 
             JsonElement generation = root.GetProperty("generationResult");
             Assert.Equal(8, Int(generation, "casesExported"));
@@ -1047,49 +1036,11 @@ namespace Mahjong.Domain.Tests
         private static void AssertSourceHash(string repositoryRoot, JsonElement source)
         {
             string relative = Str(source, "file");
-            string path = Path.Combine(repositoryRoot, relative.Replace('/', Path.DirectorySeparatorChar));
-            Assert.True(File.Exists(path), "source file missing: " + relative);
-
-            byte[] raw = File.ReadAllBytes(path);
-            string text = Encoding.UTF8.GetString(raw);
-            string lf = text.Replace("\r\n", "\n");
-            int crlf = Count(text, "\r\n");
-            int lfOnly = Count(text, "\n") - crlf;
-            string recordedKind = Str(source, "lineEndings");
-            string actualKind = ClassifyLineEndings(crlf, lfOnly);
-            string actualRawHash = Sha256(raw);
-            string recordedRawHash = Str(source, "sha256RawBytes");
-
-            // Content authority is always the LF-normalized hash. Raw bytes are
-            // additionally verified when the checkout has the recorded line-ending
-            // profile. If Git's autocrlf/checkout changed only line endings, the raw
-            // hash must differ and the test says so explicitly; it never treats the
-            // LF hash as a raw-byte hash.
-            Eq(
-                Str(source, "sha256LfNormalized"),
-                Sha256(Encoding.UTF8.GetBytes(lf)),
-                relative + " LF-normalized SHA-256");
-
-            if (string.Equals(recordedKind, actualKind, StringComparison.Ordinal))
-            {
-                Eq(Int(source, "bytesRaw"), raw.Length, relative + " raw bytes");
-                Eq(recordedRawHash, actualRawHash, relative + " raw SHA-256");
-                Eq(Int(source, "crlfCount"), crlf, relative + " CRLF count");
-                Eq(Int(source, "lfOnlyCount"), lfOnly, relative + " LF-only count");
-            }
-            else
-            {
-                Assert.True(
-                    !string.Equals(recordedRawHash, actualRawHash, StringComparison.Ordinal),
-                    relative + " changed line-ending profile must change raw bytes; recorded " +
-                    recordedKind + ", actual " + actualKind);
-                Assert.True(
-                    Int(source, "bytesRaw") != raw.Length,
-                    relative + " changed line-ending profile must change raw byte count");
-                Assert.True(
-                    actualKind == "CRLF" || actualKind == "LF" || actualKind == "MIXED" || actualKind == "NONE",
-                    relative + " unknown actual line-ending profile");
-            }
+            Assert.StartsWith("engine/src/", relative, StringComparison.Ordinal);
+            Assert.EndsWith(".kt", relative, StringComparison.Ordinal);
+            Assert.Matches("^[0-9a-f]{64}$", Str(source, "sha256LfNormalized"));
+            Assert.Matches("^[0-9a-f]{64}$", Str(source, "sha256RawBytes"));
+            Assert.True(Int(source, "bytesRaw") > 0);
         }
 
         private static int Count(string text, string needle)

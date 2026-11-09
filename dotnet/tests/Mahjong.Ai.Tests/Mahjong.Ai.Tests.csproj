@@ -23,6 +23,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="..\Shared\FrozenGoldenProvenance.cs" Link="FrozenGoldenProvenance.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\Mahjong.Ai\Mahjong.Ai.csproj" />
     <ProjectReference Include="..\..\src\Mahjong.Domain\Mahjong.Domain.csproj" />
   </ItemGroup>

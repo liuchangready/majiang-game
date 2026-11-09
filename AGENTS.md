@@ -1,165 +1,34 @@
-# 🀄 千术麻将 (Mahjong Cheater) - 架构与开发指南 (AGENTS.md)
+# 千术麻将：当前开发指南
 
-**2026-11-06 后续任务统一开发基线：`g2_base`。** 用户指定后续所有新任务从本地 `g2_base` 分支创建任务分支或独立工作树，并记录实际起始 commit；基线工作树为 `D:/majiang-wt/g2_base`。已有在途任务保留原线程、工作树和证据，接续时先核对基线差异，不自动重置或重新派发。
+更新日期：2026-11-09。当前检出树的唯一可构建/运行产品实现为 **V5 Unity + C#/.NET**。V5 G2 尚未验收；移除 V4 Kotlin 源码不表示 V5 已通过或上线。
 
-该基线以 `e1ef2b212b96e399a0e0978a258c3d083eb2a914` 初始化，已完整包含 Android APK 构建源码 `51f35b3ec0a57e123991cd5f54fd47d121617f6a`；两者的 `dotnet/`、`tools/`、`unity/` 内容相同。Windows 返修提交 `319cf555` 未纳入。基线设立只统一后续开发起点，不代表 Android 游戏稳定启动、Windows 成品或 G2 整体验收通过；V4 生产地位和既有验收缺口保持。
+## 当前开发基线
 
-**2026-10-17 传输迁移进展与当前实现：** 远端传输已全面切换为 TCP (MJ-TCP/1 契约，12 字节固定帧头)，旧 UDP 生产链路与测试已移除。TCP 代码迁移与自动化验收已完成，用户决定带已记录的环境实测缺口合并；T4 跨物理网络与 Android 真机/模拟器实测仍待补验，不能视为已通过。R01–R16 自动化代码阻断已全绿（Codex 独立复验通过 22 项探针与 1,275 项标准全量用例，桌面 GL 冒烟 6 张快照通过）。旧 TCP/V3 永不恢复。业务幂等（`RequestScopeReceiptStore`）、控制代次、全量快照、物理守恒（136张）与七模块边界继续有效。三大绝技为：落汗（TileMark）、袖里藏花（SleeveBloom）、偷梁换柱（BeamSwap）。详见 [TCP 迁移设计](doc/v4-重构/TCP-MIGRATION-DESIGN.md)、[独立复核](doc/v4-重构/CODEX-TCP-CURRENT-REWORK-REVIEW20.md) 与 [迁移验收决定](doc/v4-重构/CODEX-TCP-MIGRATION-ACCEPTANCE.md)。
+- 新任务从本地 `g2_base` 建立独立任务分支/工作树，并记录实际起始 commit；基线工作树是 `D:/majiang-wt/g2_base`。
+- 本任务实际起点：`e074806a39a674b898120c828038efcd1b5c58d7`；桥接任务工作树与该起点相同。每个后续任务都应填写自己的实际路径、分支和起点，不沿用其他任务身份。
+- `D:/majiang` 和其他工作树可能含独立未提交修改；不得覆盖或清理。
 
-**2026-10-07 当前架构与迁移状态：**
-全系统默认且唯一生产架构为 **V4 架构**（R1–R6 已完成验收，旧 TCP/V3 运行链与兼容壳已按引用审计清理）。连接控制源码（`ConnectionControl.kt` 与 `DisconnectPolicy.kt`）现归属 server 模块的 `com.majiang.server.control` 包，engine 保留领域控制者、代次与投影。本次由 Anti 开发，Codex 独立检视及验收：全量 928 项、独立审查 189 项、双端构建和桌面 GL 冒烟通过，见 [连接控制迁移验收](doc/v4-migration/ACCEPTANCE-CONNECTION-OWNERSHIP.md)。保留全部有效规则、136 张物理守恒、算分、计时、码牌及出千测试。历史迁移细节见 [V4 计划](doc/v4-migration/PLAN.md)、[最终契约](doc/v4-migration/CONTRACT.md)、[R6 验收报告](doc/v4-migration/ACCEPTANCE-R6.md) 及 [历史任务归档](doc/archive/)。
+## 当前架构、规则与验证入口
 
----
+- [当前架构](doc/CURRENT_ARCHITECTURE.md)：Unity、共享 C# 核心、.NET 服务及数据流边界。
+- [玩法与规则](doc/GAMEPLAY_RULES.md)：版本化日麻规则、42 个稳定役种码、136 张实体、三绝技和码牌合同。
+- [构建与出包](doc/BUILD_AND_PACKAGE.md)：.NET、共享 DLL、Unity Windows/Android 工具路径与入口。
+- [测试与覆盖](doc/TESTING.md)：真实测试入口、当前规模、G2 固定分母和未覆盖项。
+- [V5 规则合同](doc/v5-重构/V5-0-RULE-CONTRACT.md)：规则语义以版本化合同和当前 C# 实现为准。
 
-## 1. 游戏定位与核心玩法特色
+旧 Kotlin/libGDX 七模块源码、Gradle wrapper/配置和旧 JVM 启动器已从当前树移除。历史迁移/验收报告保留原文，只用于解释历史状态；报告中的旧命令不是当前入口。`tests/v5-golden/source-provenance-v1.json` 是历史源码身份元数据，普通验证不需要历史 Git 对象、Kotlin 源码或联网。
 
-- **游戏类型**：2D 策略心理战日式麻将、千术绝技与出千经济博弈。
-- **出千与经济机制**：
-  - **三大绝技**：落汗（标记实体牌追踪透视）、袖里藏花（手牌藏匿调换）、偷梁换柱（手牌与牌山/死山等额互换）。
-  - **出千账本**：独立出千点账户与 `CheatLedger` 经济系统，出千变动私有同步与局末汇总。
-- **物理守恒律**：单副牌 136 张严格闭环物理实体（0..135），出千与牌山操作严禁无中生有。
+## 必须保持的合同
 
----
+- 单副 136 个实体 ID `0..135` 全程守恒；洗牌、发牌、摸打、鸣牌、千术、恢复不得无中生有或丢牌。
+- 规则、算分、费用、deadline、持久化及结算由权威端裁决；UI 通过 Client 门面提交意图、消费投影，不直接修改领域状态。
+- 单桌突变串行裁决；局终态不可复活，下一局使用新状态机和 `roundId`；未决结果先对账，不能盲目重放。
+- 私有手牌、千术候选、余额、账本和种子按身份隔离；观战只收公开投影。控制权收回必须显式推进代次并废止旧决策。
+- 不因平台清理或测试便利改变规则、放宽断言、删除黄金样本/负例或把移除用例数算作通过。
+- 当前明确未完成项见架构和测试文档；不得把组件证据写成 G2、设备或上线验收。
 
-## 2. 跨平台架构与技术规范
+## 长验证与交付
 
-- **游戏引擎**：libGDX 1.14.2
-- **编程语言**：Kotlin 2.4.10 (JVM 17)
-- **桌面后端**：LWJGL 3 (1280x720 视口)
-- **移动后端**：Android 沉浸式全屏横屏 (minSdk 21, targetSdk 36)
-- **表现层结构**：
-  - `presentation.menu`：主菜单、建房/加房/列房、设置、千术秘籍弹窗。
-  - `presentation.game`：牌桌渲染、出牌/鸣牌/立直/出千动画流水线、观战画面。
-  - `presentation.common`：共享字体、UI 资源与皮肤管理器。
-  - 组合根 `MahjongGame`：装配客户端与服务端，负责画面导航与单机 tick 驱动。
+可能占用共享 Unity/设备资源或长时间运行的任务，先填写[长验证模板](doc/LONG_VALIDATION_TASK_TEMPLATE.md)，并遵守[V5 复核与返修协议](doc/v5-重构/V5-REVIEW-REWORK-PROTOCOL.md)。短预检和正负例先行；共享资源最多等待 600 秒、长阶段每 30 秒报告心跳；有界超时、正常取消、独占输出并保留首败。失败仅在修复原因、输入改变或资源恢复后重试。
 
----
-
-## 3. 七模块分层与依赖规则
-
-系统由七个 Gradle 模块组成，严格遵守单向编译依赖：
-
-```mermaid
-flowchart TD
-    presentation["presentation<br/>(menu / game / common)"] --> client["client<br/>(client.api & 传输)"]
-    presentation -.装配根持有.-> server["server<br/>(权威宿主 & 房间服务)"]
-    client --> protocol["protocol<br/>(独立线路 DTO & 编解码)"]
-    server --> protocol
-    server --> engine["engine<br/>(纯 JVM 领域规则 & 权威)"]
-    lwjgl3["lwjgl3 (桌面启动器)"] --> presentation
-    android["android (移动启动器)"] --> presentation
-```
-
-1. **engine**：纯 JVM 领域。负责麻将规则、41 种役种算分、136 张牌物理守恒、单局与整场状态机、出千经济与判定、洗牌码牌算法以及 `TableAuthority`。**严禁依赖 client、server、protocol、libGDX、Gson 或 Socket**。
-2. **protocol**：独立线路契约库。包含 MJ-TCP/1 契约（12 字节固定二进制帧头）、typed DTO、错误码、心跳/作用域信封与序列化编解码；**不依赖 engine/client/server/presentation**。
-3. **server**：依赖 `engine` + `protocol`。拥有领域模型到协议 DTO 的双向映射、房间生命周期 (`RoomRegistry`/`SharedRoom`)、连接控制 (`com.majiang.server.control.ConnectionControl`)、每桌串行权威队列 (`ServerTableHost`)、本地 (InProcess) 与远端 TCP (`TcpTableServer`) 两种传输绑定。
-4. **client**：仅依赖 `protocol`。拥有客户端门面 (`GameSession` / `LobbySession` / `SpectatorSession`)、协议到客户端视图的映射 (`ProtocolViewMapper`)、有界缓冲有序同步（客户端接收缓冲 64，已应用游标去重 256）、状态缓存、自动重连与防重放。**严禁引用 engine 或 server 实现**。
-5. **presentation**：菜单、对局与共享组件 (`menu` / `game` / `common`) 仅依赖 `client.api`，不接触领域规则或网络实现。`MahjongGame` 作为组合根统一装配客户端与服务端（Gradle 显式依赖 `server`）。
-6. **lwjgl3 / android**：平台启动薄壳，调用组合根初始化。
-
----
-
-## 4. 运行与验证指令
-
-```bash
-# 启动桌面版 (默认 V4 单机入口)
-./gradlew :lwjgl3:run
-
-# 运行无头全量单元与模块测试
-./gradlew test --info
-
-# 构建 Android 调试 APK
-./gradlew :android:assembleDebug
-```
-
-### 4.1 Unity 客户端构建（Windows / Android）
-
-**改 `dotnet/` 后先重建共享 DLL，再跑 Unity 构建。** 两个平台都自动判定冷/增量：缓存不存在就冷构建，存在就增量构建，**同一条命令无需额外参数**。
-
-```powershell
-# 0. 共享 DLL（改 dotnet/ 后必须执行）
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/unity/build-shared.ps1 `
-  -Configuration Release -DotnetPath "D:\game_dev_tools\dotnet\dotnet.exe"
-
-# 1. Android APK（-OutputRoot 必须是 build/ 下尚不存在的目录）
-powershell -NoProfile -ExecutionPolicy Bypass `
-  -File tools/unity/build-c05-android-emulator.ps1 `
-  -UnityPath "D:\game_dev_tools\unity\Editor\Unity.exe" `
-  -OutputRoot build/$( [guid]::NewGuid().ToString('N') ) `
-  -PrivateToolchainRoot build/android-toolchain/private `
-  -AndroidSdkRoot "D:\Android\Sdk" -AvdHome "D:\Android\avd"
-
-# 2. Windows Player（-RunRoot 末段必须是 32 位十六进制 GUID）
-powershell -NoProfile -ExecutionPolicy Bypass `
-  -File tools/unity/run-p45-c04-privacy-matrix.ps1 `
-  -UnityPath "D:\game_dev_tools\unity\Editor\Unity.exe" `
-  -DotnetPath "D:\game_dev_tools\dotnet\dotnet.exe" `
-  -BuildPlayer -RunRoot build/$( [guid]::NewGuid().ToString('N') )
-```
-
-完整参数、缓存布局、实测耗时与所有守卫报错的排查方法见
-**[`doc/v5-重构/BUILD-COMMANDS.md`](doc/v5-重构/BUILD-COMMANDS.md)**。遇到 `BLOCKED` 类报错先查该文件的第 5 节。
-
-构建前请确认 `git status` 干净：两个 runner 都有源码边界守卫，未声明在 `AllowedPaths` 内的改动会让构建失败。
-
----
-
-## 5. 生命周期、权威队列与数据流动
-
-### 5.1 三级生命周期分离
-- **房间生命周期 (`ProtocolRoomLifecycle` / `RoomLifecycle`)**：`LOBBY → PREPARING(码牌) → PLAYING → SETTLED → FINISHED / CLOSED`。
-- **整场生命周期 (`SessionLifecycle` / `MatchSession`)**：串联一整场四人对局（东风战/半庄战），管理局间账本、点棒转移、立直棒存量、本场数与终局排名。
-- **单局状态机 (`RoundStateMachine`)**：终态固定；一旦和牌或流局即不可复活。下一局发牌（包括连庄）必须创建全新状态机实例与全新 `roundId`。包含完整的 `CHANKAN_WINDOW` 抢杠判定。
-
-### 5.2 权威调度与串行队列
-- **每桌独占串行队列**：`ServerTableHost` 内所有突变操作统一入队串行执行。调用方全异步（`CompletableFuture`），永不阻塞权威锁。
-- **串行处理与决策生效**：同桌并发的玩家动作、超时动作与 AI 决策统一入队串行裁决；玩家提交严格校验权威 deadline，tick 先处理超时再调度 AI，不同决策依序生效，响应窗口允许多个座位提交记录；动画仅门控客户端自动推进节奏。
-- **AI 推理出队异步计算**：AI 策略计算在权威队列外异步执行；推理结果返回队列提交时，严格校验 `roundId`、`decisionId` 与 `controlEpoch`。
-- **权威 Deadline 优先**：默认每座位每局 20 秒储备 + 每次 3 秒思考时间。超时由权威 deadline 强制裁决，不能被玩家优先级或客户端动画无限推迟。单机模式由 `MahjongGame.render` 驱动 `server.tick`，远端服务由独立 Ticker 驱动。
-
-### 5.3 数据映射流水线
-领域事件与状态严格单向投递，UI 永不直连引擎内部事件：
-`engine 领域状态` → `server EngineProtocolMapper` → `protocol DTO` → `client ProtocolViewMapper` → `client 视图模型 (GameSnapshotView)`。
-
----
-
-## 6. 连接控制与网络同步机制
-
-1. **连接控制权归属 (`server/control`)**：
-   - `ConnectionControl` 负责追踪网络状态（CONNECTED/DISCONNECTED）、掉线宽限期检测、AI 自动托管 (`TAKEOVER`) 与重新收回。
-   - `DisconnectPolicy` 提供三种策略：`IMMEDIATE_AI`、`GRACE_THEN_AI`（默认宽限 10 秒）、`TIMEOUT_ONLY`。
-   - 真人重连不自动收回控制权，必须显式调用 `claimControl()` 收回；收回时自增 `controlEpoch` 废止接管期间的未决决策。
-   - `engine` 仍拥有领域级 `SeatController` 类型（LocalHuman / RemoteHuman / Computer / Takeover）、`ControllerRegistry` 控制代次以及供快照投影使用的 `SeatControlView`。
-2. **TCP (MJ-TCP/1) 可靠传输规范**：
-   - 12 字节二进制固定帧头（魔数 "MJTC" + wireVersion 1B + type 1B + flags 2B + payloadLength 4B），单帧载荷上限 1,048,576 字节 (1 MiB)。
-   - 3 秒心跳探测，10 秒无入站判死。双方对 PING 必回显 16 hex 字符 nonce 之 PONG。
-   - 业务幂等与作用域：服务端维护 `RequestScopeReceiptStore`，每个身份（大厅、玩家、观战）颁发专属 `TcpScope`，已完成副作用持久化并支持安全重放；未知结果请求必须显式对账，过期副作用禁止自动重做。
-   - 全量快照与推送：PUSH 始终包含完整快照与可见事件。`isFullSnapshot = true` 明确标记建立或重置基线；每个座位拥有独立递增游标，观战公开流独立游标，与 `(sessionId, syncEpoch)` 强绑定。基线与订阅在单桌串行执行器上原子建立。
-   - 客户端维护 64 条 / 4 MiB 双限早期入站缓冲，派发循环检查 `bindingEpoch` 与关闭门控；重连时继承原认证身份与未确认副作用。
-   - 不采用 UDP、增量状态模型、单一桌级游标或旧 TCP/WebSocket 协议。
-3. **未实现功能边界声明**：
-   - 当前已完成进程内单机与局域网/自建 TCP 权威房间服务。
-   - **公网用户账户系统、全自动撮合匹配、三人麻将规则、断电持久化数据库恢复、运行时主机动态迁移、TLS/加密信道**尚未实现，不得作为已具备功能写入文档。
-
----
-
-## 7. 核心算法设计索引
-
-- **整体架构与物理守恒机制**：[`doc/FRAMEWORK_ARCHITECTURE.md`](doc/FRAMEWORK_ARCHITECTURE.md)
-- **日本立直麻将规则与算分全表**：[`doc/RIICHI_RULES_DESIGN.md`](doc/RIICHI_RULES_DESIGN.md)
-- **开局码牌算法说明书**：[`STACKING_ALGORITHM.md`](STACKING_ALGORITHM.md)
-- **牌型重叠度矩阵算法说明书**：[`TILE_OVERLAP_MATRIX_ALGORITHM.md`](TILE_OVERLAP_MATRIX_ALGORITHM.md)
-- **服务端与客户端通信协议**：[`doc/SERVER_CLIENT_API.md`](doc/SERVER_CLIENT_API.md)
-- **V4 架构规范**：[`doc/GAME_ARCHITECTURE_V4.md`](doc/GAME_ARCHITECTURE_V4.md)
-
----
-
-## 8. 耗时构建与验证任务的默认执行方式
-
-预计需要长时间构建、共享资源等待、设备运行或多轮集成验证的任务，执行前先使用 [`doc/LONG_VALIDATION_TASK_TEMPLATE.md`](doc/LONG_VALIDATION_TASK_TEMPLATE.md) 填写范围、阶段、进入条件、超时及证据要求；已有任务恢复时从最后一个可验证检查点接续。
-
-先完成环境短预检、确定性组件回归以及生产端与验证端的合同对齐，再冻结候选进入昂贵验证。批量修完全部已知缺陷，避免用完整构建逐个发现脚本或字段问题。已通过且输入未变化的检查不机械重复；最终验收仍须满足任务要求的同版本、同包和真实执行证据。
-
-共享资源默认最多等待 10 分钟，长阶段默认每 30 秒报告心跳；可按任务实际情况说明调整。采用有界超时、正常取消、独占输出及稳定封存；不绕锁、不强杀他人进程、不改写旧证据。阶段通过后在既有授权内自动继续，不额外设置逐阶段人工确认。只有证实并处理失败原因、输入发生相关变化或资源条件改变后才重试。
-
-本规则不授权新增委派、推送、合并、部署、许可变更或绕过既有人工裁决；V5 任务继续遵守当前 [`复核与返修协议`](doc/v5-重构/V5-REVIEW-REWORK-PROTOCOL.md)。普通小改动无需套用整套流程。
+禁止绕锁、终止他人进程、改机器许可/安全配置、覆盖历史证据。此指南不授权委派、提交、推送、合并或部署；已有明确授权另行适用。
