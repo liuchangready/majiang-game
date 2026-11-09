@@ -1,0 +1,250 @@
+fileFormatVersion: 2
+guid: a51ffa270d3b01d43be9292d58b7e7a2
+TextureImporter:
+  internalIDToNameTable:
+  - first:
+      213: 7719462685118854625
+    second: button-skins_0
+  - first:
+      213: 1666814629187590296
+    second: button-skins_1
+  - first:
+      213: 2342264022740528532
+    second: button-skins_2
+  - first:
+      213: -2393678328297402936
+    second: button-skins_3
+  - first:
+      213: -6848064279793435910
+    second: button-skins_4
+  - first:
+      213: -8616036571231879091
+    second: button-skins_5
+  - first:
+      213: -1350770885845614191
+    second: button-skins_6
+  - first:
+      213: 9087980176171448391
+    second: button-skins_7
+  - first:
+      213: -7124416199495566312
+    second: button-skins_8
+  - first:
+      213: 4854812047735794102
+    second: button-skins_9
+  - first:
+      213: 7949028342428457920
+    second: button-skins_10
+  - first:
+      213: -3983415529984820759
+    second: button-skins_11
+  - first:
+      213: 3283017569593263512
+    second: button-skins_12
+  - first:
+      213: 5185686977898719133
+    second: button-skins_13
+  - first:
+      213: -7650581408853268684
+    second: button-skins_14
+  - first:
+      213: 8236464279165398927
+    second: button-skins_15
+  - first:
+      213: 126345256244061596
+    second: button-skins_16
+  - first:
+      213: 7634699034550724907
+    second: prototype_button_red
+  - first:
+      213: -150136318735908639
+    second: prototype_button_jade
+  externalObjects: {}
+  serializedVersion: 13
+  mipmaps:
+    mipMapMode: 0
+    enableMipMap: 0
+    sRGBTexture: 1
+    linearTexture: 0
+    fadeOut: 0
+    borderMipMap: 0
+    mipMapsPreserveCoverage: 0
+    alphaTestReferenceValue: 0.5
+    mipMapFadeDistanceStart: 1
+    mipMapFadeDistanceEnd: 3
+  bumpmap:
+    convertToNormalMap: 0
+    externalNormalMap: 0
+    heightScale: 0.25
+    normalMapFilter: 0
+    flipGreenChannel: 0
+  isReadable: 0
+  streamingMipmaps: 0
+  streamingMipmapsPriority: 0
+  vTOnly: 0
+  ignoreMipmapLimit: 0
+  grayScaleToAlpha: 0
+  generateCubemap: 6
+  cubemapConvolution: 0
+  seamlessCubemap: 0
+  textureFormat: 1
+  maxTextureSize: 2048
+  textureSettings:
+    serializedVersion: 2
+    filterMode: 1
+    aniso: 1
+    mipBias: 0
+    wrapU: 1
+    wrapV: 1
+    wrapW: 1
+  nPOTScale: 0
+  lightmap: 0
+  compressionQuality: 50
+  spriteMode: 2
+  spriteExtrude: 1
+  spriteMeshType: 1
+  alignment: 0
+  spritePivot: {x: 0.5, y: 0.5}
+  spritePixelsToUnits: 100
+  spriteBorder: {x: 0, y: 0, z: 0, w: 0}
+  spriteGenerateFallbackPhysicsShape: 1
+  alphaUsage: 1
+  alphaIsTransparency: 1
+  spriteTessellationDetail: -1
+  textureType: 8
+  textureShape: 1
+  singleChannelComponent: 0
+  flipbookRows: 1
+  flipbookColumns: 1
+  maxTextureSizeSet: 0
+  compressionQualitySet: 0
+  textureFormatSet: 0
+  ignorePngGamma: 0
+  applyGammaDecoding: 0
+  swizzle: 50462976
+  cookieLightType: 0
+  platformSettings:
+  - serializedVersion: 4
+    buildTarget: DefaultTexturePlatform
+    maxTextureSize: 2048
+    resizeAlgorithm: 0
+    textureFormat: -1
+    textureCompression: 0
+    compressionQuality: 50
+    crunchedCompression: 0
+    allowsAlphaSplitting: 0
+    overridden: 0
+    ignorePlatformSupport: 0
+    androidETC2FallbackOverride: 0
+    forceMaximumCompressionQuality_BC6H_BC7: 0
+  - serializedVersion: 4
+    buildTarget: Standalone
+    maxTextureSize: 2048
+    resizeAlgorithm: 0
+    textureFormat: -1
+    textureCompression: 1
+    compressionQuality: 50
+    crunchedCompression: 0
+    allowsAlphaSplitting: 0
+    overridden: 0
+    ignorePlatformSupport: 0
+    androidETC2FallbackOverride: 0
+    forceMaximumCompressionQuality_BC6H_BC7: 0
+  - serializedVersion: 4
+    buildTarget: Android
+    maxTextureSize: 2048
+    resizeAlgorithm: 0
+    textureFormat: -1
+    textureCompression: 1
+    compressionQuality: 50
+    crunchedCompression: 0
+    allowsAlphaSplitting: 0
+    overridden: 0
+    ignorePlatformSupport: 0
+    androidETC2FallbackOverride: 0
+    forceMaximumCompressionQuality_BC6H_BC7: 0
+  spriteSheet:
+    serializedVersion: 2
+    sprites:
+    - serializedVersion: 2
+      name: prototype_button_red
+      rect:
+        serializedVersion: 2
+        x: 40
+        y: 544
+        width: 1456
+        height: 384
+      alignment: 0
+      pivot: {x: 0.5, y: 0.5}
+      border: {x: 248, y: 120, z: 248, w: 120}
+      customData: 
+      outline: []
+      physicsShape: []
+      tessellationDetail: -1
+      bones: []
+      spriteID: b29e9615256e3f960800000000000000
+      internalID: 7634699034550724907
+      vertices: []
+      indices: 
+      edges: []
+      weights: []
+    - serializedVersion: 2
+      name: prototype_button_jade
+      rect:
+        serializedVersion: 2
+        x: 40
+        y: 96
+        width: 1456
+        height: 384
+      alignment: 0
+      pivot: {x: 0.5, y: 0.5}
+      border: {x: 248, y: 120, z: 248, w: 120}
+      customData: 
+      outline: []
+      physicsShape: []
+      tessellationDetail: -1
+      bones: []
+      spriteID: 1e08cd540db9aedf0800000000000000
+      internalID: -150136318735908639
+      vertices: []
+      indices: 
+      edges: []
+      weights: []
+    outline: []
+    customData: 
+    physicsShape: []
+    bones: []
+    spriteID: 
+    internalID: 0
+    vertices: []
+    indices: 
+    edges: []
+    weights: []
+    secondaryTextures: []
+    spriteCustomMetadata:
+      entries: []
+    nameFileIdTable:
+      button-skins_0: 7719462685118854625
+      button-skins_1: 1666814629187590296
+      button-skins_10: 7949028342428457920
+      button-skins_11: -3983415529984820759
+      button-skins_12: 3283017569593263512
+      button-skins_13: 5185686977898719133
+      button-skins_14: -7650581408853268684
+      button-skins_15: 8236464279165398927
+      button-skins_16: 126345256244061596
+      button-skins_2: 2342264022740528532
+      button-skins_3: -2393678328297402936
+      button-skins_4: -6848064279793435910
+      button-skins_5: -8616036571231879091
+      button-skins_6: -1350770885845614191
+      button-skins_7: 9087980176171448391
+      button-skins_8: -7124416199495566312
+      button-skins_9: 4854812047735794102
+      prototype_button_jade: -150136318735908639
+      prototype_button_red: 7634699034550724907
+  mipmapLimitGroupName: 
+  pSDRemoveMatte: 0
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
