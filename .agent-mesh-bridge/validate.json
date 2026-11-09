@@ -1,0 +1,50 @@
+{
+  "$comment": "Combined-validation commands for the Agent Mesh Bridge merge gate. This repository is a Gradle/Unity/.NET project and has no package.json, so the bridge reads its commands from here instead of refusing the merge. Every command must be a real gate: zero tests, skipped tests or a non-zero exit is a failure.",
+  "commands": [
+    {
+      "label": "build solution",
+      "command": "dotnet",
+      "args": ["build", "dotnet/Mahjong.sln", "-c", "Release", "--nologo", "-v", "q"]
+    },
+    {
+      "label": "domain tests",
+      "command": "dotnet",
+      "args": ["test", "dotnet/tests/Mahjong.Domain.Tests/Mahjong.Domain.Tests.csproj", "-c", "Release", "--no-build", "--nologo"]
+    },
+    {
+      "label": "contracts tests",
+      "command": "dotnet",
+      "args": ["test", "dotnet/tests/Mahjong.Contracts.Tests/Mahjong.Contracts.Tests.csproj", "-c", "Release", "--no-build", "--nologo"]
+    },
+    {
+      "label": "ai tests",
+      "command": "dotnet",
+      "args": ["test", "dotnet/tests/Mahjong.Ai.Tests/Mahjong.Ai.Tests.csproj", "-c", "Release", "--no-build", "--nologo"]
+    },
+    {
+      "label": "client tests",
+      "command": "dotnet",
+      "args": ["test", "dotnet/tests/Mahjong.Client.Tests/Mahjong.Client.Tests.csproj", "-c", "Release", "--no-build", "--nologo"]
+    },
+    {
+      "label": "table runtime tests",
+      "command": "dotnet",
+      "args": ["build", "dotnet/tests/Mahjong.TableRuntime.Tests/Mahjong.TableRuntime.Tests.csproj", "-c", "Release", "--nologo", "-v", "q"]
+    },
+    {
+      "label": "run table runtime tests",
+      "command": "dotnet",
+      "args": ["dotnet/tests/Mahjong.TableRuntime.Tests/bin/Release/net8.0/Mahjong.TableRuntime.Tests.dll"]
+    },
+    {
+      "label": "localhost tests",
+      "command": "dotnet",
+      "args": ["build", "dotnet/tests/Mahjong.LocalHost.Tests/Mahjong.LocalHost.Tests.csproj", "-c", "Release", "--nologo", "-v", "q"]
+    },
+    {
+      "label": "run localhost tests",
+      "command": "dotnet",
+      "args": ["dotnet/tests/Mahjong.LocalHost.Tests/bin/Release/net8.0/Mahjong.LocalHost.Tests.dll"]
+    }
+  ]
+}

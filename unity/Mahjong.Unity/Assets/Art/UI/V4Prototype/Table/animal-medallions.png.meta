@@ -1,0 +1,334 @@
+fileFormatVersion: 2
+guid: fb5128826e7b849409514a7fa1bad192
+TextureImporter:
+  internalIDToNameTable:
+  - first:
+      213: -4936036201304342663
+    second: animal-medallions_0
+  - first:
+      213: 6364819290479995253
+    second: animal-medallions_1
+  - first:
+      213: -2139125045855988951
+    second: animal-medallions_2
+  - first:
+      213: -4146807077071921855
+    second: animal-medallions_3
+  - first:
+      213: 8931062442998383907
+    second: animal-medallions_4
+  - first:
+      213: 8525627400652277567
+    second: animal-medallions_5
+  - first:
+      213: -715364466306737018
+    second: animal-medallions_6
+  - first:
+      213: 4389489803648509923
+    second: animal-medallions_7
+  - first:
+      213: -25632468055530252
+    second: animal-medallions_8
+  - first:
+      213: -2853036107178373697
+    second: animal-medallions_9
+  - first:
+      213: -6141769898537407588
+    second: animal-medallions_10
+  - first:
+      213: 2575055795917606465
+    second: animal-medallions_11
+  - first:
+      213: 1344273384799233612
+    second: animal-medallions_12
+  - first:
+      213: 1920141859523262415
+    second: animal-medallions_13
+  - first:
+      213: 7316882840516460925
+    second: animal-medallions_14
+  - first:
+      213: -1851308907417092649
+    second: animal-medallions_15
+  - first:
+      213: -5079160010051052126
+    second: animal-medallions_16
+  - first:
+      213: -7486394264484487731
+    second: animal-medallions_17
+  - first:
+      213: -6010566752059859797
+    second: animal-medallions_18
+  - first:
+      213: 4475407860501420892
+    second: animal-medallions_19
+  - first:
+      213: -3918907977844721117
+    second: animal-medallions_20
+  - first:
+      213: -6275956744511946626
+    second: animal-medallions_21
+  - first:
+      213: -8414583348997989689
+    second: animal-medallions_22
+  - first:
+      213: -5062587808378540300
+    second: animal-medallions_23
+  - first:
+      213: -3511364097126258345
+    second: animal-medallions_24
+  - first:
+      213: 5453136732961072616
+    second: octopus
+  - first:
+      213: -5001991460845427971
+    second: fox
+  - first:
+      213: 8583572021117536418
+    second: panda
+  - first:
+      213: 5799062651726021789
+    second: magpie
+  externalObjects: {}
+  serializedVersion: 13
+  mipmaps:
+    mipMapMode: 0
+    enableMipMap: 0
+    sRGBTexture: 1
+    linearTexture: 0
+    fadeOut: 0
+    borderMipMap: 0
+    mipMapsPreserveCoverage: 0
+    alphaTestReferenceValue: 0.5
+    mipMapFadeDistanceStart: 1
+    mipMapFadeDistanceEnd: 3
+  bumpmap:
+    convertToNormalMap: 0
+    externalNormalMap: 0
+    heightScale: 0.25
+    normalMapFilter: 0
+    flipGreenChannel: 0
+  isReadable: 0
+  streamingMipmaps: 0
+  streamingMipmapsPriority: 0
+  vTOnly: 0
+  ignoreMipmapLimit: 0
+  grayScaleToAlpha: 0
+  generateCubemap: 6
+  cubemapConvolution: 0
+  seamlessCubemap: 0
+  textureFormat: 1
+  maxTextureSize: 2048
+  textureSettings:
+    serializedVersion: 2
+    filterMode: 1
+    aniso: 1
+    mipBias: 0
+    wrapU: 1
+    wrapV: 1
+    wrapW: 1
+  nPOTScale: 0
+  lightmap: 0
+  compressionQuality: 50
+  spriteMode: 2
+  spriteExtrude: 1
+  spriteMeshType: 1
+  alignment: 0
+  spritePivot: {x: 0.5, y: 0.5}
+  spritePixelsToUnits: 100
+  spriteBorder: {x: 0, y: 0, z: 0, w: 0}
+  spriteGenerateFallbackPhysicsShape: 1
+  alphaUsage: 1
+  alphaIsTransparency: 1
+  spriteTessellationDetail: -1
+  textureType: 8
+  textureShape: 1
+  singleChannelComponent: 0
+  flipbookRows: 1
+  flipbookColumns: 1
+  maxTextureSizeSet: 0
+  compressionQualitySet: 0
+  textureFormatSet: 0
+  ignorePngGamma: 0
+  applyGammaDecoding: 0
+  swizzle: 50462976
+  cookieLightType: 0
+  platformSettings:
+  - serializedVersion: 4
+    buildTarget: DefaultTexturePlatform
+    maxTextureSize: 2048
+    resizeAlgorithm: 0
+    textureFormat: -1
+    textureCompression: 0
+    compressionQuality: 50
+    crunchedCompression: 0
+    allowsAlphaSplitting: 0
+    overridden: 0
+    ignorePlatformSupport: 0
+    androidETC2FallbackOverride: 0
+    forceMaximumCompressionQuality_BC6H_BC7: 0
+  - serializedVersion: 4
+    buildTarget: Standalone
+    maxTextureSize: 2048
+    resizeAlgorithm: 0
+    textureFormat: -1
+    textureCompression: 1
+    compressionQuality: 50
+    crunchedCompression: 0
+    allowsAlphaSplitting: 0
+    overridden: 0
+    ignorePlatformSupport: 0
+    androidETC2FallbackOverride: 0
+    forceMaximumCompressionQuality_BC6H_BC7: 0
+  - serializedVersion: 4
+    buildTarget: Android
+    maxTextureSize: 2048
+    resizeAlgorithm: 0
+    textureFormat: -1
+    textureCompression: 1
+    compressionQuality: 50
+    crunchedCompression: 0
+    allowsAlphaSplitting: 0
+    overridden: 0
+    ignorePlatformSupport: 0
+    androidETC2FallbackOverride: 0
+    forceMaximumCompressionQuality_BC6H_BC7: 0
+  spriteSheet:
+    serializedVersion: 2
+    sprites:
+    - serializedVersion: 2
+      name: octopus
+      rect:
+        serializedVersion: 2
+        x: 0
+        y: 627
+        width: 627
+        height: 627
+      alignment: 0
+      pivot: {x: 0.5, y: 0.5}
+      border: {x: 0, y: 0, z: 0, w: 0}
+      customData: 
+      outline: []
+      physicsShape: []
+      tessellationDetail: -1
+      bones: []
+      spriteID: 8e567c777fe6dab40800000000000000
+      internalID: 5453136732961072616
+      vertices: []
+      indices: 
+      edges: []
+      weights: []
+    - serializedVersion: 2
+      name: fox
+      rect:
+        serializedVersion: 2
+        x: 627
+        y: 627
+        width: 627
+        height: 627
+      alignment: 0
+      pivot: {x: 0.5, y: 0.5}
+      border: {x: 0, y: 0, z: 0, w: 0}
+      customData: 
+      outline: []
+      physicsShape: []
+      tessellationDetail: -1
+      bones: []
+      spriteID: df265ce944b559ab0800000000000000
+      internalID: -5001991460845427971
+      vertices: []
+      indices: 
+      edges: []
+      weights: []
+    - serializedVersion: 2
+      name: panda
+      rect:
+        serializedVersion: 2
+        x: 0
+        y: 0
+        width: 627
+        height: 627
+      alignment: 0
+      pivot: {x: 0.5, y: 0.5}
+      border: {x: 0, y: 0, z: 0, w: 0}
+      customData: 
+      outline: []
+      physicsShape: []
+      tessellationDetail: -1
+      bones: []
+      spriteID: 2a841b68649fe1770800000000000000
+      internalID: 8583572021117536418
+      vertices: []
+      indices: 
+      edges: []
+      weights: []
+    - serializedVersion: 2
+      name: magpie
+      rect:
+        serializedVersion: 2
+        x: 627
+        y: 0
+        width: 627
+        height: 627
+      alignment: 0
+      pivot: {x: 0.5, y: 0.5}
+      border: {x: 0, y: 0, z: 0, w: 0}
+      customData: 
+      outline: []
+      physicsShape: []
+      tessellationDetail: -1
+      bones: []
+      spriteID: d944d5ac1c86a7050800000000000000
+      internalID: 5799062651726021789
+      vertices: []
+      indices: 
+      edges: []
+      weights: []
+    outline: []
+    customData: 
+    physicsShape: []
+    bones: []
+    spriteID: 
+    internalID: 0
+    vertices: []
+    indices: 
+    edges: []
+    weights: []
+    secondaryTextures: []
+    spriteCustomMetadata:
+      entries: []
+    nameFileIdTable:
+      animal-medallions_0: -4936036201304342663
+      animal-medallions_1: 6364819290479995253
+      animal-medallions_10: -6141769898537407588
+      animal-medallions_11: 2575055795917606465
+      animal-medallions_12: 1344273384799233612
+      animal-medallions_13: 1920141859523262415
+      animal-medallions_14: 7316882840516460925
+      animal-medallions_15: -1851308907417092649
+      animal-medallions_16: -5079160010051052126
+      animal-medallions_17: -7486394264484487731
+      animal-medallions_18: -6010566752059859797
+      animal-medallions_19: 4475407860501420892
+      animal-medallions_2: -2139125045855988951
+      animal-medallions_20: -3918907977844721117
+      animal-medallions_21: -6275956744511946626
+      animal-medallions_22: -8414583348997989689
+      animal-medallions_23: -5062587808378540300
+      animal-medallions_24: -3511364097126258345
+      animal-medallions_3: -4146807077071921855
+      animal-medallions_4: 8931062442998383907
+      animal-medallions_5: 8525627400652277567
+      animal-medallions_6: -715364466306737018
+      animal-medallions_7: 4389489803648509923
+      animal-medallions_8: -25632468055530252
+      animal-medallions_9: -2853036107178373697
+      fox: -5001991460845427971
+      magpie: 5799062651726021789
+      octopus: 5453136732961072616
+      panda: 8583572021117536418
+  mipmapLimitGroupName: 
+  pSDRemoveMatte: 0
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
