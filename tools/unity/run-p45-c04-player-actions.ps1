@@ -537,20 +537,39 @@ function Assert-C04ExactVerifierFixtureSet([string]$root,[string[]]$expectedCase
 }
 
 function Assert-C04LocalControlProbeResult([string]$probeText) {
-    if ([string]::IsNullOrWhiteSpace($probeText) -or $probeText -notmatch 'CONTROL_PROBE_PASS') { throw 'G4 control Player probe pass marker is missing.' }
-    $lines = @($probeText -split "`r?`n" | Where-Object { $_ -match ' RESULT ' })
+    if ([string]::IsNullOrWhiteSpace($probeText)) { throw 'G4 control Player probe log is empty.' }
+    $rawLines = @($probeText -split "`r?`n")
+    $passLines = @($rawLines | Where-Object { $_ -match '(?<![A-Za-z0-9_])CONTROL_PROBE_PASS(?![A-Za-z0-9_])' })
+    if ($passLines.Count -ne 1 -or @($rawLines | Where-Object { $_ -match '(?<![A-Za-z0-9_])CONTROL_PROBE_FAIL(?![A-Za-z0-9_])' }).Count -ne 0) {
+        throw 'G4 control probe must contain one exact PASS record and no FAIL record.'
+    }
+    $lines = @($rawLines | Where-Object { $_ -match '\bRESULT\b' })
     if ($lines.Count -ne 1) { throw 'G4 control Player probe must emit exactly one result record.' }
-    $match = [regex]::Match($lines[0], 'RESULT initialEpoch=(\d+) releaseEpoch=(\d+) claimEpoch=(\d+) oldEpoch=(\d+) stalePlayerReason=StaleControlEpoch .* staleAiReason=StaleControlEpoch')
+    $pattern = '^(?<timestamp>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,7})?(?:Z|[+-]\d{2}:\d{2})) RESULT initialEpoch=(?<initial>\d+) releaseEpoch=(?<release>\d+) claimEpoch=(?<claim>\d+) oldEpoch=(?<old>\d+) stalePlayerReason=StaleControlEpoch oldAiDecision=(?<ai>\S+) staleAiReason=StaleControlEpoch round=(?<round>\S+)$'
+    $match = [regex]::Match($lines[0], $pattern)
     if (-not $match.Success) { throw 'G4 control result does not bind both stale-decision rejections to StaleControlEpoch.' }
-    $initial = [UInt64]::Parse($match.Groups[1].Value, [Globalization.CultureInfo]::InvariantCulture)
-    $released = [UInt64]::Parse($match.Groups[2].Value, [Globalization.CultureInfo]::InvariantCulture)
-    $claimed = [UInt64]::Parse($match.Groups[3].Value, [Globalization.CultureInfo]::InvariantCulture)
-    $old = [UInt64]::Parse($match.Groups[4].Value, [Globalization.CultureInfo]::InvariantCulture)
+    foreach ($identity in @('ai','round')) {
+        if ([string]::IsNullOrWhiteSpace($match.Groups[$identity].Value)) { throw "G4 control result identity is empty: $identity" }
+    }
+    [UInt64]$initial = 0; [UInt64]$released = 0; [UInt64]$claimed = 0; [UInt64]$old = 0
+    foreach ($field in @(@('initial',[ref]$initial),@('release',[ref]$released),@('claim',[ref]$claimed),@('old',[ref]$old))) {
+        if (-not [UInt64]::TryParse($match.Groups[$field[0]].Value, [Globalization.NumberStyles]::None, [Globalization.CultureInfo]::InvariantCulture, $field[1])) {
+            throw "G4 control result epoch is invalid or overflows UInt64: $($field[0])"
+        }
+    }
     if ($initial -eq [UInt64]::MaxValue -or $released -ne ($initial + [UInt64]1) -or
         $released -eq [UInt64]::MaxValue -or $claimed -ne ($released + [UInt64]1) -or $old -ne $initial) {
         throw 'G4 control epochs do not prove release/claim increments and old-epoch retention.'
     }
-    return [pscustomobject]@{ InitialEpoch=$initial; ReleaseEpoch=$released; ClaimEpoch=$claimed; OldEpoch=$old }
+    return [pscustomobject]@{ InitialEpoch=$initial; ReleaseEpoch=$released; ClaimEpoch=$claimed; OldEpoch=$old; OldAiDecision=$match.Groups['ai'].Value; Round=$match.Groups['round'].Value }
+}
+
+function Assert-C04LocalControlPlayerLog([string]$playerText) {
+    if ([string]::IsNullOrWhiteSpace($playerText) -or
+        $playerText -notmatch '(?<![A-Za-z0-9_])CONTROL_PROBE_PASS(?![A-Za-z0-9_])' -or
+        $playerText -match '(?<![A-Za-z0-9_])CONTROL_PROBE_FAIL(?![A-Za-z0-9_])') {
+        throw 'G4 runtime Player log must contain an exact PASS marker and no FAIL marker.'
+    }
 }
 
 function Test-C04ActionEvidence {
@@ -781,16 +800,32 @@ Start-Sleep -Seconds 25
         $rejected = $false; try { Test-C04ExactPlayModeXml $xmlCase.xml | Out-Null } catch { $rejected = $true }
         if (-not $rejected) { throw "Exact PlayMode XML gate accepted invalid fixture: $($xmlCase.name)" }
     }
-    $goodControlResult = '2026-11-09T00:00:00Z RESULT initialEpoch=4 releaseEpoch=5 claimEpoch=6 oldEpoch=4 stalePlayerReason=StaleControlEpoch oldAiDecision=decision-1 staleAiReason=StaleControlEpoch' + "`n" + 'CONTROL_PROBE_PASS'
+    $goodControlResult = '2026-11-09T00:00:00.0000000Z RESULT initialEpoch=4 releaseEpoch=5 claimEpoch=6 oldEpoch=4 stalePlayerReason=StaleControlEpoch oldAiDecision=decision-1 staleAiReason=StaleControlEpoch round=c04-control-seed-1' + "`n" + '2026-11-09T00:00:00.0000000Z CONTROL_PROBE_PASS'
     Assert-C04LocalControlProbeResult $goodControlResult | Out-Null
+    Assert-C04LocalControlPlayerLog ('2026-11-09T00:00:00.0000000Z CONTROL_PROBE_PASS' + "`n" + 'Unity Player log: CONTROL_PROBE_PASS')
     foreach ($badControlResult in @(
-        'CONTROL_PROBE_PASS',
-        ('2026-11-09T00:00:00Z RESULT initialEpoch=4 releaseEpoch=6 claimEpoch=7 oldEpoch=4 stalePlayerReason=StaleControlEpoch oldAiDecision=decision-1 staleAiReason=StaleControlEpoch' + "`n" + 'CONTROL_PROBE_PASS'),
-        ('2026-11-09T00:00:00Z RESULT initialEpoch=4 releaseEpoch=5 claimEpoch=6 oldEpoch=5 stalePlayerReason=StaleControlEpoch oldAiDecision=decision-1 staleAiReason=StaleControlEpoch' + "`n" + 'CONTROL_PROBE_PASS'),
-        ('2026-11-09T00:00:00Z RESULT initialEpoch=4 releaseEpoch=5 claimEpoch=6 oldEpoch=4 stalePlayerReason=StaleControlEpoch oldAiDecision=decision-1 staleAiReason=Applied' + "`n" + 'CONTROL_PROBE_PASS')
+        ('2026-11-09T00:00:00.0000000Z CONTROL_PROBE_PASS'),
+        ($goodControlResult + "`n" + ($goodControlResult -split "`n")[0]),
+        ($goodControlResult -replace 'staleAiReason=StaleControlEpoch','staleAiReason=StaleControlEpoch_CORRUPTED'),
+        ($goodControlResult -replace 'stalePlayerReason=StaleControlEpoch','stalePlayerReason=NotStaleControlEpoch'),
+        ($goodControlResult -replace ' oldAiDecision=decision-1',''),
+        ($goodControlResult -replace 'oldAiDecision=decision-1','oldAiDecision='),
+        ($goodControlResult -replace ' oldAiDecision=decision-1',' oldAiDecision=decision-1 oldAiDecision=decision-2'),
+        ($goodControlResult -replace ' round=c04-control-seed-1',''),
+        ($goodControlResult -replace 'round=c04-control-seed-1','round='),
+        ($goodControlResult -replace 'releaseEpoch=5','releaseEpoch=6'),
+        ($goodControlResult -replace 'initialEpoch=4 releaseEpoch=5 claimEpoch=6 oldEpoch=4','initialEpoch=18446744073709551615 releaseEpoch=0 claimEpoch=1 oldEpoch=18446744073709551615'),
+        ($goodControlResult -replace '2026-11-09T00:00:00.0000000Z CONTROL_PROBE_PASS',''),
+        ($goodControlResult -replace 'CONTROL_PROBE_PASS','CONTROL_PROBE_PASS_CORRUPTED'),
+        ($goodControlResult + "`n" + '2026-11-09T00:00:00.0000000Z CONTROL_PROBE_PASS'),
+        ($goodControlResult + "`n" + '2026-11-09T00:00:00.0000000Z CONTROL_PROBE_FAIL STALE_AI_RESULT_NOT_SENT')
     )) {
         $rejected = $false; try { Assert-C04LocalControlProbeResult $badControlResult | Out-Null } catch { $rejected = $true }
         if (-not $rejected) { throw 'G4 control probe gate accepted missing or mismatched epoch/stale-result evidence.' }
+    }
+    foreach ($badControlPlayerLog in @('','CONTROL_PROBE_PASS_CORRUPTED','CONTROL_PROBE_PASS CONTROL_PROBE_FAIL STALE_AI_RESULT_NOT_SENT')) {
+        $rejected = $false; try { Assert-C04LocalControlPlayerLog $badControlPlayerLog } catch { $rejected = $true }
+        if (-not $rejected) { throw 'G4 runtime Player-log gate accepted a missing, corrupted, or conflicting marker.' }
     }
     $closureBeforePath = Join-Path $RunRoot 'fixture-input-before.json'; $closureAfterPath = Join-Path $RunRoot 'fixture-input-after.json'; $closureChangesPath = Join-Path $RunRoot 'fixture-input-changes.json'
     $closureBefore = [ordered]@{ entries=@([ordered]@{path='Assets/Scripts/App.cs';bytes=10;sha256=('a'*64)},[ordered]@{path='Packages/manifest.json';bytes=10;sha256=('b'*64)},[ordered]@{path='ProjectSettings/EditorBuildSettings.asset';bytes=10;sha256=('c'*64)},[ordered]@{path='Library/PackageCache/com.unity.test/package.dll';bytes=10;sha256=('d'*64)},[ordered]@{path='Library/ScriptAssemblies/App.dll';bytes=10;sha256=('e'*64)}) }
@@ -1058,7 +1093,7 @@ Start-Sleep -Seconds 25
         throw 'Fixture evidence seal must contain stable owned outputs and exclude volatile process/download roots.'
     }
     [IO.File]::WriteAllText((Join-Path $RunRoot 'fixture-seal.json'), (($fixtureFiles | ConvertTo-Json -Depth 5) + "`n"), (New-Object Text.UTF8Encoding($false)))
-    Write-Host "C04_TOOL_FIXTURES_PASS positive=3 negative=$($negatives.Count + $evidenceNegatives.Count + $markerNegatives.Count + 21) protobuf=PASS malformed=2 timeoutTree=PASS mutexTimeoutSeal=PASS mutexCancellationSeal=PASS outputDrain=PASS outputFiles=$($fixtureFiles.Count)"
+    Write-Host "C04_TOOL_FIXTURES_PASS positive=4 negative=$($negatives.Count + $evidenceNegatives.Count + $markerNegatives.Count + 35) protobuf=PASS malformed=2 timeoutTree=PASS mutexTimeoutSeal=PASS mutexCancellationSeal=PASS outputDrain=PASS outputFiles=$($fixtureFiles.Count)"
     exit 0
 }
 
@@ -1437,8 +1472,10 @@ EditorUserSettings:
     $controlProbeLog = Join-Path $controlDir 'probe.log'
     $controlProbeText = if (Test-Path -LiteralPath $controlProbeLog -PathType Leaf) { Get-Content -LiteralPath $controlProbeLog -Raw -Encoding UTF8 } else { '' }
     $controlPlayerText = if (Test-Path -LiteralPath $controlLog -PathType Leaf) { Get-Content -LiteralPath $controlLog -Raw -Encoding UTF8 } else { '' }
-    if ($controlPlayer.exitCode -ne 0 -or $controlPlayerText -notmatch 'CONTROL_PROBE_PASS') {
-        throw "Same-package G4 LocalControlPlayerProbe failed; nativeExit=$($controlPlayer.exitCode), probeLog=$controlProbeLog, playerLog=$controlLog."
+    $controlLogGateError = ''
+    try { Assert-C04LocalControlPlayerLog $controlPlayerText } catch { $controlLogGateError = $_.Exception.Message }
+    if ($controlPlayer.exitCode -ne 0 -or -not [string]::IsNullOrEmpty($controlLogGateError)) {
+        throw "Same-package G4 LocalControlPlayerProbe failed; nativeExit=$($controlPlayer.exitCode), reason=$controlLogGateError, probeLog=$controlProbeLog, playerLog=$controlLog."
     }
     $controlEpochs = Assert-C04LocalControlProbeResult $controlProbeText
     $controlResult = [ordered]@{

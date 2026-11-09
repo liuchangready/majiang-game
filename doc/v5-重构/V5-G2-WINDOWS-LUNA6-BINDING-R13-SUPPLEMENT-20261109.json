@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "round": 13,
+  "baseline": "4523485cfd4ec2b32185a7da5c13f6cbaf54a1e1",
+  "bridgeStartHead": "c08236b9f052ae07783472ef23211d8758f0e739",
+  "bindingRowsChanged": false,
+  "lastReviewedWindowsRows": {
+    "pass": 18,
+    "partial": 11,
+    "notRun": 3,
+    "total": 32
+  },
+  "androidRows": "9 excluded; NOT_RUN",
+  "newDefects": [
+    {
+      "id": "D-12-01",
+      "severity": "MAJOR",
+      "status": "FIXED_IN_SOURCE_TOOL_GATE",
+      "scope": "G4 log parser only; does not prove the Player process or disconnect policy",
+      "evidence": "E:/g2-review-r13-d12-gate/review.json",
+      "reproNativeExit": 0,
+      "fixtureOnly": {
+        "nativeExit": 0,
+        "positive": 4,
+        "negative": 79,
+        "skipped": 0,
+        "seal": "build/13c04d1209b04806bd4f04b1482444f8/fixture-seal.json",
+        "sealSha256": "1EB996D0A6E1720600FF657428C776A5A7038A320B6D4F1F34801F74B38ACED7"
+      }
+    }
+  ],
+  "openFindings": [
+    "D-1-02",
+    "D-1-01",
+    "D-1-05",
+    "D-1-04"
+  ],
+  "productEvidenceThisRound": {
+    "unity": false,
+    "playMode": false,
+    "ordinaryWindowsPlayer": false,
+    "physicalInput": false,
+    "offlineMatch": false,
+    "commonPackage32Rows": false
+  },
+  "reviewManifest": "E:/g2-review-r13-d12-gate/review.json",
+  "reviewManifestSha256": "F5DE3D653585EBE36C0C56755F8958315C37310EC977FDD0C165B40E81B703AD"
+}
