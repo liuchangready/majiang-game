@@ -938,15 +938,6 @@ namespace Mahjong.Unity.UI.Prototype
                     _autoLoopCoroutine = StartControlledCoroutine(AutoLoopRoutine());
                 }
             }
-            else
-            {
-                if (_autoLoopCoroutine != null)
-                {
-                    StopCoroutine(_autoLoopCoroutine);
-                    _activeCoroutines.Remove(_autoLoopCoroutine);
-                    _autoLoopCoroutine = null;
-                }
-            }
             SetStatus(_isAutoLooping ? "自动演示已启动：将循环演示【摸牌 -> 选牌悬停 -> 打牌入河 -> 理牌】" : "自动演示已停止");
         }
 
@@ -1162,16 +1153,24 @@ namespace Mahjong.Unity.UI.Prototype
             {
                 for (int i = 0; i < _handTiles.Count; i++)
                 {
+                    if (!_isAutoLooping && _autoLoopCoroutine != null)
+                    {
+                        if (_handTiles[i] != null) _handTiles[i].SetHovered(false, false);
+                        break;
+                    }
                     if (_handTiles[i] != null) _handTiles[i].SetHovered(true, true);
-                    yield return WaitWithSpeed(0.06f);
+                    yield return WaitWithSpeed(0.04f);
                     if (_handTiles[i] != null) _handTiles[i].SetHovered(false, true);
                 }
 
-                if (_drawnTile != null)
+                if (_isAutoLooping || _autoLoopCoroutine == null)
                 {
-                    _drawnTile.SetHovered(true, true);
-                    yield return WaitWithSpeed(0.08f);
-                    if (_drawnTile != null) _drawnTile.SetHovered(false, true);
+                    if (_drawnTile != null)
+                    {
+                        _drawnTile.SetHovered(true, true);
+                        yield return WaitWithSpeed(0.06f);
+                        if (_drawnTile != null) _drawnTile.SetHovered(false, true);
+                    }
                 }
 
                 SetStatus("【悬停演示完成】：光标移上任意手牌可实时体验 2.5D 上浮与阴影缩放");
@@ -1364,18 +1363,21 @@ namespace Mahjong.Unity.UI.Prototype
                     if (_drawnTile == null)
                     {
                         yield return AnimateDrawRoutine();
-                        yield return WaitWithSpeed(0.5f);
+                        if (!_isAutoLooping) break;
+                        yield return WaitWithSpeed(0.25f);
                     }
 
                     if (!_isAutoLooping) break;
 
                     yield return AnimateHoverWaveRoutine();
-                    yield return WaitWithSpeed(0.2f);
+                    if (!_isAutoLooping) break;
+                    yield return WaitWithSpeed(0.15f);
 
                     if (!_isAutoLooping) break;
 
                     yield return AnimateDiscardRoutine(_riverTilesP0.Count == 5);
-                    yield return WaitWithSpeed(0.6f);
+                    if (!_isAutoLooping) break;
+                    yield return WaitWithSpeed(0.35f);
 
                     if (_riverTilesP0.Count >= 18)
                     {
@@ -1386,7 +1388,7 @@ namespace Mahjong.Unity.UI.Prototype
                         _remainingWallTiles = 69;
                         if (_wallCountText != null) _wallCountText.text = "東1局\n本0 供0\n牌山 69";
                         if (_riichiStickImage != null) _riichiStickImage.gameObject.SetActive(false);
-                        yield return WaitWithSpeed(0.8f);
+                        yield return WaitWithSpeed(0.6f);
                     }
                 }
             }

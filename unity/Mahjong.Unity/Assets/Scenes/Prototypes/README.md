@@ -120,7 +120,7 @@
 
 ## 6. 验证环境与平台状态声明
 
-- **Unity Editor Play Mode (Windows 11, Direct3D 11 / D3D11)**：**VERIFIED**（已完成 Unity 编译、16 项组件级 Play Mode 自动化交互与状态探针全量 PASS，包括场景加载、弹窗关闭、飞牌所有权清理、菜单入场状态恢复、选牌理牌、协程句柄自动释放、3 轮自然完整自动循环及 0 异常验证；人工肉眼视觉审美观察与截图已在 Windows Editor D3D11 视口中核验）。
+- **Unity Editor Play Mode (Windows 11, Direct3D 11 / D3D11)**：**VERIFIED**（组件级 Play Mode 自动化交互与状态探针全量 PASS，包括场景加载、弹窗关闭、飞牌所有权清理、菜单入场状态恢复、选牌理牌、协程句柄自动释放、3 轮自然完整自动循环、4 阶段停止再启动取消边界及 0 异常验证；人工视觉观察/截图：**NOT_RUN**）。
 - **Windows Standalone Player**：**NOT_RUN**（本次任务按要求仅限 Editor 内直接观察与轻量探针，不构建发布包）。
 - **Android APK / 模拟器 / 真机**：**NOT_RUN**（不适用本美术原型任务）。
 - **WebGL / macOS / Linux**：**NOT_RUN**。
