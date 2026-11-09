@@ -110,13 +110,21 @@ namespace Mahjong.Unity.UI.Prototype
 
         private void Awake()
         {
+            Tile2D5View.IsPausedProvider = () => _isPaused;
             BindHierarchy();
+        }
+
+        private void OnEnable()
+        {
+            Tile2D5View.IsPausedProvider = () => _isPaused;
         }
 
         private void Start()
         {
+            Tile2D5View.IsPausedProvider = () => _isPaused;
             BindHierarchy();
             BindMenuButtons();
+            BindModalButtons();
             ResetTableState();
             ShowMenu();
             ApplyScreenLayout(true);
@@ -230,6 +238,36 @@ namespace Mahjong.Unity.UI.Prototype
                 }
 
                 BindDemoBarButtons();
+            }
+
+            BindModalButtons();
+        }
+
+        private void BindModalButtons()
+        {
+            if (_galleryModal != null)
+            {
+                Button[] gBtns = _galleryModal.GetComponentsInChildren<Button>(true);
+                foreach (Button b in gBtns)
+                {
+                    if (b.name == "CloseGalleryButton" || b.name.Contains("Close"))
+                    {
+                        b.onClick.RemoveAllListeners();
+                        b.onClick.AddListener(CloseGalleryModal);
+                    }
+                }
+            }
+            if (_noticeModal != null)
+            {
+                Button[] nBtns = _noticeModal.GetComponentsInChildren<Button>(true);
+                foreach (Button b in nBtns)
+                {
+                    if (b.name == "CloseNoticeButton" || b.name.Contains("Close"))
+                    {
+                        b.onClick.RemoveAllListeners();
+                        b.onClick.AddListener(CloseNotice);
+                    }
+                }
             }
         }
 
@@ -355,6 +393,7 @@ namespace Mahjong.Unity.UI.Prototype
 
         public void ShowGalleryModal()
         {
+            BindModalButtons();
             if (_galleryModal != null)
             {
                 _galleryModal.SetActive(true);
@@ -369,6 +408,7 @@ namespace Mahjong.Unity.UI.Prototype
 
         public void ShowNotice(string title, string message)
         {
+            BindModalButtons();
             if (_noticeModal != null)
             {
                 Text[] texts = _noticeModal.GetComponentsInChildren<Text>(true);
@@ -473,12 +513,22 @@ namespace Mahjong.Unity.UI.Prototype
 
         public void ResetTableState()
         {
+            ResetTableState(false);
+        }
+
+        public void ResetTableState(bool preserveAutoLoop)
+        {
             StopAllActiveAnimations();
             _isAnimating = false;
             _selectedHandIndex = -1;
             _discardSequence = 0;
             _remainingWallTiles = 69;
             _drawDeckIndex = 0;
+            if (!preserveAutoLoop)
+            {
+                _isAutoLooping = false;
+                if (_autoButtonText != null) _autoButtonText.text = "▶ 自动演示";
+            }
             if (_wallCountText != null) _wallCountText.text = "東1局\n本0 供0\n牌山 " + _remainingWallTiles;
             if (_riichiStickImage != null) _riichiStickImage.gameObject.SetActive(false);
 
@@ -492,11 +542,9 @@ namespace Mahjong.Unity.UI.Prototype
 
         private void StopAllActiveAnimations()
         {
-            foreach (Coroutine coroutine in _activeCoroutines)
-            {
-                if (coroutine != null) StopCoroutine(coroutine);
-            }
+            StopAllCoroutines();
             _activeCoroutines.Clear();
+            _isAnimating = false;
         }
 
         private void RebuildHandTiles()
@@ -522,8 +570,8 @@ namespace Mahjong.Unity.UI.Prototype
                     true,
                     true
                 );
-                int index = i;
-                tile.Clicked += (t) => OnHandTileClicked(index, t);
+                tile.ClearClickListeners();
+                tile.Clicked += OnTileClicked;
                 _handTiles.Add(tile);
             }
 
@@ -538,7 +586,8 @@ namespace Mahjong.Unity.UI.Prototype
                 true,
                 true
             );
-            _drawnTile.Clicked += (t) => OnHandTileClicked(13, t);
+            _drawnTile.ClearClickListeners();
+            _drawnTile.Clicked += OnTileClicked;
         }
 
         private void RebuildRiverP0()
@@ -692,9 +741,27 @@ namespace Mahjong.Unity.UI.Prototype
 
         #region Interactive Hand & Animation Controls
 
+        private void OnTileClicked(Tile2D5View clickedTile)
+        {
+            if (_isAnimating || clickedTile == null) return;
+
+            int currentIndex = -1;
+            if (clickedTile == _drawnTile)
+            {
+                currentIndex = 13;
+            }
+            else
+            {
+                currentIndex = _handTiles.IndexOf(clickedTile);
+            }
+            if (currentIndex < 0) return;
+
+            OnHandTileClicked(currentIndex, clickedTile);
+        }
+
         private void OnHandTileClicked(int index, Tile2D5View clickedTile)
         {
-            if (_isAnimating) return;
+            if (_isAnimating || clickedTile == null) return;
 
             if (_selectedHandIndex == index)
             {
@@ -704,13 +771,13 @@ namespace Mahjong.Unity.UI.Prototype
             }
             else
             {
-                if (_selectedHandIndex >= 0 && _selectedHandIndex < _handTiles.Count)
-                {
-                    _handTiles[_selectedHandIndex].SetSelected(false, true);
-                }
-                else if (_selectedHandIndex == 13 && _drawnTile != null)
+                if (_selectedHandIndex == 13 && _drawnTile != null)
                 {
                     _drawnTile.SetSelected(false, true);
+                }
+                else if (_selectedHandIndex >= 0 && _selectedHandIndex < _handTiles.Count && _handTiles[_selectedHandIndex] != null)
+                {
+                    _handTiles[_selectedHandIndex].SetSelected(false, true);
                 }
 
                 _selectedHandIndex = index;
@@ -721,7 +788,13 @@ namespace Mahjong.Unity.UI.Prototype
 
         public void TriggerDraw()
         {
-            if (_isAnimating || _drawnTile != null) return;
+            if (_isAnimating) return;
+            if (_drawnTile != null)
+            {
+                // Clear existing drawn tile so user/runner can reliably replay draw animation
+                DestroyImmediate(_drawnTile.gameObject);
+                _drawnTile = null;
+            }
             StartControlledCoroutine(AnimateDrawRoutine());
         }
 
@@ -734,12 +807,22 @@ namespace Mahjong.Unity.UI.Prototype
         public void TriggerDiscard()
         {
             if (_isAnimating) return;
+            if (_handTiles.Count == 0 && _drawnTile == null)
+            {
+                SetStatus("手牌已空，无法继续打牌");
+                return;
+            }
             StartControlledCoroutine(AnimateDiscardRoutine(false));
         }
 
         public void TriggerRiichi()
         {
             if (_isAnimating) return;
+            if (_handTiles.Count == 0 && _drawnTile == null)
+            {
+                SetStatus("手牌已空，无法立直出牌");
+                return;
+            }
             StartControlledCoroutine(AnimateDiscardRoutine(true));
         }
 
@@ -748,7 +831,7 @@ namespace Mahjong.Unity.UI.Prototype
             _isAutoLooping = !_isAutoLooping;
             if (_autoButtonText != null)
             {
-                _autoButtonText.text = _isAutoLooping ? "⏹ 停止自动" : "▶ 自动循环";
+                _autoButtonText.text = _isAutoLooping ? "⏹ 停止自动" : "▶ 自动演示";
             }
             if (_isAutoLooping && !_isAnimating)
             {
@@ -794,9 +877,21 @@ namespace Mahjong.Unity.UI.Prototype
 
         private IEnumerator WrapControlledRoutine(IEnumerator routine)
         {
-            while (routine.MoveNext())
+            while (true)
             {
                 while (_isPaused) yield return null;
+                bool hasNext = false;
+                try
+                {
+                    hasNext = routine.MoveNext();
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogException(ex);
+                    _isAnimating = false;
+                    yield break;
+                }
+                if (!hasNext) break;
                 yield return routine.Current;
             }
         }
@@ -833,19 +928,39 @@ namespace Mahjong.Unity.UI.Prototype
                 if (_wallCountText != null) _wallCountText.text = "東1局\n本0 供0\n牌山 " + _remainingWallTiles;
             }
 
-            Vector2 wallStartPos = new Vector2(620f, 240f);
-            Vector2 handTargetPos = new Vector2(16 + 13 * 54 + 18, 18);
+            Vector3 wallStartWorld;
+            if (_wallRoot != null)
+            {
+                wallStartWorld = _wallRoot.TransformPoint(new Vector3(9 * 34f, 0f, 0f));
+            }
+            else
+            {
+                wallStartWorld = transform.position + new Vector3(0f, 150f, 0f);
+            }
 
+            Vector3 handTargetWorld;
+            if (_handTrayRoot != null)
+            {
+                handTargetWorld = _handTrayRoot.TransformPoint(new Vector3(16 + 13 * 54 + 18, -18, 0f));
+            }
+            else
+            {
+                handTargetWorld = transform.position + new Vector3(300f, -200f, 0f);
+            }
+
+            Transform animParent = _stageRoot != null ? _stageRoot : transform;
             var drawingTile = CreateTileInstance(
                 "HandTile_Drawn",
                 drawnIndex,
                 Tile2D5Mode.FlatFront,
-                wallStartPos,
+                Vector2.zero,
                 new Vector2(40, 56),
-                _handTrayRoot!,
+                animParent,
                 false,
                 false
             );
+            drawingTile.transform.position = wallStartWorld;
+            drawingTile.transform.SetAsLastSibling();
 
             float duration = 0.45f;
             float elapsed = 0f;
@@ -858,11 +973,10 @@ namespace Mahjong.Unity.UI.Prototype
                 float t = Mathf.Clamp01(elapsed / duration);
 
                 float eased = 1f - Mathf.Pow(1f - t, 2.5f);
-                float currentX = Mathf.Lerp(wallStartPos.x, handTargetPos.x, eased);
-                float baseY = Mathf.Lerp(wallStartPos.y, handTargetPos.y, eased);
+                Vector3 curWorld = Vector3.Lerp(wallStartWorld, handTargetWorld, eased);
                 float arc = Mathf.Sin(t * Mathf.PI) * 45f;
 
-                rt.anchoredPosition = new Vector2(currentX, -(baseY + arc));
+                drawingTile.transform.position = curWorld + new Vector3(0f, arc, 0f);
                 rt.sizeDelta = Vector2.Lerp(new Vector2(40, 56), new Vector2(52, 74), t);
 
                 if (t > 0.6f && drawingTile.Mode != Tile2D5Mode.Standing)
@@ -873,11 +987,19 @@ namespace Mahjong.Unity.UI.Prototype
                 yield return null;
             }
 
-            rt.anchoredPosition = new Vector2(handTargetPos.x, -handTargetPos.y);
+            if (_handTrayRoot != null)
+            {
+                drawingTile.transform.SetParent(_handTrayRoot, false);
+                rt.anchorMin = new Vector2(0, 1);
+                rt.anchorMax = new Vector2(0, 1);
+                rt.pivot = new Vector2(0, 1);
+                rt.anchoredPosition = new Vector2(16 + 13 * 54 + 18, -18);
+            }
             rt.sizeDelta = new Vector2(52, 74);
             drawingTile.SetMode(Tile2D5Mode.Standing, faceSprite);
             drawingTile.SetInteractive(true, true);
-            drawingTile.Clicked += (t) => OnHandTileClicked(13, t);
+            drawingTile.ClearClickListeners();
+            drawingTile.Clicked += OnTileClicked;
             _drawnTile = drawingTile;
 
             yield return WaitWithSpeed(0.08f);
@@ -892,16 +1014,16 @@ namespace Mahjong.Unity.UI.Prototype
 
             for (int i = 0; i < _handTiles.Count; i++)
             {
-                _handTiles[i].SetHovered(true, true);
+                if (_handTiles[i] != null) _handTiles[i].SetHovered(true, true);
                 yield return WaitWithSpeed(0.12f);
-                _handTiles[i].SetHovered(false, true);
+                if (_handTiles[i] != null) _handTiles[i].SetHovered(false, true);
             }
 
             if (_drawnTile != null)
             {
                 _drawnTile.SetHovered(true, true);
                 yield return WaitWithSpeed(0.18f);
-                _drawnTile.SetHovered(false, true);
+                if (_drawnTile != null) _drawnTile.SetHovered(false, true);
             }
 
             SetStatus("【悬停演示完成】：光标移上任意手牌可实时体验 2.5D 上浮与阴影缩放");
@@ -912,7 +1034,7 @@ namespace Mahjong.Unity.UI.Prototype
         {
             _isAnimating = true;
 
-            Tile2D5View tileToDiscard;
+            Tile2D5View? tileToDiscard = null;
             int discardIndex = _selectedHandIndex;
             if (discardIndex == 13 && _drawnTile != null)
             {
@@ -927,10 +1049,21 @@ namespace Mahjong.Unity.UI.Prototype
                 tileToDiscard = _drawnTile;
                 discardIndex = 13;
             }
-            else
+            else if (_handTiles.Count > 0)
             {
                 discardIndex = _handTiles.Count - 1;
                 tileToDiscard = _handTiles[discardIndex];
+            }
+            else
+            {
+                _isAnimating = false;
+                yield break;
+            }
+
+            if (tileToDiscard == null)
+            {
+                _isAnimating = false;
+                yield break;
             }
 
             string discardName = tileToDiscard.TileName;
@@ -938,13 +1071,27 @@ namespace Mahjong.Unity.UI.Prototype
             SetStatus("【打牌入河演示】：打出 [" + discardName + "]" + (isRiichi ? "（宣告立直，横置牌面）" : "") + "...");
 
             tileToDiscard.SetSelected(false, false);
-            RectTransform discardRt = tileToDiscard.GetComponent<RectTransform>();
-            Vector2 startPos = discardRt.anchoredPosition;
+            Vector3 startWorldPos = tileToDiscard.transform.position;
 
             int riverCount = _riverTilesP0.Count;
             int col = riverCount % 6;
             int row = riverCount / 6;
-            Vector2 riverTarget = new Vector2(490f + col * 36f, -(470f + row * 46f));
+
+            Vector3 targetWorldPos;
+            if (_riverRootP0 != null)
+            {
+                targetWorldPos = _riverRootP0.TransformPoint(new Vector3(col * 36f, -row * 46f, 0f));
+            }
+            else
+            {
+                targetWorldPos = transform.position;
+            }
+
+            Transform animParent = _stageRoot != null ? _stageRoot : transform;
+            tileToDiscard.transform.SetParent(animParent, true);
+            tileToDiscard.transform.SetAsLastSibling();
+
+            RectTransform discardRt = tileToDiscard.GetComponent<RectTransform>();
 
             float duration = 0.40f;
             float elapsed = 0f;
@@ -955,9 +1102,9 @@ namespace Mahjong.Unity.UI.Prototype
                 float t = Mathf.Clamp01(elapsed / duration);
                 float eased = 1f - Mathf.Pow(1f - t, 2.5f);
 
-                Vector2 cur = Vector2.Lerp(startPos, riverTarget, eased);
+                Vector3 curWorld = Vector3.Lerp(startWorldPos, targetWorldPos, eased);
                 float arc = Mathf.Sin(t * Mathf.PI) * 40f;
-                discardRt.anchoredPosition = cur + new Vector2(0f, arc);
+                tileToDiscard.transform.position = curWorld + new Vector3(0f, arc, 0f);
 
                 discardRt.sizeDelta = Vector2.Lerp(new Vector2(52, 74), new Vector2(34, 44), t);
 
@@ -969,6 +1116,8 @@ namespace Mahjong.Unity.UI.Prototype
 
                 yield return null;
             }
+
+            tileToDiscard.transform.position = targetWorldPos;
 
             if (discardIndex == 13)
             {
@@ -997,7 +1146,7 @@ namespace Mahjong.Unity.UI.Prototype
                 _drawnTile = null;
             }
 
-            yield return StartCoroutine(RealignHandTilesRoutine());
+            yield return RealignHandTilesRoutine();
 
             _selectedHandIndex = -1;
             SetStatus("【打牌完成】：[" + discardName + "] 已入河，手牌理牌对齐完成" + (isRiichi ? "，立直棒已就位" : ""));
@@ -1006,9 +1155,11 @@ namespace Mahjong.Unity.UI.Prototype
 
         private IEnumerator RealignHandTilesRoutine()
         {
+            if (_handTiles.Count == 0) yield break;
+
             float duration = 0.22f;
             float elapsed = 0f;
-            List<Vector2> starts = _handTiles.Select(t => t.GetComponent<RectTransform>().anchoredPosition).ToList();
+            List<Vector2> starts = _handTiles.Select(t => t != null ? t.GetComponent<RectTransform>().anchoredPosition : Vector2.zero).ToList();
             List<Vector2> targets = new List<Vector2>();
 
             for (int i = 0; i < _handTiles.Count; i++)
@@ -1023,18 +1174,22 @@ namespace Mahjong.Unity.UI.Prototype
                 float t = Mathf.Clamp01(elapsed / duration);
                 float eased = 1f - Mathf.Pow(1f - t, 2.5f);
 
-                for (int i = 0; i < _handTiles.Count; i++)
+                for (int i = 0; i < _handTiles.Count && i < starts.Count; i++)
                 {
-                    _handTiles[i].GetComponent<RectTransform>().anchoredPosition = Vector2.Lerp(starts[i], targets[i], eased);
+                    if (_handTiles[i] != null)
+                    {
+                        _handTiles[i].GetComponent<RectTransform>().anchoredPosition = Vector2.Lerp(starts[i], targets[i], eased);
+                    }
                 }
                 yield return null;
             }
 
-            for (int i = 0; i < _handTiles.Count; i++)
+            for (int i = 0; i < _handTiles.Count && i < targets.Count; i++)
             {
-                _handTiles[i].GetComponent<RectTransform>().anchoredPosition = targets[i];
-                int idx = i;
-                _handTiles[i].Clicked += (tile) => OnHandTileClicked(idx, tile);
+                if (_handTiles[i] != null)
+                {
+                    _handTiles[i].GetComponent<RectTransform>().anchoredPosition = targets[i];
+                }
             }
         }
 
@@ -1044,23 +1199,29 @@ namespace Mahjong.Unity.UI.Prototype
             {
                 if (_drawnTile == null)
                 {
-                    yield return StartCoroutine(AnimateDrawRoutine());
+                    yield return AnimateDrawRoutine();
                     yield return WaitWithSpeed(0.6f);
                 }
 
                 if (!_isAutoLooping) break;
 
-                yield return StartCoroutine(AnimateHoverWaveRoutine());
+                yield return AnimateHoverWaveRoutine();
                 yield return WaitWithSpeed(0.4f);
 
                 if (!_isAutoLooping) break;
 
-                yield return StartCoroutine(AnimateDiscardRoutine(_riverTilesP0.Count == 5));
+                yield return AnimateDiscardRoutine(_riverTilesP0.Count == 5);
                 yield return WaitWithSpeed(0.8f);
 
                 if (_riverTilesP0.Count >= 18)
                 {
-                    ResetTableState();
+                    SetStatus("【自动循环】：对局已满 18 巡，牌桌重置并开启新一局演示...");
+                    RebuildRiverP0();
+                    RebuildMelds();
+                    RebuildWall();
+                    _remainingWallTiles = 69;
+                    if (_wallCountText != null) _wallCountText.text = "東1局\n本0 供0\n牌山 69";
+                    if (_riichiStickImage != null) _riichiStickImage.gameObject.SetActive(false);
                     yield return WaitWithSpeed(1.0f);
                 }
             }
@@ -1177,10 +1338,11 @@ namespace Mahjong.Unity.UI.Prototype
             _riverRootP2 = CreateContainer("RiverRoot_P2", new Rect(480, 70, 240, 140), parent);
             _riverRootP3 = CreateContainer("RiverRoot_P3", new Rect(220, 260, 140, 200), parent);
 
-            _meldsRoot = CreateContainer("MeldsRoot", new Rect(800, 620, 420, 56), parent);
+            _meldsRoot = CreateContainer("MeldsRoot", new Rect(810, 526, 420, 58), parent);
 
-            var trayGo = ImageRect("HandTray", _panel, new Rect(188, 594, 840, 114), parent, true, false);
+            var trayGo = ImageRect("HandTray", _panel, new Rect(188, 594, 816, 114), parent, true, false);
             _handTrayRoot = trayGo.rectTransform;
+            _meldsRoot.SetAsLastSibling();
 
             var barGo = ImageRect("DemoControlsBar", _panel, new Rect(40, 6, 1200, 52), parent, true, false);
             _demoControlsBar = barGo.rectTransform;

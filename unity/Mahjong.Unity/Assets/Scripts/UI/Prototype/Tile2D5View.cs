@@ -55,6 +55,16 @@ namespace Mahjong.Unity.UI.Prototype
         public event Action<Tile2D5View>? Clicked;
         public event Action<Tile2D5View, bool>? HoverChanged;
 
+        /// <summary>
+        /// Optional global pause provider delegate (e.g. from V5ArtPrototype) to pause view-level tweens.
+        /// </summary>
+        public static Func<bool>? IsPausedProvider { get; set; }
+
+        public void ClearClickListeners()
+        {
+            Clicked = null;
+        }
+
         private float _currentElevation = 0f;
         private float _targetElevation = 0f;
         private Coroutine? _elevationCoroutine;
@@ -155,6 +165,7 @@ namespace Mahjong.Unity.UI.Prototype
             float elapsed = 0f;
             while (elapsed < duration)
             {
+                while (IsPausedProvider != null && IsPausedProvider()) yield return null;
                 elapsed += Time.unscaledDeltaTime;
                 float t = Mathf.Clamp01(elapsed / duration);
                 float eased = 1f - Mathf.Pow(1f - t, 3f);
@@ -193,7 +204,7 @@ namespace Mahjong.Unity.UI.Prototype
             }
             else
             {
-                _targetElevation = IsSelected ? 22f : (IsHovered ? 16f : 0f);
+                _targetElevation = IsSelected ? 24f : (IsHovered ? 18f : 0f);
             }
         }
 
@@ -209,6 +220,7 @@ namespace Mahjong.Unity.UI.Prototype
             float elapsed = 0f;
             while (elapsed < duration)
             {
+                while (IsPausedProvider != null && IsPausedProvider()) yield return null;
                 elapsed += Time.unscaledDeltaTime;
                 float t = Mathf.Clamp01(elapsed / duration);
                 float eased = 1f - Mathf.Pow(1f - t, 2f);
