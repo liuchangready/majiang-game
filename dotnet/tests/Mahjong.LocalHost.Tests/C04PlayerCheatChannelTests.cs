@@ -3,12 +3,14 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Google.Protobuf;
 using Mahjong.Client;
 using Mahjong.Contracts;
 using Mahjong.Domain.Cheat;
 using Xunit;
 using PlayerSnapshot = Mahjong.Contracts.Wire.PlayerSnapshot;
 using WireGamePhase = Mahjong.Contracts.Wire.GamePhase;
+using WireEnvelope = Mahjong.Contracts.Wire.Envelope;
 
 namespace Mahjong.LocalHost.Tests
 {
@@ -234,6 +236,200 @@ namespace Mahjong.LocalHost.Tests
             {
                 await harness.CloseAsync(session, channel);
             }
+        }
+
+        [Fact]
+        public async Task PaidTileMarkLostReceiptColdReopenChargesOnceFromFileOutbox()
+        {
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            using var bounded = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            bounded.CancelAfter(TimeSpan.FromSeconds(30));
+            ct = bounded.Token;
+            await using var harness = new C04ScenarioHarness(
+                LocalPlayerCheatScenarioKind.AuthorizedThreeCheats,
+                autoPlay: false);
+            string outboxPath = System.IO.Path.Combine(harness.Root, "client-outbox");
+            var openedChannels = new List<ITableChannel>();
+            var openedSessions = new List<TableSession>();
+            try
+            {
+            ITableChannel inner = await LocalTableHost.CreateChannelAsync(harness.Options, ct);
+            var channel = new CheatRecordingChannel(inner);
+            openedChannels.Add(channel);
+            await channel.OpenAsync(
+                new TableChannelConnectRequest(
+                    LocalTableHost.IssueTicket(harness.Options), "c04-file-lost-receipt", null), ct);
+            var session = new TableSession(channel, new FileOutboxStore(outboxPath));
+            openedSessions.Add(session);
+            await session.OpenAsync(
+                new TableSessionOpenRequest(LocalTableHost.IssueTicket(harness.Options), "c04-file-lost-receipt"), ct);
+            for (int i = 0; i < 50 && session.State != TableConnectionState.Ready; i++)
+            {
+                await session.PumpOnceAsync(ct);
+            }
+
+            Assert.Equal(TableConnectionState.Ready, session.State);
+            PlayerSnapshot baseline = await WaitForSeatZeroCheatWindowAsync(session, ct);
+            Assert.Equal(120, baseline.PrivateView.Cheat.CheatPoints);
+            LocalTableRecoveryFacts before = await CaptureFactsAsync(harness, ct);
+            AssertPhysical(before);
+            Assert.Equal(0, before.Ledger.EntryCount);
+
+            uint[] markTiles = LocalPlayerCheatScenario.ProposedTileMarkTileIds.ToArray();
+            string requestId = "c04-file-lost-mark-" + Guid.NewGuid().ToString("N");
+            BusinessPayload payload = CommandPayloadFactory.SubmitTileMark(
+                baseline.RoundId,
+                baseline.PrivateView.Decision.DecisionId,
+                baseline.PrivateView.Decision.ControlEpoch,
+                markTiles);
+            var command = new ProtocolCommand(
+                CommandKind.SubmitTileMark,
+                payload,
+                new RequestId(requestId),
+                session.Binding!.Scope.ScopeId,
+                new StateVersion(baseline.StateVersion),
+                new RoundId(baseline.RoundId),
+                decisionId: new DecisionId(baseline.PrivateView.Decision.DecisionId),
+                controlEpoch: new ControlEpoch(baseline.PrivateView.Decision.ControlEpoch));
+            CommandSubmission submission = await session.SubmitAsync(command, ct);
+            Assert.True(submission.Sent);
+            WireEnvelope sentCommand = Assert.Single(channel.Sent, frame =>
+                frame.BodyCase == WireEnvelope.BodyOneofCase.Command &&
+                frame.RequestId == requestId);
+            Assert.Equal(session.Binding.Scope.ScopeId.Value, sentCommand.Scope.ScopeId);
+
+            // No PumpOnce: the real LocalHost has committed the payment but the client
+            // has not consumed its receipt. The exact unresolved request is on disk.
+            Assert.Single(session.PendingCommands);
+            OutboxEntry persisted = Assert.Single(
+                await new FileOutboxStore(outboxPath).LoadUnresolvedAsync(ct));
+            Assert.Equal(requestId, persisted.RequestId.Value);
+            Assert.Equal(session.Binding.Scope.ScopeId, persisted.ScopeId);
+            Assert.Equal(CanonicalPayloadDigest.Compute(payload).ToHex(), persisted.DigestSha256);
+            LocalTableRecoveryFacts committed = await CaptureFactsAsync(harness, ct);
+            AssertPhysical(committed);
+            Assert.Equal(1, committed.Ledger.EntryCount);
+            Assert.Equal(119, committed.Ledger.Balances[0]);
+            Assert.Equal(before.Physical.TilesSha256, committed.Physical.TilesSha256);
+            AssertRequestApplied(committed, requestId, RawSha256(payload));
+
+            await session.CloseAsync("LOST_CHEAT_RECEIPT", CancellationToken.None);
+            await channel.CloseAsync(
+                new TableChannelCloseReason("LOST_CHEAT_RECEIPT", true), CancellationToken.None);
+            openedSessions.Remove(session);
+            openedChannels.Remove(channel);
+
+            ITableChannel recoveredInner = await LocalTableHost.CreateChannelAsync(harness.Options, ct);
+            var recoveredChannel = new CheatRecordingChannel(recoveredInner);
+            await recoveredChannel.OpenAsync(
+                new TableChannelConnectRequest(
+                    LocalTableHost.IssueTicket(harness.Options), "c04-file-lost-receipt", null), ct);
+            var recoveredSession = new TableSession(
+                recoveredChannel,
+                new FileOutboxStore(outboxPath));
+            openedChannels.Add(recoveredChannel);
+            openedSessions.Add(recoveredSession);
+            await recoveredSession.OpenAsync(
+                new TableSessionOpenRequest(
+                    LocalTableHost.IssueTicket(harness.Options), "c04-file-lost-receipt"), ct);
+            for (int i = 0; i < 50 && recoveredSession.State != TableConnectionState.Ready; i++)
+            {
+                await recoveredSession.PumpOnceAsync(ct);
+            }
+
+            Assert.Equal(TableConnectionState.Ready, recoveredSession.State);
+            Assert.Single(recoveredSession.PendingCommands);
+            TableReceiptResolvedEventArgs? resolution = null;
+            recoveredSession.ReceiptResolved += (_, args) =>
+            {
+                if (args.Command.RequestId == requestId) resolution = args;
+            };
+            await recoveredSession.ReconcilePendingAsync(ct);
+            for (int i = 0; i < 100 && recoveredSession.PendingCommands.Count > 0; i++)
+            {
+                await recoveredSession.PumpOnceAsync(ct);
+            }
+
+            Assert.Empty(recoveredSession.PendingCommands);
+            Assert.NotNull(resolution);
+            Assert.Equal(ReceiptStatus.Applied, resolution!.Resolution.ReceiptStatus);
+            Assert.True(resolution.Resolution.FromReceiptLookup);
+            Assert.Equal(requestId, resolution.Command.RequestId);
+            Assert.Equal(119, recoveredSession.PlayerSnapshot!.PrivateView.Cheat.CheatPoints);
+            Assert.Contains(
+                recoveredSession.PlayerSnapshot.PrivateView.Cheat.TileMark!.Groups,
+                group => group.Tiles.Select(tile => tile.TileId).SequenceEqual(markTiles));
+            Assert.DoesNotContain(recoveredChannel.Sent, frame =>
+                frame.BodyCase == WireEnvelope.BodyOneofCase.Command);
+            WireEnvelope lookup = Assert.Single(recoveredChannel.Sent, frame =>
+                frame.BodyCase == WireEnvelope.BodyOneofCase.ReceiptQuery &&
+                frame.ReceiptQuery.RequestId == requestId);
+            Assert.Equal(persisted.ScopeId.Value, lookup.ReceiptQuery.RequestScopeId);
+            Assert.Empty(await new FileOutboxStore(outboxPath).LoadUnresolvedAsync(ct));
+
+            LocalTableRecoveryFacts after = await CaptureFactsAsync(harness, ct);
+            AssertPhysical(after);
+            Assert.Equal(committed.StateVersion, after.StateVersion);
+            Assert.Equal(committed.EventSeq, after.EventSeq);
+            Assert.Equal(committed.Ledger.EntryCount, after.Ledger.EntryCount);
+            Assert.Equal(committed.Ledger.Balances, after.Ledger.Balances);
+            Assert.Equal(committed.Ledger.EntriesSha256, after.Ledger.EntriesSha256);
+            Assert.Equal(committed.Physical.TilesSha256, after.Physical.TilesSha256);
+
+            await recoveredSession.CloseAsync("RECONCILED", CancellationToken.None);
+            await recoveredChannel.CloseAsync(
+                new TableChannelCloseReason("RECONCILED", true), CancellationToken.None);
+            openedSessions.Remove(recoveredSession);
+            openedChannels.Remove(recoveredChannel);
+            }
+            finally
+            {
+                for (int i = openedSessions.Count - 1; i >= 0; i--)
+                {
+                    await openedSessions[i].CloseAsync("TEST_CLEANUP", CancellationToken.None);
+                }
+
+                for (int i = openedChannels.Count - 1; i >= 0; i--)
+                {
+                    await openedChannels[i].CloseAsync(
+                        new TableChannelCloseReason("TEST_CLEANUP", true), CancellationToken.None);
+                }
+            }
+        }
+
+        private sealed class CheatRecordingChannel : ITableChannel
+        {
+            private readonly ITableChannel _inner;
+            private readonly object _gate = new object();
+            private readonly List<WireEnvelope> _sent = new List<WireEnvelope>();
+
+            public CheatRecordingChannel(ITableChannel inner) => _inner = inner;
+
+            public bool IsOpen => _inner.IsOpen;
+
+            public IReadOnlyList<WireEnvelope> Sent
+            {
+                get
+                {
+                    lock (_gate) return _sent.ToArray();
+                }
+            }
+
+            public Task OpenAsync(TableChannelConnectRequest request, CancellationToken cancellationToken) =>
+                _inner.OpenAsync(request, cancellationToken);
+
+            public async Task SendAsync(ReadOnlyMemory<byte> wireEnvelope, CancellationToken cancellationToken)
+            {
+                WireEnvelope envelope = WireEnvelope.Parser.ParseFrom(wireEnvelope.ToArray());
+                lock (_gate) _sent.Add(envelope);
+                await _inner.SendAsync(wireEnvelope, cancellationToken);
+            }
+
+            public Task<ReadOnlyMemory<byte>> ReceiveAsync(CancellationToken cancellationToken) =>
+                _inner.ReceiveAsync(cancellationToken);
+
+            public Task CloseAsync(TableChannelCloseReason reason, CancellationToken cancellationToken) =>
+                _inner.CloseAsync(reason, cancellationToken);
         }
 
         [Fact]
