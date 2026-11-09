@@ -260,6 +260,8 @@ function Invoke-VisibilityRun(
 }
 
 $repo = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+$goldenMutationProbePriorValue = [Environment]::GetEnvironmentVariable('MAHJONG_GOLDEN_PROBE', 'Process')
+ try {
 & (Join-Path $PSScriptRoot 'enable-golden-mutation-probe.ps1') -RepoRoot $repo
 $runId = (Get-Date).ToUniversalTime().ToString("yyyyMMddTHHmmssZ") + "-" + $PID
 $evidenceDir = Join-Path $repo ("build/visibility-binding-probe/" + $runId)
@@ -1069,3 +1071,8 @@ if ($script:Failures.Count -gt 0) {
 
 Write-Step "PASS: probe completed"
 exit 0
+
+}
+finally {
+    [Environment]::SetEnvironmentVariable('MAHJONG_GOLDEN_PROBE', $goldenMutationProbePriorValue, 'Process')
+}

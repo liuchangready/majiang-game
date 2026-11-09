@@ -31,6 +31,8 @@ if (-not (Test-Path -LiteralPath $dotnet)) {
 }
 
 $Repo = (Resolve-Path -LiteralPath $Repo).Path
+$goldenMutationProbePriorValue = [Environment]::GetEnvironmentVariable('MAHJONG_GOLDEN_PROBE', 'Process')
+ try {
 & (Join-Path $PSScriptRoot 'enable-golden-mutation-probe.ps1') -RepoRoot $Repo
 $fixture = Join-Path $Repo 'tests/v5-golden/cheat-v1.json'
 $project = Join-Path $Repo 'dotnet/tests/Mahjong.Domain.Tests/Mahjong.Domain.Tests.csproj'
@@ -601,3 +603,8 @@ if (-not $MatrixOnly -and $readinessStatus -ne 'PASS') {
     exit 1
 }
 exit 0
+
+}
+finally {
+    [Environment]::SetEnvironmentVariable('MAHJONG_GOLDEN_PROBE', $goldenMutationProbePriorValue, 'Process')
+}

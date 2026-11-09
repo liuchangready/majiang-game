@@ -225,6 +225,8 @@ if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
     $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 }
 $RepoRoot = (Resolve-Path $RepoRoot).Path
+$goldenMutationProbePriorValue = [Environment]::GetEnvironmentVariable('MAHJONG_GOLDEN_PROBE', 'Process')
+ try {
 & (Join-Path $PSScriptRoot 'enable-golden-mutation-probe.ps1') -RepoRoot $RepoRoot
 $FixtureRelative = 'tests/v5-golden/cheat-v1.json'
 $FixturePath = Join-Path $RepoRoot ($FixtureRelative -replace '/', '\')
@@ -693,4 +695,9 @@ try {
     exit 0
 } finally {
     Restore-GoldenEnvironment $previousEnvironment
+}
+
+}
+finally {
+    [Environment]::SetEnvironmentVariable('MAHJONG_GOLDEN_PROBE', $goldenMutationProbePriorValue, 'Process')
 }

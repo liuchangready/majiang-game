@@ -142,6 +142,34 @@ function Format-Summary($Summary) {
         $Summary.Total, $Summary.Errors, $Summary.Failed, $Summary.Skipped, $Summary.NotRun)
 }
 
+function Resolve-OwnedMovementProbeTempDirectory {
+    param([string]$Candidate, [string]$TempBase)
+    $separators = [char[]]@([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+    $basePath = [System.IO.Path]::GetFullPath($TempBase).TrimEnd($separators)
+    $candidatePath = [System.IO.Path]::GetFullPath($Candidate)
+    $parentPath = [System.IO.Path]::GetDirectoryName($candidatePath).TrimEnd($separators)
+    $leaf = [System.IO.Path]::GetFileName($candidatePath)
+    if ($parentPath.Equals($basePath, [System.StringComparison]::OrdinalIgnoreCase) -and
+        $leaf -match '^movement-binding-probe-[0-9a-f]{32}$') {
+        return $candidatePath
+    }
+    return $null
+}
+
+function Remove-OwnedMovementProbeTempDirectory {
+    param([string]$Candidate, [string]$TempBase, [switch]$Keep)
+    $candidatePath = [System.IO.Path]::GetFullPath($Candidate)
+    if ($Keep) {
+        Write-Step ("kept TEMP copy: " + $candidatePath)
+        return
+    }
+    if (-not (Test-Path -LiteralPath $candidatePath)) { return }
+    $ownedTemp = Resolve-OwnedMovementProbeTempDirectory -Candidate $candidatePath -TempBase $TempBase
+    if (-not $ownedTemp) { throw "refusing to remove a temp path outside the exact movement probe GUID directory: $candidatePath" }
+    [System.IO.Directory]::Delete("\\?\" + $ownedTemp, $true)
+    if ([System.IO.Directory]::Exists($ownedTemp)) { throw "own temporary probe path remains after cleanup: $ownedTemp" }
+}
+
 function Assert-CountGate([string]$Expected, [int]$ExitCode, $Summary, [string]$Label) {
     if (Test-CountGate $Expected $ExitCode $Summary) {
         return $true
@@ -258,6 +286,8 @@ function Invoke-Mutation(
 }
 
 $repo = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+$goldenMutationProbePriorValue = [Environment]::GetEnvironmentVariable('MAHJONG_GOLDEN_PROBE', 'Process')
+ try {
 & (Join-Path $PSScriptRoot 'enable-golden-mutation-probe.ps1') -RepoRoot $repo
 $runId = (Get-Date).ToUniversalTime().ToString("yyyyMMddTHHmmssZ") + "-" + $PID
 $evidenceDir = Join-Path $repo ("build/movement-binding-probe/" + $runId)
@@ -850,16 +880,10 @@ try {
 }
 finally {
     $resolvedTemp = [System.IO.Path]::GetFullPath($tempRoot)
-    $resolvedBase = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
-    $leaf = Split-Path -Leaf $resolvedTemp
-    if (-not $KeepTemp -and
-        [System.IO.Path]::GetDirectoryName($resolvedTemp).Equals($resolvedBase, [System.StringComparison]::OrdinalIgnoreCase) -and
-        $leaf.StartsWith("movement-binding-probe-", [System.StringComparison]::Ordinal) -and
-        (Test-Path -LiteralPath $resolvedTemp)) {
-        [System.IO.Directory]::Delete("\\?\" + $resolvedTemp, $true)
-        if ([System.IO.Directory]::Exists($resolvedTemp)) { throw "own temporary probe path remains after cleanup: $resolvedTemp" }
-    }
-    elseif ($KeepTemp) {
-        Write-Step ("kept TEMP copy: " + $resolvedTemp)
-    }
+    Remove-OwnedMovementProbeTempDirectory -Candidate $resolvedTemp -TempBase ([System.IO.Path]::GetTempPath()) -Keep:$KeepTemp
+}
+
+}
+finally {
+    [Environment]::SetEnvironmentVariable('MAHJONG_GOLDEN_PROBE', $goldenMutationProbePriorValue, 'Process')
 }

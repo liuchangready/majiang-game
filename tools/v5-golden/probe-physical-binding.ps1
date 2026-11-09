@@ -382,6 +382,8 @@ if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
     $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 }
 $RepoRoot = (Resolve-Path -LiteralPath $RepoRoot).Path
+$goldenMutationProbePriorValue = [Environment]::GetEnvironmentVariable('MAHJONG_GOLDEN_PROBE', 'Process')
+ try {
 & (Join-Path $PSScriptRoot 'enable-golden-mutation-probe.ps1') -RepoRoot $RepoRoot
 
 $FixtureRelative = 'tests/v5-golden/physical-v1.json'
@@ -570,3 +572,8 @@ if (-not $fixturePreserved) {
 
 Write-Host 'PROBE-PASS: every positive control stayed green and every negative produced a real failed test.'
 exit 0
+
+}
+finally {
+    [Environment]::SetEnvironmentVariable('MAHJONG_GOLDEN_PROBE', $goldenMutationProbePriorValue, 'Process')
+}

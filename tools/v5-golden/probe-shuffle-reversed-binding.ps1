@@ -99,6 +99,8 @@ if (-not (Test-Path -LiteralPath $RepoRoot -PathType Container)) {
     Stop-Probe "RepoRoot does not exist: $RepoRoot"
 }
 $RepoRoot = (Resolve-Path -LiteralPath $RepoRoot).Path
+$goldenMutationProbePriorValue = [Environment]::GetEnvironmentVariable('MAHJONG_GOLDEN_PROBE', 'Process')
+ try {
 & (Join-Path $PSScriptRoot 'enable-golden-mutation-probe.ps1') -RepoRoot $RepoRoot
 
 if (-not (Test-Path -LiteralPath $Dotnet -PathType Leaf)) {
@@ -509,3 +511,8 @@ if ($violations.Count -gt 0) {
 }
 
 Write-Host "probe-shuffle-reversed-binding: PASS ($($rows.Count) scenarios, baseline Total=$baselineTotal, zero skips)"
+
+}
+finally {
+    [Environment]::SetEnvironmentVariable('MAHJONG_GOLDEN_PROBE', $goldenMutationProbePriorValue, 'Process')
+}
