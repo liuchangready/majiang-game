@@ -215,7 +215,7 @@ namespace Mahjong.Unity.App
             {
             ProtocolActionType rejectedAction = (ProtocolActionType)(uint)ActionForCase(_caseId);
             uint[] rejectedTiles = rejectedAction == ProtocolActionType.DeclareRiichi
-                ? new uint[] { 135 }
+                ? new uint[] { 37 }
                 : rejectedAction == ProtocolActionType.DeclareKan
                     ? new uint[] { 130, 131, 132, 133 }
                     : new uint[] { 130, 131 };
@@ -585,6 +585,7 @@ namespace Mahjong.Unity.App
                 RequestId = requestId, ScopeId = view.Identity.ScopeId,
                 BaselineScopeId = view.Identity.ScopeId, AfterScopeId = finalState.VisibleEventBatch.ScopeId,
                 PayloadBase64 = payloadBase64, PayloadSha256 = payloadHash,
+                PayloadActionType = actionPayload.RequireUInt32(CommandPayloadFields.ActionType, "actionType"),
                 BaselineRoomId = view.Identity.RoomId, BaselineSessionId = view.Identity.SessionId,
                 BaselineTableId = baselineTableId, BaselineRoundId = baselineRound, BaselineSeat = view.Identity.Seat,
                 BaselineBindingEpoch = view.Identity.BindingEpoch, BaselineConnectionEpoch = view.Identity.ConnectionEpoch,
@@ -1017,6 +1018,7 @@ namespace Mahjong.Unity.App
             public string CaseId = string.Empty, AccountId = string.Empty, RequestId = string.Empty, ScopeId = string.Empty;
             public string BaselineAccountId = string.Empty, AfterAccountId = string.Empty, BaselineScopeId = string.Empty, AfterScopeId = string.Empty;
             public string PayloadBase64 = string.Empty, PayloadSha256 = string.Empty;
+            public uint PayloadActionType;
             public string OptionId = string.Empty;
             public string BaselineRoomId = string.Empty, BaselineSessionId = string.Empty, BaselineTableId = string.Empty, BaselineRoundId = string.Empty;
             public int BaselineSeat = -1;

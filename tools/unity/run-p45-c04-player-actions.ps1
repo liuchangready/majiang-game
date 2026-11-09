@@ -484,7 +484,7 @@ function Test-C04CaseSummary {
     $payloadBytes = [Convert]::FromBase64String($Summary.canonicalPayloadBase64)
     $payload = ConvertFrom-C04CanonicalPayload $payloadBytes
     $expectedAction = @{ 'C04-G1-02'=9; 'C04-G2-01'=6; 'C04-G2-02'=5; 'C04-G2-03'=8; 'C04-G2-04'=7 }[$ExpectedCase]
-    $expectedPayloadTiles = @{ 'C04-G1-02'=''; 'C04-G2-01'='0,1,2'; 'C04-G2-02'='0,4,8'; 'C04-G2-03'='124'; 'C04-G2-04'='0,1,2,3' }[$ExpectedCase]
+$expectedPayloadTiles = @{ 'C04-G1-02'='12'; 'C04-G2-01'='0,1,2'; 'C04-G2-02'='0,4,8'; 'C04-G2-03'='124'; 'C04-G2-04'='0,1,2,3' }[$ExpectedCase]
     $expectedEventTiles = @{ 'C04-G1-02'='12'; 'C04-G2-01'='0,1,2'; 'C04-G2-02'='0,4,8'; 'C04-G2-03'=''; 'C04-G2-04'='0,1,2,3' }[$ExpectedCase]
     if ($null -eq $expectedAction -or [UInt32]$payload[4] -ne $expectedAction -or [UInt32]$Summary.payloadActionType -ne $expectedAction) { throw 'Canonical SubmitAction type does not match its fixed case.' }
     if ($payload[1] -cne $Summary.roundId -or $Summary.payloadRoundId -cne $payload[1]) { throw 'Canonical round id is not bound to the case summary.' }
@@ -582,7 +582,7 @@ function Test-C04ActionEvidence {
     if ([string]$parsed[1] -cne $Evidence.baselineRoundId -or [string]$parsed[2] -cne $Evidence.baselineDecisionId -or
         [UInt64]$parsed[3] -ne [UInt64]$Evidence.baselineControlEpoch) { throw 'Raw canonical action is not bound to its captured Player baseline.' }
     $actionByCase = @{ 'C04-G1-02'=9; 'C04-G2-01'=6; 'C04-G2-02'=5; 'C04-G2-03'=8; 'C04-G2-04'=7 }
-    $tilesByCase = @{ 'C04-G1-02'=''; 'C04-G2-01'='0,1,2'; 'C04-G2-02'='0,4,8'; 'C04-G2-03'='124'; 'C04-G2-04'='0,1,2,3' }
+    $tilesByCase = @{ 'C04-G1-02'='12'; 'C04-G2-01'='0,1,2'; 'C04-G2-02'='0,4,8'; 'C04-G2-03'='124'; 'C04-G2-04'='0,1,2,3' }
     $rawTiles = if ($parsed.ContainsKey(6)) { (@($parsed[6]) | Sort-Object) -join ',' } else { '' }
     if (-not $actionByCase.ContainsKey($ExpectedCase) -or [UInt32]$parsed[4] -ne $actionByCase[$ExpectedCase] -or $rawTiles -ne $tilesByCase[$ExpectedCase]) { throw 'Raw canonical action kind or physical selection differs from the frozen C04 case.' }
     $rawMeldType = if ($parsed.ContainsKey(7)) { [UInt32]$parsed[7] } else { 0 }
@@ -923,6 +923,42 @@ Start-Sleep -Seconds 25
         eventTiles='0,1,2'; meldTileIds='0,1,2'; handTileIdsAfter='20,24'; seatScoreBefore=25000; seatScoreAfter=25000; riichiSticksBefore=0; riichiSticksAfter=0; replacementDrawTileId=''
     }
     Test-C04CaseSummary $valid 'C04-G2-01' | Out-Null
+    $g1Stream = New-Object IO.MemoryStream
+    $g1Writer = New-Object IO.BinaryWriter($g1Stream)
+    $g1Writer.Write([Text.Encoding]::ASCII.GetBytes('MJC1')); $g1Writer.Write([UInt16]1); $g1Writer.Write([UInt16]10)
+    Write-Field $g1Writer 1 5 (Encode-CanonicalString 'fixture-round')
+    Write-Field $g1Writer 2 5 (Encode-CanonicalString 'fixture-decision')
+    Write-Field $g1Writer 3 3 ([BitConverter]::GetBytes([UInt64]0))
+    Write-Field $g1Writer 4 2 ([BitConverter]::GetBytes([UInt32]9))
+    $g1TileBytes = New-Object IO.MemoryStream; $g1TileWriter = New-Object IO.BinaryWriter($g1TileBytes)
+    $g1TileWriter.Write([UInt32]1); $g1TileWriter.Write([UInt32]12); $g1TileWriter.Flush()
+    Write-Field $g1Writer 6 7 $g1TileBytes.ToArray(); $g1Writer.Flush(); $g1Bytes = $g1Stream.ToArray()
+    $g1Hash = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($g1Bytes)).Replace('-','').ToLowerInvariant()
+    $g1 = [pscustomobject]@{}
+    foreach ($property in $valid.PSObject.Properties) { $g1 | Add-Member -NotePropertyName $property.Name -NotePropertyValue $property.Value -Force }
+    $g1.caseId='C04-G1-02'; $g1.canonicalPayloadBase64=[Convert]::ToBase64String($g1Bytes); $g1.payloadSha256=$g1Hash
+    $g1.payloadActionType=9; $g1.payloadTileIds='12'; $g1.eventType='TsumoWin'; $g1.eventTiles='12'; $g1.meldTileIds=''
+    Test-C04CaseSummary $g1 'C04-G1-02' | Out-Null
+    $g1BadStream = New-Object IO.MemoryStream
+    $g1BadWriter = New-Object IO.BinaryWriter($g1BadStream)
+    $g1BadWriter.Write([Text.Encoding]::ASCII.GetBytes('MJC1')); $g1BadWriter.Write([UInt16]1); $g1BadWriter.Write([UInt16]10)
+    Write-Field $g1BadWriter 1 5 (Encode-CanonicalString 'fixture-round')
+    Write-Field $g1BadWriter 2 5 (Encode-CanonicalString 'fixture-decision')
+    Write-Field $g1BadWriter 3 3 ([BitConverter]::GetBytes([UInt64]0))
+    Write-Field $g1BadWriter 4 2 ([BitConverter]::GetBytes([UInt32]9))
+    $g1BadTileBytes = New-Object IO.MemoryStream; $g1BadTileWriter = New-Object IO.BinaryWriter($g1BadTileBytes)
+    $g1BadTileWriter.Write([UInt32]1); $g1BadTileWriter.Write([UInt32]13); $g1BadTileWriter.Flush()
+    Write-Field $g1BadWriter 6 7 $g1BadTileBytes.ToArray(); $g1BadWriter.Flush(); $g1BadBytes = $g1BadStream.ToArray()
+    $g1Bad = [pscustomobject]@{}
+    foreach ($property in $g1.PSObject.Properties) { $g1Bad | Add-Member -NotePropertyName $property.Name -NotePropertyValue $property.Value -Force }
+    $g1Bad.canonicalPayloadBase64=[Convert]::ToBase64String($g1BadBytes)
+    $g1Bad.payloadSha256=[BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($g1BadBytes)).Replace('-','').ToLowerInvariant()
+    $g1Bad.payloadTileIds='13'
+    $g1WrongTileRejected = $false
+    try { Test-C04CaseSummary $g1Bad 'C04-G1-02' | Out-Null } catch { $g1WrongTileRejected = $true }
+    if (-not $g1WrongTileRejected) { throw 'G1 dealer Tsumo fixture accepted a different canonical winning tile.' }
+    $g1Stream.Dispose(); $g1Writer.Dispose(); $g1TileBytes.Dispose(); $g1TileWriter.Dispose()
+    $g1BadStream.Dispose(); $g1BadWriter.Dispose(); $g1BadTileBytes.Dispose(); $g1BadTileWriter.Dispose()
     $valid | Add-Member -NotePropertyName acceptanceSequence -NotePropertyValue 2 -Force
     $validEvidence = [pscustomobject]@{
         caseId='C04-G2-01'; requestId='fixture-request'; scopeId='fixture-scope'; payloadBase64=$valid.canonicalPayloadBase64; payloadSha256=$fixtureHash
@@ -1093,7 +1129,7 @@ Start-Sleep -Seconds 25
         throw 'Fixture evidence seal must contain stable owned outputs and exclude volatile process/download roots.'
     }
     [IO.File]::WriteAllText((Join-Path $RunRoot 'fixture-seal.json'), (($fixtureFiles | ConvertTo-Json -Depth 5) + "`n"), (New-Object Text.UTF8Encoding($false)))
-    Write-Host "C04_TOOL_FIXTURES_PASS positive=4 negative=$($negatives.Count + $evidenceNegatives.Count + $markerNegatives.Count + 35) protobuf=PASS malformed=2 timeoutTree=PASS mutexTimeoutSeal=PASS mutexCancellationSeal=PASS outputDrain=PASS outputFiles=$($fixtureFiles.Count)"
+    Write-Host "C04_TOOL_FIXTURES_PASS positive=5 negative=$($negatives.Count + $evidenceNegatives.Count + $markerNegatives.Count + 36) protobuf=PASS malformed=2 timeoutTree=PASS mutexTimeoutSeal=PASS mutexCancellationSeal=PASS outputDrain=PASS outputFiles=$($fixtureFiles.Count)"
     exit 0
 }
 

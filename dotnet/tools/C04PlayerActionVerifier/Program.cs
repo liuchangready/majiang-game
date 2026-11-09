@@ -74,6 +74,29 @@ internal static class Program
         bool wrongDigestRejected = false;
         try { ValidateCanonicalPayload(payload.CopyBytes(), wrongDigest); } catch (InvalidDataException) { wrongDigestRejected = true; }
         if (!wrongDigestRejected) throw new InvalidDataException("Canonical payload digest verifier accepted the unprefixed raw SHA-256.");
+        BusinessPayload tsumo = new CanonicalPayloadWriter((ushort)CommandKind.SubmitAction)
+            .WriteString(1, "c04-fixture-round")
+            .WriteString(2, "c04-fixture-decision")
+            .WriteUInt64(3, 0)
+            .WriteUInt32(4, (uint)ProtocolActionType.DeclareTsumo)
+            .WriteRepeatedUInt32(6, new uint[] { 12 })
+            .Build();
+        var tsumoParsed = CanonicalPayloadParser.Parse(tsumo.CopyBytes());
+        uint[] tsumoTiles = tsumoParsed.RequireRepeatedUInt32(CommandPayloadFields.TileIds, "tileIds").ToArray();
+        if (!tsumoTiles.SequenceEqual(ExpectedActionTiles("C04-G1-02")))
+            throw new InvalidDataException("Dealer Tsumo fixture does not preserve its exact winning physical entity.");
+        BusinessPayload wrongTsumo = new CanonicalPayloadWriter((ushort)CommandKind.SubmitAction)
+            .WriteString(1, "c04-fixture-round")
+            .WriteString(2, "c04-fixture-decision")
+            .WriteUInt64(3, 0)
+            .WriteUInt32(4, (uint)ProtocolActionType.DeclareTsumo)
+            .WriteRepeatedUInt32(6, new uint[] { 13 })
+            .Build();
+        var wrongTsumoParsed = CanonicalPayloadParser.Parse(wrongTsumo.CopyBytes());
+        bool wrongTsumoTileRejected = !wrongTsumoParsed.RequireRepeatedUInt32(CommandPayloadFields.TileIds, "tileIds")
+            .OrderBy(value => value).SequenceEqual(ExpectedActionTiles("C04-G1-02").OrderBy(value => value));
+        if (!wrongTsumoTileRejected)
+            throw new InvalidDataException("Dealer Tsumo fixture accepted a different winning physical entity.");
         if (RequiresRejectedActionEvidence("C04-G1-02") ||
             !RequiresRejectedActionEvidence("C04-G2-01") || !RequiresRejectedActionEvidence("C04-G2-02") ||
             !RequiresRejectedActionEvidence("C04-G2-03") || !RequiresRejectedActionEvidence("C04-G2-04") ||
@@ -87,6 +110,16 @@ internal static class Program
     {
         "C04-G2-01" or "C04-G2-02" or "C04-G2-03" or "C04-G2-04" => true,
         _ => false
+    };
+
+    private static uint[] ExpectedActionTiles(string caseId) => caseId switch
+    {
+        "C04-G1-02" => new uint[] { 12 },
+        "C04-G2-01" => new uint[] { 0, 1, 2 },
+        "C04-G2-02" => new uint[] { 0, 4, 8 },
+        "C04-G2-03" => new uint[] { 124 },
+        "C04-G2-04" => new uint[] { 0, 1, 2, 3 },
+        _ => throw new InvalidDataException("Unknown fixed C04 action case.")
     };
 
     private static int MakeMutationFixtures(string sourcePath, string outputDirectory)
@@ -258,15 +291,7 @@ internal static class Program
         };
         if (payload.RequireUInt32(CommandPayloadFields.ActionType, "actionType") != expectedAction)
             throw new InvalidDataException("Canonical action kind differs from the fixed C04 case.");
-        uint[] expectedTiles = RequiredString(evidence, "CaseId") switch
-        {
-            "C04-G1-02" => Array.Empty<uint>(),
-            "C04-G2-01" => new uint[] { 0, 1, 2 },
-            "C04-G2-02" => new uint[] { 0, 4, 8 },
-            "C04-G2-03" => new uint[] { 124 },
-            "C04-G2-04" => new uint[] { 0, 1, 2, 3 },
-            _ => throw new InvalidDataException("Unknown fixed C04 action case.")
-        };
+        uint[] expectedTiles = ExpectedActionTiles(RequiredString(evidence, "CaseId"));
         uint[] actualTiles = payload.HasField(CommandPayloadFields.TileIds)
             ? payload.RequireRepeatedUInt32(CommandPayloadFields.TileIds, "tileIds").ToArray()
             : Array.Empty<uint>();

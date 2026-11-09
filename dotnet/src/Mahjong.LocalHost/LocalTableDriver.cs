@@ -43,6 +43,9 @@ namespace Mahjong.LocalHost
         /// <summary>Test-only gate after an AI decision is chosen and before it is submitted.</summary>
         internal Func<int, Mahjong.Ai.AiObservation, Task>? BeforeAiSubmitForTest { get; set; }
 
+        /// <summary>Opt-in evidence hook for a real AI choice, before its normal authority submission.</summary>
+        internal Action<int, Mahjong.Ai.AiObservation, LegalActionOption>? AiDecisionChosenForTest { get; set; }
+
         public LocalTableDriver(
             TableActor actor,
             LocalTableHostOptions options,
@@ -546,6 +549,8 @@ namespace Mahjong.LocalHost
             {
                 return;
             }
+
+            AiDecisionChosenForTest?.Invoke(seat, observation, chosen);
 
             if (BeforeAiSubmitForTest != null)
             {
