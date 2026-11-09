@@ -16,6 +16,7 @@
 #>
 param(
     [string]$Repo = 'D:/majiang-wt/n3-cheat-binding',
+    [string]$DotnetPath = 'D:/game_dev_tools/dotnet/dotnet.exe',
     [string]$EvidenceRoot,
     [switch]$SkipBuild,
     [switch]$MatrixOnly
@@ -24,12 +25,15 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$dotnet = 'D:/Unity/dotnet/dotnet.exe'
+$dotnet = $DotnetPath
 if (-not (Test-Path -LiteralPath $dotnet)) {
     throw "dotnet CLI not found: $dotnet"
 }
 
 $Repo = (Resolve-Path -LiteralPath $Repo).Path
+$goldenMutationProbePriorValue = [Environment]::GetEnvironmentVariable('MAHJONG_GOLDEN_PROBE', 'Process')
+ try {
+& (Join-Path $PSScriptRoot 'enable-golden-mutation-probe.ps1') -RepoRoot $Repo
 $fixture = Join-Path $Repo 'tests/v5-golden/cheat-v1.json'
 $project = Join-Path $Repo 'dotnet/tests/Mahjong.Domain.Tests/Mahjong.Domain.Tests.csproj'
 $dll = Join-Path $Repo 'dotnet/tests/Mahjong.Domain.Tests/bin/Release/net8.0/Mahjong.Domain.Tests.dll'
@@ -439,6 +443,7 @@ namespace Mahjong.Domain.Tests
     [IO.File]::WriteAllText((Join-Path $dir 'Readiness.cs'), $readinessSource, (New-Object Text.UTF8Encoding($false)))
 
     $testSource = Join-Path $Repo 'dotnet/tests/Mahjong.Domain.Tests'
+    $sharedProvenanceSource = Join-Path $Repo 'dotnet/tests/Shared/FrozenGoldenProvenance.cs'
     $projectXml = @"
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
@@ -459,6 +464,7 @@ namespace Mahjong.Domain.Tests
   </ItemGroup>
   <ItemGroup>
     <Compile Include="$testSource/*.cs" />
+    <Compile Include="$sharedProvenanceSource" />
     <Compile Include="Readiness.cs" />
   </ItemGroup>
 </Project>
@@ -597,3 +603,8 @@ if (-not $MatrixOnly -and $readinessStatus -ne 'PASS') {
     exit 1
 }
 exit 0
+
+}
+finally {
+    [Environment]::SetEnvironmentVariable('MAHJONG_GOLDEN_PROBE', $goldenMutationProbePriorValue, 'Process')
+}

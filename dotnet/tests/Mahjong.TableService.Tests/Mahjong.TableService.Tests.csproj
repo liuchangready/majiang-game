@@ -36,6 +36,7 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <ProjectReference Include="..\..\src\Mahjong.TableService\Mahjong.TableService.csproj" />
     <ProjectReference Include="..\..\src\Mahjong.Contracts\Mahjong.Contracts.csproj" />
+    <ProjectReference Include="..\..\src\Mahjong.LocalHost\Mahjong.LocalHost.csproj" />
   </ItemGroup>
 
 </Project>

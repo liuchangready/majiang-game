@@ -6,6 +6,7 @@ using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Mahjong.Domain;
+using Mahjong.TestSupport;
 using Xunit;
 
 namespace Mahjong.Domain.Tests
@@ -23,6 +24,7 @@ namespace Mahjong.Domain.Tests
         private static JsonDocument LoadGolden()
         {
             string path = FindGoldenPath();
+            FrozenGoldenProvenance.AssertFixture(RelativePath, path);
             return JsonDocument.Parse(File.ReadAllText(path));
         }
 
@@ -67,8 +69,8 @@ namespace Mahjong.Domain.Tests
 
             throw new Xunit.Sdk.XunitException(
                 "Missing real V4 golden file " + RelativePath + " from " + AppContext.BaseDirectory +
-                " or " + Directory.GetCurrentDirectory() + ". Regenerate with: " +
-                "$env:V5_ROUND_GOLDEN_EXPORT='1'; .\\gradlew.bat :engine:test --tests \"com.majiang.rules.V5RoundGoldenExportTest\" --console=plain");
+                " or " + Directory.GetCurrentDirectory() +
+                ". The frozen fixture is part of the repository; consult its historical provenance manifest rather than regenerating it.");
         }
 
         [Fact]

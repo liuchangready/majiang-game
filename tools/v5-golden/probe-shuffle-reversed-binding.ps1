@@ -99,6 +99,9 @@ if (-not (Test-Path -LiteralPath $RepoRoot -PathType Container)) {
     Stop-Probe "RepoRoot does not exist: $RepoRoot"
 }
 $RepoRoot = (Resolve-Path -LiteralPath $RepoRoot).Path
+$goldenMutationProbePriorValue = [Environment]::GetEnvironmentVariable('MAHJONG_GOLDEN_PROBE', 'Process')
+ try {
+& (Join-Path $PSScriptRoot 'enable-golden-mutation-probe.ps1') -RepoRoot $RepoRoot
 
 if (-not (Test-Path -LiteralPath $Dotnet -PathType Leaf)) {
     Stop-Probe "dotnet executable does not exist: $Dotnet"
@@ -112,7 +115,7 @@ $testDll = Join-Path $RepoRoot 'dotnet/tests/Mahjong.Domain.Tests/bin/Release/ne
 $domainDll = Join-Path $RepoRoot 'dotnet/tests/Mahjong.Domain.Tests/bin/Release/net8.0/Mahjong.Domain.dll'
 $testSource = Join-Path $RepoRoot 'dotnet/tests/Mahjong.Domain.Tests/ShuffleReversedGoldenTests.cs'
 $productionSource = Join-Path $RepoRoot 'dotnet/src/Mahjong.Domain/Stacking/ShuffleWallSynthesizer.cs'
-$exporterSource = Join-Path $RepoRoot 'engine/src/test/kotlin/com/majiang/v3/V5ShuffleReversedGoldenExporterTest.kt'
+$sourceManifestPath = Join-Path $RepoRoot 'tests/v5-golden/source-provenance-v1.json'
 
 foreach ($required in @(
         $fixturePath,
@@ -122,7 +125,7 @@ foreach ($required in @(
         $domainDll,
         $testSource,
         $productionSource,
-        $exporterSource
+        $sourceManifestPath
     )) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
         Stop-Probe "required file missing: $required (build Domain.Tests Release and export the companion first)"
@@ -185,7 +188,13 @@ $oldFixtureSha = Get-Sha256 $oldFixturePath
 $testDllSha = Get-Sha256 $testDll
 $domainDllSha = Get-Sha256 $domainDll
 $testSourceSha = Get-Sha256 $testSource
-$exporterSourceSha = Get-Sha256 $exporterSource
+$sourceManifest = Get-Content -LiteralPath $sourceManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$exporterPin = @($sourceManifest.sources | Where-Object {
+    $_.fixture -ceq 'tests/v5-golden/shuffle-reversed-v1.json' -and
+    $_.path -ceq 'engine/src/test/kotlin/com/majiang/v3/V5ShuffleReversedGoldenExporterTest.kt'
+})
+if ($exporterPin.Count -ne 1) { Stop-Probe 'frozen historical exporter identity missing from source manifest' }
+$exporterSourceSha = $exporterPin[0].sha256LfNormalized
 $scriptSha = Get-Sha256 $PSCommandPath
 
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('shuffle-reversed-binding-probe-' + [guid]::NewGuid().ToString('N'))
@@ -437,7 +446,14 @@ try {
 finally {
     [Environment]::SetEnvironmentVariable('MAHJONG_REPO_ROOT', $previousRepoRoot, 'Process')
     if (Test-Path -LiteralPath $tempRoot) {
-        Remove-Item -LiteralPath $tempRoot -Recurse -Force
+        $resolvedTemp = [IO.Path]::GetFullPath($tempRoot)
+        $expectedParent = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+        $leaf = [IO.Path]::GetFileName($resolvedTemp)
+        if (-not $resolvedTemp.StartsWith($expectedParent, [StringComparison]::OrdinalIgnoreCase) -or
+            $leaf -notmatch '^shuffle-reversed-binding-probe-[0-9a-f]{32}$') {
+            Stop-Probe "refusing to remove unexpected temp path: $resolvedTemp"
+        }
+        [IO.Directory]::Delete("\\?\" + $resolvedTemp, $true)
     }
 }
 
@@ -495,3 +511,8 @@ if ($violations.Count -gt 0) {
 }
 
 Write-Host "probe-shuffle-reversed-binding: PASS ($($rows.Count) scenarios, baseline Total=$baselineTotal, zero skips)"
+
+}
+finally {
+    [Environment]::SetEnvironmentVariable('MAHJONG_GOLDEN_PROBE', $goldenMutationProbePriorValue, 'Process')
+}

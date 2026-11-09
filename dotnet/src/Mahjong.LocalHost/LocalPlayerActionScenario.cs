@@ -21,6 +21,7 @@ namespace Mahjong.LocalHost
         public const string Chi = "chi";
         public const string Riichi = "riichi";
         public const string ClosedKan = "closed-kan";
+        public const string DealerTsumo = "dealer-tsumo";
 
         public static LocalTableHostOptions ConfigureHostOptions(LocalTableHostOptions options, string scenarioId)
         {
@@ -36,6 +37,7 @@ namespace Mahjong.LocalHost
             if (string.Equals(scenarioId, Chi, StringComparison.Ordinal)) return BuildCallWindow(Chi);
             if (string.Equals(scenarioId, Riichi, StringComparison.Ordinal)) return BuildRiichiTurn();
             if (string.Equals(scenarioId, ClosedKan, StringComparison.Ordinal)) return BuildClosedKanTurn();
+            if (string.Equals(scenarioId, DealerTsumo, StringComparison.Ordinal)) return BuildDealerTsumoTurn();
             throw new ArgumentOutOfRangeException(nameof(scenarioId), scenarioId, "Unknown fixed C04 Player action scenario.");
         }
 
@@ -125,7 +127,8 @@ namespace Mahjong.LocalHost
             ulong commandVersion,
             ulong actionEventSeq,
             string actionEventType,
-            int actionSeat)
+            int actionSeat,
+            string? canonicalPayloadSha256 = null)
         {
             if (authoritySaveBytes == null) throw new ArgumentNullException(nameof(authoritySaveBytes));
             if (string.IsNullOrWhiteSpace(requestId)) throw new ArgumentException("Request id is required.", nameof(requestId));
@@ -163,7 +166,51 @@ namespace Mahjong.LocalHost
                 if (eventMatches) matches.Add(operation);
             }
 
-            if (matches.Count != 1)
+            byte[]? acceptedStatePayload = null;
+            ulong acceptedFingerprint = 0;
+            if (matches.Count == 1)
+            {
+                LocalDurableOperation acceptedOperation = matches[0];
+                if (acceptedOperation.ExpectedStateVersion != baselineVersion ||
+                    acceptedOperation.NextStatePayload == null || acceptedOperation.NextStatePayload.Length == 0 ||
+                    acceptedOperation.NextStateFingerprint == 0)
+                    throw new InvalidOperationException("The exact accepted action operation has no valid post-action authority state.");
+                acceptedStatePayload = acceptedOperation.NextStatePayload;
+                acceptedFingerprint = acceptedOperation.NextStateFingerprint;
+            }
+            else if (matches.Count == 0 && string.Equals(actionEventType, "TsumoWin", StringComparison.Ordinal))
+            {
+                // A terminal action may atomically checkpoint and compact its operation journal.
+                // In that case, bind the event to the retained durable receipt and the exact
+                // terminal checkpoint at the same command version instead of requiring a journal
+                // record that the production store intentionally removed.
+                TableDurableReceipt[] receipts = save.Receipts.Values.Where(value =>
+                    string.Equals(value.RequestId.Value, requestId, StringComparison.Ordinal) &&
+                    string.Equals(value.ScopeId.Value, scopeId, StringComparison.Ordinal) &&
+                    value.Receipt.Status == ReceiptStatus.Applied &&
+                    value.Receipt.EvaluatedStateVersion.Value == baselineVersion &&
+                    value.Receipt.CommandVersion?.Value == commandVersion &&
+                    value.Receipt.EventSeq.HasValue && value.Receipt.EventSeq.Value.Value >= actionEventSeq).ToArray();
+                if (receipts.Length != 1 || save.CurrentState.StateVersion.Value != commandVersion ||
+                    save.CurrentState.LastEventSeq.Value < actionEventSeq ||
+                    save.TerminalState != LocalSaveTerminalState.RoundFinished)
+                    throw new InvalidOperationException("The terminal checkpoint has no unique retained applied receipt for the confirmed Tsumo action.");
+
+                TableDurableReceipt receipt = receipts[0];
+                string receiptKey = receipt.AccountId + "\u001f" + receipt.ScopeId.Value + "\u001f" + receipt.RequestId.Value;
+                if (string.IsNullOrWhiteSpace(canonicalPayloadSha256) ||
+                    !save.ReceiptDigests.TryGetValue(receiptKey, out string? persistedDigest) ||
+                    !string.Equals(persistedDigest, canonicalPayloadSha256, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("The terminal checkpoint receipt has no matching persisted canonical request digest.");
+
+                TableCheckpoint checkpoint = LocalSaveCodec.DecodeCheckpoint(save.BaseCheckpointBlob);
+                if (checkpoint.StateVersion.Value != commandVersion || checkpoint.LastEventSeq.Value < actionEventSeq ||
+                    checkpoint.StateFingerprint == 0 || checkpoint.StatePayload.Length == 0)
+                    throw new InvalidOperationException("The terminal checkpoint does not match the accepted Tsumo command version/event.");
+                acceptedStatePayload = checkpoint.StatePayload;
+                acceptedFingerprint = checkpoint.StateFingerprint;
+            }
+            else
             {
                 LocalDurableOperation? candidate = save.Operations.FirstOrDefault(operation =>
                     operation.Kind == LocalOperationKind.Commit && operation.Receipt != null && operation.Journal != null &&
@@ -177,19 +224,18 @@ namespace Mahjong.LocalHost
                 throw new InvalidOperationException("The persisted envelope does not contain exactly one durable commit bound to the confirmed Player action (" + diagnostic + ").");
             }
 
-            LocalDurableOperation accepted = matches[0];
-            if (accepted.ExpectedStateVersion != baselineVersion || accepted.NextStatePayload == null ||
-                accepted.NextStatePayload.Length == 0 || accepted.NextStateFingerprint == 0)
-                throw new InvalidOperationException("The exact accepted action operation has no valid post-action authority state.");
-
-            RoundRecoveryState recovered = RoundRecoveryCodec.Decode(accepted.NextStatePayload);
+            RoundRecoveryState recovered = RoundRecoveryCodec.Decode(acceptedStatePayload!);
             if (recovered.Version != checked((long)commandVersion) || recovered.Spec.RoundId != roundId ||
-                recovered.SourceFingerprint != accepted.NextStateFingerprint)
+                recovered.SourceFingerprint != acceptedFingerprint)
                 throw new InvalidOperationException("The durable action state payload differs from its committed version, round, or fingerprint.");
 
             RoundStateMachine round = RoundRecovery.Restore(recovered);
             if (!string.Equals(round.RoundId, roundId, StringComparison.Ordinal))
                 throw new InvalidOperationException("The restored durable action state belongs to another round.");
+            if (string.Equals(actionEventType, "TsumoWin", StringComparison.Ordinal) &&
+                (!round.IsFinished || round.Result?.Outcome.Kind != RoundOutcomeKind.Tsumo ||
+                 round.Result.Outcome.WinnerSeat != actionSeat))
+                throw new InvalidOperationException("The terminal authority checkpoint does not contain the confirmed Tsumo winner.");
             ConservationReport physical = TilePositionMap.Validate(round.Tiles);
             IReadOnlyList<TilePlacement> placements = round.Tiles.AsPlacements();
             if (!physical.IsValid || physical.AssignedCount != TileId.Count || placements.Count != TileId.Count)
@@ -285,6 +331,19 @@ namespace Mahjong.LocalHost
             for (int i = 0; i < hand.Length; i++) fixedOrder.Add(slots[i], hand[i]);
             fixedOrder.Add(122, 73); // dead-wall replacement draw physical entity
             return BuildDealt("c04-closed-kan-seed-4404", fixedOrder);
+        }
+
+        private static RoundStateMachine BuildDealerTsumoTurn()
+        {
+            // Seat 0's thirteen tiles plus drawn 4m complete a Haku triplet,
+            // 23m/4m, 345p, 678s and 55m. This fixture is used only by explicit
+            // C04 validation and still enters LocalHost through its real host API.
+            int[] hand = { 124, 125, 126, 4, 8, 48, 52, 56, 92, 96, 100, 16, 17 };
+            int[] wallSlots = { 0, 1, 2, 3, 16, 17, 18, 19, 32, 33, 34, 35, 48 };
+            var fixedOrder = new Dictionary<int, int>();
+            for (int i = 0; i < hand.Length; i++) fixedOrder.Add(wallSlots[i], hand[i]);
+            fixedOrder.Add(52, 12);
+            return BuildDealt("c04-local-dealer-tsumo-seed-4405", fixedOrder);
         }
 
         private static RoundStateMachine BuildDealt(string roundId, IDictionary<int, int> fixedOrder)

@@ -2065,6 +2065,25 @@ else {
 }
 try { Set-Content -Path $companionMeta -Value ($companionMetaLines -join [Environment]::NewLine) -Encoding UTF8 } catch { Write-Warning "[verify-v5] could not write companion meta ${companionMeta}: $($_.Exception.Message)" }
 
+# --- 4c. frozen historical source provenance (no Git history required) --------
+$provenanceVerifier = Join-Path $root 'tools\verify-v5-source-provenance.ps1'
+$provenanceLog = Join-Path $LogDir 'source-provenance.log'
+$provenanceMeta = Join-Path $LogDir 'source-provenance.meta.txt'
+$provenanceRun = Invoke-CompanionVerifier -VerifierPath $provenanceVerifier -FixtureDir $root `
+    -LogPath $provenanceLog -TimeoutSeconds $CompanionTimeoutSeconds
+$provenanceText = ''
+try { if (Test-Path -LiteralPath $provenanceLog) { $provenanceText = Get-Content -LiteralPath $provenanceLog -Raw -Encoding UTF8 } } catch { }
+$provenanceResult = if ($provenanceRun.TimedOut -or $provenanceRun.Threw -or $null -eq $provenanceRun.ExitCode) { 'FAIL' }
+    elseif ($provenanceRun.ExitCode -eq 2) { 'BLOCKED' }
+    elseif ($provenanceRun.ExitCode -ne 0) { 'FAIL' }
+    else { 'PASS' }
+$provenanceHash = '(unavailable)'
+if (Test-Path -LiteralPath $provenanceLog) { try { $provenanceHash = (Get-FileHash -LiteralPath $provenanceLog -Algorithm SHA256).Hash } catch { } }
+if ($provenanceResult -eq 'FAIL') { $anyFail = $true }
+try {
+    @("stage            : historical-source-provenance", "verifier         : $provenanceVerifier", "command          : $($provenanceRun.Command)", "native exit      : $(if ($null -ne $provenanceRun.ExitCode) { $provenanceRun.ExitCode } else { 'UNKNOWN' })", "result           : $provenanceResult", "raw log          : $provenanceLog", "raw log sha256   : $provenanceHash", "detail           : $($provenanceText.Trim())") | Set-Content -LiteralPath $provenanceMeta -Encoding UTF8
+} catch { Write-Warning "[verify-v5] could not write provenance meta ${provenanceMeta}: $($_.Exception.Message)" }
+
 # --- 5. summary ----------------------------------------------------------------
 $summaryPath = Join-Path $LogDir 'summary.log'
 $lines = New-Object System.Collections.Generic.List[string]
@@ -2079,6 +2098,7 @@ $lines.Add("")
 $lines.Add("solution build : $(if ($buildOk) { "PASS (exit $(Format-ExitCode $slnExit))" } else { "FAIL (exit $(Format-ExitCode $slnExit))" })  log: $slnBuildLog")
 $lines.Add("plugin copy    : $pluginResult  ($($pluginDetail))$(if ($pluginLog) { "  log: $pluginLog" })")
 $lines.Add("companion gate : $companionResult  ($companionDetail)  log: $companionLog  meta: $companionMeta")
+$lines.Add("source provenance: $provenanceResult  (historical source pins; no history required)  log: $provenanceLog  meta: $provenanceMeta")
 $lines.Add("    command    : $($companionRun.Command)")
 $lines.Add("    raw exit   : $(if ($null -ne $companionRun.ExitCode) { $companionRun.ExitCode } else { 'EXCEPTION (never treated as 0)' })  raw log sha256: $companionLogHash")
 if ($companionCert.Entries.Count -gt 0) {
@@ -2133,7 +2153,7 @@ foreach ($project in $ordered) {
     }
 }
 $lines.Add("")
-$overall = $(if ($anyFail -or $companionResult -eq 'FAIL') { 'FAIL' } elseif ($companionResult -eq 'BLOCKED') { 'BLOCKED' } else { 'PASS' })
+$overall = $(if ($anyFail -or $companionResult -eq 'FAIL' -or $provenanceResult -eq 'FAIL') { 'FAIL' } elseif ($companionResult -eq 'BLOCKED' -or $provenanceResult -eq 'BLOCKED') { 'BLOCKED' } else { 'PASS' })
 $passedCount = @($ordered | Where-Object { $_.Result -eq 'PASS' }).Count
 $failedCount = @($ordered | Where-Object { $_.Result -eq 'FAIL' }).Count
 $blockedCount = @($ordered | Where-Object { $_.Result -eq 'BLOCKED' }).Count

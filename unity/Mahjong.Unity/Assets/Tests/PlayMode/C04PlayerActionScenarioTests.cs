@@ -18,6 +18,7 @@ namespace Mahjong.Unity.Tests.PlayMode
     /// <summary>Real LocalHost/Client action-path regression; never a scripted channel.</summary>
     public sealed class C04PlayerActionScenarioTests
     {
+        [UnityTest] public IEnumerator DealerTsumo_FixedPlayerActionAndTerminalWinAreApplied() => RunCase("C04-G1-02", "dealer-tsumo", PlayerActionKind.DeclareTsumo, ProtocolEventType.TsumoWin);
         [UnityTest] public IEnumerator Pon_FixedPlayerActionIsAppliedAndVisible() => RunCase("C04-G2-01", "pon", PlayerActionKind.DeclarePon, ProtocolEventType.PonDeclared);
         [UnityTest] public IEnumerator Chi_FixedPlayerActionIsAppliedAndVisible() => RunCase("C04-G2-02", "chi", PlayerActionKind.DeclareChi, ProtocolEventType.ChiDeclared);
         [UnityTest] public IEnumerator Riichi_FixedPlayerActionIsAppliedAndVisible() => RunCase("C04-G2-03", "riichi", PlayerActionKind.DeclareRiichi, ProtocolEventType.RiichiDeclared);
@@ -126,7 +127,7 @@ namespace Mahjong.Unity.Tests.PlayMode
                     Assert.AreEqual(25_000L, baselineSnapshot.PublicView.Board.Scores[0].Score);
                     Assert.AreEqual(24_000L, coordinator.Current.PlayerSnapshot.PublicView.Board.Scores[0].Score);
                 }
-                else
+                else if (action == PlayerActionKind.DeclarePon || action == PlayerActionKind.DeclareChi)
                 {
                     Assert.AreEqual(action == PlayerActionKind.DeclarePon ? PlayerMeldKind.Pon : PlayerMeldKind.Chi,
                         mapper.Project(coordinator.Current).OwnMelds[0].Kind);
@@ -135,6 +136,12 @@ namespace Mahjong.Unity.Tests.PlayMode
                     CollectionAssert.AreEquivalent(expectedTiles, after.OwnMelds[0].TileIds);
                     Assert.IsFalse(ContainsAny(after.Own!.ClosedTiles, expectedTiles),
                         "Claimed entities must leave the closed hand in the authoritative post-state.");
+                }
+                else if (action == PlayerActionKind.DeclareTsumo)
+                {
+                    CollectionAssert.AreEquivalent(new uint[] { 12 }, confirmed.Event.Payload.TileIds);
+                    Assert.AreEqual(0, confirmed.Event.Seat);
+                    Assert.AreEqual(view.Identity.RoundId, confirmed.Batch.RoundId);
                 }
             }
             finally

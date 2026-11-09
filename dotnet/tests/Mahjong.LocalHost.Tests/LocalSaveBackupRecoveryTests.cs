@@ -435,15 +435,8 @@ namespace Mahjong.LocalHost.Tests
             P41Harness harness,
             CancellationToken cancellationToken)
         {
-            string root = P41Harness.FindRepositoryRoot();
-            string workerDll = Path.Combine(
-                root,
-                "dotnet",
-                "tests",
+            string workerDll = P41Harness.FindBuiltProjectAssembly(
                 "Mahjong.LocalHost.CrashWorker",
-                "bin",
-                "Release",
-                "net8.0",
                 "Mahjong.LocalHost.CrashWorker.dll");
             Assert.True(File.Exists(workerDll), "CrashWorker was not built: " + workerDll);
             string marker = Path.Combine(harness.Root, "cold-backup-recovery-read.txt");

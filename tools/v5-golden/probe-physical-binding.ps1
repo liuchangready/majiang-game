@@ -3,9 +3,8 @@
     Independent external-copy probe for the N3 physical-v1 golden binding.
 
 .DESCRIPTION
-    Copies the real V4-exported tests/v5-golden/physical-v1.json into a brand-new
-    GUID TEMP directory (plus the pinned V4 sources/exporter needed by the golden
-    test), applies exactly one mutation, and runs the compiled
+    Copies the frozen tests/v5-golden/physical-v1.json and its source-pin manifest into
+    a brand-new GUID TEMP directory, applies exactly one mutation, and runs the compiled
     Mahjong.Domain.Tests.PhysicalGoldenTests class through MAHJONG_REPO_ROOT.
 
     Policy (D-R1-02):
@@ -163,6 +162,7 @@ function New-ProbeRoot {
     Copy-Item -LiteralPath $AgentsPath -Destination $root
     New-Item -ItemType Directory -Path (Join-Path $root 'dotnet') | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $root 'tests/v5-golden') -Force | Out-Null
+    Copy-Item -LiteralPath (Join-Path $Repo 'tests/v5-golden/source-provenance-v1.json') -Destination (Join-Path $root 'tests/v5-golden/source-provenance-v1.json')
     foreach ($relative in $SourceFiles) {
         $destination = Join-Path $root ($relative -replace '/', '\')
         New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
@@ -236,7 +236,8 @@ function Invoke-Probe {
         if ($null -ne $root) {
             $safeRoot = Assert-SafeProbeRoot -Root $root -ExpectedLeaf $leaf
             if (Test-Path -LiteralPath $safeRoot) {
-                Remove-Item -LiteralPath $safeRoot -Recurse -Force
+                [IO.Directory]::Delete($safeRoot, $true)
+                if ([IO.Directory]::Exists($safeRoot)) { throw "created probe root remains after cleanup: $safeRoot" }
             }
         }
 
@@ -381,36 +382,22 @@ if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
     $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 }
 $RepoRoot = (Resolve-Path -LiteralPath $RepoRoot).Path
+$goldenMutationProbePriorValue = [Environment]::GetEnvironmentVariable('MAHJONG_GOLDEN_PROBE', 'Process')
+ try {
+& (Join-Path $PSScriptRoot 'enable-golden-mutation-probe.ps1') -RepoRoot $RepoRoot
 
 $FixtureRelative = 'tests/v5-golden/physical-v1.json'
 $FixturePath = Join-Path $RepoRoot ($FixtureRelative -replace '/', '\')
 $AgentsPath = Join-Path $RepoRoot 'AGENTS.md'
 $Runner = Join-Path $RepoRoot 'dotnet/tests/Mahjong.Domain.Tests/bin/Release/net8.0/Mahjong.Domain.Tests.dll'
 
-$sourceFiles = @(
-    'engine/src/main/kotlin/com/majiang/model/Tile.kt',
-    'engine/src/main/kotlin/com/majiang/model/TileLocation.kt',
-    'engine/src/main/kotlin/com/majiang/model/TilePool.kt',
-    'engine/src/main/kotlin/com/majiang/state/StateInvariants.kt',
-    'engine/src/main/kotlin/com/majiang/stacking/ShuffleWallGenerator.kt',
-    'engine/src/main/kotlin/com/majiang/stacking/ShuffleSlots.kt',
-    'engine/src/main/kotlin/com/majiang/stacking/ShuffleConfig.kt',
-    'engine/src/testFixtures/kotlin/com/majiang/testing/TestTableBuilder.kt',
-    'engine/src/test/kotlin/com/majiang/model/V5PhysicalGoldenExporterTest.kt'
-) | Select-Object -Unique
+$sourceFiles = @()
 
 foreach ($required in @($FixturePath, $AgentsPath, $Runner, $DotnetPath)) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
         throw "required tool/input missing: $required"
     }
 }
-foreach ($relative in $sourceFiles) {
-    $source = Join-Path $RepoRoot ($relative -replace '/', '\')
-    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
-        throw "pinned V4 source missing: $source"
-    }
-}
-
 if ([string]::IsNullOrWhiteSpace($EvidenceRoot)) {
     $EvidenceRoot = Join-Path ([IO.Path]::GetTempPath()) ('physical-binding-evidence-' + [guid]::NewGuid().ToString('N'))
 }
@@ -514,6 +501,8 @@ foreach ($probe in $probes) {
     }
     catch {
         $script:ToolFailures++
+        $toolErrorPath = Join-Path $ProbeDir ($probe['name'] + '.tool-error.txt')
+        @($_.Exception.ToString(), $_.ScriptStackTrace) | Out-File -LiteralPath $toolErrorPath -Encoding utf8
         $null = $results.Add([pscustomobject]@{
             name          = $probe['name']
             expect        = $(if ($probe['expectPass']) { 'PASS' } else { 'FAIL_EXPECTED' })
@@ -526,7 +515,7 @@ foreach ($probe in $probes) {
             skipped       = -1
             notRun        = -1
             fixtureSha256 = ''
-            log           = ''
+            log           = $toolErrorPath
         })
         Write-Host ('TOOL-FAILURE: {0}: {1}' -f $probe['name'], $_.Exception.Message)
     }
@@ -583,3 +572,8 @@ if (-not $fixturePreserved) {
 
 Write-Host 'PROBE-PASS: every positive control stayed green and every negative produced a real failed test.'
 exit 0
+
+}
+finally {
+    [Environment]::SetEnvironmentVariable('MAHJONG_GOLDEN_PROBE', $goldenMutationProbePriorValue, 'Process')
+}

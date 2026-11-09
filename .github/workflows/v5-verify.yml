@@ -71,6 +71,10 @@ jobs:
         shell: powershell
         run: ./tools/ci/test-v5-table-evidence.ps1
 
+      - name: Verify frozen golden source provenance without Git history
+        shell: powershell
+        run: ./tools/tests/VerifyV5SourceProvenance.Tests.ps1
+
       - name: Run unified V5 verification
         shell: powershell
         run: ./tools/ci/verify-v5-table-postgres.ps1 -Configuration Release -RunUnifiedVerification -LogDir artifacts/verify-v5/table -UnifiedLogDir artifacts/verify-v5/unified

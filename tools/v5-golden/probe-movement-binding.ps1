@@ -142,6 +142,34 @@ function Format-Summary($Summary) {
         $Summary.Total, $Summary.Errors, $Summary.Failed, $Summary.Skipped, $Summary.NotRun)
 }
 
+function Resolve-OwnedMovementProbeTempDirectory {
+    param([string]$Candidate, [string]$TempBase)
+    $separators = [char[]]@([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+    $basePath = [System.IO.Path]::GetFullPath($TempBase).TrimEnd($separators)
+    $candidatePath = [System.IO.Path]::GetFullPath($Candidate)
+    $parentPath = [System.IO.Path]::GetDirectoryName($candidatePath).TrimEnd($separators)
+    $leaf = [System.IO.Path]::GetFileName($candidatePath)
+    if ($parentPath.Equals($basePath, [System.StringComparison]::OrdinalIgnoreCase) -and
+        $leaf -match '^movement-binding-probe-[0-9a-f]{32}$') {
+        return $candidatePath
+    }
+    return $null
+}
+
+function Remove-OwnedMovementProbeTempDirectory {
+    param([string]$Candidate, [string]$TempBase, [switch]$Keep)
+    $candidatePath = [System.IO.Path]::GetFullPath($Candidate)
+    if ($Keep) {
+        Write-Step ("kept TEMP copy: " + $candidatePath)
+        return
+    }
+    if (-not (Test-Path -LiteralPath $candidatePath)) { return }
+    $ownedTemp = Resolve-OwnedMovementProbeTempDirectory -Candidate $candidatePath -TempBase $TempBase
+    if (-not $ownedTemp) { throw "refusing to remove a temp path outside the exact movement probe GUID directory: $candidatePath" }
+    [System.IO.Directory]::Delete("\\?\" + $ownedTemp, $true)
+    if ([System.IO.Directory]::Exists($ownedTemp)) { throw "own temporary probe path remains after cleanup: $ownedTemp" }
+}
+
 function Assert-CountGate([string]$Expected, [int]$ExitCode, $Summary, [string]$Label) {
     if (Test-CountGate $Expected $ExitCode $Summary) {
         return $true
@@ -258,6 +286,9 @@ function Invoke-Mutation(
 }
 
 $repo = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+$goldenMutationProbePriorValue = [Environment]::GetEnvironmentVariable('MAHJONG_GOLDEN_PROBE', 'Process')
+ try {
+& (Join-Path $PSScriptRoot 'enable-golden-mutation-probe.ps1') -RepoRoot $repo
 $runId = (Get-Date).ToUniversalTime().ToString("yyyyMMddTHHmmssZ") + "-" + $PID
 $evidenceDir = Join-Path $repo ("build/movement-binding-probe/" + $runId)
 New-Item -ItemType Directory -Force -Path $evidenceDir | Out-Null
@@ -300,8 +331,9 @@ try {
     Expand-Archive -LiteralPath $zip -DestinationPath $tempRepo -Force
     foreach ($relative in @(
         "tests/v5-golden/movement-v1.json",
-        "dotnet/tests/Mahjong.Domain.Tests/TileMovementGoldenTests.cs",
-        "engine/src/test/kotlin/com/majiang/model/V5TileMovementGoldenExporterTest.kt"
+        "tests/v5-golden/source-provenance-v1.json",
+        "dotnet/tests/Shared/FrozenGoldenProvenance.cs",
+        "dotnet/tests/Mahjong.Domain.Tests/TileMovementGoldenTests.cs"
     )) {
         $source = Join-Path $repo $relative
         if (Test-Path -LiteralPath $source) {
@@ -802,15 +834,11 @@ try {
             -Apply $mutation.Apply
     }
 
-    # Positive line-ending control: the exporter source is LF in the fixture. Convert
-    # the isolated copy to CRLF; the LF-normalized content hash must stay identical and
-    # the C# test must use its explicit raw-bytes-differ branch, not fail.
+    # Positive checkout control: convert the fixture copy to CRLF; semantic assertions
+    # and the stable LF source identity must still pass.
     Copy-Item -LiteralPath $baselineFixture -Destination $fixturePath -Force
-    $exporterSource = Join-Path $tempRepo "engine/src/test/kotlin/com/majiang/model/V5TileMovementGoldenExporterTest.kt"
-    $exporterText = [System.IO.File]::ReadAllText($exporterSource, [System.Text.UTF8Encoding]::new($false))
-    $exporterLf = $exporterText.Replace("`r`n", "`n")
-    $exporterCrlf = $exporterLf.Replace("`n", "`r`n")
-    [System.IO.File]::WriteAllText($exporterSource, $exporterCrlf, [System.Text.UTF8Encoding]::new($false))
+    $fixtureText = [System.IO.File]::ReadAllText($fixturePath, [System.Text.UTF8Encoding]::new($false)).Replace("`r`n", "`n")
+    [System.IO.File]::WriteAllText($fixturePath, $fixtureText.Replace("`n", "`r`n"), [System.Text.UTF8Encoding]::new($false))
     $lineLog = Join-Path $evidenceDir "positive-line-ending-crlf.log"
     $lineNative = Invoke-Native $Dotnet @(
         $dllPath,
@@ -852,15 +880,10 @@ try {
 }
 finally {
     $resolvedTemp = [System.IO.Path]::GetFullPath($tempRoot)
-    $resolvedBase = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
-    $leaf = Split-Path -Leaf $resolvedTemp
-    if (-not $KeepTemp -and
-        $resolvedTemp.StartsWith($resolvedBase, [System.StringComparison]::OrdinalIgnoreCase) -and
-        $leaf.StartsWith("movement-binding-probe-", [System.StringComparison]::Ordinal) -and
-        (Test-Path -LiteralPath $resolvedTemp)) {
-        Remove-Item -LiteralPath $resolvedTemp -Recurse -Force -ErrorAction SilentlyContinue
-    }
-    elseif ($KeepTemp) {
-        Write-Step ("kept TEMP copy: " + $resolvedTemp)
-    }
+    Remove-OwnedMovementProbeTempDirectory -Candidate $resolvedTemp -TempBase ([System.IO.Path]::GetTempPath()) -Keep:$KeepTemp
+}
+
+}
+finally {
+    [Environment]::SetEnvironmentVariable('MAHJONG_GOLDEN_PROBE', $goldenMutationProbePriorValue, 'Process')
 }

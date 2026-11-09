@@ -50,6 +50,9 @@ if (-not (Test-Path -LiteralPath $RepoRoot -PathType Container)) {
     Stop-Probe "RepoRoot does not exist: $RepoRoot"
 }
 $RepoRoot = (Resolve-Path -LiteralPath $RepoRoot).Path
+$goldenMutationProbePriorValue = [Environment]::GetEnvironmentVariable('MAHJONG_GOLDEN_PROBE', 'Process')
+ try {
+& (Join-Path $PSScriptRoot 'enable-golden-mutation-probe.ps1') -RepoRoot $RepoRoot
 
 if (-not (Test-Path -LiteralPath $Dotnet -PathType Leaf)) {
     Stop-Probe "dotnet executable does not exist: $Dotnet"
@@ -271,7 +274,14 @@ try {
 finally {
     [Environment]::SetEnvironmentVariable('MAHJONG_REPO_ROOT', $previousRepoRoot, 'Process')
     if (Test-Path -LiteralPath $tempRoot) {
-        Remove-Item -LiteralPath $tempRoot -Recurse -Force
+        $resolvedTemp = [IO.Path]::GetFullPath($tempRoot)
+        $expectedParent = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+        $leaf = [IO.Path]::GetFileName($resolvedTemp)
+        if (-not $resolvedTemp.StartsWith($expectedParent, [StringComparison]::OrdinalIgnoreCase) -or
+            $leaf -notmatch '^n3-shuffle-binding-probe-[0-9a-f]{32}$') {
+            throw "refusing to remove unexpected temp path: $resolvedTemp"
+        }
+        [IO.Directory]::Delete("\\?\" + $resolvedTemp, $true)
     }
 }
 
@@ -315,3 +325,8 @@ if ($violations.Count -gt 0) {
 }
 
 Write-Host "probe-shuffle-binding: PASS ($($rows.Count) scenarios, baseline Total=$baselineTotal, zero skips)"
+
+}
+finally {
+    [Environment]::SetEnvironmentVariable('MAHJONG_GOLDEN_PROBE', $goldenMutationProbePriorValue, 'Process')
+}

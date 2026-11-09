@@ -1,0 +1,129 @@
+{
+  "task": "G2 Windows Luna6",
+  "reviewRound": 9,
+  "status": "NOT_ACCEPTED",
+  "sourceHeadAtRoundStart": "4caa642ff5f9d184c4cfcb39a315ad3fcd803508",
+  "sourceParent": "714ab159ddfaf35fa6a3a6000e8552bf747ec3c2",
+  "originalBase": "4523485cfd4ec2b32185a7da5c13f6cbaf54a1e1",
+  "supportEvidenceManifest": "E:/g2-r9-d8-20261109/round9-review-manifest.json",
+  "supportEvidenceManifestSha256": "F898481E7D71829525344F73CB4001B6496FFE93731C386D34FA6B80D0CAB592",
+  "dirtyInputsAtDelivery": [
+    "dotnet/tools/C04PlayerActionVerifier/Program.cs",
+    "tools/unity/run-p45-c04-player-actions.ps1",
+    "unity/Mahjong.Unity/Assets/Scripts/App/C04PlayerActionProbe.cs",
+    "doc/v5-重构/V5-G2-WINDOWS-LUNA6-TASK-20261108.md",
+    "doc/v5-重构/V5-G2-WINDOWS-LUNA6-DELIVERY-20261108.md",
+    "doc/v5-重构/V5-G2-WINDOWS-LUNA6-R9-EXECUTION-SUPPLEMENT-20261109.md",
+    "doc/v5-重构/V5-G2-WINDOWS-LUNA6-BINDING-R9-SUPPLEMENT-20261109.json"
+  ],
+  "defects": {
+    "D-8-01": {
+      "severity": "MAJOR",
+      "status": "SOURCE_FIXED_FRESH_PLAYER_PENDING",
+      "fixFiles": [
+        "tools/unity/run-p45-c04-player-actions.ps1",
+        "unity/Mahjong.Unity/Assets/Scripts/App/C04PlayerActionProbe.cs",
+        "dotnet/tools/C04PlayerActionVerifier/Program.cs"
+      ],
+      "fixedAssertions": [
+        "fixture exact set is C04-G1-02 and C04-G2-01..04 with matching filenames, CaseId and TOOL_FIXTURE_LOCALHOST_CHANNEL source",
+        "PlayMode good XML contains exactly all five fixed action cases",
+        "missing, extra, duplicate identity, wrong identity and skipped PlayMode fixtures are rejected",
+        "G1-02 legal Tsumo does not submit a false negative action",
+        "GAME rejection evidence remains mandatory for G2-01..04 and is not required for G1-02"
+      ],
+      "verification": {
+        "fixtureOnly": {
+          "nativeExit": 0,
+          "positive": 2,
+          "negative": 61,
+          "summary": "C04_TOOL_FIXTURES_PASS positive=2 negative=61 protobuf=PASS malformed=2 timeoutTree=PASS mutexTimeoutSeal=PASS mutexCancellationSeal=PASS outputDrain=PASS outputFiles=123",
+          "log": "E:/g2-r9-d8-20261109/fixture-only-5879969000004753b6cb8c4bb5c3b9b8.log",
+          "sha256": "0C4B7133704290BA61E2DDC4016D205D3DE49A9FB9F885F09E0080057EEAA19F",
+          "evidenceType": "TOOL_FIXTURE_ONLY_NOT_GAME_PASS"
+        },
+        "localHostRelease": {
+          "buildExit": 0,
+          "testExit": 0,
+          "total": 10,
+          "passed": 10,
+          "failed": 0,
+          "skipped": 0,
+          "notRun": 0,
+          "xml": "E:/g2-r9-d8-20261109/retry1/actions.xml",
+          "xmlSha256": "4D40ED9C401D1ADC2D4C186AB9FFCB445BA79BFD0E2236E89E884B22D8A11E9C",
+          "testLog": "E:/g2-r9-d8-20261109/logs/actions.log",
+          "testLogSha256": "7A377FC0C58EFBACBE4B58BD9427FC83CBE47AAB04D6C48789F5088C46556627",
+          "buildLog": "E:/g2-r9-d8-20261109/logs/localhost-build.log",
+          "buildLogSha256": "3191354C78646584FAFFC9E70DA396B8381C333C11BF68FC119B03E1311724A2"
+        },
+        "localHostDebug": {
+          "buildExit": 0,
+          "testExit": 0,
+          "total": 10,
+          "passed": 10,
+          "failed": 0,
+          "skipped": 0,
+          "notRun": 0,
+          "xml": "E:/g2-r9-d8-20261109/actions-debug.xml",
+          "xmlSha256": "8DCDE82A217B53697F07A9BC49A857B2E492AB5886EE292B5AE3C7401ABA2915",
+          "testLog": "E:/g2-r9-d8-20261109/logs/actions-debug.log",
+          "testLogSha256": "13843CB40B9CA49A422EC51BCB00B885A9993A406E5EB9DEC55CB02E18B75BDF",
+          "buildLog": "E:/g2-r9-d8-20261109/logs/localhost-debug-build.log"
+        },
+        "verifier": {
+          "buildExit": 0,
+          "buildLog": "E:/g2-r9-d8-20261109/logs/verifier-build.log",
+          "buildLogSha256": "D09790112673AE4086B1AAA1607BCE388BD1FC66C8834A6676424F7BEEB10A71",
+          "selfTestExit": 0,
+          "selfTestLog": "E:/g2-r9-d8-20261109/game-contract/selftest.log",
+          "selfTestLogSha256": "AE92DEBC93C2288B687F353F6D8BDDCA6D0BA30B3E7884A23516DDCAFCD04009",
+          "g1GameWithoutRejectedFieldsExit": 0,
+          "g1GameLogSha256": "EB0E0F58DF3AE7EF86217D46DF716337212DF69F6F5F1130A18F8D5B63BF80E4",
+          "g2GameWithoutRejectedFieldsExit": 1,
+          "g2GameLogSha256": "4B9D6F933A28D36FEF48A90C834C3D8C23C809058BF2C0D23C71D9CCE032B785",
+          "routingProbeEvidenceType": "TOOL_FIXTURE_SCHEMA_ROUTING_NOT_GAME_PASS"
+        },
+        "runnerUnitTests": {
+          "nativeExit": 0,
+          "assertions": 30,
+          "failed": 0,
+          "summary": "build/g2-runner-test-e7b16f7de87f44d29cd4b88483b43300/test-summary.json",
+          "summarySha256": "83F619E42D6B35607BAA8FD2B730A824FFD4DF1FC5EA005EF156759F27D40184"
+        }
+      }
+    },
+    "D-9-01": {
+      "severity": "MINOR",
+      "status": "FIXED_AND_RETESTED",
+      "location": "tools/unity/run-p45-c04-player-actions.ps1 FixtureOwnedTimeoutTree timeout",
+      "rootCause": "one-second timeout could terminate the parent before the child readiness/PID record was emitted",
+      "change": "bounded parent timeout increased to eight seconds while the owned child retains its 25-second sleep",
+      "firstFailure": {
+        "nativeExit": 124,
+        "log": "E:/g2-r9-d8-20261109/fixture-only-f8f0318cfe9944c2bbe4bf76e53a42bd.log"
+      },
+      "successfulRetest": {
+        "nativeExit": 0,
+        "log": "E:/g2-r9-d8-20261109/fixture-only-5879969000004753b6cb8c4bb5c3b9b8.log",
+        "sha256": "0C4B7133704290BA61E2DDC4016D205D3DE49A9FB9F885F09E0080057EEAA19F"
+      }
+    }
+  },
+  "openReviewRows": [
+    "D-1-02: real Player G1 draw/dealer continuation and G2 chankan/full negative matrix; existing G4 LocalControlPlayerProbe/test-p45-control-ui remains unexecuted and unbound on final candidate; final binding of accepted G7-02 service evidence",
+    "D-1-01: DPI-aware base/wide/tall table and settlement full frames plus physical keyboard/mouse action-to-receipt evidence",
+    "D-1-05: one clean candidate and one common complete Player package bound to all required Windows rows, 8 DLLs, assets/plugins and BuildReport",
+    "D-1-04: G7-01 remains NOT_RUN until a safe approved offline environment exists"
+  ],
+  "playerOrPlayModeExecuted": false,
+  "currentBindingCounts": {
+    "pass": 18,
+    "partial": 11,
+    "fail": 0,
+    "notRun": 3,
+    "finalCandidateCompleteRows": 0
+  },
+  "androidRows": "9 EXCLUDED_NOT_RUN",
+  "submission": "No commit, push, merge, publish, or G2 sign-off"
+}

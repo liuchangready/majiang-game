@@ -1,6 +1,6 @@
-# 正式 APP 主菜单素材包
+# 主菜单素材与历史实现说明
 
-用于 libGDX `presentation.menu.MainMenuView` 的主菜单分层改造。素材已接入正式 APP 运行链，实施与验证记录见[主菜单交付记录](../../../doc/ui/main-menu/DELIVERY.md)。设计与交互见 [正式菜单方案](../../../doc/ui/main-menu/DESIGN.md)。桌面/Android 均通过现有根 `assets/` 资源目录读取，不依赖 `ui_demo`。
+本目录保留主菜单视觉素材及其 V4/libGDX 设计记录，不能据此推断旧 libGDX APP 仍可构建或运行。当前产品为 V5 Unity + C#/.NET；Unity 当前 UI 原型导入资源位于 `unity/Mahjong.Unity/Assets/Art/UI/MainMenu/`，由 `unity/Mahjong.Unity/Assets/Editor/V4UiPrototypeBuilder.cs` 和相关 Unity 测试引用。原始方案与交付记录仅描述历史 V4 接入过程：[主菜单交付记录](../../../doc/ui/main-menu/DELIVERY.md)、[主菜单方案](../../../doc/ui/main-menu/DESIGN.md)。
 
 | 文件 | 尺寸 | 用途 |
 | --- | --- | --- |

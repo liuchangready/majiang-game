@@ -164,6 +164,67 @@ namespace Mahjong.LocalHost.Tests
         }
     }
 
+    internal sealed class BackupLockingFileSystem : ILocalFileSystem
+    {
+        private readonly SystemLocalFileSystem _inner = new SystemLocalFileSystem();
+        private readonly string _backupPath;
+        private readonly bool _lockEveryReplace;
+
+        public BackupLockingFileSystem(string backupPath, bool lockEveryReplace)
+        {
+            _backupPath = backupPath;
+            _lockEveryReplace = lockEveryReplace;
+        }
+
+        public int ReplaceAttempts { get; private set; }
+
+        public List<int> ReplaceFailureHResults { get; } = new List<int>();
+
+        public bool FileExists(string path) => _inner.FileExists(path);
+
+        public void CreateDirectory(string path) => _inner.CreateDirectory(path);
+
+        public Stream CreateNew(string path) => _inner.CreateNew(path);
+
+        public Stream OpenRead(string path) => _inner.OpenRead(path);
+
+        public Stream OpenExclusive(string path) => _inner.OpenExclusive(path);
+
+        public void FlushToDisk(Stream stream) => _inner.FlushToDisk(stream);
+
+        public void Move(string source, string destination) => _inner.Move(source, destination);
+
+        public void Replace(string source, string destination, string backup)
+        {
+            ReplaceAttempts++;
+            if (_lockEveryReplace || ReplaceAttempts == 1)
+            {
+                using (new FileStream(_backupPath, FileMode.Open, FileAccess.Read, FileShare.Read))
+                {
+                    try
+                    {
+                        _inner.Replace(source, destination, backup);
+                    }
+                    catch (IOException exception)
+                    {
+                        ReplaceFailureHResults.Add(exception.HResult);
+                        throw;
+                    }
+                }
+
+                return;
+            }
+
+            _inner.Replace(source, destination, backup);
+        }
+
+        public void Copy(string source, string destination, bool overwrite) => _inner.Copy(source, destination, overwrite);
+
+        public void Delete(string path) => _inner.Delete(path);
+
+        public byte[] ReadAllBytes(string path) => _inner.ReadAllBytes(path);
+    }
+
     public sealed class LocalTableStoreTests
     {
         [Fact]
@@ -312,6 +373,147 @@ namespace Mahjong.LocalHost.Tests
                 Assert.True(new FileInfo(harness.SavePath).Length > 32);
                 Assert.True(fs.MoveAttempts >= 1, "move attempts=" + fs.MoveAttempts);
                 Assert.True(fs.CopyAttempts >= 1, "copy attempts=" + fs.CopyAttempts);
+            }
+            finally
+            {
+                store.Dispose();
+            }
+        }
+
+        [Fact]
+        public async Task AtomicReplaceRetriesOnceAfterARealTransientBackupLock()
+        {
+            await using var harness = new P41Harness();
+            var fs = new BackupLockingFileSystem(harness.BackupPath, lockEveryReplace: false);
+            LocalTableStore store = await OpenFreshStoreAsync(harness, fs, TestContext.Current.CancellationToken);
+            try
+            {
+                byte[] previousPrimary = File.ReadAllBytes(harness.SavePath);
+                TableCheckpoint checkpoint = await BuildNextCheckpointAsync(store);
+                TableDurableCommitResult result = await SaveCheckpointAsync(
+                    store,
+                    checkpoint,
+                    expectedTiming: 1L,
+                    TestContext.Current.CancellationToken);
+
+                Assert.True(
+                    result.Disposition == TableCommitDisposition.Committed,
+                    "disposition=" + result.Disposition + " reason=" + result.ReasonCode + " detail=" + result.Detail);
+                Assert.Equal(2, fs.ReplaceAttempts);
+                Assert.Equal(new[] { unchecked((int)0x80070497) }, fs.ReplaceFailureHResults);
+                Assert.Equal(previousPrimary, File.ReadAllBytes(harness.BackupPath));
+
+                TableStateRow? state = await store.LoadStateAsync(P41Harness.RoomId, TestContext.Current.CancellationToken);
+                Assert.NotNull(state);
+                Assert.Equal(checkpoint.StateVersion, state!.StateVersion);
+                Assert.True(new FileInfo(harness.SavePath).Length > 32);
+                Assert.True(new FileInfo(harness.BackupPath).Length > 32);
+            }
+            finally
+            {
+                store.Dispose();
+            }
+        }
+
+        [Fact]
+        public async Task PersistentBackupLockLeavesOldEnvelopeAndOutcomeUnknown()
+        {
+            await using var harness = new P41Harness();
+            var fs = new BackupLockingFileSystem(harness.BackupPath, lockEveryReplace: true);
+            LocalTableStore store = await OpenFreshStoreAsync(harness, fs, TestContext.Current.CancellationToken);
+            try
+            {
+                byte[] previousPrimary = File.ReadAllBytes(harness.SavePath);
+                byte[] previousBackup = File.ReadAllBytes(harness.BackupPath);
+                TableCheckpoint checkpoint = await BuildNextCheckpointAsync(store);
+                TableDurableCommitResult result = await SaveCheckpointAsync(
+                    store,
+                    checkpoint,
+                    expectedTiming: 1L,
+                    TestContext.Current.CancellationToken);
+
+                Assert.Equal(TableCommitDisposition.OutcomeUnknown, result.Disposition);
+                Assert.Equal(5, fs.ReplaceAttempts);
+                Assert.All(fs.ReplaceFailureHResults, value => Assert.Equal(unchecked((int)0x80070497), value));
+                Assert.Equal(previousPrimary, File.ReadAllBytes(harness.SavePath));
+                Assert.Equal(previousBackup, File.ReadAllBytes(harness.BackupPath));
+            }
+            finally
+            {
+                store.Dispose();
+            }
+        }
+
+        [Fact]
+        public async Task CancellationAfterTransientReplaceFailureDoesNotRetryOrChangeEitherEnvelope()
+        {
+            await using var harness = new P41Harness();
+            var fs = new FaultingFileSystem();
+            LocalTableStore store = await OpenFreshStoreAsync(harness, fs, TestContext.Current.CancellationToken);
+            try
+            {
+                byte[] previousPrimary = File.ReadAllBytes(harness.SavePath);
+                byte[] previousBackup = File.ReadAllBytes(harness.BackupPath);
+                TableCheckpoint checkpoint = await BuildNextCheckpointAsync(store);
+                using var cts = new CancellationTokenSource();
+                fs.BeforeReplace = _ =>
+                {
+                    cts.Cancel();
+                    return new IOException("injected exact ERROR_UNABLE_TO_REMOVE_REPLACED", unchecked((int)0x80070497));
+                };
+
+                TableDurableCommitResult result = await SaveCheckpointAsync(
+                    store,
+                    checkpoint,
+                    expectedTiming: 1L,
+                    cts.Token);
+
+                Assert.True(cts.IsCancellationRequested);
+                Assert.Equal(TableCommitDisposition.OutcomeUnknown, result.Disposition);
+                Assert.Equal(1, fs.ReplaceAttempts);
+                Assert.Equal(1, fs.BeforeReplaceHits);
+                Assert.Equal(previousPrimary, File.ReadAllBytes(harness.SavePath));
+                Assert.Equal(previousBackup, File.ReadAllBytes(harness.BackupPath));
+                await Assert.ThrowsAsync<LocalTableException>(async () =>
+                    await SaveCheckpointAsync(store, checkpoint, expectedTiming: 1L, CancellationToken.None));
+            }
+            finally
+            {
+                store.Dispose();
+            }
+        }
+
+        [Fact]
+        public async Task CancellationAfterAtomicReplaceErrorStillInstallsCommittedFactsOnce()
+        {
+            await using var harness = new P41Harness();
+            var fs = new FaultingFileSystem();
+            LocalTableStore store = await OpenFreshStoreAsync(harness, fs, TestContext.Current.CancellationToken);
+            try
+            {
+                byte[] previousPrimary = File.ReadAllBytes(harness.SavePath);
+                using var cts = new CancellationTokenSource();
+                fs.AfterReplace = _ =>
+                {
+                    cts.Cancel();
+                    return new IOException("injected report after atomic replace");
+                };
+                TableCheckpoint checkpoint = await BuildNextCheckpointAsync(store);
+
+                TableDurableCommitResult result = await SaveCheckpointAsync(
+                    store,
+                    checkpoint,
+                    expectedTiming: 1L,
+                    cts.Token);
+
+                Assert.True(cts.IsCancellationRequested);
+                Assert.Equal(TableCommitDisposition.Committed, result.Disposition);
+                Assert.Equal(1, fs.ReplaceAttempts);
+                Assert.Equal(1, fs.AfterReplaceHits);
+                Assert.Equal(previousPrimary, File.ReadAllBytes(harness.BackupPath));
+                TableStateRow? row = await store.LoadStateAsync(P41Harness.RoomId, CancellationToken.None);
+                Assert.NotNull(row);
+                Assert.Equal(checkpoint.StateVersion, row!.StateVersion);
             }
             finally
             {

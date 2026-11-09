@@ -14,6 +14,8 @@
 *.hlsl text eol=lf
 *.cginc text eol=lf
 
+tests/v5-golden/*.json text eol=lf
+
 *.cs text diff=csharp
 *.sln text eol=crlf
 *.csproj text eol=crlf

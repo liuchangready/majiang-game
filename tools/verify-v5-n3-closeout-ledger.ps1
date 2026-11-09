@@ -148,6 +148,27 @@ foreach ($entry in @{
 $evidenceOk = @{}
 foreach ($evId in $evidenceCatalog.Keys) {
   $evPath = $evidenceCatalog[$evId][0]
+  if ($evId -eq 'EV-N3M-EXP') {
+    $manifestPath = Join-Path $RepoRoot 'tests/v5-golden/source-provenance-v1.json'
+    $manifestSha = 'b6b36fd35b76be74846093305e17ff357d849d9861a1c876ea9069c6968eaf67'
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf) -or
+        (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $manifestSha) {
+      Fail 'evidence-catalog' 'EV-N3M-EXP frozen-source manifest missing or changed'
+      continue
+    }
+    $pins = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $sourcePin = @($pins.sources | Where-Object {
+      $_.fixture -ceq 'tests/v5-golden/cheat-v1.json' -and
+      $_.path -ceq 'engine/src/test/kotlin/com/majiang/v3/V5CheatGoldenExporterTest.kt' -and
+      $_.sha256LfNormalized -ceq $evidenceCatalog[$evId][1]
+    })
+    if ($sourcePin.Count -ne 1) {
+      Fail 'evidence-catalog' 'EV-N3M-EXP historical exporter identity differs from frozen source pin'
+      continue
+    }
+    $evidenceOk[$evId] = $true
+    continue
+  }
   if (-not [IO.Path]::IsPathRooted($evPath)) { $evPath = Join-Path $RepoRoot ($evPath -replace '/', '\') }
   if (-not (Test-Path $evPath)) { Fail 'evidence-catalog' ($evId + ' file missing: ' + $evPath); continue }
   $evSha = (Get-FileHash -Algorithm SHA256 $evPath).Hash.ToLowerInvariant()

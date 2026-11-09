@@ -10,6 +10,8 @@ using Mahjong.Contracts;
 using Mahjong.Contracts.Wire;
 using Mahjong.Domain;
 using Mahjong.Domain.Rules;
+using Mahjong.Client;
+using Mahjong.LocalHost;
 using Mahjong.TableRuntime;
 using Xunit;
 
@@ -1092,6 +1094,8 @@ namespace Mahjong.TableService.Tests
         public async Task WireIngress_RejectsUnbackedMatchSettlement_ThenComputesTsumoFromAuthority()
         {
             const string roomId = "room-b2-local-ingress";
+            byte[] localSettlementAsset = await CreateLocalSettlementAssetAsync();
+            Assert.NotEmpty(localSettlementAsset);
             await using TableServiceTestHost host = await TableServiceTestHost.StartAsync(
                 o => { o.RoomTickIntervalMs = 50; },
                 roundSource: new FixedRoundSource(DealerTsumoRound),
@@ -1120,11 +1124,11 @@ namespace Mahjong.TableService.Tests
             // admitted identity -> TableCommandMapper -> TableSessionHandler. The service
             // must refuse it before Actor.SubmitSettlementAsync.
             const string matchRequestId = "req-b2-local-ingress-match";
-            byte[] matchPayload = TableWire.SubmitActionPayload(
+            byte[] matchPayload = BuildLocalMatchSettlementPayload(
                 before.RoundId,
                 decision.DecisionId,
                 decision.ControlEpoch,
-                (uint)ProtocolActionType.DeclareAgariYame);
+                localSettlementAsset);
             await client.SendAsync(TableWire.Command(
                 client.Welcome!,
                 matchRequestId,
@@ -1267,6 +1271,142 @@ namespace Mahjong.TableService.Tests
             writer.WriteString(8, "LOCAL");
             writer.WriteInt64(9, 999_999_999L);
             return writer.Build().CopyBytes();
+        }
+
+        private static byte[] BuildLocalMatchSettlementPayload(
+            string roundId,
+            string decisionId,
+            ulong controlEpoch,
+            byte[] localSettlementAsset)
+        {
+            if (localSettlementAsset == null || localSettlementAsset.Length == 0)
+                throw new ArgumentException("A real LocalHost terminal save is required.", nameof(localSettlementAsset));
+            var writer = new CanonicalPayloadWriter((ushort)Contracts.CommandKind.SubmitAction);
+            writer.WriteString(CommandPayloadFields.RoundIdField, roundId);
+            writer.WriteString(CommandPayloadFields.DecisionIdField, decisionId);
+            writer.WriteUInt64(CommandPayloadFields.ControlEpochField, controlEpoch);
+            writer.WriteUInt32(CommandPayloadFields.ActionType, (uint)ProtocolActionType.DeclareAgariYame);
+            writer.WriteString(8, "LOCAL");
+            writer.WriteUInt32(9, checked((uint)localSettlementAsset.Length));
+            writer.WriteBytes(10, localSettlementAsset);
+            return writer.Build().CopyBytes();
+        }
+
+        private static async Task<byte[]> CreateLocalSettlementAssetAsync()
+        {
+            string localRoot = Path.Combine(Path.GetTempPath(), "g2-local-settlement-" + Guid.NewGuid().ToString("N"));
+            string saveDirectory = Path.Combine(localRoot, "save");
+            Directory.CreateDirectory(localRoot);
+            var options = new LocalTableHostOptions
+            {
+                SaveDirectory = saveDirectory,
+                RoomId = "local-settlement-" + Guid.NewGuid().ToString("N"),
+                OwnerInstanceId = "g2-local-settlement-test",
+                LeaseDuration = TimeSpan.FromMinutes(5)
+            };
+            LocalPlayerActionScenario.ConfigureHostOptions(options, LocalPlayerActionScenario.DealerTsumo);
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+            ITableChannel channel = await LocalTableHost.CreateChannelAsync(options, timeout.Token);
+            var session = new TableSession(channel, new InMemoryOutboxStore());
+            Task pump = Task.CompletedTask;
+            try
+            {
+                await session.OpenAsync(
+                    new TableSessionOpenRequest(LocalTableHost.IssueTicket(options), "g2-local-settlement-origin"),
+                    timeout.Token);
+                pump = PumpLocalSessionUntilCancelledAsync(session, timeout.Token);
+                PlayerSnapshot before = await WaitForLocalSnapshotAsync(
+                    session,
+                    snapshot => snapshot.PrivateView?.Decision?.Actions.Any(
+                        action => action.ActionType == (uint)ProtocolActionType.DeclareTsumo) == true,
+                    timeout.Token);
+                Contracts.Wire.DecisionView decision = before.PrivateView!.Decision!;
+                string requestId = "g2-local-origin-tsumo-" + Guid.NewGuid().ToString("N");
+                var receiptTask = new TaskCompletionSource<TableReceiptResolvedEventArgs>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                EventHandler<TableReceiptResolvedEventArgs> receiptHandler = (_, args) =>
+                {
+                    if (string.Equals(args.Command.RequestId, requestId, StringComparison.Ordinal))
+                        receiptTask.TrySetResult(args);
+                };
+                session.ReceiptResolved += receiptHandler;
+                try
+                {
+                    BusinessPayload payload = CommandPayloadFactory.SubmitAction(
+                        before.RoundId,
+                        decision.DecisionId,
+                        decision.ControlEpoch,
+                        ProtocolActionType.DeclareTsumo,
+                        tileIds: new uint[] { 12 });
+                    var command = new ProtocolCommand(
+                        Contracts.CommandKind.SubmitAction,
+                        payload,
+                        new RequestId(requestId),
+                        session.Binding!.Scope.ScopeId,
+                        new StateVersion(before.StateVersion),
+                        new RoundId(before.RoundId),
+                        decisionId: new DecisionId(decision.DecisionId),
+                        controlEpoch: new ControlEpoch(decision.ControlEpoch));
+                    CommandSubmission submitted = await session.SubmitAsync(command, timeout.Token);
+                    Assert.True(submitted.Sent, "The local-origin tsumo did not reach ITableChannel.");
+                    TableReceiptResolvedEventArgs receipt = await receiptTask.Task.WaitAsync(timeout.Token);
+                    Assert.Equal(Contracts.ReceiptStatus.Applied, receipt.Resolution.ReceiptStatus);
+                    Assert.True(receipt.Resolution.CommandVersion.HasValue);
+                    Assert.True(receipt.Resolution.EventSeq.HasValue);
+
+                    PlayerSnapshot terminal = await WaitForLocalSnapshotAsync(
+                        session,
+                        snapshot => snapshot.RoundId == before.RoundId && snapshot.PublicView?.Board.Phase == GamePhase.RoundEnd,
+                        timeout.Token);
+                    Assert.Contains(terminal.PublicView!.SettlementEvents, item => item.EventType == EventType.TsumoWin);
+                    Assert.Equal(100000L, terminal.PublicView.Board.Scores.Sum(item => item.Score));
+                    LocalTableRecoveryCapture capture = await LocalTableHost.CaptureRecoveryAsync(saveDirectory, timeout.Token);
+                    Assert.Equal(before.RoundId, capture.Facts.RoundId);
+                    Assert.Equal(136, capture.Facts.Physical.TileCount);
+                    Assert.Equal(136, capture.Facts.Physical.UniqueCount);
+                    Assert.True(capture.AuthoritySaveBytes.Length > 0);
+                    return capture.AuthoritySaveBytes;
+                }
+                finally
+                {
+                    session.ReceiptResolved -= receiptHandler;
+                }
+            }
+            finally
+            {
+                timeout.Cancel();
+                try { await pump; }
+                catch (OperationCanceledException) { }
+                catch (TableChannelClosedException) { }
+                await session.CloseAsync("G2_LOCAL_ASSET_CAPTURED", CancellationToken.None);
+                await channel.CloseAsync(new TableChannelCloseReason("G2_LOCAL_ASSET_CAPTURED", true), CancellationToken.None);
+                if (Directory.Exists(localRoot)) Directory.Delete(localRoot, recursive: true);
+            }
+        }
+
+        private static async Task PumpLocalSessionUntilCancelledAsync(TableSession session, CancellationToken cancellationToken)
+        {
+            while (!cancellationToken.IsCancellationRequested &&
+                   session.State != TableConnectionState.Closed && session.State != TableConnectionState.Faulted)
+                await session.PumpOnceAsync(cancellationToken);
+        }
+
+        private static async Task<PlayerSnapshot> WaitForLocalSnapshotAsync(
+            TableSession session,
+            Func<PlayerSnapshot, bool> predicate,
+            CancellationToken cancellationToken)
+        {
+            DateTime deadline = DateTime.UtcNow.AddSeconds(30);
+            while (DateTime.UtcNow < deadline)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (session.State == TableConnectionState.Faulted)
+                    throw new InvalidOperationException("Local settlement source session faulted: " + session.LastError);
+                PlayerSnapshot? snapshot = session.PlayerSnapshot;
+                if (snapshot != null && predicate(snapshot)) return snapshot;
+                await Task.Delay(10, cancellationToken);
+            }
+            throw new TimeoutException("The real LocalHost session did not publish the required settlement state.");
         }
 
         [Fact]

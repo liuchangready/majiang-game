@@ -191,7 +191,12 @@ namespace Mahjong.LocalHost.Tests
 
         public static string FindRepositoryRoot()
         {
-            string? current = AppContext.BaseDirectory;
+            return FindRepositoryRoot(AppContext.BaseDirectory);
+        }
+
+        private static string FindRepositoryRoot(string startDirectory)
+        {
+            string? current = Path.GetFullPath(startDirectory);
             while (!string.IsNullOrEmpty(current))
             {
                 if (File.Exists(Path.Combine(current, "dotnet", "Mahjong.sln")))
@@ -203,6 +208,78 @@ namespace Mahjong.LocalHost.Tests
             }
 
             throw new InvalidOperationException("Repository root was not found from " + AppContext.BaseDirectory);
+        }
+
+        public static string FindBuiltProjectAssembly(string projectName, string assemblyName)
+        {
+            return FindBuiltProjectAssembly(projectName, assemblyName, AppContext.BaseDirectory);
+        }
+
+        internal static string FindBuiltProjectAssembly(string projectName, string assemblyName, string baseDirectory)
+        {
+            var testOutput = new DirectoryInfo(Path.GetFullPath(baseDirectory));
+            string? currentConfiguration = null;
+            string? targetFramework = null;
+            DirectoryInfo? current = testOutput;
+            if (current.Name.StartsWith("net", StringComparison.OrdinalIgnoreCase))
+            {
+                targetFramework = current.Name;
+                current = current.Parent;
+            }
+
+            currentConfiguration = current?.Name;
+            DirectoryInfo? testProjectDirectory = current?.Parent;
+            DirectoryInfo? artifactsBin = testProjectDirectory?.Parent;
+            if (artifactsBin?.Name.Equals("bin", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                if (!IsBuildConfiguration(currentConfiguration))
+                {
+                    throw new InvalidOperationException(
+                        "Cannot determine the configuration of the isolated test artifacts from " + baseDirectory);
+                }
+
+                string relativeOutputPath = Path.GetRelativePath(testProjectDirectory!.FullName, testOutput.FullName);
+                string candidate = Path.Combine(
+                    artifactsBin.Parent!.FullName,
+                    "bin",
+                    projectName,
+                    relativeOutputPath,
+                    assemblyName);
+                if (File.Exists(candidate))
+                {
+                    return candidate;
+                }
+
+                throw new FileNotFoundException(
+                    "The required project assembly is missing from the same isolated artifacts root; repository bin outputs are not used as fallback.",
+                    candidate);
+            }
+
+            if (!IsBuildConfiguration(currentConfiguration))
+            {
+                throw new InvalidOperationException(
+                    "Cannot determine the active build configuration from " + baseDirectory);
+            }
+
+            string repositoryRoot = FindRepositoryRoot(baseDirectory);
+            string projectRoot = Path.Combine(repositoryRoot, "dotnet", "tests", projectName, "bin");
+            string frameworkDirectory = targetFramework ?? "net8.0";
+            string repositoryOutput = Path.Combine(projectRoot, currentConfiguration!, frameworkDirectory, assemblyName);
+            if (File.Exists(repositoryOutput))
+            {
+                return repositoryOutput;
+            }
+
+            throw new FileNotFoundException(
+                "The required project assembly is missing from the repository output for the active configuration.",
+                repositoryOutput);
+        }
+
+        private static bool IsBuildConfiguration(string? value)
+        {
+            return value != null &&
+                (value.Equals("Debug", StringComparison.OrdinalIgnoreCase) ||
+                 value.Equals("Release", StringComparison.OrdinalIgnoreCase));
         }
 
         public async ValueTask DisposeAsync()

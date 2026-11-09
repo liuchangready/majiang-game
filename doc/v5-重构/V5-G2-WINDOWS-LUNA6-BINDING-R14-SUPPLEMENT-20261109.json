@@ -1,0 +1,156 @@
+{
+  "round": 14,
+  "date": "2026-11-09",
+  "baseCandidate": "0660cd5b557ad74d41af5ba126f2f165288971b8",
+  "mergeBase": "4523485cfd4ec2b32185a7da5c13f6cbaf54a1e1",
+  "supportOnly": true,
+  "supportSourceWasDirty": true,
+  "bindingVerdictsUnchanged": {
+    "PASS": 18,
+    "PARTIAL": 11,
+    "NOT_RUN": 3
+  },
+  "evidenceRoot": "E:/g2-r14-unity-compile-c6b679be3b9344cfb5f5b93ca06a3e89",
+  "package": {
+    "directory": "player-r14i",
+    "manifest": "player-package-r14i.json",
+    "manifestSha256": "ADEEC56B0B56D29A9D374C8CB38A29D26DAB7276332BA55132A8ED7782F2946C",
+    "fileCount": 193,
+    "independentlyRehashed": 193,
+    "missing": 0,
+    "changed": 0,
+    "candidateSupport": "dirty R14 source based on clean 0660cd5b557ad74d41af5ba126f2f165288971b8; not final bridge candidate"
+  },
+  "tests": {
+    "tableRuntimeRelease": {
+      "nativeExit": 0,
+      "total": 493,
+      "passed": 493,
+      "failed": 0,
+      "skipped": 0,
+      "notRun": 0,
+      "xml": "table-runtime-reason-r14/full.xml",
+      "xmlSha256": "C9FD17333AA5C0C3CFC5E1F866B90F81DCF6173A9FA6C36D20BD49E7EF27FC29",
+      "logSha256": "8CF8DFF00D93B2C2C0869515E813558655E3B5F7CE673301488B5384BE643BAD"
+    },
+    "reasonMappingTargeted": {
+      "nativeExit": 0,
+      "total": 10,
+      "passed": 10,
+      "failed": 0,
+      "skipped": 0,
+      "xml": "table-runtime-reason-r14/targeted.xml",
+      "xmlSha256": "647EEB393B01D078F37DC0C7FDE762D63B41B1529B792E25725B655E9A02E9F3"
+    },
+    "localHostRelease": {
+      "nativeExit": 0,
+      "total": 197,
+      "passed": 197,
+      "failed": 0,
+      "skipped": 0,
+      "notRun": 0,
+      "xml": "localhost-r14/LocalHost.xml",
+      "xmlSha256": "0ED33A9B37EC6DA78AF1042A1A201FD1DD7F2EB9E6BD728719AAF678EE6FF255",
+      "buildLogSha256": "792835BA0650B781B8DAABCF6B3F4046FF95292BD82D51EAA511B0A0CE819B5A",
+      "testLogSha256": "63840CCD160D72B99A3134B5066B050A1EBD0753399163F448B412430D0195D6"
+    },
+    "fixtureOnly": {
+      "nativeExit": 0,
+      "positive": 5,
+      "negative": 80,
+      "log": "fixture-r14-final.log",
+      "logSha256": "E068DB17783D2103A433FF59E012C5993E8C556C25DF696658EE50350AECA707",
+      "scope": "tool fixtures only; not Player or Census execution"
+    },
+    "unityBuild": {
+      "nativeExit": 0,
+      "target": "StandaloneWindows64",
+      "scenes": 6,
+      "errors": 0,
+      "logSha256": "B0461D8A061BF179297F1274D123013E19DE18E44665F803B996EB6D48BD64DB"
+    }
+  },
+  "playerActionSupport": [
+    {
+      "case": "C04-G1-02",
+      "playerNativeExit": 0,
+      "verifierNativeExit": 0,
+      "receipt": "Applied",
+      "event": "TsumoWin",
+      "version": "0->1",
+      "rawSha256": "B85B9C5F9120BEE0411998463A1E2BB0DE2900A46AF090A931B9047409898C8D",
+      "summarySha256": "046AB801EB1FFEF5A364F6887E372EC8BDA51AD6F834985EDC5E12683E03FED9",
+      "playerLogSha256": "EECBE4657392DA622C22B1BF806BBD6A9F685DD4FB1CE0AF9CFE9B861AABA4D1"
+    },
+    {
+      "case": "C04-G2-01",
+      "playerNativeExit": 0,
+      "verifierNativeExit": 0,
+      "positive": "Applied PonDeclared version 15->16",
+      "negative": "Rejected TILE_TRANSITION_REJECTED version 15->15 events 0->0 physicalStable true",
+      "rawSha256": "6B5856A12AA8EC61669B31BDA19C4F8DE600F0CE361418188403F63968F8FC47",
+      "summarySha256": "76DAA3D74E814A3FAB5F0F9D05FF0D173A3C28231A664A945B1940422ECD792A",
+      "playerLogSha256": "94027FA6987958521DA995587142D808ECB1A63880D2F9392A9A974B649DE8F4"
+    },
+    {
+      "case": "C04-G2-02",
+      "playerNativeExit": 0,
+      "verifierNativeExit": 0,
+      "positive": "Applied ChiDeclared version 15->16",
+      "negative": "Rejected TILE_TRANSITION_REJECTED version 15->15 events 0->0 physicalStable true",
+      "rawSha256": "D22DAC6F7E3E893665E71CFED292BF474F6F9ED388101FA195D4C03CCDBC461F",
+      "summarySha256": "BDFF96AB057E5ABED620D3415DB22927CC02D3ADB3375F56AF38C7883741BFDC",
+      "playerLogSha256": "64C64FD81534B11103FC613DB72CEAD6376B966A68D8D75CDD070DE41E5A1D10"
+    },
+    {
+      "case": "C04-G2-03",
+      "playerNativeExit": 0,
+      "verifierNativeExit": 0,
+      "positive": "Applied RiichiDeclared version 0->1",
+      "negative": "Rejected RIICHI_NOT_TENPAI version 0->0 events 0->0 physicalStable true",
+      "rawSha256": "07E58697440E299D7847C96B11336E606D3F08AF6EC2D9336396F968E90110AD",
+      "summarySha256": "78D2D5109A070DA248B42D5981CFBA912DB5BADAE7E5E24C918E804388FAA24C",
+      "playerLogSha256": "73C46B2E7F1788CEC24772DD59B6230FD70EC8A3F40790633F6DD1EA6F6BA14C"
+    },
+    {
+      "case": "C04-G2-04",
+      "playerNativeExit": 0,
+      "verifierNativeExit": 0,
+      "positive": "Applied KanDeclared version 0->1",
+      "negative": "Rejected TILE_TRANSITION_REJECTED version 0->0 events 0->0 physicalStable true",
+      "rawSha256": "B1140C44465FE25C1402BAE47011000E87B6D2F0DB67F60504168EE22510A800",
+      "summarySha256": "B16E45889A85363DFA1F7D195F947A7A256EDF64ADDE221D626C22B00C8E85F9",
+      "playerLogSha256": "4510EA5E1FB7582AE20E149219C1B715598097454AA29EA0249C5A8E7EBB50F4"
+    }
+  ],
+  "g4ReleaseClaimSupport": {
+    "playerNativeExit": 0,
+    "initialEpoch": 0,
+    "releaseEpoch": 1,
+    "claimEpoch": 2,
+    "oldAiDecision": "local-human-initial",
+    "sameRound": "local-main-r1",
+    "stalePlayerReason": "StaleControlEpoch",
+    "staleAiReason": "StaleControlEpoch",
+    "probeLogSha256": "7EC434538A0AEC7F779537374EEC569E10DB0B74EE5DE5EF214587809F30D902",
+    "playerLogSha256": "45B03E82BBB88A25823A11A20CF678CB01F78CA2BC114F4F3DBF9571F0EE23A0",
+    "scope": "explicit release/claim support only; does not prove disconnect/takeover"
+  },
+  "g8PhysicalInputSupport": {
+    "dpiAware": true,
+    "completed": "Menu->Lobby by physical mouse",
+    "lobbyScreenshot": "ui-physical-r14f-g/lobby.png",
+    "lobbyScreenshotSha256": "D3E32E2D93DB3D7415F714E02A03370D7A9B34DC31588C49D6CE735114E0E4B6",
+    "inputRecordSha256": "242E75EDAF10261C8A7862320F55DC01B332523FE025D8994AA72906B78299BB",
+    "playerLogSha256": "5F8C9569EC96C13A005DDC43838379D99EBC5DBC7C4C6C265DA0CAAC997CB9AF",
+    "tableAttempt": "rejected; foreground owner was desktop rather than Player, so no input was sent",
+    "scope": "partial support only; no wide/tall Table/Settlement capture or complete input-to-authoritative-receipt chain"
+  },
+  "remaining": [
+    "D-1-02: deterministic exhaustive draw/renchan/new roundId; rinshan/added-kan/chankan and complete stale/illegal matrix; true disconnect/takeover; complete actual PlayMode and final Player matrix; final binding of accepted G7-02 support",
+    "D-1-01: wide/tall full-frame UI plus complete DPI-consistent physical input-to-authoritative-receipt workflow",
+    "D-1-05: bridge-frozen clean candidate and one complete package bound to all required 32 Windows rows, full package closure and per-row sealed evidence",
+    "D-1-04: safe offline isolation and egress observation environment remains unavailable; G7-01 stays NOT_RUN"
+  ],
+  "taskAccepted": false
+}

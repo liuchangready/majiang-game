@@ -74,9 +74,53 @@ internal static class Program
         bool wrongDigestRejected = false;
         try { ValidateCanonicalPayload(payload.CopyBytes(), wrongDigest); } catch (InvalidDataException) { wrongDigestRejected = true; }
         if (!wrongDigestRejected) throw new InvalidDataException("Canonical payload digest verifier accepted the unprefixed raw SHA-256.");
-        Console.WriteLine("C04_PROTOBUF_FIXTURE_PASS valid=1 invalid=2 canonicalDigest=PASS wrongDigestRejected=1");
+        BusinessPayload tsumo = new CanonicalPayloadWriter((ushort)CommandKind.SubmitAction)
+            .WriteString(1, "c04-fixture-round")
+            .WriteString(2, "c04-fixture-decision")
+            .WriteUInt64(3, 0)
+            .WriteUInt32(4, (uint)ProtocolActionType.DeclareTsumo)
+            .WriteRepeatedUInt32(6, new uint[] { 12 })
+            .Build();
+        var tsumoParsed = CanonicalPayloadParser.Parse(tsumo.CopyBytes());
+        uint[] tsumoTiles = tsumoParsed.RequireRepeatedUInt32(CommandPayloadFields.TileIds, "tileIds").ToArray();
+        if (!tsumoTiles.SequenceEqual(ExpectedActionTiles("C04-G1-02")))
+            throw new InvalidDataException("Dealer Tsumo fixture does not preserve its exact winning physical entity.");
+        BusinessPayload wrongTsumo = new CanonicalPayloadWriter((ushort)CommandKind.SubmitAction)
+            .WriteString(1, "c04-fixture-round")
+            .WriteString(2, "c04-fixture-decision")
+            .WriteUInt64(3, 0)
+            .WriteUInt32(4, (uint)ProtocolActionType.DeclareTsumo)
+            .WriteRepeatedUInt32(6, new uint[] { 13 })
+            .Build();
+        var wrongTsumoParsed = CanonicalPayloadParser.Parse(wrongTsumo.CopyBytes());
+        bool wrongTsumoTileRejected = !wrongTsumoParsed.RequireRepeatedUInt32(CommandPayloadFields.TileIds, "tileIds")
+            .OrderBy(value => value).SequenceEqual(ExpectedActionTiles("C04-G1-02").OrderBy(value => value));
+        if (!wrongTsumoTileRejected)
+            throw new InvalidDataException("Dealer Tsumo fixture accepted a different winning physical entity.");
+        if (RequiresRejectedActionEvidence("C04-G1-02") ||
+            !RequiresRejectedActionEvidence("C04-G2-01") || !RequiresRejectedActionEvidence("C04-G2-02") ||
+            !RequiresRejectedActionEvidence("C04-G2-03") || !RequiresRejectedActionEvidence("C04-G2-04") ||
+            RequiresRejectedActionEvidence("C04-G2-05"))
+            throw new InvalidDataException("GAME rejected-action evidence contract does not match the fixed G2 action cases.");
+        Console.WriteLine("C04_PROTOBUF_FIXTURE_PASS valid=1 invalid=2 canonicalDigest=PASS wrongDigestRejected=1 caseNegativeContract=G2-only");
         return 0;
     }
+
+    private static bool RequiresRejectedActionEvidence(string caseId) => caseId switch
+    {
+        "C04-G2-01" or "C04-G2-02" or "C04-G2-03" or "C04-G2-04" => true,
+        _ => false
+    };
+
+    private static uint[] ExpectedActionTiles(string caseId) => caseId switch
+    {
+        "C04-G1-02" => new uint[] { 12 },
+        "C04-G2-01" => new uint[] { 0, 1, 2 },
+        "C04-G2-02" => new uint[] { 0, 4, 8 },
+        "C04-G2-03" => new uint[] { 124 },
+        "C04-G2-04" => new uint[] { 0, 1, 2, 3 },
+        _ => throw new InvalidDataException("Unknown fixed C04 action case.")
+    };
 
     private static int MakeMutationFixtures(string sourcePath, string outputDirectory)
     {
@@ -157,6 +201,8 @@ internal static class Program
         byte[] afterCheatBytes = Convert.FromBase64String(afterCheat);
         LocalTableRecoveryFacts baselineFacts = LocalTableRecoveryFactsReader.ReadPersistedFacts(baselineSaveBytes, baselineCheatBytes);
         LocalTableRecoveryFacts afterFacts = LocalTableRecoveryFactsReader.ReadPersistedFacts(afterSaveBytes, afterCheatBytes);
+        if (evidenceSource == "GAME" && RequiresRejectedActionEvidence(RequiredString(evidence, "CaseId")))
+            VerifyRejectedActionEvidence(evidence, baselineFacts);
         Dictionary<int, string> baselinePositions = ReadPhysicalPositions(LocalPlayerActionScenario.ReadPhysicalAudit(baselineSaveBytes, baselineCheatBytes));
         string exactActionAudit = LocalPlayerActionScenario.ReadCommittedActionPhysicalAudit(
             afterSaveBytes,
@@ -167,7 +213,8 @@ internal static class Program
             RequiredUInt64(evidence, "EventCommandVersion"),
             RequiredUInt64(evidence, "EventSeq"),
             RequiredString(evidence, "EventType"),
-            RequiredInt(evidence, "EventSeat"));
+            RequiredInt(evidence, "EventSeat"),
+            RequiredString(evidence, "PayloadSha256"));
         Dictionary<int, string> afterPositions = ReadPhysicalPositions(exactActionAudit);
         int afterActionDeadWallCount = afterPositions.Values.Count(value => value.StartsWith("DEADWALL/", StringComparison.Ordinal));
 
@@ -235,6 +282,7 @@ internal static class Program
             payload.RequireUInt64(CommandPayloadFields.ControlEpochField, "controlEpoch").ToString(CultureInfo.InvariantCulture), "canonical request control epoch");
         uint expectedAction = RequiredString(evidence, "CaseId") switch
         {
+            "C04-G1-02" => (uint)ProtocolActionType.DeclareTsumo,
             "C04-G2-01" => (uint)ProtocolActionType.DeclarePon,
             "C04-G2-02" => (uint)ProtocolActionType.DeclareChi,
             "C04-G2-03" => (uint)ProtocolActionType.DeclareRiichi,
@@ -243,14 +291,7 @@ internal static class Program
         };
         if (payload.RequireUInt32(CommandPayloadFields.ActionType, "actionType") != expectedAction)
             throw new InvalidDataException("Canonical action kind differs from the fixed C04 case.");
-        uint[] expectedTiles = RequiredString(evidence, "CaseId") switch
-        {
-            "C04-G2-01" => new uint[] { 0, 1, 2 },
-            "C04-G2-02" => new uint[] { 0, 4, 8 },
-            "C04-G2-03" => new uint[] { 124 },
-            "C04-G2-04" => new uint[] { 0, 1, 2, 3 },
-            _ => throw new InvalidDataException("Unknown fixed C04 action case.")
-        };
+        uint[] expectedTiles = ExpectedActionTiles(RequiredString(evidence, "CaseId"));
         uint[] actualTiles = payload.HasField(CommandPayloadFields.TileIds)
             ? payload.RequireRepeatedUInt32(CommandPayloadFields.TileIds, "tileIds").ToArray()
             : Array.Empty<uint>();
@@ -327,6 +368,7 @@ internal static class Program
             string expectedCase = RequiredString(evidence, "CaseId");
             int[] owned = expectedCase switch
             {
+                "C04-G1-02" => new[] { 124, 125, 126, 4, 8, 48, 52, 56, 92, 96, 100, 16, 17 },
                 "C04-G2-01" => new[] { 0, 1 },
                 "C04-G2-02" => new[] { 0, 8 },
                 "C04-G2-03" => Array.Empty<int>(),
@@ -389,6 +431,15 @@ internal static class Program
         string caseId = RequiredString(evidence, "CaseId");
         PlayerPrivateView beforeOwn = baseline.PrivateView!;
         PlayerPrivateView afterOwn = after.PrivateView!;
+        if (caseId == "C04-G1-02")
+        {
+            RequirePosition(beforePositions, 12, "HAND/0/", "baseline dealer tsumo draw");
+            RequirePosition(afterPositions, 12, "HAND/0/", "accepted dealer tsumo winner tile");
+            if (!beforeOwn.ClosedTiles.Contains(124U) || !afterOwn.ClosedTiles.Contains(124U) ||
+                !RequiredString(evidence, "EventTileIds").Equals("12", StringComparison.Ordinal))
+                throw new InvalidDataException("Tsumo evidence is not bound to the frozen dealer hand and winning entity 12.");
+            return;
+        }
         string[] expected = caseId switch
         {
             "C04-G2-01" => new[] { "0", "1", "2" },
@@ -555,6 +606,21 @@ internal static class Program
         Equal(RequiredString(evidence, "EventType"), Enum.GetName(typeof(Mahjong.Contracts.ProtocolEventType), checked((int)JsonUInt64(action, "Type"))) ?? string.Empty, "raw typed event kind");
         string tileIds = string.Join(",", JsonRequired(action, "TileIds").EnumerateArray().Select(value => value.GetUInt32().ToString(CultureInfo.InvariantCulture)));
         Equal(RequiredString(evidence, "EventTileIds", true), tileIds, "raw event physical entity list");
+        string expectedEvent = RequiredString(evidence, "CaseId") switch
+        {
+            "C04-G1-02" => nameof(Mahjong.Contracts.ProtocolEventType.TsumoWin),
+            "C04-G2-01" => nameof(Mahjong.Contracts.ProtocolEventType.PonDeclared),
+            "C04-G2-02" => nameof(Mahjong.Contracts.ProtocolEventType.ChiDeclared),
+            "C04-G2-03" => nameof(Mahjong.Contracts.ProtocolEventType.RiichiDeclared),
+            "C04-G2-04" => nameof(Mahjong.Contracts.ProtocolEventType.KanDeclared),
+            _ => throw new InvalidDataException("Unknown fixed C04 action event case.")
+        };
+        Equal(expectedEvent, RequiredString(evidence, "EventType"), "fixed C04 action event");
+        if (RequiredString(evidence, "CaseId") == "C04-G1-02")
+        {
+            Equal("0", RequiredString(evidence, "EventSeat"), "dealer tsumo winner seat");
+            Equal("12", tileIds, "dealer tsumo winning physical entity");
+        }
         Equal(RequiredString(evidence, "ReceiptCommandVersion"), JsonNumber(action, "CommandVersion"), "raw event receipt command version");
         Equal(RequiredString(evidence, "ReceiptEventSeq"), JsonNumber(batch, "EventSeq"), "accepted publication receipt event high-water");
         Equal(RequiredString(evidence, "AcceptanceSequence"), RequiredString(evidence, "AfterAcceptanceSequence"), "accepted publication/after snapshot acceptance sequence");
@@ -567,9 +633,54 @@ internal static class Program
         {
             if (JsonUInt64(action, "TileId") != 124U || JsonUInt64(JsonRequired(action, "Payload"), "DiscardTileId") != 124U)
                 throw new InvalidDataException("Raw RiichiDeclared event does not carry the exact discarded physical entity 124.");
+            if (!JsonRequired(JsonRequired(action, "Payload"), "DoubleRiichi").GetBoolean() ||
+                JsonRequired(evidence, "DoubleRiichiEvent").ValueKind != JsonValueKind.True)
+                throw new InvalidDataException("First uninterrupted Riichi event does not preserve the authoritative double-riichi fact.");
         }
         if (baseline.SessionId != after.SessionId || baseline.RoundId != after.RoundId)
             throw new InvalidDataException("Accepted publication changed the captured Player session/round identity.");
+    }
+
+    private static void VerifyRejectedActionEvidence(JsonElement evidence, LocalTableRecoveryFacts baselineFacts)
+    {
+        byte[] payloadBytes = Convert.FromBase64String(RequiredString(evidence, "RejectedPayloadBase64"));
+        string payloadDigest = RequiredString(evidence, "RejectedPayloadSha256");
+        ValidateCanonicalPayload(payloadBytes, payloadDigest);
+        var payload = CanonicalPayloadParser.Parse(payloadBytes);
+        if (payload.CommandKind != (ushort)CommandKind.SubmitAction ||
+            payload.RequireUInt32(CommandPayloadFields.ActionType, "actionType") != RequiredUInt64(evidence, "PayloadActionType") ||
+            ReadCanonicalString(payload, CommandPayloadFields.RoundIdField, "roundId") != RequiredString(evidence, "BaselineRoundId") ||
+            ReadCanonicalString(payload, CommandPayloadFields.DecisionIdField, "decisionId") != RequiredString(evidence, "BaselineDecisionId") ||
+            payload.RequireUInt64(CommandPayloadFields.ControlEpochField, "controlEpoch") != RequiredUInt64(evidence, "BaselineControlEpoch"))
+            throw new InvalidDataException("Rejected action payload does not bind to the same real Player decision and control epoch.");
+        Equal(RequiredString(evidence, "RejectedScopeId"), RequiredString(evidence, "BaselineScopeId"), "rejected action scope");
+        Equal("Rejected", RequiredString(evidence, "RejectedReceiptStatus"), "negative typed receipt status");
+        Equal("Rejected", RequiredString(evidence, "RejectedReceiptDisposition"), "negative typed receipt disposition");
+        Equal(payloadDigest, RequiredString(evidence, "RejectedReceiptDigest"), "negative receipt canonical payload digest");
+        if (string.IsNullOrWhiteSpace(RequiredString(evidence, "RejectedReceiptReasonCode")) ||
+            JsonRequired(evidence, "RejectedHasCommandVersion").ValueKind != JsonValueKind.False ||
+            JsonRequired(evidence, "RejectedHasEventSeq").ValueKind != JsonValueKind.False)
+            throw new InvalidDataException("Rejected action has no definitive reason or unexpectedly claims an applied version/event.");
+        using JsonDocument rawReceipt = ParseEmbeddedJson(evidence, "RejectedRawReceiptJsonBase64");
+        Equal("Rejected", JsonString(rawReceipt.RootElement, "Status"), "raw rejected receipt status");
+        Equal("Rejected", JsonString(rawReceipt.RootElement, "Disposition"), "raw rejected receipt disposition");
+        Equal(RequiredString(evidence, "RejectedRequestId"), JsonString(rawReceipt.RootElement, "RequestId"), "raw rejected receipt request");
+        Equal(RequiredString(evidence, "RejectedScopeId"), JsonString(rawReceipt.RootElement, "ScopeId"), "raw rejected receipt scope");
+        Equal(payloadDigest, JsonString(rawReceipt.RootElement, "CanonicalPayloadSha256"), "raw rejected receipt digest");
+        Equal("0", JsonNumber(rawReceipt.RootElement, "CommandVersion"), "raw rejected receipt command version");
+        Equal("0", JsonNumber(rawReceipt.RootElement, "EventSeq"), "raw rejected receipt event sequence");
+
+        byte[] afterSave = Convert.FromBase64String(RequiredString(evidence, "RejectedAuthoritySaveBase64"));
+        byte[] afterCheat = Convert.FromBase64String(RequiredString(evidence, "RejectedAuthorityCheatStateBase64"));
+        LocalTableRecoveryFacts afterFacts = LocalTableRecoveryFactsReader.ReadPersistedFacts(afterSave, afterCheat);
+        Equal(RequiredString(evidence, "RejectedStateVersionBefore"), RequiredString(evidence, "RejectedStateVersionAfter"), "negative state version");
+        Equal(RequiredString(evidence, "RejectedEventSeqBefore"), RequiredString(evidence, "RejectedEventSeqAfter"), "negative event sequence");
+        Equal(baselineFacts.StateVersion, afterFacts.StateVersion, "negative authority state version");
+        Equal(baselineFacts.EventSeq, afterFacts.EventSeq, "negative authority event sequence");
+        Equal(RequiredString(evidence, "RejectedPhysicalTilesSha256Before"), RequiredString(evidence, "RejectedPhysicalTilesSha256After"), "negative physical image hash");
+        Equal(baselineFacts.Physical.TilesSha256, afterFacts.Physical.TilesSha256, "negative authority physical image");
+        if (afterFacts.Physical.TileCount != 136 || afterFacts.Physical.UniqueCount != 136)
+            throw new InvalidDataException("Rejected action did not preserve all 136 physical entities.");
     }
 
     private static JsonDocument ParseEmbeddedJson(JsonElement evidence, string name)

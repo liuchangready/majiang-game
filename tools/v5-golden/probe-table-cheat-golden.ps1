@@ -43,7 +43,7 @@
 param(
     [string]$RepoRoot = '',
     [string]$EvidenceRoot = '',
-    [string]$DotnetPath = 'D:/Unity/dotnet/dotnet.exe'
+    [string]$DotnetPath = 'D:/game_dev_tools/dotnet/dotnet.exe'
 )
 
 $ErrorActionPreference = 'Continue'
@@ -225,6 +225,9 @@ if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
     $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 }
 $RepoRoot = (Resolve-Path $RepoRoot).Path
+$goldenMutationProbePriorValue = [Environment]::GetEnvironmentVariable('MAHJONG_GOLDEN_PROBE', 'Process')
+ try {
+& (Join-Path $PSScriptRoot 'enable-golden-mutation-probe.ps1') -RepoRoot $RepoRoot
 $FixtureRelative = 'tests/v5-golden/cheat-v1.json'
 $FixturePath = Join-Path $RepoRoot ($FixtureRelative -replace '/', '\')
 $ProjectPath = Join-Path $RepoRoot 'dotnet/tests/Mahjong.TableRuntime.Tests/Mahjong.TableRuntime.Tests.csproj'
@@ -692,4 +695,9 @@ try {
     exit 0
 } finally {
     Restore-GoldenEnvironment $previousEnvironment
+}
+
+}
+finally {
+    [Environment]::SetEnvironmentVariable('MAHJONG_GOLDEN_PROBE', $goldenMutationProbePriorValue, 'Process')
 }

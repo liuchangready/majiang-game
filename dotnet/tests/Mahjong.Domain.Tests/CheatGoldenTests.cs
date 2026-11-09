@@ -5,6 +5,7 @@ using System.Linq;
 using System.Text.Json;
 using Mahjong.Domain;
 using Mahjong.Domain.Cheat;
+using Mahjong.TestSupport;
 using Xunit;
 
 namespace Mahjong.Domain.Tests
@@ -103,6 +104,7 @@ namespace Mahjong.Domain.Tests
             string path = string.IsNullOrWhiteSpace(overridePath)
                 ? Path.Combine(RepoRoot(), "tests", "v5-golden", "cheat-v1.json")
                 : Path.GetFullPath(overridePath);
+            FrozenGoldenProvenance.AssertFixture("tests/v5-golden/cheat-v1.json", path);
             using JsonDocument doc = JsonDocument.Parse(File.ReadAllBytes(path));
             return doc.RootElement.Clone();
         }

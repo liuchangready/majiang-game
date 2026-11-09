@@ -247,6 +247,24 @@ namespace Mahjong.TableRuntime
                     return "MATCH_COMMAND_REJECTED";
                 case RoundTransitionErrorCode.ForeignSourceState:
                     return "FOREIGN_SOURCE_STATE";
+                case RoundTransitionErrorCode.InvalidMeld:
+                    return "INVALID_MELD";
+                case RoundTransitionErrorCode.MeldNotAllowed:
+                    return "MELD_NOT_ALLOWED";
+                case RoundTransitionErrorCode.RiichiAlreadyDeclared:
+                    return "RIICHI_ALREADY_DECLARED";
+                case RoundTransitionErrorCode.RiichiNotMenzen:
+                    return "RIICHI_NOT_MENZEN";
+                case RoundTransitionErrorCode.RiichiInsufficientPoints:
+                    return "RIICHI_INSUFFICIENT_POINTS";
+                case RoundTransitionErrorCode.RiichiNotTenpai:
+                    return "RIICHI_NOT_TENPAI";
+                case RoundTransitionErrorCode.RiichiWallTooShort:
+                    return "RIICHI_WALL_TOO_SHORT";
+                case RoundTransitionErrorCode.RiichiDiscardLocked:
+                    return "RIICHI_DISCARD_LOCKED";
+                case RoundTransitionErrorCode.KanLimitReached:
+                    return "KAN_LIMIT_REACHED";
                 default:
                     return InternalError;
             }

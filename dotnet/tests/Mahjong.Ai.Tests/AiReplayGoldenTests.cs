@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Text.Json;
 using Mahjong.Domain;
+using Mahjong.TestSupport;
 using Xunit;
 
 namespace Mahjong.Ai.Tests
@@ -38,6 +39,7 @@ namespace Mahjong.Ai.Tests
         {
             string path = ResolvePath();
             Assert.True(File.Exists(path), "Missing golden fixture: " + path);
+            FrozenGoldenProvenance.AssertFixture("tests/v5-golden/ai-v1.json", path);
             return JsonDocument.Parse(File.ReadAllText(path));
         }
     }
@@ -63,6 +65,7 @@ namespace Mahjong.Ai.Tests
         [Fact]
         public void GoldenFixtureHasProvenanceAndTheExpectedV4Cases()
         {
+            FrozenGoldenProvenance.AssertFixture("tests/v5-golden/ai-v1.json");
             using JsonDocument document = LoadFixture();
             JsonElement root = document.RootElement;
 

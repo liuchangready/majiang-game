@@ -1,0 +1,52 @@
+{
+  "round": 5,
+  "sourceCandidate": "7f232051d6643c9a6694b437fb30032eb9de3c32",
+  "parent": "cf477a7497c8c016e540917dab24f7a2d4318c46",
+  "mergeBase": "4523485cfd4ec2b32185a7da5c13f6cbaf54a1e1",
+  "worktreeStatus": "dirty after tests/docs; no clean bridge checkpoint and no final candidate",
+  "dirtySourcePath": "dotnet/tests/Mahjong.LocalHost.Tests/C04PlayerActionChannelTests.cs",
+  "release": {
+    "nativeExit": 0,
+    "total": 196,
+    "passed": 196,
+    "failed": 0,
+    "skipped": 0,
+    "notRun": 0,
+    "xml": "E:/g2-r5-localhost/LocalHost-final5.xml",
+    "xmlSha256": "F9B974D363402F0B29E7147B8A9FB1EA27C0FAD085CC018835BD8E5A47AFF2EB",
+    "buildLog": "E:/g2-r5-localhost/build-final4.log",
+    "buildLogSha256": "3DE736E7EA9DC7F46DA8FD1C8B33819B453EB989DBBFDF3DD2B8279F4B1F8E4C",
+    "testLog": "E:/g2-r5-localhost/LocalHost-final5.log",
+    "testLogSha256": "B183BC463C1EC4125EDA45320BD0E86485570E8D8DDF70297DE83CCC969944B7"
+  },
+  "debug": {
+    "nativeExit": 0,
+    "total": 196,
+    "passed": 196,
+    "failed": 0,
+    "skipped": 0,
+    "notRun": 0,
+    "xml": "E:/g2-r5-debug.xml",
+    "xmlSha256": "255440A0E74A4E1CE1037D11C58166E84F1D64195137B0E289894A3A6EEB125B",
+    "buildLog": "E:/g2-r5-debug-build.log",
+    "buildLogSha256": "D5B709E6FCBFB3BE8BA6AE41C3B4D443E43C91A718C7935FC04E4C6252D623E5",
+    "testLog": "E:/g2-r5-debug-test.log",
+    "testLogSha256": "BE123BA2601DD6C8BA3465F398D307EE5BBA707C36B417A5347716CAA1728A34"
+  },
+  "assertions": [
+    "Pon/Chi/Riichi/Kan illegal entity requests are rejected without command version or event sequence and preserve authority version/event/136-entity hash",
+    "Chi with no legal candidate is rejected with zero authority mutation",
+    "First uninterrupted Riichi accepted event carries DoubleRiichi=true"
+  ],
+  "verdict": "supporting LocalHost component coverage only; D-1-02 remains open; no Windows Player/Census rows upgraded",
+  "preservedNegativeConstructionFailures": [
+    "E:/g2-r5-localhost/LocalHost-linked.xml",
+    "E:/g2-r5-localhost/LocalHost-final.xml",
+    "E:/g2-r5-localhost/LocalHost-final2.xml"
+  ],
+  "preservedNegativeConstructionFailureSha256": [
+    "C4B9CCA41796C05E2B687B571AF4B7704B3CD84F181C814F9118FB05C7DBA7F4",
+    "A99B58C0A361B9AFBEB0A3BEBA38B860E31950006B658FF12444F900A5E0F787",
+    "28C394084BC63C9F0AE2CE33B0F820E1220FE81F665CC1E512BF33823A69CBA7"
+  ]
+}
