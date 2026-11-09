@@ -87,6 +87,14 @@ namespace Mahjong.Unity.UI.Prototype
         private readonly List<Button> _menuButtons = new List<Button>();
         private readonly Dictionary<Button, Vector3> _menuButtonHomePositions = new Dictionary<Button, Vector3>();
         private readonly List<Coroutine> _activeCoroutines = new List<Coroutine>();
+        private readonly List<Tile2D5View> _activeFlyingTiles = new List<Tile2D5View>();
+        private Coroutine? _autoLoopCoroutine;
+
+        private sealed class CoroutineHolder
+        {
+            public Coroutine? Coroutine;
+            public bool IsCompleted;
+        }
 
         private int _selectedHandIndex = -1;
         private bool _isPaused = false;
@@ -134,6 +142,10 @@ namespace Mahjong.Unity.UI.Prototype
         {
             ApplyScreenLayout(false);
             HandleInput();
+            if (_isAutoLooping && !_isAnimating && _autoLoopCoroutine == null)
+            {
+                _autoLoopCoroutine = StartControlledCoroutine(AutoLoopRoutine());
+            }
         }
 
         private void HandleInput()
@@ -368,6 +380,8 @@ namespace Mahjong.Unity.UI.Prototype
             if (_menuBackgroundImage != null) _menuBackgroundImage.gameObject.SetActive(true);
             if (_tableBackgroundImage != null) _tableBackgroundImage.gameObject.SetActive(false);
 
+            SetFlyingTilesVisible(false);
+
             StartMenuEntranceAnimation();
         }
 
@@ -382,7 +396,82 @@ namespace Mahjong.Unity.UI.Prototype
             if (_menuBackgroundImage != null) _menuBackgroundImage.gameObject.SetActive(false);
             if (_tableBackgroundImage != null) _tableBackgroundImage.gameObject.SetActive(true);
 
+            SetFlyingTilesVisible(true);
+
             SetStatus("已进入 2.5D 牌桌原型：支持摸牌、选牌/悬停、打牌入河、立直与自动演示");
+        }
+
+        private void SetFlyingTilesVisible(bool visible)
+        {
+            for (int i = _activeFlyingTiles.Count - 1; i >= 0; i--)
+            {
+                var t = _activeFlyingTiles[i];
+                if (t != null)
+                {
+                    t.gameObject.SetActive(visible);
+                }
+                else
+                {
+                    _activeFlyingTiles.RemoveAt(i);
+                }
+            }
+            if (_stageRoot != null)
+            {
+                for (int i = 0; i < _stageRoot.childCount; i++)
+                {
+                    Transform child = _stageRoot.GetChild(i);
+                    if (child != null && child.GetComponent<Tile2D5View>() != null)
+                    {
+                        child.gameObject.SetActive(visible);
+                    }
+                }
+            }
+        }
+
+        private void RestoreMenuButtonsState()
+        {
+            if (_menuButtons.Count == 0 && _menuPage != null)
+            {
+                BindMenuButtons();
+            }
+
+            for (int i = 0; i < _menuButtons.Count; i++)
+            {
+                var b = _menuButtons[i];
+                if (b != null)
+                {
+                    if (_menuButtonHomePositions.TryGetValue(b, out var homePos))
+                    {
+                        b.transform.localPosition = homePos;
+                    }
+                    b.interactable = true;
+                }
+            }
+        }
+
+        private void ClearFlyingTiles()
+        {
+            for (int i = _activeFlyingTiles.Count - 1; i >= 0; i--)
+            {
+                var t = _activeFlyingTiles[i];
+                if (t != null)
+                {
+                    DestroyImmediate(t.gameObject);
+                }
+            }
+            _activeFlyingTiles.Clear();
+
+            if (_stageRoot != null)
+            {
+                for (int i = _stageRoot.childCount - 1; i >= 0; i--)
+                {
+                    Transform child = _stageRoot.GetChild(i);
+                    if (child != null && child.GetComponent<Tile2D5View>() != null)
+                    {
+                        DestroyImmediate(child.gameObject);
+                    }
+                }
+            }
         }
 
         public void TogglePage()
@@ -441,23 +530,29 @@ namespace Mahjong.Unity.UI.Prototype
 
         private IEnumerator EnterButtonCoroutine(Button button, Vector3 target, float delay)
         {
-            yield return new WaitForSecondsRealtime(delay);
-            if (button == null) yield break;
-            Vector3 start = target + new Vector3(80f, 0f, 0f);
-            float elapsed = 0f;
-            float duration = 0.38f;
-            while (elapsed < duration)
+            try
             {
-                elapsed += Time.unscaledDeltaTime;
-                float t = Mathf.Clamp01(elapsed / duration);
-                float eased = 1f - Mathf.Pow(1f - t, 3f);
-                button.transform.localPosition = Vector3.LerpUnclamped(start, target, eased);
-                yield return null;
+                yield return new WaitForSecondsRealtime(delay);
+                if (button == null) yield break;
+                Vector3 start = target + new Vector3(80f, 0f, 0f);
+                float elapsed = 0f;
+                float duration = 0.38f;
+                while (elapsed < duration)
+                {
+                    elapsed += Time.unscaledDeltaTime;
+                    float t = Mathf.Clamp01(elapsed / duration);
+                    float eased = 1f - Mathf.Pow(1f - t, 3f);
+                    button.transform.localPosition = Vector3.LerpUnclamped(start, target, eased);
+                    yield return null;
+                }
             }
-            if (button != null)
+            finally
             {
-                button.transform.localPosition = target;
-                button.interactable = true;
+                if (button != null)
+                {
+                    button.transform.localPosition = target;
+                    button.interactable = true;
+                }
             }
         }
 
@@ -544,7 +639,10 @@ namespace Mahjong.Unity.UI.Prototype
         {
             StopAllCoroutines();
             _activeCoroutines.Clear();
+            _autoLoopCoroutine = null;
             _isAnimating = false;
+            ClearFlyingTiles();
+            RestoreMenuButtonsState();
         }
 
         private void RebuildHandTiles()
@@ -833,9 +931,21 @@ namespace Mahjong.Unity.UI.Prototype
             {
                 _autoButtonText.text = _isAutoLooping ? "⏹ 停止自动" : "▶ 自动演示";
             }
-            if (_isAutoLooping && !_isAnimating)
+            if (_isAutoLooping)
             {
-                StartControlledCoroutine(AutoLoopRoutine());
+                if (!_isAnimating && _autoLoopCoroutine == null)
+                {
+                    _autoLoopCoroutine = StartControlledCoroutine(AutoLoopRoutine());
+                }
+            }
+            else
+            {
+                if (_autoLoopCoroutine != null)
+                {
+                    StopCoroutine(_autoLoopCoroutine);
+                    _activeCoroutines.Remove(_autoLoopCoroutine);
+                    _autoLoopCoroutine = null;
+                }
             }
             SetStatus(_isAutoLooping ? "自动演示已启动：将循环演示【摸牌 -> 选牌悬停 -> 打牌入河 -> 理牌】" : "自动演示已停止");
         }
@@ -869,30 +979,56 @@ namespace Mahjong.Unity.UI.Prototype
             SetStatus("动画速度切换为：" + _animationSpeedMultiplier.ToString("0.0") + "x");
         }
 
-        private void StartControlledCoroutine(IEnumerator routine)
+        private Coroutine StartControlledCoroutine(IEnumerator routine)
         {
-            Coroutine c = StartCoroutine(WrapControlledRoutine(routine));
-            _activeCoroutines.Add(c);
+            var holder = new CoroutineHolder();
+            Coroutine c = StartCoroutine(WrapControlledRoutine(routine, holder));
+            holder.Coroutine = c;
+            if (!holder.IsCompleted)
+            {
+                _activeCoroutines.Add(c);
+            }
+            return c;
         }
 
-        private IEnumerator WrapControlledRoutine(IEnumerator routine)
+        private IEnumerator WrapControlledRoutine(IEnumerator routine, CoroutineHolder holder)
         {
-            while (true)
+            try
             {
-                while (_isPaused) yield return null;
-                bool hasNext = false;
-                try
+                while (true)
                 {
-                    hasNext = routine.MoveNext();
+                    while (_isPaused) yield return null;
+                    bool hasNext = false;
+                    try
+                    {
+                        hasNext = routine.MoveNext();
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.LogException(ex);
+                        _isAnimating = false;
+                        yield break;
+                    }
+                    if (!hasNext) break;
+                    yield return routine.Current;
                 }
-                catch (Exception ex)
+            }
+            finally
+            {
+                holder.IsCompleted = true;
+                if (holder.Coroutine != null)
                 {
-                    Debug.LogException(ex);
-                    _isAnimating = false;
-                    yield break;
+                    _activeCoroutines.Remove(holder.Coroutine);
                 }
-                if (!hasNext) break;
-                yield return routine.Current;
+                CheckAutoLoopResume();
+            }
+        }
+
+        private void CheckAutoLoopResume()
+        {
+            if (_isAutoLooping && !_isAnimating && _autoLoopCoroutine == null)
+            {
+                _autoLoopCoroutine = StartControlledCoroutine(AutoLoopRoutine());
             }
         }
 
@@ -961,50 +1097,60 @@ namespace Mahjong.Unity.UI.Prototype
             );
             drawingTile.transform.position = wallStartWorld;
             drawingTile.transform.SetAsLastSibling();
+            _activeFlyingTiles.Add(drawingTile);
+            if (_activePage == "menu") drawingTile.gameObject.SetActive(false);
 
             float duration = 0.45f;
             float elapsed = 0f;
             RectTransform rt = drawingTile.GetComponent<RectTransform>();
 
-            while (elapsed < duration)
+            try
             {
-                while (_isPaused) yield return null;
-                elapsed += Time.unscaledDeltaTime * _animationSpeedMultiplier;
-                float t = Mathf.Clamp01(elapsed / duration);
-
-                float eased = 1f - Mathf.Pow(1f - t, 2.5f);
-                Vector3 curWorld = Vector3.Lerp(wallStartWorld, handTargetWorld, eased);
-                float arc = Mathf.Sin(t * Mathf.PI) * 45f;
-
-                drawingTile.transform.position = curWorld + new Vector3(0f, arc, 0f);
-                rt.sizeDelta = Vector2.Lerp(new Vector2(40, 56), new Vector2(52, 74), t);
-
-                if (t > 0.6f && drawingTile.Mode != Tile2D5Mode.Standing)
+                while (elapsed < duration)
                 {
-                    drawingTile.SetMode(Tile2D5Mode.Standing, faceSprite);
+                    while (_isPaused) yield return null;
+                    elapsed += Time.unscaledDeltaTime * _animationSpeedMultiplier;
+                    float t = Mathf.Clamp01(elapsed / duration);
+
+                    float eased = 1f - Mathf.Pow(1f - t, 2.5f);
+                    Vector3 curWorld = Vector3.Lerp(wallStartWorld, handTargetWorld, eased);
+                    float arc = Mathf.Sin(t * Mathf.PI) * 45f;
+
+                    drawingTile.transform.position = curWorld + new Vector3(0f, arc, 0f);
+                    rt.sizeDelta = Vector2.Lerp(new Vector2(40, 56), new Vector2(52, 74), t);
+
+                    if (t > 0.6f && drawingTile.Mode != Tile2D5Mode.Standing)
+                    {
+                        drawingTile.SetMode(Tile2D5Mode.Standing, faceSprite);
+                    }
+
+                    yield return null;
                 }
 
-                yield return null;
-            }
+                if (_handTrayRoot != null)
+                {
+                    drawingTile.transform.SetParent(_handTrayRoot, false);
+                    rt.anchorMin = new Vector2(0, 1);
+                    rt.anchorMax = new Vector2(0, 1);
+                    rt.pivot = new Vector2(0, 1);
+                    rt.anchoredPosition = new Vector2(16 + 13 * 54 + 18, -18);
+                }
+                rt.sizeDelta = new Vector2(52, 74);
+                drawingTile.SetMode(Tile2D5Mode.Standing, faceSprite);
+                drawingTile.gameObject.SetActive(true);
+                drawingTile.SetInteractive(true, true);
+                drawingTile.ClearClickListeners();
+                drawingTile.Clicked += OnTileClicked;
+                _drawnTile = drawingTile;
 
-            if (_handTrayRoot != null)
+                yield return WaitWithSpeed(0.08f);
+                SetStatus("【摸牌完成】：摸入 [" + drawnName + "]，手牌共有 14 张，有 18px 独立摸牌间隙");
+            }
+            finally
             {
-                drawingTile.transform.SetParent(_handTrayRoot, false);
-                rt.anchorMin = new Vector2(0, 1);
-                rt.anchorMax = new Vector2(0, 1);
-                rt.pivot = new Vector2(0, 1);
-                rt.anchoredPosition = new Vector2(16 + 13 * 54 + 18, -18);
+                _activeFlyingTiles.Remove(drawingTile);
+                _isAnimating = false;
             }
-            rt.sizeDelta = new Vector2(52, 74);
-            drawingTile.SetMode(Tile2D5Mode.Standing, faceSprite);
-            drawingTile.SetInteractive(true, true);
-            drawingTile.ClearClickListeners();
-            drawingTile.Clicked += OnTileClicked;
-            _drawnTile = drawingTile;
-
-            yield return WaitWithSpeed(0.08f);
-            SetStatus("【摸牌完成】：摸入 [" + drawnName + "]，手牌共有 14 张，有 18px 独立摸牌间隙");
-            _isAnimating = false;
         }
 
         private IEnumerator AnimateHoverWaveRoutine()
@@ -1012,22 +1158,28 @@ namespace Mahjong.Unity.UI.Prototype
             _isAnimating = true;
             SetStatus("【选牌/悬停演示】：手牌逐张升起 18px 2.5D 高度，投影扩展并点亮倒角高光...");
 
-            for (int i = 0; i < _handTiles.Count; i++)
+            try
             {
-                if (_handTiles[i] != null) _handTiles[i].SetHovered(true, true);
-                yield return WaitWithSpeed(0.12f);
-                if (_handTiles[i] != null) _handTiles[i].SetHovered(false, true);
-            }
+                for (int i = 0; i < _handTiles.Count; i++)
+                {
+                    if (_handTiles[i] != null) _handTiles[i].SetHovered(true, true);
+                    yield return WaitWithSpeed(0.06f);
+                    if (_handTiles[i] != null) _handTiles[i].SetHovered(false, true);
+                }
 
-            if (_drawnTile != null)
+                if (_drawnTile != null)
+                {
+                    _drawnTile.SetHovered(true, true);
+                    yield return WaitWithSpeed(0.08f);
+                    if (_drawnTile != null) _drawnTile.SetHovered(false, true);
+                }
+
+                SetStatus("【悬停演示完成】：光标移上任意手牌可实时体验 2.5D 上浮与阴影缩放");
+            }
+            finally
             {
-                _drawnTile.SetHovered(true, true);
-                yield return WaitWithSpeed(0.18f);
-                if (_drawnTile != null) _drawnTile.SetHovered(false, true);
+                _isAnimating = false;
             }
-
-            SetStatus("【悬停演示完成】：光标移上任意手牌可实时体验 2.5D 上浮与阴影缩放");
-            _isAnimating = false;
         }
 
         private IEnumerator AnimateDiscardRoutine(bool isRiichi)
@@ -1090,67 +1242,77 @@ namespace Mahjong.Unity.UI.Prototype
             Transform animParent = _stageRoot != null ? _stageRoot : transform;
             tileToDiscard.transform.SetParent(animParent, true);
             tileToDiscard.transform.SetAsLastSibling();
+            _activeFlyingTiles.Add(tileToDiscard);
+            if (_activePage == "menu") tileToDiscard.gameObject.SetActive(false);
 
             RectTransform discardRt = tileToDiscard.GetComponent<RectTransform>();
 
             float duration = 0.40f;
             float elapsed = 0f;
-            while (elapsed < duration)
+
+            try
             {
-                while (_isPaused) yield return null;
-                elapsed += Time.unscaledDeltaTime * _animationSpeedMultiplier;
-                float t = Mathf.Clamp01(elapsed / duration);
-                float eased = 1f - Mathf.Pow(1f - t, 2.5f);
-
-                Vector3 curWorld = Vector3.Lerp(startWorldPos, targetWorldPos, eased);
-                float arc = Mathf.Sin(t * Mathf.PI) * 40f;
-                tileToDiscard.transform.position = curWorld + new Vector3(0f, arc, 0f);
-
-                discardRt.sizeDelta = Vector2.Lerp(new Vector2(52, 74), new Vector2(34, 44), t);
-
-                if (t > 0.4f && tileToDiscard.Mode != Tile2D5Mode.FlatFront)
+                while (elapsed < duration)
                 {
-                    Sprite? face = (_tiles.Length > tileIndex && tileIndex >= 0) ? _tiles[tileIndex] : null;
-                    tileToDiscard.SetMode(Tile2D5Mode.FlatFront, face, isRiichi);
+                    while (_isPaused) yield return null;
+                    elapsed += Time.unscaledDeltaTime * _animationSpeedMultiplier;
+                    float t = Mathf.Clamp01(elapsed / duration);
+                    float eased = 1f - Mathf.Pow(1f - t, 2.5f);
+
+                    Vector3 curWorld = Vector3.Lerp(startWorldPos, targetWorldPos, eased);
+                    float arc = Mathf.Sin(t * Mathf.PI) * 40f;
+                    tileToDiscard.transform.position = curWorld + new Vector3(0f, arc, 0f);
+
+                    discardRt.sizeDelta = Vector2.Lerp(new Vector2(52, 74), new Vector2(34, 44), t);
+
+                    if (t > 0.4f && tileToDiscard.Mode != Tile2D5Mode.FlatFront)
+                    {
+                        Sprite? face = (_tiles.Length > tileIndex && tileIndex >= 0) ? _tiles[tileIndex] : null;
+                        tileToDiscard.SetMode(Tile2D5Mode.FlatFront, face, isRiichi);
+                    }
+
+                    yield return null;
                 }
 
-                yield return null;
+                tileToDiscard.transform.position = targetWorldPos;
+
+                if (discardIndex == 13)
+                {
+                    _drawnTile = null;
+                }
+                else if (discardIndex >= 0 && discardIndex < _handTiles.Count)
+                {
+                    _handTiles.RemoveAt(discardIndex);
+                }
+                Destroy(tileToDiscard.gameObject);
+
+                AddTileToRiverP0(tileIndex, isRiichi);
+
+                if (isRiichi && _riichiStickImage != null)
+                {
+                    _riichiStickImage.gameObject.SetActive(true);
+                    RectTransform stickRt = _riichiStickImage.GetComponent<RectTransform>();
+                    stickRt.localScale = new Vector3(1.4f, 1.4f, 1f);
+                    yield return WaitWithSpeed(0.08f);
+                    stickRt.localScale = Vector3.one;
+                }
+
+                if (discardIndex != 13 && _drawnTile != null)
+                {
+                    _handTiles.Add(_drawnTile);
+                    _drawnTile = null;
+                }
+
+                yield return RealignHandTilesRoutine();
+
+                _selectedHandIndex = -1;
+                SetStatus("【打牌完成】：[" + discardName + "] 已入河，手牌理牌对齐完成" + (isRiichi ? "，立直棒已就位" : ""));
             }
-
-            tileToDiscard.transform.position = targetWorldPos;
-
-            if (discardIndex == 13)
+            finally
             {
-                _drawnTile = null;
+                _activeFlyingTiles.Remove(tileToDiscard);
+                _isAnimating = false;
             }
-            else if (discardIndex >= 0 && discardIndex < _handTiles.Count)
-            {
-                _handTiles.RemoveAt(discardIndex);
-            }
-            Destroy(tileToDiscard.gameObject);
-
-            AddTileToRiverP0(tileIndex, isRiichi);
-
-            if (isRiichi && _riichiStickImage != null)
-            {
-                _riichiStickImage.gameObject.SetActive(true);
-                RectTransform stickRt = _riichiStickImage.GetComponent<RectTransform>();
-                stickRt.localScale = new Vector3(1.4f, 1.4f, 1f);
-                yield return WaitWithSpeed(0.08f);
-                stickRt.localScale = Vector3.one;
-            }
-
-            if (discardIndex != 13 && _drawnTile != null)
-            {
-                _handTiles.Add(_drawnTile);
-                _drawnTile = null;
-            }
-
-            yield return RealignHandTilesRoutine();
-
-            _selectedHandIndex = -1;
-            SetStatus("【打牌完成】：[" + discardName + "] 已入河，手牌理牌对齐完成" + (isRiichi ? "，立直棒已就位" : ""));
-            _isAnimating = false;
         }
 
         private IEnumerator RealignHandTilesRoutine()
@@ -1195,35 +1357,42 @@ namespace Mahjong.Unity.UI.Prototype
 
         private IEnumerator AutoLoopRoutine()
         {
-            while (_isAutoLooping)
+            try
             {
-                if (_drawnTile == null)
+                while (_isAutoLooping)
                 {
-                    yield return AnimateDrawRoutine();
+                    if (_drawnTile == null)
+                    {
+                        yield return AnimateDrawRoutine();
+                        yield return WaitWithSpeed(0.5f);
+                    }
+
+                    if (!_isAutoLooping) break;
+
+                    yield return AnimateHoverWaveRoutine();
+                    yield return WaitWithSpeed(0.2f);
+
+                    if (!_isAutoLooping) break;
+
+                    yield return AnimateDiscardRoutine(_riverTilesP0.Count == 5);
                     yield return WaitWithSpeed(0.6f);
+
+                    if (_riverTilesP0.Count >= 18)
+                    {
+                        SetStatus("【自动循环】：对局已满 18 巡，牌桌重置并开启新一局演示...");
+                        RebuildRiverP0();
+                        RebuildMelds();
+                        RebuildWall();
+                        _remainingWallTiles = 69;
+                        if (_wallCountText != null) _wallCountText.text = "東1局\n本0 供0\n牌山 69";
+                        if (_riichiStickImage != null) _riichiStickImage.gameObject.SetActive(false);
+                        yield return WaitWithSpeed(0.8f);
+                    }
                 }
-
-                if (!_isAutoLooping) break;
-
-                yield return AnimateHoverWaveRoutine();
-                yield return WaitWithSpeed(0.4f);
-
-                if (!_isAutoLooping) break;
-
-                yield return AnimateDiscardRoutine(_riverTilesP0.Count == 5);
-                yield return WaitWithSpeed(0.8f);
-
-                if (_riverTilesP0.Count >= 18)
-                {
-                    SetStatus("【自动循环】：对局已满 18 巡，牌桌重置并开启新一局演示...");
-                    RebuildRiverP0();
-                    RebuildMelds();
-                    RebuildWall();
-                    _remainingWallTiles = 69;
-                    if (_wallCountText != null) _wallCountText.text = "東1局\n本0 供0\n牌山 69";
-                    if (_riichiStickImage != null) _riichiStickImage.gameObject.SetActive(false);
-                    yield return WaitWithSpeed(1.0f);
-                }
+            }
+            finally
+            {
+                _autoLoopCoroutine = null;
             }
         }
 
