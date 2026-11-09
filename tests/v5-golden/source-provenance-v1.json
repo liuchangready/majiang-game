@@ -6,61 +6,117 @@
                          "path":  "tests/v5-golden/ai-discard-flags-v1.json",
                          "sha256":  "448bab14def9809dbdcc4be1148cd53370fee1a44541535794ac7dfbe5b5cbe8",
                          "historicalCommit":  "3f5370c30983a4047dade0835bb2c49dacc5ebbf",
-                         "sourceCount":  9
+                         "sourceCount":  9,
+                         "sourceHashesRequired":  true
                      },
                      {
                          "path":  "tests/v5-golden/ai-v1.json",
                          "sha256":  "4ece5eba95851ff2bbced3a109a16dfe1e308494d7557583ef192bc6bece52a2",
                          "historicalCommit":  "3f5370c30983a4047dade0835bb2c49dacc5ebbf",
-                         "sourceCount":  7
+                         "sourceCount":  7,
+                         "generator":  "engine/src/test/kotlin/com/majiang/state/V5AiGoldenExporterTest.kt",
+                         "generatedByCommand":  "$env:V5_AI_GOLDEN_EXPORT=\u00271\u0027; .\\gradlew.bat :engine:test --tests \"com.majiang.state.V5AiGoldenExporterTest\" --console=plain",
+                         "acceptedGeneratorCommands":  [
+                                                           "$env:V5_AI_GOLDEN_EXPORT=\u00271\u0027; .\\gradlew.bat :engine:test --tests \"com.majiang.state.V5AiGoldenExporterTest\" --console=plain"
+                                                       ],
+                         "sourceHashesRequired":  true
                      },
                      {
                          "path":  "tests/v5-golden/cheat-v1.json",
                          "sha256":  "3b33824f53e6e5808d2475cc212fcf3a914bbb5df9a1a367bf2078a252f1f68d",
                          "historicalCommit":  "a96c195c852e035ff6434584135718bbb8a05d29",
-                         "sourceCount":  1
+                         "sourceCount":  1,
+                         "generator":  "engine/src/test/kotlin/com/majiang/v3/V5CheatGoldenExporterTest.kt",
+                         "generatedByCommand":  "V5_CHEAT_GOLDEN_EXPORT=1 ./gradlew :engine:test --tests com.majiang.v3.V5CheatGoldenExporterTest --console=plain",
+                         "acceptedGeneratorCommands":  [
+                                                           "V5_CHEAT_GOLDEN_EXPORT=1 ./gradlew :engine:test --tests com.majiang.v3.V5CheatGoldenExporterTest --console=plain"
+                                                       ],
+                         "sourceHashesRequired":  false
                      },
                      {
                          "path":  "tests/v5-golden/movement-v1.json",
                          "sha256":  "c2d5469e6c532476e5da48c4478e7c080a401b7f2f41f095b7a8b880ab6c7c13",
                          "historicalCommit":  "d6bc69fa930d005b355a1273ec732fbdf82bbe2f",
-                         "sourceCount":  11
+                         "sourceCount":  11,
+                         "generator":  "engine/src/test/kotlin/com/majiang/model/V5TileMovementGoldenExporterTest.kt",
+                         "generatedByCommand":  "$env:V5_MOVEMENT_GOLDEN_EXPORT=\u00271\u0027; .\\gradlew.bat :engine:test --tests \"com.majiang.model.V5TileMovementGoldenExporterTest\" --rerun-tasks --console=plain",
+                         "acceptedGeneratorCommands":  [
+                                                           "$env:V5_MOVEMENT_GOLDEN_EXPORT=\u00271\u0027; .\\gradlew.bat :engine:test --tests \"com.majiang.model.V5TileMovementGoldenExporterTest\" --rerun-tasks --console=plain",
+                                                           "V5_MOVEMENT_GOLDEN_EXPORT=1 ./gradlew :engine:test --tests \"com.majiang.model.V5TileMovementGoldenExporterTest\" --rerun-tasks --console=plain"
+                                                       ],
+                         "sourceHashesRequired":  true
                      },
                      {
                          "path":  "tests/v5-golden/physical-v1.json",
                          "sha256":  "21a3c4c84604cd6e873b0346632d765e232704be988247f3c93d0d6d679160f2",
                          "historicalCommit":  "32f645ec9b134e9ad261a2df89437416b20b3119",
-                         "sourceCount":  9
+                         "sourceCount":  9,
+                         "generator":  "engine/src/test/kotlin/com/majiang/model/V5PhysicalGoldenExporterTest.kt",
+                         "generatedByCommand":  "$env:V5_PHYSICAL_GOLDEN_EXPORT=\u00271\u0027; .\\gradlew.bat :engine:test --tests \"com.majiang.model.V5PhysicalGoldenExporterTest\" --console=plain",
+                         "acceptedGeneratorCommands":  [
+                                                           "$env:V5_PHYSICAL_GOLDEN_EXPORT=\u00271\u0027; .\\gradlew.bat :engine:test --tests \"com.majiang.model.V5PhysicalGoldenExporterTest\" --console=plain"
+                                                       ],
+                         "sourceHashesRequired":  true
                      },
                      {
                          "path":  "tests/v5-golden/round-v1.json",
                          "sha256":  "2a8b06bcbef91099c3c110d926c865590eb6af7a782ea73910092405c34764aa",
                          "historicalCommit":  "3f5370c30983a4047dade0835bb2c49dacc5ebbf",
-                         "sourceCount":  6
+                         "sourceCount":  6,
+                         "generator":  "engine/src/test/kotlin/com/majiang/rules/V5RoundGoldenExportTest.kt",
+                         "generatedByCommand":  "$env:V5_ROUND_GOLDEN_EXPORT=\u00271\u0027; .\\gradlew.bat :engine:test --tests \"com.majiang.rules.V5RoundGoldenExportTest\" --console=plain",
+                         "acceptedGeneratorCommands":  [
+                                                           "$env:V5_ROUND_GOLDEN_EXPORT=\u00271\u0027; .\\gradlew.bat :engine:test --tests \"com.majiang.rules.V5RoundGoldenExportTest\" --console=plain"
+                                                       ],
+                         "sourceHashesRequired":  false
                      },
                      {
                          "path":  "tests/v5-golden/scoring-v1.json",
                          "sha256":  "a38dcc19c7fa82ef274186658db32994eb763948ba12a91a1989e8f734dc369e",
                          "historicalCommit":  "97831c88f664a0ff6589b7fa062464d2ca057e29",
-                         "sourceCount":  5
+                         "sourceCount":  5,
+                         "generator":  "engine/src/test/kotlin/com/majiang/rules/V5ScoringGoldenExporterTest.kt",
+                         "generatedByCommand":  "$env:V5_GOLDEN_EXPORT=\u00271\u0027; .\\gradlew.bat :engine:test --tests \"com.majiang.rules.V5ScoringGoldenExporterTest\" --console=plain",
+                         "acceptedGeneratorCommands":  [
+                                                           "$env:V5_GOLDEN_EXPORT=\u00271\u0027; .\\gradlew.bat :engine:test --tests \"com.majiang.rules.V5ScoringGoldenExporterTest\" --console=plain"
+                                                       ],
+                         "sourceHashesRequired":  false
                      },
                      {
                          "path":  "tests/v5-golden/shuffle-reversed-v1.json",
                          "sha256":  "5a5ea43f774e8341d740e6b5840aafd4b671aedff9830d59da161d758c14b619",
                          "historicalCommit":  "03084f08af6e2ddefa2ebc6e094de5dac2474fd4",
-                         "sourceCount":  10
+                         "sourceCount":  10,
+                         "generator":  "engine/src/test/kotlin/com/majiang/v3/V5ShuffleReversedGoldenExporterTest.kt",
+                         "generatedByCommand":  "V5_SHUFFLE_REVERSED_GOLDEN_EXPORT=1 ./gradlew :engine:test --tests \"com.majiang.v3.V5ShuffleReversedGoldenExporterTest\" --console=plain",
+                         "acceptedGeneratorCommands":  [
+                                                           "V5_SHUFFLE_REVERSED_GOLDEN_EXPORT=1 ./gradlew :engine:test --tests \"com.majiang.v3.V5ShuffleReversedGoldenExporterTest\" --console=plain"
+                                                       ],
+                         "sourceHashesRequired":  true
                      },
                      {
                          "path":  "tests/v5-golden/shuffle-v1.json",
                          "sha256":  "eb1fcce7a11330721aff5042c73e7140e229a815b83f8202de3c17312788b4b4",
                          "historicalCommit":  "37b4dd610c5e7908dc4938378278c1475e0eee73",
-                         "sourceCount":  1
+                         "sourceCount":  1,
+                         "generator":  "engine/src/test/kotlin/com/majiang/v3/V5ShuffleGoldenExporterTest.kt",
+                         "generatedByCommand":  "V5_SHUFFLE_GOLDEN_EXPORT=1 ./gradlew :engine:test --tests \\\"com.majiang.v3.V5ShuffleGoldenExporterTest\\\" --console=plain",
+                         "acceptedGeneratorCommands":  [
+                                                           "V5_SHUFFLE_GOLDEN_EXPORT=1 ./gradlew :engine:test --tests \\\"com.majiang.v3.V5ShuffleGoldenExporterTest\\\" --console=plain"
+                                                       ],
+                         "sourceHashesRequired":  false
                      },
                      {
                          "path":  "tests/v5-golden/visibility-v1.json",
                          "sha256":  "30291ec270efb6f2a7d8c6984d53e7ae2dbd5ae45a41a7114ee69288749f346e",
                          "historicalCommit":  "e8a9e9adc401becef6d05d4cf5de972e998df976",
-                         "sourceCount":  11
+                         "sourceCount":  11,
+                         "generator":  "engine/src/test/kotlin/com/majiang/projection/V5VisibilityGoldenExporterTest.kt",
+                         "generatedByCommand":  "$env:V5_VISIBILITY_GOLDEN_EXPORT=\u00271\u0027; .\\gradlew.bat :engine:test --tests \"com.majiang.projection.V5VisibilityGoldenExporterTest\" --rerun-tasks --console=plain",
+                         "acceptedGeneratorCommands":  [
+                                                           "$env:V5_VISIBILITY_GOLDEN_EXPORT=\u00271\u0027; .\\gradlew.bat :engine:test --tests \"com.majiang.projection.V5VisibilityGoldenExporterTest\" --rerun-tasks --console=plain"
+                                                       ],
+                         "sourceHashesRequired":  true
                      }
                  ],
     "sources":  [
@@ -68,223 +124,260 @@
                         "fixture":  "tests/v5-golden/ai-discard-flags-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/event/GameEvent.kt",
                         "commit":  "3f5370c30983a4047dade0835bb2c49dacc5ebbf",
-                        "gitBlobSha1":  "ba22ca0d1cf3b22b099abdbed9fb637dd27a399f"
+                        "gitBlobSha1":  "ba22ca0d1cf3b22b099abdbed9fb637dd27a399f",
+                        "sha256LfNormalized":  "7911872e7639e790b643c276d7372375a08a090acd97cce49acb4591f20d9c25"
                     },
                     {
                         "fixture":  "tests/v5-golden/ai-discard-flags-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/model/Meld.kt",
                         "commit":  "3f5370c30983a4047dade0835bb2c49dacc5ebbf",
-                        "gitBlobSha1":  "f89c096e0de4e9660db3e23e47fb324479932252"
+                        "gitBlobSha1":  "f89c096e0de4e9660db3e23e47fb324479932252",
+                        "sha256LfNormalized":  "3849948cb752c1ec3b66df71a9c9a93be666a6ba56b8174cde51a97381fafb19"
                     },
                     {
                         "fixture":  "tests/v5-golden/ai-discard-flags-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/model/PlayerHand.kt",
                         "commit":  "3f5370c30983a4047dade0835bb2c49dacc5ebbf",
-                        "gitBlobSha1":  "e48b3400cec8132e116d18ae2e326ced5da6ee44"
+                        "gitBlobSha1":  "e48b3400cec8132e116d18ae2e326ced5da6ee44",
+                        "sha256LfNormalized":  "8218dcd2777515b5487894e7190402e030c2ef1cfe5f302205e28de90e6925d6"
                     },
                     {
                         "fixture":  "tests/v5-golden/ai-discard-flags-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/model/Tile.kt",
                         "commit":  "3f5370c30983a4047dade0835bb2c49dacc5ebbf",
-                        "gitBlobSha1":  "656f09d3af385b1315dce0dae3e8692b0c694899"
+                        "gitBlobSha1":  "656f09d3af385b1315dce0dae3e8692b0c694899",
+                        "sha256LfNormalized":  "c65d42c2fc9b68eccea6ac3402ee7a9786d0f3c58f92932f3a86921e45dcea45"
                     },
                     {
                         "fixture":  "tests/v5-golden/ai-discard-flags-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/model/TileMovement.kt",
                         "commit":  "3f5370c30983a4047dade0835bb2c49dacc5ebbf",
-                        "gitBlobSha1":  "b987d0bcfbeafaebdb8e6ff9e819c51f938ff29c"
+                        "gitBlobSha1":  "b987d0bcfbeafaebdb8e6ff9e819c51f938ff29c",
+                        "sha256LfNormalized":  "f89cf112dad6404b679002438f1a3f6a1a222d7e4377dc247c2580c15336a4e0"
                     },
                     {
                         "fixture":  "tests/v5-golden/ai-discard-flags-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/round/RoundTransitionPlanner.kt",
                         "commit":  "3f5370c30983a4047dade0835bb2c49dacc5ebbf",
-                        "gitBlobSha1":  "5db238f6c88626db62d61143d030403c7f9d9a15"
+                        "gitBlobSha1":  "5db238f6c88626db62d61143d030403c7f9d9a15",
+                        "sha256LfNormalized":  "ea7a444e1e0a311c0ec5afb6046551e0a83a32442a4248ae0dff1ca92f4dff62"
                     },
                     {
                         "fixture":  "tests/v5-golden/ai-discard-flags-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/session/PlayerView.kt",
                         "commit":  "3f5370c30983a4047dade0835bb2c49dacc5ebbf",
-                        "gitBlobSha1":  "ef66007d7512d2f3291b9b2f3da6221f45b4ab7b"
+                        "gitBlobSha1":  "ef66007d7512d2f3291b9b2f3da6221f45b4ab7b",
+                        "sha256LfNormalized":  "2398b660f3f2ef64427b2be2b3eb6d162a3bfdfda92af0150b1df3cc3645b07d"
                     },
                     {
                         "fixture":  "tests/v5-golden/ai-discard-flags-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/state/GameAction.kt",
                         "commit":  "3f5370c30983a4047dade0835bb2c49dacc5ebbf",
-                        "gitBlobSha1":  "6cbc23281cca73267f521af255d602e96c9f6635"
+                        "gitBlobSha1":  "6cbc23281cca73267f521af255d602e96c9f6635",
+                        "sha256LfNormalized":  "94cc1eca043bb6dfd4fbe05db24d841f34e11a99686ab9add98ef878b97b243c"
                     },
                     {
                         "fixture":  "tests/v5-golden/ai-discard-flags-v1.json",
                         "path":  "engine/src/test/kotlin/com/majiang/state/V5AiDiscardFlagsGoldenExporterTest.kt",
                         "commit":  "daa834a45fb651b786fc4f13a3d1edfc4d8d4a39",
-                        "gitBlobSha1":  "f5dd9afe3d80a0ddd5b7b3ca7bad4cd27e2ff60e"
+                        "gitBlobSha1":  "f5dd9afe3d80a0ddd5b7b3ca7bad4cd27e2ff60e",
+                        "sha256LfNormalized":  "3a38d87dc9f411b763c0fe1a961178af9b683258a576495068e14cf2bcb7ee57"
                     },
                     {
                         "fixture":  "tests/v5-golden/ai-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/ai/AiDecisionModels.kt",
                         "commit":  "3f5370c30983a4047dade0835bb2c49dacc5ebbf",
-                        "gitBlobSha1":  "27726fe0bad4a5b67de4fcfa198a0201212986c5"
+                        "gitBlobSha1":  "27726fe0bad4a5b67de4fcfa198a0201212986c5",
+                        "sha256LfNormalized":  "c86e3379300a2824b4736f72b5f55eae9a3c7a275df2f817900f55fa58686371"
                     },
                     {
                         "fixture":  "tests/v5-golden/ai-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/ai/AIStrategy.kt",
                         "commit":  "3f5370c30983a4047dade0835bb2c49dacc5ebbf",
-                        "gitBlobSha1":  "e057cd39e6a110c1d86a4d67da49e06cec255a63"
+                        "gitBlobSha1":  "e057cd39e6a110c1d86a4d67da49e06cec255a63",
+                        "sha256LfNormalized":  "ff42ea79a743542c9cc6c818a29fa3c4c0534f87cfc2154925bc6d164fb2958c"
                     },
                     {
                         "fixture":  "tests/v5-golden/ai-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/authority/TableAuthority.kt",
                         "commit":  "3f5370c30983a4047dade0835bb2c49dacc5ebbf",
-                        "gitBlobSha1":  "4c9413212b57a8b9ff64785599efbf82d56ad841"
+                        "gitBlobSha1":  "4c9413212b57a8b9ff64785599efbf82d56ad841",
+                        "sha256LfNormalized":  "a7f0511c2c4456b4a6cf13126d57cb065ccb1958b3dce535c3558606b84d7b61"
                     },
                     {
                         "fixture":  "tests/v5-golden/ai-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/session/PlayerView.kt",
                         "commit":  "3f5370c30983a4047dade0835bb2c49dacc5ebbf",
-                        "gitBlobSha1":  "ef66007d7512d2f3291b9b2f3da6221f45b4ab7b"
+                        "gitBlobSha1":  "ef66007d7512d2f3291b9b2f3da6221f45b4ab7b",
+                        "sha256LfNormalized":  "2398b660f3f2ef64427b2be2b3eb6d162a3bfdfda92af0150b1df3cc3645b07d"
                     },
                     {
                         "fixture":  "tests/v5-golden/ai-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/timing/DecisionClock.kt",
                         "commit":  "3f5370c30983a4047dade0835bb2c49dacc5ebbf",
-                        "gitBlobSha1":  "309fd873001f6734abad5ac20e32a7866bb240ab"
+                        "gitBlobSha1":  "309fd873001f6734abad5ac20e32a7866bb240ab",
+                        "sha256LfNormalized":  "96caf0ff2616ffe0e802cfe93b639a3895791ff2df229c1678f054b85f48e78e"
                     },
                     {
                         "fixture":  "tests/v5-golden/ai-v1.json",
                         "path":  "engine/src/test/kotlin/com/majiang/state/UnifiedActionAcceptanceTest.kt",
                         "commit":  "3f5370c30983a4047dade0835bb2c49dacc5ebbf",
-                        "gitBlobSha1":  "f4e1005f144eb433b9bb7b00729be9ab84406778"
+                        "gitBlobSha1":  "f4e1005f144eb433b9bb7b00729be9ab84406778",
+                        "sha256LfNormalized":  "a0bb28b0cc8adeef680df60f1b78fa4a1f293ebd99bbe1be5e4b6e3b39f29e28"
                     },
                     {
                         "fixture":  "tests/v5-golden/ai-v1.json",
                         "path":  "engine/src/test/kotlin/com/majiang/state/V5AiGoldenExporterTest.kt",
                         "commit":  "09d2a4fd1690d319b90044becc9156a7c6563cde",
-                        "gitBlobSha1":  "d380b9610d42a6bae2f43e3e73f7c1a804729f60"
+                        "gitBlobSha1":  "d380b9610d42a6bae2f43e3e73f7c1a804729f60",
+                        "sha256LfNormalized":  "0e4289de81e9bcc31d9d37e1a22d79d63816e807a4619912a70b787e1e3da863"
                     },
                     {
                         "fixture":  "tests/v5-golden/cheat-v1.json",
                         "path":  "engine/src/test/kotlin/com/majiang/v3/V5CheatGoldenExporterTest.kt",
                         "commit":  "d833348d0bbad23a140602d56859e8a33480ba0f",
-                        "gitBlobSha1":  "3edd1d37d0c628053458a6521757f494dd2d7ebe"
+                        "gitBlobSha1":  "3edd1d37d0c628053458a6521757f494dd2d7ebe",
+                        "sha256LfNormalized":  "402aa8ebf03b8e3f2aeb5712a94e7fc1c8508ee327981bc014f7a0a2a67902e4"
                     },
                     {
                         "fixture":  "tests/v5-golden/movement-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/model/Meld.kt",
                         "commit":  "d6bc69fa930d005b355a1273ec732fbdf82bbe2f",
-                        "gitBlobSha1":  "f89c096e0de4e9660db3e23e47fb324479932252"
+                        "gitBlobSha1":  "f89c096e0de4e9660db3e23e47fb324479932252",
+                        "sha256LfNormalized":  "4f8925892a449ff9c40d2cb1e677fe669da4b5cbbcb2cf7ea2dbb5321ee15abb"
                     },
                     {
                         "fixture":  "tests/v5-golden/movement-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/model/PlayerHand.kt",
                         "commit":  "d6bc69fa930d005b355a1273ec732fbdf82bbe2f",
-                        "gitBlobSha1":  "e48b3400cec8132e116d18ae2e326ced5da6ee44"
+                        "gitBlobSha1":  "e48b3400cec8132e116d18ae2e326ced5da6ee44",
+                        "sha256LfNormalized":  "4ed564c0fb0155eec15409dfb76bc76951661745d9bd950fa970f757e0cacdd9"
                     },
                     {
                         "fixture":  "tests/v5-golden/movement-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/model/Tile.kt",
                         "commit":  "d6bc69fa930d005b355a1273ec732fbdf82bbe2f",
-                        "gitBlobSha1":  "656f09d3af385b1315dce0dae3e8692b0c694899"
+                        "gitBlobSha1":  "656f09d3af385b1315dce0dae3e8692b0c694899",
+                        "sha256LfNormalized":  "6657290cc42efa0d3c58893ffd00d92b78e3d871ebfb426194caccd6770072b0"
                     },
                     {
                         "fixture":  "tests/v5-golden/movement-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/model/TileLocation.kt",
                         "commit":  "d6bc69fa930d005b355a1273ec732fbdf82bbe2f",
-                        "gitBlobSha1":  "b9d0b727e1f4e5a37cde772696f0c5874774002f"
+                        "gitBlobSha1":  "b9d0b727e1f4e5a37cde772696f0c5874774002f",
+                        "sha256LfNormalized":  "e21dc9c47b37706d35bd6dc048ad0d43678d1d6cb447f4bc7f92761397591869"
                     },
                     {
                         "fixture":  "tests/v5-golden/movement-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/model/TileMovement.kt",
                         "commit":  "d6bc69fa930d005b355a1273ec732fbdf82bbe2f",
-                        "gitBlobSha1":  "b987d0bcfbeafaebdb8e6ff9e819c51f938ff29c"
+                        "gitBlobSha1":  "b987d0bcfbeafaebdb8e6ff9e819c51f938ff29c",
+                        "sha256LfNormalized":  "51f085bd0ad124c16b6a279d699012aaf9a848373cc2c26310211f3a4d7565f8"
                     },
                     {
                         "fixture":  "tests/v5-golden/movement-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/model/TilePool.kt",
                         "commit":  "d6bc69fa930d005b355a1273ec732fbdf82bbe2f",
-                        "gitBlobSha1":  "0b08d7580747f5921a569b74b1d5a8b6cd31ce1a"
+                        "gitBlobSha1":  "0b08d7580747f5921a569b74b1d5a8b6cd31ce1a",
+                        "sha256LfNormalized":  "43b2562949c569122d81434960fb1cb838f20f6425d8fd4dd9c0552d22122f5c"
                     },
                     {
                         "fixture":  "tests/v5-golden/movement-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/state/GameState.kt",
                         "commit":  "d6bc69fa930d005b355a1273ec732fbdf82bbe2f",
-                        "gitBlobSha1":  "56f4b1264f842c9577dca725f89a2536585e7c2f"
+                        "gitBlobSha1":  "56f4b1264f842c9577dca725f89a2536585e7c2f",
+                        "sha256LfNormalized":  "816e1ff28859ee0bc726b76b9e5f18456624d111b8abe0da96d1d4ef1713f140"
                     },
                     {
                         "fixture":  "tests/v5-golden/movement-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/state/StateInvariants.kt",
                         "commit":  "d6bc69fa930d005b355a1273ec732fbdf82bbe2f",
-                        "gitBlobSha1":  "f2602b736d6b8f682625084ee2265eaec3eeb8d5"
+                        "gitBlobSha1":  "f2602b736d6b8f682625084ee2265eaec3eeb8d5",
+                        "sha256LfNormalized":  "db410243f699c19b944f243346e7dd5c0d9a41f117ecf4e342eea54f5c0d762e"
                     },
                     {
                         "fixture":  "tests/v5-golden/movement-v1.json",
                         "path":  "engine/src/test/kotlin/com/majiang/model/TileMovementContractTest.kt",
                         "commit":  "d6bc69fa930d005b355a1273ec732fbdf82bbe2f",
-                        "gitBlobSha1":  "6ed8c2be1f0226ac40351a7a5e533228eb2cf8ed"
+                        "gitBlobSha1":  "6ed8c2be1f0226ac40351a7a5e533228eb2cf8ed",
+                        "sha256LfNormalized":  "996143953d668a81607eae00a5f9376e1048fdd113d436b87865fd7f1d519e4f"
                     },
                     {
                         "fixture":  "tests/v5-golden/movement-v1.json",
                         "path":  "engine/src/test/kotlin/com/majiang/model/V5TileMovementGoldenExporterTest.kt",
                         "commit":  "fdd0287b415db3438b23694bb35e4b72d76d50aa",
-                        "gitBlobSha1":  "b7feb849da8762a7e308dfad3e9ad5dae9e65f4a"
+                        "gitBlobSha1":  "b7feb849da8762a7e308dfad3e9ad5dae9e65f4a",
+                        "sha256LfNormalized":  "654662dc97bc3b193523dc13426b762a52c76699b6e6577c3217baf63c496cdc"
                     },
                     {
                         "fixture":  "tests/v5-golden/movement-v1.json",
                         "path":  "engine/src/testFixtures/kotlin/com/majiang/testing/TestTableBuilder.kt",
                         "commit":  "d6bc69fa930d005b355a1273ec732fbdf82bbe2f",
-                        "gitBlobSha1":  "ea03bab5f1a9a606ffadf3c9cf612896128b24ae"
+                        "gitBlobSha1":  "ea03bab5f1a9a606ffadf3c9cf612896128b24ae",
+                        "sha256LfNormalized":  "45fe486e596a38ad696f7900a277886b7f6cc7a103e8717d299e9658cac5da0a"
                     },
                     {
                         "fixture":  "tests/v5-golden/physical-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/model/Tile.kt",
                         "commit":  "32f645ec9b134e9ad261a2df89437416b20b3119",
-                        "gitBlobSha1":  "656f09d3af385b1315dce0dae3e8692b0c694899"
+                        "gitBlobSha1":  "656f09d3af385b1315dce0dae3e8692b0c694899",
+                        "sha256LfNormalized":  "6657290cc42efa0d3c58893ffd00d92b78e3d871ebfb426194caccd6770072b0"
                     },
                     {
                         "fixture":  "tests/v5-golden/physical-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/model/TileLocation.kt",
                         "commit":  "32f645ec9b134e9ad261a2df89437416b20b3119",
-                        "gitBlobSha1":  "b9d0b727e1f4e5a37cde772696f0c5874774002f"
+                        "gitBlobSha1":  "b9d0b727e1f4e5a37cde772696f0c5874774002f",
+                        "sha256LfNormalized":  "e21dc9c47b37706d35bd6dc048ad0d43678d1d6cb447f4bc7f92761397591869"
                     },
                     {
                         "fixture":  "tests/v5-golden/physical-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/model/TilePool.kt",
                         "commit":  "32f645ec9b134e9ad261a2df89437416b20b3119",
-                        "gitBlobSha1":  "0b08d7580747f5921a569b74b1d5a8b6cd31ce1a"
+                        "gitBlobSha1":  "0b08d7580747f5921a569b74b1d5a8b6cd31ce1a",
+                        "sha256LfNormalized":  "43b2562949c569122d81434960fb1cb838f20f6425d8fd4dd9c0552d22122f5c"
                     },
                     {
                         "fixture":  "tests/v5-golden/physical-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/stacking/ShuffleConfig.kt",
                         "commit":  "32f645ec9b134e9ad261a2df89437416b20b3119",
-                        "gitBlobSha1":  "23f4858e5b722d29da6578cfae2e4590e749f081"
+                        "gitBlobSha1":  "23f4858e5b722d29da6578cfae2e4590e749f081",
+                        "sha256LfNormalized":  "cc4b1f4718e2268a130e967a9921841fdb6a676808188242fa0791042369c0d0"
                     },
                     {
                         "fixture":  "tests/v5-golden/physical-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/stacking/ShuffleSlots.kt",
                         "commit":  "32f645ec9b134e9ad261a2df89437416b20b3119",
-                        "gitBlobSha1":  "1457d24eb4a193c9bc271db8cdfff6857d61d09a"
+                        "gitBlobSha1":  "1457d24eb4a193c9bc271db8cdfff6857d61d09a",
+                        "sha256LfNormalized":  "9386871529939dad346639a311dd84cc7645d8a26af9fb566247f7d4267d95a8"
                     },
                     {
                         "fixture":  "tests/v5-golden/physical-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/stacking/ShuffleWallGenerator.kt",
                         "commit":  "32f645ec9b134e9ad261a2df89437416b20b3119",
-                        "gitBlobSha1":  "1c265a5b7b9536affb3848b4803dcae78e1273cb"
+                        "gitBlobSha1":  "1c265a5b7b9536affb3848b4803dcae78e1273cb",
+                        "sha256LfNormalized":  "ee98ace333cdbdc8f76c6b17b8c7134a6cf5a0e5168adf34b4c532afd34b1dd1"
                     },
                     {
                         "fixture":  "tests/v5-golden/physical-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/state/StateInvariants.kt",
                         "commit":  "32f645ec9b134e9ad261a2df89437416b20b3119",
-                        "gitBlobSha1":  "f2602b736d6b8f682625084ee2265eaec3eeb8d5"
+                        "gitBlobSha1":  "f2602b736d6b8f682625084ee2265eaec3eeb8d5",
+                        "sha256LfNormalized":  "db410243f699c19b944f243346e7dd5c0d9a41f117ecf4e342eea54f5c0d762e"
                     },
                     {
                         "fixture":  "tests/v5-golden/physical-v1.json",
                         "path":  "engine/src/test/kotlin/com/majiang/model/V5PhysicalGoldenExporterTest.kt",
                         "commit":  "b96bdf56da847e39125be67d574a6241880567d2",
-                        "gitBlobSha1":  "e5aa784739c0e5019131e9202db34019b3bc8c08"
+                        "gitBlobSha1":  "e5aa784739c0e5019131e9202db34019b3bc8c08",
+                        "sha256LfNormalized":  "d1d72e393a3ee455016b15a17252d2ae6b74acd9478c8822dfd3b20acaf968ac"
                     },
                     {
                         "fixture":  "tests/v5-golden/physical-v1.json",
                         "path":  "engine/src/testFixtures/kotlin/com/majiang/testing/TestTableBuilder.kt",
                         "commit":  "32f645ec9b134e9ad261a2df89437416b20b3119",
-                        "gitBlobSha1":  "ea03bab5f1a9a606ffadf3c9cf612896128b24ae"
+                        "gitBlobSha1":  "ea03bab5f1a9a606ffadf3c9cf612896128b24ae",
+                        "sha256LfNormalized":  "45fe486e596a38ad696f7900a277886b7f6cc7a103e8717d299e9658cac5da0a"
                     },
                     {
                         "fixture":  "tests/v5-golden/round-v1.json",
@@ -356,61 +449,151 @@
                         "fixture":  "tests/v5-golden/shuffle-reversed-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/model/Tile.kt",
                         "commit":  "03084f08af6e2ddefa2ebc6e094de5dac2474fd4",
-                        "gitBlobSha1":  "656f09d3af385b1315dce0dae3e8692b0c694899"
+                        "gitBlobSha1":  "656f09d3af385b1315dce0dae3e8692b0c694899",
+                        "sha256LfNormalized":  "6657290cc42efa0d3c58893ffd00d92b78e3d871ebfb426194caccd6770072b0",
+                        "sourceMetadata":  {
+                                               "role":  "v4_production_tile",
+                                               "sha256Raw":  "c65d42c2fc9b68eccea6ac3402ee7a9786d0f3c58f92932f3a86921e45dcea45",
+                                               "bytesRaw":  4690,
+                                               "bytesLfNormalized":  4569,
+                                               "lineEnding":  "CRLF",
+                                               "rawEqualsLfNormalized":  false
+                                           }
                     },
                     {
                         "fixture":  "tests/v5-golden/shuffle-reversed-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/model/TilePool.kt",
                         "commit":  "03084f08af6e2ddefa2ebc6e094de5dac2474fd4",
-                        "gitBlobSha1":  "0b08d7580747f5921a569b74b1d5a8b6cd31ce1a"
+                        "gitBlobSha1":  "0b08d7580747f5921a569b74b1d5a8b6cd31ce1a",
+                        "sha256LfNormalized":  "43b2562949c569122d81434960fb1cb838f20f6425d8fd4dd9c0552d22122f5c",
+                        "sourceMetadata":  {
+                                               "role":  "v4_production_tile_pool",
+                                               "sha256Raw":  "0a8fc2c4627a3e8c2a0ea32d062e39970274ac2bc7389957f4aec8be94c4d64a",
+                                               "bytesRaw":  8169,
+                                               "bytesLfNormalized":  7962,
+                                               "lineEnding":  "CRLF",
+                                               "rawEqualsLfNormalized":  false
+                                           }
                     },
                     {
                         "fixture":  "tests/v5-golden/shuffle-reversed-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/stacking/SeatShufflePlan.kt",
                         "commit":  "03084f08af6e2ddefa2ebc6e094de5dac2474fd4",
-                        "gitBlobSha1":  "72063fd3f284f1b8eaef7431c7111d2cfb238cc9"
+                        "gitBlobSha1":  "72063fd3f284f1b8eaef7431c7111d2cfb238cc9",
+                        "sha256LfNormalized":  "24a197ed51467422b590a2ea0a19d7b3fa011c465c5e9f0e5ed06e70e158a237",
+                        "sourceMetadata":  {
+                                               "role":  "v4_production_seat_shuffle_plan",
+                                               "sha256Raw":  "8e781c114486194e6c34faeffedadbbd10b005ea3016eb727afae208a4515a07",
+                                               "bytesRaw":  437,
+                                               "bytesLfNormalized":  419,
+                                               "lineEnding":  "CRLF",
+                                               "rawEqualsLfNormalized":  false
+                                           }
                     },
                     {
                         "fixture":  "tests/v5-golden/shuffle-reversed-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/stacking/ShuffleConfig.kt",
                         "commit":  "03084f08af6e2ddefa2ebc6e094de5dac2474fd4",
-                        "gitBlobSha1":  "23f4858e5b722d29da6578cfae2e4590e749f081"
+                        "gitBlobSha1":  "23f4858e5b722d29da6578cfae2e4590e749f081",
+                        "sha256LfNormalized":  "cc4b1f4718e2268a130e967a9921841fdb6a676808188242fa0791042369c0d0",
+                        "sourceMetadata":  {
+                                               "role":  "v4_production_shuffle_config",
+                                               "sha256Raw":  "70a1705043b670c188eaf297bd40eba5179a1ffec4a243ed88232d045123edac",
+                                               "bytesRaw":  17373,
+                                               "bytesLfNormalized":  17035,
+                                               "lineEnding":  "CRLF",
+                                               "rawEqualsLfNormalized":  false
+                                           }
                     },
                     {
                         "fixture":  "tests/v5-golden/shuffle-reversed-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/stacking/ShuffleSelection.kt",
                         "commit":  "03084f08af6e2ddefa2ebc6e094de5dac2474fd4",
-                        "gitBlobSha1":  "cca00607b697d3ade0a7eee05a9037817d652af9"
+                        "gitBlobSha1":  "cca00607b697d3ade0a7eee05a9037817d652af9",
+                        "sha256LfNormalized":  "f07c1bfd5bfafe1e8e121a0163baaedc97837e08e9ac3e7bf62a204d558c32a5",
+                        "sourceMetadata":  {
+                                               "role":  "v4_production_shuffle_selection",
+                                               "sha256Raw":  "388215be971971a429477cbc7c91387a519a2245d5effa8549387d4d0e49e7fb",
+                                               "bytesRaw":  1709,
+                                               "bytesLfNormalized":  1667,
+                                               "lineEnding":  "CRLF",
+                                               "rawEqualsLfNormalized":  false
+                                           }
                     },
                     {
                         "fixture":  "tests/v5-golden/shuffle-reversed-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/stacking/ShuffleSlots.kt",
                         "commit":  "03084f08af6e2ddefa2ebc6e094de5dac2474fd4",
-                        "gitBlobSha1":  "1457d24eb4a193c9bc271db8cdfff6857d61d09a"
+                        "gitBlobSha1":  "1457d24eb4a193c9bc271db8cdfff6857d61d09a",
+                        "sha256LfNormalized":  "9386871529939dad346639a311dd84cc7645d8a26af9fb566247f7d4267d95a8",
+                        "sourceMetadata":  {
+                                               "role":  "v4_production_shuffle_slots",
+                                               "sha256Raw":  "20d0b2c3e3b7b0d46f5c5de370bf4aa6064435b75fa970ecf1c0a7c695613faa",
+                                               "bytesRaw":  2888,
+                                               "bytesLfNormalized":  2808,
+                                               "lineEnding":  "CRLF",
+                                               "rawEqualsLfNormalized":  false
+                                           }
                     },
                     {
                         "fixture":  "tests/v5-golden/shuffle-reversed-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/stacking/ShuffleTarget.kt",
                         "commit":  "03084f08af6e2ddefa2ebc6e094de5dac2474fd4",
-                        "gitBlobSha1":  "e7404c3a5adbd1b1395b464724a2433a0b5208af"
+                        "gitBlobSha1":  "e7404c3a5adbd1b1395b464724a2433a0b5208af",
+                        "sha256LfNormalized":  "b094c50b98f6228a810ac99c10b7c316868a9430bf1d3bc0bb2161ccee35b6cc",
+                        "sourceMetadata":  {
+                                               "role":  "v4_production_shuffle_target",
+                                               "sha256Raw":  "6deb18b90f48e6d7e3f0cc9fc00e81378174998b817e2ffa116922437338f351",
+                                               "bytesRaw":  366,
+                                               "bytesLfNormalized":  353,
+                                               "lineEnding":  "CRLF",
+                                               "rawEqualsLfNormalized":  false
+                                           }
                     },
                     {
                         "fixture":  "tests/v5-golden/shuffle-reversed-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/stacking/ShuffleTargets.kt",
                         "commit":  "03084f08af6e2ddefa2ebc6e094de5dac2474fd4",
-                        "gitBlobSha1":  "000e71e3ee4834c6732f979f09cf64daf09995e7"
+                        "gitBlobSha1":  "000e71e3ee4834c6732f979f09cf64daf09995e7",
+                        "sha256LfNormalized":  "7140cc9530083f260f1c606fd56fbd92a33a417875d3e4f38f868accfa3cfa45",
+                        "sourceMetadata":  {
+                                               "role":  "v4_production_shuffle_targets",
+                                               "sha256Raw":  "44edb61e73a5839e9b65208a68557fe5b56ad6847e13c7a6221d24d7e3ab83f0",
+                                               "bytesRaw":  4020,
+                                               "bytesLfNormalized":  3897,
+                                               "lineEnding":  "CRLF",
+                                               "rawEqualsLfNormalized":  false
+                                           }
                     },
                     {
                         "fixture":  "tests/v5-golden/shuffle-reversed-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/stacking/ShuffleWallGenerator.kt",
                         "commit":  "03084f08af6e2ddefa2ebc6e094de5dac2474fd4",
-                        "gitBlobSha1":  "1c265a5b7b9536affb3848b4803dcae78e1273cb"
+                        "gitBlobSha1":  "1c265a5b7b9536affb3848b4803dcae78e1273cb",
+                        "sha256LfNormalized":  "ee98ace333cdbdc8f76c6b17b8c7134a6cf5a0e5168adf34b4c532afd34b1dd1",
+                        "sourceMetadata":  {
+                                               "role":  "v4_production_wall_generator",
+                                               "sha256Raw":  "ddcc157b80eb11407782ba03df73445fe9ac4ce12091509e39c12b48f983d7d9",
+                                               "bytesRaw":  22162,
+                                               "bytesLfNormalized":  21678,
+                                               "lineEnding":  "CRLF",
+                                               "rawEqualsLfNormalized":  false
+                                           }
                     },
                     {
                         "fixture":  "tests/v5-golden/shuffle-reversed-v1.json",
                         "path":  "engine/src/test/kotlin/com/majiang/v3/V5ShuffleReversedGoldenExporterTest.kt",
                         "commit":  "8734494936aad0d451511156a454b989d508468b",
-                        "gitBlobSha1":  "cf13b69afe8caede51ad2290a52a58c711505f54"
+                        "gitBlobSha1":  "cf13b69afe8caede51ad2290a52a58c711505f54",
+                        "sha256LfNormalized":  "8e3e3821d3f6adfb56116875d22dd1c6c6384a44a9613813171fea6a93bd9420",
+                        "sourceMetadata":  {
+                                               "role":  "v4_test_only_exporter",
+                                               "sha256Raw":  "8e3e3821d3f6adfb56116875d22dd1c6c6384a44a9613813171fea6a93bd9420",
+                                               "bytesRaw":  23341,
+                                               "bytesLfNormalized":  23341,
+                                               "lineEnding":  "LF",
+                                               "rawEqualsLfNormalized":  true
+                                           }
                     },
                     {
                         "fixture":  "tests/v5-golden/shuffle-v1.json",
@@ -422,67 +605,78 @@
                         "fixture":  "tests/v5-golden/visibility-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/event/GameEvent.kt",
                         "commit":  "e8a9e9adc401becef6d05d4cf5de972e998df976",
-                        "gitBlobSha1":  "ba22ca0d1cf3b22b099abdbed9fb637dd27a399f"
+                        "gitBlobSha1":  "ba22ca0d1cf3b22b099abdbed9fb637dd27a399f",
+                        "sha256LfNormalized":  "a571d59f5afca6fc2a9f2fd7ca0ecf2905028cf9117be026bb4051d5bfd46190"
                     },
                     {
                         "fixture":  "tests/v5-golden/visibility-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/event/GameEventSnapshot.kt",
                         "commit":  "e8a9e9adc401becef6d05d4cf5de972e998df976",
-                        "gitBlobSha1":  "f4c1532da98235338ca25dbf09c2a12417e15c75"
+                        "gitBlobSha1":  "f4c1532da98235338ca25dbf09c2a12417e15c75",
+                        "sha256LfNormalized":  "f63f9f265b5d968cb56e4ee7a9959ef3ce8ee356eac85d1fa8f9f8f9c13316e9"
                     },
                     {
                         "fixture":  "tests/v5-golden/visibility-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/projection/PublicProjectionFactory.kt",
                         "commit":  "e8a9e9adc401becef6d05d4cf5de972e998df976",
-                        "gitBlobSha1":  "f0d89b87ba965f028488513ff54e7f5cbed094bd"
+                        "gitBlobSha1":  "f0d89b87ba965f028488513ff54e7f5cbed094bd",
+                        "sha256LfNormalized":  "2168a7d02d3a4214e26266d24489d2c26bf254df87e7fb5f3565feb58c5935cb"
                     },
                     {
                         "fixture":  "tests/v5-golden/visibility-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/projection/PublicTableProjection.kt",
                         "commit":  "e8a9e9adc401becef6d05d4cf5de972e998df976",
-                        "gitBlobSha1":  "813afd51d23d2fcc1b598d5009bf537d1cbf6ed3"
+                        "gitBlobSha1":  "813afd51d23d2fcc1b598d5009bf537d1cbf6ed3",
+                        "sha256LfNormalized":  "fe5efaa876010b519061ea61a2a0b4b89b8742057fedb1fc2dec2cd77d793796"
                     },
                     {
                         "fixture":  "tests/v5-golden/visibility-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/session/PlayerView.kt",
                         "commit":  "e8a9e9adc401becef6d05d4cf5de972e998df976",
-                        "gitBlobSha1":  "ef66007d7512d2f3291b9b2f3da6221f45b4ab7b"
+                        "gitBlobSha1":  "ef66007d7512d2f3291b9b2f3da6221f45b4ab7b",
+                        "sha256LfNormalized":  "64a021e4fc1d20a8a88320e475ba1dab9ea420c18f106e47d2a71ee58db5ed0b"
                     },
                     {
                         "fixture":  "tests/v5-golden/visibility-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/session/SessionUpdate.kt",
                         "commit":  "e8a9e9adc401becef6d05d4cf5de972e998df976",
-                        "gitBlobSha1":  "8531ae10489c7dec96ef2da6b2ab8d84659e4c92"
+                        "gitBlobSha1":  "8531ae10489c7dec96ef2da6b2ab8d84659e4c92",
+                        "sha256LfNormalized":  "cc6420041ff69cf74482003ff98a38c07db2ab661bc4ce0ec4ab2e82b539f931"
                     },
                     {
                         "fixture":  "tests/v5-golden/visibility-v1.json",
                         "path":  "engine/src/main/kotlin/com/majiang/state/GameState.kt",
                         "commit":  "e8a9e9adc401becef6d05d4cf5de972e998df976",
-                        "gitBlobSha1":  "56f4b1264f842c9577dca725f89a2536585e7c2f"
+                        "gitBlobSha1":  "56f4b1264f842c9577dca725f89a2536585e7c2f",
+                        "sha256LfNormalized":  "816e1ff28859ee0bc726b76b9e5f18456624d111b8abe0da96d1d4ef1713f140"
                     },
                     {
                         "fixture":  "tests/v5-golden/visibility-v1.json",
                         "path":  "engine/src/test/kotlin/com/majiang/projection/PublicProjectionTest.kt",
                         "commit":  "e8a9e9adc401becef6d05d4cf5de972e998df976",
-                        "gitBlobSha1":  "95f96bedd74af08a1af4245bff1012fbee4d9784"
+                        "gitBlobSha1":  "95f96bedd74af08a1af4245bff1012fbee4d9784",
+                        "sha256LfNormalized":  "601acb0281db5f390c662c46b52d06dcf795beabfc57519305bc9ced287984a3"
                     },
                     {
                         "fixture":  "tests/v5-golden/visibility-v1.json",
                         "path":  "engine/src/test/kotlin/com/majiang/projection/V5VisibilityGoldenExporterTest.kt",
                         "commit":  "e8a9e9adc401becef6d05d4cf5de972e998df976",
-                        "gitBlobSha1":  "34e9ba71ed5dccef83fee558d064c380d642eaff"
+                        "gitBlobSha1":  "34e9ba71ed5dccef83fee558d064c380d642eaff",
+                        "sha256LfNormalized":  "bc5fdec591119207ec54fcff19fe882ecfaa54324ed29ff7844b5c1f2bacf870"
                     },
                     {
                         "fixture":  "tests/v5-golden/visibility-v1.json",
                         "path":  "engine/src/test/kotlin/com/majiang/session/SessionSnapshotContractTest.kt",
                         "commit":  "e8a9e9adc401becef6d05d4cf5de972e998df976",
-                        "gitBlobSha1":  "20aff54515fd9c4c8d443fc3e622545ccb611265"
+                        "gitBlobSha1":  "20aff54515fd9c4c8d443fc3e622545ccb611265",
+                        "sha256LfNormalized":  "6197d4b9822615bbdb70527f6f5eb2165fcb63c2728a354e7c201c385d4ffd0a"
                     },
                     {
                         "fixture":  "tests/v5-golden/visibility-v1.json",
                         "path":  "engine/src/testFixtures/kotlin/com/majiang/testing/TestTableBuilder.kt",
                         "commit":  "e8a9e9adc401becef6d05d4cf5de972e998df976",
-                        "gitBlobSha1":  "ea03bab5f1a9a606ffadf3c9cf612896128b24ae"
+                        "gitBlobSha1":  "ea03bab5f1a9a606ffadf3c9cf612896128b24ae",
+                        "sha256LfNormalized":  "45fe486e596a38ad696f7900a277886b7f6cc7a103e8717d299e9658cac5da0a"
                     }
                 ]
 }

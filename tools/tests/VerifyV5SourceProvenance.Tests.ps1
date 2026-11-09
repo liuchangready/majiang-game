@@ -26,6 +26,21 @@ try {
     $clean = Invoke-Probe $cleanRoot
     if ($clean.ExitCode -ne 0 -or $clean.Output -notmatch 'Git history checked=False') { throw "NO_HISTORY_POSITIVE failed: exit=$($clean.ExitCode) $($clean.Output)" }
 
+    $crlfRoot = Join-Path $testRoot 'crlf-fixtures-no-git'
+    New-Item -ItemType Directory -Path (Join-Path $crlfRoot 'tests/v5-golden') -Force | Out-Null
+    Get-ChildItem -LiteralPath $sourceDir -Filter '*.json' -File | ForEach-Object {
+        $target = Join-Path (Join-Path $crlfRoot 'tests/v5-golden') $_.Name
+        if ($_.Name -ceq 'source-provenance-v1.json') {
+            Copy-Item -LiteralPath $_.FullName -Destination $target
+            return
+        }
+        $text = [Text.UTF8Encoding]::new($false, $true).GetString([IO.File]::ReadAllBytes($_.FullName))
+        $text = $text.Replace("`r`n", "`n").Replace("`n", "`r`n")
+        [IO.File]::WriteAllBytes($target, [Text.UTF8Encoding]::new($false).GetBytes($text))
+    }
+    $crlf = Invoke-Probe $crlfRoot
+    if ($crlf.ExitCode -ne 0 -or $crlf.Output -notmatch 'Git history checked=False') { throw "CRLF_FIXTURE_POSITIVE failed: exit=$($crlf.ExitCode) $($crlf.Output)" }
+
     $mutatedManifest = Join-Path $testRoot 'bad-manifest'
     Copy-Item -LiteralPath $cleanRoot -Destination $mutatedManifest -Recurse
     $manifestPath = Join-Path $mutatedManifest 'tests/v5-golden/source-provenance-v1.json'
@@ -43,7 +58,7 @@ try {
     $gitRequired = Invoke-Probe $cleanRoot -VerifyGitPins
     if ($gitRequired.ExitCode -eq 0) { throw 'OPTIONAL_GIT_PIN negative failed: Git verification unexpectedly passed without repository history.' }
 
-    Write-Output 'PASS: provenance verifier no-history positive; manifest, golden and optional-history negatives rejected.'
+    Write-Output 'PASS: provenance verifier no-history and CRLF-fixture positives; manifest, golden and optional-history negatives rejected.'
     Write-Output ("EVIDENCE_ROOT={0}" -f $testRoot)
     exit 0
 } catch {

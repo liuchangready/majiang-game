@@ -49,6 +49,7 @@ namespace Mahjong.Ai.Tests
             }
 
             Assert.True(File.Exists(path), "Missing golden fixture: " + path);
+            FrozenGoldenProvenance.AssertFixture("tests/v5-golden/ai-discard-flags-v1.json", path);
             return JsonDocument.Parse(File.ReadAllText(path));
         }
 

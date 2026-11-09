@@ -10,6 +10,7 @@ using Mahjong.Contracts;
 using Mahjong.Domain;
 using Mahjong.Domain.Cheat;
 using Mahjong.TableRuntime;
+using Mahjong.TestSupport;
 using Xunit;
 using Xunit.Sdk;
 
@@ -579,6 +580,7 @@ namespace Mahjong.TableRuntime.Tests
         private static GoldenFixture LoadFixture()
         {
             string path = ResolveFixturePath();
+            FrozenGoldenProvenance.AssertFixture("tests/v5-golden/cheat-v1.json", path);
             byte[] bytes = File.ReadAllBytes(path);
             JsonDocument document;
             try

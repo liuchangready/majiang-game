@@ -39,6 +39,7 @@ namespace Mahjong.Ai.Tests
         {
             string path = ResolvePath();
             Assert.True(File.Exists(path), "Missing golden fixture: " + path);
+            FrozenGoldenProvenance.AssertFixture("tests/v5-golden/ai-v1.json", path);
             return JsonDocument.Parse(File.ReadAllText(path));
         }
     }

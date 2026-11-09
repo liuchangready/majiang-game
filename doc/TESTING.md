@@ -11,7 +11,7 @@
 | Unity PlayMode | 168 | UnityTest 定义 |
 | V5 合计 | 3,153 | 上述三项相加，非全量通过记录 |
 | 当前 Kotlin / Java 游戏代码和测试 | 0 | 旧七模块与其专属 JVM 工具已从当前树移除；历史报告仍记录当时结果 |
-| PowerShell 工具回归 | 21 个脚本 | 每个脚本有多项断言，不按脚本数冒充用例数；旧 Kotlin/catalog 专属自测移除，新增 frozen source provenance 自测 |
+| PowerShell 工具回归 | 22 个脚本（`tools/tests/*.ps1`） | 当前检出树可枚举的测试脚本数；每个脚本有多项断言，不按脚本数冒充用例数；旧 Kotlin/catalog 专属自测移除，新增 frozen source provenance 自测 |
 
 清理前参考源码中的 1,838 个 Kotlin 测试方法随旧模块一起移除；这只是旧测试实现数量，不是新增通过数，也不代表 V5 规则测试覆盖等价。后续变化须重新统计或读取对应版本的真实 XML。G2 Windows 32 项和 Android 平台矩阵属于验收要求，与代码测试存在覆盖关系，不重复相加。
 

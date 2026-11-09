@@ -60,10 +60,17 @@ namespace Mahjong.Domain.Tests
             "386061b42691ccf36381e2d87dc4787367958c8e9e96a93ba69d1e3fe5dac282";
 
         private static readonly Lazy<JsonDocument> Companion =
-            new Lazy<JsonDocument>(() => JsonDocument.Parse(File.ReadAllText(FindFixturePath(CompanionRelativePath))));
+            new Lazy<JsonDocument>(() => LoadFrozenFixture(CompanionRelativePath));
 
         private static readonly Lazy<JsonDocument> Old =
-            new Lazy<JsonDocument>(() => JsonDocument.Parse(File.ReadAllText(FindFixturePath(OldRelativePath))));
+            new Lazy<JsonDocument>(() => LoadFrozenFixture(OldRelativePath));
+
+        private static JsonDocument LoadFrozenFixture(string relativeName)
+        {
+            string path = FindFixturePath(relativeName);
+            FrozenGoldenProvenance.AssertFixture(relativeName, path);
+            return JsonDocument.Parse(File.ReadAllText(path));
+        }
 
         private static readonly string[] TopLevelFields =
         {

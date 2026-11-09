@@ -86,9 +86,12 @@ namespace Mahjong.Domain.Tests
             }
 
             string exporterSha = Str(root, "exporterSourceSha256");
-            Assert.Equal(64, exporterSha.Length);
+            FrozenGoldenProvenance.AssertHistoricalSourceHash(
+                "tests/v5-golden/physical-v1.json",
+                FindGoldenPath(),
+                "engine/src/test/kotlin/com/majiang/model/V5PhysicalGoldenExporterTest.kt",
+                exporterSha);
             Assert.Contains("CRLF normalized to LF", Str(root, "sourceHashAlgorithm"));
-            Assert.Matches("^[0-9a-f]{64}$", exporterSha);
 
             foreach (JsonElement source in root.GetProperty("v4SourceHashes").EnumerateArray())
             {
@@ -1080,7 +1083,9 @@ namespace Mahjong.Domain.Tests
 
         private static JsonDocument LoadGolden()
         {
-            return JsonDocument.Parse(File.ReadAllText(FindGoldenPath()));
+            string path = FindGoldenPath();
+            FrozenGoldenProvenance.AssertFixture("tests/v5-golden/physical-v1.json", path);
+            return JsonDocument.Parse(File.ReadAllText(path));
         }
 
         private static string FindGoldenPath([CallerFilePath] string sourceFile = "")

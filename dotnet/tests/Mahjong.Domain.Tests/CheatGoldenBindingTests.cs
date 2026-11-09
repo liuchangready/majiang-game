@@ -6,6 +6,7 @@ using System.Linq;
 using System.Text.Json;
 using Mahjong.Domain;
 using Mahjong.Domain.Cheat;
+using Mahjong.TestSupport;
 using Xunit;
 
 namespace Mahjong.Domain.Tests
@@ -80,6 +81,7 @@ namespace Mahjong.Domain.Tests
         {
             string path = GoldenPath();
             Assert.True(File.Exists(path), "golden fixture not found: " + path);
+            FrozenGoldenProvenance.AssertFixture("tests/v5-golden/cheat-v1.json", path);
             using JsonDocument doc = JsonDocument.Parse(File.ReadAllBytes(path));
             return doc.RootElement.Clone();
         }

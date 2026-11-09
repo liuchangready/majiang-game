@@ -908,6 +908,7 @@ namespace Mahjong.Domain.Tests
         private static JsonDocument LoadGolden()
         {
             string path = Path.Combine(RepositoryRoot(), "tests", "v5-golden", "movement-v1.json");
+            FrozenGoldenProvenance.AssertFixture("tests/v5-golden/movement-v1.json", path);
             using var stream = File.OpenRead(path);
             return JsonDocument.Parse(stream);
         }

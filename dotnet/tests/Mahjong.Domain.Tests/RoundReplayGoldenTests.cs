@@ -6,6 +6,7 @@ using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Mahjong.Domain;
+using Mahjong.TestSupport;
 using Xunit;
 
 namespace Mahjong.Domain.Tests
@@ -23,6 +24,7 @@ namespace Mahjong.Domain.Tests
         private static JsonDocument LoadGolden()
         {
             string path = FindGoldenPath();
+            FrozenGoldenProvenance.AssertFixture(RelativePath, path);
             return JsonDocument.Parse(File.ReadAllText(path));
         }
 

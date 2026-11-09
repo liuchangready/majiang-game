@@ -765,7 +765,9 @@ namespace Mahjong.Domain.Tests
 
         private static JsonDocument LoadGolden()
         {
-            return JsonDocument.Parse(File.ReadAllText(FindGoldenPath()));
+            string path = FindGoldenPath();
+            FrozenGoldenProvenance.AssertFixture("tests/v5-golden/shuffle-v1.json", path);
+            return JsonDocument.Parse(File.ReadAllText(path));
         }
 
         private static string? FindRepositoryRoot()
