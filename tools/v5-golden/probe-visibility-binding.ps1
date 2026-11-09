@@ -260,6 +260,9 @@ function Invoke-VisibilityRun(
 }
 
 $repo = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+$goldenMutationProbePriorValue = [Environment]::GetEnvironmentVariable('MAHJONG_GOLDEN_PROBE', 'Process')
+ try {
+& (Join-Path $PSScriptRoot 'enable-golden-mutation-probe.ps1') -RepoRoot $repo
 $runId = (Get-Date).ToUniversalTime().ToString("yyyyMMddTHHmmssZ") + "-" + $PID
 $evidenceDir = Join-Path $repo ("build/visibility-binding-probe/" + $runId)
 $tempRoot = Join-Path $evidenceDir "tmp"
@@ -308,8 +311,9 @@ try {
     Expand-Archive -LiteralPath $zip -DestinationPath $tempRepo -Force
     foreach ($relative in @(
         "tests/v5-golden/visibility-v1.json",
-        "dotnet/tests/Mahjong.TableRuntime.Tests/VisibilityGoldenTests.cs",
-        "engine/src/test/kotlin/com/majiang/projection/V5VisibilityGoldenExporterTest.kt"
+        "tests/v5-golden/source-provenance-v1.json",
+        "dotnet/tests/Shared/FrozenGoldenProvenance.cs",
+        "dotnet/tests/Mahjong.TableRuntime.Tests/VisibilityGoldenTests.cs"
     )) {
         $source = Join-Path $repo $relative
         if (-not (Test-Path -LiteralPath $source)) {
@@ -1067,3 +1071,8 @@ if ($script:Failures.Count -gt 0) {
 
 Write-Step "PASS: probe completed"
 exit 0
+
+}
+finally {
+    [Environment]::SetEnvironmentVariable('MAHJONG_GOLDEN_PROBE', $goldenMutationProbePriorValue, 'Process')
+}

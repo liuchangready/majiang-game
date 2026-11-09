@@ -1,3 +1,7 @@
+# 牌型重叠度算法设计与历史实现说明
+
+本文的规则与算法说明继续适用；文中 Kotlin 源码仅是旧实现示例，当前树已移除该源码及 Gradle 入口。当前运行实现以 Unity + C#/.NET 为准，详见 [doc/CURRENT_ARCHITECTURE.md](doc/CURRENT_ARCHITECTURE.md)。
+
 # 🀄 千术麻将 — 牌型重叠度矩阵算法设计说明书
 (Tile Pattern Overlap Matrix Algorithm Specification)
 

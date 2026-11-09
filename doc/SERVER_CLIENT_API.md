@@ -1,3 +1,7 @@
+# 历史接口文档（V4，当前传输实现已移除）
+
+本文保存旧 V4 服务端/客户端接口契约的历史说明。旧 Kotlin API、Gradle 模块和传输入口不在当前树中，本文不是当前接口或启动指南。当前 Unity/.NET 实现及其验证入口以 [CURRENT_ARCHITECTURE.md](CURRENT_ARCHITECTURE.md)、[BUILD_AND_PACKAGE.md](BUILD_AND_PACKAGE.md) 和 `dotnet/`、`unity/` 源码为准；V5 G2 尚未验收。
+
 # 🀄 Server ↔ Client 接口与协议规范 (V4)
 
 > 2026-10-15 设计更新：现有代码仍实现 InProcess + UDP。远端目标改为 TCP，但尚未开发；完整目标契约见 [TCP 迁移设计](v4-重构/TCP-MIGRATION-DESIGN.md)。本文现有 API/DTO 定义继续作为业务基线，UDP 帧细节仅描述待退役实现。

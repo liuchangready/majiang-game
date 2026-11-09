@@ -1,3 +1,7 @@
+# 历史架构说明（V4 Kotlin/libGDX，非当前运行实现）
+
+本文记录旧 V4 架构，仅供理解历史代码与验收材料。其 Kotlin/JVM 模块、Gradle 构建、libGDX 展示层和旧传输入口已从当前检出树移除，不应按本文命令构建或运行。当前实现、依赖和入口以 [CURRENT_ARCHITECTURE.md](CURRENT_ARCHITECTURE.md)、[BUILD_AND_PACKAGE.md](BUILD_AND_PACKAGE.md) 为准；V5 G2 仍未验收。规则语义与物理守恒约束继续有效。
+
 # 🀄 千术麻将 (Mahjong Cheater) — 整体架构与系统设计文档
 
 > 2026-10-15：远端目标已确定为 TCP，当前实现仍为可靠 UDP；本轮只更新设计。详见 [TCP 迁移设计与删除清单](v4-重构/TCP-MIGRATION-DESIGN.md)。七模块、领域规则、物理守恒与权威队列不变；下文 UDP 组件名属于当前实现，不能解释为 TCP 已开发或需要恢复旧 TCP/V3。

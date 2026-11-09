@@ -1,0 +1,85 @@
+﻿任务 ID / 具体目标：KOTLIN-REMOVAL-20261109；清理当前候选中的 Kotlin/libGDX/JVM 七模块活动实现和专属入口，保留 V5 Unity+C#/.NET 实现、规则与必要证据，并更新现行文档；不改变规则，不宣称 V5 G2 通过。
+执行者 / 复核者（如现有流程要求）：执行者 gpt-6-luna（按用户指定）；桥接生命周期安排独立 reviewer，本执行不委派。
+工作树 / 分支 / 当前 HEAD / 已接受基线：C:\Users\sncdc\.agent-mesh-bridge\worktrees\thread_20261109_161151_fd11；mesh/task/thread_20261109_161151_fd11；起点 e074806a39a674b898120c828038efcd1b5c58d7；D:/majiang-wt/g2_base HEAD 同为 e074806a39a674b898120c828038efcd1b5c58d7；merge-base 相同。origin/g2_base 落后 14 commits；不 fetch/pull/reset。任务树初始干净。
+允许修改的具体文件 / 明确排除的范围：本工作树中的旧 Gradle 七模块代码/配置/启动器、明确仅供其使用的 CI/工具、引用旧源码的 V5 测试与 verifier、当前入口说明及用户指定的 5 份指南；必要来源 pin/manifest 和任务证据。排除 D:/majiang、D:/majiang-wt/g2_base、D:/majiang-wt/current-guide-20261109、其他 worktree、ignored 历史证据/缓存、Unity 内 Android 支持/SDK/JDK/工具链、V5 正在导入的 V4Prototype 资源和任何玩法/算分变化。
+已有有效结果、源码或输入身份、原始证据路径：初始 HEAD e074806a…；g2_base ahead 14；用户给定 Unity 6000.3.27f1、.NET 8.0.426 与 SDK 路径；参考文档工作树同起点，未跟踪四份指南及 AGENTS.md 未提交，只复制，不修改来源。
+全部已知缺陷 / 已关闭且不重开的子项：首轮 KRM-001 至 KRM-004 已处理；独立 reviewer 第二轮列出的 D-1-01 至 D-1-04 已逐项批量修复。真实引用审计确认旧 Gradle/JVM runtime 与活动入口移除；冻结来源门禁、C# golden 消费矩阵、当前文档导航和 N3 历史证据入口已在第二轮复核。返修重跑新发现的反向 shuffle 来源元数据负例及 Windows 临时目录清理问题同轮修复，见本卡第二轮详细映射。其他全量 PG/Unity boundary/G2 readiness 是既有缺口，保持如实记录，不混入本次清理范围。
+固定场景分母 / 每个场景的真实成功断言：先从现有工具合同确定基线及实际计数；规则黄金数据（42 stable yakuman/役种码以文档/数据为准）、136 实体守恒、洗牌/码牌与 provenance、防篡改正例和负例原样保留；V5 verify-v5 全量 native exit/XML零失败/零跳过/零未跑；共享 DLL 源码来源校验；Unity Editor、受影响 EditMode/PlayMode；必要 Win/Android 入口合同或真实构建。移除 Kotlin 不计为新增通过。
+依赖是否就绪 / 文件范围是否冲突：先盘点活动引用；Unity/.NET 路径依用户提供待短预检。基线干净且任务树干净。共享 Unity/设备锁按现有脚本核对，等待最多600秒。
+本次唯一输出根 / 临时目录 / 自有进程及清理边界：源码只写当前工作树。证据只写当前工作树 build/task-kotlin-removal-20261109/ 下新的独占 GUID/命名子目录；日志不覆盖。仅管理本任务启动的进程；不触碰他人进程/缓存。
+阶段表：A 核定身份/短预检/全量引用审计（进入：起点确认；退出：真实范围、引用闭包和工具存在性明了；每探针≤30秒）。B 批修 Kotlin 来源依赖/入口与文档（退出：所有已知问题映射完成，相关正负例通过）。C 对齐验证器/CI/package 输入（退出：浅克隆不依赖 Git 历史、源码守卫与目录/manifest/contracts 一致）。D 完整候选验证（verify-v5、共享 DLL、Unity 受影响矩阵与构建入口；各阶段使用有界超时和独占日志）。E 停 writer，核对命令/exit/count/XML/SHA/源码身份与工作区差异，交独立复核；不提交/推送/合并。
+共享资源 / 锁名 / 等待上限 / 心跳间隔 / 取消方式：最多等600秒，每30秒状态；严格沿用 runner 锁、取消入口；不得绕锁/强杀他人进程。
+失败分类 / 可重试条件 / 无法自行处理时的最小请求：代码/合同缺陷先批修；资源阻塞记 BLOCKED 并最多等既定上限；未知结果保留 UNKNOWN。仅修复原因、输入变化或资源恢复后重试，保留首败原件。
+最终源码身份 / 构建与包身份 / 必须重验的组合：最终 HEAD/tree hash、变更闭包、验证器及数据 manifest hash；.NET source build 与共享 DLL provenance 同源；Unity 候选以 final tree 和实际项目 manifest 绑定。旧 Kotlin 测试数量减少单独解释，不能视为通过。G2 尚未验收。
+
+## 本轮审计、缺陷闭环与证据
+
+首轮实际起点为 `e074806a39a674b898120c828038efcd1b5c58d7`；第二轮返修候选基线 HEAD 为 `30da3d2f0ffbee85ae4e0079a0fc76981452d54d`、分支 `mesh/task/thread_20261109_161151_fd11`。仅在本桥接工作树内返修；`D:/majiang-wt/g2_base` 与 `D:/majiang-wt/current-guide-20261109` 未改。没有 fetch/pull/reset。当前返修未提交、未推送、未合并。
+
+### 缺陷清单（包含待环境恢复项）
+
+| ID / 严重级别 | 位置与复现 | 实际 vs 期望 | 证据 | 修复要求 / 验收断言 |
+|---|---|---|---|---|
+| KRM-001 / MAJOR，已修复 | V5 golden 消费测试和旧 traceability/probe 工具；`powershell -NoProfile -ExecutionPolicy Bypass -File tools/verify-v5.ps1 -DotnetPath D:/game_dev_tools/dotnet/dotnet.exe -LogDir build/task-kotlin-removal-20261109/verify-v5-final`。旧测试将 `engine/src/...` 工作区文件、Gradle exporter、目录存在与 live source hash 当执行依赖。 | 移除 Kotlin 后会让普通测试/浅克隆 CI 失去输入；期望测试只消费冻结 fixture 和可独立校验的来源身份，不要求旧源码、完整 Git 历史、Gradle 或联网。 | `tests/v5-golden/source-provenance-v1.json`；`dotnet/tests/Shared/FrozenGoldenProvenance.cs`；`tools/verify-v5-source-provenance.ps1`；`tools/tests/VerifyV5SourceProvenance.Tests.ps1`；本轮证据见 `build/rework-d1-20261109/`。来源 manifest SHA-256=`b6b36fd35b76be74846093305e17ff357d849d9861a1c876ea9069c6968eaf67`。 | 10 个 fixture 精确字节摘要、70 条历史 commit/path/blob SHA-1 pin 固化；普通工具只本地校验，`-VerifyGitPins` 是显式可选项。Domain、AI、TableRuntime 测试共享同一 helper。验收：无 `.kt`/历史目录时 positive 成功；manifest 与 fixture 篡改均失败；no-history CI negative 矩阵无联网；现有 golden 行为断言不减少。实际 verifier、显式 Git pins 和 no-history/负例矩阵均通过。旧 91-case Kotlin declaration scanner 删除，不将其案例计为通过；新负例范围针对新的冻结证据边界，不声称一一替代 Kotlin parser 案例。 |
+| KRM-002 / MAJOR，已修复 | 当前入口文档 `AGENTS.md`、`CLAUDE.md`、新指南与根架构/算法/API 文档；`git grep -n -I -E 'gradlew|:lwjgl3:run|assembleDebug|Gradle test' -- AGENTS.md CLAUDE.md doc/CURRENT_ARCHITECTURE.md doc/GAMEPLAY_RULES.md doc/BUILD_AND_PACKAGE.md doc/TESTING.md doc/README.md .github tools`。 | 当前指令曾把 V4 Kotlin/Gradle 说成可构建实现，并混淆 V4 测试规模和 V5 当前测试；期望当前入口只指向 Unity/C#/.NET，历史设计明确标记历史。 | `AGENTS.md`、`CLAUDE.md`、`doc/{CURRENT_ARCHITECTURE,GAMEPLAY_RULES,BUILD_AND_PACKAGE,TESTING}.md`，以及 `doc/FRAMEWORK_ARCHITECTURE.md`、`doc/GAME_ARCHITECTURE_V4.md`、`doc/SERVER_CLIENT_API.md`、`STACKING_ALGORITHM.md`、`TILE_OVERLAP_MATRIX_ALGORITHM.md`。 | 明确 V5 G2 未验收；规则的 42 stable IDs、136 个实体、三绝技/码牌与当前边界保留；Unity 正在使用的 `V4UiPrototype` 明确保留。历史验收原件未批量改写。测试文档将移除数作为移除记录而非新增通过。验收：当前指南中没有旧 Gradle 启动/构建命令；历史文档开头声明非当前实现。 |
+| KRM-003 / MAJOR，已修复 | 根 Gradle 七模块与仅供旧 JVM 的 CI/工具入口；`git ls-files '*.kt' '*.java' '*.gradle' 'gradlew*'` 并检查 `.github/workflows`、`tools` 当前跟踪文件。 | 旧 Android/JVM 启动器、Gradle 和 Kotlin/Java 执行工具仍可被误认为当前产品入口；期望当前树没有活动旧 runtime/test/build 入口。 | 任务树 `git status --short` 中的精确 staged 删除；活动 `.github/workflows/v5-verify.yml` 与剩余工具调用审计。 | 删除根 `engine/`、`protocol/`、`server/`、`client/`、`presentation/`、`lwjgl3/`、`android/` Gradle 模块、Gradle wrapper/配置、旧 run bat、`tools/architecture/`、`tools/ui-layout/`、旧 golden probe 与 traceability Kotlin scanner。保留 `tools/unity/`、Unity 生成 Android Gradle 模板/Android 支持、Unity 插件、SDK/JDK/工具链、`assets/`、`snapshot/`、`ui_demo/`、黄金 fixture 和所有历史报告。验收：当前跟踪文件没有 `.kt`、`.java`、`.gradle` 或 `gradlew*`，Unity Android 构建脚本仍在。 |
+| VAL-DB-001 / MAJOR 验证阻塞（外部环境，未修） | `tools/verify-v5.ps1`；实际命令如上。隔离 PG 设置未提供：Infrastructure 要 `MAHJONG_P52_TEST_POSTGRES_ADMIN`；DurableHost 要 `MAHJONG_P54B_TEST_PG_ADMIN` 和 `MAHJONG_P54B_TEST_PG`；LobbyService 要 `MAHJONG_LOBBY_TEST_POSTGRES`（限定 loopback 与隔离数据库前缀）。 | 实际总计 2,895 XML cases：2,821 pass、62 fail、12 skipped、0 not-run；期望门禁要求所有 case pass 且 0 fail/skip/not-run。Infrastructure 42 中 41 fail、exit 1；DurableHost 59 中 21 fail、exit 1；LobbyService 89 中 77 pass、12 明确 skip、exit 0，但总门禁拒绝。失败文本是 `BLOCKED: ... is required`，没有将缺 DB 伪装为通过。 | `build/task-kotlin-removal-20261109/verify-v5-final/summary.log`、`runs/Mahjong.Infrastructure.Tests/dotnetTest.meta.txt`、`runs/Mahjong.TableService.DurableHost.Tests/dotnetTest.meta.txt`、`runs/Mahjong.LobbyService.Tests/dotnetTest.meta.txt`，以及各项目的 `dotnetTest-xml/*/dotnet-test-results.xml`。 | 同一 PostgreSQL 阻塞类别统一要求：在授权环境提供这些测试所需的真实隔离 loopback 数据库连接，然后原样重跑完整 verify-v5；不改测试、不 skip、不注入伪绿。验收断言：原生 exit 0，所有 XML 汇总 0 failures、0 skipped、0 not-run，所有项目行 PASS。当前环境未授权修改配置，故本项保留为待环境满足的阻塞，不能宣称完整门禁通过。 |
+
+#### 补充审计新发现：KRM-004 / MAJOR（已修复）
+
+- **位置 / 复现**：`tools/verify-v5-golden-catalog.ps1` 与 `tools/tests/VerifyV5GoldenCatalog.Tests.ps1`；运行 `powershell -NoProfile -ExecutionPolicy Bypass -File tools/verify-v5-golden-catalog.ps1 -RepoRoot .`。
+- **实际 vs 期望**：旧工具读取当前六组 fixture，但内嵌的是早期 catalog 的摘要/长度，并要求 `engine/src/test/kotlin/...ExporterTest.kt` 存在；实际产生 `FIXTURE_SHA_MISMATCH`、`FIXTURE_BYTES_MISMATCH`、`IMMUTABLE_FIXTURE_PIN_MISMATCH`、`EXPORTER_MISSING`，期望现行门禁只检查清理后冻结 fixture 和来源身份，不引用旧 exporter。
+- **证据**：`build/task-kotlin-removal-20261109/catalog-first-failure.log`，SHA-256=`EFCEC875D5F6B312F30EEF275E8C8079490FBAC1B4A9D548BB6B618F71A930FF`。此前 verify-v5/CI 不调用该独立旧工具，所以统一门禁阶段没有暴露；末轮单独审计剩余工具并执行后发现。
+- **修复要求 / 映射**：旧 catalog 是历史索引快照，`tests/v5-golden/catalog-v1.json` 保留原样；不改任何 golden JSON、不刷新 catalog 摘要。删除该旧 validator 和绑定 Kotlin/exporter 的旧 self-test；当前 source-provenance verifier（10 fixture 摘要、70 source pins）与 companion verifier 作为现行完整性入口，.NET C# golden 行为测试未删除。当前指南声明 catalog 为历史快照。
+- **验收断言**：当前 CI/verify-v5/指南无旧 catalog validator/self-test 调用；no-history 正例、manifest 篡改负例、golden 篡改负例、可选 Git-history 缺失负例通过；fixture 行为测试维持原断言。
+
+#### 补充验证阻塞：VAL-UNITY-BND-001 / MAJOR（未修，当前 Unity 源边界预检问题）
+
+- **位置 / 复现**：现有 `tools/unity/check-unity-boundaries.ps1` negative matrix 的 baseline fixture，拷贝当前 Unity `Assets/` 后立即扫描 `Assets/Tests/PlayMode/C04PlayerCheatScenarioTests.cs` 与 `Assets/Scripts/UI/Prototype/V4UiPrototype.cs`。命令：`powershell -NoProfile -ExecutionPolicy Bypass -File tools/unity/check-unity-boundaries.ps1 -Report build/task-kotlin-removal-20261109/unity-boundary-report-final.json -TestNegativeMatrix`。
+- **实际 vs 期望**：matrix 在启动 16 个负例前因 baseline 有 2 项错误退出 1：测试源直接引用 `Mahjong.LocalHost`；保留的 Unity prototype source 命中 `Type.GetType` reflection 禁止项。期望负例工具的基线先通过，再逐例证明边界违规被拒绝。当前任务未改 Unity 代码/asmdef/policy；不能为了让矩阵变绿删除用户要求保留的 V4Prototype Unity 资源，也不能把 source scan 排除当作行为修复。
+- **证据**：`build/task-kotlin-removal-20261109/unity-boundary-negative.log` SHA-256=`B56E37CF5F0D4564D746578E624D169D63421852255799B7D91DCEFB2408F9F1`；该命令没有进入 16 个 mutation case。
+- **修复要求 / 验收断言**：由 Unity 架构维护者按正式 boundary 契约确认这两处是否属于可编译 runtime boundary；若违规，改成合规实现/引用；若不属于扫描目标，精确修正工具目标集并保留对 runtime 的完整扫描。随后 baseline 0 errors、16/16 负例分别命中预期类别。该项与 Kotlin 删除没有数据/Unity源输入关系，当前保留待独立处理，不宣称 Unity boundary 或 G2 通过。
+
+### 已完成改动及验证
+
+- 删除旧七模块源码/测试及旧 JVM 专属 Gradle、启动、CI、probe、architecture/render-gallery/traceability 入口。保留 Unity 已导入资源、Windows/Android Unity runner、Unity Android 支持、当前消费的冻结 golden 和全部历史证据原件。
+- 通过 `FrozenGoldenProvenance` 把旧 source hash 检查改为 fixture 精确字节 pin + 固定 manifest hash + historical source path/commit/blob 结构校验。旧历史路径仅作为不可执行来源身份字符串；现行测试不 `File.Exists`/读取/编译 Kotlin。旧 fixture 中导出器说明仍被其整体字节 pin 保护，测试源码不再提供 Gradle 重导命令。
+- `tools/verify-v5.ps1` 必跑 `verify-v5-source-provenance.ps1`；当前 GitHub workflow 增加该 self-test。独立负例矩阵证明 no-history positive、manifest mutation negative、fixture mutation negative、Git 历史缺失的可选路径负例，无 skip。
+- 当前文档复制来自只读的 `D:/majiang-wt/current-guide-20261109`；仅在本任务树更新，旧 architecture/API/rules algorithm 文档用顶部历史范围说明避免被误当当前实现。
+- 最终 `verify-v5`：命令见 KRM-001，native exit **1**；solution build 0；18 项通过、3 项失败/未运行原因见 VAL-DB-001；companion verifier 4/4 PASS、source provenance PASS、plugin scratch copy PASS。汇总 `summary.log` SHA-256=`01DB9E5D7F5CF4FF035CD17C04DD050DFFAAF4DCBB5DF3BD6D912FD352CEF917`；solution build log SHA-256=`AFAB2AAAF6E2DBD81370F255568139DB355C9CD254569A5E20335440DBA273D2`；companion log SHA-256=`6066F516CAE1CD70D7EA732ECA763C216C943B0459C31E23D3ED2AA427DFB7AB`；source-provenance log SHA-256=`11EEEED7ABE2ABE111FE4C1438F530BB4775B36BE893713F019AE6FDB18393BB`；plugin-copy log SHA-256=`741620ADA3ED90AB9D71777422F06B6C909BBED79E7B4B93B94621C22DC262AA`。
+- 最终 Domain.Tests 命令 `D:/game_dev_tools/dotnet/dotnet.exe test dotnet/tests/Mahjong.Domain.Tests/Mahjong.Domain.Tests.csproj -c Release --no-restore`：exit 0，529 pass、0 fail/skip；日志 `build/task-kotlin-removal-20261109/domain-final.log` SHA-256=`7A87998FBC083235FF069E6293B0A3F0D5F32438B1517E312B3D0F8A060521CA`。TableRuntime.Tests 同命令替换 csproj：exit 0，493 pass、0 fail/skip；日志 SHA-256=`4ED108BEB1486EE5BB5005AD8279CFE1253C536DCEDEB5053B1E697D3022A4B3`。
+- `tools/unity/build-shared.ps1 -Configuration Release -DotnetPath D:/game_dev_tools/dotnet/dotnet.exe -PluginOutputDir build/task-kotlin-removal-20261109/shared-plugin`：exit 0，156 inputs、19 output files；scratch provenance 校验 exit 0。日志 SHA-256=`FE7F0F154B18D90F517CF4484953C6F84D5055C63386130C4A5ED952063C5995`。一次针对默认同步目录的 check 因没有写该默认目录而报告 evidence missing；随后以 `-PluginDir/-EvidencePath` 对 scratch 产物复核并通过。Unity tracked plugin 和 `Library` 未写入。
+- `tools/verify-v5-source-provenance.ps1 -RepoRoot . -VerifyGitPins`：exit 0，10 fixtures / 70 source pins；默认 `verify-v5` source check 不需要历史对象。`tools/tests/VerifyV5SourceProvenance.Tests.ps1 -RepoRoot .`：exit 0；证据目录 `C:/Users/sncdc/AppData/Local/Temp/v5-source-provenance-selftest-d4cfc061497d468f870feabc745c9923`。
+- Unity Editor compile/EditMode/PlayMode 未执行：改动仅为 .NET 测试及其证据校验、文档和旧 JVM 删除；Unity C# runtime、Unity project、assembly input 和 package input 未改。共享 DLL 闭包已 scratch build+provenance 验证。Windows Player/Android 包构建未执行，因为没有 Unity/player/package 源输入改动；V5 G2 的既有缺口保持未验收。
+- `git diff --check` 通过。所有可恢复的新日志位于本任务 `build/task-kotlin-removal-20261109/` 独占证据目录；Domain/TableRuntime 首次断言失败的原始日志缺失已按 EVID-001 明示。候选需桥接流程的独立 reviewer 复核；不提交、不推送、不合并。
+
+#### 证据流程偏差：EVID-001 / MAJOR（未能恢复原始首败日志）
+
+- **位置 / 复现**：第一次单独执行 `Mahjong.TableRuntime.Tests` 时，本次新增的 source-path 断言导致 493 项中 1 项失败；原因是 `AssertSourceHash` 把当前 `dotnet/src/...` 输入误判成必须位于已删除的 `engine/src/...`。随后修正并重跑。
+- **实际 vs 期望**：应先把首败原始 runner/XML 文件复制到任务证据目录再重试；该原始文件没有成功落盘，测试框架原日志被后续运行清理/覆盖。期望保留首败原件且首败不可被成功重跑取代。
+- **证据**：原始文件路径按运行时是 `dotnet/tests/Mahjong.TableRuntime.Tests/bin/Release/net8.0/TestResults/Mahjong.TableRuntime.Tests_net8.0_x64.log`，但该首败副本当前不存在（不能声称 `table-runtime-first-failure.log` 已保留）。诊断和修复由后续代码 diff 与 final 529/493 tests 通过间接确认，非原始失败证据。
+- **修复要求 / 验收断言**：当前错误断言已按 source kind 区分历史 `engine/src` pins 与 live `dotnet/src` 源码，Domain 529/529、TableRuntime 493/493 与最终统一复跑均通过。对首败保留要求的流程偏差无法事后恢复原件；此项向独立 reviewer 明示，不用重构造的失败冒充原始证据。以后重跑前先归档原始 runner log/XML。
+
+## 第二轮复核返修：D-1-01 至 D-1-04
+
+复核候选基线 HEAD `30da3d2f0ffbee85ae4e0079a0fc76981452d54d`；当前只在原桥接工作树返修。完整证据根 `build/rework-d1-20261109/`，运行日志/XML/复制 fixture 保留；`final/log-hashes.json` 保存关键产物 SHA-256。
+
+| 缺陷 | 修复映射与验收 |
+|---|---|
+| D-1-01 / MAJOR | `.gitattributes` 固定 pinned golden JSON 为 LF，manifest 规范为 LF；source provenance manifest 同时 pin 70 个来源 identity 与反向 shuffle sourceTree 的原始元数据。恢复 C# live-source 行尾兼容逻辑。`VerifyV5SourceProvenance.Tests.ps1` exit 0，`core.autocrlf=true/false` 的 checkout-index 检出都使 10 fixtures / 70 pins 的 verifier exit 0、无需 Git 历史；隔离 LF C# source 的 Visibility 8/8、exit 0、XML 0 fail/error/skip/not-run。manifest / fixture tamper negative 仍拒绝。 |
+| D-1-02 / MAJOR | 更新 `doc/README.md` 活跃导航、`ui_demo/README.md` 真实工程路径、两个 assets README 的历史范围；校准脚本数量为 22。定向 grep 无活跃 Gradle/libGDX 入口；`git diff --check e074806a --` exit 0。素材与 Unity 已导入资源未修改。 |
+| D-1-03 / MAJOR | `FrozenGoldenProvenance` 校验 loader 实际读取的 fixture 字节和冻结来源 pin；恢复 `tools/v5-golden/probe-{ai-replay,cheat,movement,physical,shuffle,shuffle-reversed,visibility}-binding.ps1` 与 `probe-table-cheat-golden.ps1`。移除 probe 的 Kotlin 工作区复制/读取，真实 C# mutation matrices 恢复。Unified verifier Domain 529/529、AI 444/444、TableRuntime 493/493，exit 0 且 XML 0 fail/error/skip/not-run；各语义负例证据在各自 probe 目录。Table cheat mutation 28 场景 (5 positive/23 negative) 全 PASS，但 readiness 4/5，`tm-decision-mismatch` 保持 BLOCKED；Domain cheat readiness 中已有阻塞项也保持 BLOCKED，未计作绿色。 |
+| D-1-04 / MAJOR | `verify-v5-n3-closeout-ledger.ps1` 对 EV-N3M-EXP 仅检查 source manifest 中冻结的 fixture/path/SHA，不检查或读取 Kotlin 路径。当前工具仍 exit 1，因既有其他 evidence 缺失/摘要漂移；输出不含 EV-N3M-EXP file missing 或 manifest pin drift，也未改写旧历史 pins。 |
+
+probe summary 的精确矩阵计数：Physical 38（1 positive / 37 negative）；AI replay 48（5 / 43）；Cheat 46 个行为 mutation，positive baseline 95/95；Movement 48（7 / 41）；Visibility 67（6 / 61）；shuffle 33（3 / 30）；shuffle-reversed 76（5 / 71）；Table cheat 28（5 / 23）。各负例均为原生 exit 1 的真实测试失败，positive 均 exit 0；所有矩阵行 XML 的 error/skip/not-run 为 0。Cheat 与 Table cheat 的 readiness 单独为 BLOCKED，不作为 probe matrix 通过被包装成整体验收。
+
+### 新执行后才可发现的探针缺陷，同轮修复
+
+反向 shuffle C# 矩阵重跑才发现原 raw-source-hash 与 line-ending 负例在 normalized hash 已固定的策略下仍能变绿；此前首轮独立复核没有执行该脚本的完整矩阵。已在 source manifest 固化其 `sourceTree` 原始 SHA、字节数和历史行尾字段，并让 C# 与 PowerShell verifier 拒绝这些历史元数据被篡改；修复后反向 76 场景基线/合法等价/负例矩阵通过。该脚本也暴露 Windows `Remove-Item -Recurse` Access Denied；常规及 reversed shuffle probe 均改为父目录 + GUID 子目录精确检查后 `.NET Directory.Delete`，最终矩阵完整结束并保留 summary。常规 shuffle 33 场景通过，Movement 48 条（7 positive/41 negative），Visibility 67 条（6 positive/61 negative），反向 shuffle 最终通过结果在 `shuffle-reversed-final4/`；修复前失败日志仍在 `shuffle-reversed-final/` 与 `shuffle-reversed-final3/`。
+
+### 第二轮全量验证
+
+- 命令：`powershell -NoProfile -ExecutionPolicy Bypass -File tools/verify-v5.ps1 -Configuration Release -DotnetPath D:/game_dev_tools/dotnet/dotnet.exe -RunnerMode direct -LogDir build/rework-d1-20261109/verify-v5-final/logs -CompanionTimeoutSeconds 600`；原生 exit 1。Solution build exit 0；14 个 test XML 合计 2,895 total / 2,821 passed / 62 failed / 12 skipped / 0 errors / 0 not-run。Domain 529/529、AI 444/444、TableRuntime 493/493 PASS。总体 18 项 PASS、3 项 FAIL：DurableHost 21 failures，Infrastructure 41 failures，LobbyService 12 skipped；这些既有环境/项目缺口不在本轮范围。Companion gate PASS (4/4)，source provenance PASS，无历史 Git 依赖。
+- 更新后的来源 self-test exit 0；CompanionIntegration self-test 57/57 exit 0；standalone 来源 verifier 10/70 exit 0；`core.autocrlf=true/false` 双检出 exit 0；Visibility LF 复制源码 8/8 exit 0。
+- N3 ledger exit 1；仅报告其它原有历史证据缺失/摘要漂移，不刷新 hash。具体日志 `build/rework-d1-20261109/final/n3-ledger-final.log`。
+- Unity Editor、Unity EditMode/PlayMode、Windows/Android 包构建未重跑：此次返修没有修改 Unity runtime、assembly/package、共享 DLL 或平台构建输入。首轮共享 DLL scratch build 与来源校验输入未变，结果继续有效。V5 G2 仍未验收。
