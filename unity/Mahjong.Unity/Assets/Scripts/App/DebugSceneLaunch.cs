@@ -89,7 +89,10 @@ namespace Mahjong.Unity.App
             string id = Guid.NewGuid().ToString("N");
             ScenarioId = document.scenario;
             RoomId = "debug-scene-" + id;
-            RoundId = "debug-round-" + id;
+            // LocalSnapshotFacts recognizes the existing legally pre-advanced C04
+            // fixture contract by this reserved prefix. Keep it while retaining a
+            // per-launch identity; ordinary rounds never receive this prefix.
+            RoundId = "c04-debug-" + id;
             SaveDirectoryName = id;
             Enabled = true;
             Debug.Log("DEBUG_SCENE_LOADED: " + path + " scenario=" + ScenarioId);
