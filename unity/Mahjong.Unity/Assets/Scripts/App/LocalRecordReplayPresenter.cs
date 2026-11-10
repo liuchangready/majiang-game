@@ -48,6 +48,7 @@ namespace Mahjong.Unity.App
 
         public void Open()
         {
+            if (IsOpen) return;
             _previousSelected = EventSystem.current != null ? EventSystem.current.currentSelectedGameObject : null;
             _canvas!.gameObject.SetActive(true);
             if (EventSystem.current != null && _closeButton != null)
@@ -70,27 +71,44 @@ namespace Mahjong.Unity.App
         {
             try
             {
-                string root = AppRoot.Instance!.Composition.Paths.LocalSaveDirectory;
-                IReadOnlyList<LocalRecordedRound> records = await Task.Run(() => LocalRecordedRounds.List(root, 20));
+                var factory = AppRoot.Instance!.Composition.ChannelFactory as LocalTableChannelFactory
+                    ?? throw new InvalidOperationException("The configured channel factory has no local record reader.");
+                IReadOnlyList<LocalRecordedRound> records = await Task.Run(factory.ListRecordedRounds);
                 if (this == null || generation != _loadGeneration) return;
-                foreach (GameObject row in _rows) Destroy(row);
-                _rows.Clear();
-                _records.Clear();
-                foreach (LocalRecordedRound record in records)
-                {
-                    string id = record.Id;
-                    _records[id] = record;
-                    AddButton(_list!, $"{record.RecordedAt.ToLocalTime():yyyy-MM-dd HH:mm}  ·  {record.RoundId}  ·  {record.Result}", () => Select(id));
-                }
-                _status!.text = records.Count == 0 ? "暂无牌局记录" : $"最近 {records.Count} 局";
-                GameObject focus = _rows.Count > 0 ? _rows[0] : _closeButton!.gameObject;
-                if (EventSystem.current != null) EventSystem.current.SetSelectedGameObject(focus);
+                ShowRecords(records);
             }
             catch (Exception exception)
             {
-                Debug.LogWarning($"LOCAL_RECORD_LIST_FAILED: {exception.GetType().Name}");
-                if (this != null && generation == _loadGeneration) _status!.text = "读取失败，请稍后重试。";
+                if (this != null && generation == _loadGeneration) ShowLoadFailure(exception);
             }
+        }
+
+        private void ShowRecords(IReadOnlyList<LocalRecordedRound> records)
+        {
+            foreach (GameObject row in _rows)
+            {
+                if (Application.isPlaying) Destroy(row);
+                else DestroyImmediate(row);
+            }
+            _rows.Clear();
+            _records.Clear();
+            foreach (LocalRecordedRound record in records)
+            {
+                string id = record.Id;
+                _records[id] = record;
+                string matchRound = string.Equals(record.MatchId, record.RoundId, StringComparison.Ordinal)
+                    ? record.RoundId : record.MatchId + " / " + record.RoundId;
+                AddButton(_list!, $"{record.RecordedAt.ToLocalTime():yyyy-MM-dd HH:mm}  |  {matchRound}  |  {record.Result}", () => Select(id));
+            }
+            _status!.text = records.Count == 0 ? "暂无牌局记录" : $"最近 {records.Count} 局";
+            GameObject focus = _rows.Count > 0 ? _rows[0] : _closeButton!.gameObject;
+            if (EventSystem.current != null) EventSystem.current.SetSelectedGameObject(focus);
+        }
+
+        private void ShowLoadFailure(Exception exception)
+        {
+            Debug.LogWarning($"LOCAL_RECORD_LIST_FAILED: {exception.GetType().Name}: {exception.InnerException?.Message ?? exception.Message}");
+            _status!.text = "读取失败，请稍后重试。";
         }
 
         private void Select(string id)
@@ -102,7 +120,7 @@ namespace Mahjong.Unity.App
                 _cursor = 0;
                 _playing = false;
                 SetButtonText(_playPauseButton, "播放");
-                _status!.text = $"{record.RoundId} · {record.Result} · {_events.Count} 个公开事件";
+                _status!.text = $"{record.MatchId} / {record.RoundId} · {record.Result} · {_events.Count} 个公开事件";
                 ShowCurrent();
             }
             catch (Exception exception)
@@ -195,26 +213,27 @@ namespace Mahjong.Unity.App
             {
                 _playing = !_playing;
                 SetButtonText(_playPauseButton, _playing ? "暂停" : "播放");
-            }, new Vector2(-330, -300));
-            AddButton(panel, "单步", Advance, new Vector2(-110, -300));
+            }, new Vector2(-330, -330));
+            AddButton(panel, "单步", Advance, new Vector2(-110, -330));
             _speedButton = AddButton(panel, "速度 1×", () =>
             {
                 _speedLevel = _speedLevel % 3 + 1;
-                _interval = _speedLevel == 1 ? 0.8f : _speedLevel == 2 ? 0.4f : 0.2f;
+                _interval = _speedLevel == 1 ? 0.8f : _speedLevel == 2 ? 0.4f : 0.8f / 3f;
                 SetButtonText(_speedButton, "速度 " + _speedLevel + "×");
-            }, new Vector2(110, -300));
-            _closeButton = AddButton(panel, "关闭", Close, new Vector2(330, -300));
+            }, new Vector2(110, -330));
+            _closeButton = AddButton(panel, "关闭", Close, new Vector2(330, -330));
         }
 
         private Button AddButton(RectTransform parent, string label, Action action, Vector2? position = null)
         {
-            var rect = Rect(parent, "RecordButton", new Vector2(0.5f, position.HasValue ? 0 : 1), new Vector2(0.5f, position.HasValue ? 0 : 1),
-                new Vector2(920, position.HasValue ? 54 : 46));
+            var rect = Rect(parent, "RecordButton", new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f),
+                new Vector2(position.HasValue ? 190 : 920, position.HasValue ? 54 : 46));
             if (position.HasValue) rect.anchoredPosition = position.Value;
             else _rows.Add(rect.gameObject);
             Image image = Image(rect.gameObject, new Color(0.16f, 0.27f, 0.42f, 1));
             Button button = rect.gameObject.AddComponent<Button>();
             button.targetGraphic = image;
+            rect.gameObject.AddComponent<UiPointerLifecycleTrigger>();
             button.onClick.AddListener(() =>
             {
                 if (UiInputLifecycle.Instance.ConsumeClickOrSubmit(rect.gameObject)) action();
@@ -232,6 +251,14 @@ namespace Mahjong.Unity.App
                 fit.preferredHeight = 46;
             }
             return button;
+        }
+
+        private void OnDestroy()
+        {
+            if (_backRegistered && _backRouter != null)
+                _backRouter.UnregisterModal(Close);
+            if (_previousSelected != null && _previousSelected.activeInHierarchy && EventSystem.current != null)
+                EventSystem.current.SetSelectedGameObject(_previousSelected);
         }
 
         private static void SetButtonText(Button? button, string value)

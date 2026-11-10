@@ -47,9 +47,14 @@ namespace Mahjong.Unity.UI
                 float recordsY = quitRect != null
                     ? (_playButton.GetComponent<RectTransform>().anchoredPosition.y + quitRect.anchoredPosition.y) * 0.5f
                     : _playButton.GetComponent<RectTransform>().anchoredPosition.y - 100;
-                rect.anchoredPosition = new Vector2(_playButton.GetComponent<RectTransform>().anchoredPosition.x, recordsY);
+                float gap = 112;
+                rect.anchoredPosition = new Vector2(0, recordsY);
+                _playButton.GetComponent<RectTransform>().anchoredPosition = new Vector2(0, recordsY + gap);
+                if (quitRect != null) quitRect.anchoredPosition = new Vector2(0, recordsY - gap);
                 var label = _recordsButton.GetComponentInChildren<TextMeshProUGUI>();
                 if (label != null) label.text = "牌局记录";
+                if (_recordsButton.GetComponent<UiPointerLifecycleTrigger>() == null)
+                    _recordsButton.gameObject.AddComponent<UiPointerLifecycleTrigger>();
                 _recordsButton.onClick.RemoveAllListeners();
                 _recordsButton.onClick.AddListener(OnRecordsClicked);
             }
@@ -158,6 +163,7 @@ namespace Mahjong.Unity.UI
         private void OnRecordsClicked()
         {
             if (_quitModal != null && _quitModal.IsOpen) return;
+            if (_recordsPresenter?.IsOpen == true) return;
             if (!UiInputLifecycle.Instance.ConsumeClickOrSubmit(_recordsButton != null ? _recordsButton.gameObject : null)) return;
             _recordsPresenter?.Open();
         }
