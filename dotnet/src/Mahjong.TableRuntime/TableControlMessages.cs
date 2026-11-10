@@ -140,12 +140,15 @@ namespace Mahjong.TableRuntime
 
     internal sealed class AiCheatCaptureMailboxMessage : TableMailboxMessage
     {
-        public AiCheatCaptureMailboxMessage(int seat)
+        public AiCheatCaptureMailboxMessage(int seat, bool allowTakeoverPaidCheats)
         {
             Seat = seat;
+            AllowTakeoverPaidCheats = allowTakeoverPaidCheats;
         }
 
         public int Seat { get; }
+
+        public bool AllowTakeoverPaidCheats { get; }
 
         public TaskCompletionSource<TableAiCheatCaptureResult> Completion { get; } =
             new TaskCompletionSource<TableAiCheatCaptureResult>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -153,12 +156,15 @@ namespace Mahjong.TableRuntime
 
     internal sealed class AiCheatSubmitMailboxMessage : TableMailboxMessage
     {
-        public AiCheatSubmitMailboxMessage(TableAiCheatPlan plan)
+        public AiCheatSubmitMailboxMessage(TableAiCheatPlan plan, bool allowTakeoverPaidCheats)
         {
             Plan = plan ?? throw new ArgumentNullException(nameof(plan));
+            AllowTakeoverPaidCheats = allowTakeoverPaidCheats;
         }
 
         public TableAiCheatPlan Plan { get; }
+
+        public bool AllowTakeoverPaidCheats { get; }
 
         public TaskCompletionSource<TableOperationResult> Completion { get; } =
             new TaskCompletionSource<TableOperationResult>(TaskCreationOptions.RunContinuationsAsynchronously);

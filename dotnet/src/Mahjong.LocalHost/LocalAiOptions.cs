@@ -47,6 +47,12 @@ namespace Mahjong.LocalHost
         /// <summary>Points the strategy must keep unspent.</summary>
         public int ReservePoints { get; set; }
 
+        /// <summary>
+        /// Whether a disconnected human's takeover seat may initiate new paid cheats.
+        /// Defaults to false, matching AiCheatPolicy and the AI design's takeover rule.
+        /// </summary>
+        public bool TakeoverMaySpend { get; set; }
+
         internal void Validate()
         {
             if (!LocalAiProfiles.IsKnown(ProfileId))

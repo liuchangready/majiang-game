@@ -241,6 +241,35 @@ namespace Mahjong.TableRuntime
         }
 
         /// <summary>
+        /// Host-only count of AI-paid cheat points already spent in the current round. It is
+        /// derived from the authoritative ledger and the AI request-id prefix, so a recreated
+        /// local driver can restore the same round's budget instead of resetting it.
+        /// </summary>
+        public int GetAiCheatSpentThisRound(int seat)
+        {
+            CheckSeat(seat);
+            if (_cheat == null)
+            {
+                return 0;
+            }
+
+            string marker = "-ai-" + _round.RoundId + "-";
+            int spent = 0;
+            for (int i = 0; i < _cheat.Ledger.Entries.Count; i++)
+            {
+                CheatLedgerEntry entry = _cheat.Ledger.Entries[i];
+                if (entry.Seat == seat &&
+                    entry.Amount < 0 &&
+                    entry.EntryId.IndexOf(marker, StringComparison.Ordinal) >= 0)
+                {
+                    spent = checked(spent - entry.Amount);
+                }
+            }
+
+            return spent;
+        }
+
+        /// <summary>
         /// Host-only cheat accounting for validation evidence. It contains balances, entries
         /// (amount/reason) and mark-group counts; no wall order or tile identities leave here.
         /// </summary>
@@ -637,11 +666,12 @@ namespace Mahjong.TableRuntime
         /// </summary>
         public ValueTask<TableAiCheatCaptureResult> CaptureAiCheatOpportunityAsync(
             int seat,
+            bool allowTakeoverPaidCheats = false,
             CancellationToken cancellationToken = default)
         {
             CheckSeat(seat);
             cancellationToken.ThrowIfCancellationRequested();
-            var message = new AiCheatCaptureMailboxMessage(seat);
+            var message = new AiCheatCaptureMailboxMessage(seat, allowTakeoverPaidCheats);
             TableMailboxEnqueueStatus enqueue = _mailbox.TryEnqueueControl(message);
             if (enqueue != TableMailboxEnqueueStatus.Enqueued)
             {
@@ -660,6 +690,7 @@ namespace Mahjong.TableRuntime
         /// </summary>
         public ValueTask<TableOperationResult> SubmitAiCheatAsync(
             TableAiCheatPlan plan,
+            bool allowTakeoverPaidCheats = false,
             CancellationToken cancellationToken = default)
         {
             if (plan == null)
@@ -668,7 +699,7 @@ namespace Mahjong.TableRuntime
             }
 
             cancellationToken.ThrowIfCancellationRequested();
-            var message = new AiCheatSubmitMailboxMessage(plan);
+            var message = new AiCheatSubmitMailboxMessage(plan, allowTakeoverPaidCheats);
             TableMailboxEnqueueStatus enqueue = _mailbox.TryEnqueueControl(message);
             if (enqueue != TableMailboxEnqueueStatus.Enqueued)
             {
@@ -1125,11 +1156,15 @@ namespace Mahjong.TableRuntime
                         aiObservation.Completion.TrySetResult(ProcessAiObservation(aiObservation.Seat));
                         break;
                     case AiCheatCaptureMailboxMessage aiCheatCapture:
-                        aiCheatCapture.Completion.TrySetResult(ProcessAiCheatCapture(aiCheatCapture.Seat));
+                        aiCheatCapture.Completion.TrySetResult(ProcessAiCheatCapture(
+                            aiCheatCapture.Seat,
+                            aiCheatCapture.AllowTakeoverPaidCheats));
                         break;
                     case AiCheatSubmitMailboxMessage aiCheatSubmit:
                         aiCheatSubmit.Completion.TrySetResult(
-                            await ProcessAiCheatSubmitAsync(aiCheatSubmit.Plan).ConfigureAwait(false));
+                            await ProcessAiCheatSubmitAsync(
+                                aiCheatSubmit.Plan,
+                                aiCheatSubmit.AllowTakeoverPaidCheats).ConfigureAwait(false));
                         break;
                     case ControlSnapshotMailboxMessage controlSnapshot:
                         controlSnapshot.Completion.TrySetResult(BuildControlSnapshot());
@@ -2402,6 +2437,12 @@ namespace Mahjong.TableRuntime
             action == RoundCheatAction.SubmitSleeveBloomOffTurnChoice ||
             action == RoundCheatAction.SubmitSleeveBloomChoice ||
             action == RoundCheatAction.SubmitBeamSwapChoice;
+
+        private static bool IsPaidAiCheatAction(RoundCheatAction action) =>
+            action == RoundCheatAction.SubmitTileMark ||
+            action == RoundCheatAction.SubmitSleeveBloom ||
+            action == RoundCheatAction.SubmitSleeveBloomOffTurn ||
+            action == RoundCheatAction.SubmitBeamSwap;
 
         internal static bool ShouldDeliverDeferredDraw(RoundChange change)
         {
@@ -6736,7 +6777,7 @@ namespace Mahjong.TableRuntime
             return new BasicAiContext(seat, _round.IsRiichi(seat), lastDiscard, facts);
         }
 
-        private TableAiCheatCaptureResult ProcessAiCheatCapture(int seat)
+        private TableAiCheatCaptureResult ProcessAiCheatCapture(int seat, bool allowTakeoverPaidCheats)
         {
             TableOperationResult? guard = GuardServing();
             if (guard != null)
@@ -6843,7 +6884,9 @@ namespace Mahjong.TableRuntime
                 }
             }
 
-            if (!offerChoice)
+            bool takeoverSeat = _control.GetState(seat).Kind == SeatControllerKind.Takeover;
+            bool allowPaidInitiation = !takeoverSeat || allowTakeoverPaidCheats;
+            if (!offerChoice && allowPaidInitiation)
             {
                 int points = cheat.Ledger.BalanceOf(seat);
                 int turnNumber = CountDrawTurns(_round);
@@ -6986,7 +7029,9 @@ namespace Mahjong.TableRuntime
                 new TableAiCheatOpportunity(view, plans));
         }
 
-        private async ValueTask<TableOperationResult> ProcessAiCheatSubmitAsync(TableAiCheatPlan plan)
+        private async ValueTask<TableOperationResult> ProcessAiCheatSubmitAsync(
+            TableAiCheatPlan plan,
+            bool allowTakeoverPaidCheats)
         {
             TableOperationResult? guard = GuardServing();
             if (guard != null)
@@ -7022,6 +7067,16 @@ namespace Mahjong.TableRuntime
             if (identityError != null)
             {
                 return identityError;
+            }
+
+            if (!allowTakeoverPaidCheats &&
+                _control.GetState(command.Seat).Kind == SeatControllerKind.Takeover &&
+                IsPaidAiCheatAction(command.Action))
+            {
+                return TableOperationResult.Rejected(
+                    _stateVersion,
+                    TableRuntimeReasonCode.TakeoverCheatSpendForbidden,
+                    "A takeover seat may not initiate a new paid cheat; an already-paid offer may still be resolved.");
             }
 
             if (_cheat == null || _cheatEconomy == null || _sleeveConfig == null)
