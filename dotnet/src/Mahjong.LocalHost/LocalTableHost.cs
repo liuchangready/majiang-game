@@ -57,6 +57,12 @@ namespace Mahjong.LocalHost
 
         public LocalTableSeatPlan SeatPlan { get; set; } = LocalTableSeatPlan.SingleHumanSeatZero;
 
+        /// <summary>AI profile and seeded cheat configuration for automated seats.</summary>
+        public LocalAiOptions Ai { get; set; } = new LocalAiOptions();
+
+        /// <summary>Optional sanitized decision sink (validation/evidence only).</summary>
+        public ILocalAiDecisionObserver? AiDecisionObserver { get; set; }
+
         public int MaxSpectators { get; set; } = 4;
 
         public bool AllowSpectators { get; set; } = true;
@@ -114,6 +120,13 @@ namespace Mahjong.LocalHost
             {
                 throw new LocalTableException(LocalTableErrorKind.InvalidOptions, "SeatPlan or spectator limit is invalid.");
             }
+
+            if (Ai == null)
+            {
+                throw new LocalTableException(LocalTableErrorKind.InvalidOptions, "AI options must not be null.");
+            }
+
+            Ai.Validate();
 
             LocalTableHostPaths.ResolveSaveDirectory(SaveDirectory);
         }
@@ -328,6 +341,32 @@ namespace Mahjong.LocalHost
             CancellationToken cancellationToken = default)
         {
             return LocalTableRoom.OpenAsync(options, cancellationToken);
+        }
+
+        /// <summary>
+        /// Opt-in, read-only round summary for the already-open runtime that owns
+        /// <paramref name="saveDirectory"/>. It never creates a second host or acquires a lease.
+        /// </summary>
+        public static Task<LocalRoundSummary> GetRoundSummaryAsync(
+            string saveDirectory,
+            CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(saveDirectory))
+            {
+                throw new LocalTableException(
+                    LocalTableErrorKind.InvalidOptions,
+                    "A round summary requires the exact local save directory.");
+            }
+
+            string full = LocalTableHostPaths.ResolveSaveDirectory(saveDirectory);
+            if (!LocalTableDiagnosticRegistry.TryGet(full, out LocalTableRuntime? runtime) || runtime == null)
+            {
+                throw new LocalTableException(
+                    LocalTableErrorKind.Unavailable,
+                    "No open local runtime owns the requested save directory.");
+            }
+
+            return runtime.GetRoundSummaryAsync(cancellationToken);
         }
 
         /// <summary>
