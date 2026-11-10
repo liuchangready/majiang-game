@@ -46,7 +46,7 @@
 
 Build Settings 启用 6 个场景：`Boot`（初始化）、`Menu`（菜单）、`Lobby`（大厅）、`Table`（对局）、`Spectator`（观战）、`Settlement`（结算）。
 
-工程另有 `SampleScene`、`Prototypes/V4UiPrototype`、`Settings/Scenes/URP2DSceneTemplate`，共 9 个场景文件。V4UiPrototype 名称保留为 Unity 当前导入/预览资源，不是旧 Kotlin 运行实现。碰、吃、立直、杠共用 Table，通过不同权威牌局状态呈现。
+工程另有 `SampleScene`、`Prototypes/V4UiPrototype`，共 8 个场景文件。V4UiPrototype 名称保留为 Unity 当前导入/预览资源，不是旧 Kotlin 运行实现。碰、吃、立直、杠共用 Table，通过不同权威牌局状态呈现。
 
 ## 指定状态与当前限制
 
