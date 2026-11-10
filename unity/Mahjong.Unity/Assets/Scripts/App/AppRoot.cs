@@ -126,7 +126,10 @@ namespace Mahjong.Unity.App
                 var menuPresenter = FindFirstObjectByType<MenuPresenter>();
                 if (menuPresenter != null && _router != null)
                 {
-                    menuPresenter.Initialize(_router);
+                    var recordsPresenter = menuPresenter.GetComponent<LocalRecordReplayPresenter>();
+                    if (recordsPresenter == null) recordsPresenter = menuPresenter.gameObject.AddComponent<LocalRecordReplayPresenter>();
+                    recordsPresenter.Initialize();
+                    menuPresenter.Initialize(_router, recordsPresenter);
                 }
             }
             else if (sceneId == SceneId.Lobby)

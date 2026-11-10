@@ -5,7 +5,8 @@
     "Mahjong.Unity.UI",
     "Mahjong.Unity.Table",
     "Mahjong.Unity.Spectator",
-    "Mahjong.Unity.Platform"
+    "Mahjong.Unity.Platform",
+    "Unity.TextMeshPro"
   ],
   "includePlatforms": [],
   "excludePlatforms": [],

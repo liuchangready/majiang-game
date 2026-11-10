@@ -28,6 +28,8 @@
 | `Mahjong.Infrastructure` | PostgreSQL、持久回执、检查点、事件和结算 outbox 等基础设施 |
 | `unity/Mahjong.Unity/Assets/Scripts` | App 组合根、UI、Table、Spectator、Platform；业务画面读取 Client 视图与门面，宿主由 App 装配 |
 
+主菜单本地牌局记录与只读回放范围见[牌局自动记录与回放](RECORD_REPLAY.md)。
+
 ## 一次玩家动作的数据流
 
 ```text
