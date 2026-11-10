@@ -208,7 +208,7 @@ function Get-Mutex {
     $script:Mutex = New-Object System.Threading.Mutex($false, $name)
     $start = [DateTimeOffset]::UtcNow
     Write-ToolLog ('MUTEX_WAIT ' + $name)
-    $acquired = $script:Mutex.WaitOne([TimeSpan]::FromSeconds(3600))
+    $acquired = $script:Mutex.WaitOne([TimeSpan]::FromSeconds(600))
     $elapsed = ([DateTimeOffset]::UtcNow - $start).TotalSeconds
     if (-not $acquired) {
         throw ('MUTEX_TIMEOUT ' + $name + ' after ' + [math]::Round($elapsed, 3) + 's')
@@ -596,7 +596,7 @@ function Write-SourceRecord {
     [System.IO.File]::WriteAllText($stagedPatchPath, $stagedPatchText, (New-Object System.Text.UTF8Encoding($false)))
 
     $untracked = New-Object System.Collections.Generic.List[object]
-    $untrackedLines = @(& git -C $script:RepoRoot ls-files --others --exclude-standard)
+    $untrackedLines = @(& git -c core.quotepath=false -C $script:RepoRoot ls-files --others --exclude-standard)
     foreach ($relative in $untrackedLines) {
         if ([string]::IsNullOrWhiteSpace($relative)) { continue }
         $full = Join-Path $script:RepoRoot $relative

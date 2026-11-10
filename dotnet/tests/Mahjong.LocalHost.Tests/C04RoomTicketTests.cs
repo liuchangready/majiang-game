@@ -174,10 +174,20 @@ namespace Mahjong.LocalHost.Tests
                     }
                 };
                 await secondSpectatorChannel.SendAsync(WireCodec.Encode(attack), timeout.Token);
-                WireDecodeResult rejected = WireCodec.Decode((await secondSpectatorChannel.ReceiveAsync(timeout.Token)).ToArray());
-                Assert.NotNull(rejected.Envelope);
-                Assert.Equal(MessageType.Error, rejected.Envelope!.MessageType);
-                Assert.Equal("SPECTATOR_READ_ONLY", rejected.Envelope.Error!.DetailCode);
+                while (true)
+                {
+                    WireDecodeResult frame = WireCodec.Decode(
+                        (await secondSpectatorChannel.ReceiveAsync(timeout.Token)).ToArray());
+                    Assert.NotNull(frame.Envelope);
+                    if (frame.Envelope!.MessageType == MessageType.PublicUpdate)
+                    {
+                        continue;
+                    }
+
+                    Assert.Equal(MessageType.Error, frame.Envelope.MessageType);
+                    Assert.Equal("SPECTATOR_READ_ONLY", frame.Envelope.Error!.DetailCode);
+                    break;
+                }
 
                 await secondSpectator.CloseAsync("TEST_DONE", CancellationToken.None);
                 await secondSpectatorChannel.CloseAsync(new TableChannelCloseReason("TEST_DONE", true), CancellationToken.None);
@@ -907,8 +917,13 @@ namespace Mahjong.LocalHost.Tests
             long deadline = Assert.IsType<DecisionTiming>(before.Seats[0].Timing).DeadlineMillis;
             AdvanceClockTo(harness, deadline + 500);
             await WaitUntilAsync(
-                () => !string.Equals(actor.GetPendingDecisionId(0), decision, StringComparison.Ordinal),
-                "the bound recovered decision to retire",
+                () =>
+                {
+                    string? pending = actor.GetPendingDecisionId(0);
+                    return !string.IsNullOrEmpty(pending) &&
+                           !string.Equals(pending, decision, StringComparison.Ordinal);
+                },
+                "the bound recovered decision to retire and be replaced with a fresh identity",
                 ct);
 
             TableReceiptResolvedEventArgs stale = await bound.SubmitControlAsync(
@@ -917,7 +932,13 @@ namespace Mahjong.LocalHost.Tests
                 "recover-bound-stale-decision",
                 ct,
                 new DecisionId(decision));
-            Assert.Equal(OutboxDisposition.Rejected, stale.Resolution.Disposition);
+            Assert.True(
+                stale.Resolution.Disposition == OutboxDisposition.Rejected,
+                "oldDecision=" + decision +
+                " currentDecision=" + (actor.GetPendingDecisionId(0) ?? "<none>") +
+                " disposition=" + stale.Resolution.Disposition +
+                " reason=" + stale.Resolution.ReasonCode +
+                " controlEpoch=" + (await actor.GetControlSnapshotAsync(ct)).Seats[0].ControlEpoch);
             Assert.Equal(ProtocolErrorCode.DecisionMismatch, stale.Resolution.ReasonCode);
             TableControlSnapshot control = await actor.GetControlSnapshotAsync(ct);
             Assert.Equal(SeatControllerKind.LocalHuman, control.Seats[0].Kind);

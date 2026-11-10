@@ -1262,14 +1262,8 @@ namespace Mahjong.LocalHost.Tests
 
             // Real separate-process cold read. The committed temp bit must be visible there.
             string marker = Path.Combine(harness.Root, "furiten-read-marker.txt");
-            string workerDll = Path.Combine(
-                P41Harness.FindRepositoryRoot(),
-                "dotnet",
-                "tests",
+            string workerDll = P41Harness.FindBuiltProjectAssembly(
                 "Mahjong.LocalHost.CrashWorker",
-                "bin",
-                "Release",
-                "net8.0",
                 "Mahjong.LocalHost.CrashWorker.dll");
             Assert.True(File.Exists(workerDll), "CrashWorker was not built: " + workerDll);
             // Under `dotnet test` the current process is the xUnit apphost

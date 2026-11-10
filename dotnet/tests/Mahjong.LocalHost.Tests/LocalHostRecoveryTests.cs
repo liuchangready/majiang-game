@@ -318,15 +318,8 @@ using PlayerSnapshot = Mahjong.Contracts.Wire.PlayerSnapshot;
             harness.Options.AutoPlay = false;
             harness.Options.Environment = LocalHostEnvironment.System;
             CancellationToken ct = TestContext.Current.CancellationToken;
-            string root = P41Harness.FindRepositoryRoot();
-            string workerDll = Path.Combine(
-                root,
-                "dotnet",
-                "tests",
+            string workerDll = P41Harness.FindBuiltProjectAssembly(
                 "Mahjong.LocalHost.CrashWorker",
-                "bin",
-                "Release",
-                "net8.0",
                 "Mahjong.LocalHost.CrashWorker.dll");
             Assert.True(File.Exists(workerDll), "CrashWorker was not built: " + workerDll);
             string marker = Path.Combine(harness.Root, "crash-marker.txt");
@@ -460,15 +453,8 @@ using PlayerSnapshot = Mahjong.Contracts.Wire.PlayerSnapshot;
             harness.Options.AutoPlay = false;
             harness.Options.Environment = LocalHostEnvironment.System;
             CancellationToken ct = TestContext.Current.CancellationToken;
-            string root = P41Harness.FindRepositoryRoot();
-            string workerDll = Path.Combine(
-                root,
-                "dotnet",
-                "tests",
+            string workerDll = P41Harness.FindBuiltProjectAssembly(
                 "Mahjong.LocalHost.CrashWorker",
-                "bin",
-                "Release",
-                "net8.0",
                 "Mahjong.LocalHost.CrashWorker.dll");
 
             Assert.True(File.Exists(workerDll), "CrashWorker DLL not found at: " + workerDll);
@@ -634,15 +620,8 @@ using PlayerSnapshot = Mahjong.Contracts.Wire.PlayerSnapshot;
             harness.Options.AutoPlay = false;
             harness.Options.Environment = LocalHostEnvironment.System;
             CancellationToken ct = TestContext.Current.CancellationToken;
-            string root = P41Harness.FindRepositoryRoot();
-            string workerDll = Path.Combine(
-                root,
-                "dotnet",
-                "tests",
+            string workerDll = P41Harness.FindBuiltProjectAssembly(
                 "Mahjong.LocalHost.CrashWorker",
-                "bin",
-                "Release",
-                "net8.0",
                 "Mahjong.LocalHost.CrashWorker.dll");
             Assert.True(File.Exists(workerDll), "CrashWorker was not built: " + workerDll);
             string marker = Path.Combine(harness.Root, "crash-settlement-marker.txt");
@@ -900,15 +879,8 @@ using PlayerSnapshot = Mahjong.Contracts.Wire.PlayerSnapshot;
             string expectedRoundId,
             CancellationToken cancellationToken)
         {
-            string root = P41Harness.FindRepositoryRoot();
-            string workerDll = Path.Combine(
-                root,
-                "dotnet",
-                "tests",
+            string workerDll = P41Harness.FindBuiltProjectAssembly(
                 "Mahjong.LocalHost.CrashWorker",
-                "bin",
-                "Release",
-                "net8.0",
                 "Mahjong.LocalHost.CrashWorker.dll");
             Assert.True(File.Exists(workerDll), "CrashWorker was not built: " + workerDll);
 

@@ -139,6 +139,7 @@ namespace Mahjong.Unity.App
             }
 
             string requestId = "c04-" + _runId + "-" + _caseId + "-seat0-1";
+            string rejectedRequestId = "c04-" + _runId + "-" + _caseId + "-seat0-negative-1";
             var owner = new TableCommandOwnerContext(
                 new RequestId(requestId),
                 new RequestScopeId(view.Identity.ScopeId),
@@ -150,9 +151,17 @@ namespace Mahjong.Unity.App
 
             using var observer = new ConfirmedVisibleEventObserver(coordinator);
             TableReceiptResolvedEventArgs? actualReceipt = null;
+            TableReceiptResolvedEventArgs? rejectedReceipt = null;
+            var rejectedReceiptTask = new TaskCompletionSource<TableReceiptResolvedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
             EventHandler<TableReceiptResolvedEventArgs> receiptHandler = (_, args) =>
             {
                 observer.RecordReceipt(args);
+                if (string.Equals(args.Command.RequestId, rejectedRequestId, StringComparison.Ordinal) &&
+                    string.Equals(args.Command.ScopeId, view.Identity.ScopeId, StringComparison.Ordinal))
+                {
+                    rejectedReceipt = args;
+                    rejectedReceiptTask.TrySetResult(args);
+                }
                 if (string.Equals(args.Command.RequestId, requestId, StringComparison.Ordinal) &&
                     string.Equals(args.Command.ScopeId, view.Identity.ScopeId, StringComparison.Ordinal))
                 {
@@ -160,7 +169,6 @@ namespace Mahjong.Unity.App
                 }
             };
             coordinator.ReceiptResolved += receiptHandler;
-            observer.BeginAction(coordinator.Current, requestId, view.Identity.ScopeId, candidate.Action);
             string payloadHash = intent.Command.Payload.Digest.ToHex();
             string payloadBase64 = Convert.ToBase64String(intent.Command.Payload.CopyBytes());
             CanonicalPayloadDocument actionPayload = CanonicalPayloadParser.Parse(intent.Command.Payload);
@@ -197,6 +205,83 @@ namespace Mahjong.Unity.App
                 Fail("BASELINE_AUTHORITY_DIVERGED", "The durable LocalHost physical checkpoint did not match the frozen Player baseline and 136-tile inventory.");
                 yield break;
             }
+
+            bool requiresRejectedAction = _caseId == "C04-G2-01" || _caseId == "C04-G2-02" ||
+                _caseId == "C04-G2-03" || _caseId == "C04-G2-04";
+            BusinessPayload? rejectedPayload = null;
+            LocalTableRecoveryFacts? rejectedFacts = null;
+            LocalTableRecoveryCapture? rejectedAuthorityCapture = null;
+            if (requiresRejectedAction)
+            {
+            ProtocolActionType rejectedAction = (ProtocolActionType)(uint)ActionForCase(_caseId);
+            uint[] rejectedTiles = rejectedAction == ProtocolActionType.DeclareRiichi
+                ? new uint[] { 37 }
+                : rejectedAction == ProtocolActionType.DeclareKan
+                    ? new uint[] { 130, 131, 132, 133 }
+                    : new uint[] { 130, 131 };
+            rejectedPayload = CommandPayloadFactory.SubmitAction(
+                baselineRound,
+                candidate.DecisionId,
+                candidate.ControlEpoch ?? 0UL,
+                rejectedAction,
+                optionId: "c04-unadvertised-negative-option",
+                tileIds: rejectedTiles,
+                meldType: rejectedAction == ProtocolActionType.DeclareKan ? 4U : (uint?)null);
+            var rejectedCommand = new ProtocolCommand(
+                CommandKind.SubmitAction,
+                rejectedPayload,
+                new RequestId(rejectedRequestId),
+                new RequestScopeId(view.Identity.ScopeId),
+                new StateVersion(baselineVersion),
+                new RoundId(baselineRound),
+                decisionId: new DecisionId(candidate.DecisionId),
+                controlEpoch: new ControlEpoch(candidate.ControlEpoch ?? 0UL));
+            Task<CommandSubmission> rejectedSubmit = coordinator.SubmitAsync(rejectedCommand, CancellationToken.None);
+            float rejectedDeadline = Time.realtimeSinceStartup + 20f;
+            while (!rejectedSubmit.IsCompleted && Time.realtimeSinceStartup < rejectedDeadline) yield return null;
+            if (!rejectedSubmit.IsCompleted || rejectedSubmit.IsFaulted || rejectedSubmit.IsCanceled || !rejectedSubmit.Result.Sent)
+            {
+                coordinator.ReceiptResolved -= receiptHandler;
+                Fail("NEGATIVE_SUBMIT_NOT_SENT", "The invalid fixed action did not reach the production channel.");
+                yield break;
+            }
+            while (!rejectedReceiptTask.Task.IsCompleted && Time.realtimeSinceStartup < rejectedDeadline) yield return null;
+            if (!rejectedReceiptTask.Task.IsCompleted || rejectedReceipt == null ||
+                rejectedReceipt.Resolution.ReceiptStatus != ReceiptStatus.Rejected ||
+                rejectedReceipt.Resolution.CommandVersion.HasValue || rejectedReceipt.Resolution.EventSeq.HasValue)
+            {
+                coordinator.ReceiptResolved -= receiptHandler;
+                Fail("NEGATIVE_ACTION_NOT_REJECTED", rejectedReceipt == null
+                    ? "No typed rejection receipt was observed for the illegal action."
+                    : "Illegal action receipt=" + rejectedReceipt.Resolution.ReceiptStatus +
+                      " reason=" + rejectedReceipt.Resolution.ReasonCode);
+                yield break;
+            }
+            Task<LocalTableRecoveryCapture> rejectedAuthorityTask = LocalTableHost.CaptureRecoveryAsync(
+                ((LocalTableChannelFactory)composition.ChannelFactory).SaveDirectory, CancellationToken.None);
+            while (!rejectedAuthorityTask.IsCompleted && Time.realtimeSinceStartup < rejectedDeadline) yield return null;
+            if (!rejectedAuthorityTask.IsCompleted || rejectedAuthorityTask.IsFaulted || rejectedAuthorityTask.IsCanceled)
+            {
+                coordinator.ReceiptResolved -= receiptHandler;
+                Fail("NEGATIVE_AUTHORITY_CAPTURE_FAILED", "Could not read the authority image after the rejected action.");
+                yield break;
+            }
+            rejectedAuthorityCapture = rejectedAuthorityTask.Result;
+            rejectedFacts = rejectedAuthorityCapture.Facts;
+            if (rejectedFacts.RoundId != baselineAuthority.RoundId ||
+                rejectedFacts.StateVersion != baselineAuthority.StateVersion ||
+                rejectedFacts.EventSeq != baselineAuthority.EventSeq ||
+                rejectedFacts.Physical.TilesSha256 != baselineAuthority.Physical.TilesSha256 ||
+                rejectedFacts.Physical.TileCount != 136 || rejectedFacts.Physical.UniqueCount != 136 ||
+                coordinator.Current.PlayerSnapshot!.StateVersion != baselineVersion ||
+                coordinator.Current.PlayerSnapshot.EventSeq != baselineEventSeq)
+            {
+                coordinator.ReceiptResolved -= receiptHandler;
+                Fail("NEGATIVE_ACTION_MUTATED_AUTHORITY", "Rejected action changed version, event sequence, or the 136-entity image.");
+                yield break;
+            }
+            }
+            observer.BeginAction(coordinator.Current, requestId, view.Identity.ScopeId, candidate.Action);
             byte[] coordinatorBaselineBytes = coordinator.Current.PlayerSnapshot!.ToByteArray();
             long baselineAcceptanceSequence = coordinator.Current.AcceptanceSequence;
             var acceptedPublications = new Dictionary<long, SessionViewState>();
@@ -307,6 +392,18 @@ namespace Mahjong.Unity.App
                 Fail("ACTION_FACTS_DIVERGED", "Receipt, incremental event batch, baseline identity, and same-publication snapshot did not agree.");
                 yield break;
             }
+            bool doubleRiichiEvent = confirmation.Event.Payload.DoubleRiichi;
+            if (_caseId == "C04-G2-03" && !doubleRiichiEvent)
+            {
+                Fail("DOUBLE_RIICHI_FACT_MISSING", "The accepted first uninterrupted Riichi event did not project DoubleRiichi=true.");
+                yield break;
+            }
+            if (_caseId == "C04-G1-02" &&
+                (confirmation.Event.Type != ProtocolEventType.TsumoWin || !SameTiles(new uint[] { 12 }, confirmation.Event.Payload.TileIds)))
+            {
+                Fail("TSUMO_WIN_FACT_MISMATCH", "The accepted Player action did not publish the fixed dealer tsumo on physical entity 12.");
+                yield break;
+            }
 
             Task<LocalTableRecoveryCapture> afterAuthorityTask = LocalTableHost.CaptureRecoveryAsync(
                 ((LocalTableChannelFactory)composition.ChannelFactory).SaveDirectory, CancellationToken.None);
@@ -336,7 +433,8 @@ namespace Mahjong.Unity.App
                     confirmedBatch.StateVersion,
                     confirmation.Event.EventSeq,
                     confirmation.Event.Type.ToString(),
-                    0);
+                    0,
+                    payloadHash);
             }
             catch (Exception exception)
             {
@@ -431,7 +529,18 @@ namespace Mahjong.Unity.App
                 ReceiptScopeId = view.Identity.ScopeId,
                 ReceiptCommandVersion = observer.AppliedCommandVersion ?? 0UL,
                 ReceiptEventSeq = confirmation.ReceiptEventSeq,
+                RejectedRequestId = requiresRejectedAction ? rejectedRequestId : string.Empty,
+                RejectedReceiptStatus = rejectedReceipt?.Resolution.ReceiptStatus.ToString() ?? string.Empty,
+                RejectedReceiptReasonCode = rejectedReceipt?.Resolution.ReasonCode ?? string.Empty,
+                RejectedPayloadSha256 = rejectedPayload?.Digest.ToHex() ?? string.Empty,
+                RejectedStateVersionBefore = requiresRejectedAction ? baselineVersion : 0UL,
+                RejectedStateVersionAfter = rejectedFacts != null && rejectedFacts.StateVersion == baselineAuthority.StateVersion ? baselineVersion : 0UL,
+                RejectedEventSeqBefore = requiresRejectedAction ? baselineEventSeq : 0UL,
+                RejectedEventSeqAfter = rejectedFacts != null && rejectedFacts.EventSeq == baselineAuthority.EventSeq ? baselineEventSeq : 0UL,
+                RejectedPhysicalTilesSha256Before = requiresRejectedAction ? baselineAuthority.Physical.TilesSha256 : string.Empty,
+                RejectedPhysicalTilesSha256After = rejectedFacts?.Physical.TilesSha256 ?? string.Empty,
                 EventType = confirmation.Event.Type.ToString(),
+                DoubleRiichiEvent = doubleRiichiEvent,
                 EventSeat = confirmation.Event.Seat,
                 EventRoundId = confirmation.Batch.RoundId,
                 EventScopeId = confirmation.Batch.ScopeId,
@@ -476,6 +585,7 @@ namespace Mahjong.Unity.App
                 RequestId = requestId, ScopeId = view.Identity.ScopeId,
                 BaselineScopeId = view.Identity.ScopeId, AfterScopeId = finalState.VisibleEventBatch.ScopeId,
                 PayloadBase64 = payloadBase64, PayloadSha256 = payloadHash,
+                PayloadActionType = actionPayload.RequireUInt32(CommandPayloadFields.ActionType, "actionType"),
                 BaselineRoomId = view.Identity.RoomId, BaselineSessionId = view.Identity.SessionId,
                 BaselineTableId = baselineTableId, BaselineRoundId = baselineRound, BaselineSeat = view.Identity.Seat,
                 BaselineBindingEpoch = view.Identity.BindingEpoch, BaselineConnectionEpoch = view.Identity.ConnectionEpoch,
@@ -488,6 +598,26 @@ namespace Mahjong.Unity.App
                 BaselineBindingJsonBase64 = EncodeRawBinding(view.Identity, baselineTableId, coordinator.Current.Binding?.AccountId ?? string.Empty),
                 BaselineAuthoritySaveBase64 = Convert.ToBase64String(baselineAuthorityTask.Result.AuthoritySaveBytes),
                 BaselineAuthorityCheatStateBase64 = Convert.ToBase64String(baselineAuthorityTask.Result.CheatStatePayload),
+                RejectedPayloadBase64 = rejectedPayload == null ? string.Empty : Convert.ToBase64String(rejectedPayload.CopyBytes()),
+                RejectedPayloadSha256 = rejectedPayload?.Digest.ToHex() ?? string.Empty,
+                RejectedRequestId = requiresRejectedAction ? rejectedRequestId : string.Empty,
+                RejectedScopeId = requiresRejectedAction ? view.Identity.ScopeId : string.Empty,
+                RejectedReceiptStatus = rejectedReceipt?.Resolution.ReceiptStatus.ToString() ?? string.Empty,
+                RejectedReceiptDisposition = rejectedReceipt?.Resolution.Disposition.ToString() ?? string.Empty,
+                RejectedReceiptReasonCode = rejectedReceipt?.Resolution.ReasonCode ?? string.Empty,
+                RejectedReceiptDigest = rejectedReceipt?.Resolution.CanonicalPayloadSha256 ?? string.Empty,
+                RejectedRawReceiptJsonBase64 = EncodeRawReceipt(rejectedReceipt),
+                RejectedHasCommandVersion = rejectedReceipt?.Resolution.CommandVersion.HasValue ?? false,
+                RejectedHasEventSeq = rejectedReceipt?.Resolution.EventSeq.HasValue ?? false,
+                RejectedStateVersionBefore = requiresRejectedAction ? baselineVersion : 0UL,
+                RejectedStateVersionAfter = requiresRejectedAction ? baselineVersion : 0UL,
+                RejectedEventSeqBefore = requiresRejectedAction ? baselineEventSeq : 0UL,
+                RejectedEventSeqAfter = requiresRejectedAction ? baselineEventSeq : 0UL,
+                RejectedPhysicalTilesSha256Before = requiresRejectedAction ? baselineAuthority.Physical.TilesSha256 : string.Empty,
+                RejectedPhysicalTilesSha256After = rejectedFacts?.Physical.TilesSha256 ?? string.Empty,
+                RejectedAuthoritySaveBase64 = rejectedAuthorityCapture == null ? string.Empty : Convert.ToBase64String(rejectedAuthorityCapture.AuthoritySaveBytes),
+                RejectedAuthorityCheatStateBase64 = rejectedAuthorityCapture == null ? string.Empty : Convert.ToBase64String(rejectedAuthorityCapture.CheatStatePayload),
+                DoubleRiichiEvent = doubleRiichiEvent,
                 BaselinePhysicalTileCount = baselineAuthority.Physical.TileCount,
                 BaselinePhysicalUniqueCount = baselineAuthority.Physical.UniqueCount,
                 BaselineDeadWallCount = baselineAuthority.Physical.DeadWallCount,
@@ -694,7 +824,11 @@ namespace Mahjong.Unity.App
                     CommandVersion = acceptedEvent.CommandVersion, Seat = acceptedEvent.Seat,
                     TileId = acceptedEvent.Payload.DiscardTileId ?? acceptedEvent.Payload.ResultTileId ?? 0U,
                     TileIds = acceptedEvent.Payload.TileIds.ToArray(),
-                    Payload = new C04RawAcceptedEventPayload { DiscardTileId = acceptedEvent.Payload.DiscardTileId ?? 0U }
+                    Payload = new C04RawAcceptedEventPayload
+                    {
+                        DiscardTileId = acceptedEvent.Payload.DiscardTileId ?? 0U,
+                        DoubleRiichi = acceptedEvent.Payload.DoubleRiichi
+                    }
                 });
             }
             var raw = new C04RawAcceptedBatch
@@ -731,6 +865,7 @@ namespace Mahjong.Unity.App
         {
             switch (caseId)
             {
+                case "C04-G1-02": return LocalPlayerActionScenario.DealerTsumo;
                 case "C04-G2-01": return LocalPlayerActionScenario.Pon;
                 case "C04-G2-02": return LocalPlayerActionScenario.Chi;
                 case "C04-G2-03": return LocalPlayerActionScenario.Riichi;
@@ -743,6 +878,7 @@ namespace Mahjong.Unity.App
         {
             switch (caseId)
             {
+                case "C04-G1-02": return PlayerActionKind.DeclareTsumo;
                 case "C04-G2-01": return PlayerActionKind.DeclarePon;
                 case "C04-G2-02": return PlayerActionKind.DeclareChi;
                 case "C04-G2-03": return PlayerActionKind.DeclareRiichi;
@@ -840,6 +976,13 @@ namespace Mahjong.Unity.App
             public string ReceiptScopeId = string.Empty;
             public ulong ReceiptCommandVersion;
             public ulong ReceiptEventSeq;
+            public string RejectedRequestId = string.Empty;
+            public string RejectedReceiptStatus = string.Empty;
+            public string RejectedReceiptReasonCode = string.Empty;
+            public string RejectedPayloadSha256 = string.Empty;
+            public ulong RejectedStateVersionBefore, RejectedStateVersionAfter, RejectedEventSeqBefore, RejectedEventSeqAfter;
+            public string RejectedPhysicalTilesSha256Before = string.Empty, RejectedPhysicalTilesSha256After = string.Empty;
+            public bool DoubleRiichiEvent;
             public string EventType = string.Empty;
             public int EventSeat = -1;
             public string EventRoundId = string.Empty;
@@ -875,6 +1018,7 @@ namespace Mahjong.Unity.App
             public string CaseId = string.Empty, AccountId = string.Empty, RequestId = string.Empty, ScopeId = string.Empty;
             public string BaselineAccountId = string.Empty, AfterAccountId = string.Empty, BaselineScopeId = string.Empty, AfterScopeId = string.Empty;
             public string PayloadBase64 = string.Empty, PayloadSha256 = string.Empty;
+            public uint PayloadActionType;
             public string OptionId = string.Empty;
             public string BaselineRoomId = string.Empty, BaselineSessionId = string.Empty, BaselineTableId = string.Empty, BaselineRoundId = string.Empty;
             public int BaselineSeat = -1;
@@ -882,6 +1026,14 @@ namespace Mahjong.Unity.App
             public string BaselineDecisionId = string.Empty, BaselinePlayerSnapshotBase64 = string.Empty;
             public string BaselineBindingJsonBase64 = string.Empty;
             public string BaselineAuthoritySaveBase64 = string.Empty, BaselineAuthorityCheatStateBase64 = string.Empty;
+            public string RejectedPayloadBase64 = string.Empty, RejectedPayloadSha256 = string.Empty;
+            public string RejectedRequestId = string.Empty, RejectedScopeId = string.Empty;
+            public string RejectedReceiptStatus = string.Empty, RejectedReceiptDisposition = string.Empty, RejectedReceiptReasonCode = string.Empty, RejectedReceiptDigest = string.Empty;
+            public string RejectedRawReceiptJsonBase64 = string.Empty;
+            public bool RejectedHasCommandVersion, RejectedHasEventSeq, DoubleRiichiEvent;
+            public ulong RejectedStateVersionBefore, RejectedStateVersionAfter, RejectedEventSeqBefore, RejectedEventSeqAfter;
+            public string RejectedPhysicalTilesSha256Before = string.Empty, RejectedPhysicalTilesSha256After = string.Empty;
+            public string RejectedAuthoritySaveBase64 = string.Empty, RejectedAuthorityCheatStateBase64 = string.Empty;
             public int BaselinePhysicalTileCount, BaselinePhysicalUniqueCount, BaselineDeadWallCount;
             public string BaselinePhysicalTilesSha256 = string.Empty;
             public string ReceiptDisposition = string.Empty, ReceiptStatus = string.Empty, ReceiptRequestId = string.Empty, ReceiptScopeId = string.Empty, ReceiptDigest = string.Empty;
@@ -932,6 +1084,7 @@ namespace Mahjong.Unity.App
         private sealed class C04RawAcceptedEventPayload
         {
             public uint DiscardTileId;
+            public bool DoubleRiichi;
         }
 
         [Serializable]

@@ -323,8 +323,26 @@ if (-not $SkipPlayer) {
         New-Item -ItemType Directory -Force -Path $probeRun | Out-Null
         $playerLog = Join-Path $probeRun 'player.log'
         $player = Start-Process -FilePath $playerExe -ArgumentList @('-local-control-probe', $probeRun, '-smoke-data', $ProbeRoot, '-screen-width', '1280', '-screen-height', '720', '-logFile', $playerLog) -PassThru -Wait -WindowStyle Hidden
-        Write-Result 'player-control-probe' $player.ExitCode $probeRun
-        $exit = [Math]::Max($exit, $player.ExitCode)
+        $controlLog = Join-Path $probeRun 'probe.log'
+        $probeExit = $player.ExitCode
+        if ($probeExit -eq 0) {
+            if (-not (Test-Path -LiteralPath $controlLog -PathType Leaf)) {
+                $probeExit = 1
+            }
+            else {
+                $controlEvidence = Get-Content -LiteralPath $controlLog -Raw
+                foreach ($requiredFact in @('REENTRY_RECONCILIATION_DIVERGED','CLAIM_REENTRY_RECONCILIATION_DIVERGED')) {
+                    if ($controlEvidence.Contains($requiredFact)) { $probeExit = 1 }
+                }
+                if ($controlEvidence -notmatch 'oldAiDecision=[^\s]+ staleAiReason=StaleControlEpoch' -or
+                    $controlEvidence -notmatch 'claimEpoch=\d+' -or
+                    $controlEvidence -notmatch 'releaseEpoch=\d+') {
+                    $probeExit = 1
+                }
+            }
+        }
+        Write-Result 'player-control-probe' $probeExit ($probeRun + ' nativeExit=' + $player.ExitCode + ' controlEvidence=' + $controlLog)
+        $exit = [Math]::Max($exit, $probeExit)
     }
 }
 

@@ -84,28 +84,9 @@ namespace Mahjong.LocalHost.Tests
 
         private static RoundStateMachine Fixture(string method)
         {
-            string root = P41Harness.FindRepositoryRoot();
-            string path = Path.Combine(
-                root,
-                "dotnet",
-                "tests",
+            string path = P41Harness.FindBuiltProjectAssembly(
                 "Mahjong.TableRuntime.Tests",
-                "bin",
-                "Release",
-                "net8.0",
                 "Mahjong.TableRuntime.Tests.dll");
-            if (!File.Exists(path))
-            {
-                path = Path.Combine(
-                    root,
-                    "dotnet",
-                    "tests",
-                    "Mahjong.TableRuntime.Tests",
-                    "bin",
-                    "Debug",
-                    "net8.0",
-                    "Mahjong.TableRuntime.Tests.dll");
-            }
 
             Assert.True(File.Exists(path), "TableRuntime test fixture assembly was not built: " + path);
             Assembly assembly = Assembly.LoadFrom(path);

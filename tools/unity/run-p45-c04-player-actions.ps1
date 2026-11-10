@@ -429,12 +429,12 @@ function Assert-C04ArchiveHasNoGitMetadata([string]$sourceRoot) {
 
 function Test-C04ExactPlayModeXml([xml]$xmlDocument) {
     if ($null -eq $xmlDocument) { throw 'PlayMode XML is missing.' }
-    $expected = @('Pon_FixedPlayerActionIsAppliedAndVisible','Chi_FixedPlayerActionIsAppliedAndVisible','Riichi_FixedPlayerActionIsAppliedAndVisible','ClosedKan_FixedPlayerActionAndReplacementDrawAreApplied')
+    $expected = @('DealerTsumo_FixedPlayerActionAndTerminalWinAreApplied','Pon_FixedPlayerActionIsAppliedAndVisible','Chi_FixedPlayerActionIsAppliedAndVisible','Riichi_FixedPlayerActionIsAppliedAndVisible','ClosedKan_FixedPlayerActionAndReplacementDrawAreApplied')
     $nodes = @($xmlDocument.SelectNodes('//test-case'))
     $names = @($nodes | ForEach-Object { $_.GetAttribute('name').Split('.')[-1] })
-    if ($nodes.Count -ne 4 -or @($nodes | Where-Object { $_.GetAttribute('result') -cne 'Passed' }).Count -ne 0 -or
-        (($names | Sort-Object) -join '|') -cne (($expected | Sort-Object) -join '|') -or @($names | Select-Object -Unique).Count -ne 4) {
-        throw "PlayMode XML must contain the exact four unique C04 tests all Passed; count=$($nodes.Count) names=$($names -join ',')."
+    if ($nodes.Count -ne 5 -or @($nodes | Where-Object { $_.GetAttribute('result') -cne 'Passed' }).Count -ne 0 -or
+        (($names | Sort-Object) -join '|') -cne (($expected | Sort-Object) -join '|') -or @($names | Select-Object -Unique).Count -ne 5) {
+        throw "PlayMode XML must contain the exact five unique C04 tests all Passed; count=$($nodes.Count) names=$($names -join ',')."
     }
     return ,$names
 }
@@ -483,9 +483,9 @@ function Test-C04CaseSummary {
     if ([string]::IsNullOrWhiteSpace($Summary.canonicalPayloadBase64)) { throw 'C04 canonical payload bytes are missing.' }
     $payloadBytes = [Convert]::FromBase64String($Summary.canonicalPayloadBase64)
     $payload = ConvertFrom-C04CanonicalPayload $payloadBytes
-    $expectedAction = @{ 'C04-G2-01'=6; 'C04-G2-02'=5; 'C04-G2-03'=8; 'C04-G2-04'=7 }[$ExpectedCase]
-    $expectedPayloadTiles = @{ 'C04-G2-01'='0,1,2'; 'C04-G2-02'='0,4,8'; 'C04-G2-03'='124'; 'C04-G2-04'='0,1,2,3' }[$ExpectedCase]
-    $expectedEventTiles = @{ 'C04-G2-01'='0,1,2'; 'C04-G2-02'='0,4,8'; 'C04-G2-03'=''; 'C04-G2-04'='0,1,2,3' }[$ExpectedCase]
+    $expectedAction = @{ 'C04-G1-02'=9; 'C04-G2-01'=6; 'C04-G2-02'=5; 'C04-G2-03'=8; 'C04-G2-04'=7 }[$ExpectedCase]
+$expectedPayloadTiles = @{ 'C04-G1-02'='12'; 'C04-G2-01'='0,1,2'; 'C04-G2-02'='0,4,8'; 'C04-G2-03'='124'; 'C04-G2-04'='0,1,2,3' }[$ExpectedCase]
+    $expectedEventTiles = @{ 'C04-G1-02'='12'; 'C04-G2-01'='0,1,2'; 'C04-G2-02'='0,4,8'; 'C04-G2-03'=''; 'C04-G2-04'='0,1,2,3' }[$ExpectedCase]
     if ($null -eq $expectedAction -or [UInt32]$payload[4] -ne $expectedAction -or [UInt32]$Summary.payloadActionType -ne $expectedAction) { throw 'Canonical SubmitAction type does not match its fixed case.' }
     if ($payload[1] -cne $Summary.roundId -or $Summary.payloadRoundId -cne $payload[1]) { throw 'Canonical round id is not bound to the case summary.' }
     if ($payload[2] -cne $Summary.decisionId -or $Summary.payloadDecisionId -cne $payload[2] -or [string]::IsNullOrWhiteSpace($Summary.decisionId)) { throw 'Canonical decision id does not match the submitted candidate.' }
@@ -506,16 +506,70 @@ function Test-C04CaseSummary {
     if ($Summary.eventScopeId -cne $Summary.scopeId -or $Summary.eventSessionId -cne $Summary.sessionId -or $Summary.eventRoomId -cne $Summary.roomId -or $Summary.eventTableId -cne $Summary.tableId -or $Summary.eventRole -cne 'Player') { throw 'C04 event batch identity does not match the request context.' }
     $cursorAdvanced = ([UInt64]$Summary.cursorStreamAfter -gt [UInt64]$Summary.cursorStreamBefore) -or (([UInt64]$Summary.cursorStreamAfter -eq [UInt64]$Summary.cursorStreamBefore) -and ([UInt64]$Summary.cursorAfter -gt [UInt64]$Summary.cursorBefore))
     if (-not $cursorAdvanced) { throw 'C04 structured stream cursor did not advance.' }
-    $eventByCase = @{ 'C04-G2-01'='PonDeclared'; 'C04-G2-02'='ChiDeclared'; 'C04-G2-03'='RiichiDeclared'; 'C04-G2-04'='KanDeclared' }
+    $eventByCase = @{ 'C04-G1-02'='TsumoWin'; 'C04-G2-01'='PonDeclared'; 'C04-G2-02'='ChiDeclared'; 'C04-G2-03'='RiichiDeclared'; 'C04-G2-04'='KanDeclared' }
     if (-not $eventByCase.ContainsKey($ExpectedCase) -or $Summary.eventType -ne $eventByCase[$ExpectedCase]) { throw 'C04 action event type does not match its fixed case.' }
     if (($Summary.eventTiles -split ',' | Where-Object { $_ } | Sort-Object) -join ',' -ne $expectedEventTiles) { throw 'Visible action event did not carry the fixed physical entities.' }
     switch ($ExpectedCase) {
+        'C04-G1-02' { if ($Summary.eventTiles -cne '12') { throw 'Dealer tsumo event did not identify fixed winning entity 12.' } }
         'C04-G2-01' { if (($Summary.meldTileIds -split ',' | Sort-Object) -join ',' -ne '0,1,2' -or $Summary.handTileIdsAfter -match '(^|,)(0|1|2)(,|$)') { throw 'Pon entity transfer to meld/hand is invalid.' } }
         'C04-G2-02' { if (($Summary.meldTileIds -split ',' | Sort-Object) -join ',' -ne '0,4,8' -or $Summary.handTileIdsAfter -match '(^|,)(0|4|8)(,|$)') { throw 'Chi entity transfer to meld/hand is invalid.' } }
         'C04-G2-03' { if ([UInt64]$Summary.seatScoreBefore -ne 25000 -or [UInt64]$Summary.seatScoreAfter -ne 24000 -or [UInt32]$Summary.riichiSticksAfter -ne ([UInt32]$Summary.riichiSticksBefore + 1)) { throw 'Riichi score/stick transfer is invalid.' } }
         'C04-G2-04' { if (($Summary.meldTileIds -split ',' | Sort-Object) -join ',' -ne '0,1,2,3' -or $Summary.handTileIdsAfter -match '(^|,)(0|1|2|3)(,|$)' -or [string]$Summary.replacementDrawTileId -ne '73') { throw 'Closed Kan/dead-wall replacement entity transfer is invalid.' } }
     }
     return $true
+}
+
+function Assert-C04ExactVerifierFixtureSet([string]$root,[string[]]$expectedCases) {
+    if (-not (Test-Path -LiteralPath $root -PathType Container) -or $expectedCases.Count -eq 0) { throw 'C04 verifier fixture root or expected case set is missing.' }
+    $files = @(Get-ChildItem -LiteralPath $root -File -Filter '*.json' | Sort-Object Name)
+    $names = @($files | ForEach-Object { [IO.Path]::GetFileNameWithoutExtension($_.Name) })
+    if ($names.Count -ne $expectedCases.Count -or @($names | Select-Object -Unique).Count -ne $expectedCases.Count -or
+        (($names | Sort-Object) -join '|') -cne (($expectedCases | Sort-Object) -join '|')) {
+        throw 'C04 verifier fixtures do not match the exact expected case set.'
+    }
+    foreach ($file in $files) {
+        $evidence = Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($evidence.EvidenceSource -cne 'TOOL_FIXTURE_LOCALHOST_CHANNEL' -or $evidence.CaseId -cne [IO.Path]::GetFileNameWithoutExtension($file.Name)) {
+            throw 'C04 verifier fixture source or case identity does not match its filename.'
+        }
+    }
+    return $files
+}
+
+function Assert-C04LocalControlProbeResult([string]$probeText) {
+    if ([string]::IsNullOrWhiteSpace($probeText)) { throw 'G4 control Player probe log is empty.' }
+    $rawLines = @($probeText -split "`r?`n")
+    $passLines = @($rawLines | Where-Object { $_ -match '(?<![A-Za-z0-9_])CONTROL_PROBE_PASS(?![A-Za-z0-9_])' })
+    if ($passLines.Count -ne 1 -or @($rawLines | Where-Object { $_ -match '(?<![A-Za-z0-9_])CONTROL_PROBE_FAIL(?![A-Za-z0-9_])' }).Count -ne 0) {
+        throw 'G4 control probe must contain one exact PASS record and no FAIL record.'
+    }
+    $lines = @($rawLines | Where-Object { $_ -match '\bRESULT\b' })
+    if ($lines.Count -ne 1) { throw 'G4 control Player probe must emit exactly one result record.' }
+    $pattern = '^(?<timestamp>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,7})?(?:Z|[+-]\d{2}:\d{2})) RESULT initialEpoch=(?<initial>\d+) releaseEpoch=(?<release>\d+) claimEpoch=(?<claim>\d+) oldEpoch=(?<old>\d+) stalePlayerReason=StaleControlEpoch oldAiDecision=(?<ai>\S+) staleAiReason=StaleControlEpoch round=(?<round>\S+)$'
+    $match = [regex]::Match($lines[0], $pattern)
+    if (-not $match.Success) { throw 'G4 control result does not bind both stale-decision rejections to StaleControlEpoch.' }
+    foreach ($identity in @('ai','round')) {
+        if ([string]::IsNullOrWhiteSpace($match.Groups[$identity].Value)) { throw "G4 control result identity is empty: $identity" }
+    }
+    [UInt64]$initial = 0; [UInt64]$released = 0; [UInt64]$claimed = 0; [UInt64]$old = 0
+    foreach ($field in @(@('initial',[ref]$initial),@('release',[ref]$released),@('claim',[ref]$claimed),@('old',[ref]$old))) {
+        if (-not [UInt64]::TryParse($match.Groups[$field[0]].Value, [Globalization.NumberStyles]::None, [Globalization.CultureInfo]::InvariantCulture, $field[1])) {
+            throw "G4 control result epoch is invalid or overflows UInt64: $($field[0])"
+        }
+    }
+    if ($initial -eq [UInt64]::MaxValue -or $released -ne ($initial + [UInt64]1) -or
+        $released -eq [UInt64]::MaxValue -or $claimed -ne ($released + [UInt64]1) -or $old -ne $initial) {
+        throw 'G4 control epochs do not prove release/claim increments and old-epoch retention.'
+    }
+    return [pscustomobject]@{ InitialEpoch=$initial; ReleaseEpoch=$released; ClaimEpoch=$claimed; OldEpoch=$old; OldAiDecision=$match.Groups['ai'].Value; Round=$match.Groups['round'].Value }
+}
+
+function Assert-C04LocalControlPlayerLog([string]$playerText) {
+    if ([string]::IsNullOrWhiteSpace($playerText) -or
+        $playerText -notmatch '(?<![A-Za-z0-9_])CONTROL_PROBE_PASS(?![A-Za-z0-9_])' -or
+        $playerText -match '(?<![A-Za-z0-9_])CONTROL_PROBE_FAIL(?![A-Za-z0-9_])') {
+        throw 'G4 runtime Player log must contain an exact PASS marker and no FAIL marker.'
+    }
 }
 
 function Test-C04ActionEvidence {
@@ -527,8 +581,8 @@ function Test-C04ActionEvidence {
     $parsed = ConvertFrom-C04CanonicalPayload $rawPayload
     if ([string]$parsed[1] -cne $Evidence.baselineRoundId -or [string]$parsed[2] -cne $Evidence.baselineDecisionId -or
         [UInt64]$parsed[3] -ne [UInt64]$Evidence.baselineControlEpoch) { throw 'Raw canonical action is not bound to its captured Player baseline.' }
-    $actionByCase = @{ 'C04-G2-01'=6; 'C04-G2-02'=5; 'C04-G2-03'=8; 'C04-G2-04'=7 }
-    $tilesByCase = @{ 'C04-G2-01'='0,1,2'; 'C04-G2-02'='0,4,8'; 'C04-G2-03'='124'; 'C04-G2-04'='0,1,2,3' }
+    $actionByCase = @{ 'C04-G1-02'=9; 'C04-G2-01'=6; 'C04-G2-02'=5; 'C04-G2-03'=8; 'C04-G2-04'=7 }
+    $tilesByCase = @{ 'C04-G1-02'='12'; 'C04-G2-01'='0,1,2'; 'C04-G2-02'='0,4,8'; 'C04-G2-03'='124'; 'C04-G2-04'='0,1,2,3' }
     $rawTiles = if ($parsed.ContainsKey(6)) { (@($parsed[6]) | Sort-Object) -join ',' } else { '' }
     if (-not $actionByCase.ContainsKey($ExpectedCase) -or [UInt32]$parsed[4] -ne $actionByCase[$ExpectedCase] -or $rawTiles -ne $tilesByCase[$ExpectedCase]) { throw 'Raw canonical action kind or physical selection differs from the frozen C04 case.' }
     $rawMeldType = if ($parsed.ContainsKey(7)) { [UInt32]$parsed[7] } else { 0 }
@@ -573,6 +627,7 @@ function Test-C04ActionEvidence {
         [UInt64]$Evidence.seatScoreAfter -ne [UInt64]$Summary.seatScoreAfter -or [UInt32]$Evidence.riichiSticksBefore -ne [UInt32]$Summary.riichiSticksBefore -or
         [UInt32]$Evidence.riichiSticksAfter -ne [UInt32]$Summary.riichiSticksAfter) { throw 'Action effect summary differs from the actual accepted Player/publication state evidence.' }
     switch ($ExpectedCase) {
+        'C04-G1-02' { if ($Evidence.eventTileIds -cne '12' -or $Evidence.eventType -cne 'TsumoWin') { throw 'Raw Player event did not prove the fixed dealer tsumo win tile.' } }
         'C04-G2-01' { if ($Evidence.eventTileIds -ne '0,1,2' -or $Evidence.meldKind -ne 'Pon' -or $Evidence.handTileIds -match '(^|,)(0|1|2)(,|$)') { throw 'Raw Pon entity transfer is invalid.' } }
         'C04-G2-02' { if ($Evidence.eventTileIds -ne '0,4,8' -or $Evidence.meldKind -ne 'Chi' -or $Evidence.handTileIds -match '(^|,)(0|4|8)(,|$)') { throw 'Raw Chi entity transfer is invalid.' } }
         'C04-G2-03' { if ([UInt64]$Evidence.seatScoreBefore -ne 25000 -or [UInt64]$Evidence.seatScoreAfter -ne 24000 -or [UInt32]$Evidence.riichiSticksAfter -ne ([UInt32]$Evidence.riichiSticksBefore + 1)) { throw 'Raw Riichi point/stick transfer is invalid.' } }
@@ -585,6 +640,38 @@ function Test-C04ActionEvidence {
             -WorkingDirectory $RunRoot -StdoutPath $verifyLog -StderrPath (Join-Path $logs ('protobuf-authority-verify-' + $ExpectedCase + '.stderr.txt')) -Timeout 30
         if ($verify.exitCode -ne 0 -or -not (Get-Content -LiteralPath $verify.stdout -Raw).Contains('C04_PROTOBUF_AND_AUTHORITY_IMAGE_PASS')) {
             throw "Generated protobuf/LocalHost authority image verifier rejected $ExpectedCase evidence; nativeExit=$($verify.exitCode)."
+        }
+        if ($Evidence.EvidenceSource -ceq 'GAME' -and $ExpectedCase -in @('C04-G2-01','C04-G2-02','C04-G2-03','C04-G2-04')) {
+            $negativeRoot = Join-Path (Split-Path -Parent $EvidencePathForVerifier) 'game-verifier-negative'
+            New-Item -ItemType Directory -Path $negativeRoot -Force | Out-Null
+            $mutations = @(
+                @{ name='MissingRejectedPayload'; change={ param($x) $x.PSObject.Properties.Remove('RejectedPayloadBase64') } },
+                @{ name='WrongRejectedDigest'; change={ param($x) $x.RejectedPayloadSha256=('0'*64) } },
+                @{ name='ForeignRejectedRequest'; change={ param($x) $x.RejectedRequestId='foreign-request' } },
+                @{ name='ForeignRejectedScope'; change={ param($x) $x.RejectedScopeId='foreign-scope' } },
+                @{ name='RawRejectedReceiptDigestMismatch'; change={ param($x) $raw=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($x.RejectedRawReceiptJsonBase64)) | ConvertFrom-Json; $raw.CanonicalPayloadSha256=('0'*64); $x.RejectedRawReceiptJsonBase64=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($raw | ConvertTo-Json -Compress))) } },
+                @{ name='RejectedVersionAdvanced'; change={ param($x) $x.RejectedStateVersionAfter='999999' } },
+                @{ name='RejectedPhysicalImageMismatch'; change={ param($x) $x.RejectedPhysicalTilesSha256After=('0'*64) } },
+                @{ name='RejectedClaimsEventSequence'; change={ param($x) $x.RejectedHasEventSeq=$true } },
+                @{ name='CorruptRejectedAuthority'; change={ param($x) $x.RejectedAuthoritySaveBase64='AQ==' } }
+            )
+            $matrix = New-Object System.Collections.Generic.List[object]
+            foreach ($mutation in $mutations) {
+                $bad = Get-Content -LiteralPath $EvidencePathForVerifier -Raw -Encoding UTF8 | ConvertFrom-Json
+                & $mutation.change $bad
+                $badPath = Join-Path $negativeRoot ($mutation.name + '.json')
+                [IO.File]::WriteAllText($badPath,($bad | ConvertTo-Json -Depth 100) + "`n",(New-Object Text.UTF8Encoding($false)))
+                $stdout = Join-Path $logs ('game-verifier-negative-' + $mutation.name + '.stdout.txt')
+                $stderr = Join-Path $logs ('game-verifier-negative-' + $mutation.name + '.stderr.txt')
+                $run = Invoke-OwnedNative -Name ('C04GameVerifierNegative-' + $mutation.name) -FilePath $DotnetPath `
+                    -Arguments ('exec ' + (Quote-Arg $script:C04VerifierPath) + ' verify ' + (Quote-Arg $badPath)) `
+                    -WorkingDirectory $RunRoot -StdoutPath $stdout -StderrPath $stderr -Timeout 30
+                if ($run.exitCode -eq 0 -or $run.timedOut) { throw "GAME verifier accepted or timed out on negative evidence mutation $($mutation.name)." }
+                $matrix.Add([ordered]@{ mutation=$mutation.name; result='REJECTED'; nativeExitCode=$run.exitCode; evidenceSha256=(Get-Sha256 $badPath); stdoutSha256=$run.stdoutSha256; stderrSha256=$run.stderrSha256 }) | Out-Null
+            }
+            $matrixPath = Join-Path (Split-Path -Parent $EvidencePathForVerifier) ('game-verifier-negative-matrix-' + $ExpectedCase + '.json')
+            [IO.File]::WriteAllText($matrixPath,(($matrix | ConvertTo-Json -Depth 8) + "`n"),(New-Object Text.UTF8Encoding($false)))
+            $Summary | Add-Member -NotePropertyName gameVerifierNegativeMatrix -NotePropertyValue $matrix -Force
         }
     }
     return $true
@@ -644,7 +731,7 @@ Start-Sleep -Seconds 25
 '@
     [IO.File]::WriteAllText($ownedChildPath,$ownedScript,(New-Object Text.UTF8Encoding($false)))
     $env:C04_NESTED_PID_FILE = $nestedPidPath
-    $timeoutRecord = Invoke-OwnedNative -Name 'FixtureOwnedTimeoutTree' -FilePath 'powershell.exe' -Arguments ('-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' + (Quote-Arg $ownedChildPath)) -WorkingDirectory $RunRoot -StdoutPath (Join-Path $logs 'owned-timeout.stdout.txt') -StderrPath (Join-Path $logs 'owned-timeout.stderr.txt') -Timeout 1
+    $timeoutRecord = Invoke-OwnedNative -Name 'FixtureOwnedTimeoutTree' -FilePath 'powershell.exe' -Arguments ('-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' + (Quote-Arg $ownedChildPath)) -WorkingDirectory $RunRoot -StdoutPath (Join-Path $logs 'owned-timeout.stdout.txt') -StderrPath (Join-Path $logs 'owned-timeout.stderr.txt') -Timeout 8
     Remove-Item Env:C04_NESTED_PID_FILE -ErrorAction SilentlyContinue
     if ($timeoutRecord.exitCode -ne 124 -or -not $timeoutRecord.timedOut -or -not $timeoutRecord.outputDrained -or
         (Get-Content -LiteralPath $timeoutRecord.stdout -Raw) -notmatch 'OWNED_TIMEOUT_CHILD_STARTED' -or
@@ -681,15 +768,64 @@ Start-Sleep -Seconds 25
     [IO.File]::WriteAllText((Join-Path $gitPointerFixture '.git'),'gitdir: E:/foreign/repository/.git' + "`n",(New-Object Text.UTF8Encoding($false)))
     $pointerRejected = $false; try { Assert-C04ArchiveHasNoGitMetadata $gitPointerFixture | Out-Null } catch { $pointerRejected = $true }
     if (-not $pointerRejected) { throw 'Archive gate accepted a .git pointer to a foreign worktree.' }
-    $goodPlayXml = [xml]'<test-run><test-case name="A.Pon_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="A.Chi_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="A.Riichi_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="A.ClosedKan_FixedPlayerActionAndReplacementDrawAreApplied" result="Passed"/></test-run>'
+    $goodPlayXml = [xml]'<test-run><test-case name="A.DealerTsumo_FixedPlayerActionAndTerminalWinAreApplied" result="Passed"/><test-case name="A.Pon_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="A.Chi_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="A.Riichi_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="A.ClosedKan_FixedPlayerActionAndReplacementDrawAreApplied" result="Passed"/></test-run>'
     Test-C04ExactPlayModeXml $goodPlayXml | Out-Null
+    $fixtureCases = @('C04-G1-02','C04-G2-01','C04-G2-02','C04-G2-03','C04-G2-04')
+    $fixtureSetRoot = Join-Path $RunRoot 'fixture-verifier-case-set'
+    New-Item -ItemType Directory -Path $fixtureSetRoot | Out-Null
+    foreach ($caseId in $fixtureCases) {
+        [IO.File]::WriteAllText((Join-Path $fixtureSetRoot ($caseId + '.json')),(@{ EvidenceSource='TOOL_FIXTURE_LOCALHOST_CHANNEL'; CaseId=$caseId } | ConvertTo-Json -Compress) + "`n",(New-Object Text.UTF8Encoding($false)))
+    }
+    if (@(Assert-C04ExactVerifierFixtureSet $fixtureSetRoot $fixtureCases).Count -ne 5) { throw 'Five-case verifier fixture set did not validate.' }
+    foreach ($mutation in @('Missing','Extra','DuplicateIdentity')) {
+        $badRoot = Join-Path $RunRoot ('fixture-verifier-case-set-' + $mutation)
+        Copy-Item -LiteralPath $fixtureSetRoot -Destination $badRoot -Recurse
+        if ($mutation -eq 'Missing') { Remove-Item -LiteralPath (Join-Path $badRoot 'C04-G2-04.json') }
+        elseif ($mutation -eq 'Extra') {
+            [IO.File]::WriteAllText((Join-Path $badRoot 'C04-G2-05.json'),(@{ EvidenceSource='TOOL_FIXTURE_LOCALHOST_CHANNEL'; CaseId='C04-G2-05' } | ConvertTo-Json -Compress) + "`n",(New-Object Text.UTF8Encoding($false)))
+        }
+        else {
+            [IO.File]::WriteAllText((Join-Path $badRoot 'C04-G2-02.json'),(@{ EvidenceSource='TOOL_FIXTURE_LOCALHOST_CHANNEL'; CaseId='C04-G2-01' } | ConvertTo-Json -Compress) + "`n",(New-Object Text.UTF8Encoding($false)))
+        }
+        $rejected = $false; try { Assert-C04ExactVerifierFixtureSet $badRoot $fixtureCases | Out-Null } catch { $rejected = $true }
+        if (-not $rejected) { throw "Verifier fixture-set gate accepted $mutation case mutation." }
+    }
     foreach ($xmlCase in @(
         @{name='MissingPlayMode';xml=[xml]'<test-run><test-case name="A.Pon_FixedPlayerActionIsAppliedAndVisible" result="Passed"/></test-run>'},
+        @{name='WrongPlayModeCase';xml=[xml]'<test-run><test-case name="A.DealerTsumo_FixedPlayerActionAndTerminalWinAreApplied" result="Passed"/><test-case name="A.Pon_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="A.Chi_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="A.Riichi_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="A.OtherCase" result="Passed"/></test-run>'},
+        @{name='ExtraPlayMode';xml=[xml]'<test-run><test-case name="A.DealerTsumo_FixedPlayerActionAndTerminalWinAreApplied" result="Passed"/><test-case name="A.Pon_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="A.Chi_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="A.Riichi_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="A.ClosedKan_FixedPlayerActionAndReplacementDrawAreApplied" result="Passed"/><test-case name="A.ExtraCase" result="Passed"/></test-run>'},
         @{name='DuplicatePlayMode';xml=[xml]'<test-run><test-case name="A.Pon_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="B.Pon_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="A.Chi_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="A.Riichi_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="A.ClosedKan_FixedPlayerActionAndReplacementDrawAreApplied" result="Passed"/></test-run>'},
         @{name='SkippedPlayMode';xml=[xml]'<test-run><test-case name="A.Pon_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="A.Chi_FixedPlayerActionIsAppliedAndVisible" result="Passed"/><test-case name="A.Riichi_FixedPlayerActionIsAppliedAndVisible" result="Skipped"/><test-case name="A.ClosedKan_FixedPlayerActionAndReplacementDrawAreApplied" result="Passed"/></test-run>'}
     )) {
         $rejected = $false; try { Test-C04ExactPlayModeXml $xmlCase.xml | Out-Null } catch { $rejected = $true }
         if (-not $rejected) { throw "Exact PlayMode XML gate accepted invalid fixture: $($xmlCase.name)" }
+    }
+    $goodControlResult = '2026-11-09T00:00:00.0000000Z RESULT initialEpoch=4 releaseEpoch=5 claimEpoch=6 oldEpoch=4 stalePlayerReason=StaleControlEpoch oldAiDecision=decision-1 staleAiReason=StaleControlEpoch round=c04-control-seed-1' + "`n" + '2026-11-09T00:00:00.0000000Z CONTROL_PROBE_PASS'
+    Assert-C04LocalControlProbeResult $goodControlResult | Out-Null
+    Assert-C04LocalControlPlayerLog ('2026-11-09T00:00:00.0000000Z CONTROL_PROBE_PASS' + "`n" + 'Unity Player log: CONTROL_PROBE_PASS')
+    foreach ($badControlResult in @(
+        ('2026-11-09T00:00:00.0000000Z CONTROL_PROBE_PASS'),
+        ($goodControlResult + "`n" + ($goodControlResult -split "`n")[0]),
+        ($goodControlResult -replace 'staleAiReason=StaleControlEpoch','staleAiReason=StaleControlEpoch_CORRUPTED'),
+        ($goodControlResult -replace 'stalePlayerReason=StaleControlEpoch','stalePlayerReason=NotStaleControlEpoch'),
+        ($goodControlResult -replace ' oldAiDecision=decision-1',''),
+        ($goodControlResult -replace 'oldAiDecision=decision-1','oldAiDecision='),
+        ($goodControlResult -replace ' oldAiDecision=decision-1',' oldAiDecision=decision-1 oldAiDecision=decision-2'),
+        ($goodControlResult -replace ' round=c04-control-seed-1',''),
+        ($goodControlResult -replace 'round=c04-control-seed-1','round='),
+        ($goodControlResult -replace 'releaseEpoch=5','releaseEpoch=6'),
+        ($goodControlResult -replace 'initialEpoch=4 releaseEpoch=5 claimEpoch=6 oldEpoch=4','initialEpoch=18446744073709551615 releaseEpoch=0 claimEpoch=1 oldEpoch=18446744073709551615'),
+        ($goodControlResult -replace '2026-11-09T00:00:00.0000000Z CONTROL_PROBE_PASS',''),
+        ($goodControlResult -replace 'CONTROL_PROBE_PASS','CONTROL_PROBE_PASS_CORRUPTED'),
+        ($goodControlResult + "`n" + '2026-11-09T00:00:00.0000000Z CONTROL_PROBE_PASS'),
+        ($goodControlResult + "`n" + '2026-11-09T00:00:00.0000000Z CONTROL_PROBE_FAIL STALE_AI_RESULT_NOT_SENT')
+    )) {
+        $rejected = $false; try { Assert-C04LocalControlProbeResult $badControlResult | Out-Null } catch { $rejected = $true }
+        if (-not $rejected) { throw 'G4 control probe gate accepted missing or mismatched epoch/stale-result evidence.' }
+    }
+    foreach ($badControlPlayerLog in @('','CONTROL_PROBE_PASS_CORRUPTED','CONTROL_PROBE_PASS CONTROL_PROBE_FAIL STALE_AI_RESULT_NOT_SENT')) {
+        $rejected = $false; try { Assert-C04LocalControlPlayerLog $badControlPlayerLog } catch { $rejected = $true }
+        if (-not $rejected) { throw 'G4 runtime Player-log gate accepted a missing, corrupted, or conflicting marker.' }
     }
     $closureBeforePath = Join-Path $RunRoot 'fixture-input-before.json'; $closureAfterPath = Join-Path $RunRoot 'fixture-input-after.json'; $closureChangesPath = Join-Path $RunRoot 'fixture-input-changes.json'
     $closureBefore = [ordered]@{ entries=@([ordered]@{path='Assets/Scripts/App.cs';bytes=10;sha256=('a'*64)},[ordered]@{path='Packages/manifest.json';bytes=10;sha256=('b'*64)},[ordered]@{path='ProjectSettings/EditorBuildSettings.asset';bytes=10;sha256=('c'*64)},[ordered]@{path='Library/PackageCache/com.unity.test/package.dll';bytes=10;sha256=('d'*64)},[ordered]@{path='Library/ScriptAssemblies/App.dll';bytes=10;sha256=('e'*64)}) }
@@ -787,6 +923,42 @@ Start-Sleep -Seconds 25
         eventTiles='0,1,2'; meldTileIds='0,1,2'; handTileIdsAfter='20,24'; seatScoreBefore=25000; seatScoreAfter=25000; riichiSticksBefore=0; riichiSticksAfter=0; replacementDrawTileId=''
     }
     Test-C04CaseSummary $valid 'C04-G2-01' | Out-Null
+    $g1Stream = New-Object IO.MemoryStream
+    $g1Writer = New-Object IO.BinaryWriter($g1Stream)
+    $g1Writer.Write([Text.Encoding]::ASCII.GetBytes('MJC1')); $g1Writer.Write([UInt16]1); $g1Writer.Write([UInt16]10)
+    Write-Field $g1Writer 1 5 (Encode-CanonicalString 'fixture-round')
+    Write-Field $g1Writer 2 5 (Encode-CanonicalString 'fixture-decision')
+    Write-Field $g1Writer 3 3 ([BitConverter]::GetBytes([UInt64]0))
+    Write-Field $g1Writer 4 2 ([BitConverter]::GetBytes([UInt32]9))
+    $g1TileBytes = New-Object IO.MemoryStream; $g1TileWriter = New-Object IO.BinaryWriter($g1TileBytes)
+    $g1TileWriter.Write([UInt32]1); $g1TileWriter.Write([UInt32]12); $g1TileWriter.Flush()
+    Write-Field $g1Writer 6 7 $g1TileBytes.ToArray(); $g1Writer.Flush(); $g1Bytes = $g1Stream.ToArray()
+    $g1Hash = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($g1Bytes)).Replace('-','').ToLowerInvariant()
+    $g1 = [pscustomobject]@{}
+    foreach ($property in $valid.PSObject.Properties) { $g1 | Add-Member -NotePropertyName $property.Name -NotePropertyValue $property.Value -Force }
+    $g1.caseId='C04-G1-02'; $g1.canonicalPayloadBase64=[Convert]::ToBase64String($g1Bytes); $g1.payloadSha256=$g1Hash
+    $g1.payloadActionType=9; $g1.payloadTileIds='12'; $g1.eventType='TsumoWin'; $g1.eventTiles='12'; $g1.meldTileIds=''
+    Test-C04CaseSummary $g1 'C04-G1-02' | Out-Null
+    $g1BadStream = New-Object IO.MemoryStream
+    $g1BadWriter = New-Object IO.BinaryWriter($g1BadStream)
+    $g1BadWriter.Write([Text.Encoding]::ASCII.GetBytes('MJC1')); $g1BadWriter.Write([UInt16]1); $g1BadWriter.Write([UInt16]10)
+    Write-Field $g1BadWriter 1 5 (Encode-CanonicalString 'fixture-round')
+    Write-Field $g1BadWriter 2 5 (Encode-CanonicalString 'fixture-decision')
+    Write-Field $g1BadWriter 3 3 ([BitConverter]::GetBytes([UInt64]0))
+    Write-Field $g1BadWriter 4 2 ([BitConverter]::GetBytes([UInt32]9))
+    $g1BadTileBytes = New-Object IO.MemoryStream; $g1BadTileWriter = New-Object IO.BinaryWriter($g1BadTileBytes)
+    $g1BadTileWriter.Write([UInt32]1); $g1BadTileWriter.Write([UInt32]13); $g1BadTileWriter.Flush()
+    Write-Field $g1BadWriter 6 7 $g1BadTileBytes.ToArray(); $g1BadWriter.Flush(); $g1BadBytes = $g1BadStream.ToArray()
+    $g1Bad = [pscustomobject]@{}
+    foreach ($property in $g1.PSObject.Properties) { $g1Bad | Add-Member -NotePropertyName $property.Name -NotePropertyValue $property.Value -Force }
+    $g1Bad.canonicalPayloadBase64=[Convert]::ToBase64String($g1BadBytes)
+    $g1Bad.payloadSha256=[BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($g1BadBytes)).Replace('-','').ToLowerInvariant()
+    $g1Bad.payloadTileIds='13'
+    $g1WrongTileRejected = $false
+    try { Test-C04CaseSummary $g1Bad 'C04-G1-02' | Out-Null } catch { $g1WrongTileRejected = $true }
+    if (-not $g1WrongTileRejected) { throw 'G1 dealer Tsumo fixture accepted a different canonical winning tile.' }
+    $g1Stream.Dispose(); $g1Writer.Dispose(); $g1TileBytes.Dispose(); $g1TileWriter.Dispose()
+    $g1BadStream.Dispose(); $g1BadWriter.Dispose(); $g1BadTileBytes.Dispose(); $g1BadTileWriter.Dispose()
     $valid | Add-Member -NotePropertyName acceptanceSequence -NotePropertyValue 2 -Force
     $validEvidence = [pscustomobject]@{
         caseId='C04-G2-01'; requestId='fixture-request'; scopeId='fixture-scope'; payloadBase64=$valid.canonicalPayloadBase64; payloadSha256=$fixtureHash
@@ -957,7 +1129,7 @@ Start-Sleep -Seconds 25
         throw 'Fixture evidence seal must contain stable owned outputs and exclude volatile process/download roots.'
     }
     [IO.File]::WriteAllText((Join-Path $RunRoot 'fixture-seal.json'), (($fixtureFiles | ConvertTo-Json -Depth 5) + "`n"), (New-Object Text.UTF8Encoding($false)))
-    Write-Host "C04_TOOL_FIXTURES_PASS positive=2 negative=$($negatives.Count + $evidenceNegatives.Count + $markerNegatives.Count + 17) protobuf=PASS malformed=2 timeoutTree=PASS mutexTimeoutSeal=PASS mutexCancellationSeal=PASS outputDrain=PASS outputFiles=$($fixtureFiles.Count)"
+    Write-Host "C04_TOOL_FIXTURES_PASS positive=5 negative=$($negatives.Count + $evidenceNegatives.Count + $markerNegatives.Count + 36) protobuf=PASS malformed=2 timeoutTree=PASS mutexTimeoutSeal=PASS mutexCancellationSeal=PASS outputDrain=PASS outputFiles=$($fixtureFiles.Count)"
     exit 0
 }
 
@@ -1125,11 +1297,8 @@ EditorUserSettings:
     if (-not (Test-Path -LiteralPath $script:C04VerifierPath -PathType Leaf)) { throw 'Generated-code verifier DLL is missing from the fresh artifact root.' }
     $verifierSelfTest = Invoke-OwnedNative -Name 'C04GeneratedProtobufVerifierSelfTest' -FilePath $DotnetPath -Arguments ('exec ' + (Quote-Arg $script:C04VerifierPath) + ' selftest') -WorkingDirectory $dotnetResults -StdoutPath (Join-Path $logs 'c04-verifier-selftest.stdout.txt') -StderrPath (Join-Path $logs 'c04-verifier-selftest.stderr.txt') -Timeout 30
     if ($verifierSelfTest.exitCode -ne 0 -or (Get-Content -LiteralPath $verifierSelfTest.stdout -Raw) -notmatch 'C04_PROTOBUF_FIXTURE_PASS valid=1 invalid=2') { throw 'Generated PlayerSnapshot.Parser positive/malformed-byte fixture failed.' }
-    $expectedVerifierCases = @('C04-G2-01','C04-G2-02','C04-G2-03','C04-G2-04')
-    $channelFiles = @(Get-ChildItem -LiteralPath $channelFixtureRoot -File -Filter '*.json' | Sort-Object Name)
-    if ($channelFiles.Count -ne 4 -or @($channelFiles | ForEach-Object { [IO.Path]::GetFileNameWithoutExtension($_.Name) } | Where-Object { $_ -notin $expectedVerifierCases }).Count -ne 0) {
-        throw 'Fresh LocalHost evidence did not produce exactly one fixed verifier fixture for each C04 case.'
-    }
+    $expectedVerifierCases = @('C04-G1-02','C04-G2-01','C04-G2-02','C04-G2-03','C04-G2-04')
+    $channelFiles = @(Assert-C04ExactVerifierFixtureSet $channelFixtureRoot $expectedVerifierCases)
     $verifierMatrix = New-Object System.Collections.Generic.List[object]
     foreach ($casePath in $channelFiles) {
         $caseEvidence = Get-Content -LiteralPath $casePath.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -1294,6 +1463,7 @@ EditorUserSettings:
     }
 
     $caseSpecs = @(
+        @{ id='C04-G1-02'; action='dealer-tsumo'; event='TsumoWin' },
         @{ id='C04-G2-01'; action='pon'; event='PonDeclared' },
         @{ id='C04-G2-02'; action='chi'; event='ChiDeclared' },
         @{ id='C04-G2-03'; action='riichi'; event='RiichiDeclared' },
@@ -1326,7 +1496,32 @@ EditorUserSettings:
         $caseResults.Add([ordered]@{ caseId=$case.id; status='PASS'; layer='WINDOWS_PLAYER'; nativeExitCode=$player.exitCode; summary=$summaryPath; summarySha256=(Get-Sha256 $summaryPath); actionEvidence=$actionEvidencePath; actionEvidenceSha256=(Get-Sha256 $actionEvidencePath); executionEvidence=$executionPath; executionEvidenceSha256=(Get-Sha256 $executionPath); playerLog=$nativeLog; playerLogSha256=(Get-Sha256 $nativeLog); payloadSha256=$summary.payloadSha256 }) | Out-Null
     }
 
-    $final = [ordered]@{ schemaVersion=1; task='G2-C04-D03'; status='PASS'; acceptedBase='8fd7c6cb701dfbb41c28938de4186749bdd1d6c7'; frozenCandidate=$gitHead; sourceTreeStatus=$gitStatus; sourceDiffCheck='PASS'; sourceClosureManifest='source-prebuild-closure.json'; sourceClosureManifestSha256=$sourceClosureSha; stagedRepositoryRoot=$sourceRepo; unityProjectRoot=$project; unityShortPathStaging='unity-short-path-staging.json'; unityShortPathStagingSha256=$shortPathProjectSha; generatedUnityInputs='unity-generated-inputs.json'; generatedUnityInputsSha256=(Get-Sha256 (Join-Path $RunRoot 'unity-generated-inputs.json')); unityResolvedPackageInputClosure='unity-resolved-package-input-closure.json'; unityResolvedPackageInputClosureSha256=$resolvedPackageInputsSha; unityPrebuildInputClosureSha256=$preBuildInputsSha; unityPostbuildInputClosureSha256=$postBuildInputsSha; unityPostbuildInputChanges='unity-postbuild-input-changes.json'; unityPostbuildInputChangesSha256=(Get-Sha256 (Join-Path $RunRoot 'unity-postbuild-input-changes.json')); unityGeneratedDirtyInputs=$inputChanges; upmDownloadCacheVolatility='upm-cache-volatility.json'; upmDownloadCacheVolatilitySha256=$upmCacheClosureSha; postBuildAssetsClosure='source-postbuild-assets-closure.json'; postBuildAssetsClosureSha256=$postBuildClosureSha; sharedPluginClosureSha256=$pluginClosureSha; sharedPluginProvenance=(Join-Path $project 'Library/SharedPluginProvenance/provenance.json'); sharedPluginProvenanceSha256=$provenanceSha; scriptAssembliesClosureSha256=$scriptAssembliesSha; localHostTests=$localHostTestEvidence; commands=$script:stageRecords; playMode=[ordered]@{ testCount=$testNodes.Count; passed=$testNodes.Count; failed=0; skipped=0; exactNames=$actualNames; xml=$playXml; xmlSha256=(Get-Sha256 $playXml) }; buildMarker=$buildMarker; buildMarkerSha256=(Get-Sha256 $buildMarker); playerPackageManifest='player-package.json'; cases=$caseResults; platforms=[ordered]@{ windowsPlayer='actual four fixed cases'; android='NOT_RUN (C05 owner)'; ios='NOT_RUN'; remoteTransport='NOT_IN_SCOPE' } }
+    # G4 owner-control lifecycle is part of this same freshly built Player package.
+    # It uses the production menu/table route and command sink; the probe itself
+    # asserts release, same-room re-entry without auto-claim, explicit claim/epoch
+    # advancement, and stale player/AI decisions rejected by the real LocalHost.
+    $controlDir = Join-Path $RunRoot 'control'; $controlData = Join-Path $dataRoot 'control'
+    New-Item -ItemType Directory -Path $controlDir,$controlData | Out-Null
+    $controlLog = Join-Path $controlDir 'player.log'
+    $controlArgs = @('-batchmode','-runInBackground','-smoke-data',(Quote-Arg $controlData),'-logFile',(Quote-Arg $controlLog),'-local-control-probe',(Quote-Arg $controlDir))
+    $controlPlayer = Invoke-OwnedNative -Name 'Player-G4-ControlLifecycle' -FilePath $exe -Arguments ($controlArgs -join ' ') -WorkingDirectory $playerDir -StdoutPath (Join-Path $controlDir 'stdout.txt') -StderrPath (Join-Path $controlDir 'stderr.txt') -Timeout $TimeoutSeconds
+    $controlProbeLog = Join-Path $controlDir 'probe.log'
+    $controlProbeText = if (Test-Path -LiteralPath $controlProbeLog -PathType Leaf) { Get-Content -LiteralPath $controlProbeLog -Raw -Encoding UTF8 } else { '' }
+    $controlPlayerText = if (Test-Path -LiteralPath $controlLog -PathType Leaf) { Get-Content -LiteralPath $controlLog -Raw -Encoding UTF8 } else { '' }
+    $controlLogGateError = ''
+    try { Assert-C04LocalControlPlayerLog $controlPlayerText } catch { $controlLogGateError = $_.Exception.Message }
+    if ($controlPlayer.exitCode -ne 0 -or -not [string]::IsNullOrEmpty($controlLogGateError)) {
+        throw "Same-package G4 LocalControlPlayerProbe failed; nativeExit=$($controlPlayer.exitCode), reason=$controlLogGateError, probeLog=$controlProbeLog, playerLog=$controlLog."
+    }
+    $controlEpochs = Assert-C04LocalControlProbeResult $controlProbeText
+    $controlResult = [ordered]@{
+        status='PASS'; layer='WINDOWS_PLAYER'; packageManifest='player-package.json';
+        initialEpoch=$controlEpochs.InitialEpoch; releaseEpoch=$controlEpochs.ReleaseEpoch; claimEpoch=$controlEpochs.ClaimEpoch; oldEpoch=$controlEpochs.OldEpoch;
+        nativeExitCode=$controlPlayer.exitCode; probeLog=$controlProbeLog; probeLogSha256=(Get-Sha256 $controlProbeLog);
+        playerLog=$controlLog; playerLogSha256=(Get-Sha256 $controlLog); smokeData=$controlData
+    }
+
+    $final = [ordered]@{ schemaVersion=1; task='G2-C04-D03'; status='PASS'; acceptedBase='8fd7c6cb701dfbb41c28938de4186749bdd1d6c7'; frozenCandidate=$gitHead; sourceTreeStatus=$gitStatus; sourceDiffCheck='PASS'; sourceClosureManifest='source-prebuild-closure.json'; sourceClosureManifestSha256=$sourceClosureSha; stagedRepositoryRoot=$sourceRepo; unityProjectRoot=$project; unityShortPathStaging='unity-short-path-staging.json'; unityShortPathStagingSha256=$shortPathProjectSha; generatedUnityInputs='unity-generated-inputs.json'; generatedUnityInputsSha256=(Get-Sha256 (Join-Path $RunRoot 'unity-generated-inputs.json')); unityResolvedPackageInputClosure='unity-resolved-package-input-closure.json'; unityResolvedPackageInputClosureSha256=$resolvedPackageInputsSha; unityPrebuildInputClosureSha256=$preBuildInputsSha; unityPostbuildInputClosureSha256=$postBuildInputsSha; unityPostbuildInputChanges='unity-postbuild-input-changes.json'; unityPostbuildInputChangesSha256=(Get-Sha256 (Join-Path $RunRoot 'unity-postbuild-input-changes.json')); unityGeneratedDirtyInputs=$inputChanges; upmDownloadCacheVolatility='upm-cache-volatility.json'; upmDownloadCacheVolatilitySha256=$upmCacheClosureSha; postBuildAssetsClosure='source-postbuild-assets-closure.json'; postBuildAssetsClosureSha256=$postBuildClosureSha; sharedPluginClosureSha256=$pluginClosureSha; sharedPluginProvenance=(Join-Path $project 'Library/SharedPluginProvenance/provenance.json'); sharedPluginProvenanceSha256=$provenanceSha; scriptAssembliesClosureSha256=$scriptAssembliesSha; localHostTests=$localHostTestEvidence; commands=$script:stageRecords; playMode=[ordered]@{ testCount=$testNodes.Count; passed=$testNodes.Count; failed=0; skipped=0; exactNames=$actualNames; xml=$playXml; xmlSha256=(Get-Sha256 $playXml) }; buildMarker=$buildMarker; buildMarkerSha256=(Get-Sha256 $buildMarker); playerPackageManifest='player-package.json'; cases=$caseResults; g4ControlProbe=$controlResult; platforms=[ordered]@{ windowsPlayer='five fixed action cases plus same-package G4 control probe'; android='NOT_RUN (C05 owner)'; ios='NOT_RUN'; remoteTransport='NOT_IN_SCOPE' } }
     $summaryOut = Join-Path $RunRoot 'summary.json'
     [IO.File]::WriteAllText($summaryOut, (($final | ConvertTo-Json -Depth 12) + "`n"), (New-Object Text.UTF8Encoding($false)))
     Write-RunLog 'FINAL_SUMMARY_WRITTEN'
@@ -1340,20 +1535,20 @@ EditorUserSettings:
     $manifestPath = Join-Path $RunRoot 'manifest.json'
     [IO.File]::WriteAllText($manifestPath, (($manifest | ConvertTo-Json -Depth 10) + "`n"), (New-Object Text.UTF8Encoding($false)))
     [IO.File]::WriteAllText((Join-Path $RunRoot 'manifest.sha256'), ((Get-Sha256 $manifestPath) + "  manifest.json`n"), (New-Object Text.UTF8Encoding($false)))
-    Write-Host "C04_PLAYER_ACTIONS_PASS cases=4 manifest=$(Get-Sha256 $manifestPath) root=$RunRoot"
+        Write-Host "C04_PLAYER_ACTIONS_PASS cases=5 manifest=$(Get-Sha256 $manifestPath) root=$RunRoot"
 }
 catch {
     if ($script:LogOpen) { Write-RunLog ('FAIL ' + $_.Exception.GetType().Name + ': ' + $_.Exception.Message) }
     $failurePath = Join-Path $RunRoot 'failure.json'
     if (-not (Test-Path -LiteralPath $failurePath)) {
-        $fixedIds = @('C04-G2-01','C04-G2-02','C04-G2-03','C04-G2-04')
+        $fixedIds = @('C04-G1-02','C04-G2-01','C04-G2-02','C04-G2-03','C04-G2-04')
         $caseMatrix = New-Object System.Collections.Generic.List[object]
         foreach ($caseId in $fixedIds) {
             $dotnetStatus = 'NOT_RUN'
             if ($trx -and (Test-Path -LiteralPath $trx)) {
                 try {
                     [xml]$testXml = Get-Content -LiteralPath $trx -Raw
-                    $needle = switch ($caseId) { 'C04-G2-01' { 'pon' } 'C04-G2-02' { 'chi' } 'C04-G2-03' { 'riichi' } 'C04-G2-04' { 'closed-kan' } }
+                    $needle = switch ($caseId) { 'C04-G1-02' { 'dealer-tsumo' } 'C04-G2-01' { 'pon' } 'C04-G2-02' { 'chi' } 'C04-G2-03' { 'riichi' } 'C04-G2-04' { 'closed-kan' } }
                     $caseMarker = 'scenario: ' + [string][char]92 + [string][char]34 + $needle + [string][char]92 + [string][char]34
                     $nodes = @($testXml.SelectNodes("//*[local-name()='test']") | Where-Object { $_.name.IndexOf($caseMarker, [StringComparison]::OrdinalIgnoreCase) -ge 0 })
                     if ($nodes.Count -eq 1) { $dotnetStatus = if ($nodes[0].result -eq 'Pass') { 'PASS' } else { 'FAIL' } }

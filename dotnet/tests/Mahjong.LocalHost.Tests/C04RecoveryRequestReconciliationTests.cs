@@ -122,15 +122,8 @@ namespace Mahjong.LocalHost.Tests
             Directory.CreateDirectory(roomRoot);
             LocalTableHostOptions options = NewOptions(roomRoot, "c04-force-original-owner");
 
-            string root = P41Harness.FindRepositoryRoot();
-            string workerDll = Path.Combine(
-                root,
-                "dotnet",
-                "tests",
+            string workerDll = P41Harness.FindBuiltProjectAssembly(
                 "Mahjong.LocalHost.CrashWorker",
-                "bin",
-                "Release",
-                "net8.0",
                 "Mahjong.LocalHost.CrashWorker.dll");
             Assert.True(File.Exists(workerDll), "CrashWorker was not built: " + workerDll);
 

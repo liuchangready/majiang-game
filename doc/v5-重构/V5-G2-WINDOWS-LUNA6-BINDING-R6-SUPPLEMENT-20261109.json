@@ -1,0 +1,193 @@
+﻿{
+    "schemaVersion":  1,
+    "task":  "thread_20261108_190230_2b67",
+    "round":  6,
+    "status":  "IMPLEMENTATION_PROGRESS_NOT_ACCEPTED",
+    "candidate":  {
+                      "startingHead":  "33173f613ac88a4b74d11cdc5126368b17f7bcf4",
+                      "parent":  "7f232051d6643c9a6694b437fb30032eb9de3c32",
+                      "mergeBase":  "4523485cfd4ec2b32185a7da5c13f6cbaf54a1e1",
+                      "workingTree":  "dirty by this round probe/verifier/service-test changes and rebuilt shared plugin outputs",
+                      "branchCommitCreated":  false
+                  },
+    "newReviewFindingIds":  [
+
+                            ],
+    "knownFindings":  [
+                          "D-1-02",
+                          "D-1-01",
+                          "D-1-05",
+                          "D-1-04"
+                      ],
+    "implementedThisRound":  {
+                                 "D-1-02":  [
+                                                {
+                                                    "path":  "unity/Mahjong.Unity/Assets/Scripts/App/C04PlayerActionProbe.cs",
+                                                    "change":  "Every real C04 G2 Player action now sends a distinct invalid request through SessionCoordinator before the accepted action. It records the rejected canonical payload/digest, typed and raw receipt, reason, same-request scope, state/event numbers and authority recovery image; it requires unchanged version/event and all 136 unique physical entities. G2-03 now requires the projected and raw accepted RiichiDeclared event to retain DoubleRiichi=true."
+                                                },
+                                                {
+                                                    "path":  "dotnet/tools/C04PlayerActionVerifier/Program.cs",
+                                                    "change":  "For GAME-sourced Player evidence, fail closed on missing/incorrect rejected request binding, digest, typed/raw rejection facts, authority image, zero version/event delta, or changed physical inventory."
+                                                },
+                                                {
+                                                    "path":  "unity/Mahjong.Unity/Assets/Scripts/App/LocalControlPlayerProbe.cs",
+                                                    "change":  "Captures the real takeover-era AI decision, checks same-round re-entry does not regress the state version, then submits that old AI result after explicit claim/epoch increment and requires StaleControlEpoch rejection. Existing old-player decision rejection remains a separate assertion."
+                                                },
+                                                {
+                                                    "path":  "tools/unity/test-p45-control-ui.ps1",
+                                                    "change":  "Requires the Player control probe log to bind release/claim epochs and the old AI decision to a stale-epoch rejection."
+                                                },
+                                                {
+                                                    "path":  "dotnet/src/Mahjong.LocalHost/LocalPlayerActionScenario.cs",
+                                                    "change":  "Added a deterministic legal dealer-tsumo LocalHost fixture with a complete 136-entity deal, used by the actual local-channel/service-ingress test."
+                                                },
+                                                {
+                                                    "path":  "dotnet/tests/Mahjong.TableService.Tests/B2TerminalSettlementTests.cs",
+                                                    "change":  "Create and confirm a real LocalHost tsumo over ITableChannel/TableSession; send its persisted settlement asset through authenticated WebSocket/Kestrel ingress and assert MATCH_AUTHORITY_UNAVAILABLE with zero actor/commit version, event, tile, score, ledger, settlement, and outbox changes. Paired server-derived tsumo succeeds with one terminal outbox."
+                                                }
+                                            ],
+                                 "D-1-05":  [
+                                                {
+                                                    "path":  "unity/Mahjong.Unity/Assets/Plugins/Mahjong/",
+                                                    "change":  "Rebuilt the complete 19-file shared plugin closure from the current 156-input closure; provenance now targets this worktree rather than the stale R: path. This is a support input refresh, not a final common Player or 32-row binding."
+                                                }
+                                            ]
+                             },
+    "verification":  [
+                         {
+                             "name":  "C04PlayerActionVerifier Release build",
+                             "command":  "D:/game_dev_tools/dotnet/dotnet.exe build dotnet/tools/C04PlayerActionVerifier/C04PlayerActionVerifier.csproj -c Release --artifacts-path E:/g2-r6-verify2/artifacts --disable-build-servers -nodeReuse:false",
+                             "nativeExitCode":  0,
+                             "result":  "0 warnings, 0 errors"
+                         },
+                         {
+                             "name":  "C04PlayerActionVerifier selftest",
+                             "command":  "D:/game_dev_tools/dotnet/dotnet.exe exec E:/g2-r6-verify2/artifacts/bin/C04PlayerActionVerifier/release/Mahjong.C04PlayerActionVerifier.dll selftest",
+                             "nativeExitCode":  0,
+                             "result":  "C04_PROTOBUF_FIXTURE_PASS valid=1 invalid=2 canonicalDigest=PASS wrongDigestRejected=1"
+                         },
+                         {
+                             "name":  "Unity script compile",
+                             "command":  "D:/game_dev_tools/unity/Editor/Unity.exe -batchmode -nographics -quit -projectPath \u003ccurrent worktree\u003e/unity/Mahjong.Unity -logFile E:/g2-r6-unity-compile3-33173f61/unity-compile.log",
+                             "nativeExitCode":  0,
+                             "logSha256":  "DC537A61A412EC10DAF020E13BA099E2400463043FCC1E573DAB09E37AEFBFB4"
+                         },
+                         {
+                             "name":  "Shared plugin forced Release build and provenance",
+                             "command":  "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File tools/unity/build-shared.ps1 -Configuration Release -DotnetPath D:/game_dev_tools/dotnet/dotnet.exe",
+                             "nativeExitCode":  0,
+                             "buildElapsedSeconds":  34.301,
+                             "inputCount":  156,
+                             "outputCount":  19,
+                             "provenanceSha256":  "D9F7D3C2550FA31BE380216D359D174E8B67C135D3B40F148EB0E7FFE571737C",
+                             "buildLogSha256":  "5E71B5424E98D572732FB6EBFECD17D6B0912D84FDFC11AA197684C99D1C850F",
+                             "postBuildReadOnlyProvenanceCheckNativeExitCode":  0
+                         },
+                         {
+                             "name":  "Existing C04 action PlayMode suite",
+                             "command":  "D:/game_dev_tools/unity/Editor/Unity.exe -batchmode -projectPath \u003ccurrent worktree\u003e/unity/Mahjong.Unity -runTests -testPlatform PlayMode -testFilter Mahjong.Unity.Tests.PlayMode.C04PlayerActionScenarioTests -testResults E:/g2-r6-playmode2-33173f61/C04PlayerActionScenarioTests.xml -logFile E:/g2-r6-playmode2-33173f61/playmode.unity.log",
+                             "nativeExitCode":  0,
+                             "count":  {
+                                           "total":  4,
+                                           "passed":  4,
+                                           "failed":  0,
+                                           "skipped":  0,
+                                           "notRun":  0
+                                       },
+                             "xmlSha256":  "68A07C76F57FE8674EDEDDBD0854CD923FD8DA29E297238B0A316F3D89AFB5B2",
+                             "logSha256":  "0A6D3E67FCD21AF30D71B982E60C178EF11A9764B3B55F536100682F3E1AD186",
+                             "limitation":  "These are the pre-existing four PlayMode action cases; they do not execute the new ordinary Player negative evidence or the remaining Census branches."
+                         },
+                         {
+                             "name":  "G7-02 targeted LocalHost asset rejection and server-derived settlement",
+                             "command":  "D:/game_dev_tools/dotnet/dotnet.exe exec E:/g2-r6-table-service/artifacts/bin/Mahjong.TableService.Tests/release/Mahjong.TableService.Tests.dll -noLogo -automated -failSkips -method Mahjong.TableService.Tests.B2TerminalSettlementTests.WireIngress_RejectsUnbackedMatchSettlement_ThenComputesTsumoFromAuthority -result-xml E:/g2-r6-table-service/G7LocalAsset.xml",
+                             "nativeExitCode":  0,
+                             "count":  {
+                                           "failed":  0,
+                                           "notRun":  0,
+                                           "skipped":  0,
+                                           "total":  1,
+                                           "passed":  1
+                                       },
+                             "xmlSha256":  "F86218AFCEE7B6809486EB74637D7564F9629EFCEC437713351BFF0A7D9F6788"
+                         },
+                         {
+                             "name":  "Full TableService suite including G7-02",
+                             "command":  "D:/game_dev_tools/dotnet/dotnet.exe exec E:/g2-r6-table-service/artifacts/bin/Mahjong.TableService.Tests/release/Mahjong.TableService.Tests.dll -noLogo -automated -failSkips -result-xml E:/g2-r6-table-service/TableService.xml",
+                             "nativeExitCode":  0,
+                             "count":  {
+                                           "failed":  0,
+                                           "notRun":  0,
+                                           "skipped":  0,
+                                           "total":  204,
+                                           "passed":  204
+                                       },
+                             "xmlSha256":  "69F401C9E840F9E965A6B3DFAFFE2712DA8D8AA191A676B6CF9E13ECD94AD49C",
+                             "assemblySha256":  "03DCC47B4F38894E4E48FDEB44E212D143D6A8EC73755CECA5F889CCE8C572BF"
+                         },
+                         {
+                             "name":  "LocalHost Release full suite",
+                             "command":  "D:/game_dev_tools/dotnet/dotnet.exe exec E:/g2-r6-localhost/artifacts/bin/Mahjong.LocalHost.Tests/release/Mahjong.LocalHost.Tests.dll -noLogo -automated -failSkips -result-xml E:/g2-r6-localhost/LocalHost-final2.xml",
+                             "nativeExitCode":  0,
+                             "count":  {
+                                           "failed":  0,
+                                           "notRun":  0,
+                                           "skipped":  0,
+                                           "total":  196,
+                                           "passed":  196
+                                       },
+                             "xmlSha256":  "6312A6AC4BADA9289A5F3389AA395B63F1DEA8CAE59B3F461E9F1AF22FB26014"
+                         },
+                         {
+                             "name":  "Shared plugin rebuild after LocalHost fixture change",
+                             "command":  "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File tools/unity/build-shared.ps1 -Configuration Release -DotnetPath D:/game_dev_tools/dotnet/dotnet.exe",
+                             "nativeExitCode":  0,
+                             "elapsedSeconds":  34.38,
+                             "inputCount":  156,
+                             "outputCount":  19,
+                             "logSha256":  "CD4A48911028549875E82D7E17AF3C01DE872FE7307FD24DC68432840353CD75",
+                             "provenanceSha256":  "38884F8D5ADECBD0FE89C2FDB8831E5CE16860A2DAB71A7CA4D0759B0B747644",
+                             "provenanceCheckNativeExitCode":  0
+                         },
+                         {
+                             "name":  "Unity compile attempt after plugin refresh",
+                             "command":  "D:/game_dev_tools/unity/Editor/Unity.exe -batchmode -nographics -quit -projectPath \u003ccurrent worktree\u003e/unity/Mahjong.Unity -logFile E:/g2-r6-unity-compile4-33173f61/unity-compile.log",
+                             "nativeExitCode":  1,
+                             "reason":  "Win32 error 112, no space left on device while writing Library/Bee; no C# diagnostic.",
+                             "logSha256":  "F88A15B83BDF4D1F3C7138891B2DCBC9ACFA5A539951C730596D1C1BEE73BEBA"
+                         }
+                     ],
+    "preservedNonResults":  [
+                                {
+                                    "name":  "initial C04 PlayMode attempt before plugin sync",
+                                    "path":  "E:/g2-r6-playmode-33173f61/playmode.unity.log",
+                                    "sha256":  "66C749CF1FC42612CCD19B276B1FEB97083D419CE60BDD41040CF742E2171D36",
+                                    "outcome":  "NOT_RUN: the provenance guard rejected the stale plugin target/input closure before tests, XML was absent, and the owned Editor was asked to close normally; native process exit was -1073741819. Not a product test failure and not a pass."
+                                },
+                                {
+                                    "name":  "first Unity source compile attempt",
+                                    "path":  "E:/g2-r6-unity-compile-33173f61/unity-compile.log",
+                                    "outcome":  "FAIL before fixes: enum mismatch in C04PlayerActionProbe and RequestId wrapper comparison in LocalControlPlayerProbe; both were fixed and subsequent Unity compile passed."
+                                },
+                                {
+                                    "name":  "second Unity source compile attempt",
+                                    "path":  "E:/g2-r6-unity-compile2-33173f61/unity-compile.log",
+                                    "outcome":  "FAIL before fix: the Player command request ID is a string while ProtocolCommand.RequestId is a RequestId wrapper; comparison corrected and third compile passed."
+                                }
+                            ],
+    "bindingStatus":  {
+                          "pass":  18,
+                          "partial":  11,
+                          "notRun":  3,
+                          "windowsDenominator":  32,
+                          "androidRowsExcludedAndNotRun":  9
+                      },
+    "remaining":  {
+                      "D-1-02":  "Not closed: G7-02 real LocalHost asset refusal and server-derived settlement now pass the TableService integration test and full suite (204/204), but census row/package binding remains open. New ordinary Player probes still unexecuted; G1 win/draw/dealer continuation/new-round, G2 chankan/rinshan/full Player negative matrix, and G4 old AI result in a real Player remain absent.",
+                      "D-1-01":  "Not closed: no physical mouse/keyboard menu-to-game-to-settlement run or base/wide/tall complete table/settlement frames.",
+                      "D-1-05":  "Not closed: no new frozen candidate or common final ordinary Player package carrying the complete 32-row evidence and full input closure.",
+                      "D-1-04":  "Not closed: keep G7-01 NOT_RUN; approved offline isolation and egress observation remain unavailable, per the prior unchanged preflight."
+                  },
+    "taskAccepted":  false,
+    "androidScope":  "NOT_RUN; excluded from the 32-row Windows denominator"
+}
