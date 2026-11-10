@@ -2,6 +2,12 @@ using System.Threading.Tasks;
 
 namespace Mahjong.Unity.UI
 {
+    public interface ILocalRecordReplayController
+    {
+        bool IsOpen { get; }
+        void Open();
+    }
+
     public enum LocalGameStartStatus
     {
         Started = 0,

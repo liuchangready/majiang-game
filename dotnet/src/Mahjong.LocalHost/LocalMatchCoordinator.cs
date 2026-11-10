@@ -23,6 +23,13 @@ namespace Mahjong.LocalHost
 
         public MatchRuleConfig? Rules { get; set; }
 
+        /// <summary>Seat plan for every new round; all-computer is supported for automation.</summary>
+        public LocalTableSeatPlan SeatPlan { get; set; } = LocalTableSeatPlan.SingleHumanSeatZero;
+
+        public LocalAiOptions Ai { get; set; } = new LocalAiOptions();
+
+        public ILocalAiDecisionObserver? AiDecisionObserver { get; set; }
+
         public bool DeclareAgariYameAtFinalRound { get; set; }
 
         /// <summary>
@@ -35,6 +42,12 @@ namespace Mahjong.LocalHost
         internal void Validate()
         {
             LocalTableHostPaths.ResolveSaveDirectory(SaveDirectory);
+            if (SeatPlan == null || Ai == null)
+            {
+                throw new LocalTableException(LocalTableErrorKind.InvalidOptions, "SeatPlan/Ai must not be null.");
+            }
+
+            Ai.Validate();
             if (string.IsNullOrWhiteSpace(MatchId) || MatchId.Length > 64)
             {
                 throw new LocalTableException(LocalTableErrorKind.InvalidOptions, "MatchId must be 1..64 characters.");
@@ -435,7 +448,10 @@ namespace Mahjong.LocalHost
                 RulesetVersion = _options.RulesetVersion,
                 OwnerInstanceId = _options.OwnerInstanceId,
                 LeaseDuration = _options.LeaseDuration,
-                Environment = _options.Environment
+                Environment = _options.Environment,
+                SeatPlan = _options.SeatPlan,
+                Ai = _options.Ai,
+                AiDecisionObserver = _options.AiDecisionObserver
             };
             RoundStateMachine initialRound = _options.RoundFactory != null
                 ? _options.RoundFactory(state, roundOptions)

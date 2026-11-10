@@ -1,7 +1,9 @@
 #nullable enable
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
@@ -20,8 +22,11 @@ using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.InputSystem;
 using UnityEngine.InputSystem.UI;
+using UnityEngine.EventSystems;
+using UnityEngine.SceneManagement;
 using UnityEngine.TextCore.LowLevel;
 using UnityEngine.UI;
+using UnityEngine.TestTools;
 #endif
 
 namespace Mahjong.Unity.Tests.EditMode
@@ -29,6 +34,214 @@ namespace Mahjong.Unity.Tests.EditMode
     [TestFixture]
     public sealed class AppCompositionTests
     {
+        [Test]
+        public void RecordReplayList_RendersEmptyOneAndTwentyRowsAndLoadFailure()
+        {
+            Scene menuScene = EditorSceneManager.OpenScene("Assets/Scenes/Menu.unity", OpenSceneMode.Additive);
+            var root = new GameObject("RecordReplayListTest");
+            try
+            {
+                LocalRecordReplayPresenter presenter = root.AddComponent<LocalRecordReplayPresenter>();
+                presenter.Initialize();
+                Canvas canvas = root.GetComponentInChildren<Canvas>(true);
+                canvas.gameObject.SetActive(true);
+
+                Type roundType = Type.GetType("Mahjong.LocalHost.LocalRecordedRound, Mahjong.LocalHost", true)!;
+                ConstructorInfo roundConstructor = roundType.GetConstructors(BindingFlags.Instance | BindingFlags.NonPublic).Single();
+                Type eventType = roundType.GetProperty("Events")!.PropertyType.GetGenericArguments()[0];
+                Array events = Array.CreateInstance(eventType, 0);
+                MethodInfo showRecords = typeof(LocalRecordReplayPresenter).GetMethod("ShowRecords", BindingFlags.Instance | BindingFlags.NonPublic)!;
+                foreach (int count in new[] { 0, 1, 20 })
+                {
+                    Array records = Array.CreateInstance(roundType, count);
+                    for (int i = 0; i < count; i++)
+                    {
+                        object record = roundConstructor.Invoke(new object[]
+                        {
+                            "record-" + i, "local-main", "round-" + i, DateTimeOffset.UtcNow, "进行中", events
+                        });
+                        records.SetValue(record, i);
+                    }
+                    showRecords.Invoke(presenter, new object[] { records });
+                    Assert.AreEqual(count, ((System.Collections.ICollection)GetPrivate(presenter, "_rows")!).Count);
+                    var status = (TextMeshProUGUI)GetPrivate(presenter, "_status")!;
+                    if (count == 0) Assert.AreEqual("暂无牌局记录", status.text);
+                    else StringAssert.Contains(count.ToString(), status.text);
+                }
+
+                LogAssert.Expect(LogType.Warning, new Regex("LOCAL_RECORD_LIST_FAILED: InvalidOperationException: synthetic read failure"));
+                InvokePrivate(presenter, "ShowLoadFailure", new InvalidOperationException("synthetic read failure"));
+                StringAssert.Contains("读取失败", ((TextMeshProUGUI)GetPrivate(presenter, "_status")!).text);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+                if (menuScene.IsValid() && menuScene.isLoaded) EditorSceneManager.CloseScene(menuScene, true);
+            }
+        }
+
+        [Test]
+        public void MenuAndRecordReplayControls_StayVisibleAndUsePointerLifecycle()
+        {
+            UiInputLifecycle.ResetForTest();
+            var eventSystemObject = new GameObject("RecordReplayTestEventSystem", typeof(EventSystem));
+            EventSystem testEventSystem = eventSystemObject.GetComponent<EventSystem>();
+            var menuRoot = new GameObject("MenuLayoutTest");
+            var replayRoot = new GameObject("ReplayPresenterTest");
+            Scene menuScene = default;
+            try
+            {
+                menuScene = EditorSceneManager.OpenScene("Assets/Scenes/Menu.unity", OpenSceneMode.Additive);
+                MenuPresenter sceneMenu = menuScene.GetRootGameObjects()
+                    .SelectMany(x => x.GetComponentsInChildren<MenuPresenter>(true)).Single();
+                InvokePrivate(sceneMenu, "Start");
+                Button[] sceneMenuButtons = new[]
+                {
+                    (Button)GetPrivate(sceneMenu, "_playButton")!,
+                    (Button)GetPrivate(sceneMenu, "_recordsButton")!,
+                    (Button)GetPrivate(sceneMenu, "_quitButton")!
+                };
+                AssertMenuButtonsDoNotOverlap(sceneMenuButtons);
+                Assert.That(sceneMenuButtons.All(x => x.GetComponent<UiPointerLifecycleTrigger>() != null));
+                EditorSceneManager.CloseScene(menuScene, true);
+                menuScene = default;
+                testEventSystem.enabled = false;
+                testEventSystem.enabled = true;
+                InvokePrivate(testEventSystem, "OnEnable");
+                EventSystem.current = testEventSystem;
+
+                Button play = CreateLayoutButton(menuRoot.transform, "PlayButton", 30);
+                Button quit = CreateLayoutButton(menuRoot.transform, "QuitButton", -80);
+                MenuPresenter menu = menuRoot.AddComponent<MenuPresenter>();
+                SetPrivate(menu, "_playButton", play);
+                SetPrivate(menu, "_quitButton", quit);
+                menu.Initialize(null!);
+                InvokePrivate(menu, "Start");
+
+                Button[] menuButtons = menuRoot.GetComponentsInChildren<Button>(true);
+                Assert.AreEqual(3, menuButtons.Length);
+                Assert.Less(Math.Abs(play.GetComponent<RectTransform>().anchoredPosition.y -
+                    menuButtons.Single(x => x.name == "MatchRecordsButton").GetComponent<RectTransform>().anchoredPosition.y), 200);
+                Assert.That(menuButtons.All(x => x.GetComponent<UiPointerLifecycleTrigger>() != null));
+                AssertMenuButtonsDoNotOverlap(menuButtons);
+
+                LocalRecordReplayPresenter replay = replayRoot.AddComponent<LocalRecordReplayPresenter>();
+                replay.Initialize();
+                Canvas replayCanvas = replayRoot.GetComponentInChildren<Canvas>(true);
+                replayCanvas.gameObject.SetActive(true);
+                RectTransform panel = replayCanvas.transform.Find("Panel") as RectTransform;
+                Assert.IsNotNull(panel);
+                Button[] controls = panel!.GetComponentsInChildren<Button>(true);
+                Assert.AreEqual(4, controls.Length);
+                Assert.That(controls.All(x => x.GetComponent<UiPointerLifecycleTrigger>() != null));
+                AssertControlButtonsFit(panel, controls);
+
+                Button playPause = controls.Single(x => x.GetComponent<RectTransform>().anchoredPosition.x == -330);
+                FireRealPointerClick(playPause);
+                Assert.IsTrue((bool)GetPrivate(replay, "_playing")!);
+                FireRealPointerClick(playPause);
+                Assert.IsFalse((bool)GetPrivate(replay, "_playing")!);
+
+                FieldInfo eventsField = typeof(LocalRecordReplayPresenter).GetField("_events", BindingFlags.Instance | BindingFlags.NonPublic)!;
+                Type eventType = eventsField.FieldType.GetGenericArguments()[0];
+                ConstructorInfo eventConstructor = eventType.GetConstructors(BindingFlags.Instance | BindingFlags.NonPublic).Single();
+                Type roundEventType = Type.GetType("Mahjong.Domain.RoundEventType, Mahjong.Domain", throwOnError: true)!;
+                object sampleEvent = eventConstructor.Invoke(new object[] { (ulong)1, Enum.Parse(roundEventType, "TileDiscarded"), 0, (int?)5 });
+                Array eventArray = Array.CreateInstance(eventType, 1);
+                eventArray.SetValue(sampleEvent, 0);
+                eventsField.SetValue(replay, eventArray);
+                Button step = controls.Single(x => x.GetComponent<RectTransform>().anchoredPosition.x == -110);
+                FireRealPointerClick(step);
+                Assert.AreEqual(1, (int)GetPrivate(replay, "_cursor")!);
+
+                Button speed = controls.Single(x => x.GetComponent<RectTransform>().anchoredPosition.x == 110);
+                FireRealPointerClick(speed);
+                FireRealPointerClick(speed);
+                Assert.AreEqual(0.8f / 3f, (float)GetPrivate(replay, "_interval")!, 0.0001f);
+
+                var priorSelection = CreateLayoutButton(replayRoot.transform, "PriorSelection", 0);
+                EventSystem.current = testEventSystem;
+                EventSystem.current!.SetSelectedGameObject(priorSelection.gameObject);
+                var backRouter = new BackRouter();
+                SetPrivate(replay, "_backRouter", backRouter);
+                replayCanvas.gameObject.SetActive(false);
+                replay.Open();
+                Assert.IsTrue(replay.IsOpen);
+                Assert.AreEqual(BackRouteResult.Consumed, backRouter.HandleBack(BackEventSource.DesktopEscape));
+                Assert.IsFalse(replay.IsOpen);
+                Assert.AreSame(priorSelection.gameObject, EventSystem.current.currentSelectedGameObject);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(menuRoot);
+                UnityEngine.Object.DestroyImmediate(replayRoot);
+                UnityEngine.Object.DestroyImmediate(eventSystemObject);
+                if (menuScene.IsValid() && menuScene.isLoaded) EditorSceneManager.CloseScene(menuScene, true);
+            }
+        }
+
+        private static Button CreateLayoutButton(Transform parent, string name, float y)
+        {
+            var gameObject = new GameObject(name, typeof(RectTransform), typeof(Image), typeof(Button), typeof(UiPointerLifecycleTrigger));
+            gameObject.transform.SetParent(parent, false);
+            var rect = gameObject.GetComponent<RectTransform>();
+            rect.sizeDelta = new Vector2(400, 88);
+            rect.anchoredPosition = new Vector2(0, y);
+            return gameObject.GetComponent<Button>();
+        }
+
+        private static void AssertMenuButtonsDoNotOverlap(Button[] buttons)
+        {
+            foreach (Button button in buttons)
+            {
+                RectTransform rect = button.GetComponent<RectTransform>();
+                Assert.That(rect.anchoredPosition.y + rect.rect.height / 2f, Is.LessThan(540));
+                Assert.That(rect.anchoredPosition.y - rect.rect.height / 2f, Is.GreaterThan(-540));
+            }
+            float[] centers = buttons.Select(x => x.GetComponent<RectTransform>().anchoredPosition.y).OrderByDescending(x => x).ToArray();
+            for (int i = 1; i < centers.Length; i++) Assert.That(centers[i - 1] - centers[i], Is.GreaterThanOrEqualTo(88));
+        }
+
+        private static void AssertControlButtonsFit(RectTransform panel, Button[] buttons)
+        {
+            var rects = buttons.Select(x => x.GetComponent<RectTransform>()).OrderBy(x => x.anchoredPosition.x).ToArray();
+            foreach (RectTransform rect in rects)
+            {
+                Assert.That(Math.Abs(rect.anchoredPosition.x) + rect.rect.width / 2f, Is.LessThanOrEqualTo(panel.rect.width / 2f));
+                Assert.That(Math.Abs(rect.anchoredPosition.y) + rect.rect.height / 2f, Is.LessThanOrEqualTo(panel.rect.height / 2f));
+            }
+            for (int i = 1; i < rects.Length; i++)
+                Assert.That(rects[i - 1].anchoredPosition.x + rects[i - 1].rect.width / 2f,
+                    Is.LessThanOrEqualTo(rects[i].anchoredPosition.x - rects[i].rect.width / 2f));
+        }
+
+        private static void FireRealPointerClick(Button button)
+        {
+            var data = new PointerEventData(EventSystem.current)
+            {
+                button = PointerEventData.InputButton.Left,
+                pointerId = -1,
+                position = new Vector2(100, 100),
+                pressPosition = new Vector2(100, 100),
+                pointerPress = button.gameObject,
+                pointerClick = button.gameObject
+            };
+            ExecuteEvents.Execute(button.gameObject, data, ExecuteEvents.pointerDownHandler);
+            Assert.IsTrue(UiInputLifecycle.Instance.IsArmed);
+            ExecuteEvents.Execute(button.gameObject, data, ExecuteEvents.pointerUpHandler);
+            Assert.IsFalse(UiInputLifecycle.Instance.IsArmed);
+            ExecuteEvents.Execute(button.gameObject, data, ExecuteEvents.pointerClickHandler);
+        }
+
+        private static void SetPrivate(object target, string name, object value) =>
+            target.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(target, value);
+
+        private static object? GetPrivate(object target, string name) =>
+            target.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(target);
+
+        private static void InvokePrivate(object target, string name, params object[] arguments) =>
+            target.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(target, arguments);
+
         [Test]
         public void AppComposition_Initializes_WithDefaults()
         {

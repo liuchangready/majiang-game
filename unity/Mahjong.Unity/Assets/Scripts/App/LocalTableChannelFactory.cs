@@ -1,5 +1,6 @@
 #nullable enable
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Mahjong.Client;
@@ -177,6 +178,10 @@ namespace Mahjong.Unity.App
 
         /// <summary>Absolute directory the pure .NET host owns; never the outbox.</summary>
         public string SaveDirectory => _saveDirectory;
+
+        /// <summary>Returns only records in this factory's trusted local match scope.</summary>
+        public IReadOnlyList<LocalRecordedRound> ListRecordedRounds() =>
+            LocalRecordedRounds.List(_saveDirectory, _roomId, MatchModeEnabled, 20);
 
         /// <summary>
         /// Diagnostic/read-only lifecycle probe: true while this factory still owns a cached

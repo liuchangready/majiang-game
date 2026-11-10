@@ -453,6 +453,59 @@ namespace Mahjong.LocalHost
         internal Mahjong.Domain.RoundResult? CurrentRoundResult => _actor.GetRoundResult();
         internal TableActor ActorForTest => _actor;
 
+        internal async Task<LocalRoundSummary> GetRoundSummaryAsync(CancellationToken cancellationToken)
+        {
+            TableSnapshot snapshot = await _actor.GetSnapshotAsync(cancellationToken).ConfigureAwait(false);
+            RoundStateMachine round = _actor.GetRoundStateForHost();
+            RoundResult? result = _actor.GetRoundResult();
+            ConservationReport conservation = TilePositionMap.Validate(round.Tiles);
+            TableCheatLedgerSnapshot cheat = _actor.GetCheatLedgerForHost();
+
+            var usageByReason = new Dictionary<string, (int Count, int Spent)>(StringComparer.Ordinal);
+            for (int i = 0; i < cheat.Entries.Count; i++)
+            {
+                TableCheatLedgerEntryView entry = cheat.Entries[i];
+                if (entry.Amount >= 0 || string.IsNullOrEmpty(entry.Reason))
+                {
+                    continue;
+                }
+
+                usageByReason.TryGetValue(entry.Reason, out (int Count, int Spent) current);
+                usageByReason[entry.Reason] = (current.Count + 1, current.Spent - entry.Amount);
+            }
+
+            var usage = new List<LocalCheatUsage>(usageByReason.Count);
+            foreach (KeyValuePair<string, (int Count, int Spent)> entry in usageByReason)
+            {
+                usage.Add(new LocalCheatUsage(entry.Key, entry.Value.Count, entry.Value.Spent));
+            }
+
+            usage.Sort((left, right) => string.CompareOrdinal(left.Reason, right.Reason));
+
+            var errors = new List<string>(conservation.Errors.Count);
+            for (int i = 0; i < conservation.Errors.Count; i++)
+            {
+                errors.Add(conservation.Errors[i]);
+            }
+
+            return new LocalRoundSummary(
+                _options.RoomId,
+                round.RoundId,
+                snapshot.IsFinished,
+                snapshot.Phase.ToString(),
+                checked((long)snapshot.StateVersion.Value),
+                result == null ? string.Empty : result.Outcome.Kind.ToString(),
+                result == null ? -1 : result.Outcome.WinnerSeat,
+                result == null ? -1 : result.Outcome.LoserSeat,
+                result == null ? Array.Empty<long>() : result.FinalScores,
+                result == null ? 0 : result.RemainingRiichiSticks,
+                conservation.AssignedCount,
+                conservation.IsValid,
+                errors,
+                cheat.Balances,
+                usage);
+        }
+
         internal LocalTableStore StoreForTest => _store;
 
         internal TableStreamFrame? LastStreamFrameForTest => _sink?.LastFrame;

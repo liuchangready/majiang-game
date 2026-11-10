@@ -16,10 +16,13 @@ namespace Mahjong.Unity.UI
 
         private IAppNavigation? _navigation;
         private FocusRouter _focusRouter = new FocusRouter();
+        private Button? _recordsButton;
+        private ILocalRecordReplayController? _recordsPresenter;
 
-        public void Initialize(IAppNavigation navigation)
+        public void Initialize(IAppNavigation navigation, ILocalRecordReplayController? recordsPresenter = null)
         {
             _navigation = navigation;
+            _recordsPresenter = recordsPresenter;
         }
 
         private void Start()
@@ -35,8 +38,30 @@ namespace Mahjong.Unity.UI
                 _quitButton.onClick.AddListener(OnQuitClicked);
             }
 
+            if (_playButton != null)
+            {
+                _recordsButton = Instantiate(_playButton, _playButton.transform.parent);
+                _recordsButton.name = "MatchRecordsButton";
+                RectTransform rect = _recordsButton.GetComponent<RectTransform>();
+                RectTransform? quitRect = _quitButton != null ? _quitButton.GetComponent<RectTransform>() : null;
+                float recordsY = quitRect != null
+                    ? (_playButton.GetComponent<RectTransform>().anchoredPosition.y + quitRect.anchoredPosition.y) * 0.5f
+                    : _playButton.GetComponent<RectTransform>().anchoredPosition.y - 100;
+                float gap = 112;
+                rect.anchoredPosition = new Vector2(0, recordsY);
+                _playButton.GetComponent<RectTransform>().anchoredPosition = new Vector2(0, recordsY + gap);
+                if (quitRect != null) quitRect.anchoredPosition = new Vector2(0, recordsY - gap);
+                var label = _recordsButton.GetComponentInChildren<TextMeshProUGUI>();
+                if (label != null) label.text = "牌局记录";
+                if (_recordsButton.GetComponent<UiPointerLifecycleTrigger>() == null)
+                    _recordsButton.gameObject.AddComponent<UiPointerLifecycleTrigger>();
+                _recordsButton.onClick.RemoveAllListeners();
+                _recordsButton.onClick.AddListener(OnRecordsClicked);
+            }
+
             var selectables = new System.Collections.Generic.List<Selectable>();
             if (_playButton != null) selectables.Add(_playButton);
+            if (_recordsButton != null) selectables.Add(_recordsButton);
             if (_quitButton != null) selectables.Add(_quitButton);
             _focusRouter.RegisterSelectables(selectables);
 
@@ -60,6 +85,8 @@ namespace Mahjong.Unity.UI
                 return;
             }
 
+            if (_recordsPresenter?.IsOpen == true) return;
+
             if (Keyboard.current != null && (_quitModal == null || !_quitModal.IsOpen))
             {
                 var kb = Keyboard.current;
@@ -82,6 +109,7 @@ namespace Mahjong.Unity.UI
         {
             if (_playButton != null) _playButton.onClick.RemoveListener(OnPlayClicked);
             if (_quitButton != null) _quitButton.onClick.RemoveListener(OnQuitClicked);
+            if (_recordsButton != null) _recordsButton.onClick.RemoveListener(OnRecordsClicked);
         }
 
         public void OnPlayClicked()
@@ -130,6 +158,14 @@ namespace Mahjong.Unity.UI
             {
                 _navigation?.RequestQuit();
             }
+        }
+
+        private void OnRecordsClicked()
+        {
+            if (_quitModal != null && _quitModal.IsOpen) return;
+            if (_recordsPresenter?.IsOpen == true) return;
+            if (!UiInputLifecycle.Instance.ConsumeClickOrSubmit(_recordsButton != null ? _recordsButton.gameObject : null)) return;
+            _recordsPresenter?.Open();
         }
     }
 }

@@ -128,11 +128,14 @@ namespace Mahjong.LocalHost.Tests
             Assert.True(File.Exists(workerDll), "CrashWorker was not built: " + workerDll);
 
             string markerPath = Path.Combine(roomRoot, "force-marker.txt");
+            string outboxDirectory = Path.Combine(roomRoot, "outbox");
             ProcessStartInfo start = P41Harness.CreateWorkerStartInfo(
                 workerDll,
                 options.SaveDirectory,
                 options.RoomId,
-                markerPath);
+                markerPath,
+                "action-file-outbox-crash");
+            start.Arguments += " \"" + outboxDirectory + "\"";
             using Process process = Process.Start(start)!;
             using var waitCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             waitCts.CancelAfter(TimeSpan.FromSeconds(60));
@@ -140,12 +143,31 @@ namespace Mahjong.LocalHost.Tests
             Task<string> stderr = process.StandardError.ReadToEndAsync(waitCts.Token);
             try
             {
+                while (!File.Exists(markerPath))
+                {
+                    waitCts.Token.ThrowIfCancellationRequested();
+                    if (process.HasExited)
+                    {
+                        await Task.WhenAll(stdout, stderr);
+                        throw new InvalidOperationException(
+                            "CrashWorker exited before publishing its complete marker. exit=" +
+                            process.ExitCode + " stdout=" + stdout.Result + " stderr=" + stderr.Result);
+                    }
+
+                    await Task.Delay(25, waitCts.Token);
+                }
+
+                // Marker publication occurs only after the production LocalHost has
+                // committed the command. The worker has not pumped its receipt, so
+                // its pre-send FileOutboxStore entry remains unresolved.
+                Assert.True(process.Id > 0);
+                process.Kill(true);
                 await process.WaitForExitAsync(waitCts.Token);
                 await Task.WhenAll(stdout, stderr);
             }
             catch (OperationCanceledException)
             {
-                process.Kill(true);
+                if (!process.HasExited) process.Kill(true);
                 throw new TimeoutException("CrashWorker did not exit within 60s.");
             }
 
@@ -209,28 +231,18 @@ namespace Mahjong.LocalHost.Tests
                 ownerEpoch: null,
                 payloadSchemaVersion: CanonicalPayloadDigest.FormatVersion);
 
-            // Reconstruct the exact durable outbox entry that a killed process would
-            // leave behind. The canonical bytes come from the committed journal, not
-            // from a newly encoded fixture.
-            string outboxDirectory = Path.Combine(roomRoot, "outbox");
+            // Reopen the exact client file written by TableSession before SubmitAsync
+            // sent the action. The parent never manufactures a pending entry from the
+            // server marker/journal.
             var fileOutbox = new FileOutboxStore(outboxDirectory);
-            var ownerScope = new ContractRequestScope(
-                new RequestScopeId(scopeId),
-                account,
-                ProtocolRole.Player,
-                new RoomId(options.RoomId),
-                receipt.CreatedAtUtcMs,
-                receipt.ExpiresAtUtcMs);
-            var outboxEntry = new OutboxEntry(
-                command,
-                ownerScope,
-                new SessionId("force-killed-original-session"),
-                new RoomId(options.RoomId));
+            IReadOnlyList<OutboxEntry> unresolved = await fileOutbox.LoadUnresolvedAsync(ct);
+            OutboxEntry outboxEntry = Assert.Single(unresolved);
+            Assert.Equal(command.RequestId.Value, outboxEntry.RequestId.Value);
+            Assert.Equal(command.ScopeId!.Value, outboxEntry.ScopeId);
+            Assert.Equal(account, outboxEntry.OwnerScope.AccountId);
             Assert.Equal(
                 CanonicalPayloadDigest.Compute(payload).ToHex(),
                 outboxEntry.DigestSha256);
-            await fileOutbox.SaveAsync(outboxEntry, ct);
-            Assert.Single(await fileOutbox.LoadUnresolvedAsync(ct));
 
             SaveShape forceShape = ReadSaveShape(saveBytes);
             Assert.Equal(13, forceShape.HandCount);
@@ -392,6 +404,205 @@ namespace Mahjong.LocalHost.Tests
             {
                 await session.CloseAsync("TEST_DONE", CancellationToken.None);
                 await raw.CloseAsync(new TableChannelCloseReason("TEST_DONE", true), CancellationToken.None);
+            }
+        }
+
+        [Fact]
+        public async Task SharedFileOutboxKeepsPendingRequestOwnedByItsOriginalRoom()
+        {
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            using var bounded = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            bounded.CancelAfter(TimeSpan.FromSeconds(30));
+            ct = bounded.Token;
+            await using var originalHarness = new P41Harness();
+            await using var otherHarness = new P41Harness();
+            otherHarness.Options.RoomId = "room-other";
+            otherHarness.Options.SaveDirectory = Path.Combine(otherHarness.Root, "other-room-save");
+            originalHarness.Options.AutoPlay = false;
+            otherHarness.Options.AutoPlay = false;
+            string outboxPath = Path.Combine(originalHarness.Root, "shared-client-outbox");
+            var openedChannels = new List<ITableChannel>();
+            var openedSessions = new List<TableSession>();
+            try
+            {
+
+            ITableChannel originalChannel = await LocalTableHost.CreateChannelAsync(originalHarness.Options, ct);
+            openedChannels.Add(originalChannel);
+            await originalChannel.OpenAsync(
+                new TableChannelConnectRequest(
+                    LocalTableHost.IssueTicket(originalHarness.Options), "room-isolation", null), ct);
+            var originalRecording = new RecordingChannel(originalChannel);
+            var originalSession = new TableSession(originalRecording, new FileOutboxStore(outboxPath));
+            openedSessions.Add(originalSession);
+            await originalSession.OpenAsync(
+                new TableSessionOpenRequest(
+                    LocalTableHost.IssueTicket(originalHarness.Options), "room-isolation"), ct);
+            for (int i = 0; i < 50 && originalSession.State != TableConnectionState.Ready; i++)
+            {
+                await originalSession.PumpOnceAsync(ct);
+            }
+
+            Assert.Equal(TableConnectionState.Ready, originalSession.State);
+            PlayerSnapshot originalBaseline = originalSession.PlayerSnapshot!;
+            uint tile = originalBaseline.PrivateView.ClosedTiles[0];
+            string requestId = "room-owned-request-" + Guid.NewGuid().ToString("N");
+            BusinessPayload payload = CommandPayloadFactory.SubmitAction(
+                originalBaseline.RoundId,
+                "local-direct",
+                0UL,
+                ProtocolActionType.DiscardTile,
+                tileIds: new[] { tile });
+            var command = new ProtocolCommand(
+                CommandKind.SubmitAction,
+                payload,
+                new RequestId(requestId),
+                originalSession.Binding!.Scope.ScopeId,
+                new StateVersion(originalBaseline.StateVersion),
+                new RoundId(originalBaseline.RoundId),
+                decisionId: null,
+                controlEpoch: new ControlEpoch(0));
+            int sentBeforeAction = originalRecording.Sent.Count;
+            Assert.True((await originalSession.SubmitAsync(command, ct)).Sent);
+            Assert.Single(originalRecording.Sent.Skip(sentBeforeAction), f =>
+                f.MessageType == "Command" && f.RequestId == requestId);
+            Assert.Single(originalSession.PendingCommands);
+            OutboxEntry persisted = Assert.Single(
+                await new FileOutboxStore(outboxPath).LoadUnresolvedAsync(ct));
+            Assert.Equal(originalHarness.Options.RoomId, persisted.OwnerScope.RoomId.Value);
+            LocalTableRecoveryFacts originalCommitted = await CaptureFactsAsync(
+                originalHarness.Options.SaveDirectory,
+                ct);
+            Assert.True(
+                ulong.Parse(originalCommitted.EventSeq, CultureInfo.InvariantCulture) > originalBaseline.EventSeq);
+            await originalSession.CloseAsync("ROOM_SWITCH", CancellationToken.None);
+            await originalChannel.CloseAsync(
+                new TableChannelCloseReason("ROOM_SWITCH", true), CancellationToken.None);
+            openedSessions.Remove(originalSession);
+            openedChannels.Remove(originalChannel);
+
+            ITableChannel otherChannel = await LocalTableHost.CreateChannelAsync(otherHarness.Options, ct);
+            openedChannels.Add(otherChannel);
+            await otherChannel.OpenAsync(
+                new TableChannelConnectRequest(
+                    LocalTableHost.IssueTicket(otherHarness.Options), "room-isolation", null), ct);
+            LocalTableRecoveryFacts otherBefore = await CaptureFactsAsync(otherHarness.Options.SaveDirectory, ct);
+            var otherRecording = new RecordingChannel(otherChannel);
+            var otherSession = new TableSession(otherRecording, new FileOutboxStore(outboxPath));
+            openedSessions.Add(otherSession);
+            await otherSession.OpenAsync(
+                new TableSessionOpenRequest(
+                    LocalTableHost.IssueTicket(otherHarness.Options), "room-isolation"), ct);
+            for (int i = 0; i < 50 && otherSession.State != TableConnectionState.Ready; i++)
+            {
+                await otherSession.PumpOnceAsync(ct);
+            }
+
+            Assert.Equal(TableConnectionState.Ready, otherSession.State);
+            Assert.Single(otherSession.PendingCommands);
+            Assert.Equal(requestId, otherSession.PendingCommands.Single().RequestId);
+            using (var lookupTimeout = CancellationTokenSource.CreateLinkedTokenSource(ct))
+            {
+                lookupTimeout.CancelAfter(TimeSpan.FromSeconds(10));
+                try
+                {
+                    await otherSession.ReconcilePendingAsync(lookupTimeout.Token);
+                    for (int i = 0; i < 20 && otherSession.State == TableConnectionState.Ready; i++)
+                    {
+                        await otherSession.PumpOnceAsync(lookupTimeout.Token);
+                        PendingCommandSnapshot? lookupState = otherSession.PendingCommands.FirstOrDefault();
+                        if (lookupState?.LastLookup.HasValue == true) break;
+                    }
+                }
+                catch (Exception exception) when (
+                    exception is TableChannelClosedException ||
+                    exception is InvalidOperationException)
+                {
+                    // A foreign room may reject the old-scope lookup. Preserve the
+                    // unresolved file entry and prove the old room can still reconcile.
+                }
+            }
+
+            OutboxEntry foreignPending = Assert.Single(
+                await new FileOutboxStore(outboxPath).LoadUnresolvedAsync(ct));
+            Assert.Equal(persisted.Key, foreignPending.Key);
+            Assert.Equal(persisted.DigestSha256, foreignPending.DigestSha256);
+            Assert.DoesNotContain(otherRecording.Sent, f => f.MessageType == "Command");
+            FrameRecord foreignLookup = Assert.Single(otherRecording.Sent, f =>
+                f.MessageType == "ReceiptQuery" && f.RequestId == requestId);
+            Assert.Equal(persisted.ScopeId.Value, foreignLookup.ScopeId);
+            Assert.True(otherSession.PendingCommands.Single().LastLookup.HasValue);
+            Assert.Equal(ReceiptLookupStatus.NotFound, otherSession.PendingCommands.Single().LastLookup);
+            LocalTableRecoveryFacts otherAfter = await CaptureFactsAsync(otherHarness.Options.SaveDirectory, ct);
+            Assert.Equal(otherBefore.StateVersion, otherAfter.StateVersion);
+            Assert.Equal(otherBefore.EventSeq, otherAfter.EventSeq);
+            Assert.Equal(otherBefore.Ledger.EntriesSha256, otherAfter.Ledger.EntriesSha256);
+            Assert.Equal(otherBefore.Physical.TilesSha256, otherAfter.Physical.TilesSha256);
+            LocalTableRuntime? otherRuntime = (otherChannel as LocalTableChannel)?.RuntimeForMatch;
+            Assert.NotNull(otherRuntime);
+            Assert.Null(await otherRuntime!.StoreForTest.TryGetAsync(
+                persisted.Key.AccountId,
+                persisted.ScopeId,
+                persisted.RequestId,
+                ct));
+            await otherSession.CloseAsync("ROOM_SWITCH_BACK", CancellationToken.None);
+            await otherChannel.CloseAsync(
+                new TableChannelCloseReason("ROOM_SWITCH_BACK", true), CancellationToken.None);
+            openedSessions.Remove(otherSession);
+            openedChannels.Remove(otherChannel);
+
+            ITableChannel resumedChannel = await LocalTableHost.CreateChannelAsync(originalHarness.Options, ct);
+            openedChannels.Add(resumedChannel);
+            await resumedChannel.OpenAsync(
+                new TableChannelConnectRequest(
+                    LocalTableHost.IssueTicket(originalHarness.Options), "room-isolation", null), ct);
+            var resumedRecording = new RecordingChannel(resumedChannel);
+            var resumedSession = new TableSession(resumedRecording, new FileOutboxStore(outboxPath));
+            openedSessions.Add(resumedSession);
+            await resumedSession.OpenAsync(
+                new TableSessionOpenRequest(
+                    LocalTableHost.IssueTicket(originalHarness.Options), "room-isolation"), ct);
+            for (int i = 0; i < 50 && resumedSession.State != TableConnectionState.Ready; i++)
+            {
+                await resumedSession.PumpOnceAsync(ct);
+            }
+
+            Assert.Single(resumedSession.PendingCommands);
+            await resumedSession.ReconcilePendingAsync(ct);
+            for (int i = 0; i < 100 && resumedSession.PendingCommands.Count > 0; i++)
+            {
+                await resumedSession.PumpOnceAsync(ct);
+            }
+
+            Assert.Empty(resumedSession.PendingCommands);
+            Assert.DoesNotContain(resumedRecording.Sent, f => f.MessageType == "Command");
+            FrameRecord originalLookup = Assert.Single(resumedRecording.Sent, f =>
+                f.MessageType == "ReceiptQuery" && f.RequestId == requestId);
+            Assert.Equal(persisted.ScopeId.Value, originalLookup.ScopeId);
+            Assert.Empty(await new FileOutboxStore(outboxPath).LoadUnresolvedAsync(ct));
+            LocalTableRecoveryFacts originalAfter = await CaptureFactsAsync(
+                originalHarness.Options.SaveDirectory,
+                ct);
+            Assert.Equal(originalCommitted.StateVersion, originalAfter.StateVersion);
+            Assert.Equal(originalCommitted.EventSeq, originalAfter.EventSeq);
+            Assert.Equal(originalCommitted.Physical.TilesSha256, originalAfter.Physical.TilesSha256);
+            await resumedSession.CloseAsync("ROOM_ISOLATION_DONE", CancellationToken.None);
+            await resumedChannel.CloseAsync(
+                new TableChannelCloseReason("ROOM_ISOLATION_DONE", true), CancellationToken.None);
+            openedSessions.Remove(resumedSession);
+            openedChannels.Remove(resumedChannel);
+            }
+            finally
+            {
+                for (int i = openedSessions.Count - 1; i >= 0; i--)
+                {
+                    await openedSessions[i].CloseAsync("TEST_CLEANUP", CancellationToken.None);
+                }
+
+                for (int i = openedChannels.Count - 1; i >= 0; i--)
+                {
+                    await openedChannels[i].CloseAsync(
+                        new TableChannelCloseReason("TEST_CLEANUP", true), CancellationToken.None);
+                }
             }
         }
 

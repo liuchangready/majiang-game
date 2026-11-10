@@ -176,6 +176,57 @@ namespace Mahjong.Domain.Tests
         }
 
         [Fact]
+        public void PauseResumeAndControllerReplacementKeepOldCallbackAndDecisionStale()
+        {
+            var clock = new DecisionClock();
+            clock.BeginRound("r1", 0L);
+            var control = new ControlRegistry();
+            var oldKey = new DecisionKey("r1", 1, "turn");
+            var newKey = new DecisionKey("r1", 1, "turn-reclaimed");
+            var pass = new LegalActionOption(LegalActionKind.Pass, 1);
+            DecisionTiming original = clock.Open(oldKey, 0L);
+            var arbiter = new DeadlineArbiter(clock, control);
+
+            clock.Pause(5000L);
+            Assert.True(clock.Rekey(oldKey, newKey));
+            control.SetController(1, SeatControllerKind.LocalHuman);
+            control.SetController(1, SeatControllerKind.Computer);
+            long currentEpoch = control.GetEpoch(1);
+            Assert.True(currentEpoch > 0L);
+            clock.Resume(50000L);
+            var pending = new PendingDecision(newKey, 0L, new[] { pass });
+
+            DecisionTiming? rekeyed = clock.Timing(1);
+            Assert.NotNull(rekeyed);
+            Assert.Equal(newKey, rekeyed!.Key);
+            Assert.Equal(68000L, rekeyed.DeadlineMillis);
+            Assert.Equal(20000L, clock.RemainingReserve(1));
+
+            TickResult stale = arbiter.ProcessTick(new TickInput(
+                "r1",
+                50000L,
+                new[] { pending },
+                new[] { new AiDecisionSubmission(newKey, 0L, pass, 50000L) }));
+
+            Assert.Single(stale.Entries);
+            Assert.Equal(TickEntryKind.AiRejected, stale.Entries[0].Kind);
+            Assert.Equal(TickRejectionCode.StaleEpoch, stale.Entries[0].RejectionCode);
+            Assert.Equal(currentEpoch, control.GetEpoch(1));
+            DecisionTiming? stillOpen = clock.Timing(1);
+            Assert.NotNull(stillOpen);
+            Assert.Equal(newKey, stillOpen!.Key);
+            Assert.Equal(68000L, stillOpen.DeadlineMillis);
+            Assert.Equal(20000L, clock.RemainingReserve(1));
+
+            Assert.False(clock.Expire(oldKey, original.Generation, 68000L));
+            Assert.NotNull(clock.Timing(1));
+            Assert.Equal(20000L, clock.RemainingReserve(1));
+            Assert.True(clock.Expire(newKey, rekeyed!.Generation, 68000L));
+            Assert.Null(clock.Timing(1));
+            Assert.Equal(0L, clock.RemainingReserve(1));
+        }
+
+        [Fact]
         public void SessionBankSettlesUnfinishedDecisionBeforeAnotherDeal()
         {
             var clock = new DecisionClock(new DecisionClockConfig(reserveScope: ReserveScope.Session));

@@ -61,7 +61,7 @@ namespace Mahjong.LocalHost.CrashWorker
                 OwnerInstanceId = "crash-owner",
                 AutoPlay = false
             };
-            if (args.Length >= 6)
+            if (args.Length >= 6 && mode != "action-file-outbox-crash")
             {
                 options.Environment = new LocalHostEnvironment
                 {
@@ -1480,7 +1480,10 @@ namespace Mahjong.LocalHost.CrashWorker
             ITableChannel channel = await LocalTableHost.CreateChannelAsync(options);
             string channelTicket = LocalTableHost.IssueTicket(options);
             await channel.OpenAsync(new TableChannelConnectRequest(channelTicket, "crash-worker", null), CancellationToken.None);
-            var session = new TableSession(channel, new InMemoryOutboxStore());
+            IOutboxStore actionOutbox = mode == "action-file-outbox-crash"
+                ? new FileOutboxStore(args.Length >= 5 ? args[4] : throw new ArgumentException("action-file-outbox-crash requires <outboxPath>"))
+                : new InMemoryOutboxStore();
+            var session = new TableSession(channel, actionOutbox);
             string sessionTicket = LocalTableHost.IssueTicket(options);
             await session.OpenAsync(new TableSessionOpenRequest(sessionTicket, "crash-worker"), CancellationToken.None);
             for (int i = 0; i < 50 && session.State != TableConnectionState.Ready; i++)
@@ -1517,30 +1520,54 @@ namespace Mahjong.LocalHost.CrashWorker
                 return 4;
             }
 
-            // Wait until the commit is observable; then die without any dispose/close path.
-            for (int i = 0; i < 200 && session.PlayerSnapshot!.StateVersion == baseline.StateVersion; i++)
+            // In the file-outbox crash mode, TableSession has already durably written
+            // the original request before SubmitAsync sends it. Observe the production
+            // runtime's durable receipt without pumping the response back to the client.
+            // The parent kills this worker after the marker appears, leaving that exact
+            // FileOutboxStore entry unresolved on disk.
+            if (mode == "action-file-outbox-crash")
             {
-                await Task.Delay(10);
-                if (i % 2 == 0 && session.State == TableConnectionState.Ready)
+                bool committed = false;
+                for (int i = 0; i < 500 && !committed; i++)
                 {
-                    try
+                    var localChannelForReceipt = (LocalTableChannel)channel;
+                    TableDurableReceipt? durableReceipt = await localChannelForReceipt.RuntimeForMatch!.StoreForTest.TryGetAsync(
+                        "local-" + roomId + "-seat0",
+                        session.Binding!.Scope.ScopeId,
+                        command.RequestId,
+                        CancellationToken.None);
+                    committed = durableReceipt != null;
+                    if (!committed) await Task.Delay(10);
+                }
+
+                if (!committed)
+                {
+                    Console.Error.WriteLine("worker durable commit not observed");
+                    return 5;
+                }
+            }
+            else
+            {
+                // Wait until the commit is observable; then continue the legacy
+                // acknowledged-crash path unchanged.
+                for (int i = 0; i < 200 && session.PlayerSnapshot!.StateVersion == baseline.StateVersion; i++)
+                {
+                    await Task.Delay(10);
+                    if (i % 2 == 0 && session.State == TableConnectionState.Ready)
                     {
-                        await session.PumpOnceAsync(CancellationToken.None);
+                        try { await session.PumpOnceAsync(CancellationToken.None); }
+                        catch { break; }
                     }
-                    catch
-                    {
-                        break;
-                    }
+                }
+
+                if (session.PlayerSnapshot!.StateVersion == baseline.StateVersion)
+                {
+                    Console.Error.WriteLine("worker commit not observed");
+                    return 5;
                 }
             }
 
-            if (session.PlayerSnapshot!.StateVersion == baseline.StateVersion)
-            {
-                Console.Error.WriteLine("worker commit not observed");
-                return 5;
-            }
-
-            for (int i = 0; i < 500 && session.PendingCommands.Count > 0; i++)
+            for (int i = 0; mode != "action-file-outbox-crash" && i < 500 && session.PendingCommands.Count > 0; i++)
             {
                 if (session.State == TableConnectionState.Ready)
                 {
@@ -1612,7 +1639,12 @@ namespace Mahjong.LocalHost.CrashWorker
             long b3 = cheatCp?.Balances.Count > 3 ? cheatCp.Balances[3] : 0L;
 
             TableStateRow? authorState = store != null ? await store.LoadStateAsync(roomId, CancellationToken.None) : null;
-            ulong authorVersion = authorState?.StateVersion.Value ?? session.PlayerSnapshot.StateVersion;
+            if (authorState == null)
+            {
+                throw new InvalidDataException("Committed action has no durable author state.");
+            }
+
+            ulong authorVersion = authorState.StateVersion.Value;
 
             string rKey = "local-" + roomId + "-seat0\u001f" + session.Binding!.Scope.ScopeId.Value + "\u001fcrash-request-1";
             LocalDurableOperation? lastOp = save?.Operations.LastOrDefault(o => o.Receipt != null && o.Receipt.RequestId.Value == "crash-request-1");
@@ -1646,6 +1678,21 @@ namespace Mahjong.LocalHost.CrashWorker
                     TilePosition pos = tiles[i];
                     lines.Add($"{i}:{(int)pos.Zone}:{pos.Index}");
                 }
+            }
+
+            if (mode == "action-file-outbox-crash")
+            {
+                // Publish a complete marker atomically; the parent uses its presence
+                // as the signal that the durable receipt and tile facts are ready.
+                string completeMarker = marker + ".complete";
+                File.WriteAllLines(completeMarker, lines);
+                File.Move(completeMarker, marker);
+
+                // Parent owns the kill. The wait is bounded so a broken parent cannot
+                // leave a permanent writer process behind.
+                await Task.Delay(TimeSpan.FromSeconds(90));
+                Console.Error.WriteLine("parent did not terminate action-file-outbox-crash worker after marker publication");
+                return 8;
             }
 
             File.WriteAllLines(marker, lines);

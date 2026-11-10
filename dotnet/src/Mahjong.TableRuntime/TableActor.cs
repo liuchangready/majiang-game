@@ -84,6 +84,9 @@ namespace Mahjong.TableRuntime
         private readonly CheatEconomyConfig? _cheatEconomy;
         private readonly SleeveBloomConfig? _sleeveConfig;
 
+        /// <summary>Host-only API marker for an AI cheat journal entry (no client receipt).</summary>
+        internal const string AiCheatApi = "INTERNAL_AI_CHEAT";
+
         private readonly Dictionary<string, CheatRequestBinding> _cheatRequestBindings =
             new Dictionary<string, CheatRequestBinding>(StringComparer.Ordinal);
         private StateVersion _stateVersion;
@@ -235,6 +238,76 @@ namespace Mahjong.TableRuntime
         public Mahjong.Domain.RoundResult? GetRoundResult()
         {
             return _round.GetResult();
+        }
+
+        /// <summary>
+        /// Host-only count of AI-paid cheat points already spent in the current round. It is
+        /// derived from the authoritative ledger and the AI request-id prefix, so a recreated
+        /// local driver can restore the same round's budget instead of resetting it.
+        /// </summary>
+        public int GetAiCheatSpentThisRound(int seat)
+        {
+            CheckSeat(seat);
+            if (_cheat == null)
+            {
+                return 0;
+            }
+
+            string marker = "-ai-" + _round.RoundId + "-";
+            int spent = 0;
+            for (int i = 0; i < _cheat.Ledger.Entries.Count; i++)
+            {
+                CheatLedgerEntry entry = _cheat.Ledger.Entries[i];
+                if (entry.Seat == seat &&
+                    entry.Amount < 0 &&
+                    entry.EntryId.IndexOf(marker, StringComparison.Ordinal) >= 0)
+                {
+                    spent = checked(spent - entry.Amount);
+                }
+            }
+
+            return spent;
+        }
+
+        /// <summary>
+        /// Host-only cheat accounting for validation evidence. It contains balances, entries
+        /// (amount/reason) and mark-group counts; no wall order or tile identities leave here.
+        /// </summary>
+        public TableCheatLedgerSnapshot GetCheatLedgerForHost()
+        {
+            if (_cheat == null)
+            {
+                return new TableCheatLedgerSnapshot(
+                    new[] { 0, 0, 0, 0 },
+                    Array.Empty<TableCheatLedgerEntryView>(),
+                    new[] { 0, 0, 0, 0 });
+            }
+
+            var balances = new int[4];
+            for (int seat = 0; seat < 4; seat++)
+            {
+                balances[seat] = _cheat.Ledger.BalanceOf(seat);
+            }
+
+            var entries = new List<TableCheatLedgerEntryView>(_cheat.Ledger.Entries.Count);
+            for (int i = 0; i < _cheat.Ledger.Entries.Count; i++)
+            {
+                CheatLedgerEntry entry = _cheat.Ledger.Entries[i];
+                entries.Add(new TableCheatLedgerEntryView(
+                    entry.EntryId,
+                    entry.Seat,
+                    entry.Amount,
+                    entry.BalanceAfter,
+                    entry.Reason));
+            }
+
+            var groups = new int[4];
+            for (int seat = 0; seat < 4; seat++)
+            {
+                groups[seat] = _cheat.TileMarks.GroupsForSeat(seat).Count;
+            }
+
+            return new TableCheatLedgerSnapshot(balances, entries, groups);
         }
 
         /// <summary>
@@ -584,6 +657,57 @@ namespace Mahjong.TableRuntime
 
             EnsurePump();
             return new ValueTask<TableAiObservationResult>(message.Completion.Task);
+        }
+
+        /// <summary>
+        /// Captures the AI cheat window inside the same serial authority queue as ordinary
+        /// decisions. Every returned option is backed by a command built from this snapshot;
+        /// the AI never receives the round, wall, hand or command itself.
+        /// </summary>
+        public ValueTask<TableAiCheatCaptureResult> CaptureAiCheatOpportunityAsync(
+            int seat,
+            bool allowTakeoverPaidCheats = false,
+            CancellationToken cancellationToken = default)
+        {
+            CheckSeat(seat);
+            cancellationToken.ThrowIfCancellationRequested();
+            var message = new AiCheatCaptureMailboxMessage(seat, allowTakeoverPaidCheats);
+            TableMailboxEnqueueStatus enqueue = _mailbox.TryEnqueueControl(message);
+            if (enqueue != TableMailboxEnqueueStatus.Enqueued)
+            {
+                return new ValueTask<TableAiCheatCaptureResult>(AiCheatAdmissionFailure(enqueue));
+            }
+
+            EnsurePump();
+            return new ValueTask<TableAiCheatCaptureResult>(message.Completion.Task);
+        }
+
+        /// <summary>
+        /// Re-enters the serial queue with one prepared AI cheat candidate. The plan's snapshot
+        /// identity is checked again before the shared <c>RoundCheatTransition.Prepare</c> and
+        /// commit path runs; a stale, foreign, unauthorized or unaffordable plan is rejected
+        /// without a fee, ledger entry or physical move.
+        /// </summary>
+        public ValueTask<TableOperationResult> SubmitAiCheatAsync(
+            TableAiCheatPlan plan,
+            bool allowTakeoverPaidCheats = false,
+            CancellationToken cancellationToken = default)
+        {
+            if (plan == null)
+            {
+                throw new ArgumentNullException(nameof(plan));
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            var message = new AiCheatSubmitMailboxMessage(plan, allowTakeoverPaidCheats);
+            TableMailboxEnqueueStatus enqueue = _mailbox.TryEnqueueControl(message);
+            if (enqueue != TableMailboxEnqueueStatus.Enqueued)
+            {
+                return new ValueTask<TableOperationResult>(AdmissionFailure(enqueue));
+            }
+
+            EnsurePump();
+            return new ValueTask<TableOperationResult>(message.Completion.Task);
         }
 
         /// <summary>
@@ -1030,6 +1154,17 @@ namespace Mahjong.TableRuntime
                         break;
                     case AiObservationMailboxMessage aiObservation:
                         aiObservation.Completion.TrySetResult(ProcessAiObservation(aiObservation.Seat));
+                        break;
+                    case AiCheatCaptureMailboxMessage aiCheatCapture:
+                        aiCheatCapture.Completion.TrySetResult(ProcessAiCheatCapture(
+                            aiCheatCapture.Seat,
+                            aiCheatCapture.AllowTakeoverPaidCheats));
+                        break;
+                    case AiCheatSubmitMailboxMessage aiCheatSubmit:
+                        aiCheatSubmit.Completion.TrySetResult(
+                            await ProcessAiCheatSubmitAsync(
+                                aiCheatSubmit.Plan,
+                                aiCheatSubmit.AllowTakeoverPaidCheats).ConfigureAwait(false));
                         break;
                     case ControlSnapshotMailboxMessage controlSnapshot:
                         controlSnapshot.Completion.TrySetResult(BuildControlSnapshot());
@@ -2302,6 +2437,12 @@ namespace Mahjong.TableRuntime
             action == RoundCheatAction.SubmitSleeveBloomOffTurnChoice ||
             action == RoundCheatAction.SubmitSleeveBloomChoice ||
             action == RoundCheatAction.SubmitBeamSwapChoice;
+
+        private static bool IsPaidAiCheatAction(RoundCheatAction action) =>
+            action == RoundCheatAction.SubmitTileMark ||
+            action == RoundCheatAction.SubmitSleeveBloom ||
+            action == RoundCheatAction.SubmitSleeveBloomOffTurn ||
+            action == RoundCheatAction.SubmitBeamSwap;
 
         internal static bool ShouldDeliverDeferredDraw(RoundChange change)
         {
@@ -4170,34 +4311,16 @@ namespace Mahjong.TableRuntime
             int journalSchema;
             if (roundEnvelope != null || cheatEnvelope != null)
             {
-                RequestScopeId requestScope = roundEnvelope != null ? roundEnvelope.ScopeId!.Value : cheatEnvelope!.ScopeId!.Value;
-                string requestApi = roundEnvelope != null ? roundEnvelope.Api! : cheatEnvelope!.Api!;
-                TablePayloadSha256 requestDigest = roundEnvelope != null
-                    ? roundEnvelope.PayloadSha256!.Value
-                    : cheatEnvelope!.PayloadSha256!.Value;
-                RequestId requestRequestId = roundEnvelope != null ? roundEnvelope.RequestId : cheatEnvelope!.RequestId;
-                TableScopeLookup lookup = await durable.Scopes
-                    .LookupAsync(requestScope, CancellationToken.None)
-                    .ConfigureAwait(false);
-                if (!lookup.Found || lookup.Scope == null)
+                bool internalAiCheat = cheatEnvelope != null &&
+                    string.Equals(cheatEnvelope.Api, AiCheatApi, StringComparison.Ordinal);
+                if (internalAiCheat)
                 {
-                    return TableOperationResult.Failed(
-                        evaluated,
-                        ProtocolErrorCode.Unauthenticated,
-                        "The host-issued scope disappeared before cheat commit.");
-                }
-
-                accountId = lookup.Scope.AccountId;
-                scopeId = requestScope;
-                api = requestApi;
-                digest = requestDigest;
-                if (roundEnvelope != null)
-                {
-                    commandPayload = RoundCommandCodec.Encode(roundCommand!);
-                    journalSchema = RoundCommandCodec.FormatVersion;
-                }
-                else
-                {
+                    // Host-generated AI cheat: there is no client scope or durable receipt to
+                    // look up. The command still travels through the same journal, commit,
+                    // recovery and Domain validation path.
+                    accountId = "system";
+                    scopeId = cheatEnvelope!.ScopeId!.Value;
+                    api = cheatEnvelope.Api!;
                     commandPayload = TableCheatCommandCodec.Encode(new RoundCheatJournal(
                         cheatCommand!,
                         context.TurnNumber,
@@ -4206,20 +4329,61 @@ namespace Mahjong.TableRuntime
                         context.LastDrawKind,
                         context.BootId));
                     journalSchema = 2;
+                    digest = TablePayloadSha256.Compute(commandPayload);
                 }
+                else
+                {
+                    RequestScopeId requestScope = roundEnvelope != null ? roundEnvelope.ScopeId!.Value : cheatEnvelope!.ScopeId!.Value;
+                    string requestApi = roundEnvelope != null ? roundEnvelope.Api! : cheatEnvelope!.Api!;
+                    TablePayloadSha256 requestDigest = roundEnvelope != null
+                        ? roundEnvelope.PayloadSha256!.Value
+                        : cheatEnvelope!.PayloadSha256!.Value;
+                    RequestId requestRequestId = roundEnvelope != null ? roundEnvelope.RequestId : cheatEnvelope!.RequestId;
+                    TableScopeLookup lookup = await durable.Scopes
+                        .LookupAsync(requestScope, CancellationToken.None)
+                        .ConfigureAwait(false);
+                    if (!lookup.Found || lookup.Scope == null)
+                    {
+                        return TableOperationResult.Failed(
+                            evaluated,
+                            ProtocolErrorCode.Unauthenticated,
+                            "The host-issued scope disappeared before cheat commit.");
+                    }
 
-                durableReceipt = new TableDurableReceipt(
-                    accountId,
-                    scopeId,
-                    requestRequestId,
-                    api,
-                    digest,
-                    change.Accepted
-                        ? Receipt.Applied(evaluated, commandVersion, lastEventSeq, null, createdUtc == 0 ? (ulong?)null : createdUtc)
-                        : Receipt.Rejected(evaluated, reasonCode),
-                    string.Empty,
-                    createdUtc,
-                    ReceiptExpiry(createdUtc, durable));
+                    accountId = lookup.Scope.AccountId;
+                    scopeId = requestScope;
+                    api = requestApi;
+                    digest = requestDigest;
+                    if (roundEnvelope != null)
+                    {
+                        commandPayload = RoundCommandCodec.Encode(roundCommand!);
+                        journalSchema = RoundCommandCodec.FormatVersion;
+                    }
+                    else
+                    {
+                        commandPayload = TableCheatCommandCodec.Encode(new RoundCheatJournal(
+                            cheatCommand!,
+                            context.TurnNumber,
+                            context.NowMillis,
+                            context.RoundOrdinal,
+                            context.LastDrawKind,
+                            context.BootId));
+                        journalSchema = 2;
+                    }
+
+                    durableReceipt = new TableDurableReceipt(
+                        accountId,
+                        scopeId,
+                        requestRequestId,
+                        api,
+                        digest,
+                        change.Accepted
+                            ? Receipt.Applied(evaluated, commandVersion, lastEventSeq, null, createdUtc == 0 ? (ulong?)null : createdUtc)
+                            : Receipt.Rejected(evaluated, reasonCode),
+                        string.Empty,
+                        createdUtc,
+                        ReceiptExpiry(createdUtc, durable));
+                }
             }
             else
             {
@@ -4306,7 +4470,9 @@ namespace Mahjong.TableRuntime
                 _ownerEpoch,
                 evaluated,
                 durableReceipt,
-                internalCommand: roundEnvelope == null && cheatEnvelope == null,
+                internalCommand: (roundEnvelope == null && cheatEnvelope == null) ||
+                                 (cheatEnvelope != null &&
+                                  string.Equals(cheatEnvelope.Api, AiCheatApi, StringComparison.Ordinal)),
                 events: records,
                 commandJournal: journal,
                 outbox: outbox,
@@ -6546,7 +6712,8 @@ namespace Mahjong.TableRuntime
                     BuildVisibleDiscards(),
                     _round.Tiles.DoraIndicators,
                     _round.Scores,
-                    pending.Candidates);
+                    pending.Candidates,
+                    BuildBasicContext(seat, pending.Candidates));
                 if (_recoveryGeneration > 0)
                 {
                     _aiObservationGenerations.Add(observation, new ObservationGeneration(_recoveryGeneration));
@@ -6565,6 +6732,498 @@ namespace Mahjong.TableRuntime
                     exception.GetType().Name + ": " + exception.Message);
             }
         }
+
+        private BasicAiContext BuildBasicContext(int seat, IReadOnlyList<LegalActionOption> candidates)
+        {
+            var facts = new List<BasicCandidateFacts>();
+            for (int i = 0; i < candidates.Count; i++)
+            {
+                LegalActionOption candidate = candidates[i];
+                if (candidate.Kind == LegalActionKind.Kan)
+                {
+                    BasicKanKind kind = BasicKanKind.Open;
+                    string optionId = candidate.OptionId ?? string.Empty;
+                    if (optionId.StartsWith("closed-kan-", StringComparison.Ordinal))
+                    {
+                        kind = BasicKanKind.Closed;
+                    }
+                    else if (optionId.StartsWith("added-kan-", StringComparison.Ordinal))
+                    {
+                        kind = BasicKanKind.Added;
+                    }
+
+                    facts.Add(new BasicCandidateFacts(candidate, kanKind: kind));
+                }
+                else if (candidate.Kind == LegalActionKind.Other)
+                {
+                    // V5 has no separate abortive-draw candidate kind. The local candidate
+                    // provider never emits an abortive Other; classify it explicitly as not one
+                    // rather than letting the strategy guess.
+                    facts.Add(new BasicCandidateFacts(candidate, abortiveDraw: null));
+                }
+            }
+
+            TileId? lastDiscard = null;
+            for (int i = _round.Events.Count - 1; i >= 0; i--)
+            {
+                RoundEvent evt = _round.Events[i];
+                if (evt.Type == RoundEventType.TileDiscarded && evt.Tile.HasValue)
+                {
+                    lastDiscard = evt.Tile.Value;
+                    break;
+                }
+            }
+
+            return new BasicAiContext(seat, _round.IsRiichi(seat), lastDiscard, facts);
+        }
+
+        private TableAiCheatCaptureResult ProcessAiCheatCapture(int seat, bool allowTakeoverPaidCheats)
+        {
+            TableOperationResult? guard = GuardServing();
+            if (guard != null)
+            {
+                return AiCheatRejected(guard.ReasonCode, guard.Detail);
+            }
+
+            if (!TryReadClock(out long now, out _, out string clockFailure))
+            {
+                return AiCheatFailed(clockFailure, "The monotonic clock is not safe for AI cheat capture.");
+            }
+
+            if (_round.IsFinished)
+            {
+                return AiCheatRejected(
+                    TableRuntimeReasonCode.StaleDecision,
+                    "The round is already terminal.");
+            }
+
+            if (!_control.GetState(seat).IsAutomated)
+            {
+                return AiCheatRejected(
+                    TableRuntimeReasonCode.SeatNotAutomated,
+                    "The seat is not under automated control.");
+            }
+
+            if (_cheat == null || _cheatEconomy == null || _sleeveConfig == null)
+            {
+                return AiCheatRejected(
+                    TableRuntimeReasonCode.CheatNotConfigured,
+                    "No authoritative cheat aggregate/economy/sleeve configuration is wired into this actor.");
+            }
+
+            var plans = new List<TableAiCheatPlan>();
+            bool offerChoice = false;
+            CheatState cheat = _cheat;
+            SleeveBloomOffer? immediate = cheat.SleeveBloom.ImmediateOffer;
+            if (immediate != null && immediate.Seat == seat)
+            {
+                offerChoice = true;
+                long controlEpochForOffer = _control.GetState(seat).ControlEpoch;
+                plans.Add(AiCheatPlan(
+                    seat,
+                    "sleeve-first",
+                    "sleeve_bloom",
+                    0,
+                    true,
+                    true,
+                    RoundCheatAction.SubmitSleeveBloomChoice,
+                    RoundCheatPayload.SleeveBloomChoice(immediate.OfferId, SleeveBloomKeep.First),
+                    controlEpochForOffer));
+                plans.Add(AiCheatPlan(
+                    seat,
+                    "sleeve-second",
+                    "sleeve_bloom",
+                    0,
+                    false,
+                    true,
+                    RoundCheatAction.SubmitSleeveBloomChoice,
+                    RoundCheatPayload.SleeveBloomChoice(immediate.OfferId, SleeveBloomKeep.Second),
+                    controlEpochForOffer));
+            }
+            else
+            {
+                // Off-turn sleeve bloom activation is intentionally not offered. Its deferred
+                // delivery journal is a separate host path (the actor's internal discard
+                // delivery) and is out of scope for this AI feature; immediate sleeve bloom,
+                // tile mark and beam swap remain available.
+            }
+
+            BeamSwapOffer? beam = cheat.BeamSwap.Offer;
+            if (!offerChoice && beam != null && beam.Seat == seat)
+            {
+                offerChoice = true;
+                long controlEpochForOffer = _control.GetState(seat).ControlEpoch;
+                plans.Add(AiCheatPlan(
+                    seat,
+                    "beam-keep",
+                    "beam_swap",
+                    0,
+                    true,
+                    true,
+                    RoundCheatAction.SubmitBeamSwapChoice,
+                    RoundCheatPayload.BeamSwapChoice(beam.OfferId, BeamSwapAction.KeepOriginal, null, null),
+                    controlEpochForOffer));
+                if (beam.EligibleHandTileIds.Count > 0)
+                {
+                    TileId handTile = beam.EligibleHandTileIds[0];
+                    int swapCount = Math.Min(beam.Candidates.Count, 8);
+                    for (int i = 0; i < swapCount; i++)
+                    {
+                        BeamSwapCandidate candidate = beam.Candidates[i];
+                        plans.Add(AiCheatPlan(
+                            seat,
+                            "beam-swap-" + i.ToString(CultureInfo.InvariantCulture),
+                            "beam_swap",
+                            0,
+                            false,
+                            true,
+                            RoundCheatAction.SubmitBeamSwapChoice,
+                            RoundCheatPayload.BeamSwapChoice(beam.OfferId, BeamSwapAction.Swap, handTile, candidate.Slot),
+                            controlEpochForOffer));
+                    }
+                }
+            }
+
+            bool takeoverSeat = _control.GetState(seat).Kind == SeatControllerKind.Takeover;
+            bool allowPaidInitiation = !takeoverSeat || allowTakeoverPaidCheats;
+            if (!offerChoice && allowPaidInitiation)
+            {
+                int points = cheat.Ledger.BalanceOf(seat);
+                int turnNumber = CountDrawTurns(_round);
+                bool currentSeat = _round.CurrentSeat == seat;
+                bool responseOpen = _round.Window != null;
+                bool riichi = _round.IsRiichi(seat);
+                DrawnTileEvidence? drawn = _round.Tiles.DrawnTile;
+                bool drawnInHand = drawn.HasValue &&
+                    drawn.Value.Seat == seat &&
+                    _round.Tiles.PositionOf(drawn.Value.Tile).Zone == TileZone.Hand &&
+                    _round.Tiles.PositionOf(drawn.Value.Tile).Seat == seat;
+                SleeveBloomDrawKind drawKind = DrawKindOf(_round.Tiles);
+                bool noSleeveOffer = cheat.SleeveBloom.ImmediateOffer == null &&
+                                     cheat.SleeveBloom.OffTurnOfferFor(seat) == null &&
+                                     cheat.SleeveBloom.ReservationFor(seat) == null;
+                bool noBeamOffer = cheat.BeamSwap.Offer == null;
+                bool trickAlreadyUsed = cheat.SleeveBloom.UsedOnTurn == turnNumber ||
+                                        cheat.BeamSwap.UsedOnTurn == turnNumber;
+
+                if (currentSeat &&
+                    !responseOpen &&
+                    (_round.Phase == RoundPhase.CheatWindow || _round.Phase == RoundPhase.Discard) &&
+                    !riichi &&
+                    noSleeveOffer &&
+                    noBeamOffer &&
+                    _cheatEconomy.TryGetCost(CheatEconomyConfig.TileMarkCostKey, out int markCost) &&
+                    markCost > 0 &&
+                    points >= markCost &&
+                    cheat.TileMarks.GroupsForSeat(seat).Count < 3)
+                {
+                    var marked = new HashSet<int>();
+                    IReadOnlyList<TileId> markedTiles = cheat.TileMarks.MarkedTilesForSeat(seat);
+                    for (int i = 0; i < markedTiles.Count; i++)
+                    {
+                        marked.Add(markedTiles[i].Value);
+                    }
+
+                    if (marked.Count <= 8)
+                    {
+                        IReadOnlyList<TileId> hand = _round.Tiles.TilesInZone(TileZone.Hand, seat);
+                        var markTiles = new List<TileId>(4);
+                        for (int i = 0; i < hand.Count && markTiles.Count < 4; i++)
+                        {
+                            if (!marked.Contains(hand[i].Value))
+                            {
+                                markTiles.Add(hand[i]);
+                            }
+                        }
+
+                        if (markTiles.Count == 4)
+                        {
+                            plans.Add(AiCheatPlan(
+                                seat,
+                                "tile-mark",
+                                "tile_mark",
+                                markCost,
+                                false,
+                                false,
+                                RoundCheatAction.SubmitTileMark,
+                                RoundCheatPayload.TileMark("ai-grp-" + AiRequestId(seat, "tile-mark"), markTiles),
+                                _control.GetState(seat).ControlEpoch));
+                        }
+                    }
+                }
+
+                if (currentSeat &&
+                    !responseOpen &&
+                    _round.Phase == RoundPhase.CheatWindow &&
+                    drawnInHand &&
+                    drawKind != SleeveBloomDrawKind.DealExtra &&
+                    noSleeveOffer &&
+                    noBeamOffer &&
+                    !trickAlreadyUsed &&
+                    _cheatEconomy.TryGetCost(CheatEconomyConfig.SleeveBloomCostKey, out int bloomCost) &&
+                    bloomCost == 10 &&
+                    points >= bloomCost &&
+                    (drawKind != SleeveBloomDrawKind.Normal || _round.Tiles.WallRemaining > 0))
+                {
+                    plans.Add(AiCheatPlan(
+                        seat,
+                        "sleeve-activate",
+                        "sleeve_bloom",
+                        bloomCost,
+                        false,
+                        false,
+                        RoundCheatAction.SubmitSleeveBloom,
+                        RoundCheatPayload.SleeveBloom(),
+                        _control.GetState(seat).ControlEpoch));
+                }
+
+                if (currentSeat &&
+                    !responseOpen &&
+                    _round.Phase == RoundPhase.CheatWindow &&
+                    !riichi &&
+                    drawnInHand &&
+                    drawKind != SleeveBloomDrawKind.DealExtra &&
+                    noSleeveOffer &&
+                    noBeamOffer &&
+                    !trickAlreadyUsed &&
+                    _cheatEconomy.TryGetCost(CheatEconomyConfig.BeamSwapCostKey, out int beamCost) &&
+                    beamCost == 10 &&
+                    points >= beamCost &&
+                    HasEligibleBeamHand(seat, drawn!.Value.Tile) &&
+                    (drawKind == SleeveBloomDrawKind.Normal
+                        ? _round.Tiles.WallRemaining > 0 && _round.Tiles.WallPointer < _round.Tiles.WallEndExclusive
+                        : _round.Tiles.RinshanPointer >= 1 && _round.Tiles.RinshanPointer <= 3 &&
+                          _round.Tiles.KanCount < 4))
+                {
+                    plans.Add(AiCheatPlan(
+                        seat,
+                        "beam-activate",
+                        "beam_swap",
+                        beamCost,
+                        false,
+                        false,
+                        RoundCheatAction.SubmitBeamSwap,
+                        RoundCheatPayload.BeamSwap(),
+                        _control.GetState(seat).ControlEpoch));
+                }
+            }
+
+            var options = new List<AiCheatOption>(plans.Count);
+            for (int i = 0; i < plans.Count; i++)
+            {
+                options.Add(plans[i].Option);
+            }
+
+            var view = new AiCheatOpportunity(
+                seat,
+                _round.RoundId,
+                checked((long)_stateVersion.Value),
+                checked((long)_control.GetState(seat).ControlEpoch),
+                _cheat.Ledger.BalanceOf(seat),
+                offerChoice,
+                options);
+            return new TableAiCheatCaptureResult(
+                TableAiCheatCaptureStatus.Captured,
+                string.Empty,
+                string.Empty,
+                new TableAiCheatOpportunity(view, plans));
+        }
+
+        private async ValueTask<TableOperationResult> ProcessAiCheatSubmitAsync(
+            TableAiCheatPlan plan,
+            bool allowTakeoverPaidCheats)
+        {
+            TableOperationResult? guard = GuardServing();
+            if (guard != null)
+            {
+                return guard;
+            }
+
+            TableCheatCommandEnvelope envelope = plan.Envelope;
+            if (!string.Equals(envelope.Api, AiCheatApi, StringComparison.Ordinal))
+            {
+                return TableOperationResult.Rejected(
+                    _stateVersion,
+                    TableRuntimeReasonCode.InvalidSubmission,
+                    "The cheat plan is not a host-generated AI plan.");
+            }
+
+            if (!TryReadClock(out long now, out _, out string clockFailure))
+            {
+                return TableOperationResult.Rejected(_stateVersion, clockFailure, "The monotonic clock is not safe for authority.");
+            }
+
+            RoundCheatCommand command = envelope.CheatCommand;
+            TableOperationResult? identityError = ValidateAuthorityIdentity(
+                command.RoundId,
+                command.Seat,
+                envelope.ExpectedStateVersion,
+                envelope.OwnerEpoch,
+                envelope.ControlEpoch,
+                envelope.DecisionId,
+                envelope.RecoveryGeneration,
+                now,
+                out _);
+            if (identityError != null)
+            {
+                return identityError;
+            }
+
+            if (!allowTakeoverPaidCheats &&
+                _control.GetState(command.Seat).Kind == SeatControllerKind.Takeover &&
+                IsPaidAiCheatAction(command.Action))
+            {
+                return TableOperationResult.Rejected(
+                    _stateVersion,
+                    TableRuntimeReasonCode.TakeoverCheatSpendForbidden,
+                    "A takeover seat may not initiate a new paid cheat; an already-paid offer may still be resolved.");
+            }
+
+            if (_cheat == null || _cheatEconomy == null || _sleeveConfig == null)
+            {
+                return TableOperationResult.Rejected(
+                    _stateVersion,
+                    TableRuntimeReasonCode.CheatNotConfigured,
+                    "No authoritative cheat aggregate/economy/sleeve configuration is wired into this actor.");
+            }
+
+            CheatTurnContext context = BuildCheatContext(now);
+            RoundCheatPreparation preparation;
+            try
+            {
+                preparation = RoundCheatTransition.Prepare(
+                    _round,
+                    _cheat,
+                    command,
+                    context,
+                    _cheatEconomy,
+                    _sleeveConfig);
+            }
+            catch (Exception exception)
+            {
+                return TableOperationResult.Failed(
+                    _stateVersion,
+                    TableRuntimeReasonCode.InternalError,
+                    exception.GetType().Name + ": " + exception.Message);
+            }
+
+            if (!preparation.IsReady)
+            {
+                return TableOperationResult.Rejected(
+                    _stateVersion,
+                    TableRuntimeReasonCode.FromCheat(preparation.Error, preparation.CheatError),
+                    preparation.Message);
+            }
+
+            return await CommitCheatAndInstallAsync(
+                preparation.Change!,
+                roundEnvelope: null,
+                envelope,
+                roundCommand: null,
+                command,
+                systemJournal: null,
+                context,
+                pending: null,
+                decisionId: null,
+                now).ConfigureAwait(false);
+        }
+
+        private TableAiCheatPlan AiCheatPlan(
+            int seat,
+            string optionId,
+            string capabilityId,
+            int cost,
+            bool safeDefault,
+            bool offerChoice,
+            RoundCheatAction action,
+            RoundCheatPayload payload,
+            long controlEpoch)
+        {
+            string requestId = AiRequestId(seat, optionId);
+            var command = new RoundCheatCommand(_round.RoundId, seat, action, requestId, payload);
+            var envelope = new TableCheatCommandEnvelope(
+                command,
+                new RequestId(requestId),
+                _stateVersion,
+                _ownerEpoch,
+                new ControlEpoch(unchecked((ulong)controlEpoch)),
+                recoveryGeneration: _recoveryGeneration,
+                scopeId: new RequestScopeId("system"),
+                api: AiCheatApi,
+                payloadSha256: TablePayloadSha256.Compute(System.Text.Encoding.UTF8.GetBytes(requestId)));
+            return new TableAiCheatPlan(
+                new AiCheatOption(optionId, capabilityId, cost, safeDefault, offerChoice),
+                envelope);
+        }
+
+        private string AiRequestId(int seat, string optionId)
+        {
+            string raw = "ai-" + _round.RoundId + "-" +
+                _stateVersion.Value.ToString(CultureInfo.InvariantCulture) + "-" +
+                seat.ToString(CultureInfo.InvariantCulture) + "-" + optionId;
+            var builder = new System.Text.StringBuilder(raw.Length);
+            for (int i = 0; i < raw.Length && builder.Length < 96; i++)
+            {
+                char c = raw[i];
+                builder.Append(
+                    (c >= 'a' && c <= 'z') ||
+                    (c >= 'A' && c <= 'Z') ||
+                    (c >= '0' && c <= '9') ||
+                    c == '-' || c == '_' || c == '.'
+                        ? c
+                        : '_');
+            }
+
+            return builder.Length == 0 ? "ai-cheat" : builder.ToString();
+        }
+
+        private bool HasEligibleBeamHand(int seat, TileId drawnTile)
+        {
+            IReadOnlyList<TileId> hand = _round.Tiles.TilesInZone(TileZone.Hand, seat);
+            for (int i = 0; i < hand.Count; i++)
+            {
+                if (!hand[i].Equals(drawnTile))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private TableAiCheatCaptureResult AiCheatRejected(string reasonCode, string detail)
+        {
+            return new TableAiCheatCaptureResult(
+                TableAiCheatCaptureStatus.Rejected,
+                reasonCode,
+                detail,
+                null);
+        }
+
+        private TableAiCheatCaptureResult AiCheatFailed(string reasonCode, string detail)
+        {
+            return new TableAiCheatCaptureResult(
+                TableAiCheatCaptureStatus.Failed,
+                reasonCode,
+                detail,
+                null);
+        }
+
+        private static TableAiCheatCaptureResult AiCheatAdmissionFailure(TableMailboxEnqueueStatus enqueue)
+        {
+            return enqueue == TableMailboxEnqueueStatus.Full
+                ? new TableAiCheatCaptureResult(
+                    TableAiCheatCaptureStatus.Failed,
+                    TableRuntimeReasonCode.MailboxFull,
+                    "The table mailbox is full; the AI cheat capture was not admitted.",
+                    null)
+                : new TableAiCheatCaptureResult(
+                    TableAiCheatCaptureStatus.Failed,
+                    TableRuntimeReasonCode.ActorClosed,
+                    "The table mailbox is closed; the AI cheat capture was not admitted.",
+                    null);
+        }
+
 
         private TileId? DrawnTileFor(int seat)
         {
@@ -9495,6 +10154,19 @@ namespace Mahjong.TableRuntime
                         detail,
                         true,
                         null));
+                    break;
+                case AiCheatCaptureMailboxMessage aiCheatCapture:
+                    aiCheatCapture.Completion.TrySetResult(new TableAiCheatCaptureResult(
+                        TableAiCheatCaptureStatus.Failed,
+                        TableRuntimeReasonCode.InternalError,
+                        detail,
+                        null));
+                    break;
+                case AiCheatSubmitMailboxMessage aiCheatSubmit:
+                    aiCheatSubmit.Completion.TrySetResult(TableOperationResult.Failed(
+                        _stateVersion,
+                        TableRuntimeReasonCode.InternalError,
+                        detail));
                     break;
                 case ControlSnapshotMailboxMessage controlSnapshot:
                     controlSnapshot.Completion.TrySetException(exception);
