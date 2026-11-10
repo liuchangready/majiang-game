@@ -138,6 +138,32 @@ namespace Mahjong.TableRuntime
             new TaskCompletionSource<TableAiObservationResult>(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 
+    internal sealed class AiCheatCaptureMailboxMessage : TableMailboxMessage
+    {
+        public AiCheatCaptureMailboxMessage(int seat)
+        {
+            Seat = seat;
+        }
+
+        public int Seat { get; }
+
+        public TaskCompletionSource<TableAiCheatCaptureResult> Completion { get; } =
+            new TaskCompletionSource<TableAiCheatCaptureResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    internal sealed class AiCheatSubmitMailboxMessage : TableMailboxMessage
+    {
+        public AiCheatSubmitMailboxMessage(TableAiCheatPlan plan)
+        {
+            Plan = plan ?? throw new ArgumentNullException(nameof(plan));
+        }
+
+        public TableAiCheatPlan Plan { get; }
+
+        public TaskCompletionSource<TableOperationResult> Completion { get; } =
+            new TaskCompletionSource<TableOperationResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
     internal sealed class ControlSnapshotMailboxMessage : TableMailboxMessage
     {
         public TaskCompletionSource<TableControlSnapshot> Completion { get; } =
