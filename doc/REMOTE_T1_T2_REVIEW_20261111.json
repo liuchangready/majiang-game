@@ -1,0 +1,83 @@
+{
+    "threadId":  "thread_20261111_012014_c8a1",
+    "testedSourceCommit":  "58b27b00696c458585a790409931c121f3e51314",
+    "publicationBase":  "93ce7cc7b4a2599f8a83ac41e8d8fde110a5e7d5",
+    "acceptance":  "Investigation/stop-condition deliverable accepted; API-15 NOT passed",
+    "reviewerEvidenceRoot":  "E:/agent-space/thread_20261111_012014_c8a1/worktree/artifacts/remote-t1-t2-review/9a436d6e0de542e0929fac1930023bc5",
+    "componentTotal":  1443,
+    "remoteB1Rerun":  false,
+    "remoteB1DeveloperExit":  1,
+    "api15PassingAssertions":  0,
+    "projects":  [
+                     {
+                         "project":  "Mahjong.Client.Tests",
+                         "buildCommand":  "D:/game_dev_tools/dotnet/dotnet.exe build dotnet/tests/Mahjong.Client.Tests/Mahjong.Client.Tests.csproj -c Release --nologo",
+                         "testCommand":  "D:/game_dev_tools/dotnet/dotnet.exe dotnet/tests/Mahjong.Client.Tests/bin/Release/net8.0/Mahjong.Client.Tests.dll -xml E:\\agent-space\\thread_20261111_012014_c8a1\\worktree\\artifacts\\remote-t1-t2-review\\9a436d6e0de542e0929fac1930023bc5\\Mahjong.Client.Tests.xml",
+                         "buildExit":  0,
+                         "testExit":  0,
+                         "total":  182,
+                         "passed":  182,
+                         "failed":  0,
+                         "errors":  0,
+                         "skipped":  0,
+                         "notRun":  0,
+                         "xmlSha256":  "9a9e0861786c38c34ab075671af591f456ee505db998faeaeaf99490b1560c36"
+                     },
+                     {
+                         "project":  "Mahjong.Client.Wss.Tests",
+                         "buildCommand":  "D:/game_dev_tools/dotnet/dotnet.exe build dotnet/tests/Mahjong.Client.Wss.Tests/Mahjong.Client.Wss.Tests.csproj -c Release --nologo",
+                         "testCommand":  "D:/game_dev_tools/dotnet/dotnet.exe dotnet/tests/Mahjong.Client.Wss.Tests/bin/Release/net8.0/Mahjong.Client.Wss.Tests.dll -xml E:\\agent-space\\thread_20261111_012014_c8a1\\worktree\\artifacts\\remote-t1-t2-review\\9a436d6e0de542e0929fac1930023bc5\\Mahjong.Client.Wss.Tests.xml",
+                         "buildExit":  0,
+                         "testExit":  0,
+                         "total":  82,
+                         "passed":  82,
+                         "failed":  0,
+                         "errors":  0,
+                         "skipped":  0,
+                         "notRun":  0,
+                         "xmlSha256":  "471c27fd68bd366c7fce078c4bff8e677ccb4e13a1748e2ba857abb655086f96"
+                     },
+                     {
+                         "project":  "Mahjong.Contracts.Tests",
+                         "buildCommand":  "D:/game_dev_tools/dotnet/dotnet.exe build dotnet/tests/Mahjong.Contracts.Tests/Mahjong.Contracts.Tests.csproj -c Release --nologo",
+                         "testCommand":  "D:/game_dev_tools/dotnet/dotnet.exe dotnet/tests/Mahjong.Contracts.Tests/bin/Release/net8.0/Mahjong.Contracts.Tests.dll -xml E:\\agent-space\\thread_20261111_012014_c8a1\\worktree\\artifacts\\remote-t1-t2-review\\9a436d6e0de542e0929fac1930023bc5\\Mahjong.Contracts.Tests.xml",
+                         "buildExit":  0,
+                         "testExit":  0,
+                         "total":  152,
+                         "passed":  152,
+                         "failed":  0,
+                         "errors":  0,
+                         "skipped":  0,
+                         "notRun":  0,
+                         "xmlSha256":  "2a7b79266153942e8e87e1b9bbbacbd15375c73835a5781460af79399eb7e389"
+                     },
+                     {
+                         "project":  "Mahjong.Domain.Tests",
+                         "buildCommand":  "D:/game_dev_tools/dotnet/dotnet.exe build dotnet/tests/Mahjong.Domain.Tests/Mahjong.Domain.Tests.csproj -c Release --nologo",
+                         "testCommand":  "D:/game_dev_tools/dotnet/dotnet.exe dotnet/tests/Mahjong.Domain.Tests/bin/Release/net8.0/Mahjong.Domain.Tests.dll -xml E:\\agent-space\\thread_20261111_012014_c8a1\\worktree\\artifacts\\remote-t1-t2-review\\9a436d6e0de542e0929fac1930023bc5\\Mahjong.Domain.Tests.xml",
+                         "buildExit":  0,
+                         "testExit":  0,
+                         "total":  534,
+                         "passed":  534,
+                         "failed":  0,
+                         "errors":  0,
+                         "skipped":  0,
+                         "notRun":  0,
+                         "xmlSha256":  "d9614388f0c8907381323e0f643d8e0078217be2aec765f4d4b3366a3f81974e"
+                     },
+                     {
+                         "project":  "Mahjong.TableRuntime.Tests",
+                         "buildCommand":  "D:/game_dev_tools/dotnet/dotnet.exe build dotnet/tests/Mahjong.TableRuntime.Tests/Mahjong.TableRuntime.Tests.csproj -c Release --nologo",
+                         "testCommand":  "D:/game_dev_tools/dotnet/dotnet.exe dotnet/tests/Mahjong.TableRuntime.Tests/bin/Release/net8.0/Mahjong.TableRuntime.Tests.dll -xml E:\\agent-space\\thread_20261111_012014_c8a1\\worktree\\artifacts\\remote-t1-t2-review\\9a436d6e0de542e0929fac1930023bc5\\Mahjong.TableRuntime.Tests.xml",
+                         "buildExit":  0,
+                         "testExit":  0,
+                         "total":  493,
+                         "passed":  493,
+                         "failed":  0,
+                         "errors":  0,
+                         "skipped":  0,
+                         "notRun":  0,
+                         "xmlSha256":  "65e925357241bd3348f422eeddd6e9b8e2de2514c3861cca35d2fe940cac7ef9"
+                     }
+                 ]
+}
