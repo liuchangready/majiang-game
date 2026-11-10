@@ -25,19 +25,33 @@ namespace Mahjong.LocalHost
 
         public static LocalTableHostOptions ConfigureHostOptions(LocalTableHostOptions options, string scenarioId)
         {
+            return ConfigureHostOptions(options, scenarioId, null);
+        }
+
+        public static LocalTableHostOptions ConfigureHostOptions(
+            LocalTableHostOptions options,
+            string scenarioId,
+            string? roundId)
+        {
             if (options == null) throw new ArgumentNullException(nameof(options));
-            options.InitialRound = CreateInitialRound(scenarioId);
+            options.InitialRound = CreateInitialRound(scenarioId, roundId);
             options.AutoPlay = true;
             return options;
         }
 
         public static RoundStateMachine CreateInitialRound(string scenarioId)
         {
-            if (string.Equals(scenarioId, Pon, StringComparison.Ordinal)) return BuildCallWindow(Pon);
-            if (string.Equals(scenarioId, Chi, StringComparison.Ordinal)) return BuildCallWindow(Chi);
-            if (string.Equals(scenarioId, Riichi, StringComparison.Ordinal)) return BuildRiichiTurn();
-            if (string.Equals(scenarioId, ClosedKan, StringComparison.Ordinal)) return BuildClosedKanTurn();
-            if (string.Equals(scenarioId, DealerTsumo, StringComparison.Ordinal)) return BuildDealerTsumoTurn();
+            return CreateInitialRound(scenarioId, null);
+        }
+
+        /// <summary>Builds the same accepted fixture under a caller-owned isolated round id.</summary>
+        public static RoundStateMachine CreateInitialRound(string scenarioId, string? roundId)
+        {
+            if (string.Equals(scenarioId, Pon, StringComparison.Ordinal)) return BuildCallWindow(Pon, roundId);
+            if (string.Equals(scenarioId, Chi, StringComparison.Ordinal)) return BuildCallWindow(Chi, roundId);
+            if (string.Equals(scenarioId, Riichi, StringComparison.Ordinal)) return BuildRiichiTurn(roundId);
+            if (string.Equals(scenarioId, ClosedKan, StringComparison.Ordinal)) return BuildClosedKanTurn(roundId);
+            if (string.Equals(scenarioId, DealerTsumo, StringComparison.Ordinal)) return BuildDealerTsumoTurn(roundId);
             throw new ArgumentOutOfRangeException(nameof(scenarioId), scenarioId, "Unknown fixed C04 Player action scenario.");
         }
 
@@ -259,7 +273,7 @@ namespace Mahjong.LocalHost
             return string.Join("\n", lines);
         }
 
-        private static RoundStateMachine BuildCallWindow(string action)
+        private static RoundStateMachine BuildCallWindow(string action, string? requestedRoundId)
         {
             bool pon = string.Equals(action, Pon, StringComparison.Ordinal);
             var fixedOrder = new Dictionary<int, int>();
@@ -274,7 +288,7 @@ namespace Mahjong.LocalHost
             fixedOrder.Add(8, 84); // deterministic seat 2 prelude discard
             fixedOrder.Add(12, target); // seat 3 supplies the fixed call tile
 
-            RoundStateMachine round = BuildDealt("c04-" + action + "-seed-440" + (pon ? "1" : "2"), fixedOrder);
+            RoundStateMachine round = BuildDealt(requestedRoundId ?? "c04-" + action + "-seed-440" + (pon ? "1" : "2"), fixedOrder);
             round = Accepted(round, RoundCommand.Discard(round.RoundId, 0, new TileId(132), new[] { 1, 2, 3 }));
             round = PassAll(round);
             round = Accepted(round, RoundCommand.Discard(round.RoundId, 1, new TileId(80), new[] { 0, 2, 3 }));
@@ -314,26 +328,26 @@ namespace Mahjong.LocalHost
             return round;
         }
 
-        private static RoundStateMachine BuildRiichiTurn()
+        private static RoundStateMachine BuildRiichiTurn(string? requestedRoundId)
         {
             var fixedOrder = new Dictionary<int, int>();
             int[] hand = { 0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 37, 72, 76, 124 };
             int[] slots = { 0, 1, 2, 3, 16, 17, 18, 19, 32, 33, 34, 35, 48, 52 };
             for (int i = 0; i < hand.Length; i++) fixedOrder.Add(slots[i], hand[i]);
-            return BuildDealt("c04-riichi-seed-4403", fixedOrder);
+            return BuildDealt(requestedRoundId ?? "c04-riichi-seed-4403", fixedOrder);
         }
 
-        private static RoundStateMachine BuildClosedKanTurn()
+        private static RoundStateMachine BuildClosedKanTurn(string? requestedRoundId)
         {
             var fixedOrder = new Dictionary<int, int>();
             int[] hand = { 0, 1, 2, 3, 36, 40, 44, 48, 52, 56, 60, 64, 68, 72 };
             int[] slots = { 0, 1, 2, 3, 16, 17, 18, 19, 32, 33, 34, 35, 48, 52 };
             for (int i = 0; i < hand.Length; i++) fixedOrder.Add(slots[i], hand[i]);
             fixedOrder.Add(122, 73); // dead-wall replacement draw physical entity
-            return BuildDealt("c04-closed-kan-seed-4404", fixedOrder);
+            return BuildDealt(requestedRoundId ?? "c04-closed-kan-seed-4404", fixedOrder);
         }
 
-        private static RoundStateMachine BuildDealerTsumoTurn()
+        private static RoundStateMachine BuildDealerTsumoTurn(string? requestedRoundId)
         {
             // Seat 0's thirteen tiles plus drawn 4m complete a Haku triplet,
             // 23m/4m, 345p, 678s and 55m. This fixture is used only by explicit
@@ -343,7 +357,7 @@ namespace Mahjong.LocalHost
             var fixedOrder = new Dictionary<int, int>();
             for (int i = 0; i < hand.Length; i++) fixedOrder.Add(wallSlots[i], hand[i]);
             fixedOrder.Add(52, 12);
-            return BuildDealt("c04-local-dealer-tsumo-seed-4405", fixedOrder);
+            return BuildDealt(requestedRoundId ?? "c04-local-dealer-tsumo-seed-4405", fixedOrder);
         }
 
         private static RoundStateMachine BuildDealt(string roundId, IDictionary<int, int> fixedOrder)
