@@ -92,6 +92,97 @@ namespace Mahjong.Ai.Tests
         }
 
         [Fact]
+        public void ReservePointsAreRetainedForPositiveCostCandidates()
+        {
+            var strategy = new RandomCheatBasicAiStrategy(
+                new SeededAiRandom(31UL),
+                new AiCheatPolicy(enabled: true, maxSpendPerRound: 60, reservePoints: 5));
+            AiCheatOption mark = new AiCheatOption("mark", "tile_mark", 1, false, true);
+
+            Assert.Null(strategy.ChooseCheat(Opportunity(points: 5, isOfferChoice: true, mark)));
+            Assert.Equal(
+                "mark",
+                strategy.ChooseCheat(Opportunity(points: 6, isOfferChoice: true, mark)));
+        }
+
+        [Fact]
+        public void ZeroCostOfferResolutionSurvivesReserveAndEmptyBalance()
+        {
+            var strategy = new RandomCheatBasicAiStrategy(
+                new SeededAiRandom(32UL),
+                new AiCheatPolicy(enabled: true, maxSpendPerRound: 60, reservePoints: 5));
+            Assert.Equal(
+                "first",
+                strategy.ChooseCheat(Opportunity(
+                    points: 0,
+                    isOfferChoice: true,
+                    new AiCheatOption("first", "sleeve_bloom", 0, true, true))));
+        }
+
+        [Fact]
+        public void SpendThatWouldLandExactlyOnReserveIsAllowedButTheNextCostIsNot()
+        {
+            var strategy = new RandomCheatBasicAiStrategy(
+                new SeededAiRandom(33UL),
+                new AiCheatPolicy(enabled: true, maxSpendPerRound: 10, reservePoints: 5));
+            Assert.Equal(
+                "ten",
+                strategy.ChooseCheat(Opportunity(
+                    points: 15,
+                    isOfferChoice: true,
+                    new AiCheatOption("ten", "tile_mark", 10, false, true))));
+            Assert.Null(strategy.ChooseCheat(Opportunity(
+                points: 15,
+                isOfferChoice: true,
+                new AiCheatOption("one", "tile_mark", 1, false, true))));
+        }
+
+        [Fact]
+        public void BudgetAdditionDoesNotOverflow()
+        {
+            var strategy = new RandomCheatBasicAiStrategy(
+                new SeededAiRandom(34UL),
+                new AiCheatPolicy(enabled: true, maxSpendPerRound: int.MaxValue));
+            Assert.Equal(
+                "max",
+                strategy.ChooseCheat(Opportunity(
+                    points: int.MaxValue,
+                    isOfferChoice: true,
+                    new AiCheatOption("max", "tile_mark", int.MaxValue, false, true))));
+            Assert.Null(strategy.ChooseCheat(Opportunity(
+                points: int.MaxValue,
+                isOfferChoice: true,
+                new AiCheatOption("one", "tile_mark", 1, false, true))));
+        }
+
+        [Fact]
+        public void RestoredRoundSpendIsNotResetForTheSameRoundButANewRoundStartsFresh()
+        {
+            var strategy = new RandomCheatBasicAiStrategy(
+                new SeededAiRandom(35UL),
+                new AiCheatPolicy(enabled: true, maxSpendPerRound: 10));
+            strategy.RestoreRoundSpend("round-1", 0, 10);
+            Assert.Null(strategy.ChooseCheat(Opportunity(
+                points: 120,
+                isOfferChoice: true,
+                new AiCheatOption("one", "tile_mark", 1, false, true))));
+
+            strategy.RestoreRoundSpend("round-1", 0, 10);
+            Assert.Null(strategy.ChooseCheat(Opportunity(
+                points: 120,
+                isOfferChoice: true,
+                new AiCheatOption("one", "tile_mark", 1, false, true))));
+
+            strategy.RestoreRoundSpend("round-2", 0, 0);
+            Assert.Equal(
+                "one",
+                strategy.ChooseCheat(Opportunity(
+                    points: 120,
+                    isOfferChoice: true,
+                    new AiCheatOption("one", "tile_mark", 1, false, true))));
+        }
+
+        [Fact]
         public void DisabledPolicyNeverChoosesACheat()
         {
             var strategy = new RandomCheatBasicAiStrategy(

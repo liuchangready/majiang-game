@@ -31,6 +31,7 @@ namespace Mahjong.LocalHost
         private readonly CancellationTokenSource _stop = new CancellationTokenSource();
         private readonly long[] _controlEpochs = new long[4];
         private readonly bool[] _aiSeats = new bool[4];
+        private readonly bool[] _takeoverSeats = new bool[4];
         private readonly string[] _lastDecisionKeys = new string[4];
         private readonly object _iterationGateForTest = new object();
         private TaskCompletionSource<long> _iterationCompletedForTest = NewIterationSignal();
@@ -75,7 +76,8 @@ namespace Mahjong.LocalHost
                 var policy = new AiCheatPolicy(
                     enabled: ai.AllowCheats,
                     maxSpendPerRound: ai.MaxSpendPerRound,
-                    reservePoints: ai.ReservePoints);
+                    reservePoints: ai.ReservePoints,
+                    takeoverMaySpend: ai.TakeoverMaySpend);
                 _cheatStrategy = new RandomCheatBasicAiStrategy(new SeededAiRandom(ai.Seed), policy);
                 _aiStrategy = _cheatStrategy;
             }
@@ -265,8 +267,9 @@ namespace Mahjong.LocalHost
             for (int i = 0; i < 4; i++)
             {
                 _controlEpochs[i] = control.Seats[i].ControlEpoch;
+                _takeoverSeats[i] = control.Seats[i].Kind == SeatControllerKind.Takeover;
                 _aiSeats[i] = control.Seats[i].Kind == SeatControllerKind.Computer ||
-                              control.Seats[i].Kind == SeatControllerKind.Takeover;
+                              _takeoverSeats[i];
             }
 
             // Authorized cheat candidates are captured and submitted inside the actor's serial
@@ -276,7 +279,20 @@ namespace Mahjong.LocalHost
             {
                 for (int i = 0; i < 4; i++)
                 {
-                    if (_aiSeats[i] && await TryAiCheatAsync(i, snapshot).ConfigureAwait(false))
+                    if (!_aiSeats[i])
+                    {
+                        continue;
+                    }
+
+                    // A reconstructed driver must continue the current round's budget from
+                    // the authoritative ledger, not from an empty in-memory counter.
+                    _cheatStrategy.RestoreRoundSpend(
+                        snapshot.RoundId,
+                        i,
+                        _actor.GetAiCheatSpentThisRound(i));
+                    bool takeoverMaySpend = _takeoverSeats[i] &&
+                        _cheatStrategy.CheatPolicy.TakeoverMaySpend;
+                    if (await TryAiCheatAsync(i, snapshot, takeoverMaySpend).ConfigureAwait(false))
                     {
                         return;
                     }
@@ -477,10 +493,10 @@ namespace Mahjong.LocalHost
             return true;
         }
 
-        private async Task<bool> TryAiCheatAsync(int seat, TableSnapshot snapshot)
+        private async Task<bool> TryAiCheatAsync(int seat, TableSnapshot snapshot, bool allowTakeoverPaidCheats)
         {
             TableAiCheatCaptureResult captured = await _actor
-                .CaptureAiCheatOpportunityAsync(seat, _stop.Token)
+                .CaptureAiCheatOpportunityAsync(seat, allowTakeoverPaidCheats, _stop.Token)
                 .ConfigureAwait(false);
             if (!captured.IsCaptured || captured.Opportunity == null)
             {
@@ -514,7 +530,8 @@ namespace Mahjong.LocalHost
                 return false;
             }
 
-            TableOperationResult result = await _actor.SubmitAiCheatAsync(plan, _stop.Token)
+            TableOperationResult result = await _actor
+                .SubmitAiCheatAsync(plan, allowTakeoverPaidCheats, _stop.Token)
                 .ConfigureAwait(false);
             bool accepted = result.Status == TableOperationStatus.Accepted ||
                             result.Status == TableOperationStatus.Replayed;

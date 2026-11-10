@@ -238,13 +238,24 @@ namespace Mahjong.Ai
             }
 
             int spent = _spentBySeat[opportunity.Seat];
+            long spendable = (long)opportunity.CheatPoints - _policy.ReservePoints;
+            if (spendable < 0)
+            {
+                spendable = 0;
+            }
+
             var eligible = new List<AiCheatOption>(opportunity.Options.Count);
             for (int i = 0; i < opportunity.Options.Count; i++)
             {
                 AiCheatOption option = opportunity.Options[i];
-                if (option.Cost > opportunity.CheatPoints || spent + option.Cost > _policy.MaxSpendPerRound)
+                if (option.Cost > 0)
                 {
-                    continue;
+                    long afterSpend = (long)spent + option.Cost;
+                    if (afterSpend > _policy.MaxSpendPerRound ||
+                        (long)option.Cost > spendable)
+                    {
+                        continue;
+                    }
                 }
 
                 if (!string.Equals(option.CapabilityId, "none", StringComparison.Ordinal) &&
@@ -281,6 +292,37 @@ namespace Mahjong.Ai
             }
 
             return selected.OptionId;
+        }
+
+        /// <summary>
+        /// Rehydrates the per-round spend from authoritative evidence (for example the cheat
+        /// ledger after a local save/reopen). A different round starts a fresh budget; the same
+        /// round keeps the supplied spend so a reconstructed driver cannot spend it again.
+        /// </summary>
+        public void RestoreRoundSpend(string roundId, int seat, int spentPoints)
+        {
+            if (roundId == null)
+            {
+                throw new ArgumentNullException(nameof(roundId));
+            }
+
+            AiGuard.RequireText(roundId, nameof(roundId));
+            AiGuard.CheckSeat(seat, nameof(seat));
+            if (spentPoints < 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(spentPoints),
+                    spentPoints,
+                    "Spent points cannot be negative.");
+            }
+
+            if (!string.Equals(_budgetRoundId, roundId, StringComparison.Ordinal))
+            {
+                _budgetRoundId = roundId;
+                Array.Clear(_spentBySeat, 0, _spentBySeat.Length);
+            }
+
+            _spentBySeat[seat] = Math.Min(spentPoints, _policy.MaxSpendPerRound);
         }
 
         public override string ToString() =>
