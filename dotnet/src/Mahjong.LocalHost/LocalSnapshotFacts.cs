@@ -112,7 +112,9 @@ namespace Mahjong.LocalHost
                 ? checked((ulong)round.Version)
                 : 0UL;
             var initialStateVersion = new StateVersion(initialVersion);
-            var initialEventSeq = new EventSeq(0);
+            IReadOnlyList<TableEventRecord> initialHistory = options.InitialCommittedHistory ?? Array.Empty<TableEventRecord>();
+            IReadOnlyList<TableCommandBinding> initialBindings = options.InitialCommandBindings ?? Array.Empty<TableCommandBinding>();
+            var initialEventSeq = new EventSeq(checked((ulong)initialHistory.Count));
             var controllers = new Dictionary<int, SeatControllerKind>();
             for (int seat = 0; seat < 4; seat++)
                 controllers[seat] = options.SeatPlan.Contains(seat)
@@ -150,7 +152,7 @@ namespace Mahjong.LocalHost
                 0L,
                 0L,
                 (long)utc,
-                Array.Empty<TableEventRecord>()));
+                initialHistory));
             byte[] factsPayload = TableProjectionFactsCodec.Encode(facts);
 
             return TableCheckpointFactory.Create(
@@ -167,8 +169,8 @@ namespace Mahjong.LocalHost
                 factsPayload,
                 1L,
                 0L,
-                Array.Empty<TableEventRecord>(),
-                Array.Empty<TableCommandBinding>());
+                initialHistory,
+                initialBindings);
         }
 
         public TableProjectionContextData Capture(TableProjectionContextRequest request)
