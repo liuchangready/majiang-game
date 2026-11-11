@@ -177,7 +177,7 @@ TextureImporter:
       alignment: 0
       pivot: {x: 0.5, y: 0.5}
       border: {x: 248, y: 120, z: 248, w: 120}
-      customData:
+      customData: 
       outline: []
       physicsShape: []
       tessellationDetail: -1
@@ -185,7 +185,7 @@ TextureImporter:
       spriteID: b29e9615256e3f960800000000000000
       internalID: 7634699034550724907
       vertices: []
-      indices:
+      indices: 
       edges: []
       weights: []
     - serializedVersion: 2
@@ -199,7 +199,7 @@ TextureImporter:
       alignment: 0
       pivot: {x: 0.5, y: 0.5}
       border: {x: 248, y: 120, z: 248, w: 120}
-      customData:
+      customData: 
       outline: []
       physicsShape: []
       tessellationDetail: -1
@@ -207,17 +207,17 @@ TextureImporter:
       spriteID: 1e08cd540db9aedf0800000000000000
       internalID: -150136318735908639
       vertices: []
-      indices:
+      indices: 
       edges: []
       weights: []
     outline: []
-    customData:
+    customData: 
     physicsShape: []
     bones: []
-    spriteID:
+    spriteID: 
     internalID: 0
     vertices: []
-    indices:
+    indices: 
     edges: []
     weights: []
     secondaryTextures: []
@@ -243,8 +243,8 @@ TextureImporter:
       button-skins_9: 4854812047735794102
       prototype_button_jade: -150136318735908639
       prototype_button_red: 7634699034550724907
-  mipmapLimitGroupName:
+  mipmapLimitGroupName: 
   pSDRemoveMatte: 0
-  userData:
-  assetBundleName:
-  assetBundleVariant:
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
