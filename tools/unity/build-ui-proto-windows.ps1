@@ -28,6 +28,7 @@ public static class UiProtoNativeProcess
 $mutexName = 'Local\MahjongV5P45UnityValidation'
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot 'unity\Mahjong.Unity'))
+$baselineHead = (git -C $repoRoot rev-parse HEAD).Trim()
 if (-not (Test-Path -LiteralPath $UnityPath -PathType Leaf)) { throw "Unity executable not found: $UnityPath" }
 if (-not (Test-Path -LiteralPath $projectRoot -PathType Container)) { throw "Unity project not found: $projectRoot" }
 
@@ -153,7 +154,7 @@ try {
     $summary = [ordered]@{
         status = $unityResult
         product = 'ui_proto Windows visual demo'
-        baseline = '58b27b00696c458585a790409931c121f3e51314'
+        baseline = $baselineHead
         branch = (git -C $repoRoot branch --show-current)
         head = (git -C $repoRoot rev-parse HEAD)
         workingTree = $repoRoot
@@ -179,10 +180,12 @@ try {
     Write-Host ("UI_PROTO_BUILD_PASS exe={0} files={1} compilerErrors=0 summary={2}" -f $env:UI_PROTO_OUTPUT_PATH, $manifest.Count, $summaryPath)
 }
 catch {
-    if ($unityResult -ne 'PASS') { $unityResult = 'FAIL' }
+    if ($unityResult -ne 'PASS') {
+        $unityResult = if ($_.Exception.Message.StartsWith('BLOCKED:')) { 'BLOCKED' } else { 'FAIL' }
+    }
     $summary = [ordered]@{
         status = $unityResult
-        baseline = '58b27b00696c458585a790409931c121f3e51314'
+        baseline = $baselineHead
         branch = (git -C $repoRoot branch --show-current)
         head = (git -C $repoRoot rev-parse HEAD)
         workingTree = $repoRoot

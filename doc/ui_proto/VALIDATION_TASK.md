@@ -61,3 +61,18 @@
 - Specific missing-resource negative: isolated root `build/ui_proto/asset-negative-41ec0303ddcf4c28aa6d25744af7d4a0/` contains builder/prefab and five original PNG/meta pairs but omits `riichi_stick.png`; asset checker returned exit 1 with `Missing V5 art source`, and the real project checker returned exit 0.
 - Timeout negative: generated a temporary 7-second fake child outside source; runner command used `-BuildTimeoutSeconds 1 -HeartbeatSeconds 30 -ResourceWaitSeconds 600` at `build/ui_proto/runner-timeout-799aa8188e5b4fc59c45a4dd275415fe/`. Runner requested normal close, waited for its own child, then returned exit 1 with native child exit 0, `timedOut=true`, no BuildReport/player, status FAIL. This verifies timeout cannot pass and lock retention continues until child exit.
 - Preview method confirmation: native exit 0, `V5_ART_PROTOTYPE_OPENED` found, Missing Sprite/compiler diagnostic matches 0; confirmed log `build/ui_proto/20db8bf6c84d4820aee18435a7f456ee/editor-preview-confirmed.log`.
+
+## 2026-11-11 桌面截图复核任务卡（本 receiver 会话）
+
+- 任务：ui_proto-desktop-visual-20261111；在 Windows Standalone Player 中真实进入桌面演示、捕获桌面截图、对照用户牌桌参考图检查并按需迭代。
+- 工作树 / 分支 / 起点：`E:\agent-space\thread_20261111_162151_580d\worktree` / `ui_prot` / `c38e1ba1d35fe28173210ed60801116ca99fbaff`。源检出交叉核对为 `D:/majiang` `chore/cleanup-step1-20261110` `5fe836504af627da67cf46af0ca6657eafdacee5`；不在源检出执行修改。
+- 固定场景：`unity/Mahjong.Unity/Assets/Scenes/Prototypes/V5ArtPrototype.unity`。构建入口：`tools/unity/build-ui-proto-windows.ps1`。画面目标为 16:9 深绿桌呢/红木描金桌框、中心局况、上/左/右叠层牌墙，四家手牌/牌河/副露清楚且牌河朝桌心、副露贴本家牌区；四个座位标识完整，本家在下；不裁边/互遮；所有牌实例对象宽高相同，方向只旋转；保留 2.5D 玉绿/象牙风格。只从真实 Player 桌面截图判断。
+- 修改范围：ui_proto 原型、其专用文档和本轮 `build/ui_proto/<GUID>` 证据。排除正式规则/权威/算分/费用/持久化、插件二进制、机器设置及其他工作树；不跑无关测试；不提交/推送/合并/部署。
+- 阶段：A 检查资源/空间/Unity 进程，使用 runner 等待 Editor 与共享锁最多 600 秒、每 30 秒心跳；B 单场景 Windows x64 Player 构建，超时 1800 秒，要求原生退出 0、BuildReport 成功/错误 0、Player 完整；C 启动本任务 Player，实际点击“单机对局”并进入“直接开局演示”，捕捉真实 Windows 桌面画面，留运行日志；D 用图像查看工具检查全图与细节并逐项比对；有缺陷则只改本范围、正常关闭自有 Player、为每轮用新 GUID 重新构建/运行/截图；E 保存截图路径/SHA/时间、每轮退出码、发现/修改/复核及未覆盖项。
+- 取消/重试：只正常关闭本任务自启进程，不终止他人进程或绕锁。保留首败；只有原因已修复、输入改变或资源恢复才重试。缺少图像/桌面/Player 证据时标记 BLOCKED/NOT_RUN，不宣称视觉通过。
+
+### 本任务实际执行记录
+
+- 2026-11-11 16:28 +08：执行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/build-ui-proto-windows.ps1 -RunRoot build/ui_proto/537e9c74f482446c8819278452f424c5 -ResourceWaitSeconds 600 -HeartbeatSeconds 30 -BuildTimeoutSeconds 1800`。Asset preflight exit 0。共享 Unity Editor PID 18536（`D:/game_dev_tools/unity/Editor/Unity.exe`，项目 `D:/majiang-wt/ui-proto-20261111/unity/Mahjong.Unity`）存活至等待 600 秒上限；runner exit 1，原始错误为 `BLOCKED: a Unity Editor is still open after the bounded 600s wait; no second Editor was started.`。未启动本任务 Unity build、Player 或截图。原始 `summary.json` 保留；runner 将资源超时错误标为 FAIL，`operator-review.json` 记录准确分类 BLOCKED。没有 unity.log、BuildReport 或 Player 产物。
+- 已将 runner 的 summary 基线改为启动时读取当前 HEAD，并令 catch 将 `BLOCKED:` 错误分类为 BLOCKED；修改后 PowerShell parser errors=0。上述旧 invocation 已载入未修版脚本，所以首轮原始 summary 未改写；待 Editor 正常关闭这一前置条件变化后，才能用新 GUID 重试。
+- 用户本轮附图在 receiver 可读上下文里不可见，已请求重附。文字验收目标已记录，图像对照待取得参考图；当前没有视觉验收结论。
