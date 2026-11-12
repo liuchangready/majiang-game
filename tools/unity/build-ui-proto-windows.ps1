@@ -151,7 +151,7 @@ try {
     $summary = [ordered]@{
         status = $unityResult
         product = 'ui_proto Windows visual demo'
-        baseline = 'd922b24fec412e6a9f1c9fe0d4a8a4d6c1cb441e'
+        baseline = 'd6a5a755be18eee42861b68dd7fb7abd72ad68cd'
         branch = (git -C $repoRoot branch --show-current)
         head = (git -C $repoRoot rev-parse HEAD)
         workingTree = $repoRoot
@@ -179,7 +179,7 @@ catch {
     if ($unityResult -ne 'PASS') { $unityResult = 'FAIL' }
     $summary = [ordered]@{
         status = $unityResult
-        baseline = 'd922b24fec412e6a9f1c9fe0d4a8a4d6c1cb441e'
+        baseline = 'd6a5a755be18eee42861b68dd7fb7abd72ad68cd'
         branch = (git -C $repoRoot branch --show-current)
         head = (git -C $repoRoot rev-parse HEAD)
         workingTree = $repoRoot

@@ -1,18 +1,22 @@
 # V1 / V2 wall comparison
 
-- Reference image: 600×345 (1.739:1).
-- Captured V2 image: [`table-20261112-103226-491-0.png`](../../build/ui_proto/a899b75ca4d9483195a38ef7466edbc1/screenshots/table-20261112-103226-491-0.png), 1200×690 (same aspect ratio), 864,950 bytes, SHA-256 `42D14C31109C2A1D9FE20DEFA98988A86FE4362AF3402F43FD6F48B3D8A1FE4D`.
-- Captured V1 image: [`table-20261112-103323-469-0.png`](../../build/ui_proto/a899b75ca4d9483195a38ef7466edbc1/screenshots/table-20261112-103323-469-0.png), 1280×720, 981,436 bytes, SHA-256 `2DEC37E0B6B5973A4C403F53EC320DD0C4B93DD03CB3F83D3029D7689AF6B0CE`.
+## Capture dimensions and evidence
 
-## Visual result
+- User reference: `600x345`, ratio `40:23` (`1.73913`).
+- V2: [`table-20261112-105853-213-0.png`](../../build/ui_proto/cb6dc8bae44c40f1af10d6d3eab66df6/screenshots/table-20261112-105853-213-0.png), `1200x690`, ratio `40:23`, 866,253 bytes, SHA-256 `B2ED220FDED553F1EF5AAD325DBAD86607A864D8D04A0232100956DDE3133563`.
+- V1: [`table-20261112-110031-372-0.png`](../../build/ui_proto/cb6dc8bae44c40f1af10d6d3eab66df6/screenshots/table-20261112-110031-372-0.png), `1280x720`, ratio `16:9`, 981,436 bytes, SHA-256 `2DEC37E0B6B5973A4C403F53EC320DD0C4B93DD03CB3F83D3029D7689AF6B0CE`.
+- Both screenshots were taken with C from the same fresh Player package at `build/ui_proto/cb6dc8bae44c40f1af10d6d3eab66df6/`. V1 intentionally retains its original size and view.
 
-V2 now uses a continuous dark teal back face for each opponent tile. A shared mesh adds a light top plane, a darker side plane, narrow inset back detailing and a soft offset shadow. The north wall reads as a horizontal row. West and east rows follow the table sides, mirror each other, and grow toward the near ends. The face-up player hand and the existing river/center composition are unchanged. At the captured size, all three walls read as connected thick tile rows rather than separate orange cards.
+## V2 visual result
 
-## Remaining gaps
+The opponent walls use one canonical tile body projected from a shared table-local coordinate basis. North stays horizontal; west and east follow the table sides with mirrored orientation and natural near/far size change. The top, side and back faces meet at common projected corners. Side rows join the north row at the corners without the former stepped overlap. V1 and the player’s face-up tiles retain their previous rendering.
 
-- The wall rows end before the seat plates and do not turn through the corners; the current composition leaves those breaks open.
-- The back design is flat vector color with a small diamond and thin border; it does not reproduce the reference's fine tile texture, rounded edges or material reflections.
-- Side-wall perspective is a fixed 2D taper and screen-plane extrusion, not a camera projection; the top row remains constant size.
-- Existing portraits, labels, rivers and central HUD are retained prototype art and are not pixel-matched to the reference.
+The fresh V2 Player screenshot was inspected at full display size. The three walls read as a continuous U-shaped set of thick tiles; the north row’s end sides and both side walls show visible thickness. The silhouette and connectedness are substantially closer to the supplied image than the earlier rotated orange cards.
 
-The PNGs are from the fresh Windows Player in `build/ui_proto/a899b75ca4d9483195a38ef7466edbc1/`. C created one image in V2 and one in V1. The V1 screenshot still shows the original orange rotated-card walls, confirming the old view remains separate.
+## Remaining visual gaps
+
+- The tile backs are clean vector shapes with a small center mark; they do not reproduce the reference’s fine texture, rounded material edges, highlights or subtle wear.
+- The projection is a deliberately compact UI mesh model; its lighting, shadow softness and depth cues remain simpler than the reference illustration.
+- Existing portraits, labels, discard rivers and central HUD are retained prototype art and are not pixel-matched to the reference.
+
+V2 matches the reference aspect ratio. V1 remains `16:9` to preserve its existing direct launch and composition; that is expected compatibility behavior.

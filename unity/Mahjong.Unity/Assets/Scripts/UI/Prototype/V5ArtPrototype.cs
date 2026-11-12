@@ -636,6 +636,7 @@ namespace Mahjong.Unity.UI.Prototype
         private void EnsureSeatPrototypeV2Ui()
         {
             if (_stageRoot == null || _seatPrototypeV2Page != null) return;
+            Debug.Log(MahjongWallGeometry.RunSelfCheck());
             _seatPrototypeV2Page = CreatePage("Prototype Mahjong V2", _stageRoot);
             BuildSeatPrototypeContent(_seatPrototypeV2Page.transform, true);
             _seatPrototypeV2Page.SetActive(false);
