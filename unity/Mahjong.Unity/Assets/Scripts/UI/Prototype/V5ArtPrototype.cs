@@ -73,6 +73,7 @@ namespace Mahjong.Unity.UI.Prototype
         [SerializeField] private RectTransform? _meldsRoot;
         [SerializeField] private RectTransform? _wallRoot;
         [SerializeField] private RectTransform? _demoControlsBar;
+        [SerializeField] private GameObject? _seatPrototypeV2Page;
         private RectTransform? _matchHudRoot;
         [SerializeField] private Text? _demoStatusText;
         [SerializeField] private Text? _wallCountText;
@@ -143,6 +144,7 @@ namespace Mahjong.Unity.UI.Prototype
         private int _drawDeckIndex = 0;
         private int _screenshotSequence;
         private bool _directTableMode;
+        private bool _directTableV2Mode;
 
         public bool IsPaused => _isPaused;
         public bool IsAutoLooping => _isAutoLooping;
@@ -175,9 +177,14 @@ namespace Mahjong.Unity.UI.Prototype
             BindMenuButtons();
             BindModalButtons();
             ResetTableState();
+            string[] args = Environment.GetCommandLineArgs();
+            _directTableV2Mode = !Application.isEditor
+                && Array.IndexOf(args, "--prototype-mahjong-table-v2") >= 0;
             _directTableMode = !Application.isEditor
-                && Array.IndexOf(Environment.GetCommandLineArgs(), "--prototype-mahjong-table") >= 0;
-            if (_directTableMode)
+                && (_directTableV2Mode || Array.IndexOf(args, "--prototype-mahjong-table") >= 0);
+            if (_directTableV2Mode)
+                ShowSeatPrototypeV2();
+            else if (_directTableMode)
                 ShowSeatPrototype();
             else
                 ShowMenu();
@@ -197,7 +204,8 @@ namespace Mahjong.Unity.UI.Prototype
         private void HandleInput()
         {
             if (Keyboard.current == null) return;
-            if (_directTableMode && _activePage == "seat-prototype" && Keyboard.current.cKey.wasPressedThisFrame)
+            if (_directTableMode && (_activePage == "seat-prototype" || _activePage == "seat-prototype-v2")
+                && Keyboard.current.cKey.wasPressedThisFrame)
                 StartCoroutine(CapturePrototypeScreenshot());
             if (Keyboard.current.tabKey.wasPressedThisFrame || Keyboard.current.escapeKey.wasPressedThisFrame)
             {
@@ -547,6 +555,7 @@ namespace Mahjong.Unity.UI.Prototype
             if (_menuPage != null) _menuPage.SetActive(true);
             if (_tablePage != null) _tablePage.SetActive(false);
             if (_seatPrototypePage != null) _seatPrototypePage.SetActive(false);
+            if (_seatPrototypeV2Page != null) _seatPrototypeV2Page.SetActive(false);
             if (_galleryModal != null) _galleryModal.SetActive(false);
             if (_noticeModal != null) _noticeModal.SetActive(false);
             StopTargetPickerEntrance();
@@ -570,6 +579,7 @@ namespace Mahjong.Unity.UI.Prototype
             if (_menuPage != null) _menuPage.SetActive(false);
             if (_tablePage != null) _tablePage.SetActive(true);
             if (_seatPrototypePage != null) _seatPrototypePage.SetActive(false);
+            if (_seatPrototypeV2Page != null) _seatPrototypeV2Page.SetActive(false);
             if (_galleryModal != null) _galleryModal.SetActive(false);
             if (_noticeModal != null) _noticeModal.SetActive(false);
 
@@ -592,6 +602,7 @@ namespace Mahjong.Unity.UI.Prototype
             _activePage = "seat-prototype";
             if (_menuPage != null) _menuPage.SetActive(false);
             if (_tablePage != null) _tablePage.SetActive(false);
+            if (_seatPrototypeV2Page != null) _seatPrototypeV2Page.SetActive(false);
             if (_seatPrototypePage != null) _seatPrototypePage.SetActive(true);
             if (_galleryModal != null) _galleryModal.SetActive(false);
             if (_noticeModal != null) _noticeModal.SetActive(false);
@@ -600,6 +611,34 @@ namespace Mahjong.Unity.UI.Prototype
             if (_menuBackgroundImage != null) _menuBackgroundImage.gameObject.SetActive(false);
             if (_tableBackgroundImage != null) _tableBackgroundImage.gameObject.SetActive(false);
             SetFlyingTilesVisible(false);
+        }
+
+        public void ShowSeatPrototypeV2()
+        {
+            if (_stageRoot == null) return;
+            _isAutoLooping = false;
+            StopAllActiveAnimations();
+            EnsureSeatPrototypeV2Ui();
+            _activePage = "seat-prototype-v2";
+            if (_menuPage != null) _menuPage.SetActive(false);
+            if (_tablePage != null) _tablePage.SetActive(false);
+            if (_seatPrototypePage != null) _seatPrototypePage.SetActive(false);
+            if (_seatPrototypeV2Page != null) _seatPrototypeV2Page.SetActive(true);
+            if (_galleryModal != null) _galleryModal.SetActive(false);
+            if (_noticeModal != null) _noticeModal.SetActive(false);
+            if (_preparationPanel != null) _preparationPanel.SetActive(false);
+            if (_targetPickerPanel != null) _targetPickerPanel.SetActive(false);
+            if (_menuBackgroundImage != null) _menuBackgroundImage.gameObject.SetActive(false);
+            if (_tableBackgroundImage != null) _tableBackgroundImage.gameObject.SetActive(false);
+            SetFlyingTilesVisible(false);
+        }
+
+        private void EnsureSeatPrototypeV2Ui()
+        {
+            if (_stageRoot == null || _seatPrototypeV2Page != null) return;
+            _seatPrototypeV2Page = CreatePage("Prototype Mahjong V2", _stageRoot);
+            BuildSeatPrototypeContent(_seatPrototypeV2Page.transform, true);
+            _seatPrototypeV2Page.SetActive(false);
         }
 
         private void EnsureSeatPrototypeUi()
@@ -638,7 +677,7 @@ namespace Mahjong.Unity.UI.Prototype
             }
         }
 
-        private void BuildSeatPrototypeContent(Transform parent)
+        private void BuildSeatPrototypeContent(Transform parent, bool connectedWallV2 = false)
         {
             var bgGo = new GameObject("Blue felt background", typeof(RectTransform), typeof(CanvasRenderer), typeof(RawImage));
             bgGo.transform.SetParent(parent, false);
@@ -670,15 +709,24 @@ namespace Mahjong.Unity.UI.Prototype
             feltWash.raycastTarget = false;
             Stretch(feltWash.rectTransform);
 
-            // The tile backs meet at their front faces; overlap the hidden sprite margins.
-            int[] topWall = Enumerable.Repeat(0, 14).ToArray();
-            int[] sideWall = Enumerable.Repeat(0, 13).ToArray();
-            CreateConnectedTileRow("WallOpposite", topWall, Tile2D5Mode.StandingBack,
-                new Vector2(535, 14), new Vector2(28, 44), 25.5f, false, parent);
-            CreateConnectedTileRow("WallLeft", sideWall, Tile2D5Mode.StandingBack,
-                new Vector2(220, 83), new Vector2(28, 38), 16.5f, true, parent, -4.5f);
-            CreateConnectedTileRow("WallRight", sideWall, Tile2D5Mode.StandingBack,
-                new Vector2(1085, 222), new Vector2(34, 46), 21.5f, true, parent, 6.5f);
+            if (connectedWallV2)
+            {
+                CreateMahjongWall("WallOpposite V2", MahjongWallSeat.North, parent);
+                CreateMahjongWall("WallLeft V2", MahjongWallSeat.West, parent);
+                CreateMahjongWall("WallRight V2", MahjongWallSeat.East, parent);
+            }
+            else
+            {
+                // The tile backs meet at their front faces; overlap the hidden sprite margins.
+                int[] topWall = Enumerable.Repeat(0, 14).ToArray();
+                int[] sideWall = Enumerable.Repeat(0, 13).ToArray();
+                CreateConnectedTileRow("WallOpposite", topWall, Tile2D5Mode.StandingBack,
+                    new Vector2(535, 14), new Vector2(28, 44), 25.5f, false, parent);
+                CreateConnectedTileRow("WallLeft", sideWall, Tile2D5Mode.StandingBack,
+                    new Vector2(220, 83), new Vector2(28, 38), 16.5f, true, parent, -4.5f);
+                CreateConnectedTileRow("WallRight", sideWall, Tile2D5Mode.StandingBack,
+                    new Vector2(1085, 222), new Vector2(34, 46), 21.5f, true, parent, 6.5f);
+            }
 
             int[] river = { 27, 28, 29, 31, 32, 33, 34, 35, 36, 4, 13, 22, 30, 5, 14, 23, 6, 15, 24, 26 };
             CreateConnectedTileRow("RiverOpposite", river.Take(5).ToArray(), Tile2D5Mode.FlatFront,
@@ -717,6 +765,18 @@ namespace Mahjong.Unity.UI.Prototype
             Text? backText = back.GetComponentInChildren<Text>(true);
             if (backText != null) backText.text = "返回";
             back.onClick.AddListener(ShowMenu);
+        }
+
+        private static void CreateMahjongWall(string name, MahjongWallSeat seat, Transform parent)
+        {
+            var go = new GameObject(name, typeof(RectTransform), typeof(CanvasRenderer), typeof(MahjongWallRowGraphic));
+            go.transform.SetParent(parent, false);
+            RectTransform rect = go.GetComponent<RectTransform>();
+            rect.anchorMin = rect.anchorMax = new Vector2(0f, 1f);
+            rect.pivot = new Vector2(0f, 1f);
+            rect.anchoredPosition = Vector2.zero;
+            rect.sizeDelta = new Vector2(1280f, 720f);
+            go.GetComponent<MahjongWallRowGraphic>().Configure(seat);
         }
 
         private void DrawPrototypeSeat(string name, Sprite? portrait, Rect portraitRect, Rect plateRect, Transform parent)
