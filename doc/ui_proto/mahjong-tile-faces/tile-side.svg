@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="240" height="540" viewBox="0 0 240 540">
+  <title>麻将牌侧面，54×24，前半白色牌芯，后半黄色牌背</title>
+  <defs>
+    <linearGradient id="white" x2="0" y2="1"><stop stop-color="#fffef8"/><stop offset="1" stop-color="#e8e0cf"/></linearGradient>
+    <linearGradient id="yellow" x2="0" y2="1"><stop stop-color="#f5c45b"/><stop offset="1" stop-color="#d7972b"/></linearGradient>
+    <filter id="shadow" x="-25%" y="-15%" width="150%" height="140%"><feDropShadow dx="5" dy="8" stdDeviation="8" flood-color="#21334a" flood-opacity=".24"/></filter>
+  </defs>
+  <g filter="url(#shadow)">
+    <path d="M12 24Q12 12 24 12H216Q228 12 228 24V516Q228 528 216 528H24Q12 528 12 516Z" fill="#694718"/>
+    <path d="M12 24Q12 12 24 12H120V528H24Q12 528 12 516Z" fill="url(#white)"/>
+    <path d="M120 12H216Q228 12 228 24V516Q228 528 216 528H120Z" fill="url(#yellow)"/>
+    <path d="M120 18V522" stroke="#9b6c27" stroke-width="5"/>
+    <path d="M24 19H216" stroke="#fff1c7" stroke-width="6" stroke-linecap="round"/>
+    <path d="M22 519H218" stroke="#8c5d1f" stroke-width="5"/>
+    <path d="M18 28V510" stroke="#fffdf4" stroke-opacity=".85" stroke-width="4"/>
+  </g>
+</svg>

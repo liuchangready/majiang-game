@@ -24,6 +24,16 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-ui-proto
 
 This opens the newest successful player in a 1280×720 window. Launching `ui_proto.exe` normally still opens the main menu.
 
+## Open the reference-matched wall prototype
+
+Use V3 to compare the three separate orange seat walls with the supplied table reference:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/run-ui-proto-table.ps1 -PrototypeVersion v3
+```
+
+V3 opens at 1200×690 (40:23). Press `C` to save a timestamped PNG under the selected build root's `screenshots/` directory. The V1 and V2 launch modes remain available with `-PrototypeVersion v1` or `v2`.
+
 While this direct table-only Player is focused, press **C** to save a PNG in the active build root's `screenshots/` folder. Each press uses a unique timestamped name (`table-YYYYMMDD-HHmmss-fff-<n>.png`); these captures are independent of the Player folder and remain with that build's evidence.
 
 ## Compare the redesigned wall prototype (V2)

@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     [string]$RunRoot = '',
-    [ValidateSet('v1','v2')][string]$PrototypeVersion = 'v1'
+    [ValidateSet('v1','v2','v3')][string]$PrototypeVersion = 'v1'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -25,8 +25,12 @@ if ([string]::IsNullOrWhiteSpace($RunRoot)) {
 
 $exe = Join-Path ([IO.Path]::GetFullPath($RunRoot)) 'player\ui_proto.exe'
 if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { throw "Player executable not found: $exe" }
-$size = if ($PrototypeVersion -eq 'v2') { @('1200', '690') } else { @('1280', '720') }
-$switch = if ($PrototypeVersion -eq 'v2') { '--prototype-mahjong-table-v2' } else { '--prototype-mahjong-table' }
+$size = if ($PrototypeVersion -in @('v2','v3')) { @('1200', '690') } else { @('1280', '720') }
+$switch = switch ($PrototypeVersion) {
+    'v2' { '--prototype-mahjong-table-v2' }
+    'v3' { '--prototype-mahjong-table-v3' }
+    default { '--prototype-mahjong-table' }
+}
 $process = Start-Process -FilePath $exe -WorkingDirectory (Split-Path $exe) `
     -ArgumentList @('-screen-width', $size[0], '-screen-height', $size[1], '-screen-fullscreen', '0', $switch) -PassThru
 Write-Host "UI_PROTO_TABLE_STARTED version=$PrototypeVersion pid=$($process.Id) exe=$exe"

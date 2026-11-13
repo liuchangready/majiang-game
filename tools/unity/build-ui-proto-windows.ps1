@@ -128,7 +128,19 @@ try {
         throw "FAIL: could not read a completed native Unity exit code for pid=$($child.Id)."
     }
     $unityExit = [int]$nativeExitCode
-    $logText = if (Test-Path -LiteralPath $unityLog) { [IO.File]::ReadAllText($unityLog) } else { '' }
+    $logText = ''
+    if (Test-Path -LiteralPath $unityLog) {
+        for ($logReadAttempt = 0; $logReadAttempt -lt 11; $logReadAttempt++) {
+            try {
+                $logText = [IO.File]::ReadAllText($unityLog)
+                break
+            }
+            catch [IO.IOException] {
+                if ($logReadAttempt -eq 10) { throw }
+                Start-Sleep -Milliseconds 250
+            }
+        }
+    }
     $compileErrors = @([regex]::Matches($logText, '(?m)^.*(?:error CS\d+|Compilation failed|Scripts have compiler errors).*$') | ForEach-Object { $_.Value.Trim() } | Select-Object -Unique)
     $buildReport = if (Test-Path -LiteralPath $buildReportPath) { Get-Content -LiteralPath $buildReportPath -Raw | ConvertFrom-Json } else { $null }
     $buildReportSucceeded = $buildReport -ne $null -and $buildReport.result -eq 'Succeeded' -and [int]$buildReport.totalErrors -eq 0

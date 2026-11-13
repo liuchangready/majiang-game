@@ -29,6 +29,10 @@ namespace Mahjong.Unity.UI.Prototype
         [SerializeField] private bool _isHoverable = true;
         [SerializeField] private bool _isSelectable = true;
         [SerializeField] private bool _isRotated90 = false;
+        private bool _fourFaceAssembly;
+        private bool _fourFaceFrontFillsRoot;
+        private Sprite? _fourFaceFront;
+        private float _fourFaceProjectedDepth = -1f;
 
         [Header("Internal References")]
         [SerializeField] private RectTransform? _shadowRect;
@@ -110,6 +114,15 @@ namespace Mahjong.Unity.UI.Prototype
         {
             _isHoverable = hoverable;
             _isSelectable = selectable;
+        }
+
+        public void UseFourFaceAssembly(float projectedDepth = -1f, bool frontFillsRoot = false)
+        {
+            _fourFaceAssembly = true;
+            _fourFaceProjectedDepth = projectedDepth;
+            _fourFaceFrontFillsRoot = frontFillsRoot;
+            _fourFaceFront = MahjongTileFaceAtlas.Front;
+            ApplyModeVisuals(_glyphImage != null ? _glyphImage.sprite : null);
         }
 
         public void SetHovered(bool hovered, bool animated = true)
@@ -268,16 +281,49 @@ namespace Mahjong.Unity.UI.Prototype
             EnsureHierarchy();
             RectTransform rootRt = GetComponent<RectTransform>();
             bool isStanding = _mode == Tile2D5Mode.Standing || _mode == Tile2D5Mode.StandingBack;
+            bool assembledFlatFront = _fourFaceAssembly && _mode == Tile2D5Mode.FlatFront;
+            float faceDepth = assembledFlatFront
+                ? Mathf.Min(_fourFaceProjectedDepth > 0f ? _fourFaceProjectedDepth
+                    : Mathf.Min(rootRt.rect.width * (24f / 34f), rootRt.rect.height * (24f / 54f)),
+                    Mathf.Min(rootRt.rect.width * (24f / 34f), rootRt.rect.height * (24f / 54f)))
+                : Mathf.Clamp(rootRt.rect.width * 0.12f, 5f, 9f);
             if (_thicknessGraphic != null)
             {
-                _thicknessGraphic.gameObject.SetActive(isStanding);
-                _thicknessGraphic.SetDepth(Mathf.Clamp(rootRt.rect.width * 0.12f, 5f, 9f));
+                _thicknessGraphic.gameObject.SetActive(isStanding || assembledFlatFront);
+                _thicknessGraphic.SetDepth(faceDepth);
+                RectTransform thicknessRect = _thicknessGraphic.rectTransform;
+                if (assembledFlatFront && _fourFaceFrontFillsRoot)
+                {
+                    thicknessRect.offsetMin = new Vector2(0f, -faceDepth);
+                    thicknessRect.offsetMax = new Vector2(faceDepth, 0f);
+                }
+                else
+                {
+                    thicknessRect.offsetMin = Vector2.zero;
+                    thicknessRect.offsetMax = Vector2.zero;
+                }
+                if (assembledFlatFront)
+                    _thicknessGraphic.SetFaceColors(
+                        new Color(.93f, .82f, .62f, 1f),
+                        new Color(.58f, .38f, .18f, 1f),
+                        new Color(.68f, .45f, .22f, 1f));
+                if (assembledFlatFront && MahjongTileFaceAtlas.Texture != null)
+                    _thicknessGraphic.SetFaceTextures(MahjongTileFaceAtlas.Texture,
+                        MahjongTileFaceAtlas.SideUv, MahjongTileFaceAtlas.BottomUv);
             }
             if (_bodyRect != null)
             {
-                float depth = isStanding ? Mathf.Clamp(rootRt.rect.width * 0.12f, 5f, 9f) : 0f;
-                _bodyRect.offsetMin = new Vector2(0f, depth);
-                _bodyRect.offsetMax = new Vector2(-depth, 0f);
+                float depth = isStanding || assembledFlatFront ? faceDepth : 0f;
+                if (assembledFlatFront && _fourFaceFrontFillsRoot)
+                {
+                    _bodyRect.offsetMin = Vector2.zero;
+                    _bodyRect.offsetMax = Vector2.zero;
+                }
+                else
+                {
+                    _bodyRect.offsetMin = new Vector2(0f, depth);
+                    _bodyRect.offsetMax = new Vector2(-depth, 0f);
+                }
             }
 
             if (_isRotated90)
@@ -336,14 +382,16 @@ namespace Mahjong.Unity.UI.Prototype
                     break;
 
                 case Tile2D5Mode.FlatFront:
+                    bool useTextureFront = assembledFlatFront && _tileIndex == 33 && _fourFaceFront != null;
                     if (_chassisImage != null)
                     {
-                        _chassisImage.sprite = _flatFrontChassis;
+                        _chassisImage.sprite = useTextureFront ? _fourFaceFront
+                            : assembledFlatFront ? _standingChassis : _flatFrontChassis;
                         _chassisImage.color = Color.white;
                     }
                     if (_glyphImage != null)
                     {
-                        _glyphImage.gameObject.SetActive(true);
+                        _glyphImage.gameObject.SetActive(!useTextureFront);
                         _glyphImage.sprite = faceSprite;
                         _glyphImage.preserveAspect = true;
                     }
@@ -477,6 +525,13 @@ namespace Mahjong.Unity.UI.Prototype
     public sealed class TileThicknessGraphic : MaskableGraphic
     {
         private float _depth = 7f;
+        private bool _showBottomFace;
+        private Texture2D? _faceAtlas;
+        private Rect _sideUv;
+        private Rect _bottomUv;
+        private Color _topFaceColor;
+        private Color _sideFaceColor;
+        private Color _bottomFaceColor;
 
         public void SetDepth(float depth)
         {
@@ -485,11 +540,32 @@ namespace Mahjong.Unity.UI.Prototype
             SetVerticesDirty();
         }
 
+        public void SetFaceColors(Color top, Color side, Color bottom)
+        {
+            _topFaceColor = top;
+            _sideFaceColor = side;
+            _bottomFaceColor = bottom;
+            _showBottomFace = true;
+            SetVerticesDirty();
+        }
+
+        public void SetFaceTextures(Texture2D atlas, Rect sideUv, Rect bottomUv)
+        {
+            _faceAtlas = atlas;
+            _sideUv = sideUv;
+            _bottomUv = bottomUv;
+            _showBottomFace = true;
+            SetMaterialDirty();
+            SetVerticesDirty();
+        }
+
+        public override Texture mainTexture => _faceAtlas != null ? _faceAtlas : s_WhiteTexture;
+
         protected override void OnPopulateMesh(VertexHelper vertices)
         {
             vertices.Clear();
             Rect rect = GetPixelAdjustedRect();
-            float depth = Mathf.Min(_depth, Mathf.Min(rect.width * 0.2f, rect.height * 0.15f));
+            float depth = Mathf.Min(_depth, Mathf.Min(rect.width * (24f / 34f), rect.height * (24f / 54f)));
             if (depth <= 0f) return;
 
             Vector2 frontBottomLeft = new Vector2(rect.xMin, rect.yMin + depth);
@@ -498,18 +574,64 @@ namespace Mahjong.Unity.UI.Prototype
             Vector2 frontTopLeft = new Vector2(rect.xMin, rect.yMax);
             Vector2 extrusion = new Vector2(depth, -depth);
 
-            AddQuad(vertices,
-                frontTopLeft,
-                frontTopRight,
-                frontTopRight + extrusion,
-                frontTopLeft + extrusion,
-                color * new Color(0.94f, 0.82f, 0.60f, 1f));
-            AddQuad(vertices,
-                frontBottomRight,
-                frontTopRight,
-                frontTopRight + extrusion,
-                frontBottomRight + extrusion,
-                color * new Color(0.58f, 0.39f, 0.19f, 1f));
+            if (_showBottomFace && _faceAtlas != null)
+                AddTextureQuad(vertices,
+                    frontBottomLeft, frontBottomRight, frontBottomRight + extrusion, frontBottomLeft + extrusion,
+                    _bottomUv, true, color);
+            else if (_showBottomFace)
+                AddQuad(vertices,
+                    frontBottomLeft,
+                    frontBottomRight,
+                    frontBottomRight + extrusion,
+                    frontBottomLeft + extrusion,
+                    color * _bottomFaceColor);
+            if (_showBottomFace && _faceAtlas != null)
+            {
+                AddTextureQuad(vertices, frontTopLeft, frontTopRight, frontTopRight + extrusion,
+                    frontTopLeft + extrusion, _bottomUv, true, color);
+                AddTextureQuad(vertices, frontBottomRight, frontTopRight, frontTopRight + extrusion,
+                    frontBottomRight + extrusion, _sideUv, false, color);
+            }
+            else
+            {
+                AddQuad(vertices,
+                    frontTopLeft,
+                    frontTopRight,
+                    frontTopRight + extrusion,
+                    frontTopLeft + extrusion,
+                    color * (_showBottomFace ? _topFaceColor : new Color(0.94f, 0.82f, 0.60f, 1f)));
+                AddQuad(vertices,
+                    frontBottomRight,
+                    frontTopRight,
+                    frontTopRight + extrusion,
+                    frontBottomRight + extrusion,
+                    color * (_showBottomFace ? _sideFaceColor : new Color(0.58f, 0.39f, 0.19f, 1f)));
+            }
+        }
+
+        private static void AddTextureQuad(VertexHelper vertices, Vector2 a, Vector2 b, Vector2 c, Vector2 d,
+            Rect rect, bool depthBands, Color tint)
+        {
+            int start = vertices.currentVertCount;
+            float left = rect.xMin, right = rect.xMax, bottom = rect.yMin, top = rect.yMax;
+            UIVertex vertex = UIVertex.simpleVert;
+            vertex.color = tint;
+            if (depthBands)
+            {
+                vertex.position = a; vertex.uv0 = new Vector2(left, top); vertices.AddVert(vertex);
+                vertex.position = b; vertex.uv0 = new Vector2(right, top); vertices.AddVert(vertex);
+                vertex.position = c; vertex.uv0 = new Vector2(right, bottom); vertices.AddVert(vertex);
+                vertex.position = d; vertex.uv0 = new Vector2(left, bottom); vertices.AddVert(vertex);
+            }
+            else
+            {
+                vertex.position = a; vertex.uv0 = new Vector2(left, bottom); vertices.AddVert(vertex);
+                vertex.position = b; vertex.uv0 = new Vector2(left, top); vertices.AddVert(vertex);
+                vertex.position = c; vertex.uv0 = new Vector2(right, top); vertices.AddVert(vertex);
+                vertex.position = d; vertex.uv0 = new Vector2(right, bottom); vertices.AddVert(vertex);
+            }
+            vertices.AddTriangle(start, start + 1, start + 2);
+            vertices.AddTriangle(start, start + 2, start + 3);
         }
 
         private static void AddQuad(VertexHelper vertices, Vector2 a, Vector2 b, Vector2 c, Vector2 d, Color tint)

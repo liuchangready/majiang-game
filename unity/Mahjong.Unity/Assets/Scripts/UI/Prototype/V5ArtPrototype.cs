@@ -74,6 +74,7 @@ namespace Mahjong.Unity.UI.Prototype
         [SerializeField] private RectTransform? _wallRoot;
         [SerializeField] private RectTransform? _demoControlsBar;
         [SerializeField] private GameObject? _seatPrototypeV2Page;
+        [SerializeField] private GameObject? _seatPrototypeV3Page;
         private RectTransform? _matchHudRoot;
         [SerializeField] private Text? _demoStatusText;
         [SerializeField] private Text? _wallCountText;
@@ -143,8 +144,10 @@ namespace Mahjong.Unity.UI.Prototype
         private static readonly int[] SampleDrawDeck = { 34, 3, 12, 21, 28, 29, 32, 33, 4, 13, 22 };
         private int _drawDeckIndex = 0;
         private int _screenshotSequence;
+        private int _lastScreenshotInputFrame = -1;
         private bool _directTableMode;
         private bool _directTableV2Mode;
+        private bool _directTableV3Mode;
 
         public bool IsPaused => _isPaused;
         public bool IsAutoLooping => _isAutoLooping;
@@ -178,11 +181,15 @@ namespace Mahjong.Unity.UI.Prototype
             BindModalButtons();
             ResetTableState();
             string[] args = Environment.GetCommandLineArgs();
+            _directTableV3Mode = !Application.isEditor
+                && Array.IndexOf(args, "--prototype-mahjong-table-v3") >= 0;
             _directTableV2Mode = !Application.isEditor
                 && Array.IndexOf(args, "--prototype-mahjong-table-v2") >= 0;
             _directTableMode = !Application.isEditor
-                && (_directTableV2Mode || Array.IndexOf(args, "--prototype-mahjong-table") >= 0);
-            if (_directTableV2Mode)
+                && (_directTableV3Mode || _directTableV2Mode || Array.IndexOf(args, "--prototype-mahjong-table") >= 0);
+            if (_directTableV3Mode)
+                ShowSeatPrototypeV3();
+            else if (_directTableV2Mode)
                 ShowSeatPrototypeV2();
             else if (_directTableMode)
                 ShowSeatPrototype();
@@ -204,9 +211,12 @@ namespace Mahjong.Unity.UI.Prototype
         private void HandleInput()
         {
             if (Keyboard.current == null) return;
-            if (_directTableMode && (_activePage == "seat-prototype" || _activePage == "seat-prototype-v2")
-                && Keyboard.current.cKey.wasPressedThisFrame)
-                StartCoroutine(CapturePrototypeScreenshot());
+            bool screenshotPressed = Keyboard.current.cKey.wasPressedThisFrame;
+            if (screenshotPressed)
+                Debug.Log("[V5ArtPrototype] C key detected direct=" + _directTableMode + " page=" + _activePage);
+            if (_directTableMode && (_activePage == "seat-prototype" || _activePage == "seat-prototype-v2" || _activePage == "seat-prototype-v3")
+                && screenshotPressed)
+                QueuePrototypeScreenshot();
             if (Keyboard.current.tabKey.wasPressedThisFrame || Keyboard.current.escapeKey.wasPressedThisFrame)
             {
                 if (_galleryModal != null && _galleryModal.activeSelf) _galleryModal.SetActive(false);
@@ -229,6 +239,23 @@ namespace Mahjong.Unity.UI.Prototype
             if (Keyboard.current.digit6Key.wasPressedThisFrame) TriggerChi();
             if (Keyboard.current.digit7Key.wasPressedThisFrame) TriggerPon();
             if (Keyboard.current.digit8Key.wasPressedThisFrame) TriggerKan();
+        }
+
+        private void OnGUI()
+        {
+            if (!_directTableMode || (_activePage != "seat-prototype" && _activePage != "seat-prototype-v2" && _activePage != "seat-prototype-v3")) return;
+            Event current = Event.current;
+            if (current == null || current.type != EventType.KeyDown || current.keyCode != KeyCode.C) return;
+            current.Use();
+            Debug.Log("[V5ArtPrototype] C key detected by IMGUI fallback page=" + _activePage);
+            QueuePrototypeScreenshot();
+        }
+
+        private void QueuePrototypeScreenshot()
+        {
+            if (_lastScreenshotInputFrame == Time.frameCount) return;
+            _lastScreenshotInputFrame = Time.frameCount;
+            StartCoroutine(CapturePrototypeScreenshot());
         }
 
         private IEnumerator CapturePrototypeScreenshot()
@@ -556,6 +583,7 @@ namespace Mahjong.Unity.UI.Prototype
             if (_tablePage != null) _tablePage.SetActive(false);
             if (_seatPrototypePage != null) _seatPrototypePage.SetActive(false);
             if (_seatPrototypeV2Page != null) _seatPrototypeV2Page.SetActive(false);
+            if (_seatPrototypeV3Page != null) _seatPrototypeV3Page.SetActive(false);
             if (_galleryModal != null) _galleryModal.SetActive(false);
             if (_noticeModal != null) _noticeModal.SetActive(false);
             StopTargetPickerEntrance();
@@ -580,6 +608,7 @@ namespace Mahjong.Unity.UI.Prototype
             if (_tablePage != null) _tablePage.SetActive(true);
             if (_seatPrototypePage != null) _seatPrototypePage.SetActive(false);
             if (_seatPrototypeV2Page != null) _seatPrototypeV2Page.SetActive(false);
+            if (_seatPrototypeV3Page != null) _seatPrototypeV3Page.SetActive(false);
             if (_galleryModal != null) _galleryModal.SetActive(false);
             if (_noticeModal != null) _noticeModal.SetActive(false);
 
@@ -603,6 +632,7 @@ namespace Mahjong.Unity.UI.Prototype
             if (_menuPage != null) _menuPage.SetActive(false);
             if (_tablePage != null) _tablePage.SetActive(false);
             if (_seatPrototypeV2Page != null) _seatPrototypeV2Page.SetActive(false);
+            if (_seatPrototypeV3Page != null) _seatPrototypeV3Page.SetActive(false);
             if (_seatPrototypePage != null) _seatPrototypePage.SetActive(true);
             if (_galleryModal != null) _galleryModal.SetActive(false);
             if (_noticeModal != null) _noticeModal.SetActive(false);
@@ -624,6 +654,28 @@ namespace Mahjong.Unity.UI.Prototype
             if (_tablePage != null) _tablePage.SetActive(false);
             if (_seatPrototypePage != null) _seatPrototypePage.SetActive(false);
             if (_seatPrototypeV2Page != null) _seatPrototypeV2Page.SetActive(true);
+            if (_seatPrototypeV3Page != null) _seatPrototypeV3Page.SetActive(false);
+            if (_galleryModal != null) _galleryModal.SetActive(false);
+            if (_noticeModal != null) _noticeModal.SetActive(false);
+            if (_preparationPanel != null) _preparationPanel.SetActive(false);
+            if (_targetPickerPanel != null) _targetPickerPanel.SetActive(false);
+            if (_menuBackgroundImage != null) _menuBackgroundImage.gameObject.SetActive(false);
+            if (_tableBackgroundImage != null) _tableBackgroundImage.gameObject.SetActive(false);
+            SetFlyingTilesVisible(false);
+        }
+
+        public void ShowSeatPrototypeV3()
+        {
+            if (_stageRoot == null) return;
+            _isAutoLooping = false;
+            StopAllActiveAnimations();
+            EnsureSeatPrototypeV3Ui();
+            _activePage = "seat-prototype-v3";
+            if (_menuPage != null) _menuPage.SetActive(false);
+            if (_tablePage != null) _tablePage.SetActive(false);
+            if (_seatPrototypePage != null) _seatPrototypePage.SetActive(false);
+            if (_seatPrototypeV2Page != null) _seatPrototypeV2Page.SetActive(false);
+            if (_seatPrototypeV3Page != null) _seatPrototypeV3Page.SetActive(true);
             if (_galleryModal != null) _galleryModal.SetActive(false);
             if (_noticeModal != null) _noticeModal.SetActive(false);
             if (_preparationPanel != null) _preparationPanel.SetActive(false);
@@ -640,6 +692,14 @@ namespace Mahjong.Unity.UI.Prototype
             _seatPrototypeV2Page = CreatePage("Prototype Mahjong V2", _stageRoot);
             BuildSeatPrototypeContent(_seatPrototypeV2Page.transform, true);
             _seatPrototypeV2Page.SetActive(false);
+        }
+
+        private void EnsureSeatPrototypeV3Ui()
+        {
+            if (_stageRoot == null || _seatPrototypeV3Page != null) return;
+            _seatPrototypeV3Page = CreatePage("Prototype Mahjong V3 Reference Layout", _stageRoot);
+            BuildSeatPrototypeContent(_seatPrototypeV3Page.transform, false, true);
+            _seatPrototypeV3Page.SetActive(false);
         }
 
         private void EnsureSeatPrototypeUi()
@@ -678,27 +738,36 @@ namespace Mahjong.Unity.UI.Prototype
             }
         }
 
-        private void BuildSeatPrototypeContent(Transform parent, bool connectedWallV2 = false)
+        private void BuildSeatPrototypeContent(Transform parent, bool connectedWallV2 = false, bool separatedReferenceWallV3 = false)
         {
             var bgGo = new GameObject("Blue felt background", typeof(RectTransform), typeof(CanvasRenderer), typeof(RawImage));
             bgGo.transform.SetParent(parent, false);
             RawImage bg = bgGo.GetComponent<RawImage>();
             bg.raycastTarget = false;
-            Sprite? feltSprite = Resources.Load<Sprite>("Prototype/Table/mahjong-table-felt");
+            Sprite? feltSprite = Resources.Load<Sprite>(separatedReferenceWallV3
+                ? "Prototype/Table/mahjong-table-felt-inset"
+                : "Prototype/Table/mahjong-table-felt");
             if (feltSprite != null)
             {
                 bg.texture = feltSprite.texture;
-                float sourceAspect = (float)bg.texture.width / bg.texture.height;
-                float targetAspect = 1280f / 720f;
-                if (sourceAspect > targetAspect)
+                if (separatedReferenceWallV3)
                 {
-                    float cropWidth = targetAspect / sourceAspect;
-                    bg.uvRect = new Rect((1f - cropWidth) * .5f, 0f, cropWidth, 1f);
+                    bg.uvRect = new Rect(.04f, 0f, .92f, 1f);
                 }
                 else
                 {
-                    float cropHeight = sourceAspect / targetAspect;
-                    bg.uvRect = new Rect(0f, (1f - cropHeight) * .5f, 1f, cropHeight);
+                    float sourceAspect = (float)bg.texture.width / bg.texture.height;
+                    float targetAspect = 1280f / 720f;
+                    if (sourceAspect > targetAspect)
+                    {
+                        float cropWidth = targetAspect / sourceAspect;
+                        bg.uvRect = new Rect((1f - cropWidth) * .5f, 0f, cropWidth, 1f);
+                    }
+                    else
+                    {
+                        float cropHeight = sourceAspect / targetAspect;
+                        bg.uvRect = new Rect(0f, (1f - cropHeight) * .5f, 1f, cropHeight);
+                    }
                 }
             }
             Stretch(bg.rectTransform);
@@ -706,11 +775,23 @@ namespace Mahjong.Unity.UI.Prototype
             var feltWashGo = new GameObject("Blue felt light wash", typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
             feltWashGo.transform.SetParent(parent, false);
             Image feltWash = feltWashGo.GetComponent<Image>();
-            feltWash.color = new Color(.38f, .52f, .72f, .14f);
+            feltWash.color = separatedReferenceWallV3
+                ? new Color(.035f, .07f, .14f, .12f)
+                : new Color(.38f, .52f, .72f, .14f);
             feltWash.raycastTarget = false;
             Stretch(feltWash.rectTransform);
 
-            if (connectedWallV2)
+            Transform tableRingParent = separatedReferenceWallV3
+                ? CreateScaledReferenceTableRing(parent, 1.1f)
+                : parent;
+
+            if (separatedReferenceWallV3)
+            {
+                CreateMahjongWall("WallOpposite V3", MahjongWallSeat.North, tableRingParent, true);
+                CreateMahjongWall("WallLeft V3", MahjongWallSeat.West, tableRingParent, true);
+                CreateMahjongWall("WallRight V3", MahjongWallSeat.East, tableRingParent, true);
+            }
+            else if (connectedWallV2)
             {
                 CreateMahjongWall("WallOpposite V2", MahjongWallSeat.North, parent);
                 CreateMahjongWall("WallLeft V2", MahjongWallSeat.West, parent);
@@ -730,46 +811,190 @@ namespace Mahjong.Unity.UI.Prototype
             }
 
             int[] river = { 27, 28, 29, 31, 32, 33, 34, 35, 36, 4, 13, 22, 30, 5, 14, 23, 6, 15, 24, 26 };
-            CreateConnectedTileRow("RiverOpposite", river.Take(5).ToArray(), Tile2D5Mode.FlatFront,
-                new Vector2(520, 159), new Vector2(34, 44), 29, false, parent);
-            CreateConnectedTileRow("RiverSelf", river.Skip(5).Take(5).ToArray(), Tile2D5Mode.FlatFront,
-                new Vector2(520, 435), new Vector2(34, 44), 29, false, parent);
-            CreateConnectedTileRow("RiverLeft", river.Skip(10).Take(5).ToArray(), Tile2D5Mode.FlatFront,
-                new Vector2(430, 287), new Vector2(34, 44), 29, true, parent);
-            CreateConnectedTileRow("RiverRight", river.Skip(15).Take(5).ToArray(), Tile2D5Mode.FlatFront,
-                new Vector2(818, 287), new Vector2(34, 44), 29, true, parent);
+            if (separatedReferenceWallV3)
+            {
+                Vector2 acrossRiverSize = new Vector2(
+                    PrototypeTileDimensions.SelfHandFaceWidth * PrototypeTileDimensions.OppositeWidthRatio,
+                    PrototypeTileDimensions.SelfHandFaceHeight * PrototypeTileDimensions.OppositeHeightRatio);
+                const float acrossRiverGap = 2f;
+                float acrossRiverStep = acrossRiverSize.x + acrossRiverGap;
+                float acrossRiverRowWidth = acrossRiverSize.x * 5f + acrossRiverGap * 4f;
+                float acrossRiverStartX = (1280f - acrossRiverRowWidth) * .5f;
+
+                float upperWidth = PrototypeTileDimensions.SelfHandFaceWidth
+                    * PrototypeTileDimensions.SideWidthRatio(MahjongWallSeat.West, .5f);
+                float upperHeight = PrototypeTileDimensions.SelfHandFaceHeight
+                    * PrototypeTileDimensions.SideHeightRatio(MahjongWallSeat.West, .5f);
+                float lowerWidth = PrototypeTileDimensions.SelfHandFaceWidth
+                    * PrototypeTileDimensions.SideWidthRatio(MahjongWallSeat.East, .5f);
+                float lowerHeight = PrototypeTileDimensions.SelfHandFaceHeight
+                    * PrototypeTileDimensions.SideHeightRatio(MahjongWallSeat.East, .5f);
+                Vector2 upperRiverRootSize = new Vector2(upperHeight, upperWidth);
+                Vector2 lowerRiverRootSize = new Vector2(lowerHeight, lowerWidth);
+                float upperRiverStep = upperHeight + 2f;
+                float lowerRiverStep = lowerHeight + 2f;
+                float upperRiverSpan = upperRiverStep * 4f + upperHeight;
+                float lowerRiverSpan = lowerRiverStep * 4f + lowerHeight;
+
+                CreateConnectedTileRow("RiverOpposite V3", river.Take(5).ToArray(), Tile2D5Mode.FlatFront,
+                    new Vector2(acrossRiverStartX, 169), acrossRiverSize, acrossRiverStep, false, tableRingParent,
+                    useFourFaceAssembly: true,
+                    fourFaceProjectedDepth: PrototypeTileDimensions.ProjectedDepthForFaceWidth(acrossRiverSize.x));
+                CreateConnectedTileRow("RiverSelf V3", river.Skip(5).Take(5).ToArray(), Tile2D5Mode.FlatFront,
+                    new Vector2(acrossRiverStartX, 373), acrossRiverSize, acrossRiverStep, false, tableRingParent,
+                    useFourFaceAssembly: true,
+                    fourFaceProjectedDepth: PrototypeTileDimensions.ProjectedDepthForFaceWidth(acrossRiverSize.x));
+                CreateConnectedTileRow("RiverLeft V3", river.Skip(10).Take(5).ToArray(), Tile2D5Mode.FlatFront,
+                    new Vector2(448, 300f - upperRiverSpan * .5f), upperRiverRootSize,
+                    upperRiverStep, true, tableRingParent, -upperRiverStep * .2f,
+                    useFourFaceAssembly: true,
+                    fourFaceProjectedDepth: PrototypeTileDimensions.ProjectedDepthForFaceWidth(upperWidth));
+                CreateConnectedTileRow("RiverRight V3", river.Skip(15).Take(5).ToArray(), Tile2D5Mode.FlatFront,
+                    new Vector2(755, 300f - lowerRiverSpan * .5f), lowerRiverRootSize,
+                    lowerRiverStep, true, tableRingParent, lowerRiverStep * .2f,
+                    useFourFaceAssembly: true,
+                    fourFaceProjectedDepth: PrototypeTileDimensions.ProjectedDepthForFaceWidth(lowerWidth));
+            }
+            else
+            {
+                CreateConnectedTileRow("RiverOpposite", river.Take(5).ToArray(), Tile2D5Mode.FlatFront,
+                    new Vector2(520, 159), new Vector2(34, 44), 29, false, parent);
+                CreateConnectedTileRow("RiverSelf", river.Skip(5).Take(5).ToArray(), Tile2D5Mode.FlatFront,
+                    new Vector2(520, 435), new Vector2(34, 44), 29, false, parent);
+                CreateConnectedTileRow("RiverLeft", river.Skip(10).Take(5).ToArray(), Tile2D5Mode.FlatFront,
+                    new Vector2(430, 287), new Vector2(34, 44), 29, true, parent);
+                CreateConnectedTileRow("RiverRight", river.Skip(15).Take(5).ToArray(), Tile2D5Mode.FlatFront,
+                    new Vector2(818, 287), new Vector2(34, 44), 29, true, parent);
+            }
 
             Image centerFrame = ImageRect("Center plate frame", null, new Rect(562, 272, 156, 138), parent, false, false);
             centerFrame.color = new Color(.57f, .43f, .23f, 1f);
             Image center = ImageRect("Center plate", null, new Rect(567, 277, 146, 128), parent, false, false);
             center.color = new Color(.035f, .09f, .15f, .96f);
+            if (separatedReferenceWallV3)
+            {
+                SetRect(centerFrame.rectTransform, new Rect(512, 217, 228, 144));
+                SetRect(center.rectTransform, new Rect(517, 222, 218, 134));
+            }
             Label("东一局", new Rect(577, 282, 126, 25), 17, new Color(.82f, .88f, .94f), TextAlignmentOptions.Center, parent);
             Label("25,000", new Rect(593, 311, 94, 28), 19, new Color(1f, .84f, .42f), TextAlignmentOptions.Center, parent);
             Label("本场 0  ·  供托 0", new Rect(573, 343, 134, 20), 12, Color.white, TextAlignmentOptions.Center, parent);
             Label("牌山 69", new Rect(590, 371, 100, 20), 13, new Color(.65f, .86f, .96f), TextAlignmentOptions.Center, parent);
 
             DrawPrototypeSeat("对家", _portraits.Length > 1 ? _portraits[1] : null,
-                new Rect(918, 22, 58, 68), new Rect(977, 36, 110, 42), parent);
+                new Rect(separatedReferenceWallV3 ? 900 : 918, 22, separatedReferenceWallV3 ? 82 : 58, separatedReferenceWallV3 ? 82 : 68),
+                new Rect(977, separatedReferenceWallV3 ? 128 : 36, 110, 42), parent);
             DrawPrototypeSeat("上家", _portraits.Length > 2 ? _portraits[2] : null,
-                new Rect(20, 104, 62, 72), new Rect(16, 178, 92, 42), parent);
+                new Rect(separatedReferenceWallV3 ? 26 : 20, separatedReferenceWallV3 ? 170 : 104, separatedReferenceWallV3 ? 80 : 62, separatedReferenceWallV3 ? 80 : 72),
+                new Rect(16, separatedReferenceWallV3 ? 260 : 178, 92, 42), parent);
             DrawPrototypeSeat("下家", _portraits.Length > 3 ? _portraits[3] : null,
-                new Rect(1174, 148, 58, 68), new Rect(1148, 220, 88, 42), parent);
+                new Rect(separatedReferenceWallV3 ? 1140 : 1174, separatedReferenceWallV3 ? 180 : 148, separatedReferenceWallV3 ? 72 : 58, separatedReferenceWallV3 ? 82 : 68),
+                new Rect(1148, separatedReferenceWallV3 ? 273 : 220, 88, 42), parent);
             DrawPrototypeSeat("本家", _portraits.Length > 0 ? _portraits[0] : null,
-                new Rect(254, 518, 60, 70), new Rect(316, 530, 126, 44), parent);
+                new Rect(254, separatedReferenceWallV3 ? 492 : 518, separatedReferenceWallV3 ? 80 : 60, separatedReferenceWallV3 ? 88 : 70),
+                new Rect(separatedReferenceWallV3 ? 335 : 316, separatedReferenceWallV3 ? 536 : 530,
+                    separatedReferenceWallV3 ? 132 : 126, separatedReferenceWallV3 ? 36 : 44), parent);
+
+            const float handTileWidth = PrototypeTileDimensions.SelfHandFaceWidth;
+            const float handTileStep = PrototypeTileDimensions.SelfHandFaceWidth;
+            const float drawnTileGap = 5f;
+            float handCanvasWidth = (parent as RectTransform)?.rect.width ?? 1280f;
+            float drawnTileOffset = handTileStep * (InitialHandTiles.Length - 1) + handTileWidth + drawnTileGap;
+            float handRowWidth = drawnTileOffset + handTileWidth;
+            float handStartX = Mathf.Max(0f, (handCanvasWidth - handRowWidth) * 0.5f);
+            float handY = separatedReferenceWallV3 ? 605 : 618;
+            Vector2 handTileSize = new Vector2(handTileWidth,
+                separatedReferenceWallV3 ? PrototypeTileDimensions.SelfHandFaceHeight : 92f);
 
             CreateConnectedTileRow("PlayerHand", InitialHandTiles, Tile2D5Mode.FlatFront,
-                new Vector2(150, 618), new Vector2(64, 92), 56, false, parent);
-            CreatePrototypeTile("PlayerDrawn", SampleDrawDeck[0], Tile2D5Mode.FlatFront,
-                new Vector2(150 + 13 * 56 + 13, 618), new Vector2(64, 92), false, parent);
+                new Vector2(handStartX, handY), handTileSize,
+                handTileStep, false, parent, useFourFaceAssembly: separatedReferenceWallV3,
+                fourFaceProjectedDepth: PrototypeTileDimensions.ProjectedThickness,
+                fourFaceFrontFillsRoot: separatedReferenceWallV3);
+            Tile2D5View drawnTile = CreatePrototypeTile("PlayerDrawn", SampleDrawDeck[0], Tile2D5Mode.FlatFront,
+                new Vector2(handStartX + drawnTileOffset, handY),
+                handTileSize, false, parent);
+            if (separatedReferenceWallV3)
+                drawnTile.UseFourFaceAssembly(PrototypeTileDimensions.ProjectedThickness, true);
 
-            Button back = ButtonRect("Back to menu", new Rect(1142, 12, 104, 32), _secondaryButton, parent, 14);
-            Text? backText = back.GetComponentInChildren<Text>(true);
-            if (backText != null) backText.text = "返回";
-            back.onClick.AddListener(ShowMenu);
+            if (separatedReferenceWallV3) CreateReferenceEdgeControls(parent);
+            else
+            {
+                Button back = ButtonRect("Back to menu", new Rect(1142, 12, 104, 32), _secondaryButton, parent, 14);
+                Text? backText = back.GetComponentInChildren<Text>(true);
+                if (backText != null) backText.text = "返回";
+                back.onClick.AddListener(ShowMenu);
+            }
         }
 
-        private static void CreateMahjongWall(string name, MahjongWallSeat seat, Transform parent)
+        private void CreateReferenceEdgeControls(Transform parent)
         {
+            Image scoreFrame = ImageRect("Reference score frame", null, new Rect(14, 36, 194, 82), parent, false, false);
+            scoreFrame.color = new Color(.62f, .39f, .17f, .96f);
+            Image scorePanel = ImageRect("Reference score panel", null, new Rect(18, 40, 186, 74), parent, false, false);
+            scorePanel.color = new Color(.035f, .065f, .10f, .97f);
+            for (int i = 0; i < 6; i++)
+            {
+                Image miniTile = ImageRect("Reference mini tile " + i, null,
+                    new Rect(64 + i * 21, 46, 18, 37), parent, false, false);
+                miniTile.color = new Color(.97f - (i % 2) * .04f, .49f, .12f, 1f);
+            }
+            Label("牌山 69", new Rect(16, 47, 48, 34), 12, new Color(.90f, .91f, .88f), TextAlignmentOptions.Center, parent);
+            Label("×1     ×0", new Rect(24, 86, 112, 23), 14, Color.white, TextAlignmentOptions.Left, parent);
+            Label("牌局·四人麻将", new Rect(16, 132, 192, 30), 18, new Color(1f, .78f, .32f), TextAlignmentOptions.Left, parent);
+
+            CreateReferenceButton("设置", new Rect(1036, 14, 92, 36), parent);
+            CreateReferenceButton("役种", new Rect(1132, 14, 92, 36), parent);
+
+            Image leftControl = ImageRect("Reference left action rail", null, new Rect(0, 322, 42, 222), parent, false, false);
+            leftControl.color = new Color(.025f, .055f, .10f, .9f);
+            Label("理\n和\n鸣\n切", new Rect(2, 332, 35, 176), 19, new Color(.70f, .88f, .25f), TextAlignmentOptions.Center, parent);
+            Label("▶", new Rect(12, 508, 20, 24), 17, new Color(1f, .68f, .12f), TextAlignmentOptions.Center, parent);
+
+            Image rightControl = ImageRect("Reference right action rail", null, new Rect(1205, 338, 43, 206), parent, false, false);
+            rightControl.color = new Color(.025f, .055f, .10f, .9f);
+            Label("长\n情", new Rect(1209, 355, 34, 94), 22, new Color(1f, .61f, .16f), TextAlignmentOptions.Center, parent);
+
+            Image alert = ImageRect("Reference alert diamond", null, new Rect(1194, 592, 17, 17), parent, false, false);
+            alert.color = new Color(1f, .74f, .12f);
+            alert.rectTransform.localRotation = Quaternion.Euler(0f, 0f, 45f);
+            for (int i = 0; i < 3; i++)
+            {
+                Image signal = ImageRect("Reference signal bar " + i, null,
+                    new Rect(1204 + i * 9, 679 - i * 7, 6, 7 + i * 7), parent, false, false);
+                signal.color = new Color(.18f, .84f, .18f, 1f);
+            }
+        }
+
+        private void CreateReferenceButton(string text, Rect rect, Transform parent)
+        {
+            Image frame = ImageRect("Reference button frame " + text, null, rect, parent, false, false);
+            frame.color = new Color(.67f, .48f, .20f, .96f);
+            Image face = ImageRect("Reference button face " + text,
+                null, new Rect(rect.x + 3, rect.y + 3, rect.width - 6, rect.height - 6), parent, false, false);
+            face.color = new Color(.035f, .10f, .095f, .98f);
+            Label(text, new Rect(rect.x, rect.y + 2, rect.width, rect.height - 4), 17,
+                new Color(.93f, .87f, .68f), TextAlignmentOptions.Center, parent);
+        }
+
+        private static Transform CreateScaledReferenceTableRing(Transform parent, float scale)
+        {
+            var go = new GameObject("Reference table ring", typeof(RectTransform));
+            go.transform.SetParent(parent, false);
+            RectTransform rect = go.GetComponent<RectTransform>();
+            rect.anchorMin = rect.anchorMax = new Vector2(.5f, .5f);
+            rect.pivot = new Vector2(.5f, .5f);
+            rect.anchoredPosition = new Vector2(0f, -24f);
+            rect.sizeDelta = new Vector2(1280f, 720f);
+            rect.localScale = new Vector3(scale, scale, 1f);
+            return rect;
+        }
+
+        private void CreateMahjongWall(string name, MahjongWallSeat seat, Transform parent, bool referenceLayout = false)
+        {
+            if (referenceLayout)
+                CreateWallFaceReveal(name, seat, parent);
+
             var go = new GameObject(name, typeof(RectTransform), typeof(CanvasRenderer), typeof(MahjongWallRowGraphic));
             go.transform.SetParent(parent, false);
             RectTransform rect = go.GetComponent<RectTransform>();
@@ -777,12 +1002,37 @@ namespace Mahjong.Unity.UI.Prototype
             rect.pivot = new Vector2(0f, 1f);
             rect.anchoredPosition = Vector2.zero;
             rect.sizeDelta = new Vector2(1280f, 720f);
-            go.GetComponent<MahjongWallRowGraphic>().Configure(seat);
+            go.GetComponent<MahjongWallRowGraphic>().Configure(seat, referenceLayout);
+        }
+
+        private void CreateWallFaceReveal(string name, MahjongWallSeat seat, Transform parent)
+        {
+            int revealTile = seat == MahjongWallSeat.North ? InitialHandTiles[0]
+                : seat == MahjongWallSeat.West ? InitialHandTiles[5] : InitialHandTiles[10];
+            var revealGo = new GameObject(name + " middle face reveal",
+                typeof(RectTransform), typeof(CanvasRenderer), typeof(MahjongWallFaceRevealGraphic));
+            revealGo.transform.SetParent(parent, false);
+            RectTransform revealRect = revealGo.GetComponent<RectTransform>();
+            revealRect.anchorMin = revealRect.anchorMax = new Vector2(0f, 1f);
+            revealRect.pivot = new Vector2(0f, 1f);
+            revealRect.anchoredPosition = Vector2.zero;
+            revealRect.sizeDelta = new Vector2(1280f, 720f);
+            Canvas revealCanvas = revealGo.AddComponent<Canvas>();
+            revealCanvas.overrideSorting = true;
+            revealCanvas.sortingOrder = 1000;
+            revealGo.GetComponent<MahjongWallFaceRevealGraphic>().Configure(seat, GetTileFaceSprite(revealTile));
         }
 
         private void DrawPrototypeSeat(string name, Sprite? portrait, Rect portraitRect, Rect plateRect, Transform parent)
         {
             ImageRect("Seat " + name + " portrait", portrait, portraitRect, parent, false, true);
+            if (_directTableV3Mode)
+            {
+                Image statusBar = ImageRect("Seat " + name + " status bar", null,
+                    new Rect(portraitRect.x + 4, portraitRect.y + portraitRect.height - 7, portraitRect.width - 8, 9),
+                    parent, false, false);
+                statusBar.color = new Color(.82f, .055f, .075f, 1f);
+            }
             Image plate = ImageRect("Seat " + name + " plate", null, plateRect, parent, false, false);
             plate.color = new Color(.025f, .045f, .085f, .85f);
             Label(name + "\n25,000", new Rect(plateRect.x + 3, plateRect.y + 1, plateRect.width - 6, plateRect.height - 2),
@@ -790,7 +1040,9 @@ namespace Mahjong.Unity.UI.Prototype
         }
 
         private void CreateConnectedTileRow(string name, int[] tileIndices, Tile2D5Mode mode,
-            Vector2 origin, Vector2 size, float step, bool rotated, Transform parent, float horizontalDrift = 0f)
+            Vector2 origin, Vector2 size, float step, bool rotated, Transform parent, float horizontalDrift = 0f,
+            bool useFourFaceAssembly = false, float fourFaceProjectedDepth = -1f,
+            bool fourFaceFrontFillsRoot = false)
         {
             for (int i = 0; i < tileIndices.Length; i++)
             {
@@ -798,6 +1050,9 @@ namespace Mahjong.Unity.UI.Prototype
                     ? new Vector2(origin.x + i * horizontalDrift, origin.y + i * step)
                     : new Vector2(origin.x + i * step, origin.y);
                 Tile2D5View tile = CreatePrototypeTile(name + "_" + i, tileIndices[i], mode, position, size, rotated, parent);
+                if (useFourFaceAssembly || (name.StartsWith("River", StringComparison.Ordinal)
+                    && name.EndsWith(" V3", StringComparison.Ordinal)))
+                    tile.UseFourFaceAssembly(fourFaceProjectedDepth, fourFaceFrontFillsRoot);
                 if (rotated && horizontalDrift != 0f)
                 {
                     float angle = Mathf.Atan2(horizontalDrift, step) * Mathf.Rad2Deg;
@@ -1207,7 +1462,9 @@ namespace Mahjong.Unity.UI.Prototype
             var canvas = _canvasRoot.GetComponentInParent<Canvas>();
             var scaler = canvas != null ? canvas.GetComponent<CanvasScaler>() : null;
             if (scaler == null) return;
-            scaler.matchWidthOrHeight = Screen.width / 1280f <= Screen.height / 720f ? 0f : 1f;
+            scaler.matchWidthOrHeight = _directTableV3Mode
+                ? 1f
+                : Screen.width / 1280f <= Screen.height / 720f ? 0f : 1f;
             Canvas.ForceUpdateCanvases();
 
             float actualScale = Mathf.Max(0.0001f, canvas != null ? canvas.scaleFactor : 1f);
@@ -2652,12 +2909,19 @@ namespace Mahjong.Unity.UI.Prototype
 
         private Text Label(string text, Rect rect, float size, Color color, TextAlignmentOptions alignment, Transform parent)
         {
+            if (_directTableV3Mode)
+            {
+                if (Mathf.Abs(rect.y - 282f) < .1f) rect = new Rect(531, 227, 190, rect.height);
+                else if (Mathf.Abs(rect.y - 311f) < .1f) rect = new Rect(565, 257, 122, rect.height);
+                else if (Mathf.Abs(rect.y - 343f) < .1f) rect = new Rect(538, 290, 184, rect.height);
+                else if (Mathf.Abs(rect.y - 371f) < .1f) rect = new Rect(557, 318, 146, rect.height);
+            }
             var go = new GameObject("Text · " + (text.Length > 16 ? text.Substring(0, 16) : text), typeof(RectTransform), typeof(CanvasRenderer), typeof(Text));
             go.transform.SetParent(parent, false);
             var label = go.GetComponent<Text>();
             label.text = text;
             label.font = _theme != null && _theme.fontAsset != null ? _theme.fontAsset.sourceFontFile : null;
-            label.fontSize = Mathf.RoundToInt(size);
+            label.fontSize = Mathf.RoundToInt(size * (_directTableV3Mode ? 1.2f : 1f));
             label.color = color;
             label.alignment = ToTextAnchor(alignment);
             label.horizontalOverflow = HorizontalWrapMode.Wrap;
