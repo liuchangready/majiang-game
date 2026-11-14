@@ -25,19 +25,44 @@ namespace Mahjong.LocalHost
 
         public static LocalTableHostOptions ConfigureHostOptions(LocalTableHostOptions options, string scenarioId)
         {
+            return ConfigureHostOptions(options, scenarioId, null);
+        }
+
+        public static LocalTableHostOptions ConfigureHostOptions(
+            LocalTableHostOptions options,
+            string scenarioId,
+            string? roundId)
+        {
             if (options == null) throw new ArgumentNullException(nameof(options));
-            options.InitialRound = CreateInitialRound(scenarioId);
+            var history = new List<TableEventRecord>();
+            options.InitialRound = CreateInitialRound(scenarioId, roundId, history);
+            options.InitialCommittedHistory = history;
+            options.InitialCommandBindings = TableCommandBindingsCodec.Build(history);
             options.AutoPlay = true;
             return options;
         }
 
         public static RoundStateMachine CreateInitialRound(string scenarioId)
         {
-            if (string.Equals(scenarioId, Pon, StringComparison.Ordinal)) return BuildCallWindow(Pon);
-            if (string.Equals(scenarioId, Chi, StringComparison.Ordinal)) return BuildCallWindow(Chi);
-            if (string.Equals(scenarioId, Riichi, StringComparison.Ordinal)) return BuildRiichiTurn();
-            if (string.Equals(scenarioId, ClosedKan, StringComparison.Ordinal)) return BuildClosedKanTurn();
-            if (string.Equals(scenarioId, DealerTsumo, StringComparison.Ordinal)) return BuildDealerTsumoTurn();
+            return CreateInitialRound(scenarioId, null);
+        }
+
+        /// <summary>Builds the same accepted fixture under a caller-owned isolated round id.</summary>
+        public static RoundStateMachine CreateInitialRound(string scenarioId, string? roundId)
+        {
+            return CreateInitialRound(scenarioId, roundId, null);
+        }
+
+        private static RoundStateMachine CreateInitialRound(
+            string scenarioId,
+            string? roundId,
+            List<TableEventRecord>? setupHistory)
+        {
+            if (string.Equals(scenarioId, Pon, StringComparison.Ordinal)) return BuildCallWindow(Pon, roundId, setupHistory);
+            if (string.Equals(scenarioId, Chi, StringComparison.Ordinal)) return BuildCallWindow(Chi, roundId, setupHistory);
+            if (string.Equals(scenarioId, Riichi, StringComparison.Ordinal)) return BuildRiichiTurn(roundId);
+            if (string.Equals(scenarioId, ClosedKan, StringComparison.Ordinal)) return BuildClosedKanTurn(roundId);
+            if (string.Equals(scenarioId, DealerTsumo, StringComparison.Ordinal)) return BuildDealerTsumoTurn(roundId);
             throw new ArgumentOutOfRangeException(nameof(scenarioId), scenarioId, "Unknown fixed C04 Player action scenario.");
         }
 
@@ -259,7 +284,10 @@ namespace Mahjong.LocalHost
             return string.Join("\n", lines);
         }
 
-        private static RoundStateMachine BuildCallWindow(string action)
+        private static RoundStateMachine BuildCallWindow(
+            string action,
+            string? requestedRoundId,
+            List<TableEventRecord>? setupHistory)
         {
             bool pon = string.Equals(action, Pon, StringComparison.Ordinal);
             var fixedOrder = new Dictionary<int, int>();
@@ -274,14 +302,14 @@ namespace Mahjong.LocalHost
             fixedOrder.Add(8, 84); // deterministic seat 2 prelude discard
             fixedOrder.Add(12, target); // seat 3 supplies the fixed call tile
 
-            RoundStateMachine round = BuildDealt("c04-" + action + "-seed-440" + (pon ? "1" : "2"), fixedOrder);
-            round = Accepted(round, RoundCommand.Discard(round.RoundId, 0, new TileId(132), new[] { 1, 2, 3 }));
-            round = PassAll(round);
-            round = Accepted(round, RoundCommand.Discard(round.RoundId, 1, new TileId(80), new[] { 0, 2, 3 }));
-            round = PassAll(round);
-            round = Accepted(round, RoundCommand.Discard(round.RoundId, 2, new TileId(84), new[] { 0, 1, 3 }));
-            round = PassAll(round);
-            round = Accepted(round, RoundCommand.Discard(round.RoundId, 3, new TileId(target), new[] { 0, 1, 2 }));
+            RoundStateMachine round = BuildDealt(requestedRoundId ?? "c04-" + action + "-seed-440" + (pon ? "1" : "2"), fixedOrder);
+            round = Accepted(round, RoundCommand.Discard(round.RoundId, 0, new TileId(132), new[] { 1, 2, 3 }), setupHistory);
+            round = PassAll(round, setupHistory);
+            round = Accepted(round, RoundCommand.Discard(round.RoundId, 1, new TileId(80), new[] { 0, 2, 3 }), setupHistory);
+            round = PassAll(round, setupHistory);
+            round = Accepted(round, RoundCommand.Discard(round.RoundId, 2, new TileId(84), new[] { 0, 1, 3 }), setupHistory);
+            round = PassAll(round, setupHistory);
+            round = Accepted(round, RoundCommand.Discard(round.RoundId, 3, new TileId(target), new[] { 0, 1, 2 }), setupHistory);
             if (round.Window == null || round.Window.FromSeat != 3 || !round.Window.EligibleSeats.Contains(0))
                 throw new InvalidOperationException("Frozen call fixture did not create the seat-0 response window.");
 
@@ -293,12 +321,12 @@ namespace Mahjong.LocalHost
             {
                 int seat = otherResponders[i];
                 if (round.Window?.HasResponded(seat) == false)
-                    round = Accepted(round, RoundCommand.Pass(round.RoundId, seat));
+                    round = Accepted(round, RoundCommand.Pass(round.RoundId, seat), setupHistory);
             }
             return round;
         }
 
-        private static RoundStateMachine PassAll(RoundStateMachine round)
+        private static RoundStateMachine PassAll(RoundStateMachine round, List<TableEventRecord>? setupHistory)
         {
             while (round.Window != null)
             {
@@ -309,31 +337,31 @@ namespace Mahjong.LocalHost
                     if (!round.Window.HasResponded(seat)) { pendingSeat = seat; break; }
                 }
                 if (pendingSeat < 0) break;
-                round = Accepted(round, RoundCommand.Pass(round.RoundId, pendingSeat));
+                round = Accepted(round, RoundCommand.Pass(round.RoundId, pendingSeat), setupHistory);
             }
             return round;
         }
 
-        private static RoundStateMachine BuildRiichiTurn()
+        private static RoundStateMachine BuildRiichiTurn(string? requestedRoundId)
         {
             var fixedOrder = new Dictionary<int, int>();
             int[] hand = { 0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 37, 72, 76, 124 };
             int[] slots = { 0, 1, 2, 3, 16, 17, 18, 19, 32, 33, 34, 35, 48, 52 };
             for (int i = 0; i < hand.Length; i++) fixedOrder.Add(slots[i], hand[i]);
-            return BuildDealt("c04-riichi-seed-4403", fixedOrder);
+            return BuildDealt(requestedRoundId ?? "c04-riichi-seed-4403", fixedOrder);
         }
 
-        private static RoundStateMachine BuildClosedKanTurn()
+        private static RoundStateMachine BuildClosedKanTurn(string? requestedRoundId)
         {
             var fixedOrder = new Dictionary<int, int>();
             int[] hand = { 0, 1, 2, 3, 36, 40, 44, 48, 52, 56, 60, 64, 68, 72 };
             int[] slots = { 0, 1, 2, 3, 16, 17, 18, 19, 32, 33, 34, 35, 48, 52 };
             for (int i = 0; i < hand.Length; i++) fixedOrder.Add(slots[i], hand[i]);
             fixedOrder.Add(122, 73); // dead-wall replacement draw physical entity
-            return BuildDealt("c04-closed-kan-seed-4404", fixedOrder);
+            return BuildDealt(requestedRoundId ?? "c04-closed-kan-seed-4404", fixedOrder);
         }
 
-        private static RoundStateMachine BuildDealerTsumoTurn()
+        private static RoundStateMachine BuildDealerTsumoTurn(string? requestedRoundId)
         {
             // Seat 0's thirteen tiles plus drawn 4m complete a Haku triplet,
             // 23m/4m, 345p, 678s and 55m. This fixture is used only by explicit
@@ -343,7 +371,7 @@ namespace Mahjong.LocalHost
             var fixedOrder = new Dictionary<int, int>();
             for (int i = 0; i < hand.Length; i++) fixedOrder.Add(wallSlots[i], hand[i]);
             fixedOrder.Add(52, 12);
-            return BuildDealt("c04-local-dealer-tsumo-seed-4405", fixedOrder);
+            return BuildDealt(requestedRoundId ?? "c04-local-dealer-tsumo-seed-4405", fixedOrder);
         }
 
         private static RoundStateMachine BuildDealt(string roundId, IDictionary<int, int> fixedOrder)
@@ -369,13 +397,36 @@ namespace Mahjong.LocalHost
                 dealt, RoundPhase.CheatWindow);
         }
 
-        private static RoundStateMachine Accepted(RoundStateMachine state, RoundCommand command)
+        private static RoundStateMachine Accepted(
+            RoundStateMachine state,
+            RoundCommand command,
+            List<TableEventRecord>? setupHistory = null)
         {
             RoundTransition transition = state.Execute(command);
             if (!transition.IsAccepted || transition.State == null)
                 throw new InvalidOperationException("Frozen scenario prelude was rejected: " + transition.Error);
             if (TilePositionMap.Validate(transition.State.Tiles).AssignedCount != TileId.Count)
                 throw new InvalidOperationException("Frozen scenario prelude violated 136-tile conservation.");
+            if (setupHistory != null)
+            {
+                ulong commandVersion = checked((ulong)transition.State.Version);
+                for (int i = 0; i < transition.Events.Count; i++)
+                {
+                    RoundEvent value = transition.Events[i];
+                    setupHistory.Add(new TableEventRecord(
+                        new EventSeq(checked((ulong)setupHistory.Count + 1UL)),
+                        new StateVersion(commandVersion),
+                        i,
+                        value.Type,
+                        value.Seat,
+                        value.Tile,
+                        value.Detail,
+                        payload: TableEventFactCodec.Encode(
+                            new StateVersion(commandVersion),
+                            i,
+                            transition.State.SourceFingerprint)));
+                }
+            }
             return transition.State;
         }
     }
