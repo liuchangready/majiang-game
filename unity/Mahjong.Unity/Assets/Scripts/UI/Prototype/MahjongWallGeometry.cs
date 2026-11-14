@@ -3,7 +3,8 @@ using System.Collections.Generic;
 
 namespace Mahjong.Unity.UI.Prototype
 {
-    public enum MahjongWallSeat { North, West, East }
+    public enum MahjongWallSeat { North, West, East, South }
+    public enum MahjongWallTextureMode { BackFacingTable, FaceUp }
 
     public struct MahjongWallPoint3
     {
@@ -23,11 +24,31 @@ namespace Mahjong.Unity.UI.Prototype
         public static MahjongWallPoint2 operator *(MahjongWallPoint2 a, float scale) { return new MahjongWallPoint2(a.X * scale, a.Y * scale); }
     }
 
+    public struct MahjongWallAxisFrame
+    {
+        public MahjongWallPoint2 Axis1Start;
+        public MahjongWallPoint2 Axis2Start;
+        public MahjongWallPoint2 Axis3Start;
+        public float AxisLength;
+        public float AxisSlopeDegrees;
+
+        public MahjongWallAxisFrame(MahjongWallPoint2 axis1Start, MahjongWallPoint2 axis2Start,
+            MahjongWallPoint2 axis3Start, float axisLength, float axisSlopeDegrees)
+        {
+            Axis1Start = axis1Start;
+            Axis2Start = axis2Start;
+            Axis3Start = axis3Start;
+            AxisLength = axisLength;
+            AxisSlopeDegrees = axisSlopeDegrees;
+        }
+    }
+
     public sealed class MahjongWallTileGeometry
     {
         public MahjongWallPoint3 Origin;
         public float Width, Height, Depth, Gap, PerspectiveScale;
         public bool ShowBackMark = true;
+        public bool IsCenterRendered;
         public MahjongWallPoint2[][] Quads;
         public MahjongWallPoint2[][] Triangles;
         public MahjongWallPoint2[] FrontFace;
@@ -55,7 +76,34 @@ namespace Mahjong.Unity.UI.Prototype
         private const float ProjectionCenterY = 330f;
         private const float Epsilon = .0001f;
 
-        public static int TileCount(MahjongWallSeat seat) { return seat == MahjongWallSeat.North ? 14 : 11; }
+        public static int TileCount(MahjongWallSeat seat)
+        {
+            return seat == MahjongWallSeat.North || seat == MahjongWallSeat.South ? 14 : 11;
+        }
+
+        public static float ReferenceRenderedFaceWidth(MahjongWallSeat seat, float axisLength)
+        {
+            MahjongWallTileGeometry[] template = BuildRow(seat, true);
+            float faceWidth = Length(template[0].BackFace[1] - template[0].BackFace[0]);
+            float pitch = axisLength / Math.Max(1, TileCount(seat) - 1);
+            float maxFaceWidth = Math.Max(1f, pitch - 1f);
+            return seat == MahjongWallSeat.North ? Math.Min(faceWidth, maxFaceWidth) : maxFaceWidth;
+        }
+
+        public static float AxisLengthForWallExtent(MahjongWallSeat seat, float wallExtent)
+        {
+            int count = TileCount(seat);
+            MahjongWallTileGeometry[] template = BuildRow(seat, true);
+            float faceWidth = Length(template[0].BackFace[1] - template[0].BackFace[0]);
+            if (seat != MahjongWallSeat.North)
+                return Math.Max(40f, (wallExtent + 1f) * (count - 1f) / count);
+            float pitchAtFullWidth = faceWidth + 1f;
+            float extentAtFullWidth = pitchAtFullWidth * count - 1f;
+            float axisLength = wallExtent <= extentAtFullWidth
+                ? (wallExtent + 1f) * (count - 1f) / count
+                : wallExtent - faceWidth;
+            return Math.Max(40f, axisLength);
+        }
 
         public static MahjongWallTileGeometry[] BuildRow(MahjongWallSeat seat)
         {
@@ -64,7 +112,173 @@ namespace Mahjong.Unity.UI.Prototype
 
         public static MahjongWallTileGeometry[] BuildReferenceRow(MahjongWallSeat seat)
         {
-            return BuildRow(seat, true);
+            return BuildReferenceRow(seat, 0);
+        }
+
+        public static MahjongWallTileGeometry[] BuildReferenceRow(MahjongWallSeat seat, int centerRenderTileCount)
+        {
+            return BuildWallFromAxes(seat, centerRenderTileCount, BuildReferenceAxisFrame(seat));
+        }
+
+        public static MahjongWallAxisFrame BuildReferenceAxisFrame(MahjongWallSeat seat)
+        {
+            MahjongWallTileGeometry[] template = BuildRow(seat, true);
+            MahjongWallPoint2 firstCenter = QuadCenter(template[0].BackFace);
+            MahjongWallPoint2 lastCenter = QuadCenter(template[template.Length - 1].BackFace);
+            if (seat == MahjongWallSeat.West)
+            {
+                firstCenter = new MahjongWallPoint2(231f, 146f);
+                lastCenter = new MahjongWallPoint2(198f, 289f);
+            }
+            else if (seat == MahjongWallSeat.East)
+            {
+                firstCenter = new MahjongWallPoint2(1028f, 240f);
+                lastCenter = new MahjongWallPoint2(1116f, 493f);
+            }
+            float spanLength = Length(lastCenter - firstCenter);
+            float side = seat == MahjongWallSeat.West ? -1f : seat == MahjongWallSeat.East ? 1f : 0f;
+            MahjongWallPoint2 rowSpan = lastCenter - firstCenter;
+            float angle = seat == MahjongWallSeat.North ? 0f
+                : (float)(Math.Atan2(rowSpan.Y, rowSpan.X) * 180f / Math.PI);
+            MahjongWallPoint2 rowAxis = seat == MahjongWallSeat.North
+                ? new MahjongWallPoint2(1f, 0f) : Normalize(rowSpan);
+
+            float faceWidth = 0f, riseLength = 0f;
+            MahjongWallPoint2 depth = new MahjongWallPoint2(0f, 0f);
+            for (int i = 0; i < template.Length; i++)
+            {
+                faceWidth += Length(template[i].BackFace[1] - template[i].BackFace[0]);
+                riseLength += Length(template[i].BackFace[3] - template[i].BackFace[0]);
+                depth += template[i].BottomFace[3] - template[i].BottomFace[0];
+            }
+            faceWidth /= template.Length;
+            riseLength /= template.Length;
+            depth = seat == MahjongWallSeat.North
+                ? depth * (-1f / template.Length)
+                : new MahjongWallPoint2(-side * Length(depth) / template.Length, 0f);
+            MahjongWallPoint2 rise = new MahjongWallPoint2(0f, -riseLength);
+            MahjongWallPoint2 firstBase = firstCenter - rowAxis * (faceWidth * .5f) - rise * .5f;
+            if (seat == MahjongWallSeat.West || seat == MahjongWallSeat.East)
+                firstBase -= depth;
+
+            return new MahjongWallAxisFrame(firstBase, firstBase + rise, firstBase + depth,
+                spanLength, angle);
+        }
+
+        public static MahjongWallTileGeometry[] BuildWallFromAxes(MahjongWallSeat seat,
+            int centerRenderTileCount, MahjongWallAxisFrame axes,
+            float faceWidthOverride = 0f, int gapAfterTileIndex = -1, float extraGap = 0f)
+        {
+            return BuildWallFromAxes(seat, centerRenderTileCount, axes.Axis1Start, axes.Axis2Start,
+                axes.Axis3Start, axes.AxisLength, axes.AxisSlopeDegrees,
+                faceWidthOverride, gapAfterTileIndex, extraGap);
+        }
+
+        public static MahjongWallTileGeometry[] BuildWallFromAxes(MahjongWallSeat seat,
+            int centerRenderTileCount, MahjongWallPoint2 axis1Start, MahjongWallPoint2 axis2Start,
+            MahjongWallPoint2 axis3Start, float axisLength, float axisSlopeDegrees,
+            float faceWidthOverride = 0f, int gapAfterTileIndex = -1, float extraGap = 0f)
+        {
+            MahjongWallTileGeometry[] template = BuildRow(seat, true);
+            return BuildWallFromAxes(seat, centerRenderTileCount, axis1Start, axis2Start,
+                axis3Start, axisLength, axisSlopeDegrees, template, 0f,
+                faceWidthOverride, gapAfterTileIndex, extraGap);
+        }
+
+        private static MahjongWallTileGeometry[] BuildWallFromAxes(MahjongWallSeat seat,
+            int centerRenderTileCount, MahjongWallPoint2 axis1Start, MahjongWallPoint2 axis2Start,
+            MahjongWallPoint2 axis3Start, float axisLength, float axisSlopeDegrees,
+            MahjongWallTileGeometry[] row, float knownFaceWidth, float faceWidthOverride = 0f,
+            int gapAfterTileIndex = -1, float extraGap = 0f)
+        {
+            if (row.Length == 0) return row;
+            if (axisLength <= Epsilon) throw new ArgumentOutOfRangeException(nameof(axisLength));
+            int centerCount = Math.Max(0, Math.Min(row.Length, centerRenderTileCount));
+            MahjongWallPoint2 rowAxis = new MahjongWallPoint2(
+                (float)Math.Cos(axisSlopeDegrees * Math.PI / 180f),
+                (float)Math.Sin(axisSlopeDegrees * Math.PI / 180f));
+            MahjongWallPoint2 riseAxis = axis2Start - axis1Start;
+            MahjongWallPoint2 depthAxis = axis3Start - axis1Start;
+            float appliedGap = gapAfterTileIndex >= 0 && gapAfterTileIndex < row.Length - 1
+                ? Math.Max(0f, extraGap) : 0f;
+            float pitch = row.Length <= 1 ? axisLength
+                : Math.Max(Epsilon, axisLength - appliedGap) / (row.Length - 1);
+            float faceWidth = knownFaceWidth;
+            if (faceWidth <= Epsilon)
+            {
+                for (int i = 0; i < row.Length; i++)
+                    faceWidth += Length(row[i].BackFace[1] - row[i].BackFace[0]);
+                faceWidth /= row.Length;
+            }
+            float maxFaceWidth = Math.Max(1f, pitch - 1f);
+            float renderedFaceWidth = faceWidthOverride > Epsilon ? faceWidthOverride
+                : seat == MahjongWallSeat.North ? Math.Min(faceWidth, maxFaceWidth) : maxFaceWidth;
+            MahjongWallPoint2 backAxis = rowAxis * renderedFaceWidth;
+            int centerStart = (row.Length - centerCount) / 2;
+
+            for (int i = 0; i < row.Length; i++)
+            {
+                MahjongWallTileGeometry tile = row[i];
+                float tileOffset = pitch * i + (i > gapAfterTileIndex ? appliedGap : 0f);
+                MahjongWallPoint2 baseCorner = axis1Start + rowAxis * tileOffset;
+                MahjongWallPoint2[] back = Parallelogram(baseCorner, backAxis, riseAxis);
+                MahjongWallPoint2 frontOrigin = baseCorner + depthAxis;
+                MahjongWallPoint2[] front = Parallelogram(frontOrigin, backAxis, riseAxis);
+                MahjongWallPoint2[] bottom = new[]
+                {
+                    frontOrigin, frontOrigin + backAxis, baseCorner + backAxis, baseCorner
+                };
+                MahjongWallPoint2[] top = new[]
+                {
+                    front[3], front[2], back[2], back[3]
+                };
+                MahjongWallPoint2[] side = new[]
+                {
+                    front[1], baseCorner + backAxis, back[2], front[2]
+                };
+
+                tile.BackFace = back;
+                tile.FrontFace = front;
+                // The prototype uses plain tile faces. The side walls' inward-facing
+                // yellow backs are rendered separately from their outer white faces.
+                tile.ShowBackMark = false;
+                tile.BottomFace = bottom;
+                tile.TopFace = top;
+                tile.SideFace = side;
+                tile.ShadowFace = Offset(bottom, 0f, 5f);
+                tile.Quads = new[] { tile.ShadowFace, side, top, back };
+                tile.IsCenterRendered = i >= centerStart && i < centerStart + centerCount;
+                MahjongWallPoint2 up = Bilinear(back, .5f, .30f);
+                MahjongWallPoint2 right = Bilinear(back, .70f, .5f);
+                MahjongWallPoint2 down = Bilinear(back, .5f, .70f);
+                MahjongWallPoint2 left = Bilinear(back, .30f, .5f);
+                tile.Triangles = new[] { new[] { up, right, down }, new[] { up, down, left } };
+            }
+            return row;
+        }
+
+        private static MahjongWallPoint2[] Parallelogram(MahjongWallPoint2 origin,
+            MahjongWallPoint2 axisA, MahjongWallPoint2 axisB)
+        {
+            return new[] { origin, origin + axisA, origin + axisA + axisB, origin + axisB };
+        }
+
+        private static MahjongWallPoint2 QuadCenter(MahjongWallPoint2[] quad)
+        {
+            MahjongWallPoint2 center = new MahjongWallPoint2(0f, 0f);
+            for (int i = 0; i < quad.Length; i++) center += quad[i];
+            return center * .25f;
+        }
+
+        private static float Length(MahjongWallPoint2 vector)
+        {
+            return (float)Math.Sqrt(vector.X * vector.X + vector.Y * vector.Y);
+        }
+
+        private static MahjongWallPoint2 Normalize(MahjongWallPoint2 vector)
+        {
+            float length = Length(vector);
+            return length <= Epsilon ? new MahjongWallPoint2(0f, 0f) : vector * (1f / length);
         }
 
         private static MahjongWallTileGeometry[] BuildRow(MahjongWallSeat seat, bool referenceLayout)

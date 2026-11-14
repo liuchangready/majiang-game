@@ -10,33 +10,70 @@ namespace Mahjong.Unity.UI.Prototype
     {
         [SerializeField] private MahjongWallSeat _seat;
         [SerializeField] private bool _referenceLayout;
+        [SerializeField] private int _centerRenderTileCount;
+        [SerializeField] private MahjongWallTextureMode _textureMode;
+        private MahjongWallAxisFrame _axisFrame;
+        private float _faceWidthOverride;
+        private int _gapAfterTileIndex = -1;
+        private float _extraGap;
 
         public override Texture mainTexture => _referenceLayout && MahjongTileFaceAtlas.Texture != null
             ? MahjongTileFaceAtlas.Texture : s_WhiteTexture;
 
-        public void Configure(MahjongWallSeat seat, bool referenceLayout = false)
+        public void Configure(MahjongWallSeat seat, bool referenceLayout = false,
+            int centerRenderTileCount = 0, MahjongWallAxisFrame axisFrame = default,
+            MahjongWallTextureMode textureMode = MahjongWallTextureMode.BackFacingTable,
+            float faceWidthOverride = 0f, int gapAfterTileIndex = -1, float extraGap = 0f)
         {
             _seat = seat;
             _referenceLayout = referenceLayout;
+            _centerRenderTileCount = Mathf.Max(0, centerRenderTileCount);
+            _axisFrame = axisFrame;
+            _textureMode = textureMode;
+            _faceWidthOverride = faceWidthOverride;
+            _gapAfterTileIndex = gapAfterTileIndex;
+            _extraGap = extraGap;
             raycastTarget = false;
+            SetVerticesDirty();
+        }
+
+        public void SetAxisFrame(MahjongWallAxisFrame axisFrame)
+        {
+            _axisFrame = axisFrame;
             SetVerticesDirty();
         }
 
         protected override void OnPopulateMesh(VertexHelper vh)
         {
             vh.Clear();
+            MahjongWallAxisFrame axes = _referenceLayout
+                ? (_axisFrame.AxisLength > 0f ? _axisFrame : MahjongWallGeometry.BuildReferenceAxisFrame(_seat))
+                : default;
             MahjongWallTileGeometry[] row = _referenceLayout
-                ? MahjongWallGeometry.BuildReferenceRow(_seat)
+                ? MahjongWallGeometry.BuildWallFromAxes(_seat, _centerRenderTileCount, axes,
+                    _faceWidthOverride, _gapAfterTileIndex, _extraGap)
                 : MahjongWallGeometry.BuildRow(_seat);
-            int revealIndex = _referenceLayout ? row.Length / 2 : -1;
-            Rect revealBounds = revealIndex >= 0 ? TileBounds(row[revealIndex]) : default;
+            int revealStart = _referenceLayout && _centerRenderTileCount > 0
+                ? (row.Length - Mathf.Min(row.Length, _centerRenderTileCount)) / 2 : -1;
+            int revealEnd = revealStart < 0 ? -1
+                : revealStart + Mathf.Min(row.Length, _centerRenderTileCount);
+            Rect revealBounds = revealStart >= 0 ? TileBounds(row[revealStart]) : default;
+            for (int i = revealStart + 1; i >= 0 && i < revealEnd; i++)
+                revealBounds = Union(revealBounds, TileBounds(row[i]));
             for (int i = 0; i < row.Length; i++)
             {
-                bool revealFace = i == revealIndex;
-                bool translucentOccluder = _referenceLayout && i > revealIndex
+                bool revealFace = row[i].IsCenterRendered;
+                bool translucentOccluder = _referenceLayout && revealStart >= 0
+                    && (i < revealStart || i >= revealEnd)
                     && Overlaps(TileBounds(row[i]), revealBounds);
                 AddTile(vh, row[i], i, revealFace || translucentOccluder, revealFace);
             }
+        }
+
+        private static Rect Union(Rect a, Rect b)
+        {
+            return Rect.MinMaxRect(Mathf.Min(a.xMin, b.xMin), Mathf.Min(a.yMin, b.yMin),
+                Mathf.Max(a.xMax, b.xMax), Mathf.Max(a.yMax, b.yMax));
         }
 
         private void AddTile(VertexHelper vh, MahjongWallTileGeometry tile, int index,
@@ -62,32 +99,67 @@ namespace Mahjong.Unity.UI.Prototype
                 Color shellTint = translucentShell ? new Color(1f, 1f, 1f, .42f) : Color.white;
                 if (MahjongTileFaceAtlas.Texture != null)
                 {
-                    AddTextureQuad(vh, tile.BottomFace, MahjongTileFaceAtlas.BottomUv, FaceUvOrder.Bottom, shellTint);
-                    AddTextureQuad(vh, tile.SideFace, MahjongTileFaceAtlas.SideUv, FaceUvOrder.Side, shellTint);
-                    AddTextureQuad(vh, tile.TopFace, MahjongTileFaceAtlas.BottomUv, FaceUvOrder.Bottom, shellTint);
-                    AddTextureQuad(vh, tile.BackFace, MahjongTileFaceAtlas.BackUv, FaceUvOrder.Standard, shellTint);
+                    if (_textureMode == MahjongWallTextureMode.FaceUp)
+                    {
+                        // FaceUp puts the glyph sprite on the Axis1/Axis2 plane;
+                        // only its three extrusion faces belong to the chassis.
+                        AddTextureQuad(vh, tile.BottomFace, MahjongTileFaceAtlas.BottomUv, FaceUvOrder.Bottom, shellTint);
+                        AddTextureQuad(vh, tile.SideFace, MahjongTileFaceAtlas.SideUv, FaceUvOrder.Side, shellTint);
+                        AddTextureQuad(vh, tile.TopFace, MahjongTileFaceAtlas.BottomUv, FaceUvOrder.Top, shellTint);
+                    }
+                    else if (_seat == MahjongWallSeat.North)
+                    {
+                        AddTextureQuad(vh, tile.BottomFace, MahjongTileFaceAtlas.BottomUv, FaceUvOrder.Bottom, shellTint);
+                        AddTextureQuad(vh, tile.SideFace, MahjongTileFaceAtlas.SideUv, FaceUvOrder.Side, shellTint);
+                        AddTextureQuad(vh, tile.TopFace, MahjongTileFaceAtlas.BottomUv, FaceUvOrder.Bottom, shellTint);
+                        AddTextureQuad(vh, tile.BackFace, MahjongTileFaceAtlas.BackUv, FaceUvOrder.Standard, shellTint);
+                    }
+                    else
+                    {
+                        // Side walls expose the inward yellow plane, each tile's
+                        // depth-side parallelogram, and the top edge. The underside
+                        // and outward plane stay hidden.
+                        AddTextureQuad(vh, tile.SideFace, MahjongTileFaceAtlas.SideUv, FaceUvOrder.SideInward, shellTint);
+                        AddTextureQuad(vh, tile.TopFace, MahjongTileFaceAtlas.BottomUv, FaceUvOrder.Top, shellTint);
+                        AddTextureQuad(vh, tile.FrontFace, MahjongTileFaceAtlas.BackUv, FaceUvOrder.Standard, shellTint);
+                    }
                 }
                 else
                 {
                     Color bottom = new Color(.44f, .25f, .09f, translucentShell ? .42f : 1f);
                     Color side = colors[1], top = colors[2];
                     if (translucentShell) { side.a = .42f; top.a = .42f; }
-                    AddQuad(vh, tile.BottomFace, bottom);
-                    AddQuad(vh, tile.SideFace, side);
-                    AddQuad(vh, tile.TopFace, top);
-                    AddQuad(vh, tile.BackFace, revealMiddleFace
-                        ? new Color(.50f, .30f, .10f, .42f)
-                        : new Color(.50f, .30f, .10f, 1f));
+                    if (_textureMode == MahjongWallTextureMode.FaceUp)
+                    {
+                        AddQuad(vh, tile.BottomFace, bottom);
+                        AddQuad(vh, tile.SideFace, side);
+                        AddQuad(vh, tile.TopFace, top);
+                    }
+                    else if (_seat == MahjongWallSeat.North)
+                    {
+                        AddQuad(vh, tile.BottomFace, bottom);
+                        AddQuad(vh, tile.SideFace, side);
+                        AddQuad(vh, tile.TopFace, top);
+                        AddQuad(vh, tile.BackFace, revealMiddleFace
+                            ? new Color(.50f, .30f, .10f, .42f)
+                            : new Color(.50f, .30f, .10f, 1f));
+                    }
+                    else
+                    {
+                        AddQuad(vh, tile.SideFace, side);
+                        AddQuad(vh, tile.TopFace, top);
+                        AddQuad(vh, tile.FrontFace, new Color(.98f, .60f, .17f, translucentShell ? .42f : 1f));
+                    }
                     Color backMark = colors[3];
                     if (translucentShell) backMark.a = .42f;
-                    AddQuad(vh, Inset(tile.BackFace, 1.5f), backMark);
+                    if (_seat == MahjongWallSeat.North) AddQuad(vh, Inset(tile.BackFace, 1.5f), backMark);
                 }
             }
             else
             {
                 for (int q = 0; q < tile.Quads.Length; q++) AddQuad(vh, tile.Quads[q], colors[q]);
             }
-            if (tile.ShowBackMark)
+            if (tile.ShowBackMark && !_referenceLayout)
             {
                 AddTriangle(vh, tile.Triangles[0], new Color(.62f, .82f, .69f, 1f));
                 AddTriangle(vh, tile.Triangles[1], new Color(.31f, .58f, .49f, 1f));
@@ -124,7 +196,7 @@ namespace Mahjong.Unity.UI.Prototype
 
         private static Vector2 ToUnity(MahjongWallPoint2 point) => new Vector2(point.X, -point.Y);
 
-        private enum FaceUvOrder { Standard, Side, Bottom }
+        private enum FaceUvOrder { Standard, Side, SideInward, Bottom, Top }
 
         private static void AddTextureQuad(VertexHelper vh, MahjongWallPoint2[] points, Rect rect,
             FaceUvOrder order, Color tint)
@@ -134,8 +206,12 @@ namespace Mahjong.Unity.UI.Prototype
             {
                 FaceUvOrder.Side => new[] { new Vector2(left, bottom), new Vector2(right, bottom),
                     new Vector2(right, top), new Vector2(left, top) },
+                FaceUvOrder.SideInward => new[] { new Vector2(right, bottom), new Vector2(left, bottom),
+                    new Vector2(left, top), new Vector2(right, top) },
                 FaceUvOrder.Bottom => new[] { new Vector2(left, top), new Vector2(right, top),
                     new Vector2(right, bottom), new Vector2(left, bottom) },
+                FaceUvOrder.Top => new[] { new Vector2(left, bottom), new Vector2(right, bottom),
+                    new Vector2(right, top), new Vector2(left, top) },
                 _ => new[] { new Vector2(left, bottom), new Vector2(right, bottom),
                     new Vector2(right, top), new Vector2(left, top) }
             };

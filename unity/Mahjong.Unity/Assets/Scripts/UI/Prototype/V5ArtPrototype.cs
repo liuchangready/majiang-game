@@ -787,9 +787,16 @@ namespace Mahjong.Unity.UI.Prototype
 
             if (separatedReferenceWallV3)
             {
-                CreateMahjongWall("WallOpposite V3", MahjongWallSeat.North, tableRingParent, true);
-                CreateMahjongWall("WallLeft V3", MahjongWallSeat.West, tableRingParent, true);
-                CreateMahjongWall("WallRight V3", MahjongWallSeat.East, tableRingParent, true);
+                MahjongWallLayoutEditor wallEditor = EnsureWallLayoutEditor(parent);
+                MahjongWallSeat[] wallSeats = { MahjongWallSeat.North, MahjongWallSeat.West, MahjongWallSeat.East };
+                string[] wallNames = { "WallOpposite V3", "WallLeft V3", "WallRight V3" };
+                for (int i = 0; i < wallSeats.Length; i++)
+                {
+                    MahjongWallSeat seat = wallSeats[i];
+                    MahjongWallAxisFrame frame = wallEditor.ResolveFrame(seat,
+                        MahjongWallGeometry.BuildReferenceAxisFrame(seat));
+                    DrawMahjongWall(wallNames[i], seat, tableRingParent, 0, frame);
+                }
             }
             else if (connectedWallV2)
             {
@@ -906,16 +913,30 @@ namespace Mahjong.Unity.UI.Prototype
             Vector2 handTileSize = new Vector2(handTileWidth,
                 separatedReferenceWallV3 ? PrototypeTileDimensions.SelfHandFaceHeight : 92f);
 
-            CreateConnectedTileRow("PlayerHand", InitialHandTiles, Tile2D5Mode.FlatFront,
-                new Vector2(handStartX, handY), handTileSize,
-                handTileStep, false, parent, useFourFaceAssembly: separatedReferenceWallV3,
-                fourFaceProjectedDepth: PrototypeTileDimensions.ProjectedThickness,
-                fourFaceFrontFillsRoot: separatedReferenceWallV3);
-            Tile2D5View drawnTile = CreatePrototypeTile("PlayerDrawn", SampleDrawDeck[0], Tile2D5Mode.FlatFront,
-                new Vector2(handStartX + drawnTileOffset, handY),
-                handTileSize, false, parent);
             if (separatedReferenceWallV3)
-                drawnTile.UseFourFaceAssembly(PrototypeTileDimensions.ProjectedThickness, true);
+            {
+                // The self hand uses the same axis-driven chassis as the three walls,
+                // but its glyphs are mapped FaceUp onto Axis1/Axis2. Preserve the
+                // thirteen-tile run and the five-pixel draw-tile break as one row.
+                int[] handAndDrawnTiles = InitialHandTiles.Concat(new[] { SampleDrawDeck[0] }).ToArray();
+                var handAxes = new MahjongWallAxisFrame(
+                    new MahjongWallPoint2(handStartX, handY + handTileSize.y),
+                    new MahjongWallPoint2(handStartX, handY),
+                    new MahjongWallPoint2(handStartX + PrototypeTileDimensions.ProjectedThickness,
+                        handY + handTileSize.y + PrototypeTileDimensions.ProjectedThickness),
+                    drawnTileOffset, 0f);
+                DrawMahjongWall("PlayerHand V3", MahjongWallSeat.South, parent, 0, handAxes,
+                    MahjongWallTextureMode.FaceUp, handAndDrawnTiles, handTileWidth,
+                    InitialHandTiles.Length - 1, drawnTileGap);
+            }
+            else
+            {
+                CreateConnectedTileRow("PlayerHand", InitialHandTiles, Tile2D5Mode.FlatFront,
+                    new Vector2(handStartX, handY), handTileSize,
+                    handTileStep, false, parent);
+                CreatePrototypeTile("PlayerDrawn", SampleDrawDeck[0], Tile2D5Mode.FlatFront,
+                    new Vector2(handStartX + drawnTileOffset, handY), handTileSize, false, parent);
+            }
 
             if (separatedReferenceWallV3) CreateReferenceEdgeControls(parent);
             else
@@ -990,10 +1011,15 @@ namespace Mahjong.Unity.UI.Prototype
             return rect;
         }
 
-        private void CreateMahjongWall(string name, MahjongWallSeat seat, Transform parent, bool referenceLayout = false)
+        private void CreateMahjongWall(string name, MahjongWallSeat seat, Transform parent,
+            bool referenceLayout = false, int centerRenderTileCount = 0)
         {
             if (referenceLayout)
-                CreateWallFaceReveal(name, seat, parent);
+            {
+                DrawMahjongWall(name, seat, parent, centerRenderTileCount,
+                    MahjongWallGeometry.BuildReferenceAxisFrame(seat));
+                return;
+            }
 
             var go = new GameObject(name, typeof(RectTransform), typeof(CanvasRenderer), typeof(MahjongWallRowGraphic));
             go.transform.SetParent(parent, false);
@@ -1002,25 +1028,105 @@ namespace Mahjong.Unity.UI.Prototype
             rect.pivot = new Vector2(0f, 1f);
             rect.anchoredPosition = Vector2.zero;
             rect.sizeDelta = new Vector2(1280f, 720f);
-            go.GetComponent<MahjongWallRowGraphic>().Configure(seat, referenceLayout);
+            go.GetComponent<MahjongWallRowGraphic>().Configure(seat);
         }
 
-        private void CreateWallFaceReveal(string name, MahjongWallSeat seat, Transform parent)
+        private List<MahjongWallFaceRevealGraphic> CreateWallFaceReveals(string name, MahjongWallSeat seat, Transform parent,
+            int centerRenderTileCount, MahjongWallAxisFrame axisFrame)
         {
-            int revealTile = seat == MahjongWallSeat.North ? InitialHandTiles[0]
-                : seat == MahjongWallSeat.West ? InitialHandTiles[5] : InitialHandTiles[10];
-            var revealGo = new GameObject(name + " middle face reveal",
-                typeof(RectTransform), typeof(CanvasRenderer), typeof(MahjongWallFaceRevealGraphic));
-            revealGo.transform.SetParent(parent, false);
-            RectTransform revealRect = revealGo.GetComponent<RectTransform>();
-            revealRect.anchorMin = revealRect.anchorMax = new Vector2(0f, 1f);
-            revealRect.pivot = new Vector2(0f, 1f);
-            revealRect.anchoredPosition = Vector2.zero;
-            revealRect.sizeDelta = new Vector2(1280f, 720f);
-            Canvas revealCanvas = revealGo.AddComponent<Canvas>();
-            revealCanvas.overrideSorting = true;
-            revealCanvas.sortingOrder = 1000;
-            revealGo.GetComponent<MahjongWallFaceRevealGraphic>().Configure(seat, GetTileFaceSprite(revealTile));
+            var faceGraphics = new List<MahjongWallFaceRevealGraphic>();
+            int count = Mathf.Clamp(centerRenderTileCount, 0, MahjongWallGeometry.ReferenceTileCount);
+            int start = (MahjongWallGeometry.ReferenceTileCount - count) / 2;
+            int handOffset = seat == MahjongWallSeat.North ? 0
+                : seat == MahjongWallSeat.West ? 5 : 10;
+            for (int i = 0; i < count; i++)
+            {
+                int tileIndex = start + i;
+                int handIndex = (handOffset + i) % InitialHandTiles.Length;
+                int revealTile = InitialHandTiles[handIndex];
+                var revealGo = new GameObject(name + " middle face reveal " + tileIndex,
+                    typeof(RectTransform), typeof(CanvasRenderer), typeof(MahjongWallFaceRevealGraphic));
+                revealGo.transform.SetParent(parent, false);
+                RectTransform revealRect = revealGo.GetComponent<RectTransform>();
+                revealRect.anchorMin = revealRect.anchorMax = new Vector2(0f, 1f);
+                revealRect.pivot = new Vector2(0f, 1f);
+                revealRect.anchoredPosition = Vector2.zero;
+                revealRect.sizeDelta = new Vector2(1280f, 720f);
+                Canvas revealCanvas = revealGo.AddComponent<Canvas>();
+                revealCanvas.overrideSorting = true;
+                revealCanvas.sortingOrder = 1000 + i;
+                MahjongWallFaceRevealGraphic faceGraphic = revealGo.GetComponent<MahjongWallFaceRevealGraphic>();
+                faceGraphic.Configure(seat, GetTileFaceSprite(revealTile), tileIndex, axisFrame);
+                faceGraphics.Add(faceGraphic);
+            }
+            return faceGraphics;
+        }
+
+        private void DrawMahjongWall(string name, MahjongWallSeat seat, Transform parent,
+            int centerRenderTileCount, MahjongWallAxisFrame axisFrame,
+            MahjongWallTextureMode textureMode = MahjongWallTextureMode.BackFacingTable,
+            int[]? faceTileIds = null, float faceWidthOverride = 0f,
+            int gapAfterTileIndex = -1, float extraGap = 0f)
+        {
+            var go = new GameObject(name, typeof(RectTransform), typeof(CanvasRenderer),
+                typeof(MahjongWallRowGraphic));
+            go.transform.SetParent(parent, false);
+            RectTransform rect = go.GetComponent<RectTransform>();
+            rect.anchorMin = rect.anchorMax = new Vector2(0f, 1f);
+            rect.pivot = new Vector2(0f, 1f);
+            rect.anchoredPosition = Vector2.zero;
+            rect.sizeDelta = new Vector2(1280f, 720f);
+            MahjongWallRowGraphic graphic = go.GetComponent<MahjongWallRowGraphic>();
+            graphic.Configure(seat, true, centerRenderTileCount, axisFrame, textureMode,
+                faceWidthOverride, gapAfterTileIndex, extraGap);
+            List<MahjongWallFaceRevealGraphic> faceGraphics;
+            if (textureMode == MahjongWallTextureMode.FaceUp && faceTileIds != null)
+            {
+                faceGraphics = new List<MahjongWallFaceRevealGraphic>();
+                int count = Mathf.Min(faceTileIds.Length, MahjongWallGeometry.TileCount(seat));
+                for (int i = 0; i < count; i++)
+                {
+                    var faceGo = new GameObject(name + " face " + i,
+                        typeof(RectTransform), typeof(CanvasRenderer), typeof(MahjongWallFaceRevealGraphic));
+                    faceGo.transform.SetParent(parent, false);
+                    RectTransform faceRect = faceGo.GetComponent<RectTransform>();
+                    faceRect.anchorMin = faceRect.anchorMax = new Vector2(0f, 1f);
+                    faceRect.pivot = new Vector2(0f, 1f);
+                    faceRect.anchoredPosition = Vector2.zero;
+                    faceRect.sizeDelta = new Vector2(1280f, 720f);
+                    Canvas faceCanvas = faceGo.AddComponent<Canvas>();
+                    faceCanvas.overrideSorting = true;
+                    faceCanvas.sortingOrder = 1000 + i;
+                    MahjongWallFaceRevealGraphic faceGraphic = faceGo.GetComponent<MahjongWallFaceRevealGraphic>();
+                    faceGraphic.Configure(seat,
+                        GetTileFaceSprite(faceTileIds[i]), i, axisFrame, textureMode,
+                        faceWidthOverride, gapAfterTileIndex, extraGap);
+                    faceGraphics.Add(faceGraphic);
+                }
+            }
+            else
+            {
+                faceGraphics = CreateWallFaceReveals(name, seat, parent, centerRenderTileCount, axisFrame);
+            }
+            MahjongWallLayoutEditor editor = EnsureWallLayoutEditor(parent);
+            editor.Register(seat, graphic, axisFrame, textureMode, faceWidthOverride,
+                gapAfterTileIndex, extraGap, faceGraphics);
+        }
+
+        private MahjongWallLayoutEditor EnsureWallLayoutEditor(Transform drawingParent)
+        {
+            MahjongWallLayoutEditor editor = drawingParent.GetComponentInParent<MahjongWallLayoutEditor>();
+            if (editor != null) return editor;
+
+            RectTransform coordinateRoot = _canvasRoot != null
+                ? _canvasRoot
+                : drawingParent as RectTransform;
+            if (coordinateRoot == null)
+                throw new InvalidOperationException("Axis-driven mahjong walls need a RectTransform coordinate root.");
+            editor = coordinateRoot.GetComponent<MahjongWallLayoutEditor>();
+            if (editor == null) editor = coordinateRoot.gameObject.AddComponent<MahjongWallLayoutEditor>();
+            editor.Configure(coordinateRoot);
+            return editor;
         }
 
         private void DrawPrototypeSeat(string name, Sprite? portrait, Rect portraitRect, Rect plateRect, Transform parent)
@@ -1462,9 +1568,10 @@ namespace Mahjong.Unity.UI.Prototype
             var canvas = _canvasRoot.GetComponentInParent<Canvas>();
             var scaler = canvas != null ? canvas.GetComponent<CanvasScaler>() : null;
             if (scaler == null) return;
-            scaler.matchWidthOrHeight = _directTableV3Mode
-                ? 1f
-                : Screen.width / 1280f <= Screen.height / 720f ? 0f : 1f;
+            // Fit the fixed 1280x720 table stage inside the current window.
+            // V3 used to force height scaling, which clipped both side walls
+            // when a resizable window became narrower than the reference aspect.
+            scaler.matchWidthOrHeight = Screen.width / 1280f <= Screen.height / 720f ? 0f : 1f;
             Canvas.ForceUpdateCanvases();
 
             float actualScale = Mathf.Max(0.0001f, canvas != null ? canvas.scaleFactor : 1f);
