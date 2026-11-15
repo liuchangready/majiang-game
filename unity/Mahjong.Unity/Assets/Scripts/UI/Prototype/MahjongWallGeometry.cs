@@ -3,8 +3,16 @@ using System.Collections.Generic;
 
 namespace Mahjong.Unity.UI.Prototype
 {
-    public enum MahjongWallSeat { North, West, East, South }
-    public enum MahjongWallTextureMode { BackFacingTable, FaceUp }
+    public enum MahjongWallSeat
+    {
+        North, West, East, South, SouthDiscard, NorthDiscard, WestDiscard, EastDiscard
+    }
+    public enum MahjongWallTextureMode
+    {
+        BackFacingTable, FaceUp, FaceUpWithSideAndBottom, SideDiscardWall
+    }
+    public enum MahjongWallFrontFace { Automatic, Front, Back, Top, Bottom, LeftSide, RightSide, SideDiscard }
+    public enum MahjongWallSurface { Front, Back, Top, Bottom, LeftSide, RightSide, SideDiscardTop, SideDiscardSide }
 
     public struct MahjongWallPoint3
     {
@@ -31,15 +39,20 @@ namespace Mahjong.Unity.UI.Prototype
         public MahjongWallPoint2 Axis3Start;
         public float AxisLength;
         public float AxisSlopeDegrees;
+        public float FaceWidthAxisOffsetDegrees;
+        public float FaceUvRotationDegrees;
 
         public MahjongWallAxisFrame(MahjongWallPoint2 axis1Start, MahjongWallPoint2 axis2Start,
-            MahjongWallPoint2 axis3Start, float axisLength, float axisSlopeDegrees)
+            MahjongWallPoint2 axis3Start, float axisLength, float axisSlopeDegrees,
+            float faceWidthAxisOffsetDegrees = 0f, float faceUvRotationDegrees = 0f)
         {
             Axis1Start = axis1Start;
             Axis2Start = axis2Start;
             Axis3Start = axis3Start;
             AxisLength = axisLength;
             AxisSlopeDegrees = axisSlopeDegrees;
+            FaceWidthAxisOffsetDegrees = faceWidthAxisOffsetDegrees;
+            FaceUvRotationDegrees = faceUvRotationDegrees;
         }
     }
 
@@ -56,18 +69,90 @@ namespace Mahjong.Unity.UI.Prototype
         public MahjongWallPoint2[] SideFace;
         public MahjongWallPoint2[] TopFace;
         public MahjongWallPoint2[] BottomFace;
+        public MahjongWallPoint2[] LeftSideFace;
         public MahjongWallPoint2[] ShadowFace;
+        public MahjongWallPoint2[] SideDiscardTop;
+        public MahjongWallPoint2[] SideDiscardFace;
+        public MahjongWallPoint2[] SideDiscardSide;
     }
 
     /// <summary>Canonical table-local tile chassis and one pinhole-style table projection shared by every seat.</summary>
     public static class MahjongWallGeometry
     {
+        private static readonly MahjongWallSurface[] FrontVisibleSurfaces =
+            { MahjongWallSurface.Front, MahjongWallSurface.Top, MahjongWallSurface.RightSide };
+        private static readonly MahjongWallSurface[] BackVisibleSurfaces =
+            { MahjongWallSurface.Back, MahjongWallSurface.Top, MahjongWallSurface.RightSide };
+        private static readonly MahjongWallSurface[] TopVisibleSurfaces =
+            { MahjongWallSurface.Top, MahjongWallSurface.Front, MahjongWallSurface.RightSide };
+        private static readonly MahjongWallSurface[] BottomVisibleSurfaces =
+            { MahjongWallSurface.Bottom, MahjongWallSurface.Front, MahjongWallSurface.RightSide };
+        private static readonly MahjongWallSurface[] LeftVisibleSurfaces =
+            { MahjongWallSurface.LeftSide, MahjongWallSurface.Front, MahjongWallSurface.Top };
+        private static readonly MahjongWallSurface[] RightVisibleSurfaces =
+            { MahjongWallSurface.RightSide, MahjongWallSurface.Front, MahjongWallSurface.Top };
+        private static readonly MahjongWallSurface[] FaceUpSurfaces =
+            { MahjongWallSurface.Bottom, MahjongWallSurface.RightSide, MahjongWallSurface.Top };
+        private static readonly MahjongWallSurface[] FaceUpWithSideAndBottomSurfaces =
+            { MahjongWallSurface.Bottom, MahjongWallSurface.RightSide };
+        private static readonly MahjongWallSurface[] SideDiscardSurfaces =
+            { MahjongWallSurface.SideDiscardTop, MahjongWallSurface.SideDiscardSide };
         public const int ReferenceTileCount = 14;
         public const float TileWidth = .115f;
         public const float TileHeight = .17f;
         public const float TileDepth = .02f;
         public const float TileGap = .003f;
         public const float FarWallY = 1.3f;
+
+        public static MahjongWallFrontFace ResolveFrontFace(MahjongWallSeat seat,
+            MahjongWallTextureMode textureMode, MahjongWallFrontFace requested = MahjongWallFrontFace.Automatic)
+        {
+            if (requested != MahjongWallFrontFace.Automatic) return requested;
+            if (textureMode == MahjongWallTextureMode.FaceUp
+                || textureMode == MahjongWallTextureMode.FaceUpWithSideAndBottom)
+                return MahjongWallFrontFace.Back;
+            return textureMode switch
+            {
+                MahjongWallTextureMode.BackFacingTable => seat == MahjongWallSeat.North
+                    ? MahjongWallFrontFace.Back : MahjongWallFrontFace.Front,
+                MahjongWallTextureMode.SideDiscardWall => MahjongWallFrontFace.SideDiscard,
+                _ => MahjongWallFrontFace.Front
+            };
+        }
+
+        public static MahjongWallSurface[] VisibleSurfaces(MahjongWallFrontFace frontFace,
+            MahjongWallTextureMode textureMode = MahjongWallTextureMode.BackFacingTable)
+        {
+            if (textureMode == MahjongWallTextureMode.FaceUp) return FaceUpSurfaces;
+            if (textureMode == MahjongWallTextureMode.FaceUpWithSideAndBottom)
+                return FaceUpWithSideAndBottomSurfaces;
+            if (textureMode == MahjongWallTextureMode.SideDiscardWall) return SideDiscardSurfaces;
+            return frontFace switch
+            {
+                MahjongWallFrontFace.Front => FrontVisibleSurfaces,
+                MahjongWallFrontFace.Back => BackVisibleSurfaces,
+                MahjongWallFrontFace.Top => TopVisibleSurfaces,
+                MahjongWallFrontFace.Bottom => BottomVisibleSurfaces,
+                MahjongWallFrontFace.LeftSide => LeftVisibleSurfaces,
+                MahjongWallFrontFace.RightSide => RightVisibleSurfaces,
+                _ => FrontVisibleSurfaces
+            };
+        }
+
+        public static MahjongWallPoint2[] Surface(MahjongWallTileGeometry tile, MahjongWallSurface surface)
+        {
+            return surface switch
+            {
+                MahjongWallSurface.Front => tile.FrontFace,
+                MahjongWallSurface.Back => tile.BackFace,
+                MahjongWallSurface.Top => tile.TopFace,
+                MahjongWallSurface.Bottom => tile.BottomFace,
+                MahjongWallSurface.LeftSide => tile.LeftSideFace,
+                MahjongWallSurface.SideDiscardTop => tile.SideDiscardTop,
+                MahjongWallSurface.SideDiscardSide => tile.SideDiscardSide,
+                _ => tile.SideFace
+            };
+        }
         private const float CameraDistance = 3.2f;
         private const float FocalLength = 1350f;
         private const float TableVerticalSlope = .62f;
@@ -78,14 +163,18 @@ namespace Mahjong.Unity.UI.Prototype
 
         public static int TileCount(MahjongWallSeat seat)
         {
-            return seat == MahjongWallSeat.North || seat == MahjongWallSeat.South ? 14 : 11;
+            return seat == MahjongWallSeat.SouthDiscard || seat == MahjongWallSeat.NorthDiscard
+                || seat == MahjongWallSeat.WestDiscard || seat == MahjongWallSeat.EastDiscard ? 5
+                : seat == MahjongWallSeat.North || seat == MahjongWallSeat.South ? 14 : 11;
         }
 
-        public static float ReferenceRenderedFaceWidth(MahjongWallSeat seat, float axisLength)
+        public static float ReferenceRenderedFaceWidth(MahjongWallSeat seat, float axisLength,
+            int tileCountOverride = 0)
         {
             MahjongWallTileGeometry[] template = BuildRow(seat, true);
             float faceWidth = Length(template[0].BackFace[1] - template[0].BackFace[0]);
-            float pitch = axisLength / Math.Max(1, TileCount(seat) - 1);
+            int count = tileCountOverride > 0 ? tileCountOverride : TileCount(seat);
+            float pitch = axisLength / Math.Max(1, count - 1);
             float maxFaceWidth = Math.Max(1f, pitch - 1f);
             return seat == MahjongWallSeat.North ? Math.Min(faceWidth, maxFaceWidth) : maxFaceWidth;
         }
@@ -167,29 +256,33 @@ namespace Mahjong.Unity.UI.Prototype
 
         public static MahjongWallTileGeometry[] BuildWallFromAxes(MahjongWallSeat seat,
             int centerRenderTileCount, MahjongWallAxisFrame axes,
-            float faceWidthOverride = 0f, int gapAfterTileIndex = -1, float extraGap = 0f)
+            float faceWidthOverride = 0f, int gapAfterTileIndex = -1, float extraGap = 0f,
+            int tileCountOverride = 0)
         {
             return BuildWallFromAxes(seat, centerRenderTileCount, axes.Axis1Start, axes.Axis2Start,
                 axes.Axis3Start, axes.AxisLength, axes.AxisSlopeDegrees,
-                faceWidthOverride, gapAfterTileIndex, extraGap);
+                faceWidthOverride, gapAfterTileIndex, extraGap, tileCountOverride,
+                axes.FaceWidthAxisOffsetDegrees);
         }
 
         public static MahjongWallTileGeometry[] BuildWallFromAxes(MahjongWallSeat seat,
             int centerRenderTileCount, MahjongWallPoint2 axis1Start, MahjongWallPoint2 axis2Start,
             MahjongWallPoint2 axis3Start, float axisLength, float axisSlopeDegrees,
-            float faceWidthOverride = 0f, int gapAfterTileIndex = -1, float extraGap = 0f)
+            float faceWidthOverride = 0f, int gapAfterTileIndex = -1, float extraGap = 0f,
+            int tileCountOverride = 0, float faceWidthAxisOffsetDegrees = 0f)
         {
-            MahjongWallTileGeometry[] template = BuildRow(seat, true);
+            MahjongWallTileGeometry[] template = BuildRow(seat, true, tileCountOverride);
             return BuildWallFromAxes(seat, centerRenderTileCount, axis1Start, axis2Start,
                 axis3Start, axisLength, axisSlopeDegrees, template, 0f,
-                faceWidthOverride, gapAfterTileIndex, extraGap);
+                faceWidthOverride, gapAfterTileIndex, extraGap, faceWidthAxisOffsetDegrees);
         }
 
         private static MahjongWallTileGeometry[] BuildWallFromAxes(MahjongWallSeat seat,
             int centerRenderTileCount, MahjongWallPoint2 axis1Start, MahjongWallPoint2 axis2Start,
             MahjongWallPoint2 axis3Start, float axisLength, float axisSlopeDegrees,
             MahjongWallTileGeometry[] row, float knownFaceWidth, float faceWidthOverride = 0f,
-            int gapAfterTileIndex = -1, float extraGap = 0f)
+            int gapAfterTileIndex = -1, float extraGap = 0f,
+            float faceWidthAxisOffsetDegrees = 0f)
         {
             if (row.Length == 0) return row;
             if (axisLength <= Epsilon) throw new ArgumentOutOfRangeException(nameof(axisLength));
@@ -213,7 +306,10 @@ namespace Mahjong.Unity.UI.Prototype
             float maxFaceWidth = Math.Max(1f, pitch - 1f);
             float renderedFaceWidth = faceWidthOverride > Epsilon ? faceWidthOverride
                 : seat == MahjongWallSeat.North ? Math.Min(faceWidth, maxFaceWidth) : maxFaceWidth;
-            MahjongWallPoint2 backAxis = rowAxis * renderedFaceWidth;
+            double faceRadians = (axisSlopeDegrees + faceWidthAxisOffsetDegrees) * Math.PI / 180d;
+            MahjongWallPoint2 faceAxis = new MahjongWallPoint2((float)Math.Cos(faceRadians),
+                (float)Math.Sin(faceRadians));
+            MahjongWallPoint2 backAxis = faceAxis * renderedFaceWidth;
             int centerStart = (row.Length - centerCount) / 2;
 
             for (int i = 0; i < row.Length; i++)
@@ -236,6 +332,37 @@ namespace Mahjong.Unity.UI.Prototype
                 {
                     front[1], baseCorner + backAxis, back[2], front[2]
                 };
+                MahjongWallPoint2[] leftSide = new[]
+                {
+                    frontOrigin, baseCorner, baseCorner + riseAxis, front[3]
+                };
+                MahjongWallPoint2[] sideDiscardTop;
+                MahjongWallPoint2[] sideDiscardFace;
+                MahjongWallPoint2[] sideDiscardSide;
+                if (seat == MahjongWallSeat.EastDiscard)
+                {
+                    // The three starts are long, parallel wall axes. Split each
+                    // axis interval into one tile-length segment, then bridge
+                    // those segments: Axis1->2 top, Axis2->3 face, Axis1->3 side.
+                    float segmentLength = pitch - (i == gapAfterTileIndex ? appliedGap : 0f);
+                    MahjongWallPoint2 segmentAxis = rowAxis * segmentLength;
+                    float segmentStartOffset = tileOffset - pitch * .5f;
+                    MahjongWallPoint2 axis1 = axis1Start + rowAxis * segmentStartOffset;
+                    MahjongWallPoint2 axis2 = axis2Start + rowAxis * segmentStartOffset;
+                    MahjongWallPoint2 axis3 = axis3Start + rowAxis * segmentStartOffset;
+                    sideDiscardTop = Parallelogram(axis1, segmentAxis, axis2 - axis1);
+                    sideDiscardFace = Parallelogram(axis2, segmentAxis, axis3 - axis2);
+                    sideDiscardSide = Parallelogram(axis1, segmentAxis, axis3 - axis1);
+                }
+                else
+                {
+                    MahjongWallPoint2 axis1 = baseCorner;
+                    MahjongWallPoint2 axis2 = baseCorner + riseAxis;
+                    MahjongWallPoint2 axis3 = baseCorner + depthAxis;
+                    sideDiscardTop = Parallelogram(axis1, backAxis, axis2 - axis1);
+                    sideDiscardFace = Parallelogram(axis2, backAxis, axis3 - axis2);
+                    sideDiscardSide = bottom;
+                }
 
                 tile.BackFace = back;
                 tile.FrontFace = front;
@@ -243,8 +370,12 @@ namespace Mahjong.Unity.UI.Prototype
                 // yellow backs are rendered separately from their outer white faces.
                 tile.ShowBackMark = false;
                 tile.BottomFace = bottom;
+                tile.LeftSideFace = leftSide;
                 tile.TopFace = top;
                 tile.SideFace = side;
+                tile.SideDiscardTop = sideDiscardTop;
+                tile.SideDiscardFace = sideDiscardFace;
+                tile.SideDiscardSide = sideDiscardSide;
                 tile.ShadowFace = Offset(bottom, 0f, 5f);
                 tile.Quads = new[] { tile.ShadowFace, side, top, back };
                 tile.IsCenterRendered = i >= centerStart && i < centerStart + centerCount;
@@ -281,9 +412,11 @@ namespace Mahjong.Unity.UI.Prototype
             return length <= Epsilon ? new MahjongWallPoint2(0f, 0f) : vector * (1f / length);
         }
 
-        private static MahjongWallTileGeometry[] BuildRow(MahjongWallSeat seat, bool referenceLayout)
+        private static MahjongWallTileGeometry[] BuildRow(MahjongWallSeat seat, bool referenceLayout,
+            int tileCountOverride = 0)
         {
-            int count = referenceLayout ? ReferenceTileCount : TileCount(seat);
+            int count = tileCountOverride > 0 ? tileCountOverride
+                : referenceLayout ? ReferenceTileCount : TileCount(seat);
             float width = referenceLayout
                 ? .081f * (PrototypeTileDimensions.SelfHandFaceWidth / 64f)
                     * (PrototypeTileDimensions.OppositeWidthRatio / .45f)
@@ -460,6 +593,13 @@ namespace Mahjong.Unity.UI.Prototype
             tile.SideFace = side;
             tile.TopFace = top;
             tile.BottomFace = bottom;
+            tile.LeftSideFace = new[]
+            {
+                Project(Point(seat, origin, tangent, inward, width, height, depth, 0f, 0f, 0f)),
+                Project(Point(seat, origin, tangent, inward, width, height, depth, 0f, 1f, 0f)),
+                Project(Point(seat, origin, tangent, inward, width, height, depth, 0f, 1f, 1f)),
+                Project(Point(seat, origin, tangent, inward, width, height, depth, 0f, 0f, 1f))
+            };
             tile.ShadowFace = tile.Quads[0];
             MahjongWallPoint2 center = Bilinear(back, .5f, .5f);
             MahjongWallPoint2 up = Bilinear(back, .5f, .30f);

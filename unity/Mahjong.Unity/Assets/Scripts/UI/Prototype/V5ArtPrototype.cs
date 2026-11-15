@@ -789,13 +789,24 @@ namespace Mahjong.Unity.UI.Prototype
             {
                 MahjongWallLayoutEditor wallEditor = EnsureWallLayoutEditor(parent);
                 MahjongWallSeat[] wallSeats = { MahjongWallSeat.North, MahjongWallSeat.West, MahjongWallSeat.East };
+                // The downstream (East) wall's requested front is the face bounded by C1, D1, C2, and D2.
+                MahjongWallFrontFace[] wallFrontFaces =
+                {
+                    MahjongWallFrontFace.Back,
+                    MahjongWallFrontFace.Front,
+                    MahjongWallFrontFace.Front
+                };
                 string[] wallNames = { "WallOpposite V3", "WallLeft V3", "WallRight V3" };
                 for (int i = 0; i < wallSeats.Length; i++)
                 {
                     MahjongWallSeat seat = wallSeats[i];
                     MahjongWallAxisFrame frame = wallEditor.ResolveFrame(seat,
                         MahjongWallGeometry.BuildReferenceAxisFrame(seat));
-                    DrawMahjongWall(wallNames[i], seat, tableRingParent, 0, frame);
+                    DrawMahjongWall(wallNames[i], seat, tableRingParent, 0, frame,
+                        frontFace: wallFrontFaces[i],
+                        tileCountOverride: seat == MahjongWallSeat.East ? 13 : 0,
+                        usePerTileFrontRenderer: seat == MahjongWallSeat.East,
+                        outerPoint: MahjongWallOuterPoint.B1);
                 }
             }
             else if (connectedWallV2)
@@ -843,24 +854,63 @@ namespace Mahjong.Unity.UI.Prototype
                 float upperRiverSpan = upperRiverStep * 4f + upperHeight;
                 float lowerRiverSpan = lowerRiverStep * 4f + lowerHeight;
 
-                CreateConnectedTileRow("RiverOpposite V3", river.Take(5).ToArray(), Tile2D5Mode.FlatFront,
-                    new Vector2(acrossRiverStartX, 169), acrossRiverSize, acrossRiverStep, false, tableRingParent,
-                    useFourFaceAssembly: true,
-                    fourFaceProjectedDepth: PrototypeTileDimensions.ProjectedDepthForFaceWidth(acrossRiverSize.x));
-                CreateConnectedTileRow("RiverSelf V3", river.Skip(5).Take(5).ToArray(), Tile2D5Mode.FlatFront,
-                    new Vector2(acrossRiverStartX, 373), acrossRiverSize, acrossRiverStep, false, tableRingParent,
-                    useFourFaceAssembly: true,
-                    fourFaceProjectedDepth: PrototypeTileDimensions.ProjectedDepthForFaceWidth(acrossRiverSize.x));
-                CreateConnectedTileRow("RiverLeft V3", river.Skip(10).Take(5).ToArray(), Tile2D5Mode.FlatFront,
-                    new Vector2(448, 300f - upperRiverSpan * .5f), upperRiverRootSize,
-                    upperRiverStep, true, tableRingParent, -upperRiverStep * .2f,
-                    useFourFaceAssembly: true,
-                    fourFaceProjectedDepth: PrototypeTileDimensions.ProjectedDepthForFaceWidth(upperWidth));
-                CreateConnectedTileRow("RiverRight V3", river.Skip(15).Take(5).ToArray(), Tile2D5Mode.FlatFront,
-                    new Vector2(755, 300f - lowerRiverSpan * .5f), lowerRiverRootSize,
-                    lowerRiverStep, true, tableRingParent, lowerRiverStep * .2f,
-                    useFourFaceAssembly: true,
-                    fourFaceProjectedDepth: PrototypeTileDimensions.ProjectedDepthForFaceWidth(lowerWidth));
+                float riverDepth = PrototypeTileDimensions.ProjectedDepthForFaceWidth(acrossRiverSize.x);
+                int[] oppositeRiverTiles = river.Take(5).ToArray();
+                var oppositeRiverAxes = new MahjongWallAxisFrame(
+                    new MahjongWallPoint2(acrossRiverStartX, 169f + acrossRiverSize.y),
+                    new MahjongWallPoint2(acrossRiverStartX, 169f),
+                    new MahjongWallPoint2(acrossRiverStartX + riverDepth,
+                        169f + acrossRiverSize.y + riverDepth),
+                    acrossRiverStep * (oppositeRiverTiles.Length - 1), 0f, 0f, 180f);
+                DrawMahjongWall("RiverOpposite V3", MahjongWallSeat.NorthDiscard, tableRingParent,
+                    0, oppositeRiverAxes, MahjongWallTextureMode.FaceUpWithSideAndBottom,
+                    oppositeRiverTiles, acrossRiverSize.x, tileCountOverride: oppositeRiverTiles.Length);
+                int[] selfRiverTiles = river.Skip(5).Take(5).ToArray();
+                float selfRiverDepth = PrototypeTileDimensions.ProjectedDepthForFaceWidth(acrossRiverSize.x);
+                var selfRiverAxes = new MahjongWallAxisFrame(
+                    new MahjongWallPoint2(acrossRiverStartX, 373f + acrossRiverSize.y),
+                    new MahjongWallPoint2(acrossRiverStartX, 373f),
+                    new MahjongWallPoint2(acrossRiverStartX + selfRiverDepth,
+                        373f + acrossRiverSize.y + selfRiverDepth),
+                    acrossRiverStep * (selfRiverTiles.Length - 1), 0f);
+                DrawMahjongWall("RiverSelf V3", MahjongWallSeat.SouthDiscard, tableRingParent,
+                    0, selfRiverAxes, MahjongWallTextureMode.FaceUpWithSideAndBottom,
+                    selfRiverTiles, acrossRiverSize.x, tileCountOverride: selfRiverTiles.Length);
+                int[] leftRiverTiles = river.Skip(10).Take(5).ToArray();
+                float leftRiverTop = 300f - upperRiverSpan * .5f
+                    - (upperRiverRootSize.x - upperWidth) * .5f;
+                Vector2 leftRiverStepVector = new Vector2(-upperRiverStep * .2f, upperRiverStep);
+                float leftRiverSlope = Mathf.Atan2(leftRiverStepVector.y, leftRiverStepVector.x) * Mathf.Rad2Deg;
+                float leftRiverX = 448f + (upperRiverRootSize.x - upperWidth) * .5f;
+                var leftRiverAxes = new MahjongWallAxisFrame(
+                    new MahjongWallPoint2(leftRiverX, leftRiverTop + upperRiverRootSize.x),
+                    new MahjongWallPoint2(leftRiverX, leftRiverTop),
+                    new MahjongWallPoint2(leftRiverX + riverDepth,
+                        leftRiverTop + upperRiverRootSize.x + riverDepth),
+                    leftRiverStepVector.magnitude * (leftRiverTiles.Length - 1), leftRiverSlope,
+                    -leftRiverSlope, 90f);
+                DrawMahjongWall("RiverLeft V3", MahjongWallSeat.WestDiscard, tableRingParent,
+                    0, leftRiverAxes, MahjongWallTextureMode.SideDiscardWall,
+                    leftRiverTiles, upperWidth, tileCountOverride: leftRiverTiles.Length);
+
+                int[] rightRiverTiles = river.Skip(15).Take(5).ToArray();
+                float rightRiverTop = 300f - lowerRiverSpan * .5f
+                    - (lowerRiverRootSize.x - lowerWidth) * .5f;
+                Vector2 rightRiverStepVector = new Vector2(lowerRiverStep * .2f, lowerRiverStep);
+                float rightRiverSlope = Mathf.Atan2(rightRiverStepVector.y, rightRiverStepVector.x) * Mathf.Rad2Deg;
+                float rightRiverX = 755f + (lowerRiverRootSize.x - lowerWidth) * .5f;
+                var rightRiverAxes = new MahjongWallAxisFrame(
+                    new MahjongWallPoint2(rightRiverX, rightRiverTop + lowerRiverRootSize.x),
+                    new MahjongWallPoint2(rightRiverX, rightRiverTop),
+                    new MahjongWallPoint2(rightRiverX + riverDepth,
+                        rightRiverTop + lowerRiverRootSize.x + riverDepth),
+                    rightRiverStepVector.magnitude * (rightRiverTiles.Length - 1), rightRiverSlope,
+                    180f - rightRiverSlope, -90f);
+                DrawMahjongWall("RiverRight V3", MahjongWallSeat.EastDiscard, tableRingParent,
+                    0, rightRiverAxes, MahjongWallTextureMode.SideDiscardWall,
+                    rightRiverTiles, 0f, tileCountOverride: rightRiverTiles.Length,
+                    usePerTileFrontRenderer: true, outerPoint: MahjongWallOuterPoint.C1,
+                    widthShrinkPercent: 6f);
             }
             else
             {
@@ -1066,24 +1116,53 @@ namespace Mahjong.Unity.UI.Prototype
             int centerRenderTileCount, MahjongWallAxisFrame axisFrame,
             MahjongWallTextureMode textureMode = MahjongWallTextureMode.BackFacingTable,
             int[]? faceTileIds = null, float faceWidthOverride = 0f,
-            int gapAfterTileIndex = -1, float extraGap = 0f)
+            int gapAfterTileIndex = -1, float extraGap = 0f, int tileCountOverride = 0,
+            MahjongWallFrontFace frontFace = MahjongWallFrontFace.Automatic,
+            bool usePerTileFrontRenderer = false,
+            MahjongWallOuterPoint outerPoint = MahjongWallOuterPoint.B1,
+            float widthShrinkPercent = 0f)
         {
-            var go = new GameObject(name, typeof(RectTransform), typeof(CanvasRenderer),
-                typeof(MahjongWallRowGraphic));
+            MahjongWallLayoutEditor editor = EnsureWallLayoutEditor(parent);
+            axisFrame = editor.ResolveFrame(seat, axisFrame);
+            widthShrinkPercent = editor.ResolveWidthShrinkPercent(seat, widthShrinkPercent);
+            frontFace = MahjongWallGeometry.ResolveFrontFace(seat, textureMode, frontFace);
+            var go = new GameObject(name, typeof(RectTransform), typeof(CanvasRenderer));
             go.transform.SetParent(parent, false);
             RectTransform rect = go.GetComponent<RectTransform>();
             rect.anchorMin = rect.anchorMax = new Vector2(0f, 1f);
             rect.pivot = new Vector2(0f, 1f);
             rect.anchoredPosition = Vector2.zero;
             rect.sizeDelta = new Vector2(1280f, 720f);
-            MahjongWallRowGraphic graphic = go.GetComponent<MahjongWallRowGraphic>();
-            graphic.Configure(seat, true, centerRenderTileCount, axisFrame, textureMode,
-                faceWidthOverride, gapAfterTileIndex, extraGap);
+            MaskableGraphic graphic;
+            Action<MahjongWallAxisFrame> setAxisFrame;
+            if (usePerTileFrontRenderer)
+            {
+                MahjongExplicitFrontWallGraphic frontGraphic = go.AddComponent<MahjongExplicitFrontWallGraphic>();
+                MahjongWallTileFrontSpec[] tileSpecs = new MahjongWallTileFrontSpec[tileCountOverride];
+                for (int i = 0; i < tileSpecs.Length; i++)
+                    tileSpecs[i] = new MahjongWallTileFrontSpec(MahjongWallSurface.Front,
+                        axisFrame.FaceUvRotationDegrees);
+                frontGraphic.Configure(axisFrame, tileSpecs, faceWidthOverride,
+                    gapAfterTileIndex, extraGap, outerPoint, widthShrinkPercent);
+                frontGraphic.SetRenderView(new MahjongWallRenderView(720f));
+                graphic = frontGraphic;
+                setAxisFrame = frontGraphic.SetAxisFrame;
+            }
+            else
+            {
+                MahjongWallRowGraphic rowGraphic = go.AddComponent<MahjongWallRowGraphic>();
+                rowGraphic.Configure(seat, true, centerRenderTileCount, axisFrame, textureMode,
+                    faceWidthOverride, gapAfterTileIndex, extraGap, tileCountOverride, frontFace);
+                graphic = rowGraphic;
+                setAxisFrame = rowGraphic.SetAxisFrame;
+            }
             List<MahjongWallFaceRevealGraphic> faceGraphics;
-            if (textureMode == MahjongWallTextureMode.FaceUp && faceTileIds != null)
+            if (textureMode != MahjongWallTextureMode.BackFacingTable && faceTileIds != null)
             {
                 faceGraphics = new List<MahjongWallFaceRevealGraphic>();
-                int count = Mathf.Min(faceTileIds.Length, MahjongWallGeometry.TileCount(seat));
+                int geometryTileCount = tileCountOverride > 0
+                    ? tileCountOverride : MahjongWallGeometry.ReferenceTileCount;
+                int count = Mathf.Min(faceTileIds.Length, geometryTileCount);
                 for (int i = 0; i < count; i++)
                 {
                     var faceGo = new GameObject(name + " face " + i,
@@ -1100,7 +1179,8 @@ namespace Mahjong.Unity.UI.Prototype
                     MahjongWallFaceRevealGraphic faceGraphic = faceGo.GetComponent<MahjongWallFaceRevealGraphic>();
                     faceGraphic.Configure(seat,
                         GetTileFaceSprite(faceTileIds[i]), i, axisFrame, textureMode,
-                        faceWidthOverride, gapAfterTileIndex, extraGap);
+                        faceWidthOverride, gapAfterTileIndex, extraGap, tileCountOverride,
+                        usePerTileFrontRenderer, widthShrinkPercent);
                     faceGraphics.Add(faceGraphic);
                 }
             }
@@ -1108,9 +1188,9 @@ namespace Mahjong.Unity.UI.Prototype
             {
                 faceGraphics = CreateWallFaceReveals(name, seat, parent, centerRenderTileCount, axisFrame);
             }
-            MahjongWallLayoutEditor editor = EnsureWallLayoutEditor(parent);
-            editor.Register(seat, graphic, axisFrame, textureMode, faceWidthOverride,
-                gapAfterTileIndex, extraGap, faceGraphics);
+            editor.Register(seat, graphic, setAxisFrame, axisFrame, textureMode, faceWidthOverride,
+                gapAfterTileIndex, extraGap, tileCountOverride, faceGraphics, frontFace,
+                usePerTileFrontRenderer, outerPoint, widthShrinkPercent);
         }
 
         private MahjongWallLayoutEditor EnsureWallLayoutEditor(Transform drawingParent)

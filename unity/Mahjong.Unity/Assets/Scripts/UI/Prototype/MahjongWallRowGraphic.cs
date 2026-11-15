@@ -12,10 +12,12 @@ namespace Mahjong.Unity.UI.Prototype
         [SerializeField] private bool _referenceLayout;
         [SerializeField] private int _centerRenderTileCount;
         [SerializeField] private MahjongWallTextureMode _textureMode;
+        [SerializeField] private MahjongWallFrontFace _frontFace;
         private MahjongWallAxisFrame _axisFrame;
         private float _faceWidthOverride;
         private int _gapAfterTileIndex = -1;
         private float _extraGap;
+        private int _tileCountOverride;
 
         public override Texture mainTexture => _referenceLayout && MahjongTileFaceAtlas.Texture != null
             ? MahjongTileFaceAtlas.Texture : s_WhiteTexture;
@@ -23,16 +25,19 @@ namespace Mahjong.Unity.UI.Prototype
         public void Configure(MahjongWallSeat seat, bool referenceLayout = false,
             int centerRenderTileCount = 0, MahjongWallAxisFrame axisFrame = default,
             MahjongWallTextureMode textureMode = MahjongWallTextureMode.BackFacingTable,
-            float faceWidthOverride = 0f, int gapAfterTileIndex = -1, float extraGap = 0f)
+            float faceWidthOverride = 0f, int gapAfterTileIndex = -1, float extraGap = 0f,
+            int tileCountOverride = 0, MahjongWallFrontFace frontFace = MahjongWallFrontFace.Automatic)
         {
             _seat = seat;
             _referenceLayout = referenceLayout;
             _centerRenderTileCount = Mathf.Max(0, centerRenderTileCount);
             _axisFrame = axisFrame;
             _textureMode = textureMode;
+            _frontFace = frontFace;
             _faceWidthOverride = faceWidthOverride;
             _gapAfterTileIndex = gapAfterTileIndex;
             _extraGap = extraGap;
+            _tileCountOverride = Mathf.Max(0, tileCountOverride);
             raycastTarget = false;
             SetVerticesDirty();
         }
@@ -51,7 +56,7 @@ namespace Mahjong.Unity.UI.Prototype
                 : default;
             MahjongWallTileGeometry[] row = _referenceLayout
                 ? MahjongWallGeometry.BuildWallFromAxes(_seat, _centerRenderTileCount, axes,
-                    _faceWidthOverride, _gapAfterTileIndex, _extraGap)
+                    _faceWidthOverride, _gapAfterTileIndex, _extraGap, _tileCountOverride)
                 : MahjongWallGeometry.BuildRow(_seat);
             int revealStart = _referenceLayout && _centerRenderTileCount > 0
                 ? (row.Length - Mathf.Min(row.Length, _centerRenderTileCount)) / 2 : -1;
@@ -93,6 +98,21 @@ namespace Mahjong.Unity.UI.Prototype
                     new Color(.79f, .84f, .74f, 1f),
                     new Color(.08f + variation * 1.5f, .34f + variation * 1.5f, .31f + variation * 1.5f, 1f)
                 };
+            if (_frontFace != MahjongWallFrontFace.Automatic)
+            {
+                AddQuad(vh, tile.ShadowFace, colors[0]);
+                MahjongWallSurface[] visible = MahjongWallGeometry.VisibleSurfaces(_frontFace, _textureMode);
+                bool useAtlas = _referenceLayout && MahjongTileFaceAtlas.Texture != null;
+                for (int i = 0; i < visible.Length; i++)
+                    AddAutoVisibleFace(vh, tile, visible[i], colors, translucentShell, useAtlas);
+                if (tile.ShowBackMark && !_referenceLayout)
+                {
+                    AddTriangle(vh, tile.Triangles[0], new Color(.62f, .82f, .69f, 1f));
+                    AddTriangle(vh, tile.Triangles[1], new Color(.31f, .58f, .49f, 1f));
+                }
+                return;
+            }
+
             if (_referenceLayout)
             {
                 AddQuad(vh, tile.ShadowFace, colors[0]);
@@ -106,6 +126,21 @@ namespace Mahjong.Unity.UI.Prototype
                         AddTextureQuad(vh, tile.BottomFace, MahjongTileFaceAtlas.BottomUv, FaceUvOrder.Bottom, shellTint);
                         AddTextureQuad(vh, tile.SideFace, MahjongTileFaceAtlas.SideUv, FaceUvOrder.Side, shellTint);
                         AddTextureQuad(vh, tile.TopFace, MahjongTileFaceAtlas.BottomUv, FaceUvOrder.Top, shellTint);
+                    }
+                    else if (_textureMode == MahjongWallTextureMode.FaceUpWithSideAndBottom)
+                    {
+                        AddTextureQuad(vh, tile.BottomFace, MahjongTileFaceAtlas.BottomUv, FaceUvOrder.Bottom, shellTint);
+                        AddTextureQuad(vh, tile.SideFace, MahjongTileFaceAtlas.SideUv, FaceUvOrder.Side, shellTint);
+                    }
+                    else if (_textureMode == MahjongWallTextureMode.SideDiscardWall)
+                    {
+                        // The downstream wall exposes all three requested planes
+                        // while validating the axis mapping. Keep upstream's top hidden.
+                        if (_seat == MahjongWallSeat.EastDiscard)
+                            AddTextureQuad(vh, tile.SideDiscardTop, MahjongTileFaceAtlas.BottomUv,
+                                FaceUvOrder.Top, shellTint);
+                        AddTextureQuad(vh, tile.SideDiscardSide, MahjongTileFaceAtlas.SideUv,
+                            FaceUvOrder.Side, shellTint);
                     }
                     else if (_seat == MahjongWallSeat.North)
                     {
@@ -134,6 +169,15 @@ namespace Mahjong.Unity.UI.Prototype
                         AddQuad(vh, tile.BottomFace, bottom);
                         AddQuad(vh, tile.SideFace, side);
                         AddQuad(vh, tile.TopFace, top);
+                    }
+                    else if (_textureMode == MahjongWallTextureMode.FaceUpWithSideAndBottom)
+                    {
+                        AddQuad(vh, tile.BottomFace, bottom);
+                        AddQuad(vh, tile.SideFace, side);
+                    }
+                    else if (_textureMode == MahjongWallTextureMode.SideDiscardWall)
+                    {
+                        AddQuad(vh, tile.SideDiscardSide, side);
                     }
                     else if (_seat == MahjongWallSeat.North)
                     {
@@ -164,6 +208,41 @@ namespace Mahjong.Unity.UI.Prototype
                 AddTriangle(vh, tile.Triangles[0], new Color(.62f, .82f, .69f, 1f));
                 AddTriangle(vh, tile.Triangles[1], new Color(.31f, .58f, .49f, 1f));
             }
+        }
+
+        private void AddAutoVisibleFace(VertexHelper vh, MahjongWallTileGeometry tile,
+            MahjongWallSurface surface, Color[] colors, bool translucentShell, bool useAtlas)
+        {
+            MahjongWallPoint2[] face = MahjongWallGeometry.Surface(tile, surface);
+            if (useAtlas)
+            {
+                Rect uv = surface == MahjongWallSurface.Front || surface == MahjongWallSurface.Back
+                    ? MahjongTileFaceAtlas.BackUv
+                    : surface == MahjongWallSurface.LeftSide || surface == MahjongWallSurface.RightSide
+                        ? MahjongTileFaceAtlas.SideUv : MahjongTileFaceAtlas.BottomUv;
+                FaceUvOrder order = surface switch
+                {
+                    MahjongWallSurface.Top => FaceUvOrder.Top,
+                    MahjongWallSurface.Bottom => FaceUvOrder.Bottom,
+                    MahjongWallSurface.SideDiscardTop => FaceUvOrder.Top,
+                    MahjongWallSurface.SideDiscardSide => FaceUvOrder.Side,
+                    MahjongWallSurface.LeftSide => FaceUvOrder.Side,
+                    MahjongWallSurface.RightSide => _seat == MahjongWallSeat.North
+                        ? FaceUvOrder.Side : FaceUvOrder.SideInward,
+                    _ => FaceUvOrder.Standard
+                };
+                AddTextureQuad(vh, face, uv, order,
+                    translucentShell ? new Color(1f, 1f, 1f, .42f) : Color.white);
+                return;
+            }
+
+            Color color = surface == MahjongWallSurface.Front || surface == MahjongWallSurface.Back
+                ? colors[3]
+                : surface == MahjongWallSurface.LeftSide || surface == MahjongWallSurface.RightSide
+                    || surface == MahjongWallSurface.SideDiscardSide
+                    ? colors[1] : colors[2];
+            if (translucentShell) color.a *= .42f;
+            AddQuad(vh, face, color);
         }
 
         private static Rect TileBounds(MahjongWallTileGeometry tile)
