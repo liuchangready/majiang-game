@@ -8,6 +8,7 @@
 - [玩法与规则](GAMEPLAY_RULES.md)：规则合同、42 个役种稳定码、136 张实体、三绝技与码牌约束。
 - [构建与出包](BUILD_AND_PACKAGE.md)：当前 .NET、共享 DLL、Unity Windows/Android 构建入口。
 - [测试与覆盖](TESTING.md)：当前 .NET/Unity 验证、覆盖口径和未完成项。
+- [测试设计与用例](TEST_DESIGN.md)：四部分职责、Windows/Android端到端场景、补充覆盖目标及避免重复测试的规则。
 - [V5 规则合同](v5-重构/V5-0-RULE-CONTRACT.md)：版本化规则语义及当前 C# 实现边界。
 
 ## 设计与历史记录

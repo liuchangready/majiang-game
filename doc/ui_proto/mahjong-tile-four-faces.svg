@@ -1,0 +1,132 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
+  <title id="title">麻将牌四面设计图</title>
+  <desc id="desc">按统一牌体比例绘制的正面、背面、侧面和底面材质图。</desc>
+  <defs>
+    <linearGradient id="bg" x2="0" y2="1">
+      <stop stop-color="#152d50"/>
+      <stop offset="1" stop-color="#09172b"/>
+    </linearGradient>
+    <linearGradient id="ivory" x2="0" y2="1">
+      <stop stop-color="#fffef8"/>
+      <stop offset=".72" stop-color="#f4f1e7"/>
+      <stop offset="1" stop-color="#e7dfcb"/>
+    </linearGradient>
+    <linearGradient id="orange" x2="0" y2="1">
+      <stop stop-color="#ffa63d"/>
+      <stop offset=".18" stop-color="#fb9828"/>
+      <stop offset="1" stop-color="#ed7d17"/>
+    </linearGradient>
+    <linearGradient id="side" x2="1" y2="0">
+      <stop stop-color="#d48a34"/>
+      <stop offset=".2" stop-color="#b97326"/>
+      <stop offset="1" stop-color="#754319"/>
+    </linearGradient>
+    <linearGradient id="bottom" x2="0" y2="1">
+      <stop stop-color="#d3933b"/>
+      <stop offset=".22" stop-color="#ae6e27"/>
+      <stop offset="1" stop-color="#77471e"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-25%" width="160%" height="170%">
+      <feDropShadow dx="0" dy="12" stdDeviation="12" flood-color="#020812" flood-opacity=".55"/>
+    </filter>
+    <pattern id="felt" width="8" height="8" patternUnits="userSpaceOnUse">
+      <path d="M0 8 8 0M-2 2 2-2M6 10 10 6" stroke="#ffffff" stroke-opacity=".025" stroke-width="1"/>
+    </pattern>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto-start-reverse">
+      <path d="M0 0 8 4 0 8Z" fill="#8fa6c1"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="760" fill="url(#bg)"/>
+  <rect width="1200" height="760" fill="url(#felt)"/>
+  <path d="M36 88H1164" stroke="#be914c" stroke-opacity=".55"/>
+  <text x="48" y="52" fill="#f4d28a" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="30" font-weight="600">麻将牌 · 四面材质稿</text>
+  <text x="1152" y="50" text-anchor="end" fill="#8fa6c1" font-family="Arial, sans-serif" font-size="13" letter-spacing="3">TILE FACE STUDY / 01</text>
+  <text x="48" y="76" fill="#9dafc5" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14">统一牌体比例：宽 34 · 高 54 · 厚 24　|　正面白色牌芯，背面黄色牌背，侧边显示两段厚度</text>
+
+  <g font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif">
+    <!-- Front face -->
+    <g transform="translate(42 122)">
+      <rect width="267" height="556" rx="16" fill="#0b1b31" stroke="#344a66"/>
+      <text x="22" y="38" fill="#f1d18a" font-size="20" font-weight="600">正面</text>
+      <text x="22" y="60" fill="#7f97b3" font-family="Arial, sans-serif" font-size="11" letter-spacing="2">FRONT · FACE ART</text>
+      <g filter="url(#shadow)">
+        <rect x="75" y="122" width="132" height="220" rx="15" fill="#b99560" opacity=".45"/>
+        <rect x="68" y="112" width="132" height="220" rx="15" fill="url(#ivory)" stroke="#fffdf4" stroke-width="3"/>
+        <rect x="77" y="121" width="114" height="202" rx="9" fill="none" stroke="#d6c6a7" stroke-width="2"/>
+        <path d="M85 128h24M85 128v24M183 128h-24M183 128v24M85 316h24M85 316v-24M183 316h-24M183 316v-24" fill="none" stroke="#c2ae86" stroke-width="2"/>
+        <text x="134" y="256" text-anchor="middle" fill="#c83528" font-size="92" font-weight="700">中</text>
+      </g>
+      <path d="M68 367H200" stroke="#526983" stroke-opacity=".5"/>
+      <text x="134" y="402" text-anchor="middle" fill="#c9d4e1" font-size="14">字面贴图 / 白玉牌芯 / 圆角细描边</text>
+      <path d="M68 440H200" stroke="#8fa6c1" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+      <text x="134" y="464" text-anchor="middle" fill="#8fa6c1" font-size="12">宽 34</text>
+      <path d="M48 112V332" stroke="#8fa6c1" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+      <text x="37" y="226" text-anchor="middle" fill="#8fa6c1" font-size="12" transform="rotate(-90 37 226)">高 54</text>
+    </g>
+
+    <!-- Back face -->
+    <g transform="translate(333 122)">
+      <rect width="267" height="556" rx="16" fill="#0b1b31" stroke="#344a66"/>
+      <text x="22" y="38" fill="#f1d18a" font-size="20" font-weight="600">背面</text>
+      <text x="22" y="60" fill="#7f97b3" font-family="Arial, sans-serif" font-size="11" letter-spacing="2">BACK · WALL DISPLAY</text>
+      <g filter="url(#shadow)">
+        <rect x="75" y="122" width="132" height="220" rx="15" fill="#754319" opacity=".75"/>
+        <rect x="68" y="112" width="132" height="220" rx="15" fill="#f3b641" stroke="#9d691f" stroke-width="3"/>
+        <rect x="75" y="119" width="118" height="206" rx="10" fill="none" stroke="#ffe19a" stroke-width="2"/>
+        <path d="M80 125h108" stroke="#fff0bf" stroke-width="3" stroke-linecap="round" opacity=".9"/>
+        <path d="M79 130v186M189 130v186" stroke="#bd801e" stroke-width="1.5" opacity=".65"/>
+        <path d="M79 317h110" stroke="#9e681c" stroke-width="2"/>
+      </g>
+      <path d="M68 367H200" stroke="#526983" stroke-opacity=".5"/>
+      <text x="134" y="402" text-anchor="middle" fill="#c9d4e1" font-size="14">黄色牌背 / 细金色上沿 / 暗棕分缝</text>
+      <text x="134" y="438" text-anchor="middle" fill="#8fa6c1" font-size="12">墙牌朝外，连续排列时保留窄缝</text>
+    </g>
+
+    <!-- Side face -->
+    <g transform="translate(624 122)">
+      <rect width="267" height="556" rx="16" fill="#0b1b31" stroke="#344a66"/>
+      <text x="22" y="38" fill="#f1d18a" font-size="20" font-weight="600">侧面</text>
+      <text x="22" y="60" fill="#7f97b3" font-family="Arial, sans-serif" font-size="11" letter-spacing="2">SIDE · EDGE THICKNESS</text>
+      <g filter="url(#shadow)">
+        <path d="M79 112h98v220H79z" fill="#e9ad39" stroke="#694518" stroke-width="2"/>
+        <path d="M79 112h49v220H79z" fill="#f4f0e3"/>
+        <path d="M128 114v216" stroke="#a9782d" stroke-width="2"/>
+        <path d="M82 118v208" stroke="#fffdf4" stroke-width="2" opacity=".9"/>
+        <path d="M174 118v208" stroke="#aa731e" stroke-width="2" opacity=".8"/>
+        <path d="M79 112h98" stroke="#ffdfa0" stroke-width="3"/>
+        <path d="M79 332h98" stroke="#573515" stroke-width="3"/>
+      </g>
+      <path d="M79 367H177" stroke="#8fa6c1" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+      <text x="128" y="391" text-anchor="middle" fill="#8fa6c1" font-size="12">厚 24</text>
+      <path d="M68 420H200" stroke="#526983" stroke-opacity=".5"/>
+      <text x="134" y="454" text-anchor="middle" fill="#c9d4e1" font-size="14">前半白色牌芯 + 后半黄色牌背</text>
+      <text x="134" y="486" text-anchor="middle" fill="#8fa6c1" font-size="12">总厚 24；白黄分界沿厚度方向</text>
+    </g>
+
+    <!-- Bottom face -->
+    <g transform="translate(915 122)">
+      <rect width="243" height="556" rx="16" fill="#0b1b31" stroke="#344a66"/>
+      <text x="22" y="38" fill="#f1d18a" font-size="20" font-weight="600">底面</text>
+      <text x="22" y="60" fill="#7f97b3" font-family="Arial, sans-serif" font-size="11" letter-spacing="2">BOTTOM · CONTACT FACE</text>
+      <g filter="url(#shadow)">
+        <rect x="48" y="180" width="150" height="110" rx="5" fill="#e9ad39" stroke="#694518" stroke-width="2"/>
+        <path d="M53 185h140v50H53z" fill="#f4f0e3"/>
+        <path d="M51 235h144" stroke="#a9782d" stroke-width="2"/>
+        <path d="M53 185h140" stroke="#fffdf4" stroke-width="2" opacity=".9"/>
+        <path d="M53 286h140" stroke="#70431d" stroke-width="2"/>
+      </g>
+      <path d="M48 316H198" stroke="#8fa6c1" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+      <text x="123" y="294" text-anchor="middle" fill="#8fa6c1" font-size="12">宽 34</text>
+      <path d="M218 180v110" stroke="#8fa6c1" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+      <text x="229" y="235" fill="#8fa6c1" font-size="12" transform="rotate(90 229 235)">厚 24</text>
+      <path d="M38 350H205" stroke="#526983" stroke-opacity=".5"/>
+      <text x="121" y="384" text-anchor="middle" fill="#c9d4e1" font-size="14">前段白色牌芯 / 后段黄色牌背</text>
+      <text x="121" y="416" text-anchor="middle" fill="#8fa6c1" font-size="12">比例与侧面一致，总厚 24</text>
+    </g>
+  </g>
+
+  <path d="M36 706H1164" stroke="#be914c" stroke-opacity=".35"/>
+  <text x="48" y="733" fill="#8fa6c1" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="13">材质基准：象牙白正面与前段 · 黄色后段与背面 · 深棕分界和接触阴影</text>
+  <text x="1152" y="733" text-anchor="end" fill="#647d99" font-family="Arial, sans-serif" font-size="12">34 × 54 × 24</text>
+</svg>

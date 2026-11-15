@@ -35,6 +35,14 @@ namespace Mahjong.Unity.App
             // root so it never reads or writes the real user's save/outbox. The
             // default launch keeps Application.persistentDataPath.
             string[] args = Environment.GetCommandLineArgs();
+#if UNITY_EDITOR || DEVELOPMENT_BUILD || UNITY_INCLUDE_TESTS
+            if (DebugSceneLaunch.WasRequested(args) && !DebugSceneLaunch.TryEnable(args, out string debugSceneError))
+            {
+                Debug.LogError("DEBUG_SCENE_LOAD_FAILED: " + debugSceneError);
+                Application.Quit();
+                return;
+            }
+#endif
             string? persistentDataPath = null;
             for (int i = 0; i < args.Length; i++)
             {
@@ -75,6 +83,19 @@ namespace Mahjong.Unity.App
                     return;
                 }
                 Debug.Log("BOOT_SCENE_LOAD_SUCCESS: Menu scene loaded.");
+
+#if UNITY_EDITOR || DEVELOPMENT_BUILD || UNITY_INCLUDE_TESTS
+                if (DebugSceneLaunch.Enabled)
+                {
+                    LocalGameStartResult debugStart = await AppRoot.Instance.Router.StartLocalGameAsync();
+                    if (debugStart.Status != LocalGameStartStatus.Started)
+                    {
+                        Debug.LogError("DEBUG_SCENE_START_FAILED: " + debugStart.StableErrorCode);
+                        Application.Quit();
+                    }
+                    return;
+                }
+#endif
 
                 string[] args = Environment.GetCommandLineArgs();
                 for (int i = 0; i < args.Length; i++)

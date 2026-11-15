@@ -1,5 +1,6 @@
 #nullable enable
 using System;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Mahjong.Client;
@@ -111,7 +112,17 @@ namespace Mahjong.Unity.App
             _ownerInstanceId = string.IsNullOrWhiteSpace(ownerInstanceId)
                 ? "unity-local-" + Guid.NewGuid().ToString("N")
                 : ownerInstanceId!;
-            _saveDirectory = paths.LocalSaveDirectory;
+#if UNITY_EDITOR || DEVELOPMENT_BUILD || UNITY_INCLUDE_TESTS
+            if (DebugSceneLaunch.Enabled)
+            {
+                _roomId = DebugSceneLaunch.RoomId;
+                _saveDirectory = Path.Combine(paths.LocalSaveDirectory, "debug-scenes", DebugSceneLaunch.SaveDirectoryName);
+            }
+            else
+#endif
+            {
+                _saveDirectory = paths.LocalSaveDirectory;
+            }
             _leaseDuration = leaseDuration ?? TimeSpan.FromMinutes(10);
         }
 
@@ -337,6 +348,10 @@ namespace Mahjong.Unity.App
                         ? LocalTableSeatPlan.AllFourHumanSeats
                         : LocalTableSeatPlan.SingleHumanSeatZero
                 };
+#if UNITY_EDITOR || DEVELOPMENT_BUILD || UNITY_INCLUDE_TESTS
+                if (DebugSceneLaunch.Enabled)
+                    LocalPlayerActionScenario.ConfigureHostOptions(options, DebugSceneLaunch.ScenarioId, DebugSceneLaunch.RoundId);
+#endif
                 string? scenario = Volatile.Read(ref _playerActionScenario);
                 if (!string.IsNullOrEmpty(scenario)) LocalPlayerActionScenario.ConfigureHostOptions(options, scenario!);
                 cancellationToken.ThrowIfCancellationRequested();

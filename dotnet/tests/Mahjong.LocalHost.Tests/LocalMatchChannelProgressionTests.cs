@@ -198,7 +198,8 @@ namespace Mahjong.LocalHost.Tests
                 return BuildRiichiWinRound(state.CurrentRoundId, state.Scores, state.RiichiSticks);
             };
 
-            var outbox = new InMemoryOutboxStore();
+            string clientOutboxPath = Path.Combine(root, "client-outbox");
+            var outbox = new FileOutboxStore(clientOutboxPath);
             LocalMatchCoordinator match = await LocalMatchCoordinator.OpenAsync(options, ct);
             try
             {
@@ -240,13 +241,22 @@ namespace Mahjong.LocalHost.Tests
                 PendingCommandSnapshot pending = session.PendingCommands.Single();
                 string expectedDigest = CanonicalPayloadDigest.Compute(command.Payload).ToHex();
                 Assert.Equal(expectedDigest, pending.DigestSha256);
+                OutboxEntry persisted = Assert.Single(
+                    await new FileOutboxStore(clientOutboxPath).LoadUnresolvedAsync(ct));
+                Assert.Equal(command.RequestId.Value, persisted.RequestId.Value);
+                Assert.Equal(command.ScopeId!.Value, persisted.ScopeId);
+                Assert.Equal(expectedDigest, persisted.DigestSha256);
                 await session.CloseAsync("LOST_RECEIPT", CancellationToken.None);
 
                 LocalMatchRound recovered = await match.OpenRoundAsync(ct);
                 Assert.Equal(roundId, recovered.RoundId);
                 await recovered.Channel.OpenAsync(
                     new TableChannelConnectRequest(recovered.Ticket, "outbox-reconcile", null), ct);
-                var recoveredSession = new TableSession(recovered.Channel, outbox);
+                // Reopen from disk like a cold client process; do not carry the
+                // original in-memory store object across the match reconnect.
+                var recoveredSession = new TableSession(
+                    recovered.Channel,
+                    new FileOutboxStore(clientOutboxPath));
                 await recoveredSession.OpenAsync(
                     new TableSessionOpenRequest(recovered.Ticket, "outbox-reconcile"), ct);
                 for (int i = 0; i < 100 && recoveredSession.State != TableConnectionState.Ready; i++)

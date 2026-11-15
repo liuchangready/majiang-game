@@ -64,6 +64,10 @@ namespace Mahjong.LocalHost
         /// <summary>Optional pre-built initial round (match coordination).</summary>
         internal Mahjong.Domain.RoundStateMachine? InitialRound { get; set; }
 
+        internal IReadOnlyList<TableEventRecord>? InitialCommittedHistory { get; set; }
+
+        internal IReadOnlyList<TableCommandBinding>? InitialCommandBindings { get; set; }
+
         /// <summary>Test/controlled hosts may disable the autonomous AI ticker.</summary>
         internal bool AutoPlay { get; set; } = true;
 

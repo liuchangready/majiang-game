@@ -194,6 +194,20 @@ namespace Mahjong.LocalHost
                     await store.CreateRoomAsync(checkpoint, cancellationToken).ConfigureAwait(false);
                     actor = CreateActor(options, environment, clock, store, facts, round, checkpoint, controllers, temporaryFuriten, riichiFuriten);
                     facts.SettlementProvider = () => actor.LastSettlementCalculation;
+                    if (checkpoint.LastEventSeq.Value > 0)
+                    {
+                        // Pre-advanced local fixtures carry real committed event history in
+                        // their seed checkpoint. Install that history into the actor's event
+                        // cursor before publishing the first snapshot or accepting commands.
+                        TableRecoveryResult seeded = await actor.RecoverFromStoreAsync(cancellationToken).ConfigureAwait(false);
+                        if (!seeded.Recovered)
+                        {
+                            await actor.DisposeAsync().ConfigureAwait(false);
+                            throw new LocalTableException(
+                                LocalTableErrorKind.CorruptState,
+                                "Initial fixture recovery failed: " + seeded.ReasonCode + " " + seeded.Detail);
+                        }
+                    }
                 }
 
                 // The actor is the authority for furiten. A recovered actor has already installed
