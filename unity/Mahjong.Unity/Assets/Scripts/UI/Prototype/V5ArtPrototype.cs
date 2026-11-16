@@ -55,6 +55,7 @@ namespace Mahjong.Unity.UI.Prototype
         [Header("Hierarchy Containers")]
         [SerializeField] private Canvas? _canvas;
         [SerializeField] private RectTransform? _canvasRoot;
+        private MahjongWallLayoutEditor? _wallLayoutEditor;
         [SerializeField] private RectTransform? _stageRoot;
         [SerializeField] private GameObject? _menuPage;
         [SerializeField] private GameObject? _tablePage;
@@ -215,7 +216,8 @@ namespace Mahjong.Unity.UI.Prototype
             if (screenshotPressed)
                 Debug.Log("[V5ArtPrototype] C key detected direct=" + _directTableMode + " page=" + _activePage);
             if (_directTableMode && (_activePage == "seat-prototype" || _activePage == "seat-prototype-v2" || _activePage == "seat-prototype-v3")
-                && screenshotPressed)
+                && screenshotPressed && !(_wallLayoutEditor?.CanCopySelectedWall ?? false)
+                && !(_wallLayoutEditor?.CopyShortcutConsumed ?? false))
                 QueuePrototypeScreenshot();
             if (Keyboard.current.tabKey.wasPressedThisFrame || Keyboard.current.escapeKey.wasPressedThisFrame)
             {
@@ -245,7 +247,9 @@ namespace Mahjong.Unity.UI.Prototype
         {
             if (!_directTableMode || (_activePage != "seat-prototype" && _activePage != "seat-prototype-v2" && _activePage != "seat-prototype-v3")) return;
             Event current = Event.current;
-            if (current == null || current.type != EventType.KeyDown || current.keyCode != KeyCode.C) return;
+            if (current == null || current.type != EventType.KeyDown || current.keyCode != KeyCode.C
+                || (_wallLayoutEditor?.CanCopySelectedWall ?? false)
+                || (_wallLayoutEditor?.CopyShortcutConsumed ?? false)) return;
             current.Use();
             Debug.Log("[V5ArtPrototype] C key detected by IMGUI fallback page=" + _activePage);
             QueuePrototypeScreenshot();
@@ -1120,11 +1124,14 @@ namespace Mahjong.Unity.UI.Prototype
             MahjongWallFrontFace frontFace = MahjongWallFrontFace.Automatic,
             bool usePerTileFrontRenderer = false,
             MahjongWallOuterPoint outerPoint = MahjongWallOuterPoint.B1,
-            float widthShrinkPercent = 0f)
+            float widthShrinkPercent = 0f,
+            bool useProvidedAxisFrame = false, bool isRuntimeCopy = false,
+            string wallInstanceId = null)
         {
             MahjongWallLayoutEditor editor = EnsureWallLayoutEditor(parent);
-            axisFrame = editor.ResolveFrame(seat, axisFrame);
-            widthShrinkPercent = editor.ResolveWidthShrinkPercent(seat, widthShrinkPercent);
+            if (!useProvidedAxisFrame) axisFrame = editor.ResolveFrame(seat, axisFrame);
+            if (!useProvidedAxisFrame)
+                widthShrinkPercent = editor.ResolveWidthShrinkPercent(seat, widthShrinkPercent);
             frontFace = MahjongWallGeometry.ResolveFrontFace(seat, textureMode, frontFace);
             var go = new GameObject(name, typeof(RectTransform), typeof(CanvasRenderer));
             go.transform.SetParent(parent, false);
@@ -1188,15 +1195,27 @@ namespace Mahjong.Unity.UI.Prototype
             {
                 faceGraphics = CreateWallFaceReveals(name, seat, parent, centerRenderTileCount, axisFrame);
             }
+            Action<MahjongWallAxisFrame, float, string, bool> copyAtFrame = null;
+            copyAtFrame = (copyFrame, shrinkPercent, copyId, runtimeCopy) => DrawMahjongWall(
+                name + " Copy", seat, parent, centerRenderTileCount, copyFrame, textureMode,
+                faceTileIds, faceWidthOverride, gapAfterTileIndex, extraGap, tileCountOverride,
+                frontFace, usePerTileFrontRenderer, outerPoint, shrinkPercent,
+                useProvidedAxisFrame: true, isRuntimeCopy: runtimeCopy,
+                wallInstanceId: copyId);
             editor.Register(seat, graphic, setAxisFrame, axisFrame, textureMode, faceWidthOverride,
                 gapAfterTileIndex, extraGap, tileCountOverride, faceGraphics, frontFace,
-                usePerTileFrontRenderer, outerPoint, widthShrinkPercent);
+                usePerTileFrontRenderer, outerPoint, widthShrinkPercent,
+                copyAtFrame, isRuntimeCopy, wallInstanceId);
         }
 
         private MahjongWallLayoutEditor EnsureWallLayoutEditor(Transform drawingParent)
         {
             MahjongWallLayoutEditor editor = drawingParent.GetComponentInParent<MahjongWallLayoutEditor>();
-            if (editor != null) return editor;
+            if (editor != null)
+            {
+                _wallLayoutEditor = editor;
+                return editor;
+            }
 
             RectTransform coordinateRoot = _canvasRoot != null
                 ? _canvasRoot
@@ -1206,6 +1225,7 @@ namespace Mahjong.Unity.UI.Prototype
             editor = coordinateRoot.GetComponent<MahjongWallLayoutEditor>();
             if (editor == null) editor = coordinateRoot.gameObject.AddComponent<MahjongWallLayoutEditor>();
             editor.Configure(coordinateRoot);
+            _wallLayoutEditor = editor;
             return editor;
         }
 
