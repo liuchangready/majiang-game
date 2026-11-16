@@ -19,6 +19,8 @@ namespace Mahjong.Unity.UI.Prototype
         private int _tileCountOverride;
         private bool _useExplicitFrontGeometry;
         private float _widthShrinkPercent;
+        private bool _widthByYAxis;
+        private float _widthFalloffPerScreenY = MahjongExplicitFrontWallGraphic.DefaultWidthFalloffPerScreenY;
 
         public override Texture mainTexture => _face != null ? _face.texture : s_WhiteTexture;
 
@@ -27,7 +29,8 @@ namespace Mahjong.Unity.UI.Prototype
             MahjongWallTextureMode textureMode = MahjongWallTextureMode.BackFacingTable,
             float faceWidthOverride = 0f, int gapAfterTileIndex = -1, float extraGap = 0f,
             int tileCountOverride = 0, bool useExplicitFrontGeometry = false,
-            float widthShrinkPercent = 0f)
+            float widthShrinkPercent = 0f, bool widthByYAxis = false,
+            float widthFalloffPerScreenY = MahjongExplicitFrontWallGraphic.DefaultWidthFalloffPerScreenY)
         {
             _seat = seat;
             _face = face;
@@ -40,6 +43,8 @@ namespace Mahjong.Unity.UI.Prototype
             _tileCountOverride = Mathf.Max(0, tileCountOverride);
             _useExplicitFrontGeometry = useExplicitFrontGeometry;
             _widthShrinkPercent = Mathf.Clamp(widthShrinkPercent, 0f, 100f);
+            _widthByYAxis = widthByYAxis;
+            _widthFalloffPerScreenY = Mathf.Max(0f, widthFalloffPerScreenY);
             raycastTarget = false;
             SetMaterialDirty();
             SetVerticesDirty();
@@ -54,6 +59,12 @@ namespace Mahjong.Unity.UI.Prototype
         public void SetWidthShrinkPercent(float percent)
         {
             _widthShrinkPercent = Mathf.Clamp(percent, 0f, 100f);
+            SetVerticesDirty();
+        }
+
+        public void SetWidthFalloffPerScreenY(float value)
+        {
+            _widthFalloffPerScreenY = Mathf.Max(0f, value);
             SetVerticesDirty();
         }
 
@@ -72,7 +83,8 @@ namespace Mahjong.Unity.UI.Prototype
                 MahjongWallSkeleton skeleton = MahjongExplicitFrontWallGraphic.BuildSkeleton(axes,
                     tileCount, _faceWidthOverride, _gapAfterTileIndex, _extraGap);
                 MahjongExplicitTileGeometry[] row = MahjongExplicitFrontWallGraphic.BuildTileGeometry(
-                    skeleton, tileCount, _gapAfterTileIndex, _extraGap, _widthShrinkPercent);
+                    skeleton, tileCount, _gapAfterTileIndex, _extraGap, _widthShrinkPercent,
+                    _widthByYAxis, _widthFalloffPerScreenY);
                 revealFace = row[Mathf.Clamp(_tileIndex, 0, row.Length - 1)].FrontFace;
             }
             else

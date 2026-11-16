@@ -44,6 +44,8 @@ namespace Mahjong.Unity.UI.Prototype
             public float faceUvRotationDegrees;
             public float widthShrinkPercent;
             public bool hasWidthShrinkPercent;
+            public float widthFalloffPerScreenY;
+            public bool hasWidthFalloffPerScreenY;
         }
 
         private sealed class WallState
@@ -53,13 +55,15 @@ namespace Mahjong.Unity.UI.Prototype
             public MaskableGraphic Graphic;
             public Action<MahjongWallAxisFrame> SetAxisFrame;
             public bool PerTileFrontRenderer;
+            public bool WidthByYAxis;
             public MahjongWallAxisFrame Frame;
             public MahjongWallTextureMode TextureMode;
             public MahjongWallFrontFace FrontFace;
             public MahjongWallOuterPoint OuterPoint;
             public float FaceWidthOverride;
             public float WidthShrinkPercent;
-            public Action<MahjongWallAxisFrame, float, string, bool> CopyAtFrame;
+            public float WidthFalloffPerScreenY;
+            public Action<MahjongWallAxisFrame, float, float, string, bool> CopyAtFrame;
             public bool IsRuntimeCopy;
             public int GapAfterTileIndex;
             public float ExtraGap;
@@ -77,8 +81,10 @@ namespace Mahjong.Unity.UI.Prototype
             new Dictionary<MahjongWallSeat, MahjongWallAxisFrame>();
         private readonly Dictionary<MahjongWallSeat, float> _loadedWidthShrinkPercents =
             new Dictionary<MahjongWallSeat, float>();
-        private readonly Dictionary<MahjongWallSeat, Action<MahjongWallAxisFrame, float, string, bool>>
-            _wallFactoriesBySeat = new Dictionary<MahjongWallSeat, Action<MahjongWallAxisFrame, float, string, bool>>();
+        private readonly Dictionary<MahjongWallSeat, float> _loadedWidthFalloffsPerScreenY =
+            new Dictionary<MahjongWallSeat, float>();
+        private readonly Dictionary<MahjongWallSeat, Action<MahjongWallAxisFrame, float, float, string, bool>>
+            _wallFactoriesBySeat = new Dictionary<MahjongWallSeat, Action<MahjongWallAxisFrame, float, float, string, bool>>();
         private readonly HashSet<string> _deletedWallIds = new HashSet<string>(StringComparer.Ordinal);
         private readonly HashSet<string> _restoredSerializedCopyIds = new HashSet<string>(StringComparer.Ordinal);
         private LayoutDocument _serializedLayout;
@@ -127,6 +133,12 @@ namespace Mahjong.Unity.UI.Prototype
             return _loadedWidthShrinkPercents.TryGetValue(seat, out float value) ? value : fallback;
         }
 
+        public float ResolveWidthFalloffPerScreenY(MahjongWallSeat seat, float fallback)
+        {
+            LoadDefaultLayoutOnce();
+            return _loadedWidthFalloffsPerScreenY.TryGetValue(seat, out float value) ? value : fallback;
+        }
+
         public void Register(MahjongWallSeat seat, MaskableGraphic graphic,
             Action<MahjongWallAxisFrame> setAxisFrame,
             MahjongWallAxisFrame frame, MahjongWallTextureMode textureMode,
@@ -135,8 +147,9 @@ namespace Mahjong.Unity.UI.Prototype
             MahjongWallFrontFace frontFace = MahjongWallFrontFace.Automatic,
             bool perTileFrontRenderer = false,
             MahjongWallOuterPoint outerPoint = MahjongWallOuterPoint.B1,
-            float widthShrinkPercent = 0f,
-            Action<MahjongWallAxisFrame, float, string, bool> copyAtFrame = null,
+            float widthShrinkPercent = 0f, bool widthByYAxis = false,
+            float widthFalloffPerScreenY = MahjongExplicitFrontWallGraphic.DefaultWidthFalloffPerScreenY,
+            Action<MahjongWallAxisFrame, float, float, string, bool> copyAtFrame = null,
             bool isRuntimeCopy = false, string wallId = null)
         {
             WallState state = null;
@@ -156,12 +169,14 @@ namespace Mahjong.Unity.UI.Prototype
             state.Graphic = graphic;
             state.SetAxisFrame = setAxisFrame;
             state.PerTileFrontRenderer = perTileFrontRenderer;
+            state.WidthByYAxis = widthByYAxis;
             state.Frame = frame;
             state.TextureMode = textureMode;
             state.FrontFace = frontFace;
             state.OuterPoint = outerPoint;
             state.FaceWidthOverride = faceWidthOverride;
             state.WidthShrinkPercent = Mathf.Clamp(widthShrinkPercent, 0f, 100f);
+            state.WidthFalloffPerScreenY = Mathf.Max(0f, widthFalloffPerScreenY);
             state.CopyAtFrame = copyAtFrame;
             state.IsRuntimeCopy = isRuntimeCopy;
             state.GapAfterTileIndex = gapAfterTileIndex;
@@ -383,7 +398,7 @@ namespace Mahjong.Unity.UI.Prototype
                 new MahjongWallPoint2(frame.Axis3Start.X + offsetRight, frame.Axis3Start.Y),
                 frame.AxisLength, frame.AxisSlopeDegrees,
                 frame.FaceWidthAxisOffsetDegrees, frame.FaceUvRotationDegrees);
-            source.CopyAtFrame(frame, source.WidthShrinkPercent,
+            source.CopyAtFrame(frame, source.WidthShrinkPercent, source.WidthFalloffPerScreenY,
                 Guid.NewGuid().ToString("N"), true);
             _selectedWall = _walls.Count - 1;
             _runtimeCopyCount++;
@@ -409,7 +424,7 @@ namespace Mahjong.Unity.UI.Prototype
 
         private Rect GetDisplayBoundsInEditor(WallState wall, float offsetX = 0f)
         {
-            MahjongWallPoint2[] corners = BuildSkeletonCorners(wall);
+            MahjongWallPoint2[] corners = BuildDisplaySkeletonCorners(wall);
             MahjongWallPoint2 first = corners[0];
             MahjongWallPoint2 firstInEditor = ToEditorPoint(wall,
                 new MahjongWallPoint2(first.X + offsetX, first.Y));
@@ -431,10 +446,31 @@ namespace Mahjong.Unity.UI.Prototype
         {
             if (_selectedWall < 0 || _selectedWall >= _walls.Count) return;
             WallState wall = _walls[_selectedWall];
-            if (wall.Seat != MahjongWallSeat.EastDiscard || !wall.PerTileFrontRenderer) return;
+            if (!SupportsWidthAdjustment(wall)) return;
+            if (wall.WidthByYAxis)
+            {
+                SetWidthFalloffPerScreenY(wall, wall.WidthFalloffPerScreenY + delta * .0001f);
+                RefreshSkeleton();
+                RefreshOverlay();
+                return;
+            }
             SetWidthShrinkPercent(wall, wall.WidthShrinkPercent + delta);
             RefreshSkeleton();
             RefreshOverlay();
+        }
+
+        private static bool SupportsWidthAdjustment(WallState wall) =>
+            wall.PerTileFrontRenderer
+            && (wall.Seat == MahjongWallSeat.East || wall.Seat == MahjongWallSeat.EastDiscard);
+
+        private void SetWidthFalloffPerScreenY(WallState wall, float value)
+        {
+            wall.WidthFalloffPerScreenY = Mathf.Clamp(Mathf.Round(value * 100000f) / 100000f, 0f, .05f);
+            if (wall.Graphic is MahjongExplicitFrontWallGraphic explicitGraphic)
+                explicitGraphic.SetWidthFalloffPerScreenY(wall.WidthFalloffPerScreenY);
+            for (int i = 0; i < wall.FaceGraphics.Count; i++)
+                wall.FaceGraphics[i].SetWidthFalloffPerScreenY(wall.WidthFalloffPerScreenY);
+            _loadedWidthFalloffsPerScreenY[wall.Seat] = wall.WidthFalloffPerScreenY;
         }
 
         private void SetWidthShrinkPercent(WallState wall, float percent)
@@ -461,8 +497,7 @@ namespace Mahjong.Unity.UI.Prototype
                 _selectedWall = 0;
                 for (int i = 0; i < _walls.Count; i++)
                 {
-                    if (_walls[i].Seat != MahjongWallSeat.EastDiscard
-                        || !_walls[i].PerTileFrontRenderer) continue;
+                    if (!SupportsWidthAdjustment(_walls[i])) continue;
                     _selectedWall = i;
                     break;
                 }
@@ -500,7 +535,7 @@ namespace Mahjong.Unity.UI.Prototype
             {
                 for (int i = _walls.Count - 1; i >= 0; i--)
                 {
-                    MahjongWallPoint2[] nodes = BuildSkeletonCorners(_walls[i]);
+                    MahjongWallPoint2[] nodes = BuildDisplaySkeletonCorners(_walls[i]);
                     int[] controlNodes = { 0, 1, 2, 4 };
                     for (int handle = 0; handle < controlNodes.Length; handle++)
                     {
@@ -518,7 +553,7 @@ namespace Mahjong.Unity.UI.Prototype
 
             if (_selectedWall >= 0)
             {
-                MahjongWallPoint2[] controls = GetControlPointsInEditor(_walls[_selectedWall]);
+                MahjongWallPoint2[] controls = GetDisplayControlPointsInEditor(_walls[_selectedWall]);
                 for (int handle = 0; handle < controls.Length; handle++)
                 {
                     if (Distance(pointer, controls[handle]) > HandleHitRadius) continue;
@@ -713,6 +748,14 @@ namespace Mahjong.Unity.UI.Prototype
             return controls;
         }
 
+        private MahjongWallPoint2[] GetDisplayControlPointsInEditor(WallState wall)
+        {
+            if (!UsesExplicitDisplayGeometry(wall)) return GetControlPointsInEditor(wall);
+            MahjongWallPoint2[] corners = BuildDisplaySkeletonCorners(wall);
+            return new[] { ToEditorPoint(wall, corners[0]), ToEditorPoint(wall, corners[1]),
+                ToEditorPoint(wall, corners[2]), ToEditorPoint(wall, corners[4]) };
+        }
+
         private MahjongWallPoint2[] GetEditOutlineCorners(WallState wall)
         {
             MahjongWallPoint2[] controls = GetControlPoints(wall);
@@ -726,17 +769,28 @@ namespace Mahjong.Unity.UI.Prototype
 
         private MahjongWallPoint2[] GetSelectionPolygon(WallState wall)
         {
-            MahjongWallPoint2[] controls = GetControlPoints(wall);
-            MahjongWallPoint2 a1 = controls[0], b1 = controls[1], c1 = controls[2];
-            MahjongWallPoint2 d1 = b1 + c1 - a1;
-            MahjongWallPoint2 depth = controls[3] - a1;
-            var points = new List<MahjongWallPoint2>(8)
+            List<MahjongWallPoint2> points;
+            if (UsesExplicitDisplayGeometry(wall))
             {
-                ToEditorPoint(wall, a1), ToEditorPoint(wall, b1), ToEditorPoint(wall, c1),
-                ToEditorPoint(wall, d1), ToEditorPoint(wall, controls[3]),
-                ToEditorPoint(wall, b1 + depth), ToEditorPoint(wall, c1 + depth),
-                ToEditorPoint(wall, d1 + depth)
-            };
+                MahjongWallPoint2[] localCorners = BuildDisplaySkeletonCorners(wall);
+                points = new List<MahjongWallPoint2>(localCorners.Length);
+                for (int i = 0; i < localCorners.Length; i++)
+                    points.Add(ToEditorPoint(wall, localCorners[i]));
+            }
+            else
+            {
+                MahjongWallPoint2[] controls = GetControlPoints(wall);
+                MahjongWallPoint2 a1 = controls[0], b1 = controls[1], c1 = controls[2];
+                MahjongWallPoint2 d1 = b1 + c1 - a1;
+                MahjongWallPoint2 depth = controls[3] - a1;
+                points = new List<MahjongWallPoint2>(8)
+                {
+                    ToEditorPoint(wall, a1), ToEditorPoint(wall, b1), ToEditorPoint(wall, c1),
+                    ToEditorPoint(wall, d1), ToEditorPoint(wall, controls[3]),
+                    ToEditorPoint(wall, b1 + depth), ToEditorPoint(wall, c1 + depth),
+                    ToEditorPoint(wall, d1 + depth)
+                };
+            }
             points.Sort((left, right) => left.X != right.X
                 ? left.X.CompareTo(right.X) : left.Y.CompareTo(right.Y));
             var hull = new List<MahjongWallPoint2>(16);
@@ -869,21 +923,23 @@ namespace Mahjong.Unity.UI.Prototype
         {
             bool selected = _selectedWall >= 0 && _selectedWall < _walls.Count;
             bool showWidth = selected && _showSkeleton
-                && _walls[_selectedWall].Seat == MahjongWallSeat.EastDiscard
-                && _walls[_selectedWall].PerTileFrontRenderer;
+                && SupportsWidthAdjustment(_walls[_selectedWall]);
             if (_widthShrinkLabel != null)
             {
                 _widthShrinkLabel.gameObject.SetActive(showWidth);
                 if (showWidth)
                 {
                     WallState selectedWidthWall = _walls[_selectedWall];
-                    MahjongWallPoint2[] widthCorners = BuildSkeletonCorners(selectedWidthWall);
+                    MahjongWallPoint2[] widthCorners = BuildDisplaySkeletonCorners(selectedWidthWall);
                     MahjongWallPoint2 center = new MahjongWallPoint2(0f, 0f);
                     for (int i = 0; i < widthCorners.Length; i++)
                         center += ToEditorPoint(selectedWidthWall, widthCorners[i]);
                     center *= 1f / widthCorners.Length;
-                    _widthShrinkLabel.text = "牌宽递减 " + Mathf.RoundToInt(selectedWidthWall.WidthShrinkPercent) + "%";
-                    PositionAt(_widthShrinkLabel.rectTransform, center);
+                    _widthShrinkLabel.text = selectedWidthWall.WidthByYAxis
+                        ? "Y系数 " + selectedWidthWall.WidthFalloffPerScreenY.ToString("0.00000")
+                        : "牌宽递减 " + Mathf.RoundToInt(selectedWidthWall.WidthShrinkPercent) + "%";
+                    PositionAt(_widthShrinkLabel.rectTransform, new MahjongWallPoint2(
+                        center.X + (selectedWidthWall.WidthByYAxis ? 70f : 0f), center.Y));
                     _widthShrinkLabel.transform.SetAsLastSibling();
                 }
             }
@@ -897,7 +953,7 @@ namespace Mahjong.Unity.UI.Prototype
 
             WallState wall = _walls[_selectedWall];
             MahjongWallPoint2[] corners = GetEditOutlineCorners(wall);
-            MahjongWallPoint2[] controls = GetControlPointsInEditor(wall);
+            MahjongWallPoint2[] controls = GetDisplayControlPointsInEditor(wall);
             for (int i = 0; i < 4; i++)
             {
                 if (!_showSkeleton) _edges[i].transform.SetAsLastSibling();
@@ -930,7 +986,7 @@ namespace Mahjong.Unity.UI.Prototype
                     wall.SkeletonNodes[node].gameObject.SetActive(false);
                     wall.SkeletonLabels[node].gameObject.SetActive(false);
                 }
-                MahjongWallPoint2[] corners = BuildSkeletonCorners(wall);
+                MahjongWallPoint2[] corners = BuildDisplaySkeletonCorners(wall);
                 int[,] edges =
                 {
                     { 0, 1 }, { 1, 3 }, { 3, 2 }, { 2, 0 },
@@ -952,7 +1008,7 @@ namespace Mahjong.Unity.UI.Prototype
 
             if (_selectedWall < 0 || _selectedWall >= _walls.Count) return;
             WallState selectedWall = _walls[_selectedWall];
-            MahjongWallPoint2[] selectedCorners = BuildSkeletonCorners(selectedWall);
+            MahjongWallPoint2[] selectedCorners = BuildDisplaySkeletonCorners(selectedWall);
             MahjongWallPoint2[] editorCorners = new MahjongWallPoint2[selectedCorners.Length];
             MahjongWallPoint2 center = new MahjongWallPoint2(0f, 0f);
             for (int i = 0; i < selectedCorners.Length; i++)
@@ -1018,7 +1074,7 @@ namespace Mahjong.Unity.UI.Prototype
                     wall.GapAfterTileIndex, wall.ExtraGap);
                 MahjongExplicitTileGeometry[] explicitTiles = MahjongExplicitFrontWallGraphic.BuildTileGeometry(
                     skeleton, wall.TileCountOverride, wall.GapAfterTileIndex, wall.ExtraGap,
-                    wall.WidthShrinkPercent);
+                    wall.WidthShrinkPercent, wall.WidthByYAxis, wall.WidthFalloffPerScreenY);
                 for (int tile = 0; tile < explicitTiles.Length; tile++)
                 {
                     MahjongWallSurface[] outerFaces = MahjongExplicitFrontWallGraphic.GetOuterSurfaces(
@@ -1126,6 +1182,28 @@ namespace Mahjong.Unity.UI.Prototype
                 axis1 + length, axis2 + length, axis3 + length, axis4 + length
             };
         }
+
+        private static MahjongWallPoint2[] BuildDisplaySkeletonCorners(WallState wall)
+        {
+            if (!UsesExplicitDisplayGeometry(wall)) return BuildSkeletonCorners(wall);
+            MahjongWallSkeleton skeleton = MahjongExplicitFrontWallGraphic.BuildSkeleton(
+                wall.Frame, wall.TileCountOverride, wall.FaceWidthOverride,
+                wall.GapAfterTileIndex, wall.ExtraGap);
+            MahjongExplicitTileGeometry[] tiles = MahjongExplicitFrontWallGraphic.BuildTileGeometry(
+                skeleton, wall.TileCountOverride, wall.GapAfterTileIndex, wall.ExtraGap,
+                wall.WidthShrinkPercent, wall.WidthByYAxis, wall.WidthFalloffPerScreenY);
+            if (tiles.Length == 0) return BuildSkeletonCorners(wall);
+            MahjongExplicitTileGeometry first = tiles[0];
+            MahjongExplicitTileGeometry last = tiles[tiles.Length - 1];
+            return new[]
+            {
+                first.BackFace[0], first.BackFace[1], first.FrontFace[0], first.FrontFace[1],
+                last.BackFace[3], last.BackFace[2], last.FrontFace[3], last.FrontFace[2]
+            };
+        }
+
+        private static bool UsesExplicitDisplayGeometry(WallState wall) =>
+            wall.PerTileFrontRenderer && wall.WidthByYAxis;
 
         private MahjongWallPoint2 ToEditorPoint(WallState wall, MahjongWallPoint2 point)
         {
@@ -1283,10 +1361,14 @@ namespace Mahjong.Unity.UI.Prototype
                     ApplyFrame(_walls[j], frame);
                     if (entry.hasWidthShrinkPercent)
                         SetWidthShrinkPercent(_walls[j], entry.widthShrinkPercent);
+                    if (entry.hasWidthFalloffPerScreenY)
+                        SetWidthFalloffPerScreenY(_walls[j], entry.widthFalloffPerScreenY);
                     break;
                 }
                 if (entry.hasWidthShrinkPercent)
                     _loadedWidthShrinkPercents[seat] = Mathf.Clamp(entry.widthShrinkPercent, 0f, 100f);
+                if (entry.hasWidthFalloffPerScreenY)
+                    _loadedWidthFalloffsPerScreenY[seat] = Mathf.Clamp(entry.widthFalloffPerScreenY, 0f, .05f);
             }
             RefreshOverlay();
         }
@@ -1295,6 +1377,7 @@ namespace Mahjong.Unity.UI.Prototype
         {
             _loadedFrames.Clear();
             _loadedWidthShrinkPercents.Clear();
+            _loadedWidthFalloffsPerScreenY.Clear();
             _deletedWallIds.Clear();
             _restoredSerializedCopyIds.Clear();
             if (document.deletedWallIds != null)
@@ -1310,6 +1393,8 @@ namespace Mahjong.Unity.UI.Prototype
                 _loadedFrames[seat] = FromEntry(entry);
                 if (entry.hasWidthShrinkPercent)
                     _loadedWidthShrinkPercents[seat] = Mathf.Clamp(entry.widthShrinkPercent, 0f, 100f);
+                if (entry.hasWidthFalloffPerScreenY)
+                    _loadedWidthFalloffsPerScreenY[seat] = Mathf.Clamp(entry.widthFalloffPerScreenY, 0f, .05f);
             }
 
             for (int i = _walls.Count - 1; i >= 0; i--)
@@ -1327,8 +1412,8 @@ namespace Mahjong.Unity.UI.Prototype
             _draggingHandle = -1;
 
             // Copies are a snapshot: remove current ones and recreate precisely those in the file.
-            foreach (KeyValuePair<MahjongWallSeat, Action<MahjongWallAxisFrame, float, string, bool>> factory
-                in new List<KeyValuePair<MahjongWallSeat, Action<MahjongWallAxisFrame, float, string, bool>>>(_wallFactoriesBySeat))
+            foreach (KeyValuePair<MahjongWallSeat, Action<MahjongWallAxisFrame, float, float, string, bool>> factory
+                in new List<KeyValuePair<MahjongWallSeat, Action<MahjongWallAxisFrame, float, float, string, bool>>>(_wallFactoriesBySeat))
             {
                 bool hasBase = false;
                 for (int i = 0; i < _walls.Count; i++)
@@ -1337,7 +1422,7 @@ namespace Mahjong.Unity.UI.Prototype
                 if (!hasBase && factory.Value != null && baseEntry != null
                     && !_deletedWallIds.Contains(BaseWallId(factory.Key)))
                     factory.Value(FromEntry(baseEntry), baseEntry.widthShrinkPercent,
-                        BaseWallId(factory.Key), false);
+                        baseEntry.widthFalloffPerScreenY, BaseWallId(factory.Key), false);
             }
 
             for (int i = 0; i < document.walls.Length; i++)
@@ -1356,6 +1441,7 @@ namespace Mahjong.Unity.UI.Prototype
             if (entry == null || !IsValid(entry)) return;
             ApplyFrame(wall, FromEntry(entry));
             if (entry.hasWidthShrinkPercent) SetWidthShrinkPercent(wall, entry.widthShrinkPercent);
+            if (entry.hasWidthFalloffPerScreenY) SetWidthFalloffPerScreenY(wall, entry.widthFalloffPerScreenY);
         }
 
         private static LayoutEntry FindEntry(LayoutDocument document, string wallId)
@@ -1388,10 +1474,10 @@ namespace Mahjong.Unity.UI.Prototype
         {
             if (_restoredSerializedCopyIds.Contains(entry.wallId)) return;
             if (!_wallFactoriesBySeat.TryGetValue((MahjongWallSeat)entry.seat,
-                out Action<MahjongWallAxisFrame, float, string, bool> factory)) return;
+                out Action<MahjongWallAxisFrame, float, float, string, bool> factory)) return;
             if (factory == null) return;
             _restoredSerializedCopyIds.Add(entry.wallId);
-            factory(FromEntry(entry), entry.widthShrinkPercent,
+            factory(FromEntry(entry), entry.widthShrinkPercent, entry.widthFalloffPerScreenY,
                 entry.wallId, true);
         }
 
@@ -1421,7 +1507,9 @@ namespace Mahjong.Unity.UI.Prototype
             faceWidthAxisOffsetDegrees = wall.Frame.FaceWidthAxisOffsetDegrees,
             faceUvRotationDegrees = wall.Frame.FaceUvRotationDegrees,
             widthShrinkPercent = wall.WidthShrinkPercent,
-            hasWidthShrinkPercent = true
+            hasWidthShrinkPercent = true,
+            widthFalloffPerScreenY = wall.WidthFalloffPerScreenY,
+            hasWidthFalloffPerScreenY = true
         };
 
         private static MahjongWallAxisFrame FromEntry(LayoutEntry entry) => new MahjongWallAxisFrame(

@@ -57,12 +57,16 @@ namespace Mahjong.Unity.UI.Prototype
     [AddComponentMenu("")]
     public sealed class MahjongExplicitFrontWallGraphic : MaskableGraphic
     {
+        // Reference fit: about 6% size change per 42 UI pixels; each tile uses its actual Y distance.
+        public const float DefaultWidthFalloffPerScreenY = 0.00147f;
         private MahjongWallAxisFrame _axisFrame;
         private MahjongWallRenderView _view = new MahjongWallRenderView(720f);
         private MahjongWallTileFrontSpec[] _tileSpecs = Array.Empty<MahjongWallTileFrontSpec>();
         private MahjongWallOuterPoint _outerPoint = MahjongWallOuterPoint.B1;
         private float _faceWidthOverride;
         private float _widthShrinkPercent;
+        private bool _widthByYAxis;
+        private float _widthFalloffPerScreenY = DefaultWidthFalloffPerScreenY;
         private int _gapAfterTileIndex = -1;
         private float _extraGap;
 
@@ -73,12 +77,15 @@ namespace Mahjong.Unity.UI.Prototype
             MahjongWallTileFrontSpec[] tileSpecs, float faceWidthOverride = 0f,
             int gapAfterTileIndex = -1, float extraGap = 0f,
             MahjongWallOuterPoint outerPoint = MahjongWallOuterPoint.B1,
-            float widthShrinkPercent = 0f)
+            float widthShrinkPercent = 0f, bool widthByYAxis = false,
+            float widthFalloffPerScreenY = DefaultWidthFalloffPerScreenY)
         {
             _axisFrame = axisFrame;
             _tileSpecs = tileSpecs ?? Array.Empty<MahjongWallTileFrontSpec>();
             _faceWidthOverride = faceWidthOverride;
             _widthShrinkPercent = Mathf.Clamp(widthShrinkPercent, 0f, 100f);
+            _widthByYAxis = widthByYAxis;
+            _widthFalloffPerScreenY = Mathf.Max(0f, widthFalloffPerScreenY);
             _gapAfterTileIndex = gapAfterTileIndex;
             _extraGap = extraGap;
             _outerPoint = outerPoint;
@@ -99,6 +106,12 @@ namespace Mahjong.Unity.UI.Prototype
             SetVerticesDirty();
         }
 
+        public void SetWidthFalloffPerScreenY(float value)
+        {
+            _widthFalloffPerScreenY = Mathf.Max(0f, value);
+            SetVerticesDirty();
+        }
+
         public void SetRenderView(MahjongWallRenderView view)
         {
             _view = view;
@@ -113,7 +126,8 @@ namespace Mahjong.Unity.UI.Prototype
             MahjongWallSkeleton skeleton = BuildSkeleton(_axisFrame, _tileSpecs.Length,
                 _faceWidthOverride, _gapAfterTileIndex, _extraGap);
             MahjongExplicitTileGeometry[] tiles = BuildTileGeometry(skeleton, _tileSpecs.Length,
-                _gapAfterTileIndex, _extraGap, _widthShrinkPercent);
+                _gapAfterTileIndex, _extraGap, _widthShrinkPercent, _widthByYAxis,
+                _widthFalloffPerScreenY);
             int[] drawOrder = new int[tiles.Length];
             for (int i = 0; i < drawOrder.Length; i++) drawOrder[i] = i;
 
@@ -169,7 +183,8 @@ namespace Mahjong.Unity.UI.Prototype
 
         public static MahjongExplicitTileGeometry[] BuildTileGeometry(MahjongWallSkeleton skeleton,
             int tileCount, int gapAfterTileIndex = -1, float extraGap = 0f,
-            float widthShrinkPercent = 0f)
+            float widthShrinkPercent = 0f, bool widthByYAxis = false,
+            float widthFalloffPerScreenY = DefaultWidthFalloffPerScreenY)
         {
             int count = Mathf.Max(0, tileCount);
             var tiles = new MahjongExplicitTileGeometry[count];
@@ -180,22 +195,38 @@ namespace Mahjong.Unity.UI.Prototype
                 + gap + skeleton.TileFaceWidth);
             float regularGap = Mathf.Max(0f, skeleton.TilePitch - skeleton.TileFaceWidth);
             float widthRetention = 1f - Mathf.Clamp(widthShrinkPercent, 0f, 100f) * .01f;
+            float[] widthWeights = new float[count];
             float widthWeightSum = 0f;
-            for (int i = 0; i < count; i++) widthWeightSum += Mathf.Pow(widthRetention, i);
+            float nearY = Mathf.Max(skeleton.A1.Y, skeleton.A2.Y);
+            for (int i = 0; i < count; i++)
+            {
+                if (widthByYAxis)
+                {
+                    float centerT = (i + .5f) / count;
+                    float centerY = skeleton.A1.Y + (skeleton.A2.Y - skeleton.A1.Y) * centerT;
+                    widthWeights[i] = Mathf.Exp(-Mathf.Max(0f, widthFalloffPerScreenY)
+                        * Mathf.Max(0f, nearY - centerY));
+                }
+                else widthWeights[i] = Mathf.Pow(widthRetention, i);
+                widthWeightSum += widthWeights[i];
+            }
             float totalTileWidth = Mathf.Max(.0001f,
                 fullLength - regularGap * (count - 1) - gap);
-            float firstTileWidth = totalTileWidth / Mathf.Max(.0001f, widthWeightSum);
+            float firstTileWidth = totalTileWidth
+                / Mathf.Max(.0001f, widthByYAxis ? count : widthWeightSum);
+            float scaledSpan = regularGap * (count - 1) + gap;
+            for (int i = 0; i < count; i++) scaledSpan += firstTileWidth * widthWeights[i];
+            float rowY = skeleton.A2.Y - skeleton.A1.Y;
+            float cursor = widthByYAxis && rowY > 0f ? fullLength - scaledSpan : 0f;
             MahjongWallPoint2 Lerp(MahjongWallPoint2 start, MahjongWallPoint2 end, float t) =>
                 start + (end - start) * t;
-            float cursor = 0f;
             for (int i = 0; i < count; i++)
             {
                 if (i > 0) cursor += regularGap;
                 if (gapAfterTileIndex >= 0 && i > gapAfterTileIndex) cursor += gap;
-                float tileWidth = firstTileWidth * Mathf.Pow(widthRetention, i);
-                float offset = cursor;
-                float startT = offset / fullLength;
-                float endT = (offset + tileWidth) / fullLength;
+                float tileWidth = firstTileWidth * widthWeights[i];
+                float startT = cursor / fullLength;
+                float endT = (cursor + tileWidth) / fullLength;
                 MahjongWallPoint2 a1 = Lerp(skeleton.A1, skeleton.A2, startT);
                 MahjongWallPoint2 b1 = Lerp(skeleton.B1, skeleton.B2, startT);
                 MahjongWallPoint2 c1 = Lerp(skeleton.C1, skeleton.C2, startT);
