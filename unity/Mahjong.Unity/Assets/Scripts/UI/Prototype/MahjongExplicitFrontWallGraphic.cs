@@ -235,6 +235,12 @@ namespace Mahjong.Unity.UI.Prototype
                 MahjongWallPoint2 b2 = Lerp(skeleton.B1, skeleton.B2, endT);
                 MahjongWallPoint2 c2 = Lerp(skeleton.C1, skeleton.C2, endT);
                 MahjongWallPoint2 d2 = Lerp(skeleton.D1, skeleton.D2, endT);
+                if (widthByYAxis)
+                {
+                    // The row length already uses this factor; scale the cross sections to match.
+                    ScaleSection(ref a1, ref b1, ref c1, ref d1, widthWeights[i]);
+                    ScaleSection(ref a2, ref b2, ref c2, ref d2, widthWeights[i]);
+                }
                 tiles[i] = new MahjongExplicitTileGeometry
                 {
                     BackFace = new[] { a1, b1, b2, a2 },
@@ -247,6 +253,17 @@ namespace Mahjong.Unity.UI.Prototype
                 cursor += tileWidth;
             }
             return tiles;
+        }
+
+        private static void ScaleSection(ref MahjongWallPoint2 a, ref MahjongWallPoint2 b,
+            ref MahjongWallPoint2 c, ref MahjongWallPoint2 d, float scale)
+        {
+            if (scale == 1f) return;
+            MahjongWallPoint2 center = (a + b + c + d) * .25f;
+            a = center + (a - center) * scale;
+            b = center + (b - center) * scale;
+            c = center + (c - center) * scale;
+            d = center + (d - center) * scale;
         }
 
         public static MahjongWallSurface[] GetOuterSurfaces(MahjongExplicitTileGeometry tile,

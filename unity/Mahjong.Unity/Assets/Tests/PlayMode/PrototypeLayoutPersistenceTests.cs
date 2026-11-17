@@ -120,6 +120,120 @@ namespace Mahjong.Unity.Tests.PlayMode
                 .Count(e => (bool)Field(e, "isRuntimeCopy")));
         }
 
+        [Test]
+        public void OldWestDiscardFramesMigrateForFallbackLoadCopiesAndResave()
+        {
+            MahjongWallLayoutEditor cold = NewEditor(out V5ArtPrototype prototype);
+            const string old = "{\"version\":2,\"walls\":["
+                + "{\"wallId\":\"base:6\",\"seat\":6,\"axis1X\":457,\"axis1Y\":202,\"axis2X\":457,\"axis2Y\":160,\"axis3X\":460.84,\"axis3Y\":205.84,\"axisLength\":224,\"axisSlopeDegrees\":101.31,\"faceWidthAxisOffsetDegrees\":-101.31,\"faceUvRotationDegrees\":90},"
+                + "{\"wallId\":\"copy-old\",\"isRuntimeCopy\":true,\"seat\":6,\"axis1X\":500,\"axis1Y\":202,\"axis2X\":500,\"axis2Y\":160,\"axis3X\":503.84,\"axis3Y\":205.84,\"axisLength\":224,\"axisSlopeDegrees\":101.31,\"faceWidthAxisOffsetDegrees\":-101.31,\"faceUvRotationDegrees\":90}],\"deletedWallIds\":[\"base:0\"]}";
+            var oldFrame = new MahjongWallAxisFrame(new MahjongWallPoint2(457, 202),
+                new MahjongWallPoint2(457, 160), new MahjongWallPoint2(460.84f, 205.84f), 224, 101.31f, -101.31f, 90);
+            MahjongWallAxisFrame fallback = cold.ResolveFrame(MahjongWallSeat.WestDiscard, oldFrame);
+            Assert.That(Mathf.Abs(fallback.Axis2Start.X - fallback.Axis1Start.X), Is.GreaterThan(30f));
+            var valid = new MahjongWallAxisFrame(new MahjongWallPoint2(460, 361),
+                new MahjongWallPoint2(422, 361), new MahjongWallPoint2(460, 353), 150, -90, 0, 90);
+            Assert.AreEqual(valid.Axis2Start.X, cold.ResolveFrame(MahjongWallSeat.WestDiscard, valid).Axis2Start.X);
+            Assert.AreEqual(oldFrame.Axis2Start.X, cold.ResolveFrame(MahjongWallSeat.EastDiscard, oldFrame).Axis2Start.X);
+            Apply(cold, old);
+            Draw(prototype, MahjongWallSeat.WestDiscard);
+            object[] first = Entries(Invoke(cold, "CaptureDocument"));
+            Assert.AreEqual(2, first.Length);
+            Assert.That(first.All(e => Mathf.Abs((float)Field(e, "axis2X") - (float)Field(e, "axis1X")) > 30f));
+            string saved = JsonUtility.ToJson(Invoke(cold, "CaptureDocument"));
+            Assert.That(saved, Does.Contain("base:0"));
+            MahjongWallLayoutEditor loaded = NewEditor(out V5ArtPrototype second);
+            Draw(second, MahjongWallSeat.WestDiscard);
+            Apply(loaded, old);
+            string runtime = JsonUtility.ToJson(Invoke(loaded, "CaptureDocument"));
+            Assert.AreEqual(saved, runtime);
+            Apply(loaded, saved);
+            Assert.AreEqual(saved, JsonUtility.ToJson(Invoke(loaded, "CaptureDocument")));
+            MahjongWallLayoutEditor reloaded = NewEditor(out V5ArtPrototype third);
+            Apply(reloaded, saved);
+            Draw(third, MahjongWallSeat.WestDiscard);
+            Assert.AreEqual(saved, JsonUtility.ToJson(Invoke(reloaded, "CaptureDocument")));
+        }
+
+        [TestCase(0f)]
+        [TestCase(90f)]
+        public void EditedWestDiscardAndCopyKeepEveryFrameValueOnRuntimeAndColdLoad(float offset)
+        {
+            MahjongWallLayoutEditor editor = NewEditor(out V5ArtPrototype prototype);
+            Draw(prototype, MahjongWallSeat.WestDiscard);
+            object wall = ((System.Collections.IEnumerable)typeof(MahjongWallLayoutEditor)
+                .GetField("_walls", PrivateInstance).GetValue(editor)).Cast<object>().Single();
+            var frame = new MahjongWallAxisFrame(new MahjongWallPoint2(460, 361),
+                new MahjongWallPoint2(450, 323), new MahjongWallPoint2(460, 353), 150, -90, offset, 90);
+            Invoke(editor, "ApplyFrame", wall, frame);
+            Invoke(editor, "SetWidthFalloffPerScreenY", wall, .0023f);
+            Copy(editor, 0);
+            Draw(prototype, MahjongWallSeat.North);
+            SetField(editor, "_selectedWall", 2);
+            Invoke(editor, "DeleteSelectedWall");
+            object document = Invoke(editor, "CaptureDocument");
+            object[] entries = Entries(document);
+            Assert.AreEqual(2, entries.Length);
+            Assert.That(JsonUtility.ToJson(document), Does.Contain("base:0"));
+            object baseEntry = entries.Single(e => !(bool)Field(e, "isRuntimeCopy"));
+            Assert.AreEqual(460f, Field(baseEntry, "axis1X"));
+            Assert.AreEqual(361f, Field(baseEntry, "axis1Y"));
+            Assert.AreEqual(450f, Field(baseEntry, "axis2X"));
+            Assert.AreEqual(323f, Field(baseEntry, "axis2Y"));
+            Assert.AreEqual(460f, Field(baseEntry, "axis3X"));
+            Assert.AreEqual(353f, Field(baseEntry, "axis3Y"));
+            Assert.AreEqual(offset, Field(baseEntry, "faceWidthAxisOffsetDegrees"));
+            Assert.AreEqual(90f, Field(baseEntry, "faceUvRotationDegrees"));
+            Assert.AreEqual(.0023f, Field(baseEntry, "widthFalloffPerScreenY"));
+            string snapshot = JsonUtility.ToJson(document);
+            Apply(editor, snapshot);
+            Assert.AreEqual(snapshot, JsonUtility.ToJson(Invoke(editor, "CaptureDocument")));
+            _tempPath = Path.Combine(Application.temporaryCachePath, Guid.NewGuid().ToString("N") + ".json");
+            File.WriteAllText(_tempPath, snapshot);
+            MahjongWallLayoutEditor cold = NewEditor(out V5ArtPrototype coldPrototype);
+            Apply(cold, File.ReadAllText(_tempPath));
+            Draw(coldPrototype, MahjongWallSeat.WestDiscard);
+            Draw(coldPrototype, MahjongWallSeat.North);
+            Assert.AreEqual(snapshot, JsonUtility.ToJson(Invoke(cold, "CaptureDocument")));
+
+            if (offset == 0f)
+            {
+                // Files created before the marker also preserve the reviewer's explicit-axis example.
+                foreach (object entry in entries) SetPublicField(entry, "explicitTileGeometry", false);
+                Apply(editor, JsonUtility.ToJson(document));
+                object loadedBase = Entries(Invoke(editor, "CaptureDocument")).Single(e => !(bool)Field(e, "isRuntimeCopy"));
+                Assert.AreEqual(450f, Field(loadedBase, "axis2X"));
+                Assert.AreEqual(323f, Field(loadedBase, "axis2Y"));
+            }
+        }
+
+        [Test]
+        public void CandidateAndOtherSeatFramesRemainUnchangedThroughLoading()
+        {
+            MahjongWallLayoutEditor editor = NewEditor(out V5ArtPrototype prototype);
+            Draw(prototype, MahjongWallSeat.WestDiscard);
+            Draw(prototype, MahjongWallSeat.EastDiscard);
+            object[] walls = ((System.Collections.IEnumerable)typeof(MahjongWallLayoutEditor)
+                .GetField("_walls", PrivateInstance).GetValue(editor)).Cast<object>().ToArray();
+            var candidate = new MahjongWallAxisFrame(new MahjongWallPoint2(460, 361),
+                new MahjongWallPoint2(422, 361), new MahjongWallPoint2(460, 353), 150, -90, 0, 90);
+            var other = new MahjongWallAxisFrame(new MahjongWallPoint2(460, 361),
+                new MahjongWallPoint2(450, 323), new MahjongWallPoint2(460, 353), 150, -90, 0, -90);
+            Invoke(editor, "ApplyFrame", walls[0], candidate);
+            Invoke(editor, "ApplyFrame", walls[1], other);
+            Copy(editor, 0);
+            string snapshot = JsonUtility.ToJson(Invoke(editor, "CaptureDocument"));
+            Apply(editor, snapshot);
+            Assert.AreEqual(snapshot, JsonUtility.ToJson(Invoke(editor, "CaptureDocument")));
+            MahjongWallLayoutEditor cold = NewEditor(out V5ArtPrototype coldPrototype);
+            Apply(cold, snapshot);
+            Draw(coldPrototype, MahjongWallSeat.WestDiscard);
+            Draw(coldPrototype, MahjongWallSeat.EastDiscard);
+            CollectionAssert.AreEqual(
+                Entries(Invoke(editor, "CaptureDocument")).Select(JsonUtility.ToJson).OrderBy(x => x).ToArray(),
+                Entries(Invoke(cold, "CaptureDocument")).Select(JsonUtility.ToJson).OrderBy(x => x).ToArray());
+        }
+
         private MahjongWallLayoutEditor NewEditor(out V5ArtPrototype prototype)
         {
             var root = new GameObject("Prototype layout persistence test", typeof(RectTransform));
@@ -150,6 +264,14 @@ namespace Mahjong.Unity.Tests.PlayMode
             float x = seat == MahjongWallSeat.North ? 100f : 450f;
             args[4] = new MahjongWallAxisFrame(new MahjongWallPoint2(x, 200f),
                 new MahjongWallPoint2(x, 170f), new MahjongWallPoint2(x + 15f, 200f), 160f, 0f);
+            if (seat == MahjongWallSeat.WestDiscard)
+            {
+                args[5] = MahjongWallTextureMode.SideDiscardWall;
+                args[10] = 6;
+                args[12] = true;
+                args[13] = MahjongWallOuterPoint.C1;
+                args[15] = true;
+            }
             method.Invoke(prototype, args);
         }
 
