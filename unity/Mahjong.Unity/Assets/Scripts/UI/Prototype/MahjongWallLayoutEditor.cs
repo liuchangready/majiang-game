@@ -46,6 +46,7 @@ namespace Mahjong.Unity.UI.Prototype
             public bool hasWidthShrinkPercent;
             public float widthFalloffPerScreenY;
             public bool hasWidthFalloffPerScreenY;
+            public bool explicitTileGeometry;
         }
 
         private sealed class WallState
@@ -124,7 +125,8 @@ namespace Mahjong.Unity.UI.Prototype
         public MahjongWallAxisFrame ResolveFrame(MahjongWallSeat seat, MahjongWallAxisFrame fallback)
         {
             LoadDefaultLayoutOnce();
-            return _loadedFrames.TryGetValue(seat, out MahjongWallAxisFrame frame) ? frame : fallback;
+            return _loadedFrames.TryGetValue(seat, out MahjongWallAxisFrame frame)
+                ? frame : NormalizeLoadedFrame(seat, fallback);
         }
 
         public float ResolveWidthShrinkPercent(MahjongWallSeat seat, float fallback)
@@ -1234,7 +1236,7 @@ namespace Mahjong.Unity.UI.Prototype
         {
             if (_loaded) return;
             _loaded = true;
-            string path = DefaultLayoutPath;
+            string path = StartupLayoutPath(Environment.GetCommandLineArgs(), DefaultLayoutPath);
             if (!File.Exists(path)) return;
             try
             {
@@ -1245,6 +1247,14 @@ namespace Mahjong.Unity.UI.Prototype
             {
                 Debug.LogWarning("[MahjongWallLayoutEditor] Could not load saved layout: " + exception.Message);
             }
+        }
+
+        private static string StartupLayoutPath(string[] args, string fallback)
+        {
+            for (int i = 0; i < args.Length; i++)
+                if (args[i] == "--prototype-layout")
+                    return i + 1 < args.Length ? args[i + 1] : string.Empty;
+            return fallback;
         }
 
         private void SaveLayout()
@@ -1509,15 +1519,40 @@ namespace Mahjong.Unity.UI.Prototype
             widthShrinkPercent = wall.WidthShrinkPercent,
             hasWidthShrinkPercent = true,
             widthFalloffPerScreenY = wall.WidthFalloffPerScreenY,
-            hasWidthFalloffPerScreenY = true
+            hasWidthFalloffPerScreenY = true,
+            explicitTileGeometry = true
         };
 
-        private static MahjongWallAxisFrame FromEntry(LayoutEntry entry) => new MahjongWallAxisFrame(
-            new MahjongWallPoint2(entry.axis1X, entry.axis1Y),
-            new MahjongWallPoint2(entry.axis2X, entry.axis2Y),
-            new MahjongWallPoint2(entry.axis3X, entry.axis3Y),
-            entry.axisLength, entry.axisSlopeDegrees, entry.faceWidthAxisOffsetDegrees,
-            entry.faceUvRotationDegrees);
+        private static MahjongWallAxisFrame FromEntry(LayoutEntry entry)
+        {
+            var frame = new MahjongWallAxisFrame(
+                new MahjongWallPoint2(entry.axis1X, entry.axis1Y),
+                new MahjongWallPoint2(entry.axis2X, entry.axis2Y),
+                new MahjongWallPoint2(entry.axis3X, entry.axis3Y),
+                entry.axisLength, entry.axisSlopeDegrees, entry.faceWidthAxisOffsetDegrees,
+                entry.faceUvRotationDegrees);
+            return entry.explicitTileGeometry ? frame : NormalizeLoadedFrame((MahjongWallSeat)entry.seat, frame);
+        }
+
+        private static MahjongWallAxisFrame NormalizeLoadedFrame(MahjongWallSeat seat, MahjongWallAxisFrame frame)
+        {
+            if (seat != MahjongWallSeat.WestDiscard) return frame;
+            if (Mathf.Abs(frame.FaceWidthAxisOffsetDegrees) < 1f
+                || Mathf.Abs(Mathf.DeltaAngle(0f, frame.AxisSlopeDegrees + frame.FaceWidthAxisOffsetDegrees)) > .1f)
+                return frame;
+            MahjongWallPoint2 row = RowUnit(frame);
+            MahjongWallPoint2 rise = frame.Axis2Start - frame.Axis1Start;
+            float length = Mathf.Sqrt(rise.X * rise.X + rise.Y * rise.Y);
+            if (length < .001f || Mathf.Abs(row.X * rise.Y - row.Y * rise.X) >= length * .3f)
+                return frame;
+            MahjongWallPoint2 depth = frame.Axis3Start - frame.Axis1Start;
+            float thickness = Mathf.Sqrt(depth.X * depth.X + depth.Y * depth.Y);
+            // Old side-discard frames used a separate face-width axis; the explicit renderer uses the row axis.
+            return new MahjongWallAxisFrame(frame.Axis1Start,
+                frame.Axis1Start + new MahjongWallPoint2(-row.Y * length, row.X * length),
+                frame.Axis1Start - row * thickness, frame.AxisLength, frame.AxisSlopeDegrees,
+                frame.FaceWidthAxisOffsetDegrees, frame.FaceUvRotationDegrees);
+        }
 
         private bool IsWindows() => Application.platform == RuntimePlatform.WindowsPlayer
             || Application.platform == RuntimePlatform.WindowsEditor;
