@@ -462,8 +462,7 @@ namespace Mahjong.Unity.UI.Prototype
         }
 
         private static bool SupportsWidthAdjustment(WallState wall) =>
-            wall.PerTileFrontRenderer
-            && (wall.Seat == MahjongWallSeat.East || wall.Seat == MahjongWallSeat.EastDiscard);
+            wall.PerTileFrontRenderer;
 
         private void SetWidthFalloffPerScreenY(WallState wall, float value)
         {

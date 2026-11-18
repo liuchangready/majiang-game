@@ -793,7 +793,7 @@ namespace Mahjong.Unity.UI.Prototype
             {
                 MahjongWallLayoutEditor wallEditor = EnsureWallLayoutEditor(parent);
                 MahjongWallSeat[] wallSeats = { MahjongWallSeat.North, MahjongWallSeat.West, MahjongWallSeat.East };
-                // The downstream (East) wall's requested front is the face bounded by C1, D1, C2, and D2.
+                // Both side walls use C1/D1/C2/D2 as the front face.
                 MahjongWallFrontFace[] wallFrontFaces =
                 {
                     MahjongWallFrontFace.Back,
@@ -811,10 +811,12 @@ namespace Mahjong.Unity.UI.Prototype
                             ? MahjongWallTextureMode.SideDiscardWall
                             : MahjongWallTextureMode.BackFacingTable,
                         frontFace: wallFrontFaces[i],
-                        tileCountOverride: seat == MahjongWallSeat.East || seat == MahjongWallSeat.West ? 13 : 0,
-                        usePerTileFrontRenderer: seat == MahjongWallSeat.East || seat == MahjongWallSeat.West,
-                        outerPoint: MahjongWallOuterPoint.B1,
-                        widthByYAxis: seat == MahjongWallSeat.East || seat == MahjongWallSeat.West);
+                        tileCountOverride: seat == MahjongWallSeat.East || seat == MahjongWallSeat.West
+                            ? 13 : MahjongWallGeometry.ReferenceTileCount,
+                        usePerTileFrontRenderer: true,
+                        outerPoint: seat == MahjongWallSeat.West
+                            ? MahjongWallOuterPoint.A1 : MahjongWallOuterPoint.B1,
+                        widthByYAxis: true);
                 }
             }
             else if (connectedWallV2)
@@ -872,7 +874,9 @@ namespace Mahjong.Unity.UI.Prototype
                     acrossRiverStep * (oppositeRiverTiles.Length - 1), 0f, 0f, 180f);
                 DrawMahjongWall("RiverOpposite V3", MahjongWallSeat.NorthDiscard, tableRingParent,
                     0, oppositeRiverAxes, MahjongWallTextureMode.FaceUpWithSideAndBottom,
-                    oppositeRiverTiles, acrossRiverSize.x * 1.25f, tileCountOverride: oppositeRiverTiles.Length);
+                    oppositeRiverTiles, acrossRiverSize.x * 1.25f, tileCountOverride: oppositeRiverTiles.Length,
+                    usePerTileFrontRenderer: true, outerPoint: MahjongWallOuterPoint.C1,
+                    widthByYAxis: true);
                 int[] selfRiverTiles = river.Skip(6).Take(6).ToArray();
                 float selfRiverDepth = PrototypeTileDimensions.ProjectedDepthForFaceWidth(acrossRiverSize.x);
                 var selfRiverAxes = new MahjongWallAxisFrame(
@@ -883,7 +887,9 @@ namespace Mahjong.Unity.UI.Prototype
                     acrossRiverStep * (selfRiverTiles.Length - 1), 0f);
                 DrawMahjongWall("RiverSelf V3", MahjongWallSeat.SouthDiscard, tableRingParent,
                     0, selfRiverAxes, MahjongWallTextureMode.FaceUpWithSideAndBottom,
-                    selfRiverTiles, acrossRiverSize.x * 1.25f, tileCountOverride: selfRiverTiles.Length);
+                    selfRiverTiles, acrossRiverSize.x * 1.25f, tileCountOverride: selfRiverTiles.Length,
+                    usePerTileFrontRenderer: true, outerPoint: MahjongWallOuterPoint.C1,
+                    widthByYAxis: true);
                 int[] leftRiverTiles = river.Skip(12).Take(6).ToArray();
                 float leftRiverTop = 300f - upperRiverSpan * .5f
                     - (upperRiverRootSize.x - upperWidth) * .5f;
@@ -975,8 +981,7 @@ namespace Mahjong.Unity.UI.Prototype
 
             if (separatedReferenceWallV3)
             {
-                // The self hand uses the same axis-driven chassis as the three walls,
-                // but its glyphs are mapped FaceUp onto Axis1/Axis2. Preserve the
+                // The self hand shares the walls' editable per-tile chassis. Preserve the
                 // thirteen-tile run and the five-pixel draw-tile break as one row.
                 int[] handAndDrawnTiles = InitialHandTiles.Concat(new[] { SampleDrawDeck[0] }).ToArray();
                 var handAxes = new MahjongWallAxisFrame(
@@ -987,7 +992,10 @@ namespace Mahjong.Unity.UI.Prototype
                     drawnTileOffset, 0f);
                 DrawMahjongWall("PlayerHand V3", MahjongWallSeat.South, parent, 0, handAxes,
                     MahjongWallTextureMode.FaceUp, handAndDrawnTiles, handTileWidth,
-                    InitialHandTiles.Length - 1, drawnTileGap);
+                    InitialHandTiles.Length - 1, drawnTileGap,
+                    tileCountOverride: handAndDrawnTiles.Length,
+                    usePerTileFrontRenderer: true, outerPoint: MahjongWallOuterPoint.C1,
+                    widthByYAxis: true);
             }
             else
             {
@@ -1136,6 +1144,9 @@ namespace Mahjong.Unity.UI.Prototype
             string wallInstanceId = null)
         {
             MahjongWallLayoutEditor editor = EnsureWallLayoutEditor(parent);
+            if (usePerTileFrontRenderer && tileCountOverride <= 0)
+                tileCountOverride = faceTileIds != null && faceTileIds.Length > 0
+                    ? faceTileIds.Length : MahjongWallGeometry.ReferenceTileCount;
             if (!useProvidedAxisFrame) axisFrame = editor.ResolveFrame(seat, axisFrame);
             if (!useProvidedAxisFrame)
             {

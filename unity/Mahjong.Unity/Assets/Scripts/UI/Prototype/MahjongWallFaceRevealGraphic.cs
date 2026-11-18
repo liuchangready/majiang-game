@@ -86,6 +86,18 @@ namespace Mahjong.Unity.UI.Prototype
                     skeleton, tileCount, _gapAfterTileIndex, _extraGap, _widthShrinkPercent,
                     _widthByYAxis, _widthFalloffPerScreenY);
                 revealFace = row[Mathf.Clamp(_tileIndex, 0, row.Length - 1)].FrontFace;
+                if (_seat == MahjongWallSeat.WestDiscard
+                    && _textureMode == MahjongWallTextureMode.SideDiscardWall)
+                {
+                    // West's cross section winds opposite to East's; keep the glyph facing the table.
+                    revealFace = new[] { revealFace[1], revealFace[0], revealFace[3], revealFace[2] };
+                }
+                else if (_textureMode == MahjongWallTextureMode.FaceUp
+                    || _textureMode == MahjongWallTextureMode.FaceUpWithSideAndBottom)
+                {
+                    // Face-up UVs follow the row first; explicit faces follow the cross section first.
+                    revealFace = new[] { revealFace[0], revealFace[3], revealFace[2], revealFace[1] };
+                }
             }
             else
             {
