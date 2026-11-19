@@ -6,6 +6,7 @@
     "Unity.TextMeshPro",
     "UnityEngine.UI",
     "Unity.InputSystem",
+    "Unity.InputSystem.TestFramework",
     "Mahjong.Unity.App",
     "Mahjong.Unity.UI",
     "Mahjong.Unity.Platform",

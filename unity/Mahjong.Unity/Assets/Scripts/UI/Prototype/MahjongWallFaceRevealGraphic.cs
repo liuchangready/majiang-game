@@ -22,6 +22,22 @@ namespace Mahjong.Unity.UI.Prototype
         private bool _widthByYAxis;
         private float _widthFalloffPerScreenY = MahjongExplicitFrontWallGraphic.DefaultWidthFalloffPerScreenY;
 
+        private int _visibleStart = -1, _visibleEnd = -1;
+
+        public void SetVisibleRange(int start, int end)
+        {
+            _visibleStart = start;
+            _visibleEnd = end;
+            SetVerticesDirty();
+        }
+
+        public void SetPlacement(float faceWidth, float extraGap)
+        {
+            _faceWidthOverride = faceWidth;
+            _extraGap = extraGap;
+            SetVerticesDirty();
+        }
+
         public override Texture mainTexture => _face != null ? _face.texture : s_WhiteTexture;
 
         public void Configure(MahjongWallSeat seat, Sprite? face, int tileIndex,
@@ -72,6 +88,7 @@ namespace Mahjong.Unity.UI.Prototype
         {
             vh.Clear();
             if (_face == null || _face.texture == null) return;
+            if (_visibleStart >= 0 && (_tileIndex < _visibleStart || _tileIndex > _visibleEnd)) return;
 
             MahjongWallAxisFrame axes = _axisFrame.AxisLength > 0f
                 ? _axisFrame : MahjongWallGeometry.BuildReferenceAxisFrame(_seat);
@@ -86,6 +103,18 @@ namespace Mahjong.Unity.UI.Prototype
                     skeleton, tileCount, _gapAfterTileIndex, _extraGap, _widthShrinkPercent,
                     _widthByYAxis, _widthFalloffPerScreenY);
                 revealFace = row[Mathf.Clamp(_tileIndex, 0, row.Length - 1)].FrontFace;
+                if (_seat == MahjongWallSeat.WestDiscard
+                    && _textureMode == MahjongWallTextureMode.SideDiscardWall)
+                {
+                    // West's cross section winds opposite to East's; keep the glyph facing the table.
+                    revealFace = new[] { revealFace[1], revealFace[0], revealFace[3], revealFace[2] };
+                }
+                else if (_textureMode == MahjongWallTextureMode.FaceUp
+                    || _textureMode == MahjongWallTextureMode.FaceUpWithSideAndBottom)
+                {
+                    // Face-up UVs follow the row first; explicit faces follow the cross section first.
+                    revealFace = new[] { revealFace[0], revealFace[3], revealFace[2], revealFace[1] };
+                }
             }
             else
             {

@@ -1,0 +1,66 @@
+﻿{
+    "version":  "proto-V3",
+    "savedAt":  "2026-11-18T09:57:29.4184314+08:00",
+    "observedRoot":  "D:/majiang",
+    "observedBranch":  "chore/cleanup-step1-20261110",
+    "observedHead":  "5fe836504af627da67cf46af0ca6657eafdacee5",
+    "observedDirty":  [
+                          "doc/LONG_VALIDATION_TASK_TEMPLATE.md",
+                          "dotnet/Directory.Build.props",
+                          ".agent_bridge/",
+                          "default.json"
+                      ],
+    "sourceWorktree":  "D:\\majiang-wt\\sync-ui-prototype-20261117",
+    "sourceBranch":  "ui_prot",
+    "sourceBase":  "07a1785700910b3d72529606a9634c7a7ab31ba9",
+    "archiveBranch":  "archive/proto-v3-20261118",
+    "archiveTag":  "proto-V3",
+    "sourceOverlay":  [
+                          {
+                              "sha256":  "3A803D9205B02EFC4A109B503FCA0C9CF8EF7AD8C0EFE00E797E0CB973E71367",
+                              "file":  "unity/Mahjong.Unity/Assets/Scripts/UI/Prototype/MahjongWallFaceRevealGraphic.cs"
+                          },
+                          {
+                              "sha256":  "E2E6E41A2BA05A2A9EEB3D1D28FC5C13ED9D55DD77748F29503F7BE76D86F0DB",
+                              "file":  "unity/Mahjong.Unity/Assets/Scripts/UI/Prototype/MahjongWallLayoutEditor.cs"
+                          },
+                          {
+                              "sha256":  "C4407C12F7A08A7227604EDCE312E5B7135F3A07269B93AA158A2FFAB520A63F",
+                              "file":  "unity/Mahjong.Unity/Assets/Scripts/UI/Prototype/V5ArtPrototype.cs"
+                          },
+                          {
+                              "sha256":  "B8684CE8B231880C50243073B3DF922D1D9314E930D3B8E40063AB60E10FBBD8",
+                              "file":  "unity/Mahjong.Unity/Assets/Tests/PlayMode/Mahjong.Unity.PlayMode.Tests.asmdef"
+                          },
+                          {
+                              "sha256":  "394ED4AC2B342232B4F4C64875EA942CBE0D781CC17D00F6F70274B05D252728",
+                              "file":  "unity/Mahjong.Unity/Assets/Tests/EditMode/PrototypeFaceOrientationTests.cs"
+                          },
+                          {
+                              "sha256":  "804CC002AAB09807CB869B0AF75EB74006E49923616A3E52A3F352195235BB04",
+                              "file":  "unity/Mahjong.Unity/Assets/Tests/EditMode/PrototypeFaceOrientationTests.cs.meta"
+                          },
+                          {
+                              "sha256":  "A5AF3A714A7A10AFB0BE65C7B1501C8C82D80E73C32B1FE46B2F7E43917551A3",
+                              "file":  "unity/Mahjong.Unity/Assets/Tests/PlayMode/PrototypeAllGroupsEditingTests.cs"
+                          },
+                          {
+                              "sha256":  "ECB2457139BE6D632EA4D37D4C0DCCCCF44558F47FC1773C9D563B2230A1E326",
+                              "file":  "unity/Mahjong.Unity/Assets/Tests/PlayMode/PrototypeAllGroupsEditingTests.cs.meta"
+                          }
+                      ],
+    "editableLayout":  "tools/unity/layouts/proto-V3.json",
+    "editableLayoutSha256":  "BB1EE8EBEBED2A75EDC2C94705169CF6C2341669577FF336A00435CF73170FDD",
+    "editableLayoutNote":  "Latest D:/majiang/default.json snapshot. Parsed and unique IDs checked; not used for the earlier package visual check.",
+    "packageLayout":  "tools/unity/layouts/proto-V3-package.json",
+    "packageLayoutSha256":  "5E16276CC2F872F0677AB1E2B7B15CDA1F3618320340C310F0598B45B4EB1BC4",
+    "runtimePackage":  "D:\\majiang\\build\\prototype-snapshots\\proto-V3",
+    "originalPackage":  "D:\\majiang-wt\\sync-ui-prototype-20261117\\build\\ui_proto\\west-face-a1-20261118-f1c10031",
+    "verifiedPlayerFiles":  181,
+    "priorEvidence":  "package-verification.json",
+    "priorEditModePassed":  25,
+    "priorPlayModePassed":  18,
+    "validationReuse":  "All source content matched frozen package inputs; 2 files differ only by CRLF/LF. Player SHA256 verified. Archive only, no rebuild or new Unity test run.",
+    "authorization":  "User requested saving current version as proto-V3; local snapshot commit/tag only.",
+    "g2Acceptance":  "NOT_ASSESSED"
+}
