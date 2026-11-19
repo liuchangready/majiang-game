@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -47,6 +48,8 @@ namespace Mahjong.Unity.UI.Prototype
             public float widthFalloffPerScreenY;
             public bool hasWidthFalloffPerScreenY;
             public bool explicitTileGeometry;
+            public bool hasPlacement;
+            public float faceWidthOverride, extraGap;
         }
 
         private sealed class WallState
@@ -62,6 +65,7 @@ namespace Mahjong.Unity.UI.Prototype
             public MahjongWallFrontFace FrontFace;
             public MahjongWallOuterPoint OuterPoint;
             public float FaceWidthOverride;
+            public float DefaultFaceWidthOverride, DefaultExtraGap;
             public float WidthShrinkPercent;
             public float WidthFalloffPerScreenY;
             public Action<MahjongWallAxisFrame, float, float, string, bool> CopyAtFrame;
@@ -112,6 +116,30 @@ namespace Mahjong.Unity.UI.Prototype
         private bool _showTileFrames;
         private bool _fileDialogOpen;
         private Text _widthShrinkLabel;
+        private bool _tuningPanel, _isolate, _panelSkeleton, _previewA;
+        private bool _showHelp;
+        private int _viewMode = 2, _viewPosition = 1;
+        private int _diagnosticFace;
+        private static readonly MahjongWallSurface[] DiagnosticFaces = { MahjongWallSurface.Front, MahjongWallSurface.Back, MahjongWallSurface.Top, MahjongWallSurface.Bottom, MahjongWallSurface.LeftSide, MahjongWallSurface.RightSide };
+        private static readonly Color[] DiagnosticColors = { Color.cyan, Color.magenta, Color.green, Color.yellow, new Color(1f, .5f, 0f), Color.red };
+        private Rect _panelRect = new Rect(20, 20, 360, 620);
+        private Vector2 _panelScroll;
+        private string _fieldName, _fieldText, _fieldError;
+        private string _textUndoField, _textUndoWallId;
+        private KeyCode _guiArrowHeld;
+        private readonly Stack<string> _textUndo = new Stack<string>();
+        private string _loadedLayoutPath = "", _savedLayoutPath = "";
+        private bool _capturing;
+        private bool _movingByKeyboard;
+        private string _aWallId;
+        private MahjongWallAxisFrame _aFrame, _bFrame;
+        private float _aShrink, _aFalloff, _bShrink, _bFalloff;
+        private float _aWidth, _aGap, _bWidth, _bGap;
+        private readonly Stack<LayoutEntry> _undo = new Stack<LayoutEntry>();
+        private readonly Stack<LayoutEntry> _redo = new Stack<LayoutEntry>();
+        private readonly Dictionary<KeyCode, int> _tuningShortcutFrames = new Dictionary<KeyCode, int>();
+        private readonly Dictionary<string, LayoutEntry> _baselineEntries = new Dictionary<string, LayoutEntry>();
+        public bool HasInputFocus { get; private set; }
 
         public bool CanCopySelectedWall => _selectedWall >= 0 && _selectedWall < _walls.Count
             && _walls[_selectedWall].CopyAtFrame != null;
@@ -177,6 +205,8 @@ namespace Mahjong.Unity.UI.Prototype
             state.FrontFace = frontFace;
             state.OuterPoint = outerPoint;
             state.FaceWidthOverride = faceWidthOverride;
+            state.DefaultFaceWidthOverride = faceWidthOverride;
+            state.DefaultExtraGap = extraGap;
             state.WidthShrinkPercent = Mathf.Clamp(widthShrinkPercent, 0f, 100f);
             state.WidthFalloffPerScreenY = Mathf.Max(0f, widthFalloffPerScreenY);
             state.CopyAtFrame = copyAtFrame;
@@ -211,9 +241,27 @@ namespace Mahjong.Unity.UI.Prototype
         private void Update()
         {
             if (_coordinateRoot == null) return;
+            if (Mouse.current == null || !Mouse.current.leftButton.isPressed || !Application.isFocused)
+                _draggingHandle = -1;
+            if (HasInputFocus) return;
             Keyboard keyboard = Keyboard.current;
             if (keyboard != null)
             {
+                if (keyboard.f1Key.wasPressedThisFrame) HandleTuningShortcut(KeyCode.F1, false, false);
+                if (keyboard.f2Key.wasPressedThisFrame) HandleTuningShortcut(KeyCode.F2, false, false);
+                if (keyboard.f3Key.wasPressedThisFrame) HandleTuningShortcut(KeyCode.F3, false, false);
+                if (keyboard.f4Key.wasPressedThisFrame) HandleTuningShortcut(KeyCode.F4, false, false);
+                if (keyboard.f5Key.wasPressedThisFrame) HandleTuningShortcut(KeyCode.F5, false, false);
+                if (keyboard.f6Key.wasPressedThisFrame) HandleTuningShortcut(KeyCode.F6, false, false);
+                if (keyboard.tabKey.wasPressedThisFrame) HandleTuningShortcut(KeyCode.Tab, keyboard.shiftKey.isPressed, false);
+                if (keyboard.ctrlKey.isPressed && keyboard.zKey.wasPressedThisFrame) HandleTuningShortcut(KeyCode.Z, false, true);
+                if (keyboard.ctrlKey.isPressed && keyboard.yKey.wasPressedThisFrame) HandleTuningShortcut(KeyCode.Y, false, true);
+                if (_previewA)
+                {
+                    if (keyboard.sKey.wasPressedThisFrame) RequestSave();
+                    if (keyboard.lKey.wasPressedThisFrame) { ToggleComparison(); RequestLoad(); }
+                    return;
+                }
                 if (keyboard.qKey.wasPressedThisFrame && !_skeletonKeyHeld)
                 {
                     _skeletonKeyHeld = true;
@@ -235,12 +283,14 @@ namespace Mahjong.Unity.UI.Prototype
                 if (keyboard.pKey.wasPressedThisFrame && !_increaseDepthKeyHeld)
                 {
                     _increaseDepthKeyHeld = true;
+                    if (_selectedWall >= 0) RememberEdit(_walls[_selectedWall]);
                     AdjustSelectedWidthShrink(1f);
                 }
                 if (keyboard.pKey.wasReleasedThisFrame) _increaseDepthKeyHeld = false;
                 if (keyboard.mKey.wasPressedThisFrame && !_decreaseDepthKeyHeld)
                 {
                     _decreaseDepthKeyHeld = true;
+                    if (_selectedWall >= 0) RememberEdit(_walls[_selectedWall]);
                     AdjustSelectedWidthShrink(-1f);
                 }
                 if (keyboard.mKey.wasReleasedThisFrame) _decreaseDepthKeyHeld = false;
@@ -264,6 +314,7 @@ namespace Mahjong.Unity.UI.Prototype
             if (Mouse.current == null) return;
 
             Vector2 screen = Mouse.current.position.ReadValue();
+            if (_tuningPanel && _panelRect.Contains(new Vector2(screen.x, Screen.height - screen.y))) return;
             if (!RectTransformUtility.ScreenPointToLocalPointInRectangle(
                     _coordinateRoot, screen, null, out Vector2 local)) return;
             MahjongWallPoint2 pointer = new MahjongWallPoint2(
@@ -271,7 +322,11 @@ namespace Mahjong.Unity.UI.Prototype
                 _coordinateRoot.rect.height * .5f - local.y);
 
             if (Mouse.current.leftButton.wasPressedThisFrame)
+            {
                 BeginPointerAction(pointer);
+                if (_draggingHandle >= 0 && _selectedWall >= 0) RememberEdit(_walls[_selectedWall]);
+                RefreshView();
+            }
             if (_draggingHandle >= 0 && Mouse.current.leftButton.isPressed)
                 DragHandle(pointer);
             if (Mouse.current.leftButton.wasReleasedThisFrame)
@@ -281,8 +336,24 @@ namespace Mahjong.Unity.UI.Prototype
         private void OnGUI()
         {
             if (_coordinateRoot == null || Event.current == null) return;
+            if (_tuningPanel)
+            {
+                Font previous = GUI.skin.font;
+                if (_widthShrinkLabel != null && _widthShrinkLabel.font != null) GUI.skin.font = _widthShrinkLabel.font;
+                _panelRect = GUI.Window(GetInstanceID(), _panelRect, DrawTuningPanel, "牌组调试 (F2)");
+                GUI.skin.font = previous;
+            }
+            if (_showHelp) GUI.Box(new Rect(400, 20, 410, 110), "F2 panel  |  F3 isolate  |  F4 tile range\nF5 compare  |  Tab select group\nQ skeleton  |  P/M Y scale  |  C copy  |  D delete\nS save  |  L load  |  arrows move\nEnter commits a numeric field");
+            if (_tuningPanel && Event.current.type == EventType.MouseDown && !_panelRect.Contains(Event.current.mousePosition)) GUI.FocusControl(null);
+            HasInputFocus = _tuningPanel && !string.IsNullOrEmpty(GUI.GetNameOfFocusedControl());
+            if (HasInputFocus) { _guiArrowHeld = KeyCode.None; return; }
+            _textUndoField = null; _textUndoWallId = null; _textUndo.Clear();
+            if (Event.current.type == EventType.KeyDown && HandleTuningShortcut(Event.current.keyCode, Event.current.shift, Event.current.control || Event.current.command, true)) { Event.current.Use(); return; }
+            _fieldName = null;
+            if (_previewA) return;
             if (Event.current.type == EventType.KeyUp)
             {
+                if (Event.current.keyCode == _guiArrowHeld) _guiArrowHeld = KeyCode.None;
                 if (Event.current.keyCode == KeyCode.Q) _skeletonKeyHeld = false;
                 if (Event.current.keyCode == KeyCode.S) _saveKeyHeld = false;
                 if (Event.current.keyCode == KeyCode.L) _loadKeyHeld = false;
@@ -293,6 +364,7 @@ namespace Mahjong.Unity.UI.Prototype
                 return;
             }
             if (Event.current.type != EventType.KeyDown) return;
+            if (MoveSelectedWithGuiArrow(Event.current)) { Event.current.Use(); return; }
             if (Event.current.keyCode == KeyCode.S && !_saveKeyHeld)
             {
                 _saveKeyHeld = true;
@@ -317,12 +389,14 @@ namespace Mahjong.Unity.UI.Prototype
             else if (Event.current.keyCode == KeyCode.P && !_increaseDepthKeyHeld)
             {
                 _increaseDepthKeyHeld = true;
+                if (_selectedWall >= 0) RememberEdit(_walls[_selectedWall]);
                 AdjustSelectedWidthShrink(1f);
                 Event.current.Use();
             }
             else if (Event.current.keyCode == KeyCode.M && !_decreaseDepthKeyHeld)
             {
                 _decreaseDepthKeyHeld = true;
+                if (_selectedWall >= 0) RememberEdit(_walls[_selectedWall]);
                 AdjustSelectedWidthShrink(-1f);
                 Event.current.Use();
             }
@@ -340,6 +414,393 @@ namespace Mahjong.Unity.UI.Prototype
             }
         }
 
+        private bool HandleTuningShortcut(KeyCode key, bool shift, bool control, bool fromGui = false)
+        {
+            bool supported = key == KeyCode.F1 || key == KeyCode.F2 || key == KeyCode.F3 || key == KeyCode.F4
+                || key == KeyCode.F5 || key == KeyCode.F6 || key == KeyCode.Tab
+                || (control && (key == KeyCode.Z || key == KeyCode.Y));
+            if (!supported) return false;
+            int stamp = Time.frameCount * 2 + (fromGui ? 1 : 0);
+            if (_tuningShortcutFrames.TryGetValue(key, out int previous) && previous / 2 == Time.frameCount && previous != stamp) return true;
+            _tuningShortcutFrames[key] = stamp;
+            switch (key)
+            {
+                case KeyCode.F1: _showHelp = !_showHelp; break;
+                case KeyCode.F2:
+                    _tuningPanel = !_tuningPanel;
+                    if (_tuningPanel && _baselineEntries.Count == 0) CaptureBaseline();
+                    if (_tuningPanel && _selectedWall < 0 && _walls.Count > 0) _selectedWall = 0;
+                    if (!_tuningPanel) { _isolate = false; _viewMode = 2; }
+                    RefreshView(); break;
+                case KeyCode.F3: _isolate = !_isolate; RefreshView(); break;
+                case KeyCode.F4: _viewMode = (_viewMode + 1) % 3; RefreshView(); break;
+                case KeyCode.F5: ToggleComparison(); break;
+                case KeyCode.F6: if (!_capturing) StartCoroutine(ExportScreenshot()); break;
+                case KeyCode.Tab:
+                    if (_walls.Count == 0) break;
+                    if (_previewA) ToggleComparison();
+                    int step = shift ? -1 : 1;
+                    _selectedWall = _selectedWall < 0 ? (step < 0 ? _walls.Count - 1 : 0) : (_selectedWall + step + _walls.Count) % _walls.Count;
+                    RefreshView(); RefreshOverlay(); break;
+                case KeyCode.Z: RestoreHistory(_undo, _redo); break;
+                case KeyCode.Y: RestoreHistory(_redo, _undo); break;
+            }
+            return true;
+        }
+
+        private void DrawTuningPanel(int id)
+        {
+            if (_selectedWall < 0 && _walls.Count > 0) _selectedWall = 0;
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button(_isolate ? "仅所选组" : "全桌")) { _isolate = !_isolate; RefreshView(); }
+            if (GUILayout.Button(new[] { "单张", "三张", "整组" }[_viewMode])) { _viewMode = (_viewMode + 1) % 3; RefreshView(); }
+            GUILayout.EndHorizontal();
+            GUILayout.BeginHorizontal();
+            for (int i = 0; i < 3; i++)
+                if (GUILayout.Button(new[] { "近端", "中间", "远端" }[i])) { _viewPosition = i; RefreshView(); }
+            GUILayout.EndHorizontal();
+            _panelScroll = GUILayout.BeginScrollView(_panelScroll);
+            for (int i = 0; i < _walls.Count; i++)
+            {
+                int index = i;
+                if (GUILayout.Button((_selectedWall == i ? "> " : "") + _walls[i].Seat + "  " + _walls[i].WallId))
+                {
+                    if (_previewA) ToggleComparison();
+                    GUI.FocusControl(null); _fieldName = null; _fieldText = null; _fieldError = null;
+                    _selectedWall = index; RefreshView(); RefreshOverlay(); RefreshSkeleton();
+                }
+            }
+            if (_selectedWall >= 0 && _selectedWall < _walls.Count)
+            {
+                WallState wall = _walls[_selectedWall];
+                GUILayout.Label("当前: " + wall.Seat + " / " + wall.WallId + (_previewA ? " / A (只读)" : " / B"));
+                GUILayout.Label("已加载: " + (string.IsNullOrEmpty(_loadedLayoutPath) ? "无" : _loadedLayoutPath));
+                GUILayout.Label("已保存: " + (string.IsNullOrEmpty(_savedLayoutPath) ? "无" : _savedLayoutPath));
+                if (!string.IsNullOrEmpty(_fieldName)) GUILayout.Label("未提交: " + _fieldName + " = " + _fieldText);
+                if (_baselineEntries.TryGetValue(wall.WallId, out LayoutEntry preset))
+                    GUILayout.Label("预设轴长: " + preset.axisLength.ToString("G7") + " / 当前: " + wall.Frame.AxisLength.ToString("G7"));
+                if (GUILayout.Button("导出截图及布局 (F6)") && !_capturing) StartCoroutine(ExportScreenshot());
+                GUILayout.BeginHorizontal();
+                if (GUILayout.Button("设为 A") && !_previewA) SetComparisonA(wall);
+                if (GUILayout.Button("A / B (F5)")) ToggleComparison();
+                if (GUILayout.Button("撤销")) RestoreHistory(_undo, _redo);
+                if (GUILayout.Button("重做")) RestoreHistory(_redo, _undo);
+                GUILayout.EndHorizontal();
+                if (GUILayout.Button("恢复初值") && !_previewA && _baselineEntries.TryGetValue(wall.WallId, out LayoutEntry baseline))
+                {
+                    RememberEdit(wall); ApplyEntry(wall, baseline); RefreshOverlay();
+                }
+                if (GUILayout.Button(_panelSkeleton ? "骨架叠加: 开" : "骨架叠加: 关"))
+                {
+                    _panelSkeleton = !_panelSkeleton; _showSkeleton = _panelSkeleton; _showTileFrames = _panelSkeleton;
+                    foreach (WallState item in _walls) ApplySkeletonVisibility(item);
+                    RefreshSkeleton(); RefreshOverlay(); RefreshView();
+                }
+                if (_panelSkeleton)
+                {
+                    if (GUILayout.Button("Face: " + DiagnosticFaces[_diagnosticFace])) { _diagnosticFace = (_diagnosticFace + 1) % DiagnosticFaces.Length; RefreshSkeleton(); }
+                    ShowFaceDiagnostic(wall);
+                }
+                GUI.enabled = !_previewA;
+                MahjongWallPoint2 height = wall.Frame.Axis2Start - wall.Frame.Axis1Start;
+                MahjongWallPoint2 depth = wall.Frame.Axis3Start - wall.Frame.Axis1Start;
+                EditNumber(wall, "Face length", Mathf.Sqrt(height.X * height.X + height.Y * height.Y), 10);
+                EditNumber(wall, "Face angle", Mathf.Atan2(height.Y, height.X) * Mathf.Rad2Deg, 11);
+                EditNumber(wall, "Depth length", Mathf.Sqrt(depth.X * depth.X + depth.Y * depth.Y), 12);
+                EditNumber(wall, "Depth angle", Mathf.Atan2(depth.Y, depth.X) * Mathf.Rad2Deg, 13);
+                EditNumber(wall, "Position X", wall.Frame.Axis1Start.X, 0);
+                EditNumber(wall, "Position Y", wall.Frame.Axis1Start.Y, 1);
+                GUILayout.Label("Advanced control points");
+                EditNumber(wall, "A1 X", wall.Frame.Axis1Start.X, 16);
+                EditNumber(wall, "A1 Y", wall.Frame.Axis1Start.Y, 17);
+                EditNumber(wall, "B1 X", wall.Frame.Axis2Start.X, 2);
+                EditNumber(wall, "B1 Y", wall.Frame.Axis2Start.Y, 3);
+                EditNumber(wall, "C1 X", wall.Frame.Axis3Start.X, 4);
+                EditNumber(wall, "C1 Y", wall.Frame.Axis3Start.Y, 5);
+                EditNumber(wall, "Axis length", wall.Frame.AxisLength, 6);
+                MahjongWallSkeleton diagnostic = MahjongExplicitFrontWallGraphic.BuildSkeleton(wall.Frame, TileCount(wall), wall.FaceWidthOverride, wall.GapAfterTileIndex, wall.ExtraGap);
+                EditNumber(wall, "Width before Y", diagnostic.TileFaceWidth, 14);
+                int tileIndex = SelectedTileIndex(wall, TileCount(wall));
+                MahjongExplicitTileGeometry[] actualTiles = MahjongExplicitFrontWallGraphic.BuildTileGeometry(diagnostic,
+                    TileCount(wall), wall.GapAfterTileIndex, wall.ExtraGap, wall.WidthShrinkPercent,
+                    wall.WidthByYAxis, wall.WidthFalloffPerScreenY);
+                if (tileIndex >= 0 && tileIndex < actualTiles.Length)
+                {
+                    MahjongWallPoint2[] edge = actualTiles[tileIndex].BackFace;
+                    GUILayout.Label("Tile " + tileIndex + " actual width: " + Distance(edge[0], edge[3]).ToString("G5"));
+                    if (tileIndex + 1 < actualTiles.Length)
+                        GUILayout.Label("Actual gap to next: " + Distance(edge[3], actualTiles[tileIndex + 1].BackFace[0]).ToString("G5"));
+                }
+                if (wall.GapAfterTileIndex >= 0) EditNumber(wall, "Extra gap", wall.ExtraGap, 15);
+                EditNumber(wall, "Axis angle", wall.Frame.AxisSlopeDegrees, 7);
+                EditNumber(wall, "Y falloff", wall.WidthFalloffPerScreenY, 8);
+                EditNumber(wall, "Face rotation", wall.Frame.FaceUvRotationDegrees, 9);
+                if (GUILayout.Button("Rotate face 90°"))
+                {
+                    RememberEdit(wall);
+                    MahjongWallAxisFrame frame = wall.Frame;
+                    frame.FaceUvRotationDegrees += 90f;
+                    ApplyFrame(wall, frame); RefreshOverlay();
+                }
+                GUI.enabled = true;
+                if (!string.IsNullOrEmpty(_fieldError)) GUILayout.Label(_fieldError);
+            }
+            GUILayout.EndScrollView();
+            GUI.DragWindow(new Rect(0, 0, 10000, 20));
+        }
+
+        private void EditNumber(WallState wall, string label, float value, int field)
+        {
+            GUILayout.BeginHorizontal(); GUILayout.Label(label, GUILayout.Width(110));
+            string name = "wall-field-" + field;
+            bool focused = GUI.GetNameOfFocusedControl() == name;
+            if (focused && (_textUndoField != name || _textUndoWallId != wall.WallId))
+            {
+                _textUndoField = name; _textUndoWallId = wall.WallId; _textUndo.Clear();
+            }
+            bool textUndo = focused && Event.current.type == EventType.KeyDown && (Event.current.control || Event.current.command)
+                && Event.current.keyCode == KeyCode.Z;
+            if (textUndo)
+            {
+                if (_textUndo.Count > 0) { _fieldName = name; _fieldText = _textUndo.Pop(); }
+                Event.current.Use();
+            }
+            string displayed = _fieldName == name ? _fieldText : value.ToString("G7", System.Globalization.CultureInfo.InvariantCulture);
+            bool keyboardCommit = GUI.GetNameOfFocusedControl() == name && Event.current.type == EventType.KeyDown
+                && (Event.current.keyCode == KeyCode.Return || Event.current.keyCode == KeyCode.KeypadEnter);
+            GUI.SetNextControlName(name);
+            string text = GUILayout.TextField(displayed ?? "");
+            if (focused && !textUndo && text != displayed) _textUndo.Push(displayed ?? "");
+            if (keyboardCommit || GUI.GetNameOfFocusedControl() == name) { _fieldName = name; _fieldText = text; }
+            bool decrease = GUILayout.Button("−", GUILayout.Width(25));
+            bool increase = GUILayout.Button("+", GUILayout.Width(25));
+            if (decrease || increase)
+            {
+                float step = field == 8 ? .0001f : 1f;
+                _fieldText = (value + (increase ? step : -step)).ToString("G7", System.Globalization.CultureInfo.InvariantCulture);
+                _fieldName = name;
+            }
+            bool commit = keyboardCommit || decrease || increase;
+            if (commit)
+            {
+                float parsed;
+                if (!float.TryParse(_fieldText, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out parsed) || float.IsNaN(parsed) || float.IsInfinity(parsed) || Mathf.Abs(parsed) > 100000f || (field == 6 && (parsed < 40f || parsed <= wall.ExtraGap)) || ((field == 10 || field == 12 || field == 14) && parsed <= .0001f) || (field == 15 && (parsed < 0f || parsed >= wall.Frame.AxisLength)) || (field == 8 && (parsed < 0f || parsed > .05f)))
+                    _fieldError = "Invalid value: " + label;
+                else
+                {
+                    _fieldError = null;
+                    MahjongWallAxisFrame frame = wall.Frame;
+                    switch (field)
+                    {
+                        case 0: { float d = parsed - frame.Axis1Start.X; frame.Axis1Start.X += d; frame.Axis2Start.X += d; frame.Axis3Start.X += d; break; }
+                        case 1: { float d = parsed - frame.Axis1Start.Y; frame.Axis1Start.Y += d; frame.Axis2Start.Y += d; frame.Axis3Start.Y += d; break; }
+                        case 2: frame.Axis2Start.X = parsed; break;
+                        case 3: frame.Axis2Start.Y = parsed; break;
+                        case 4: frame.Axis3Start.X = parsed; break;
+                        case 5: frame.Axis3Start.Y = parsed; break;
+                        case 6: frame.AxisLength = parsed; break;
+                        case 7: frame.AxisSlopeDegrees = parsed; break;
+                        case 8: break;
+                        case 9: frame.FaceUvRotationDegrees = parsed; break;
+                        case 10: frame.Axis2Start = WithLengthAndAngle(frame.Axis1Start, frame.Axis2Start, parsed, null); break;
+                        case 11: frame.Axis2Start = WithLengthAndAngle(frame.Axis1Start, frame.Axis2Start, null, parsed); break;
+                        case 12: frame.Axis3Start = WithLengthAndAngle(frame.Axis1Start, frame.Axis3Start, parsed, null); break;
+                        case 13: frame.Axis3Start = WithLengthAndAngle(frame.Axis1Start, frame.Axis3Start, null, parsed); break;
+                        case 16: frame.Axis1Start.X = parsed; break;
+                        case 17: frame.Axis1Start.Y = parsed; break;
+                    }
+                    float candidateWidth = field == 14 ? parsed : wall.FaceWidthOverride;
+                    float candidateGap = field == 15 ? parsed : wall.ExtraGap;
+                    bool changesPlacement = field == 14 || field == 15 || field == 6;
+                    bool candidateOverride = HasPlacementOverride(wall, candidateWidth, candidateGap);
+                    if (changesPlacement && (field == 14 || candidateOverride)
+                        && !PlacementValid(wall, frame.AxisLength, candidateWidth, candidateGap))
+                        _fieldError = "Invalid value: tile width exceeds pitch or gap exceeds axis";
+                    else if (Distance(frame.Axis1Start, frame.Axis2Start) < .0001f || Distance(frame.Axis1Start, frame.Axis3Start) < .0001f)
+                        _fieldError = "Invalid value: " + label + " (zero cross-section)";
+                    else
+                    {
+                        RememberEdit(wall);
+                        if (field == 8) SetWidthFalloffPerScreenY(wall, parsed);
+                        if (field == 14) SetPlacement(wall, parsed, wall.ExtraGap);
+                        if (field == 15) SetPlacement(wall, wall.FaceWidthOverride, parsed);
+                        ApplyFrame(wall, frame); RefreshOverlay();
+                    }
+                }
+                GUI.FocusControl(null); _fieldName = null; _textUndoField = null; _textUndoWallId = null; _textUndo.Clear(); if (keyboardCommit) Event.current.Use();
+            }
+            GUILayout.EndHorizontal();
+        }
+
+        private void RememberEdit(WallState wall) { _undo.Push(ToEntry(wall)); _redo.Clear(); }
+
+        private static bool HasPlacementOverride(WallState wall, float width, float gap) =>
+            !Mathf.Approximately(width, wall.DefaultFaceWidthOverride)
+            || !Mathf.Approximately(gap, wall.DefaultExtraGap);
+
+        private static bool PlacementValid(WallState wall, float axisLength, float width, float extraGap)
+        {
+            int count = TileCount(wall);
+            float gap = wall.GapAfterTileIndex >= 0 && wall.GapAfterTileIndex < count - 1 ? extraGap : 0f;
+            if (!IsFinite(axisLength) || !IsFinite(width) || !IsFinite(extraGap)
+                || width < 0f || extraGap < 0f || gap >= axisLength) return false;
+            return width <= .0001f || count <= 1 || width <= (axisLength - gap) / (count - 1);
+        }
+
+        private void CaptureBaseline()
+        {
+            _baselineEntries.Clear();
+            foreach (WallState wall in _walls) _baselineEntries[wall.WallId] = ToEntry(wall);
+        }
+
+        private void ApplyEntry(WallState wall, LayoutEntry entry)
+        {
+            ApplyFrame(wall, FromEntry(entry));
+            SetWidthShrinkPercent(wall, entry.widthShrinkPercent);
+            SetWidthFalloffPerScreenY(wall, entry.widthFalloffPerScreenY);
+            SetPlacement(wall, entry.faceWidthOverride, entry.extraGap);
+            RefreshSkeleton();
+        }
+
+        private static MahjongWallPoint2 WithLengthAndAngle(MahjongWallPoint2 origin, MahjongWallPoint2 end, float? length, float? angle)
+        {
+            MahjongWallPoint2 delta = end - origin;
+            float magnitude = length ?? Mathf.Sqrt(delta.X * delta.X + delta.Y * delta.Y);
+            float radians = angle.HasValue ? angle.Value * Mathf.Deg2Rad : Mathf.Atan2(delta.Y, delta.X);
+            return origin + new MahjongWallPoint2(Mathf.Cos(radians) * magnitude, Mathf.Sin(radians) * magnitude);
+        }
+
+        private void RestoreHistory(Stack<LayoutEntry> from, Stack<LayoutEntry> to)
+        {
+            if (_previewA || from.Count == 0) return;
+            LayoutEntry entry = from.Pop();
+            WallState wall = _walls.Find(item => item.WallId == entry.wallId);
+            if (wall == null) return;
+            to.Push(ToEntry(wall));
+            ApplyEntry(wall, entry);
+            RefreshOverlay();
+        }
+
+        private void SetComparisonA(WallState wall)
+        {
+            _aWallId = wall.WallId; _aFrame = wall.Frame; _aShrink = wall.WidthShrinkPercent;
+            _aFalloff = wall.WidthFalloffPerScreenY; _aWidth = wall.FaceWidthOverride; _aGap = wall.ExtraGap;
+        }
+
+        private void ToggleComparison()
+        {
+            if (_selectedWall < 0 || _selectedWall >= _walls.Count) return;
+            WallState wall = _walls[_selectedWall];
+            if (wall.WallId != _aWallId) return;
+            if (!_previewA) { _bFrame = wall.Frame; _bShrink = wall.WidthShrinkPercent; _bFalloff = wall.WidthFalloffPerScreenY; _bWidth = wall.FaceWidthOverride; _bGap = wall.ExtraGap; }
+            _previewA = !_previewA;
+            ApplyFrame(wall, _previewA ? _aFrame : _bFrame);
+            SetWidthShrinkPercent(wall, _previewA ? _aShrink : _bShrink);
+            SetWidthFalloffPerScreenY(wall, _previewA ? _aFalloff : _bFalloff);
+            SetPlacement(wall, _previewA ? _aWidth : _bWidth, _previewA ? _aGap : _bGap);
+            RefreshSkeleton(); RefreshOverlay();
+        }
+
+        private void RefreshView()
+        {
+            for (int i = 0; i < _walls.Count; i++)
+            {
+                WallState wall = _walls[i];
+                bool selected = i == _selectedWall;
+                bool visible = !_isolate || selected;
+                if (wall.Graphic != null) wall.Graphic.enabled = visible && (!_showSkeleton || _panelSkeleton);
+                int start = -1, end = -1;
+                if (selected && _viewMode != 2)
+                {
+                    int count = TileCount(wall);
+                    int index = SelectedTileIndex(wall, count);
+                    int length = _viewMode == 0 ? 1 : Math.Min(3, count);
+                    start = Mathf.Clamp(index - length / 2, 0, count - length); end = start + length - 1;
+                }
+                if (wall.Graphic is MahjongExplicitFrontWallGraphic graphic) graphic.SetVisibleRange(start, end);
+                foreach (MahjongWallFaceRevealGraphic face in wall.FaceGraphics)
+                    if (face != null) { face.enabled = visible && (!_showSkeleton || _panelSkeleton); face.SetVisibleRange(start, end); }
+            }
+            RefreshSkeleton();
+        }
+
+        private bool TileInView(WallState wall, int index, int count)
+        {
+            if (_viewMode == 2) return true;
+            int center = SelectedTileIndex(wall, count);
+            int length = _viewMode == 0 ? 1 : Math.Min(3, count);
+            int start = Mathf.Clamp(center - length / 2, 0, count - length);
+            return index >= start && index < start + length;
+        }
+
+        private int SelectedTileIndex(WallState wall, int count)
+        {
+            if (_viewPosition == 1 || count < 2) return count / 2;
+            MahjongWallPoint2[] corners = BuildDisplaySkeletonCorners(wall);
+            float startY = ToEditorPoint(wall, corners[0]).Y;
+            float endY = ToEditorPoint(wall, corners[4]).Y;
+            int near = startY >= endY ? 0 : count - 1;
+            return _viewPosition == 0 ? near : count - 1 - near;
+        }
+
+        private void ShowFaceDiagnostic(WallState wall)
+        {
+            int count = TileCount(wall);
+            int index = SelectedTileIndex(wall, count);
+            MahjongWallSkeleton skeleton = MahjongExplicitFrontWallGraphic.BuildSkeleton(wall.Frame, count, wall.FaceWidthOverride, wall.GapAfterTileIndex, wall.ExtraGap);
+            MahjongExplicitTileGeometry[] tiles = MahjongExplicitFrontWallGraphic.BuildTileGeometry(skeleton, count, wall.GapAfterTileIndex, wall.ExtraGap, wall.WidthShrinkPercent, wall.WidthByYAxis, wall.WidthFalloffPerScreenY);
+            if (index < 0 || index >= tiles.Length) return;
+            MahjongWallSurface surface = DiagnosticFaces[_diagnosticFace];
+            MahjongWallPoint2[] face = MahjongExplicitFrontWallGraphic.Surface(tiles[index], surface);
+            float twiceArea = 0f, maxEdgeSquared = 0f;
+            for (int i = 0; i < face.Length; i++)
+            {
+                MahjongWallPoint2 next = face[(i + 1) % face.Length];
+                twiceArea += face[i].X * next.Y - next.X * face[i].Y;
+                float dx = next.X - face[i].X, dy = next.Y - face[i].Y;
+                maxEdgeSquared = Mathf.Max(maxEdgeSquared, dx * dx + dy * dy);
+            }
+            float area = Mathf.Abs(twiceArea) * .5f;
+            bool nearCollinear = maxEdgeSquared < .000001f || area / maxEdgeSquared < .001f;
+            bool submitted = Array.IndexOf(MahjongExplicitFrontWallGraphic.GetOuterSurfaces(tiles[index], wall.OuterPoint, index, count), surface) >= 0;
+            GUILayout.Label("Tile " + index + ", " + surface + (submitted ? " / mesh" : " / diagnostic only") + ", area " + area.ToString("G5") + (nearCollinear ? " (near collinear)" : ""));
+            for (int i = 0; i < face.Length; i++) GUILayout.Label(i + ": " + face[i].X.ToString("F2") + ", " + face[i].Y.ToString("F2"));
+        }
+
+        private IEnumerator ExportScreenshot()
+        {
+            _capturing = true;
+            string stem = Path.Combine(Application.persistentDataPath, "wall-export",
+                DateTime.Now.ToString("yyyyMMdd-HHmmss-fff") + "-" + (_previewA ? "A-" : "B-") + Guid.NewGuid().ToString("N"));
+            LayoutDocument document = CaptureDocument();
+            bool panel = _tuningPanel, help = _showHelp, skeleton = _showSkeleton, frames = _showTileFrames, overlay = _panelSkeleton, isolate = _isolate;
+            int selected = _selectedWall;
+            _tuningPanel = false; _showHelp = false; _showSkeleton = false; _showTileFrames = false; _panelSkeleton = false;
+            // Keep the selection for filtering; hide only the editor's visual overlays.
+            RefreshView(); RefreshOverlay();
+            foreach (Image handle in _handles) if (handle != null) handle.gameObject.SetActive(false);
+            foreach (Image edge in _edges) if (edge != null) edge.gameObject.SetActive(false);
+            foreach (Text label in _handleLabels) if (label != null) label.gameObject.SetActive(false);
+            yield return new WaitForEndOfFrame();
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(stem));
+                var image = new Texture2D(Screen.width, Screen.height, TextureFormat.RGB24, false);
+                image.ReadPixels(new Rect(0, 0, Screen.width, Screen.height), 0, 0);
+                image.Apply();
+                File.WriteAllBytes(stem + ".png", image.EncodeToPNG());
+                Destroy(image);
+                File.WriteAllText(stem + ".json", JsonUtility.ToJson(document, true));
+                Debug.Log("[MahjongWallLayoutEditor] Exported " + stem);
+            }
+            catch (Exception exception) { Debug.LogError("[MahjongWallLayoutEditor] Export failed: " + exception.Message); }
+            finally
+            {
+                _selectedWall = selected; _isolate = isolate; _tuningPanel = panel; _showHelp = help; _showSkeleton = skeleton; _showTileFrames = frames; _panelSkeleton = overlay;
+                RefreshView(); RefreshSkeleton(); RefreshOverlay(); _capturing = false;
+            }
+        }
+
         private void DeleteSelectedWall()
         {
             if (_selectedWall < 0 || _selectedWall >= _walls.Count) return;
@@ -347,9 +808,9 @@ namespace Mahjong.Unity.UI.Prototype
             if (!wall.IsRuntimeCopy) _deletedWallIds.Add(wall.WallId);
             DestroyWallObjects(wall);
             _walls.RemoveAt(_selectedWall);
-            _selectedWall = -1;
+            _selectedWall = _walls.Count == 0 ? -1 : Mathf.Min(_selectedWall, _walls.Count - 1);
             _draggingHandle = -1;
-            RefreshSkeleton();
+            RefreshView();
             RefreshOverlay();
             Debug.Log("[MahjongWallLayoutEditor] Deleted selected wall.");
         }
@@ -403,8 +864,10 @@ namespace Mahjong.Unity.UI.Prototype
             source.CopyAtFrame(frame, source.WidthShrinkPercent, source.WidthFalloffPerScreenY,
                 Guid.NewGuid().ToString("N"), true);
             _selectedWall = _walls.Count - 1;
+            SetPlacement(_walls[_selectedWall], source.FaceWidthOverride, source.ExtraGap);
+            _baselineEntries[_walls[_selectedWall].WallId] = ToEntry(_walls[_selectedWall]);
             _runtimeCopyCount++;
-            RefreshSkeleton();
+            RefreshView();
             RefreshOverlay();
             Debug.Log("[MahjongWallLayoutEditor] Duplicated selected wall to the right (copy "
                 + _runtimeCopyCount + ").");
@@ -464,6 +927,15 @@ namespace Mahjong.Unity.UI.Prototype
         private static bool SupportsWidthAdjustment(WallState wall) =>
             wall.PerTileFrontRenderer;
 
+        private static void SetPlacement(WallState wall, float width, float gap)
+        {
+            wall.FaceWidthOverride = width;
+            wall.ExtraGap = gap;
+            if (wall.Graphic is MahjongExplicitFrontWallGraphic graphic) graphic.SetPlacement(width, gap);
+            foreach (MahjongWallFaceRevealGraphic face in wall.FaceGraphics)
+                if (face != null) face.SetPlacement(width, gap);
+        }
+
         private void SetWidthFalloffPerScreenY(WallState wall, float value)
         {
             wall.WidthFalloffPerScreenY = Mathf.Clamp(Mathf.Round(value * 100000f) / 100000f, 0f, .05f);
@@ -486,6 +958,7 @@ namespace Mahjong.Unity.UI.Prototype
 
         private void ToggleSkeleton()
         {
+            _panelSkeleton = false;
             if (!_showSkeleton) _showSkeleton = true;
             else if (!_showTileFrames) _showTileFrames = true;
             else
@@ -507,6 +980,7 @@ namespace Mahjong.Unity.UI.Prototype
                 ApplySkeletonVisibility(_walls[i]);
             RefreshSkeleton();
             RefreshOverlay();
+            RefreshView();
         }
 
         private void ApplySkeletonVisibility(WallState wall)
@@ -536,6 +1010,7 @@ namespace Mahjong.Unity.UI.Prototype
             {
                 for (int i = _walls.Count - 1; i >= 0; i--)
                 {
+                    if (_panelSkeleton && i != _selectedWall) continue;
                     MahjongWallPoint2[] nodes = BuildDisplaySkeletonCorners(_walls[i]);
                     int[] controlNodes = { 0, 1, 2, 4 };
                     for (int handle = 0; handle < controlNodes.Length; handle++)
@@ -566,6 +1041,7 @@ namespace Mahjong.Unity.UI.Prototype
 
             for (int i = _walls.Count - 1; i >= 0; i--)
             {
+                if (_isolate && i != _selectedWall) continue;
                 if (!Contains(GetSelectionPolygon(_walls[i]), pointer)) continue;
                 _selectedWall = i;
                 _draggingHandle = 4;
@@ -593,22 +1069,22 @@ namespace Mahjong.Unity.UI.Prototype
             if (_draggingHandle == 0) // A1; keep the independently adjustable A2 fixed.
             {
                 MahjongWallPoint2[] outer = GetControlPoints(wall);
-                SetOuterControlPoints(wall, ref frame, outer[0] + delta, outer[1], outer[2], outer[3]);
+                if (!SetOuterControlPoints(wall, ref frame, outer[0] + delta, outer[1], outer[2], outer[3])) _fieldError = "Invalid placement: tile width exceeds pitch"; else _fieldError = null;
             }
             else if (_draggingHandle == 1)
             {
                 MahjongWallPoint2[] outer = GetControlPoints(wall);
-                SetOuterControlPoints(wall, ref frame, outer[0], outer[1] + delta, outer[2], outer[3]);
+                if (!SetOuterControlPoints(wall, ref frame, outer[0], outer[1] + delta, outer[2], outer[3])) _fieldError = "Invalid placement: tile width exceeds pitch"; else _fieldError = null;
             }
             else if (_draggingHandle == 2)
             {
                 MahjongWallPoint2[] outer = GetControlPoints(wall);
-                SetOuterControlPoints(wall, ref frame, outer[0], outer[1], outer[2] + delta, outer[3]);
+                if (!SetOuterControlPoints(wall, ref frame, outer[0], outer[1], outer[2] + delta, outer[3])) _fieldError = "Invalid placement: tile width exceeds pitch"; else _fieldError = null;
             }
             else if (_draggingHandle == 3)
             {
                 MahjongWallPoint2[] outer = GetControlPoints(wall);
-                SetOuterControlPoints(wall, ref frame, outer[0], outer[1], outer[2], wallPointer);
+                if (!SetOuterControlPoints(wall, ref frame, outer[0], outer[1], outer[2], wallPointer)) _fieldError = "Invalid placement: tile width exceeds pitch"; else _fieldError = null;
             }
             else if (_draggingHandle == 4)
             {
@@ -636,13 +1112,35 @@ namespace Mahjong.Unity.UI.Prototype
                 - (keyboard.leftArrowKey.isPressed ? 1f : 0f);
             float y = (keyboard.downArrowKey.isPressed ? 1f : 0f)
                 - (keyboard.upArrowKey.isPressed ? 1f : 0f);
-            if (Math.Abs(x) < .001f && Math.Abs(y) < .001f) return;
+            if (Math.Abs(x) < .001f && Math.Abs(y) < .001f) { _movingByKeyboard = false; return; }
+            if (!_movingByKeyboard) { RememberEdit(_walls[_selectedWall]); _movingByKeyboard = true; }
             float speed = keyboard.leftShiftKey.isPressed || keyboard.rightShiftKey.isPressed ? 600f : 160f;
+            MoveSelectedByScreenDelta(x * speed * Time.unscaledDeltaTime, y * speed * Time.unscaledDeltaTime);
+        }
+
+        private bool MoveSelectedWithGuiArrow(Event input)
+        {
+            if (_selectedWall < 0 || _selectedWall >= _walls.Count) return false;
+            float x = input.keyCode == KeyCode.RightArrow ? 1f : input.keyCode == KeyCode.LeftArrow ? -1f : 0f;
+            float y = input.keyCode == KeyCode.DownArrow ? 1f : input.keyCode == KeyCode.UpArrow ? -1f : 0f;
+            if (x == 0f && y == 0f) return false;
+            Keyboard keyboard = Keyboard.current;
+            bool handledByKeyboard = keyboard != null && (keyboard.rightArrowKey.isPressed || keyboard.leftArrowKey.isPressed
+                || keyboard.downArrowKey.isPressed || keyboard.upArrowKey.isPressed);
+            if (handledByKeyboard) return false;
+            if (_guiArrowHeld != input.keyCode) { RememberEdit(_walls[_selectedWall]); _guiArrowHeld = input.keyCode; }
+            float step = input.shift ? 10f : 3f;
+            MoveSelectedByScreenDelta(x * step, y * step);
+            return true;
+        }
+
+        private void MoveSelectedByScreenDelta(float x, float y)
+        {
             WallState wall = _walls[_selectedWall];
             MahjongWallPoint2 center = new MahjongWallPoint2(
                 _coordinateRoot.rect.width * .5f, _coordinateRoot.rect.height * .5f);
             MahjongWallPoint2 localShift = ToWallPoint(wall, center + new MahjongWallPoint2(
-                x * speed * Time.unscaledDeltaTime, y * speed * Time.unscaledDeltaTime))
+                x, y))
                 - ToWallPoint(wall, center);
             MahjongWallAxisFrame frame = wall.Frame;
             frame.Axis1Start += localShift;
@@ -706,20 +1204,25 @@ namespace Mahjong.Unity.UI.Prototype
             return (low + high) * .5f;
         }
 
-        private static void SetOuterControlPoints(WallState wall, ref MahjongWallAxisFrame frame,
+        private static bool SetOuterControlPoints(WallState wall, ref MahjongWallAxisFrame frame,
             MahjongWallPoint2 a1, MahjongWallPoint2 b1, MahjongWallPoint2 c1, MahjongWallPoint2 a2)
         {
             MahjongWallPoint2 depth = a2 - a1;
             float extent = Length(depth);
-            if (extent < 40f) return;
-            frame.AxisSlopeDegrees = (float)(Math.Atan2(depth.Y, depth.X) * 180f / Math.PI);
-            frame.AxisLength = AxisLengthForRenderedExtent(wall, extent);
-            MahjongWallPoint2 row = RowUnit(frame);
-            GetRenderedAxisOffsets(wall, frame, out float first, out _);
+            if (extent < 40f) return false;
+            MahjongWallAxisFrame candidate = frame;
+            candidate.AxisSlopeDegrees = (float)(Math.Atan2(depth.Y, depth.X) * 180f / Math.PI);
+            candidate.AxisLength = AxisLengthForRenderedExtent(wall, extent);
+            if (HasPlacementOverride(wall, wall.FaceWidthOverride, wall.ExtraGap)
+                && !PlacementValid(wall, candidate.AxisLength, wall.FaceWidthOverride, wall.ExtraGap)) return false;
+            MahjongWallPoint2 row = RowUnit(candidate);
+            GetRenderedAxisOffsets(wall, candidate, out float first, out _);
             MahjongWallPoint2 shift = row * first;
-            frame.Axis1Start = a1 - shift;
-            frame.Axis2Start = b1 - shift;
-            frame.Axis3Start = c1 - shift;
+            candidate.Axis1Start = a1 - shift;
+            candidate.Axis2Start = b1 - shift;
+            candidate.Axis3Start = c1 - shift;
+            frame = candidate;
+            return true;
         }
 
         private MahjongWallPoint2 ToWallPoint(WallState wall, MahjongWallPoint2 editorPoint)
@@ -981,7 +1484,7 @@ namespace Mahjong.Unity.UI.Prototype
             {
                 WallState wall = _walls[i];
                 if (wall.SkeletonEdges == null) continue;
-                bool visible = _showSkeleton;
+                bool visible = _showSkeleton && (!_panelSkeleton || i == _selectedWall);
                 for (int node = 0; node < wall.SkeletonNodes.Length; node++)
                 {
                     wall.SkeletonNodes[node].gameObject.SetActive(false);
@@ -1078,8 +1581,20 @@ namespace Mahjong.Unity.UI.Prototype
                     wall.WidthShrinkPercent, wall.WidthByYAxis, wall.WidthFalloffPerScreenY);
                 for (int tile = 0; tile < explicitTiles.Length; tile++)
                 {
+                    if (_panelSkeleton && (_selectedWall < 0 || _selectedWall >= _walls.Count || wall != _walls[_selectedWall] || !TileInView(wall, tile, explicitTiles.Length))) continue;
                     MahjongWallSurface[] outerFaces = MahjongExplicitFrontWallGraphic.GetOuterSurfaces(
                         explicitTiles[tile], wall.OuterPoint, tile, explicitTiles.Length);
+                    if (_panelSkeleton)
+                    {
+                        for (int f = 0; f < DiagnosticFaces.Length; f++)
+                        {
+                            Color color = DiagnosticColors[f];
+                            if (Array.IndexOf(outerFaces, DiagnosticFaces[f]) < 0) color.a = .3f;
+                            if (f != _diagnosticFace) color.a *= .55f;
+                            AddTileFrameFace(wall, MahjongExplicitFrontWallGraphic.Surface(explicitTiles[tile], DiagnosticFaces[f]), ref lineIndex, color);
+                        }
+                        continue;
+                    }
                     for (int face = 0; face < outerFaces.Length; face++)
                     {
                         AddTileFrameFace(wall, MahjongExplicitFrontWallGraphic.Surface(
@@ -1151,7 +1666,7 @@ namespace Mahjong.Unity.UI.Prototype
                 wall.TileFrameLines[i].gameObject.SetActive(false);
         }
 
-        private void AddTileFrameFace(WallState wall, MahjongWallPoint2[] face, ref int lineIndex)
+        private void AddTileFrameFace(WallState wall, MahjongWallPoint2[] face, ref int lineIndex, Color? diagnosticColor = null)
         {
             for (int edge = 0; edge < face.Length; edge++)
             {
@@ -1161,7 +1676,7 @@ namespace Mahjong.Unity.UI.Prototype
                         "Wall tile frame " + wall.Seat + " " + lineIndex,
                         TileFrameColor, new Vector2(1f, 1.5f)));
                 line = wall.TileFrameLines[lineIndex++];
-                line.color = TileFrameColor;
+                line.color = diagnosticColor ?? TileFrameColor;
                 line.gameObject.SetActive(true);
                 PositionLine(line.rectTransform, ToEditorPoint(wall, face[edge]),
                     ToEditorPoint(wall, face[(edge + 1) % face.Length]));
@@ -1239,7 +1754,7 @@ namespace Mahjong.Unity.UI.Prototype
             if (!File.Exists(path)) return;
             try
             {
-                ApplyDocument(JsonUtility.FromJson<LayoutDocument>(File.ReadAllText(path)));
+                LoadLayoutFile(path);
                 Debug.Log("[MahjongWallLayoutEditor] Loaded layout " + path);
             }
             catch (Exception exception)
@@ -1283,10 +1798,14 @@ namespace Mahjong.Unity.UI.Prototype
             if (string.IsNullOrEmpty(path)) return;
             try
             {
+                bool restorePreview = _previewA;
+                if (restorePreview) ToggleComparison();
                 LayoutDocument document = CaptureDocument();
+                if (restorePreview) ToggleComparison();
                 Directory.CreateDirectory(Path.GetDirectoryName(path));
                 File.WriteAllText(path, JsonUtility.ToJson(document, true));
                 RememberPath(path);
+                _savedLayoutPath = path;
                 Debug.Log("[MahjongWallLayoutEditor] Saved layout " + path);
             }
             catch (Exception exception)
@@ -1334,7 +1853,7 @@ namespace Mahjong.Unity.UI.Prototype
             if (string.IsNullOrEmpty(path)) return;
             try
             {
-                ApplyDocument(JsonUtility.FromJson<LayoutDocument>(File.ReadAllText(path)));
+                LoadLayoutFile(path);
                 RememberPath(path);
                 Debug.Log("[MahjongWallLayoutEditor] Loaded layout " + path);
             }
@@ -1342,6 +1861,28 @@ namespace Mahjong.Unity.UI.Prototype
             {
                 Debug.LogError("[MahjongWallLayoutEditor] Could not load layout: " + exception.Message);
             }
+        }
+
+        private void LoadLayoutFile(string path)
+        {
+            LayoutDocument document = JsonUtility.FromJson<LayoutDocument>(File.ReadAllText(path));
+            if (document == null || document.walls == null) throw new InvalidDataException("Layout has no wall entries.");
+            foreach (LayoutEntry entry in document.walls)
+            {
+                if (entry == null || !IsValid(entry)) throw new InvalidDataException("Invalid wall entry.");
+                WallState template = _walls.Find(item => item.Seat == (MahjongWallSeat)entry.seat && !item.IsRuntimeCopy);
+                if (entry.hasPlacement && template != null
+                    && !PlacementValid(template, entry.axisLength, entry.faceWidthOverride, entry.extraGap))
+                    throw new InvalidDataException("Invalid placement for " + entry.wallId);
+            }
+            ApplyDocument(document);
+            _loadedLayoutPath = Path.GetFullPath(path);
+            _previewA = false; _aWallId = null; _undo.Clear(); _redo.Clear();
+            _fieldName = null; _fieldText = null; _fieldError = null;
+            _textUndoField = null; _textUndoWallId = null; _textUndo.Clear();
+            _draggingHandle = -1; _movingByKeyboard = false;
+            _isolate = false; _viewMode = 2; _viewPosition = 1;
+            CaptureBaseline(); RefreshView(); RefreshOverlay();
         }
 
         private void ApplyDocument(LayoutDocument document)
@@ -1448,9 +1989,17 @@ namespace Mahjong.Unity.UI.Prototype
             if (!_hasSerializedLayout || _serializedLayoutIsLegacy || wall.IsRuntimeCopy) return;
             LayoutEntry entry = FindEntry(_serializedLayout, wall.WallId);
             if (entry == null || !IsValid(entry)) return;
+            if (entry.hasPlacement && !PlacementValid(wall, entry.axisLength, entry.faceWidthOverride, entry.extraGap))
+            {
+                Debug.LogWarning("[MahjongWallLayoutEditor] Invalid placement for " + wall.WallId);
+                return;
+            }
             ApplyFrame(wall, FromEntry(entry));
             if (entry.hasWidthShrinkPercent) SetWidthShrinkPercent(wall, entry.widthShrinkPercent);
             if (entry.hasWidthFalloffPerScreenY) SetWidthFalloffPerScreenY(wall, entry.widthFalloffPerScreenY);
+            SetPlacement(wall, entry.hasPlacement ? entry.faceWidthOverride : wall.DefaultFaceWidthOverride,
+                entry.hasPlacement ? entry.extraGap : wall.DefaultExtraGap);
+            RefreshSkeleton();
         }
 
         private static LayoutEntry FindEntry(LayoutDocument document, string wallId)
@@ -1485,9 +2034,18 @@ namespace Mahjong.Unity.UI.Prototype
             if (!_wallFactoriesBySeat.TryGetValue((MahjongWallSeat)entry.seat,
                 out Action<MahjongWallAxisFrame, float, float, string, bool> factory)) return;
             if (factory == null) return;
+            WallState template = _walls.Find(item => item.Seat == (MahjongWallSeat)entry.seat && !item.IsRuntimeCopy);
+            if (entry.hasPlacement && template != null
+                && !PlacementValid(template, entry.axisLength, entry.faceWidthOverride, entry.extraGap))
+            {
+                Debug.LogWarning("[MahjongWallLayoutEditor] Invalid placement for " + entry.wallId);
+                return;
+            }
             _restoredSerializedCopyIds.Add(entry.wallId);
             factory(FromEntry(entry), entry.widthShrinkPercent, entry.widthFalloffPerScreenY,
                 entry.wallId, true);
+            WallState copy = _walls.Find(item => item.WallId == entry.wallId);
+            if (copy != null && entry.hasPlacement) { SetPlacement(copy, entry.faceWidthOverride, entry.extraGap); RefreshSkeleton(); }
         }
 
         private static bool IsValid(LayoutEntry entry) =>
@@ -1496,7 +2054,12 @@ namespace Mahjong.Unity.UI.Prototype
             && IsFinite(entry.axis2X) && IsFinite(entry.axis2Y)
             && IsFinite(entry.axis3X) && IsFinite(entry.axis3Y)
             && IsFinite(entry.axisLength) && entry.axisLength >= 40f
-            && IsFinite(entry.axisSlopeDegrees);
+            && IsFinite(entry.axisSlopeDegrees) && IsFinite(entry.faceWidthAxisOffsetDegrees)
+            && IsFinite(entry.faceUvRotationDegrees)
+            && (!entry.hasWidthShrinkPercent || IsFinite(entry.widthShrinkPercent))
+            && (!entry.hasWidthFalloffPerScreenY || IsFinite(entry.widthFalloffPerScreenY))
+            && (!entry.hasPlacement || (IsFinite(entry.faceWidthOverride) && entry.faceWidthOverride >= 0f
+                && IsFinite(entry.extraGap) && entry.extraGap >= 0f && entry.extraGap < entry.axisLength));
 
         private static bool IsFinite(float value) => !float.IsNaN(value) && !float.IsInfinity(value);
 
@@ -1519,6 +2082,9 @@ namespace Mahjong.Unity.UI.Prototype
             hasWidthShrinkPercent = true,
             widthFalloffPerScreenY = wall.WidthFalloffPerScreenY,
             hasWidthFalloffPerScreenY = true,
+            hasPlacement = HasPlacementOverride(wall, wall.FaceWidthOverride, wall.ExtraGap),
+            faceWidthOverride = wall.FaceWidthOverride,
+            extraGap = wall.ExtraGap,
             explicitTileGeometry = true
         };
 

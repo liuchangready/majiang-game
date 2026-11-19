@@ -70,6 +70,22 @@ namespace Mahjong.Unity.UI.Prototype
         private int _gapAfterTileIndex = -1;
         private float _extraGap;
 
+        private int _visibleStart = -1, _visibleEnd = -1;
+
+        public void SetVisibleRange(int start, int end)
+        {
+            _visibleStart = start;
+            _visibleEnd = end;
+            SetVerticesDirty();
+        }
+
+        public void SetPlacement(float faceWidth, float extraGap)
+        {
+            _faceWidthOverride = faceWidth;
+            _extraGap = extraGap;
+            SetVerticesDirty();
+        }
+
         public override Texture mainTexture => MahjongTileFaceAtlas.Texture != null
             ? MahjongTileFaceAtlas.Texture : s_WhiteTexture;
 
@@ -138,6 +154,7 @@ namespace Mahjong.Unity.UI.Prototype
             for (int drawIndex = 0; drawIndex < tiles.Length; drawIndex++)
             {
                 int tileIndex = drawOrder[drawIndex];
+                if (_visibleStart >= 0 && (tileIndex < _visibleStart || tileIndex > _visibleEnd)) continue;
                 MahjongExplicitTileGeometry tile = tiles[tileIndex];
                 MahjongWallTileFrontSpec spec = _tileSpecs[tileIndex];
                 MahjongWallSurface[] outerFaces = GetOuterSurfaces(tile, _outerPoint,

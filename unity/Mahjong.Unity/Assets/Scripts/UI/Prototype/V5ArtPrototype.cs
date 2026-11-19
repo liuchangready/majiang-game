@@ -212,6 +212,8 @@ namespace Mahjong.Unity.UI.Prototype
         private void HandleInput()
         {
             if (Keyboard.current == null) return;
+            if (_wallLayoutEditor?.HasInputFocus ?? false) return;
+            bool wallPrototype = _directTableMode && (_activePage == "seat-prototype" || _activePage == "seat-prototype-v2" || _activePage == "seat-prototype-v3");
             bool screenshotPressed = Keyboard.current.cKey.wasPressedThisFrame;
             if (screenshotPressed)
                 Debug.Log("[V5ArtPrototype] C key detected direct=" + _directTableMode + " page=" + _activePage);
@@ -219,16 +221,16 @@ namespace Mahjong.Unity.UI.Prototype
                 && screenshotPressed && !(_wallLayoutEditor?.CanCopySelectedWall ?? false)
                 && !(_wallLayoutEditor?.CopyShortcutConsumed ?? false))
                 QueuePrototypeScreenshot();
-            if (Keyboard.current.tabKey.wasPressedThisFrame || Keyboard.current.escapeKey.wasPressedThisFrame)
+            if ((!wallPrototype && Keyboard.current.tabKey.wasPressedThisFrame) || Keyboard.current.escapeKey.wasPressedThisFrame)
             {
                 if (_galleryModal != null && _galleryModal.activeSelf) _galleryModal.SetActive(false);
                 else if (_noticeModal != null && _noticeModal.activeSelf) _noticeModal.SetActive(false);
                 else if (_targetPickerPanel != null && _targetPickerPanel.activeSelf) CloseTargetPicker();
                 else TogglePage();
             }
-            if (Keyboard.current.f1Key.wasPressedThisFrame) ShowMenu();
-            if (Keyboard.current.f2Key.wasPressedThisFrame) ShowTable();
-            if (Keyboard.current.f3Key.wasPressedThisFrame) ShowGalleryModal();
+            if (!wallPrototype && Keyboard.current.f1Key.wasPressedThisFrame) ShowMenu();
+            if (!wallPrototype && Keyboard.current.f2Key.wasPressedThisFrame) ShowTable();
+            if (!wallPrototype && Keyboard.current.f3Key.wasPressedThisFrame) ShowGalleryModal();
             if (_activePage != "table") return;
 
             if (Keyboard.current.spaceKey.wasPressedThisFrame) TogglePause();
@@ -245,6 +247,7 @@ namespace Mahjong.Unity.UI.Prototype
 
         private void OnGUI()
         {
+            if (!string.IsNullOrEmpty(GUI.GetNameOfFocusedControl())) return;
             if (!_directTableMode || (_activePage != "seat-prototype" && _activePage != "seat-prototype-v2" && _activePage != "seat-prototype-v3")) return;
             Event current = Event.current;
             if (current == null || current.type != EventType.KeyDown || current.keyCode != KeyCode.C

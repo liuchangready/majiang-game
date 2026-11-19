@@ -22,6 +22,22 @@ namespace Mahjong.Unity.UI.Prototype
         private bool _widthByYAxis;
         private float _widthFalloffPerScreenY = MahjongExplicitFrontWallGraphic.DefaultWidthFalloffPerScreenY;
 
+        private int _visibleStart = -1, _visibleEnd = -1;
+
+        public void SetVisibleRange(int start, int end)
+        {
+            _visibleStart = start;
+            _visibleEnd = end;
+            SetVerticesDirty();
+        }
+
+        public void SetPlacement(float faceWidth, float extraGap)
+        {
+            _faceWidthOverride = faceWidth;
+            _extraGap = extraGap;
+            SetVerticesDirty();
+        }
+
         public override Texture mainTexture => _face != null ? _face.texture : s_WhiteTexture;
 
         public void Configure(MahjongWallSeat seat, Sprite? face, int tileIndex,
@@ -72,6 +88,7 @@ namespace Mahjong.Unity.UI.Prototype
         {
             vh.Clear();
             if (_face == null || _face.texture == null) return;
+            if (_visibleStart >= 0 && (_tileIndex < _visibleStart || _tileIndex > _visibleEnd)) return;
 
             MahjongWallAxisFrame axes = _axisFrame.AxisLength > 0f
                 ? _axisFrame : MahjongWallGeometry.BuildReferenceAxisFrame(_seat);
