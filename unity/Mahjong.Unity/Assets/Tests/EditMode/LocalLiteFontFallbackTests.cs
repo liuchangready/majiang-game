@@ -1,0 +1,112 @@
+#if UNITY_EDITOR
+using Mahjong.Unity.UI;
+using Mahjong.Unity.Spectator;
+using Mahjong.Unity.App;
+using NUnit.Framework;
+using System.Reflection;
+using TMPro;
+using UnityEngine;
+using UnityEngine.UI;
+
+namespace Mahjong.Unity.Tests.EditMode
+{
+    public sealed class LocalLiteFontFallbackTests
+    {
+        [Test]
+        public void WindowsFallback_ProvidesEveryLiteMenuGlyph()
+        {
+            const string label = "\u6D4B\u8BD5\u5C40\u9762";
+            Font font = FontFallbackResolver.CreateWindowsSystemFont(label, 32);
+            Assert.IsNotNull(font);
+            foreach (char character in label)
+                Assert.IsTrue(font.GetCharacterInfo(character, out _, 32, FontStyle.Normal), "Missing glyph U+" + ((int)character).ToString("X4"));
+        }
+
+        [Test]
+        public void LiteMenuAndSettlementActions_HaveOneReadableLabelWhenOsFontIsUnavailable()
+        {
+            FontFallbackResolver.WindowsSystemFontProviderForTest = (_, _) => null;
+            var root = new GameObject("LiteLabels");
+            try
+            {
+                Button play = MakeButton(root.transform, "Play", "template");
+                Button quit = MakeButton(root.transform, "Quit", "template");
+                var titleObject = new GameObject("Title");
+                titleObject.transform.SetParent(root.transform, false);
+                var title = titleObject.AddComponent<TextMeshProUGUI>();
+                var menu = root.AddComponent<MenuPresenter>();
+                Set(menu, "_playButton", play);
+                Set(menu, "_quitButton", quit);
+                Set(menu, "_titleText", title);
+                Invoke(menu, "ConfigureLiteMenu");
+                AssertVisibleLabel(play.gameObject, "New game");
+                AssertVisibleLabel(quit.gameObject, "Exit");
+                Button test = root.transform.Find("LocalLiteTestButton")!.GetComponent<Button>();
+                AssertVisibleLabel(test.gameObject, "Test cases");
+
+                Button back = MakeButton(root.transform, "SettlementBack", "template");
+                var settlement = root.AddComponent<SettlementPresenter>();
+                Set(settlement, "_backButton", back);
+                Invoke(settlement, "ConfigureLiteActions");
+                Button restart = root.transform.Find("LocalLiteRestartButton")!.GetComponent<Button>();
+                AssertVisibleLabel(back.gameObject, "Back to menu");
+                AssertVisibleLabel(restart.gameObject, "New round");
+            }
+            finally
+            {
+                FontFallbackResolver.WindowsSystemFontProviderForTest = null;
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        [Test]
+        public void RunContext_ChangesFixtureToRandomAndReportsWriteFailureWithoutLockingCaller()
+        {
+            LocalLiteRunContext.ResetForTest();
+            string root = System.IO.Path.Combine(Application.temporaryCachePath, "lite-run-context-" + System.Guid.NewGuid().ToString("N"));
+            LocalLiteRunContext.Initialize(root, "test", "build", "identity");
+            Assert.IsTrue(LocalLiteRunContext.RecordStage("pon", "table"));
+            Assert.IsTrue(LocalLiteRunContext.RecordStage(null, "starting"));
+            Assert.AreEqual("random", LocalLiteRunContext.CurrentCaseId);
+            StringAssert.Contains("\"caseId\":\"random\"", System.IO.File.ReadAllText(System.IO.Path.Combine(root, "current-case.json")));
+
+            string blocker = System.IO.Path.Combine(root, "file-is-not-a-directory");
+            System.IO.File.WriteAllText(blocker, "kept");
+            LocalLiteRunContext.Initialize(blocker, "test", "build", "identity");
+            Assert.IsFalse(LocalLiteRunContext.RecordStage("chi", "starting"));
+            Assert.AreEqual("LOCAL_LITE_DIAGNOSTICS_UNAVAILABLE", LocalLiteRunContext.LastFailure);
+            LocalLiteRunContext.ResetForTest();
+        }
+
+        private static Button MakeButton(Transform parent, string name, string label)
+        {
+            var buttonObject = new GameObject(name, typeof(RectTransform), typeof(Button));
+            buttonObject.transform.SetParent(parent, false);
+            var textObject = new GameObject("Label", typeof(RectTransform));
+            textObject.transform.SetParent(buttonObject.transform, false);
+            textObject.AddComponent<TextMeshProUGUI>().text = label;
+            return buttonObject.GetComponent<Button>();
+        }
+
+        private static void AssertVisibleLabel(GameObject button, string expected)
+        {
+            var labels = new System.Collections.Generic.List<string>();
+            foreach (TMP_Text text in button.GetComponentsInChildren<TMP_Text>(true))
+                if (text.enabled && text.gameObject.activeInHierarchy) labels.Add(text.text);
+            foreach (UnityEngine.UI.Text text in button.GetComponentsInChildren<UnityEngine.UI.Text>(true))
+                if (text.enabled && text.gameObject.activeInHierarchy) labels.Add(text.text);
+            Assert.AreEqual(1, labels.Count, button.name + " must expose exactly one visible text label");
+            Assert.AreEqual(expected, labels[0], button.name);
+        }
+
+        private static void Set(object target, string field, object value) =>
+            typeof(MenuPresenter).GetField(field, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(target, value);
+
+        private static void Set(object target, string field, Button value) =>
+            target.GetType().GetField(field, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(target, value);
+
+        private static void Invoke(object target, string method) =>
+            target.GetType().GetMethod(method, BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(target, null);
+    }
+}
+#endif

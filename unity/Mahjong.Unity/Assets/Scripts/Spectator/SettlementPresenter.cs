@@ -28,10 +28,13 @@ namespace Mahjong.Unity.Spectator
         [SerializeField] private GameObject? _incompatibleBannerRoot;
         [SerializeField] private TextMeshProUGUI? _incompatibleBannerText;
         [SerializeField] private Button? _backButton;
+        private Button? _restartButton;
+        private bool _localLiteMode;
 
         private IAppNavigation? _navigation;
         private ISessionView? _sessionView;
         private long _lastGeneration = -1;
+        private string? _lastLiteSettlementRound;
         private readonly FocusRouter _focusRouter = new FocusRouter();
 
         public TextMeshProUGUI? TitleText => _titleText;
@@ -84,6 +87,7 @@ namespace Mahjong.Unity.Spectator
         public void Initialize(IAppNavigation navigation, ISessionView? sessionView = null)
         {
             _navigation = navigation;
+            _localLiteMode = LocalLiteRunContext.Enabled;
             Rebind(sessionView);
         }
 
@@ -126,6 +130,7 @@ namespace Mahjong.Unity.Spectator
 
         private void Start()
         {
+            if (_localLiteMode && _backButton != null) ConfigureLiteActions();
             if (_backButton != null)
             {
                 _backButton.onClick.AddListener(OnBackClicked);
@@ -161,6 +166,11 @@ namespace Mahjong.Unity.Spectator
             if (_backButton != null)
             {
                 _backButton.onClick.RemoveListener(OnBackClicked);
+            }
+            if (_restartButton != null)
+            {
+                _restartButton.onClick.RemoveListener(OnRestartClicked);
+                Destroy(_restartButton.gameObject);
             }
             if (_sessionView != null)
             {
@@ -218,6 +228,12 @@ namespace Mahjong.Unity.Spectator
 
             SettlementViewModel settlement = SettlementModelExtractor.Extract(state);
             UpdateDisplay(settlement);
+            if (_localLiteMode && settlement.Round != null &&
+                !string.Equals(_lastLiteSettlementRound, settlement.Round.RoundId, StringComparison.Ordinal))
+            {
+                _lastLiteSettlementRound = settlement.Round.RoundId;
+                LocalLiteRunContext.RecordStage(LocalLiteRunContext.CurrentCaseId, "settlement");
+            }
         }
 
         private void UpdateDisplay(SettlementViewModel model)
@@ -228,7 +244,9 @@ namespace Mahjong.Unity.Spectator
 
             if (_titleText != null)
             {
-                _titleText.text = match.IsFinished ? "【终局对局结算】" : "【本局结算】";
+                _titleText.text = _localLiteMode
+                    ? "【单局结算】 G2-Local-Lite v" + Application.version
+                    : match.IsFinished ? "【终局对局结算】" : "【本局结算】";
             }
 
             // Round settlement
@@ -339,7 +357,7 @@ namespace Mahjong.Unity.Spectator
             // Match rankings
             if (_matchSummaryRoot != null)
             {
-                _matchSummaryRoot.SetActive(match.IsFinished || match.Rankings.Count > 0);
+                _matchSummaryRoot.SetActive(!_localLiteMode && (match.IsFinished || match.Rankings.Count > 0));
             }
 
             if (_matchRankingsText != null)
@@ -396,7 +414,103 @@ namespace Mahjong.Unity.Spectator
                 return;
             }
             Debug.Log("SETTLEMENT_BACK_CLICKED: Returning to menu...");
+            if (_localLiteMode)
+            {
+                _ = ReturnLiteToMenuAsync();
+                return;
+            }
             _navigation?.BackToMenu();
+        }
+
+        private async System.Threading.Tasks.Task ReturnLiteToMenuAsync()
+        {
+            if (_navigation is not ILocalLiteNavigation lite) return;
+            bool returned = await lite.ReturnToMenuLiteAsync();
+            if (!returned)
+            {
+                LocalLiteRunContext.SetPublicError("LOCAL_ROOM_CLOSE_FAILED");
+                if (_titleText != null) _titleText.text = "Close failed; no new round was started";
+            }
+        }
+
+        private void ConfigureLiteActions()
+        {
+            if (_backButton == null) return;
+            _restartButton = Instantiate(_backButton, _backButton.transform.parent);
+            _restartButton.name = "LocalLiteRestartButton";
+            _restartButton.onClick.RemoveAllListeners();
+            _restartButton.onClick.AddListener(OnRestartClicked);
+            SetLiteLabel(_backButton, "返回开始", "Back to menu");
+            RectTransform back = _backButton.GetComponent<RectTransform>();
+            if (back != null) back.anchoredPosition = new Vector2(-150f, -325f);
+            SetLiteLabel(_restartButton, "再开一局", "New round");
+            RectTransform restart = _restartButton.GetComponent<RectTransform>();
+            if (restart != null) restart.anchoredPosition = new Vector2(150f, -325f);
+        }
+
+        private static void SetLiteLabel(Button button, string label, string fallback)
+        {
+            TMP_Text? source = button.GetComponentInChildren<TMP_Text>(true);
+            if (source == null) return;
+            source.text = label;
+            source.enabled = true;
+            if (Application.platform != RuntimePlatform.WindowsPlayer && Application.platform != RuntimePlatform.WindowsEditor)
+                return;
+            Transform? oldLabel = source.transform.Find("LocalLiteSystemFontLabel");
+            if (oldLabel != null)
+            {
+                oldLabel.gameObject.SetActive(false);
+                Destroy(oldLabel.gameObject);
+            }
+            int size = Mathf.Max(1, Mathf.RoundToInt(source.fontSize));
+            Font? font = Mahjong.Unity.UI.FontFallbackResolver.CreateWindowsSystemFont(label, size);
+            if (font == null)
+            {
+                source.text = fallback;
+                return;
+            }
+            source.enabled = false;
+            var labelObject = new GameObject("LocalLiteSystemFontLabel", typeof(RectTransform), typeof(UnityEngine.UI.Text));
+            labelObject.transform.SetParent(source.transform, false);
+            RectTransform rect = (RectTransform)labelObject.transform;
+            rect.anchorMin = Vector2.zero;
+            rect.anchorMax = Vector2.one;
+            rect.offsetMin = Vector2.zero;
+            rect.offsetMax = Vector2.zero;
+            UnityEngine.UI.Text text = labelObject.GetComponent<UnityEngine.UI.Text>();
+            text.font = font;
+            text.fontSize = size;
+            text.color = source.color;
+            text.alignment = TextAnchor.MiddleCenter;
+            text.raycastTarget = false;
+            text.text = label;
+        }
+
+        private static void SetLabel(Button button, string label)
+        {
+            TMP_Text? text = button.GetComponentInChildren<TMP_Text>(true);
+            if (text != null) text.text = label;
+        }
+
+        private async void OnRestartClicked()
+        {
+            if (!UiInputLifecycle.Instance.ConsumeClickOrSubmit(_restartButton != null ? _restartButton.gameObject : null)) return;
+            if (_navigation is not ILocalLiteNavigation lite) return;
+            if (_titleText != null) _titleText.text = "Closing old round and starting new...";
+            try
+            {
+                LocalGameStartResult result = await lite.RestartLocalGameAsync();
+                if (result.Status == LocalGameStartStatus.Started) return;
+                if (result.Status != LocalGameStartStatus.Started) LocalLiteRunContext.SetPublicError(result.StableErrorCode ?? result.Status.ToString());
+                if (_titleText != null) _titleText.text = result.IsTerminal
+                    ? "Close failed; new round was not started"
+                    : "Restart failed: " + (result.StableErrorCode ?? result.Status.ToString());
+            }
+            catch (Exception ex)
+            {
+                if (_titleText != null) _titleText.text = "Restart failed: LOCAL_GAME_START_FAILED";
+                Debug.LogWarning("LOCAL_LITE_RESTART_FAILED: LOCAL_GAME_START_FAILED " + ex.GetType().Name);
+            }
         }
     }
 }

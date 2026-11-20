@@ -1002,7 +1002,10 @@ namespace Mahjong.Unity.Table
                     _ => "大厅/未知"
                 };
                 string authStr = view.Identity.IsPrivateAuthorized ? "已授权" : "公开流";
-                _sessionInfoText.text = $"{roleStr} | {authStr}";
+            bool lite = LocalLiteRunContext.Enabled;
+                _sessionInfoText.text = lite
+                ? $"G2 Local Lite v{Application.version} | case:{LocalLiteRunContext.CurrentCaseId} | stage:{LocalLiteRunContext.CurrentStage} | seat:{view.Identity.Seat}"
+                    : $"{roleStr} | {authStr}";
             }
 
             if (_roundStatusText != null)
@@ -1226,6 +1229,18 @@ namespace Mahjong.Unity.Table
 
         private void RenderCheats(PlayerTableViewState view)
         {
+            if (LocalLiteRunContext.Enabled)
+            {
+                if (_cheatPanelRoot != null) _cheatPanelRoot.SetActive(false);
+                if (_cheatPointsText != null) _cheatPointsText.text = string.Empty;
+                SetButtonActive(_tileMarkButton, false);
+                SetButtonActive(_sleeveBloomButton, false);
+                SetButtonActive(_beamSwapButton, false);
+                SetButtonActive(_preparationButton, false);
+                CloseAllCheatDialogs();
+                return;
+            }
+
             bool canCheat = view.Identity.IsPrivateAuthorized &&
                             view.Own?.Cheat != null &&
                             view.Own.Control != null &&
@@ -1273,7 +1288,7 @@ namespace Mahjong.Unity.Table
 
             if (_nextRoundButton != null)
             {
-                _nextRoundButton.gameObject.SetActive(isRoundEnd && !isMatchFinished);
+            _nextRoundButton.gameObject.SetActive(!LocalLiteRunContext.Enabled && isRoundEnd && !isMatchFinished);
             }
 
             if (_viewSettlementButton != null)
@@ -2438,7 +2453,19 @@ namespace Mahjong.Unity.Table
         public void OnBackButtonClicked()
         {
             if (!ConsumeInputLifecycle(_backButton?.gameObject)) return;
+            if (LocalLiteRunContext.Enabled)
+            {
+                _ = ReturnLiteToMenuAsync();
+                return;
+            }
             _navigation?.BackToMenu();
+        }
+
+        private async Task ReturnLiteToMenuAsync()
+        {
+            if (_navigation is not ILocalLiteNavigation lite) return;
+            bool returned = await lite.ReturnToMenuLiteAsync();
+            if (!returned) UpdateStatusText("旧局未能安全关闭；新局已阻止启动。请保留本次数据与记录后退出。");
         }
 
         public void OnViewSettlementClicked()
@@ -2956,7 +2983,7 @@ namespace Mahjong.Unity.Table
             if (_seatNameText != null)
             {
                 string dealer = isDealer ? " [庄]" : "";
-                string turn = isCurrentTurn ? " ◀" : "";
+                string turn = isCurrentTurn ? " >" : "";
                 _seatNameText.text = $"{seatLabel}{dealer}{turn}";
             }
 

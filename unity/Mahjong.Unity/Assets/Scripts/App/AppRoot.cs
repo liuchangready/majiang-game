@@ -1,5 +1,6 @@
 #nullable enable
 using System;
+using System.Threading.Tasks;
 using Mahjong.Unity.Platform;
 using Mahjong.Unity.UI;
 using UnityEngine;
@@ -23,6 +24,7 @@ namespace Mahjong.Unity.App
         private AppLifecycle? _lifecycle;
 
         public AppComposition Composition => _composition!;
+        public AppConfig Config => _config;
         public AppRouter Router => _router!;
         public BackRouter BackRouter => _backRouter!;
         public MainThreadDispatcher Dispatcher => _dispatcher!;
@@ -94,17 +96,38 @@ namespace Mahjong.Unity.App
 
         private void EnsureEventSystem()
         {
-            var eventSystem = FindFirstObjectByType<EventSystem>();
+            EventSystem[] systems = FindObjectsByType<EventSystem>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            EventSystem? eventSystem = EventSystem.current;
+            if (eventSystem == null || !eventSystem.isActiveAndEnabled)
+            {
+                foreach (EventSystem candidate in systems)
+                {
+                    if (candidate != null && candidate.isActiveAndEnabled)
+                    {
+                        eventSystem = candidate;
+                        break;
+                    }
+                }
+            }
+
             if (eventSystem == null)
             {
-                var eventSystemGo = new GameObject("EventSystem", typeof(EventSystem));
-                DontDestroyOnLoad(eventSystemGo);
-                UnityBackRequestSource.EnsureInputModule(eventSystemGo);
+                GameObject eventSystemGo = new GameObject("EventSystem", typeof(EventSystem));
+                eventSystem = eventSystemGo.GetComponent<EventSystem>();
+                eventSystem.enabled = true;
+                systems = FindObjectsByType<EventSystem>(FindObjectsInactive.Include, FindObjectsSortMode.None);
             }
-            else
+
+            DontDestroyOnLoad(eventSystem.gameObject);
+            UnityBackRequestSource.EnsureInputModule(eventSystem.gameObject);
+
+            foreach (EventSystem duplicate in systems)
             {
-                DontDestroyOnLoad(eventSystem.gameObject);
-                UnityBackRequestSource.EnsureInputModule(eventSystem.gameObject);
+                if (duplicate == null || duplicate == eventSystem) continue;
+                duplicate.enabled = false;
+                var duplicateModule = duplicate.GetComponent<BaseInputModule>();
+                if (duplicateModule != null) duplicateModule.enabled = false;
+                Destroy(duplicate.gameObject);
             }
         }
 
@@ -126,7 +149,7 @@ namespace Mahjong.Unity.App
                 var menuPresenter = FindFirstObjectByType<MenuPresenter>();
                 if (menuPresenter != null && _router != null)
                 {
-                    menuPresenter.Initialize(_router);
+                    menuPresenter.Initialize(_router, _config.localLiteMode);
                 }
             }
             else if (sceneId == SceneId.Lobby)
@@ -199,14 +222,7 @@ namespace Mahjong.Unity.App
         private void OnApplicationQuit()
         {
             _lifecycle?.HandleApplicationQuit();
-            try
-            {
-                _composition?.ShutdownAsync("APP_QUIT").Wait(1000);
-            }
-            catch
-            {
-                // Bounded catch on quit
-            }
+            WaitForShutdown("APP_QUIT");
         }
 
         private void OnDestroy()
@@ -215,13 +231,22 @@ namespace Mahjong.Unity.App
             {
                 _instance = null;
             }
+            WaitForShutdown("APP_DESTROY");
+        }
+
+        private void WaitForShutdown(string reason)
+        {
+            AppComposition? composition = _composition;
+            if (composition == null) return;
             try
             {
-                _composition?.ShutdownAsync("APP_DESTROY").Wait(1000);
+                Task<ShutdownResult> shutdown = composition.ShutdownAsync(reason);
+                if (!shutdown.Wait(composition.ShutdownWaitBudgetMs) || shutdown.Result.Outcome != ShutdownOutcome.Completed)
+                    Debug.LogError("LOCAL_SHUTDOWN_INCOMPLETE: " + reason);
             }
-            catch
+            catch (Exception ex)
             {
-                // Bounded catch on destroy
+                Debug.LogError("LOCAL_SHUTDOWN_FAILED: " + reason + " kind=" + ex.GetType().Name);
             }
         }
     }

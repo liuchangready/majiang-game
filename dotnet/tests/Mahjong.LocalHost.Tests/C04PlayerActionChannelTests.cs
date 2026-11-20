@@ -23,6 +23,31 @@ namespace Mahjong.LocalHost.Tests
     public sealed class C04PlayerActionChannelTests
     {
         [Theory]
+        [InlineData(LocalPlayerActionScenario.Pon)]
+        [InlineData(LocalPlayerActionScenario.Chi)]
+        [InlineData(LocalPlayerActionScenario.Riichi)]
+        [InlineData(LocalPlayerActionScenario.ClosedKan)]
+        [InlineData(LocalPlayerActionScenario.DealerTsumo)]
+        public void lite_fixture_round_identity_is_fresh_without_changing_legacy_fixture(string scenario)
+        {
+            string firstId = "c04-" + scenario + "-lite-" + Guid.NewGuid().ToString("N");
+            string secondId = "c04-" + scenario + "-lite-" + Guid.NewGuid().ToString("N");
+            RoundStateMachine legacy = LocalPlayerActionScenario.CreateInitialRound(scenario);
+            RoundStateMachine first = LocalPlayerActionScenario.CreateInitialRound(scenario, firstId);
+            RoundStateMachine second = LocalPlayerActionScenario.CreateInitialRound(scenario, secondId);
+
+            Assert.StartsWith("c04-", legacy.RoundId);
+            Assert.Equal(firstId, first.RoundId);
+            Assert.Equal(secondId, second.RoundId);
+            Assert.NotEqual(first.RoundId, second.RoundId);
+            Assert.Equal(legacy.Version, first.Version);
+            Assert.Equal(legacy.Phase, first.Phase);
+            Assert.Equal(legacy.CurrentSeat, first.CurrentSeat);
+            Assert.Equal(TilePositionMap.Validate(legacy.Tiles).StateHash, TilePositionMap.Validate(first.Tiles).StateHash);
+            Assert.Equal(TileId.Count, TilePositionMap.Validate(first.Tiles).AssignedCount);
+        }
+
+        [Theory]
         [InlineData(LocalPlayerActionScenario.Pon, ProtocolActionType.DeclarePon)]
         [InlineData(LocalPlayerActionScenario.Chi, ProtocolActionType.DeclareChi)]
         [InlineData(LocalPlayerActionScenario.Riichi, ProtocolActionType.DeclareRiichi)]
