@@ -1,3 +1,4 @@
+#nullable enable
 using System;
 
 namespace Mahjong.Unity.App
@@ -5,6 +6,8 @@ namespace Mahjong.Unity.App
     [Serializable]
     public sealed class AppConfig
     {
+        public bool localLiteMode;
+        public string? localLiteDataRoot;
         public int targetFrameRate = 60;
         public int pumpBarrierTimeoutMs = 2000;
         public int closeTimeoutMs = 3000;

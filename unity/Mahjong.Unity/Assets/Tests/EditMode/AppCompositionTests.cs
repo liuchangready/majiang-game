@@ -8,11 +8,14 @@ using NUnit.Framework;
 using Mahjong.Client;
 using Mahjong.Contracts;
 using Mahjong.Contracts.Wire;
+using Mahjong.LocalHost;
 using Mahjong.Unity.App;
 using Mahjong.Unity.Platform;
+using Mahjong.Unity.Table;
 using Mahjong.Unity.UI;
 using Mahjong.Unity.UI.Session;
 using TMPro;
+using WireEnvelope = Mahjong.Contracts.Wire.Envelope;
 
 #if UNITY_EDITOR
 using UnityEditor;
@@ -41,6 +44,32 @@ namespace Mahjong.Unity.Tests.EditMode
             Assert.IsNotNull(comp.ChannelFactory);
             Assert.AreEqual(60, comp.Config.targetFrameRate);
             Assert.IsNull(comp.SessionCoordinator);
+        }
+
+        [Test]
+        public async Task LocalLiteGamePreparation_RotatesRoomIdWithoutOpeningAHost()
+        {
+            string root = System.IO.Path.GetFullPath("build/local-lite-prep-" + Guid.NewGuid().ToString("N"));
+            var paths = new UnityAppPaths(root);
+            var factory = new LocalTableChannelFactory(new AppConfig { localLiteMode = true }, paths);
+            string first = factory.RoomId;
+
+            await factory.PrepareLocalLiteGameAsync("pon", CancellationToken.None);
+            string ponRoom = factory.RoomId;
+            string ponOutbox = factory.CurrentOutboxDirectory;
+            await factory.PrepareLocalLiteGameAsync("chi", CancellationToken.None);
+            string chiRoom = factory.RoomId;
+            string chiOutbox = factory.CurrentOutboxDirectory;
+            Assert.ThrowsAsync<ArgumentOutOfRangeException>(async () =>
+                await factory.PrepareLocalLiteGameAsync("not-a-case", CancellationToken.None));
+
+            Assert.AreNotEqual(first, ponRoom);
+            Assert.AreNotEqual(ponRoom, chiRoom);
+            Assert.AreNotEqual(ponOutbox, chiOutbox, "Every Lite room must own an isolated, retained client outbox scope.");
+            Assert.AreEqual(chiRoom, factory.RoomId, "An invalid case must not replace the selected room scope.");
+            StringAssert.StartsWith("local-lite-", ponRoom);
+            Assert.IsFalse(factory.IsRoomOpen, "Preparing a case must not create its host before StartLocalGameAsync owns the transition.");
+            Assert.IsFalse(System.IO.Directory.Exists(root), "Preparing a case must not create save or outbox directories.");
         }
 
         [Test]
@@ -90,6 +119,43 @@ namespace Mahjong.Unity.Tests.EditMode
             Assert.AreEqual(ShutdownOutcome.Completed, result.Outcome);
             Assert.IsTrue(result.MenuAllowed);
             Assert.IsFalse(result.Quarantined);
+        }
+
+        [Test]
+        public async Task SharedRoomPrimarySeatConflictAndReturnKeepExistingViewerAlive()
+        {
+            string root = System.IO.Path.GetFullPath("build/shared-room-owner-" + Guid.NewGuid().ToString("N"));
+            var comp = new AppComposition(new AppConfig(), new MainThreadDispatcher(), persistentDataPath: root);
+            SessionCoordinator viewer = await comp.OpenRoomViewerAsync(LocalRoomViewerRole.Player, 0, CancellationToken.None);
+            for (int i = 0; i < 500 && viewer.Current.PlayerSnapshot == null; i++)
+            {
+                comp.UpdateRoomViewers();
+                await Task.Delay(10);
+            }
+            Assert.IsNotNull(viewer.Current.PlayerSnapshot, "The viewer must have received its initial real host projection before the ownership negative case.");
+            Assert.AreEqual(TableConnectionState.Ready, viewer.Current.State);
+
+            Assert.ThrowsAsync<LocalTableException>(async () => await comp.OpenLocalSessionAsync(CancellationToken.None));
+            Assert.AreEqual(TableConnectionState.Ready, viewer.Current.State, "A duplicate primary seat must not close the room owned by a registered viewer.");
+            Assert.IsTrue(viewer.CanSubmit, "The existing viewer must remain attached to its original binding after the rejected open.");
+            Assert.IsNotNull(viewer.Current.PlayerSnapshot, "The retained viewer must keep receiving its private projection.");
+            int laterProjections = 0;
+            viewer.Changed += (_, __) => laterProjections++;
+            for (int i = 0; i < 500 && laterProjections == 0; i++)
+            {
+                comp.UpdateRoomViewers();
+                await Task.Delay(10);
+            }
+            Assert.Greater(laterProjections, 0, "The original room viewer must continue receiving projections after the rejected open.");
+
+            ShutdownResult returned = await comp.ShutdownAsync("RETURN_TO_MENU");
+            Assert.AreEqual(ShutdownOutcome.Completed, returned.Outcome);
+            Assert.AreEqual(TableConnectionState.Ready, viewer.Current.State, "Non-exit cleanup without a primary must retain registered viewers and their shared host.");
+            Assert.IsTrue(viewer.CanSubmit);
+
+            ShutdownResult exited = await comp.ShutdownAsync("APP_QUIT");
+            Assert.AreEqual(ShutdownOutcome.Completed, exited.Outcome);
+            Assert.AreEqual(TableConnectionState.Closed, viewer.Current.State);
         }
 
         private sealed class TestChannel : ITableChannel, IDisposable
@@ -188,8 +254,10 @@ namespace Mahjong.Unity.Tests.EditMode
         }
 
         private SessionViewState View(long generation) => new SessionViewState(generation, TableConnectionState.Ready, null, new PlayerSnapshot(), null, null, null, null);
-        private SessionCoordinator Coordinator(FakeSession session, MainThreadDispatcher dispatcher, TableSessionOperationQueue? queue = null) =>
-            new SessionCoordinator(session, queue, null, dispatcher, new AppConfig { closeTimeoutMs = 50, pumpBarrierTimeoutMs = 50, cancelObservationMs = 10 }, 1);
+        private SessionCoordinator Coordinator(FakeSession session, MainThreadDispatcher dispatcher, TableSessionOperationQueue? queue = null,
+            Func<Task<TableSessionQueueSnapshot?>>? captureProvider = null, int closeTimeoutMs = 50) =>
+            new SessionCoordinator(session, queue, null, dispatcher,
+                new AppConfig { closeTimeoutMs = closeTimeoutMs, pumpBarrierTimeoutMs = 50, cancelObservationMs = 10 }, 1, captureProvider);
 
         [Test]
         public async Task CloseFaultMustNotReportCompleted()
@@ -200,6 +268,529 @@ namespace Mahjong.Unity.Tests.EditMode
             Assert.AreNotEqual(ShutdownOutcome.Completed, result.Outcome, "Faulted Close must not allow menu/dispose.");
             Assert.IsFalse(result.MenuAllowed);
             Assert.IsTrue(result.Quarantined);
+        }
+
+        [Test]
+        public async Task ShutdownReconcilesOldScopeBeforeClosingAndKeepsUnknownAuthorityOpen()
+        {
+            var session = new FakeSession();
+            var key = new IdempotencyKey("player", new RequestScopeId("old-room-scope"), new RequestId("old-request"));
+            session.PendingCommands = new[]
+            {
+                new PendingCommandSnapshot(key, CommandKind.SubmitAction, "digest", 32,
+                    handedToTransport: true, deliveryUnknown: true, needsReconciliation: true,
+                    lastLookup: null, lastReceipt: null, queryInFlight: false)
+            };
+            session.Reconcile = () => session.PendingCommands = Array.Empty<PendingCommandSnapshot>();
+            var queue = new TableSessionOperationQueue(session);
+            var owner = Coordinator(session, new MainThreadDispatcher(), queue);
+            await queue.OpenAsync(new TableSessionOpenRequest("ticket", "test"), CancellationToken.None);
+            owner.SetPumpTask(Task.CompletedTask);
+
+            ShutdownResult result = await owner.ShutdownAsync("RETURN_TO_MENU");
+
+            Assert.AreEqual(ShutdownOutcome.Completed, result.Outcome);
+            CollectionAssert.AreEqual(new[] { "query:old-room-scope/old-request", "close" }, session.Lifecycle);
+        }
+
+        [Test]
+        public async Task UnknownOldReceiptMustQuarantineWithoutClosingItsAuthority()
+        {
+            var session = new FakeSession();
+            var key = new IdempotencyKey("player", new RequestScopeId("old-room-scope"), new RequestId("old-request"));
+            session.PendingCommands = new[]
+            {
+                new PendingCommandSnapshot(key, CommandKind.SubmitAction, "digest", 32,
+                    handedToTransport: true, deliveryUnknown: true, needsReconciliation: true,
+                    lastLookup: null, lastReceipt: null, queryInFlight: false)
+            };
+            session.Reconcile = () => { };
+            var queue = new TableSessionOperationQueue(session);
+            var owner = Coordinator(session, new MainThreadDispatcher(), queue);
+            await queue.OpenAsync(new TableSessionOpenRequest("ticket", "test"), CancellationToken.None);
+            owner.SetPumpTask(Task.CompletedTask);
+
+            ShutdownResult result = await owner.ShutdownAsync("RETURN_TO_MENU");
+
+            Assert.AreEqual(ShutdownOutcome.CloseFault, result.Outcome);
+            Assert.IsTrue(owner.IsQuarantined);
+            Assert.IsFalse(owner.RunToken.IsCancellationRequested, "Unknown is not proof of non-application; keep the original authority and writer alive.");
+            CollectionAssert.AreEqual(new[] { "query:old-room-scope/old-request" }, session.Lifecycle);
+            Assert.AreEqual("old-request", session.PendingCommands[0].RequestId);
+        }
+
+        [Test]
+        public async Task ShutdownWaitsForAlreadyInFlightOldScopeLookupWithoutIssuingAnotherQuery()
+        {
+            var session = new FakeSession();
+            var key = new IdempotencyKey("player", new RequestScopeId("old-room-scope"), new RequestId("old-request"));
+            session.PendingCommands = new[]
+            {
+                new PendingCommandSnapshot(key, CommandKind.SubmitAction, "digest", 32,
+                    handedToTransport: true, deliveryUnknown: true, needsReconciliation: true,
+                    lastLookup: null, lastReceipt: null, queryInFlight: true)
+            };
+            var queue = new TableSessionOperationQueue(session);
+            var owner = Coordinator(session, new MainThreadDispatcher(), queue, closeTimeoutMs: 250);
+            await queue.OpenAsync(new TableSessionOpenRequest("ticket", "test"), CancellationToken.None);
+            owner.SetPumpTask(Task.CompletedTask);
+
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(50);
+                session.Lifecycle.Add("query-resolved:old-room-scope/old-request");
+                session.PendingCommands = Array.Empty<PendingCommandSnapshot>();
+            });
+            ShutdownResult result = await owner.ShutdownAsync("RETURN_TO_MENU");
+
+            Assert.AreEqual(ShutdownOutcome.Completed, result.Outcome);
+            CollectionAssert.AreEqual(new[] { "query-resolved:old-room-scope/old-request", "close" }, session.Lifecycle,
+                "An in-flight lookup must settle in the original scope before close; shutdown must not issue a duplicate query.");
+        }
+
+        [Test]
+        public async Task InFlightOldScopeLookupTimeoutQuarantinesAndKeepsAuthorityOpen()
+        {
+            var session = new FakeSession();
+            var key = new IdempotencyKey("player", new RequestScopeId("old-room-scope"), new RequestId("old-request"));
+            session.PendingCommands = new[]
+            {
+                new PendingCommandSnapshot(key, CommandKind.SubmitAction, "digest", 32,
+                    handedToTransport: true, deliveryUnknown: true, needsReconciliation: true,
+                    lastLookup: null, lastReceipt: null, queryInFlight: true)
+            };
+            var queue = new TableSessionOperationQueue(session);
+            var owner = Coordinator(session, new MainThreadDispatcher(), queue, closeTimeoutMs: 75);
+            await queue.OpenAsync(new TableSessionOpenRequest("ticket", "test"), CancellationToken.None);
+            owner.SetPumpTask(Task.CompletedTask);
+
+            ShutdownResult result = await owner.ShutdownAsync("RETURN_TO_MENU");
+
+            Assert.AreEqual(ShutdownOutcome.CloseTimeout, result.Outcome);
+            Assert.IsTrue(owner.IsQuarantined);
+            Assert.IsFalse(owner.RunToken.IsCancellationRequested, "Keep the original receive path available while its old-scope receipt query remains in flight.");
+            CollectionAssert.IsEmpty(session.Lifecycle, "No close or duplicate lookup may pass an in-flight receipt query.");
+        }
+
+        [Test]
+        public async Task ShutdownCaptureStallIsBoundedAndLateCaptureCannotCloseAuthority()
+        {
+            var session = new FakeSession();
+            var queue = new TableSessionOperationQueue(session);
+            var capture = new TaskCompletionSource<TableSessionQueueSnapshot?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var owner = Coordinator(session, new MainThreadDispatcher(), queue, () => capture.Task, closeTimeoutMs: 75);
+            await queue.OpenAsync(new TableSessionOpenRequest("ticket", "test"), CancellationToken.None);
+            owner.SetPumpTask(Task.CompletedTask);
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+
+            ShutdownResult result = await owner.ShutdownAsync("RETURN_TO_MENU");
+            stopwatch.Stop();
+
+            Assert.AreEqual(ShutdownOutcome.CloseTimeout, result.Outcome);
+            Assert.Less(stopwatch.ElapsedMilliseconds, 400, "The owner capture must be covered by the configured close budget.");
+            Assert.IsTrue(owner.IsQuarantined);
+            Assert.IsFalse(session.Lifecycle.Contains("close"));
+            capture.TrySetResult(new TableSessionQueueSnapshot(TableConnectionState.Ready, null, null,
+                Array.Empty<PendingCommandSnapshot>(), null, 0));
+            await Task.Delay(25);
+            Assert.IsFalse(session.Lifecycle.Contains("close"), "A late owner completion must not revive shutdown or release the old authority.");
+        }
+
+        [Test]
+        public async Task RealLiteComposition_ReconcilesAppliedCommandAfterReceiptLossBeforeClosingRoom()
+        {
+            string root = System.IO.Path.GetFullPath("build/lite-close-applied-" + Guid.NewGuid().ToString("N"));
+            var config = new AppConfig { localLiteMode = true, closeTimeoutMs = 5000 };
+            var paths = new UnityAppPaths(root);
+            var faultChannel = new LocalCloseFaultChannel();
+            var factory = new LocalTableChannelFactory(config, paths, channelDecoratorForTest: channel =>
+            {
+                faultChannel.Inner = channel;
+                faultChannel.DropFirstActionReceipt = true;
+                faultChannel.DelayActionSend = true;
+                faultChannel.DelayReceiptLookup = true;
+                return faultChannel;
+            });
+            var composition = new AppComposition(config, new MainThreadDispatcher(), channelFactory: factory, persistentDataPath: root);
+            await composition.PrepareLocalLiteGameAsync("dealer-tsumo", CancellationToken.None);
+            SessionCoordinator coordinator = await composition.OpenLocalSessionAsync(CancellationToken.None);
+            PlayerTableViewState view = await WaitForPlayerDecisionAsync(composition, coordinator);
+            PlayerLegalActionState tsumo = FindAction(view, PlayerActionKind.DeclareTsumo);
+            string scope = view.Identity.ScopeId;
+            var intent = CreateActionIntent(view, tsumo, "lite-r4-applied-" + Guid.NewGuid().ToString("N"));
+            Task<CommandSubmission> submit = coordinator.SubmitAsync(intent.Command, CancellationToken.None);
+            Assert.AreSame(faultChannel.ActionSendEntered.Task,
+                await Task.WhenAny(faultChannel.ActionSendEntered.Task, Task.Delay(5000)),
+                "The real Client must hand the action to the instrumented room channel.");
+            Task<ShutdownResult> shutdown = composition.ShutdownAsync("APP_QUIT");
+            await Task.Delay(30);
+            Assert.IsFalse(shutdown.IsCompleted, "Shutdown must include a Submit already handed to the real room channel.");
+            faultChannel.ReleaseActionSend.TrySetResult(true);
+            CommandSubmission sent = await submit;
+            Assert.IsTrue(sent.Sent);
+
+            Assert.AreSame(faultChannel.ReceiptLookupEntered.Task,
+                await Task.WhenAny(faultChannel.ReceiptLookupEntered.Task, Task.Delay(5000)),
+                "Shutdown must query the same old room for the command whose first receipt was lost.");
+            Assert.IsFalse(shutdown.IsCompleted, "A query already in flight must keep the old room open until its answer arrives.");
+            Assert.IsTrue(factory.IsRoomOpen);
+            faultChannel.ReleaseReceiptLookup.TrySetResult(true);
+
+            ShutdownResult result = await shutdown;
+            Assert.AreEqual(ShutdownOutcome.Completed, result.Outcome,
+                "real old-scope reconcile did not complete; queries=" + faultChannel.ReceiptQueries +
+                " dropped=" + faultChannel.DroppedActionReceipts + " commands=" + faultChannel.ActionCommands);
+            Assert.AreEqual(1, faultChannel.ActionCommands, "The accepted command must not be retried while recovering its receipt.");
+            Assert.AreEqual(1, faultChannel.DroppedActionReceipts);
+            Assert.Greater(faultChannel.ReceiptQueries, 0, "The old authority must answer a ReceiptQuery before room close.");
+            Assert.AreEqual(intent.Command.RequestId.Value, faultChannel.ReceiptQueryRequestIds[0]);
+            Assert.AreEqual(scope, faultChannel.ReceiptQueryScopeIds[0]);
+            Assert.IsFalse(factory.IsRoomOpen);
+        }
+
+        [Test]
+        public async Task RealLiteComposition_UnappliedCommandRemainsUnknownAndBlocksSecondHost()
+        {
+            string root = System.IO.Path.GetFullPath("build/lite-close-unapplied-" + Guid.NewGuid().ToString("N"));
+            var config = new AppConfig { localLiteMode = true, closeTimeoutMs = 3000 };
+            var paths = new UnityAppPaths(root);
+            var faultChannel = new LocalCloseFaultChannel { SuppressActionSend = true };
+            var factory = new LocalTableChannelFactory(config, paths, channelDecoratorForTest: channel =>
+            {
+                faultChannel.Inner = channel;
+                return faultChannel;
+            });
+            var composition = new AppComposition(config, new MainThreadDispatcher(), channelFactory: factory, persistentDataPath: root);
+            await composition.PrepareLocalLiteGameAsync("dealer-tsumo", CancellationToken.None);
+            SessionCoordinator coordinator = await composition.OpenLocalSessionAsync(CancellationToken.None);
+            PlayerTableViewState view = await WaitForPlayerDecisionAsync(composition, coordinator);
+            PlayerLegalActionState tsumo = FindAction(view, PlayerActionKind.DeclareTsumo);
+            var intent = CreateActionIntent(view, tsumo, "lite-r4-unapplied-" + Guid.NewGuid().ToString("N"));
+            CommandSubmission sent = await coordinator.SubmitAsync(intent.Command, CancellationToken.None);
+            Assert.IsTrue(sent.Sent, "The client only knows transport acceptance; local authority intentionally receives no command.");
+
+            ShutdownResult result = await composition.ShutdownAsync("RETURN_TO_MENU");
+
+            Assert.AreEqual(ShutdownOutcome.CloseFault, result.Outcome, "A ReceiptLookup Unknown must not be treated as a safe retry or clean close.");
+            Assert.IsTrue(factory.IsRoomOpen, "The original LocalTableRoom remains the only authority while outcome is unknown.");
+            Assert.AreEqual(0, faultChannel.ActionCommands);
+            Assert.AreEqual(1, faultChannel.ReceiptQueries);
+            Assert.AreEqual(intent.Command.RequestId.Value, faultChannel.ReceiptQueryRequestIds[0]);
+            Assert.AreEqual(view.Identity.ScopeId, faultChannel.ReceiptQueryScopeIds[0]);
+            Assert.IsTrue(composition.IsTerminal);
+            IReadOnlyList<OutboxEntry> unresolved = await new FileOutboxStore(factory.CurrentOutboxDirectory)
+                .LoadUnresolvedAsync(CancellationToken.None);
+            Assert.AreEqual(1, unresolved.Count, "Unknown must retain its durable request instead of clearing or retrying it.");
+            Assert.AreEqual(intent.Command.RequestId, unresolved[0].RequestId);
+            Assert.AreEqual(new RequestScopeId(view.Identity.ScopeId), unresolved[0].ScopeId);
+            Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await composition.PrepareLocalLiteGameAsync("random", CancellationToken.None));
+            await factory.CloseRoomAsync(CancellationToken.None);
+        }
+
+        [Test]
+        public async Task RealLiteComposition_AppliedReceiptTransportLossQuarantinesUnresolvedBeforeRoomClose()
+        {
+            string root = System.IO.Path.GetFullPath("build/lite-transport-loss-applied-" + Guid.NewGuid().ToString("N"));
+            var config = new AppConfig { localLiteMode = true, closeTimeoutMs = 3000 };
+            var paths = new UnityAppPaths(root);
+            var faultChannel = new LocalCloseFaultChannel
+            {
+                DropFirstActionReceipt = true,
+                InterruptAfterDroppedActionReceipt = true
+            };
+            var factory = new LocalTableChannelFactory(config, paths, channelDecoratorForTest: channel =>
+            {
+                faultChannel.Inner = channel;
+                return faultChannel;
+            });
+            var composition = new AppComposition(config, new MainThreadDispatcher(), channelFactory: factory, persistentDataPath: root);
+            await composition.PrepareLocalLiteGameAsync("dealer-tsumo", CancellationToken.None);
+            SessionCoordinator coordinator = await composition.OpenLocalSessionAsync(CancellationToken.None);
+            PlayerTableViewState view = await WaitForPlayerDecisionAsync(composition, coordinator);
+            PlayerLegalActionState tsumo = FindAction(view, PlayerActionKind.DeclareTsumo);
+            string scope = view.Identity.ScopeId;
+            var intent = CreateActionIntent(view, tsumo, "lite-r5-transport-loss-" + Guid.NewGuid().ToString("N"));
+
+            CommandSubmission submission = await coordinator.SubmitAsync(intent.Command, CancellationToken.None);
+            Assert.IsTrue(submission.Sent);
+            await WaitForConnectionStateAsync(coordinator, TableConnectionState.Reconnecting);
+
+            Assert.AreEqual("Applied", faultChannel.DroppedActionReceiptStatus,
+                "The LocalTableRoom must apply the legal tsumo before the wrapper interrupts receipt transport.");
+            Assert.AreEqual(1, faultChannel.ActionCommands, "Transport loss must not cause action replay.");
+            ShutdownResult result = await composition.ShutdownAsync("RETURN_TO_MENU");
+
+            Assert.AreEqual(ShutdownOutcome.CloseFault, result.Outcome,
+                "A non-Ready Client with a durable unresolved command must not report a clean close.");
+            Assert.IsTrue(result.Quarantined);
+            Assert.IsTrue(factory.IsRoomOpen, "The original room remains the authority needed to reconcile the applied request.");
+            Assert.AreEqual(0, faultChannel.ReceiptQueries, "A reconnecting Client cannot query through a broken transport.");
+            IReadOnlyList<OutboxEntry> unresolved = await new FileOutboxStore(factory.CurrentOutboxDirectory)
+                .LoadUnresolvedAsync(CancellationToken.None);
+            Assert.AreEqual(1, unresolved.Count);
+            Assert.AreEqual(intent.Command.RequestId, unresolved[0].RequestId);
+            Assert.AreEqual(new RequestScopeId(scope), unresolved[0].ScopeId);
+            Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await composition.PrepareLocalLiteGameAsync("random", CancellationToken.None));
+
+            await factory.CloseRoomAsync(CancellationToken.None);
+        }
+
+        [Test]
+        public async Task RealLiteComposition_NonReadyClientWithoutUnresolvedCommandsClosesCleanly()
+        {
+            string root = System.IO.Path.GetFullPath("build/lite-transport-loss-empty-" + Guid.NewGuid().ToString("N"));
+            var config = new AppConfig { localLiteMode = true, closeTimeoutMs = 3000 };
+            var paths = new UnityAppPaths(root);
+            var faultChannel = new LocalCloseFaultChannel();
+            var factory = new LocalTableChannelFactory(config, paths, channelDecoratorForTest: channel =>
+            {
+                faultChannel.Inner = channel;
+                return faultChannel;
+            });
+            var composition = new AppComposition(config, new MainThreadDispatcher(), channelFactory: factory, persistentDataPath: root);
+            await composition.PrepareLocalLiteGameAsync(null, CancellationToken.None);
+            SessionCoordinator coordinator = await composition.OpenLocalSessionAsync(CancellationToken.None);
+            _ = await WaitForPlayerDecisionAsync(composition, coordinator);
+
+            faultChannel.TriggerTransientTransportLoss();
+            await WaitForConnectionStateAsync(coordinator, TableConnectionState.Reconnecting);
+            Assert.AreEqual(0, (await new FileOutboxStore(factory.CurrentOutboxDirectory)
+                .LoadUnresolvedAsync(CancellationToken.None)).Count);
+
+            ShutdownResult result = await composition.ShutdownAsync("RETURN_TO_MENU");
+
+            Assert.AreEqual(ShutdownOutcome.Completed, result.Outcome);
+            Assert.IsFalse(result.Quarantined);
+            Assert.IsFalse(factory.IsRoomOpen, "A non-Ready session with no unresolved command remains cleanly closable.");
+        }
+
+        private static async Task WaitForConnectionStateAsync(SessionCoordinator coordinator, TableConnectionState expected)
+        {
+            DateTime deadline = DateTime.UtcNow.AddSeconds(5);
+            while (GetTransportState(coordinator) != expected && DateTime.UtcNow < deadline)
+                await Task.Delay(10);
+            Assert.AreEqual(expected, GetTransportState(coordinator), "Timed out waiting for Client state " + expected + ".");
+        }
+
+        private static TableConnectionState GetTransportState(SessionCoordinator coordinator)
+        {
+            var field = typeof(SessionCoordinator).GetField("_operationQueue", BindingFlags.Instance | BindingFlags.NonPublic);
+            var queue = field?.GetValue(coordinator) as TableSessionOperationQueue;
+            return queue?.State ?? coordinator.Current.State;
+        }
+
+        [TestCase(false, ShutdownOutcome.CloseFault)]
+        [TestCase(true, ShutdownOutcome.CloseTimeout)]
+        public async Task RealLiteComposition_WriterCloseFailureQuarantinesWithoutSecondHost(bool delayClose, ShutdownOutcome expected)
+        {
+            string root = System.IO.Path.GetFullPath("build/lite-close-writer-" + Guid.NewGuid().ToString("N"));
+            var config = new AppConfig { localLiteMode = true, closeTimeoutMs = 100, pumpBarrierTimeoutMs = 100 };
+            var paths = new UnityAppPaths(root);
+            var faultChannel = new LocalCloseFaultChannel { DelayClose = delayClose, FailClose = !delayClose };
+            var factory = new LocalTableChannelFactory(config, paths, channelDecoratorForTest: channel =>
+            {
+                faultChannel.Inner = channel;
+                return faultChannel;
+            });
+            var composition = new AppComposition(config, new MainThreadDispatcher(), channelFactory: factory, persistentDataPath: root);
+            await composition.PrepareLocalLiteGameAsync(null, CancellationToken.None);
+            SessionCoordinator coordinator = await composition.OpenLocalSessionAsync(CancellationToken.None);
+            _ = await WaitForPlayerDecisionAsync(composition, coordinator);
+
+            ShutdownResult result = await composition.ShutdownAsync("RETURN_TO_MENU");
+
+            Assert.AreEqual(expected, result.Outcome);
+            Assert.IsTrue(result.Quarantined);
+            Assert.IsTrue(factory.IsRoomOpen);
+            Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await composition.PrepareLocalLiteGameAsync("pon", CancellationToken.None));
+            faultChannel.ReleaseClose.TrySetResult(true);
+            await factory.CloseRoomAsync(CancellationToken.None);
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task RealLiteComposition_LocalTableRoomDisposeTimeoutOrFaultQuarantines(bool delayRoomDispose)
+        {
+            string root = System.IO.Path.GetFullPath("build/lite-room-dispose-" + Guid.NewGuid().ToString("N"));
+            bool failNextDispose = !delayRoomDispose;
+            var releaseRoomDispose = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var roomDisposeEntered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            Func<Func<Task>, Task> disposeHook = async dispose =>
+            {
+                roomDisposeEntered.TrySetResult(true);
+                if (delayRoomDispose)
+                {
+                    await releaseRoomDispose.Task.ConfigureAwait(false);
+                    await dispose().ConfigureAwait(false);
+                    return;
+                }
+                if (failNextDispose)
+                {
+                    failNextDispose = false;
+                    await dispose().ConfigureAwait(false);
+                    throw new InvalidOperationException("TEST_LOCAL_TABLE_ROOM_WRITER_DISPOSE_FAILURE");
+                }
+                await dispose().ConfigureAwait(false);
+            };
+            var config = new AppConfig { localLiteMode = true, closeTimeoutMs = 1000 };
+            var paths = new UnityAppPaths(root);
+            var factory = new LocalTableChannelFactory(config, paths, roomDisposeForTest: disposeHook);
+            var composition = new AppComposition(config, new MainThreadDispatcher(), channelFactory: factory, persistentDataPath: root);
+            await composition.PrepareLocalLiteGameAsync(null, CancellationToken.None);
+            SessionCoordinator coordinator = await composition.OpenLocalSessionAsync(CancellationToken.None);
+            _ = await WaitForPlayerDecisionAsync(composition, coordinator);
+
+            ShutdownResult result = await composition.ShutdownAsync("RETURN_TO_MENU");
+
+            Assert.AreSame(roomDisposeEntered.Task,
+                await Task.WhenAny(roomDisposeEntered.Task, Task.Delay(5000)), "The real LocalTableRoom dispose boundary must be reached.");
+            Assert.AreEqual(ShutdownOutcome.CloseFault, result.Outcome,
+                "Room writer disposal timeout/failure must not be converted to a clean menu transition.");
+            Assert.IsTrue(result.Quarantined);
+            Assert.IsTrue(factory.IsRoomOpen, "A failed LocalTableRoom dispose must remain the only owned host.");
+            Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await composition.PrepareLocalLiteGameAsync("pon", CancellationToken.None));
+
+            releaseRoomDispose.TrySetResult(true);
+            if (delayRoomDispose)
+            {
+                await factory.CloseRoomAsync(CancellationToken.None);
+                Assert.IsFalse(factory.IsRoomOpen);
+            }
+            else
+            {
+                Assert.ThrowsAsync<InvalidOperationException>(async () => await factory.CloseRoomAsync(CancellationToken.None));
+                Assert.IsTrue(factory.IsRoomOpen, "A faulted room-close record remains quarantined until an explicit recovery path exists.");
+            }
+        }
+
+        private static async Task<PlayerTableViewState> WaitForPlayerDecisionAsync(AppComposition composition, SessionCoordinator coordinator)
+        {
+            var mapper = new PlayerTableProjectionMapper(new SystemTableClientClock());
+            PlayerTableViewState? view = null;
+            for (int i = 0; i < 500; i++)
+            {
+                composition.Dispatcher.Update(128, 1000);
+                view = mapper.Project(coordinator.Current);
+                if (coordinator.Current.State == TableConnectionState.Ready &&
+                    view.Own?.Decision != null && view.Own.Decision.Candidates.Count > 0)
+                    return view;
+                await Task.Delay(10);
+            }
+            Assert.Fail("Real AppComposition did not publish a legal player decision within 5 seconds.");
+            throw new AssertionException("unreachable");
+        }
+
+        private static PlayerLegalActionState FindAction(PlayerTableViewState view, PlayerActionKind action)
+        {
+            if (view.Own?.Decision != null)
+                for (int i = 0; i < view.Own.Decision.Candidates.Count; i++)
+                    if (view.Own.Decision.Candidates[i].Action == action) return view.Own.Decision.Candidates[i];
+            Assert.Fail("Expected legal action candidate was not projected: " + action);
+            throw new AssertionException("unreachable");
+        }
+
+        private static TableCommandIntent CreateActionIntent(PlayerTableViewState view, PlayerLegalActionState action, string requestId) =>
+            new TableCommandIntentFactory(new SystemTableClientClock()).CreateSubmitAction(view, action,
+                new TableCommandOwnerContext(new RequestId(requestId), new RequestScopeId(view.Identity.ScopeId),
+                    new StateVersion(view.Identity.StateVersion), new OwnerEpoch(view.Identity.OwnerEpoch)));
+
+        private sealed class LocalCloseFaultChannel : ITableChannel
+        {
+            public ITableChannel? Inner;
+            public bool DropFirstActionReceipt;
+            public bool InterruptAfterDroppedActionReceipt;
+            public bool SuppressActionSend;
+            public bool DelayActionSend;
+            public bool DelayReceiptLookup;
+            public bool DelayClose;
+            public bool FailClose;
+            public int ActionCommands;
+            public int DroppedActionReceipts;
+            public int ReceiptQueries;
+            public readonly List<string> ReceiptQueryRequestIds = new List<string>();
+            public readonly List<string> ReceiptQueryScopeIds = new List<string>();
+            public readonly TaskCompletionSource<bool> ActionSendEntered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            public readonly TaskCompletionSource<bool> ReleaseActionSend = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            public readonly TaskCompletionSource<bool> ReceiptLookupEntered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            public readonly TaskCompletionSource<bool> ReleaseReceiptLookup = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            public readonly TaskCompletionSource<bool> ReleaseClose = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            private readonly TaskCompletionSource<bool> _transportLoss = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            private int _transportLossDelivered;
+            private string? _actionRequestId;
+            private bool _dropped;
+            public string? DroppedActionReceiptStatus;
+            public bool IsOpen => Inner?.IsOpen ?? false;
+            public Task OpenAsync(TableChannelConnectRequest request, CancellationToken cancellationToken) => RequireInner().OpenAsync(request, cancellationToken);
+
+            public async Task SendAsync(ReadOnlyMemory<byte> frame, CancellationToken cancellationToken)
+            {
+                var envelope = WireEnvelope.Parser.ParseFrom(frame.ToArray());
+                if (envelope.BodyCase == WireEnvelope.BodyOneofCase.Command)
+                {
+                    _actionRequestId = envelope.RequestId;
+                    ActionSendEntered.TrySetResult(true);
+                    if (DelayActionSend) await ReleaseActionSend.Task.ConfigureAwait(false);
+                    if (SuppressActionSend) return;
+                    ActionCommands++;
+                }
+                if (envelope.BodyCase == WireEnvelope.BodyOneofCase.ReceiptQuery && envelope.ReceiptQuery != null)
+                {
+                    ReceiptQueries++;
+                    ReceiptQueryRequestIds.Add(envelope.ReceiptQuery.RequestId);
+                    ReceiptQueryScopeIds.Add(envelope.ReceiptQuery.RequestScopeId);
+                }
+                await RequireInner().SendAsync(frame, cancellationToken).ConfigureAwait(false);
+            }
+
+            public async Task<ReadOnlyMemory<byte>> ReceiveAsync(CancellationToken cancellationToken)
+            {
+                while (true)
+                {
+                    Task<ReadOnlyMemory<byte>> receive = RequireInner().ReceiveAsync(cancellationToken);
+                    if (Volatile.Read(ref _transportLossDelivered) == 0)
+                    {
+                        Task winner = await Task.WhenAny(receive, _transportLoss.Task).ConfigureAwait(false);
+                        if (winner == _transportLoss.Task && Interlocked.Exchange(ref _transportLossDelivered, 1) == 0)
+                            throw new TableChannelClosedException("TEST_TRANSIENT_TRANSPORT_LOSS", permanent: false);
+                    }
+                    ReadOnlyMemory<byte> frame = await receive.ConfigureAwait(false);
+                    var envelope = WireEnvelope.Parser.ParseFrom(frame.ToArray());
+                    if (DelayReceiptLookup && envelope.BodyCase == WireEnvelope.BodyOneofCase.ReceiptLookup)
+                    {
+                        ReceiptLookupEntered.TrySetResult(true);
+                        await ReleaseReceiptLookup.Task.ConfigureAwait(false);
+                    }
+                    if (DropFirstActionReceipt && !_dropped && envelope.BodyCase == WireEnvelope.BodyOneofCase.Receipt &&
+                        string.Equals(envelope.RequestId, _actionRequestId, StringComparison.Ordinal))
+                    {
+                        _dropped = true;
+                        DroppedActionReceipts++;
+                        DroppedActionReceiptStatus = envelope.Receipt.Status.ToString();
+                        if (InterruptAfterDroppedActionReceipt)
+                            throw new TableChannelClosedException("TEST_APPLIED_RECEIPT_TRANSPORT_LOSS", permanent: false);
+                        continue;
+                    }
+                    return frame;
+                }
+            }
+
+            public async Task CloseAsync(TableChannelCloseReason reason, CancellationToken cancellationToken)
+            {
+                if (FailClose) throw new InvalidOperationException("TEST_WRITER_CLOSE_FAILURE");
+                if (DelayClose) await ReleaseClose.Task.ConfigureAwait(false);
+                await RequireInner().CloseAsync(reason, cancellationToken).ConfigureAwait(false);
+            }
+
+            public void Dispose()
+            {
+                if (Inner is IDisposable disposable) disposable.Dispose();
+            }
+            public void TriggerTransientTransportLoss() => _transportLoss.TrySetResult(true);
+            private ITableChannel RequireInner() => Inner ?? throw new InvalidOperationException("Test decorator is not connected.");
         }
 
         [Test]
@@ -293,6 +884,9 @@ namespace Mahjong.Unity.Tests.EditMode
             private EventHandler<TableSnapshotChangedEventArgs>? _changed;
             public bool RaiseOnOpen;
             public Func<CancellationToken, Task> Close = _ => Task.CompletedTask;
+            public Action Reconcile = () => { };
+            public List<string> Lifecycle { get; } = new List<string>();
+            public IReadOnlyList<PendingCommandSnapshot> PendingCommands { get; set; } = Array.Empty<PendingCommandSnapshot>();
             public TableConnectionState State => TableConnectionState.Ready;
             public Func<CancellationToken, bool>? BaselineAdmissionCheck { get; set; }
             public TableSessionBinding? Binding => null;
@@ -300,7 +894,6 @@ namespace Mahjong.Unity.Tests.EditMode
             public PlayerSnapshot? PlayerSnapshot => null;
             public PublicSnapshot? PublicSnapshot => null;
             public RoomUpdate? RoomSnapshot => null;
-            public IReadOnlyList<PendingCommandSnapshot> PendingCommands => Array.Empty<PendingCommandSnapshot>();
             public int EarlyBufferItemCount => 0;
             public long EarlyBufferByteCount => 0;
             public long EarlyBufferOverflowCount => 0;
@@ -321,9 +914,19 @@ namespace Mahjong.Unity.Tests.EditMode
             public Task PumpOnceAsync(CancellationToken ct) => Task.CompletedTask;
             public Task DisconnectAsync(CancellationToken ct) => Task.CompletedTask;
             public Task<CommandSubmission> SubmitAsync(ProtocolCommand c, CancellationToken ct) => throw new NotSupportedException();
-            public Task ReconcilePendingAsync(CancellationToken ct) => Task.CompletedTask;
+            public Task ReconcilePendingAsync(CancellationToken ct)
+            {
+                foreach (PendingCommandSnapshot command in PendingCommands)
+                    Lifecycle.Add("query:" + command.ScopeId + "/" + command.RequestId);
+                Reconcile();
+                return Task.CompletedTask;
+            }
             public Task<CommandSubmission> RetryPendingAsync(IdempotencyKey k, CancellationToken ct) => throw new NotSupportedException();
-            public Task CloseAsync(string r, CancellationToken ct) => Close(ct);
+            public Task CloseAsync(string r, CancellationToken ct)
+            {
+                Lifecycle.Add("close");
+                return Close(ct);
+            }
         }
 
 #if UNITY_EDITOR

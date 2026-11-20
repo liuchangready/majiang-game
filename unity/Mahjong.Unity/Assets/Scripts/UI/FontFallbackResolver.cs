@@ -13,6 +13,7 @@ namespace Mahjong.Unity.UI
 
         private static FontFallbackResolver? _instance;
         private static bool _eventHooked;
+        public static Func<string, int, Font?>? WindowsSystemFontProviderForTest;
 
         public static FontFallbackResolver Instance => _instance ??= InitializeDefault();
 
@@ -38,6 +39,32 @@ namespace Mahjong.Unity.UI
             if (_eventHooked) return;
             _eventHooked = true;
             TMPro_EventManager.TEXT_CHANGED_EVENT.Add(OnTextChanged);
+        }
+
+        /// <summary>Loads and primes Windows' built-in UI font for Lite-only labels absent from the bundled subset.</summary>
+        public static Font? CreateWindowsSystemFont(string text, int size)
+        {
+            if (WindowsSystemFontProviderForTest != null) return WindowsSystemFontProviderForTest(text, size);
+            if (Application.platform != RuntimePlatform.WindowsPlayer && Application.platform != RuntimePlatform.WindowsEditor)
+                return null;
+            if (string.IsNullOrEmpty(text) || size < 1) return null;
+
+            Font osFont = Font.CreateDynamicFontFromOSFont(new[] { "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", "SimSun" }, size);
+            if (osFont == null)
+            {
+                Debug.LogWarning("LOCAL_LITE_FONT_OS_SOURCE_MISSING");
+                return null;
+            }
+            osFont.RequestCharactersInTexture(text, size, FontStyle.Normal);
+            for (int i = 0; i < text.Length; i++)
+            {
+                if (!osFont.GetCharacterInfo(text[i], out _, size, FontStyle.Normal))
+                {
+                    Debug.LogWarning("LOCAL_LITE_FONT_OS_GLYPH_MISSING face=" + osFont.name + " codepoint=" + ((int)text[i]).ToString("X4"));
+                    return null;
+                }
+            }
+            return osFont;
         }
 
         private static void OnTextChanged(UnityEngine.Object obj)

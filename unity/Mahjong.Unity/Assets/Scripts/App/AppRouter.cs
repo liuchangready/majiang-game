@@ -20,7 +20,7 @@ namespace Mahjong.Unity.App
         Failed = 2
     }
 
-    public sealed class AppRouter : IAppNavigation
+    public sealed class AppRouter : IAppNavigation, ILocalLiteNavigation
     {
         private readonly AppComposition _composition;
         private readonly BackRouter _backRouter;
@@ -73,7 +73,31 @@ namespace Mahjong.Unity.App
 
         public bool IsLocalGameStartAvailable => _composition.SupportsLocalStart;
 
-        public async Task<LocalGameStartResult> StartLocalGameAsync()
+        public Task<LocalGameStartResult> StartLocalGameAsync() => StartLocalGameAsync(null);
+
+        public async Task<LocalGameStartResult> RestartLocalGameAsync()
+        {
+            if (!_composition.Config.localLiteMode)
+                return LocalGameStartResult.Failed(LocalGameStartResult.UnexpectedFailureCode);
+            if (_startInFlight != 0 || _isTransitioning) return LocalGameStartResult.Busy();
+            bool returned = await ReturnToMenuAsync();
+            if (!returned)
+                return _composition.IsTerminal
+                    ? TerminalStartResult()
+                    : LocalGameStartResult.Busy();
+            LocalGameStartResult restarted = await StartLocalGameAsync(null);
+            if (restarted.Status != LocalGameStartStatus.Started)
+            {
+                string error = restarted.StableErrorCode ?? restarted.Status.ToString();
+                LocalLiteRunContext.SetPublicError(error);
+                UnityEngine.Object.FindObjectOfType<MenuPresenter>()?.ShowLiteError(error);
+            }
+            return restarted;
+        }
+
+        public Task<bool> ReturnToMenuLiteAsync() => ReturnToMenuAsync();
+
+        public async Task<LocalGameStartResult> StartLocalGameAsync(string? scenarioId)
         {
             // One owner per router. The second concurrent call is rejected before it
             // can enter AppComposition, load a scene or run any shutdown/cleanup.
@@ -94,6 +118,15 @@ namespace Mahjong.Unity.App
             SceneId sceneAtStart = _currentScene;
             try
             {
+            if (_composition.Config.localLiteMode)
+            {
+                LocalLiteRunContext.SetPublicError(null);
+                if (!LocalLiteRunContext.RecordStage(scenarioId, "starting"))
+                {
+                    LocalLiteRunContext.SetPublicError("LOCAL_LITE_DIAGNOSTICS_UNAVAILABLE");
+                    return LocalGameStartResult.Failed("LOCAL_LITE_DIAGNOSTICS_UNAVAILABLE");
+                }
+            }
                 if (!_composition.SupportsLocalStart)
                 {
                     if (_composition.IsTerminal)
@@ -113,11 +146,13 @@ namespace Mahjong.Unity.App
 
                 try
                 {
+                    await _composition.PrepareLocalLiteGameAsync(scenarioId, CancellationToken.None);
                     await _composition.OpenLocalSessionAsync(CancellationToken.None);
                 }
                 catch (LocalTableUnavailableException)
                 {
                     if (_composition.IsTerminal) return TerminalStartResult();
+                    RecordLiteFailure(LocalGameStartResult.LocalHostUnavailableCode);
                     return LocalGameStartResult.Failed(LocalGameStartResult.LocalHostUnavailableCode);
                 }
                 catch (OperationCanceledException)
@@ -127,6 +162,7 @@ namespace Mahjong.Unity.App
                     // shutdown, expose the terminal result instead of hiding it.
                     if (_composition.IsTerminal) return TerminalStartResult();
                     if (_composition.IsShutdownInProgress) return LocalGameStartResult.Busy();
+                    RecordLiteFailure("LOCAL_GAME_START_CANCELLED");
                     return LocalGameStartResult.Cancelled();
                 }
                 catch (LocalTableException ex)
@@ -139,6 +175,7 @@ namespace Mahjong.Unity.App
                     if (_composition.IsTerminal) return TerminalStartResult();
                     if (_composition.IsShutdownInProgress) return LocalGameStartResult.Busy();
                     Debug.LogWarning($"LOCAL_HOST_START_FAILED: kind={ex.ErrorKind}");
+                    RecordLiteFailure(MapLocalHostFailure(ex.ErrorKind));
                     return LocalGameStartResult.Failed(MapLocalHostFailure(ex.ErrorKind));
                 }
                 catch (Exception)
@@ -149,6 +186,7 @@ namespace Mahjong.Unity.App
                     // new room.
                     if (_composition.IsTerminal) return TerminalStartResult();
                     if (_composition.IsShutdownInProgress) return LocalGameStartResult.Busy();
+                    RecordLiteFailure(LocalGameStartResult.LocalHostStartFailedCode);
                     return LocalGameStartResult.Failed(LocalGameStartResult.LocalHostStartFailedCode);
                 }
 
@@ -187,6 +225,7 @@ namespace Mahjong.Unity.App
                         return TerminalStartResult();
                     }
 
+                    RecordLiteFailure(LocalGameStartResult.TableSceneUnavailableCode);
                     return LocalGameStartResult.Failed(LocalGameStartResult.TableSceneUnavailableCode);
                 }
 
@@ -194,6 +233,9 @@ namespace Mahjong.Unity.App
                 {
                     return TerminalStartResult();
                 }
+
+                if (_composition.Config.localLiteMode)
+                    LocalLiteRunContext.RecordStage(scenarioId, "table");
 
                 return LocalGameStartResult.Started();
             }
@@ -206,6 +248,13 @@ namespace Mahjong.Unity.App
 
         private LocalGameStartResult TerminalStartResult() =>
             LocalGameStartResult.Terminal(LocalGameStartResult.LocalHostTerminalCode);
+
+        private void RecordLiteFailure(string code)
+        {
+            if (!_composition.Config.localLiteMode) return;
+            LocalLiteRunContext.SetPublicError(code);
+            LocalLiteRunContext.RecordStage(LocalLiteRunContext.CurrentCaseId, "failed-" + code);
+        }
 
         /// <summary>
         /// Stable UI mapping of the accepted host's error kinds. UI never receives
@@ -347,11 +396,18 @@ namespace Mahjong.Unity.App
                 ShutdownResult result = await _composition.ShutdownAsync("RETURN_TO_MENU");
                 if (!result.MenuAllowed)
                 {
+                    if (_composition.Config.localLiteMode)
+                        LocalLiteRunContext.SetPublicError("LOCAL_ROOM_CLOSE_FAILED");
                     Debug.LogWarning($"NAV_BLOCKED: Shutdown outcome {result.Outcome} disallowed menu");
                     return false;
                 }
-
-                return await LoadAsyncInternal(SceneId.Menu);
+                bool loaded = await LoadAsyncInternal(SceneId.Menu);
+                if (loaded && _composition.Config.localLiteMode)
+                {
+                    if (!LocalLiteRunContext.RecordStage(LocalLiteRunContext.CurrentCaseId, "menu"))
+                        UnityEngine.Object.FindObjectOfType<MenuPresenter>()?.ShowLiteError("LOCAL_LITE_DIAGNOSTICS_UNAVAILABLE");
+                }
+                return loaded;
             }
             finally
             {

@@ -70,6 +70,9 @@ namespace Mahjong.Unity.App
         private Task<ShutdownResult>? _shutdownTask;
         private ShutdownResult? _terminal;
         private bool _quarantined;
+        private bool _shutdownRequested;
+        private int _activeSubmissions;
+        private TaskCompletionSource<bool>? _submissionsDrained;
 
         public event EventHandler<SessionViewState>? Changed;
         public event EventHandler<TableReceiptResolvedEventArgs>? ReceiptResolved;
@@ -438,9 +441,9 @@ namespace Mahjong.Unity.App
             TableSessionOperationQueue? queue;
             lock (_stateGate)
             {
-                if (_terminal != null || _quarantined)
+                if (_terminal != null || _quarantined || _shutdownRequested)
                 {
-                    throw new InvalidOperationException($"SessionCoordinator is closed or quarantined (Outcome={_terminal?.Outcome}, Quarantined={_quarantined}).");
+                    throw new InvalidOperationException($"SessionCoordinator is closing, closed or quarantined (Outcome={_terminal?.Outcome}, Quarantined={_quarantined}).");
                 }
 
                 queue = _operationQueue;
@@ -448,10 +451,30 @@ namespace Mahjong.Unity.App
                 {
                     throw new InvalidOperationException("No active TableSessionOperationQueue to submit command.");
                 }
+                _activeSubmissions++;
+                if (_activeSubmissions == 1)
+                    _submissionsDrained = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             }
 
-            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _runCts.Token);
-            return await queue.SubmitAsync(command, linkedCts.Token).ConfigureAwait(false);
+            try
+            {
+                using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _runCts.Token);
+                return await queue.SubmitAsync(command, linkedCts.Token).ConfigureAwait(false);
+            }
+            finally
+            {
+                TaskCompletionSource<bool>? drained = null;
+                lock (_stateGate)
+                {
+                    _activeSubmissions--;
+                    if (_activeSubmissions == 0)
+                    {
+                        drained = _submissionsDrained;
+                        _submissionsDrained = null;
+                    }
+                }
+                drained?.TrySetResult(true);
+            }
         }
 
         public Task<ShutdownResult> ShutdownAsync(string reason = "APP_QUIT")
@@ -468,6 +491,7 @@ namespace Mahjong.Unity.App
                     return _shutdownTask;
                 }
 
+                _shutdownRequested = true;
                 _shutdownTask = RunShutdownOnceAsync(reason);
                 return _shutdownTask;
             }
@@ -477,6 +501,98 @@ namespace Mahjong.Unity.App
         {
             try
             {
+                // One deadline governs accepted submissions and all same-scope
+                // reconciliation captures/queries. A timed out authority stays
+                // alive and quarantined; it is never reported cleanly closed.
+                if (_operationQueue != null)
+                {
+                    DateTime deadline = DateTime.UtcNow.AddMilliseconds(Math.Max(1, _config.closeTimeoutMs));
+                    Task? drainSubmissions;
+                    lock (_stateGate) drainSubmissions = _activeSubmissions == 0 ? null : _submissionsDrained?.Task;
+                    if (drainSubmissions != null && !await WaitUntilAsync(drainSubmissions, deadline).ConfigureAwait(false))
+                        return Quarantine(ShutdownResult.CloseTimeout());
+
+                    TableSessionQueueSnapshot? pending = await CaptureUntilAsync(deadline).ConfigureAwait(false);
+                    if (pending == null)
+                        return Quarantine(ShutdownResult.CloseTimeout());
+
+                    bool hasUnqueried = false;
+                    bool hasInFlight = false;
+                    foreach (PendingCommandSnapshot command in pending.PendingCommands)
+                    {
+                        hasUnqueried |= command.NeedsReconciliation && !command.QueryInFlight;
+                        hasInFlight |= command.QueryInFlight;
+                    }
+
+                    if (hasUnqueried)
+                    {
+                        // A transiently disconnected Client still needs its
+                        // unresolved commands captured. It cannot safely query
+                        // the old authority until Ready again, so retain that
+                        // authority and quarantine instead of treating the
+                        // non-Ready state as an empty queue.
+                        if (_operationQueue.State != TableConnectionState.Ready)
+                            return Quarantine(ShutdownResult.CloseFault());
+
+                        Task reconcile = _operationQueue.ReconcilePendingAsync(CancellationToken.None);
+                        if (!await WaitUntilAsync(reconcile, deadline).ConfigureAwait(false))
+                            return Quarantine(ShutdownResult.CloseTimeout());
+                        await reconcile.ConfigureAwait(false);
+                    }
+
+                    pending = await CaptureUntilAsync(deadline).ConfigureAwait(false);
+                    if (pending == null) return Quarantine(ShutdownResult.CloseTimeout());
+                    hasInFlight = false;
+                    bool unresolvedAfterQuery = false;
+                    foreach (PendingCommandSnapshot command in pending.PendingCommands)
+                    {
+                        hasInFlight |= command.QueryInFlight;
+                        unresolvedAfterQuery |= command.NeedsReconciliation;
+                    }
+                    if (!hasInFlight && unresolvedAfterQuery)
+                    {
+                        // Unknown is not proof of non-application. Preserve this
+                        // authority and its durable request evidence for recovery.
+                        return Quarantine(ShutdownResult.CloseFault());
+                    }
+
+                    while (hasInFlight)
+                    {
+                        if (!await WaitUntilAsync(Task.Delay(20), deadline).ConfigureAwait(false))
+                            return Quarantine(ShutdownResult.CloseTimeout());
+                        TableSessionQueueSnapshot? current = await CaptureUntilAsync(deadline).ConfigureAwait(false);
+                        if (current == null)
+                            return Quarantine(ShutdownResult.CloseTimeout());
+                        hasInFlight = false;
+                        bool unresolved = false;
+                        foreach (PendingCommandSnapshot command in current.PendingCommands)
+                        {
+                            hasInFlight |= command.QueryInFlight;
+                            unresolved |= command.NeedsReconciliation;
+                        }
+                        if (!hasInFlight && unresolved)
+                        {
+                            // Unknown is not proof of non-application. Preserve this
+                            // authority and its durable request evidence for recovery.
+                            return Quarantine(ShutdownResult.CloseFault());
+                        }
+                    }
+
+                    // Capture once more under the same deadline before allowing the
+                    // old writer to close, including if reconciliation settled fast.
+                    if (hasUnqueried || unresolvedAfterQuery)
+                    {
+                        TableSessionQueueSnapshot? final = await CaptureUntilAsync(deadline).ConfigureAwait(false);
+                        if (final == null)
+                            return Quarantine(ShutdownResult.CloseTimeout());
+                        foreach (PendingCommandSnapshot command in final.PendingCommands)
+                        {
+                            if (command.QueryInFlight) return Quarantine(ShutdownResult.CloseTimeout());
+                            if (command.NeedsReconciliation) return Quarantine(ShutdownResult.CloseFault());
+                        }
+                    }
+                }
+
                 _runCts.Cancel();
 
                 // Step 1: Pump barrier timeout & fault check
@@ -608,6 +724,41 @@ namespace Mahjong.Unity.App
                     return _terminal;
                 }
             }
+        }
+
+        private async Task<bool> WaitUntilAsync(Task task, DateTime deadline)
+        {
+            int remaining = (int)Math.Ceiling((deadline - DateTime.UtcNow).TotalMilliseconds);
+            if (remaining <= 0) return task.IsCompleted;
+            return await Task.WhenAny(task, Task.Delay(remaining)).ConfigureAwait(false) == task;
+        }
+
+        private async Task<TableSessionQueueSnapshot?> CaptureUntilAsync(DateTime deadline)
+        {
+            Task<TableSessionQueueSnapshot?> capture = _captureProvider != null
+                ? _captureProvider()
+                : CaptureQueueAsync();
+            int remaining = (int)Math.Ceiling((deadline - DateTime.UtcNow).TotalMilliseconds);
+            if (remaining <= 0 || await Task.WhenAny(capture, Task.Delay(remaining)).ConfigureAwait(false) != capture)
+                return null;
+            return await capture.ConfigureAwait(false);
+        }
+
+        private async Task<TableSessionQueueSnapshot?> CaptureQueueAsync()
+        {
+            if (_operationQueue == null) return null;
+            return await _operationQueue.CaptureAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+
+        private ShutdownResult Quarantine(ShutdownResult result)
+        {
+            lock (_stateGate)
+            {
+                _quarantined = true;
+                _terminal = result;
+                CleanupSubscriptions();
+            }
+            return result;
         }
 
         private void CleanupSubscriptions()

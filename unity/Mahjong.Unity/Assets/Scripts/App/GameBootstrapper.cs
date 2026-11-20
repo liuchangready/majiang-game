@@ -1,6 +1,7 @@
 #nullable enable
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
@@ -26,21 +27,48 @@ namespace Mahjong.Unity.App
         // flag only neutralises that environment gate; the pointer gesture,
         // Button.onClick and the production route remain exactly the real ones.
         private bool _smokeInputOverride;
+        private bool _startupBlocked;
 
         private void Awake()
         {
             DontDestroyOnLoad(gameObject);
 
+            string[] args = Environment.GetCommandLineArgs();
+            string? smokeDataPath = null;
+            for (int i = 0; i + 1 < args.Length; i++)
+                if (args[i] == "-smoke-data") { smokeDataPath = args[i + 1]; break; }
+
+#if G2_LOCAL_LITE
+            _config.localLiteMode = true;
+            try
+            {
+                string liteRunId = DateTime.UtcNow.ToString("yyyyMMddTHHmmssfffZ") + "-" + Guid.NewGuid().ToString("N");
+                string liteBase = string.IsNullOrWhiteSpace(smokeDataPath) ? Application.persistentDataPath : Path.GetFullPath(smokeDataPath);
+                string liteRoot = Path.Combine(liteBase, "G2LocalLite", "runs", liteRunId);
+                Directory.CreateDirectory(Path.Combine(liteRoot, "logs"));
+                string buildIdentityPath = Path.Combine(Application.streamingAssetsPath, "G2LocalLiteBuild.json");
+                string buildIdentity = File.Exists(buildIdentityPath) ? File.ReadAllText(buildIdentityPath) : "{\"identity\":\"unknown\"}";
+                LocalLiteRunContext.Initialize(liteRoot, Application.version, Application.buildGUID, buildIdentity);
+                if (!string.IsNullOrEmpty(LocalLiteRunContext.LastFailure)) throw new IOException(LocalLiteRunContext.LastFailure);
+                _config.localLiteDataRoot = liteRoot;
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException || ex is ArgumentException || ex is System.Security.SecurityException)
+            {
+                _startupBlocked = true;
+                Debug.LogError("LOCAL_LITE_STARTUP_STORAGE_UNAVAILABLE");
+                return;
+            }
+#endif
+
             // The local Player smoke runs against an isolated absolute persistent
             // root so it never reads or writes the real user's save/outbox. The
             // default launch keeps Application.persistentDataPath.
-            string[] args = Environment.GetCommandLineArgs();
             string? persistentDataPath = null;
             for (int i = 0; i < args.Length; i++)
             {
                 if (args[i] == "-smoke-data" && i + 1 < args.Length)
                 {
-                    persistentDataPath = args[i + 1];
+                    persistentDataPath = _config.localLiteMode ? _config.localLiteDataRoot : args[i + 1];
                     break;
                 }
             }
@@ -51,7 +79,7 @@ namespace Mahjong.Unity.App
             // real menu route instead of the window manager.
             for (int i = 0; i < args.Length; i++)
             {
-                if (args[i] == "-smoke-test" || args[i] == "-smoke-localhost")
+                    if (args[i] == "-smoke-test" || args[i] == "-smoke-localhost" || args[i] == "-g2-local-lite-lifecycle")
                 {
                     Application.runInBackground = true;
                     _smokeInputOverride = true;
@@ -60,12 +88,17 @@ namespace Mahjong.Unity.App
                 }
             }
 
-            AppRoot.EnsureInitialized(_config, _theme, persistentDataPath);
+            AppRoot.EnsureInitialized(_config, _theme,
+                string.IsNullOrWhiteSpace(persistentDataPath) ? _config.localLiteDataRoot : persistentDataPath);
         }
 
         private async void Start()
         {
+            if (_startupBlocked) return;
             Debug.Log("BOOTSTRAPPER_START: Initializing Menu load...");
+#if G2_LOCAL_LITE
+            LocalLiteRunContext.RecordStage(null, "boot");
+#endif
             if (AppRoot.Instance != null && AppRoot.Instance.Router != null)
             {
                 bool success = await AppRoot.Instance.Router.LoadAsync(SceneId.Menu);
@@ -90,6 +123,12 @@ namespace Mahjong.Unity.App
                     {
                         string dir = args[i + 1];
                         StartCoroutine(RunLocalHostSmokeSequence(dir));
+                        break;
+                    }
+
+                    if (args[i] == "-g2-local-lite-lifecycle")
+                    {
+                        StartCoroutine(RunLocalLiteLifecycleSequence());
                         break;
                     }
                 }
@@ -720,6 +759,189 @@ namespace Mahjong.Unity.App
             FailLocalSmoke("Application did not quit after local smoke returned to menu", 33);
         }
 
+        [Serializable]
+        private sealed class LiteLifecycleEvidence
+        {
+            public string status = "NOT_RUN";
+            public string failure = string.Empty;
+            public string[] cases = Array.Empty<string>();
+            public string[] rooms = Array.Empty<string>();
+            public string[] rounds = Array.Empty<string>();
+            public string[] scopes = Array.Empty<string>();
+            public long[] generations = Array.Empty<long>();
+        public string acceptedActionRequestId = string.Empty;
+        public string acceptedActionEvent = string.Empty;
+        public string settlementRoundId = string.Empty;
+            public bool roomClosed;
+        }
+
+        private IEnumerator RunLocalLiteLifecycleSequence()
+        {
+            var evidence = new LiteLifecycleEvidence();
+            var cases = new List<string>();
+            var rooms = new List<string>();
+            var rounds = new List<string>();
+            var scopes = new List<string>();
+            var generations = new List<long>();
+            string[] sequence = { "random", "pon", "random", "chi", "riichi", "random", "closed-kan", "dealer-tsumo", "random", "pon" };
+            AppRoot? app = AppRoot.Instance;
+            LocalTableChannelFactory? factory = app?.Composition.ChannelFactory as LocalTableChannelFactory;
+            string failure = app == null || factory == null || !app.Composition.Config.localLiteMode
+                ? "LITE_PLAYER_CONTEXT_UNAVAILABLE"
+                : string.Empty;
+            for (int i = 0; i < sequence.Length && failure.Length == 0; i++)
+            {
+                string scenario = sequence[i];
+                Task<LocalGameStartResult> start = app!.Router.StartLocalGameAsync(scenario == "random" ? null : scenario);
+                float deadline = Time.realtimeSinceStartup + 60f;
+                while (!start.IsCompleted && Time.realtimeSinceStartup < deadline) yield return null;
+                if (!start.IsCompleted || start.IsFaulted || start.Result.Status != LocalGameStartStatus.Started)
+                {
+                    failure = "LITE_START_FAILED_" + scenario;
+                    break;
+                }
+                SessionCoordinator? coordinator = app.Composition.SessionCoordinator;
+                while ((coordinator == null || coordinator.Current.State != TableConnectionState.Ready ||
+                        coordinator.Current.PlayerSnapshot == null || coordinator.Current.Binding == null) &&
+                       Time.realtimeSinceStartup < deadline)
+                {
+                    yield return null;
+                    coordinator = app.Composition.SessionCoordinator;
+                }
+                if (coordinator?.Current.PlayerSnapshot == null || coordinator.Current.Binding == null)
+                {
+                    failure = "LITE_SESSION_NOT_READY_" + scenario;
+                    break;
+                }
+                string room = factory!.RoomId;
+                string round = coordinator.Current.PlayerSnapshot.RoundId;
+                string scope = coordinator.Current.Binding.ScopeId;
+                if (string.IsNullOrWhiteSpace(round) || string.IsNullOrWhiteSpace(scope) || !factory.IsRoomOpen)
+                {
+                    failure = "LITE_SCOPE_OR_ROOM_MISSING_" + scenario;
+                    break;
+                }
+                cases.Add(scenario);
+                rooms.Add(room);
+                rounds.Add(round);
+                scopes.Add(scope);
+                generations.Add(coordinator.Generation);
+
+                // Bind one real client command to the fixed dealer-tsumo fixture
+                // in this same-package lifecycle run. This is automated Client
+                // input, not physical mouse evidence.
+                if (scenario == "dealer-tsumo")
+                {
+                    var mapper = new PlayerTableProjectionMapper(new SystemTableClientClock());
+                    PlayerTableViewState view = mapper.Project(coordinator.Current);
+                    PlayerLegalActionState? tsumo = null;
+                    if (view.Own?.Decision != null)
+                    {
+                        for (int candidateIndex = 0; candidateIndex < view.Own.Decision.Candidates.Count; candidateIndex++)
+                        {
+                            if (view.Own.Decision.Candidates[candidateIndex].Action == PlayerActionKind.DeclareTsumo)
+                            {
+                                tsumo = view.Own.Decision.Candidates[candidateIndex];
+                                break;
+                            }
+                        }
+                    }
+                    if (tsumo == null)
+                    {
+                        failure = "LITE_DEALER_TSUMO_CANDIDATE_MISSING";
+                        break;
+                    }
+
+                    string requestId = "lite-lifecycle-tsumo-" + Guid.NewGuid().ToString("N");
+                    var actionObserver = new ConfirmedVisibleEventObserver(coordinator);
+                    coordinator.ReceiptResolved += actionObserver.OnReceiptResolved;
+                    var ownerContext = new TableCommandOwnerContext(new RequestId(requestId),
+                        new RequestScopeId(view.Identity.ScopeId), new StateVersion(view.Identity.StateVersion),
+                        new OwnerEpoch(view.Identity.OwnerEpoch));
+                    TableCommandIntent intent = new TableCommandIntentFactory(new SystemTableClientClock())
+                        .CreateSubmitAction(view, tsumo, ownerContext);
+                    actionObserver.BeginAction(coordinator.Current, requestId, view.Identity.ScopeId, tsumo.Action);
+                    Task<CommandSubmission> submit = coordinator.SubmitAsync(intent.Command, CancellationToken.None);
+                    float actionDeadline = Time.realtimeSinceStartup + 15f;
+                    while (!submit.IsCompleted && Time.realtimeSinceStartup < actionDeadline) yield return null;
+                    if (!submit.IsCompleted || submit.IsFaulted || submit.IsCanceled || !submit.Result.Sent)
+                    {
+                        coordinator.ReceiptResolved -= actionObserver.OnReceiptResolved;
+                        failure = "LITE_DEALER_TSUMO_SUBMIT_FAILED";
+                        break;
+                    }
+
+                    ConfirmedVisibleActionEvent? confirmed = null;
+                    while (confirmed == null && Time.realtimeSinceStartup < actionDeadline)
+                    {
+                        confirmed = actionObserver.TryGetConfirmation();
+                        yield return null;
+                    }
+                    coordinator.ReceiptResolved -= actionObserver.OnReceiptResolved;
+                    if (confirmed == null || confirmed.Event.Type != ProtocolEventType.TsumoWin)
+                    {
+                        failure = "LITE_DEALER_TSUMO_NOT_CONFIRMED";
+                        break;
+                    }
+                    PlayerTableViewState settledView = mapper.Project(coordinator.Current);
+                    if (settledView.Board.Phase != PlayerGamePhase.RoundEnd ||
+                        !string.Equals(settledView.Board.SettlementRoundId, round, StringComparison.Ordinal))
+                    {
+                        failure = "LITE_DEALER_TSUMO_SETTLEMENT_MISSING";
+                        break;
+                    }
+                    evidence.acceptedActionRequestId = requestId;
+                    evidence.acceptedActionEvent = confirmed.Event.Type.ToString();
+                    evidence.settlementRoundId = settledView.Board.SettlementRoundId;
+                }
+
+                Task<bool> close = app.Router.ReturnToMenuLiteAsync();
+                deadline = Time.realtimeSinceStartup + 15f;
+                while (!close.IsCompleted && Time.realtimeSinceStartup < deadline) yield return null;
+                if (!close.IsCompleted || close.IsFaulted || !close.Result || factory.IsRoomOpen || app.Composition.SessionCoordinator != null)
+                {
+                    failure = "LITE_CLOSE_FAILED_" + scenario;
+                    break;
+                }
+            }
+            if (failure.Length == 0 && (new HashSet<string>(rooms).Count != sequence.Length ||
+                new HashSet<string>(rounds).Count != sequence.Length || new HashSet<string>(scopes).Count != sequence.Length ||
+                new HashSet<long>(generations).Count != sequence.Length)) failure = "LITE_IDENTITY_REUSED";
+            if (failure.Length == 0 && (evidence.acceptedActionEvent != ProtocolEventType.TsumoWin.ToString() ||
+                string.IsNullOrWhiteSpace(evidence.acceptedActionRequestId) || string.IsNullOrWhiteSpace(evidence.settlementRoundId)))
+                failure = "LITE_REAL_ACTION_SETTLEMENT_NOT_OBSERVED";
+            evidence.status = failure.Length == 0 ? "PASS" : "FAIL";
+            evidence.failure = failure;
+            evidence.cases = cases.ToArray();
+            evidence.rooms = rooms.ToArray();
+            evidence.rounds = rounds.ToArray();
+            evidence.scopes = scopes.ToArray();
+            evidence.generations = generations.ToArray();
+            evidence.roomClosed = factory == null || !factory.IsRoomOpen;
+            string? root = LocalLiteRunContext.RunRoot;
+            if (!string.IsNullOrWhiteSpace(root))
+            {
+                try { File.WriteAllText(Path.Combine(root, "lifecycle-matrix.json"), JsonUtility.ToJson(evidence, true) + "\n"); }
+                catch (Exception ex) { failure = "LITE_EVIDENCE_WRITE_FAILED_" + ex.GetType().Name; evidence.status = "FAIL"; evidence.failure = failure; }
+            }
+            if (failure.Length == 0) Debug.Log("LOCAL_LITE_LIFECYCLE_PASS: count=" + cases.Count);
+            else Debug.LogError("LOCAL_LITE_LIFECYCLE_FAILED: " + failure);
+            if (app != null)
+            {
+                Task<ShutdownResult> shutdown = app.Composition.ShutdownAsync("APP_QUIT");
+                float shutdownDeadline = Time.realtimeSinceStartup + 10f;
+                while (!shutdown.IsCompleted && Time.realtimeSinceStartup < shutdownDeadline) yield return null;
+                evidence.roomClosed = factory == null || !factory.IsRoomOpen;
+                if (!evidence.roomClosed) { evidence.status = "FAIL"; evidence.failure = "LITE_QUIT_CLOSE_FAILED"; }
+                if (!string.IsNullOrWhiteSpace(root))
+                {
+                    try { File.WriteAllText(Path.Combine(root, "lifecycle-matrix.json"), JsonUtility.ToJson(evidence, true) + "\n"); }
+                    catch { }
+                }
+            }
+            Application.Quit(evidence.status == "PASS" && evidence.roomClosed ? 0 : 1);
+        }
+
         private IEnumerator WaitForScene(SceneId scene, float timeoutSeconds)
         {
             float timer = 0f;
@@ -734,6 +956,19 @@ namespace Mahjong.Unity.App
         {
             Debug.LogError("SMOKE_ERROR: " + message);
             Application.Quit(exitCode);
+        }
+
+        private void OnGUI()
+        {
+            if (!_startupBlocked) return;
+            const float panelWidth = 520f;
+            const float panelHeight = 150f;
+            var panel = new Rect((Screen.width - panelWidth) * 0.5f, (Screen.height - panelHeight) * 0.5f, panelWidth, panelHeight);
+            GUI.Box(panel, "G2 Local Lite");
+            GUI.Label(new Rect(panel.x + 20f, panel.y + 35f, panel.width - 40f, 50f),
+                "Test data storage is unavailable. No game was started. Check the folder permissions and restart.\nLOCAL_LITE_STARTUP_STORAGE_UNAVAILABLE");
+            if (GUI.Button(new Rect(panel.x + 180f, panel.y + 95f, 160f, 36f), "退出 / Exit"))
+                Application.Quit();
         }
     }
 }

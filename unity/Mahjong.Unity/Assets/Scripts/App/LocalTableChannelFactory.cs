@@ -46,6 +46,11 @@ namespace Mahjong.Unity.App
         Task CloseRoomAsync(CancellationToken cancellationToken);
     }
 
+    public interface ILocalLiteOutboxScope
+    {
+        string CurrentOutboxDirectory { get; }
+    }
+
     public enum LocalRoomViewerRole : byte
     {
         Player = 0,
@@ -78,7 +83,7 @@ namespace Mahjong.Unity.App
     /// host; the normal application never enables it.
     /// </para>
     /// </summary>
-    public sealed class LocalTableChannelFactory : ITableChannelFactory, ILocalMatchControl, ILocalRoomViewerFactory
+    public sealed class LocalTableChannelFactory : ITableChannelFactory, ILocalMatchControl, ILocalRoomViewerFactory, ILocalLiteOutboxScope
     {
         public const string DefaultRoomId = "local-main";
         public const string ClientBuild = "unity-p42b-localhost";
@@ -87,22 +92,35 @@ namespace Mahjong.Unity.App
         private static int _privacyRoomModeEnabled;
         private static string? _playerActionScenario;
 
-        private readonly string _roomId;
+        private string _roomId;
         private readonly string _ownerInstanceId;
         private readonly string _saveDirectory;
+        private readonly string _outboxRoot;
+        private readonly bool _localLiteMode;
         private readonly TimeSpan _leaseDuration;
+#if UNITY_EDITOR
+        private readonly Func<ITableChannel, ITableChannel>? _channelDecoratorForTest;
+        private readonly Func<Func<Task>, Task>? _roomDisposeForTest;
+#endif
         private readonly SemaphoreSlim _matchGate = new SemaphoreSlim(1, 1);
         private readonly SemaphoreSlim _roomGate = new SemaphoreSlim(1, 1);
 
         private LocalMatchCoordinator? _match;
         private LocalTableRoom? _room;
+        private Task? _roomCloseTask;
+        private string? _nextScenario;
 
         public LocalTableChannelFactory(
             AppConfig config,
             UnityAppPaths paths,
             string? roomId = null,
             string? ownerInstanceId = null,
-            TimeSpan? leaseDuration = null)
+            TimeSpan? leaseDuration = null
+#if UNITY_EDITOR
+            , Func<ITableChannel, ITableChannel>? channelDecoratorForTest = null,
+            Func<Func<Task>, Task>? roomDisposeForTest = null
+#endif
+            )
         {
             if (config == null) throw new ArgumentNullException(nameof(config));
             if (paths == null) throw new ArgumentNullException(nameof(paths));
@@ -112,7 +130,13 @@ namespace Mahjong.Unity.App
                 ? "unity-local-" + Guid.NewGuid().ToString("N")
                 : ownerInstanceId!;
             _saveDirectory = paths.LocalSaveDirectory;
+            _outboxRoot = paths.OutboxDirectory;
+            _localLiteMode = config.localLiteMode;
             _leaseDuration = leaseDuration ?? TimeSpan.FromMinutes(10);
+#if UNITY_EDITOR
+            _channelDecoratorForTest = channelDecoratorForTest;
+            _roomDisposeForTest = roomDisposeForTest;
+#endif
         }
 
         /// <summary>
@@ -177,6 +201,11 @@ namespace Mahjong.Unity.App
 
         /// <summary>Absolute directory the pure .NET host owns; never the outbox.</summary>
         public string SaveDirectory => _saveDirectory;
+
+        /// <summary>Every Lite round gets a separate durable outbox scope; prior evidence is retained.</summary>
+        public string CurrentOutboxDirectory => _localLiteMode
+            ? System.IO.Path.Combine(_outboxRoot, _roomId)
+            : _outboxRoot;
 
         /// <summary>
         /// Diagnostic/read-only lifecycle probe: true while this factory still owns a cached
@@ -291,6 +320,9 @@ namespace Mahjong.Unity.App
             LocalTableRoom room = await GetOrOpenRoomAsync(cancellationToken).ConfigureAwait(false);
             LocalTableConnectionTicket ticket = room.CreatePlayerTicket(0);
             ITableChannel channel = await room.ConnectAsync(ticket, cancellationToken).ConfigureAwait(false);
+#if UNITY_EDITOR
+            if (_channelDecoratorForTest != null) channel = _channelDecoratorForTest(channel);
+#endif
             return new LocalTableTicketChannel(channel, ticket.Value);
         }
 
@@ -304,17 +336,52 @@ namespace Mahjong.Unity.App
                 ? room.CreateSpectatorTicket()
                 : room.CreatePlayerTicket(seatId);
             ITableChannel channel = await room.ConnectAsync(ticket, cancellationToken).ConfigureAwait(false);
+#if UNITY_EDITOR
+            if (_channelDecoratorForTest != null) channel = _channelDecoratorForTest(channel);
+#endif
             return new LocalTableTicketChannel(channel, ticket.Value);
         }
 
         public async Task CloseRoomAsync(CancellationToken cancellationToken)
         {
-            await _roomGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            if (!await _roomGate.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken).ConfigureAwait(false))
+                throw new TimeoutException("Local room is still opening; refusing to overlap another host.");
             try
             {
                 LocalTableRoom? room = _room;
+                if (room == null) return;
+                Task close = _roomCloseTask ??= BeginRoomDisposeAsync(room);
+                Task completed = await Task.WhenAny(close, Task.Delay(TimeSpan.FromSeconds(3), cancellationToken)).ConfigureAwait(false);
+                if (!ReferenceEquals(completed, close))
+                    throw new TimeoutException("Local room shutdown exceeded 3000 ms; the host remains quarantined.");
+                await close.ConfigureAwait(false);
                 _room = null;
-                if (room != null) await room.DisposeAsync().ConfigureAwait(false);
+                _roomCloseTask = null;
+            }
+            finally { _roomGate.Release(); }
+        }
+
+        private Task BeginRoomDisposeAsync(LocalTableRoom room)
+        {
+#if UNITY_EDITOR
+            if (_roomDisposeForTest != null)
+                return _roomDisposeForTest(() => room.DisposeAsync().AsTask());
+#endif
+            return room.DisposeAsync().AsTask();
+        }
+
+        /// <summary>Bind the next standalone Lite game to a fresh room and optional manual fixture.</summary>
+        public async Task PrepareLocalLiteGameAsync(string? scenarioId, CancellationToken cancellationToken)
+        {
+            if (scenarioId != null) LocalPlayerActionScenario.ValidateScenario(scenarioId);
+            await _roomGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                if (_room != null)
+                    throw new InvalidOperationException("The previous local room is still open; refusing to create a second host.");
+                Interlocked.Exchange(ref _playerActionScenario, null);
+                _roomId = "local-lite-" + Guid.NewGuid().ToString("N");
+                _nextScenario = scenarioId;
             }
             finally { _roomGate.Release(); }
         }
@@ -333,18 +400,37 @@ namespace Mahjong.Unity.App
                     OwnerInstanceId = _ownerInstanceId,
                     LeaseDuration = _leaseDuration,
                     AutoFlushInterval = TimeSpan.FromMilliseconds(500),
+                    Ai = new LocalAiOptions
+                    {
+                        ProfileId = ConfiguredProfile,
+                        AllowCheats = false
+                    },
                     SeatPlan = Volatile.Read(ref _privacyRoomModeEnabled) == 1
                         ? LocalTableSeatPlan.AllFourHumanSeats
                         : LocalTableSeatPlan.SingleHumanSeatZero
                 };
-                string? scenario = Volatile.Read(ref _playerActionScenario);
-                if (!string.IsNullOrEmpty(scenario)) LocalPlayerActionScenario.ConfigureHostOptions(options, scenario!);
+                string? scenario = _nextScenario ?? Interlocked.Exchange(ref _playerActionScenario, null);
+                _nextScenario = null;
+                if (!string.IsNullOrEmpty(scenario))
+                {
+                    if (_localLiteMode)
+                    {
+                        string uniqueRoundId = "c04-" + scenario + "-lite-" + Guid.NewGuid().ToString("N");
+                        LocalPlayerActionScenario.ConfigureHostOptions(options, scenario!, uniqueRoundId);
+                    }
+                    else
+                    {
+                        LocalPlayerActionScenario.ConfigureHostOptions(options, scenario!);
+                    }
+                }
                 cancellationToken.ThrowIfCancellationRequested();
                 _room = await LocalTableHost.OpenRoomAsync(options, cancellationToken).ConfigureAwait(false);
                 return _room;
             }
             finally { _roomGate.Release(); }
         }
+
+        private string ConfiguredProfile => _localLiteMode ? LocalAiProfiles.Basic : LocalAiProfiles.LegacyHeuristic;
 
         private sealed class LocalTableTicketChannel : ITableChannel, ILocalTableTicketSource
         {

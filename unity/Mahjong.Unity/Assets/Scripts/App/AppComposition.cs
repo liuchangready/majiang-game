@@ -128,6 +128,12 @@ namespace Mahjong.Unity.App
             }
         }
 
+        // Includes the old-scope receipt lookup, receive-pump barrier, channel
+        // close and LocalTableChannelFactory's bounded room disposal.
+        public int ShutdownWaitBudgetMs => Math.Max(1000,
+            Math.Max(0, Config.closeTimeoutMs) * 3 + Math.Max(0, Config.pumpBarrierTimeoutMs) +
+            Math.Max(0, Config.cancelObservationMs) + 3000);
+
         public AppComposition(
             AppConfig config,
             MainThreadDispatcher dispatcher,
@@ -186,6 +192,19 @@ namespace Mahjong.Unity.App
                 _inFlightOpen = OpenLocalSessionInternalAsync(cancellationToken);
                 return _inFlightOpen;
             }
+        }
+
+        public Task PrepareLocalLiteGameAsync(string? scenarioId, CancellationToken cancellationToken)
+        {
+            if (!Config.localLiteMode) return Task.CompletedTask;
+            lock (_gate)
+            {
+                if (_sessionCoordinator != null || _isSessionShuttingDown || _isAppQuitting || _isQuarantined)
+                    return Task.FromException(new InvalidOperationException("A Lite game can only be prepared after the previous session has closed."));
+            }
+            return ChannelFactory is LocalTableChannelFactory local
+                ? local.PrepareLocalLiteGameAsync(scenarioId, cancellationToken)
+                : Task.FromException(new InvalidOperationException("The Lite local host is unavailable."));
         }
 
         public async Task<SessionCoordinator> OpenRoomViewerAsync(
@@ -326,7 +345,11 @@ namespace Mahjong.Unity.App
                         : "unity-p42b-test";
 
                     Paths.EnsureDirectoriesCreated();
-                    var outbox = new FileOutboxStore(Paths.OutboxDirectory);
+                    string outboxDirectory = ChannelFactory is ILocalLiteOutboxScope scopedOutbox
+                        ? scopedOutbox.CurrentOutboxDirectory
+                        : Paths.OutboxDirectory;
+                    Directory.CreateDirectory(outboxDirectory);
+                    var outbox = new FileOutboxStore(outboxDirectory);
                     var session = new TableSession(channel, outbox, new TableSessionOptions());
                     var queue = new TableSessionOperationQueue(session);
                     coordinator = new SessionCoordinator(session, queue, channel, Dispatcher, Config, gen);
@@ -380,6 +403,7 @@ namespace Mahjong.Unity.App
                 }
                 catch
                 {
+                    bool cleanupComplete = true;
                     if (coordinator != null)
                     {
                         try
@@ -395,9 +419,11 @@ namespace Mahjong.Unity.App
                                     _quarantinedTask = Task.FromResult(shutResult);
                                 }
                             }
+                            cleanupComplete = shutResult.Outcome == ShutdownOutcome.Completed && !shutResult.Quarantined;
                         }
                         catch (Exception)
                         {
+                            cleanupComplete = false;
                             if (coordinator.IsQuarantined)
                             {
                                 var shutResult = ShutdownResult.CloseFault();
@@ -414,6 +440,17 @@ namespace Mahjong.Unity.App
                     else if (channel is IDisposable disposable)
                     {
                         try { disposable.Dispose(); } catch { }
+                    }
+                    bool hasSurvivingViewers;
+                    lock (_gate) hasSurvivingViewers = _roomViewers.Count != 0;
+                    if (cleanupComplete && !hasSurvivingViewers && ChannelFactory is ILocalRoomViewerFactory roomFactory &&
+                        ChannelFactory is LocalTableChannelFactory localFactory && localFactory.IsRoomOpen)
+                    {
+                        try { await roomFactory.CloseRoomAsync(CancellationToken.None).ConfigureAwait(false); }
+                        catch
+                        {
+                            lock (_gate) _isQuarantined = true;
+                        }
                     }
                     throw;
                 }
@@ -453,14 +490,14 @@ namespace Mahjong.Unity.App
                 }
 
                 if (_isAppQuitting && _sessionCoordinator == null && _roomViewers.Count == 0 &&
-                    (_inFlightOpen == null || _inFlightOpen.IsCompleted) && !(ChannelFactory is ILocalRoomViewerFactory))
+                    (_inFlightOpen == null || _inFlightOpen.IsCompleted) && !HasOpenLocalRoom())
                 {
                     return CachedCompletedTask;
                 }
 
                 if (_sessionCoordinator == null && _roomViewers.Count == 0 &&
                     (_inFlightOpen == null || _inFlightOpen.IsCompleted) &&
-                    (!isQuit || !(ChannelFactory is ILocalRoomViewerFactory)))
+                    !HasOpenLocalRoom())
                 {
                     return CachedCompletedTask;
                 }
@@ -566,7 +603,9 @@ namespace Mahjong.Unity.App
                     return result;
                 }
 
-                if (isQuit && ChannelFactory is ILocalRoomViewerFactory roomFactory)
+                bool viewersRemainWithoutPrimary;
+                lock (_gate) viewersRemainWithoutPrimary = _roomViewers.Count != 0;
+                if (!viewersRemainWithoutPrimary && ChannelFactory is ILocalRoomViewerFactory roomFactory && HasOpenLocalRoom())
                     await roomFactory.CloseRoomAsync(CancellationToken.None).ConfigureAwait(false);
 
                 lock (_gate)
@@ -593,5 +632,7 @@ namespace Mahjong.Unity.App
                 return quarantined;
             }
         }
+
+        private bool HasOpenLocalRoom() => ChannelFactory is LocalTableChannelFactory factory && factory.IsRoomOpen;
     }
 }

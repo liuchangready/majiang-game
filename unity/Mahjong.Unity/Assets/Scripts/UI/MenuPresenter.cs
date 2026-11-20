@@ -4,6 +4,8 @@ using UnityEngine;
 using UnityEngine.UI;
 using UnityEngine.InputSystem;
 using TMPro;
+using System.Collections.Generic;
+using System.Threading.Tasks;
 
 namespace Mahjong.Unity.UI
 {
@@ -13,18 +15,33 @@ namespace Mahjong.Unity.UI
         [SerializeField] private Button? _quitButton;
         [SerializeField] private TextMeshProUGUI? _titleText;
         [SerializeField] private ModalPresenter? _quitModal;
+        [SerializeField] private bool _localLiteMode;
 
         private IAppNavigation? _navigation;
         private FocusRouter _focusRouter = new FocusRouter();
+        private Button? _testButton;
+        private readonly List<Button> _scenarioButtons = new List<Button>();
+        private bool _scenarioListOpen;
+        private bool _starting;
 
-        public void Initialize(IAppNavigation navigation)
+        public void Initialize(IAppNavigation navigation) => Initialize(navigation, false);
+
+        public void Initialize(IAppNavigation navigation, bool localLiteMode)
         {
             _navigation = navigation;
+            _localLiteMode = localLiteMode;
+        }
+
+        public void ShowLiteError(string error)
+        {
+            LocalLiteRunContext.SetPublicError(error);
+            if (_titleText != null) _titleText.text = "G2 Local Lite: " + error;
         }
 
         private void Start()
         {
             Debug.Log("MENU_PRESENTER_STARTED");
+            if (_localLiteMode) ConfigureLiteMenu();
             if (_playButton != null)
             {
                 _playButton.onClick.AddListener(OnPlayClicked);
@@ -82,6 +99,10 @@ namespace Mahjong.Unity.UI
         {
             if (_playButton != null) _playButton.onClick.RemoveListener(OnPlayClicked);
             if (_quitButton != null) _quitButton.onClick.RemoveListener(OnQuitClicked);
+            if (_testButton != null) _testButton.onClick.RemoveListener(OnTestClicked);
+            foreach (Button button in _scenarioButtons) Destroy(button.gameObject);
+            _scenarioButtons.Clear();
+            if (_testButton != null) Destroy(_testButton.gameObject);
         }
 
         public void OnPlayClicked()
@@ -95,10 +116,165 @@ namespace Mahjong.Unity.UI
                 return;
             }
             Debug.Log("PLAY_BUTTON_CLICKED: Opening lobby...");
+            if (_localLiteMode)
+            {
+                _ = StartLiteGameAsync(null);
+                return;
+            }
             if (_navigation != null)
             {
                 _navigation.OpenLobby();
             }
+        }
+
+        private void ConfigureLiteMenu()
+        {
+            if (_titleText != null) _titleText.text = "G2 Local Lite v" + Application.version;
+            SetLabel(_playButton, "开始一局");
+            SetLabel(_quitButton, "退出");
+            if (_playButton == null) return;
+
+            RectTransform playRect = _playButton.GetComponent<RectTransform>();
+            if (playRect != null) playRect.anchoredPosition += new Vector2(0f, 70f);
+            if (_quitButton != null)
+            {
+                RectTransform quitRect = _quitButton.GetComponent<RectTransform>();
+                if (quitRect != null) quitRect.anchoredPosition = new Vector2(0f, -100f);
+            }
+
+            _testButton = Instantiate(_playButton, _playButton.transform.parent);
+            _testButton.name = "LocalLiteTestButton";
+            _testButton.onClick.RemoveAllListeners();
+            _testButton.onClick.AddListener(OnTestClicked);
+            if (!SetWindowsSystemFontLabel(_testButton, "\u6D4B\u8BD5\u5C40\u9762"))
+                SetLabel(_testButton, "Test cases");
+            RectTransform testRect = _testButton.GetComponent<RectTransform>();
+            if (testRect != null) testRect.anchoredPosition = new Vector2(0f, 0f);
+            _testButton.transform.SetSiblingIndex(_playButton.transform.GetSiblingIndex() + 1);
+
+            string[] ids = { "pon", "chi", "riichi", "closed-kan", "dealer-tsumo" };
+            string[] labels = { "碰", "吃", "立直", "暗杠", "庄家自摸" };
+            for (int i = 0; i < ids.Length; i++)
+            {
+                int index = i;
+                Button option = Instantiate(_playButton, _playButton.transform.parent);
+                option.name = "LocalLiteScenario-" + ids[i];
+                option.onClick.RemoveAllListeners();
+                option.onClick.AddListener(() => OnScenarioClicked(ids[index]));
+                if (!SetWindowsSystemFontLabel(option, labels[i]))
+                    SetLabel(option, new[] { "Pon", "Chi", "Riichi", "Closed kan", "Dealer tsumo" }[i]);
+                RectTransform rect = option.GetComponent<RectTransform>();
+                if (rect != null) rect.anchoredPosition = new Vector2(245f, 100f - 52f * i);
+                option.gameObject.SetActive(false);
+                _scenarioButtons.Add(option);
+            }
+            bool fontReady = SetWindowsSystemFontLabel(_playButton, "\u5F00\u59CB\u4E00\u5C40");
+            if (!fontReady) SetLabel(_playButton, "New game");
+            if (_quitButton != null && !SetWindowsSystemFontLabel(_quitButton, "\u9000\u51FA"))
+                SetLabel(_quitButton, "Exit");
+            if (_titleText != null)
+                _titleText.text = LocalLiteRunContext.LastFailure ?? LocalLiteRunContext.LastPublicError ??
+                    (!fontReady ? "Windows Chinese font unavailable; English labels are active" : "G2 Local Lite v" + Application.version);
+        }
+
+        private static void SetLabel(Button? button, string label)
+        {
+            TMP_Text? text = button != null ? button.GetComponentInChildren<TMP_Text>(true) : null;
+            if (text != null) text.text = label;
+        }
+
+        private static bool SetWindowsSystemFontLabel(Button button, string label)
+        {
+            TMP_Text? source = button.GetComponentInChildren<TMP_Text>(true);
+            if (source == null) return false;
+            source.text = label;
+            source.enabled = true;
+            int size = Mathf.Max(1, Mathf.RoundToInt(source.fontSize));
+            Font? font = FontFallbackResolver.CreateWindowsSystemFont(label, size);
+            if (font == null) return false;
+
+            source.enabled = false;
+            var labelObject = new GameObject("LocalLiteSystemFontLabel", typeof(RectTransform), typeof(UnityEngine.UI.Text));
+            labelObject.transform.SetParent(source.transform, false);
+            RectTransform rect = (RectTransform)labelObject.transform;
+            rect.anchorMin = Vector2.zero;
+            rect.anchorMax = Vector2.one;
+            rect.offsetMin = Vector2.zero;
+            rect.offsetMax = Vector2.zero;
+            UnityEngine.UI.Text text = labelObject.GetComponent<UnityEngine.UI.Text>();
+            text.font = font;
+            text.fontSize = size;
+            text.color = source.color;
+            text.alignment = TextAnchor.MiddleCenter;
+            text.raycastTarget = false;
+            text.text = label;
+            return true;
+        }
+
+        private void OnTestClicked()
+        {
+            if (_starting || !UiInputLifecycle.Instance.ConsumeClickOrSubmit(_testButton != null ? _testButton.gameObject : null)) return;
+            _scenarioListOpen = !_scenarioListOpen;
+            foreach (Button button in _scenarioButtons) button.gameObject.SetActive(_scenarioListOpen);
+            if (_titleText != null) _titleText.text = _scenarioListOpen ? "Select a test case" : "G2 Local Lite v" + Application.version;
+        }
+
+        private void OnScenarioClicked(string scenarioId)
+        {
+            if (_starting || !UiInputLifecycle.Instance.ConsumeClickOrSubmit(EventSystemTarget(scenarioId))) return;
+            _ = StartLiteGameAsync(scenarioId);
+        }
+
+        private GameObject? EventSystemTarget(string scenarioId)
+        {
+            foreach (Button button in _scenarioButtons)
+                if (button.name == "LocalLiteScenario-" + scenarioId) return button.gameObject;
+            return null;
+        }
+
+        private async Task StartLiteGameAsync(string? scenarioId)
+        {
+            if (_starting) return;
+            if (_navigation is not ILocalLiteNavigation liteNavigation)
+            {
+                if (_titleText != null) _titleText.text = "Local table unavailable";
+                return;
+            }
+
+            _starting = true;
+            LocalLiteRunContext.RecordStage(scenarioId, "starting");
+            SetLiteButtonsInteractable(false);
+            if (_titleText != null) _titleText.text = scenarioId == null ? "Creating a new round..." : "Preparing test case...";
+            try
+            {
+                LocalGameStartResult result = await liteNavigation.StartLocalGameAsync(scenarioId);
+                if (result.Status == LocalGameStartStatus.Started)
+                {
+                LocalLiteRunContext.RecordStage(scenarioId, "table");
+                    return;
+                }
+                LocalLiteRunContext.RecordStage(scenarioId, "failed-" + (result.StableErrorCode ?? result.Status.ToString()));
+                if (_titleText != null)
+                    _titleText.text = result.IsTerminal ? "Close failed; start stopped" :
+                        "Start failed: " + (result.StableErrorCode ?? result.Status.ToString());
+                Debug.LogWarning("LOCAL_LITE_START_FAILED: " + (result.StableErrorCode ?? result.Status.ToString()));
+                if (result.IsTerminal) return;
+            }
+            catch (Exception ex)
+            {
+                if (_titleText != null) _titleText.text = "Start failed: LOCAL_GAME_START_FAILED";
+                Debug.LogWarning("LOCAL_LITE_START_FAILED: LOCAL_GAME_START_FAILED " + ex.GetType().Name);
+            }
+            _starting = false;
+            SetLiteButtonsInteractable(true);
+        }
+
+        private void SetLiteButtonsInteractable(bool value)
+        {
+            if (_playButton != null) _playButton.interactable = value;
+            if (_testButton != null) _testButton.interactable = value;
+            if (_quitButton != null) _quitButton.interactable = value;
+            foreach (Button button in _scenarioButtons) button.interactable = value;
         }
 
         public void OnQuitClicked()

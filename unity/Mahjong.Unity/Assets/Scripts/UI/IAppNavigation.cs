@@ -1,3 +1,4 @@
+#nullable enable
 using System.Threading.Tasks;
 
 namespace Mahjong.Unity.UI
@@ -79,5 +80,12 @@ namespace Mahjong.Unity.UI
         /// stable failure/cancel/busy result. Never throws to the UI caller.
         /// </summary>
         Task<LocalGameStartResult> StartLocalGameAsync();
+    }
+
+    public interface ILocalLiteNavigation
+    {
+        Task<LocalGameStartResult> StartLocalGameAsync(string? scenarioId);
+        Task<LocalGameStartResult> RestartLocalGameAsync();
+        Task<bool> ReturnToMenuLiteAsync();
     }
 }
