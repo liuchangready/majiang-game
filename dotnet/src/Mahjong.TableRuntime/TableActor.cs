@@ -79,6 +79,7 @@ namespace Mahjong.TableRuntime
         private ulong _nextStreamHandle;
 
         private RoundStateMachine _round;
+        private TableSnapshot? _latestSnapshot;
         private TableFuritenSnapshot _furiten;
         private CheatState? _cheat;
         private readonly CheatEconomyConfig? _cheatEconomy;
@@ -224,6 +225,7 @@ namespace Mahjong.TableRuntime
 
             _lastMonotonicMillis = initialMonotonic;
             _decisionClock.BeginRound(_round.RoundId, initialMonotonic);
+            _latestSnapshot = BuildSnapshot();
         }
 
         public string PublicationFault => _publicationFault;
@@ -930,6 +932,17 @@ namespace Mahjong.TableRuntime
         }
 
         /// <summary>
+        /// Lock-free last committed/lifecycle snapshot for bounded public observability. This
+        /// read never enters the actor control reserve; it may lag a currently-processing
+        /// message until that message completes.
+        /// </summary>
+        public TableSnapshot GetLatestSnapshotForObservation()
+        {
+            return Volatile.Read(ref _latestSnapshot) ?? throw new InvalidOperationException(
+                "The actor has not published its initial observation snapshot.");
+        }
+
+        /// <summary>
         /// Registers one trusted stream and queues its first full baseline in the same consumer
         /// turn. No public snapshot is read outside the actor and no subscription becomes
         /// visible after the baseline, so a commit can never land between "read state" and
@@ -1223,6 +1236,10 @@ namespace Mahjong.TableRuntime
             {
                 CompleteFault(message, exception);
                 SetFaulted(exception);
+            }
+            finally
+            {
+                Volatile.Write(ref _latestSnapshot, BuildSnapshot());
             }
         }
 
@@ -7929,6 +7946,17 @@ namespace Mahjong.TableRuntime
 
         private TableStreamControlResult ProcessSubscribeStream(TableStreamSubscribeRequest request)
         {
+            if (_options.RejectFinishedSubscriptions && _round.IsFinished)
+            {
+                return TableStreamControlResult.Failure(
+                    TableStreamControlStatus.Rejected,
+                    TableRuntimeReasonCode.ActorClosed,
+                    "New streams are refused after the authoritative RoundEnd.",
+                    null,
+                    _stateVersion,
+                    _controlVersion);
+            }
+
             TableStreamControlResult? guard = GuardStreamControl();
             if (guard != null)
             {

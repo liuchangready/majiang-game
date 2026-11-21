@@ -1034,6 +1034,37 @@ namespace Mahjong.TableService.Tests
             }
         }
 
+        [Fact]
+        public async Task FailedFirstAdmissionReleasesOnlyItsUnusedRoomSlot()
+        {
+            TableServiceOptions options = Options();
+            options.MaxRooms = 1;
+            var hosts = new InMemoryTableHostRegistry(
+                options,
+                new WireTableStreamContractCodec(),
+                SystemTableClock.Instance,
+                CryptographicTableRoundSource.Instance);
+
+            RoomHostAdmissionReservation failed = await hosts.BeginAdmissionAsync("expired-assignment-room");
+            await failed.DisposeAsync();
+            Assert.Empty(hosts.Hosts);
+
+            RoomHostAdmissionReservation first = await hosts.BeginAdmissionAsync("concurrent-room");
+            RoomHostAdmissionReservation second = await hosts.BeginAdmissionAsync("concurrent-room");
+            Assert.Same(first.Host, second.Host);
+            await first.DisposeAsync();
+            Assert.Single(hosts.Hosts);
+            second.MarkWelcomeDelivered();
+            await second.DisposeAsync();
+
+            await Assert.ThrowsAsync<TableServiceCapacityException>(
+                () => hosts.BeginAdmissionAsync("over-capacity-room"));
+            foreach (RoomHost active in hosts.Hosts)
+            {
+                await active.Actor.DisposeAsync();
+            }
+        }
+
         /// <summary>
         /// D-1-03 (round 3): the review's REAL-HANDLER interleave — B and C both commit their
         /// seat handovers while parked inside their WELCOME write (TCS-gated sockets, no

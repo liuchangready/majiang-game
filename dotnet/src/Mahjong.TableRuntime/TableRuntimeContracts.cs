@@ -65,6 +65,9 @@ namespace Mahjong.TableRuntime
         /// <summary>Additional bounded slots for control messages. Must be at least one.</summary>
         public int ControlReserve { get; set; } = 16;
 
+        /// <summary>Host policy: do not add a stream after the one authoritative RoundEnd.</summary>
+        public bool RejectFinishedSubscriptions { get; set; }
+
         /// <summary>Recent event window returned by the authority snapshot. Full replay is P3.2/P3.4.</summary>
         public int SnapshotEventWindow { get; set; } = 64;
 

@@ -30,6 +30,7 @@
     <Compile Include="..\Mahjong.P5.4b.B1.HttpsAdmission.Worker\HeartbeatBindingAuditChannel.cs" Link="B1\HeartbeatBindingAuditChannel.cs" />
     <Compile Include="..\Mahjong.P5.4b.B1.HttpsAdmission.Worker\HeartbeatLivenessGate.cs" Link="B1\HeartbeatLivenessGate.cs" />
     <Compile Include="..\Mahjong.P5.4b.B1.HttpsAdmission.Worker\PublicProjectionValidator.cs" Link="B1\PublicProjectionValidator.cs" />
+    <Compile Include="..\Mahjong.P5.4b.B1.HttpsAdmission.Worker\RawWssProbe.cs" Link="B1\RawWssProbe.cs" />
     <Compile Include="..\Mahjong.P5.4b.B1.HttpsAdmission.Worker\RealWssTableChannel.cs" Link="B1\RealWssTableChannel.cs" />
     <Compile Include="..\Mahjong.P5.4b.B1.HttpsAdmission.Worker\ReceiptLossChannel.cs" Link="B1\ReceiptLossChannel.cs" />
     <Compile Include="..\Mahjong.P5.4b.B1.HttpsAdmission.Worker\StrictRootTrust.cs" Link="B1\StrictRootTrust.cs" />

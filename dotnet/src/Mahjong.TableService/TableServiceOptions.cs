@@ -101,6 +101,22 @@ namespace Mahjong.TableService
         // reachable at a known address, so the entry point passes this to Kestrel.
         public int HttpPort { get; set; }
 
+        // The executable defaults to loopback. Remote interfaces require an explicitly
+        // configured certificate so a deployment cannot accidentally expose plaintext WSS.
+        public string BindAddress { get; set; } = "127.0.0.1";
+
+        /// <summary>Require online confirmation against the issuing Lobby before WELCOME.</summary>
+        public bool RequireLobbyAdmission { get; set; }
+
+        public string? LobbyAdmissionBaseUrl { get; set; }
+
+        public string? LobbyAdmissionSharedKey { get; set; }
+
+        public string? LobbyAdmissionTlsRootCertificatePath { get; set; }
+
+        /// <summary>Reject new WSS admission after the one authoritative RoundEnd (MVP mode).</summary>
+        public bool RejectFinishedAdmission { get; set; }
+
         // Durable port wiring (accepted P3.4 in-memory implementations; PG arrives with P5.2).
         public int LeaseTtlSeconds { get; set; } = 90;
 
@@ -168,6 +184,35 @@ namespace Mahjong.TableService
             RequireRange(RoomTickIntervalMs, 10, 60_000, nameof(RoomTickIntervalMs));
             RequireRange(LeaseTtlSeconds, 5, 3_600, nameof(LeaseTtlSeconds));
             RequireRange(HttpPort, 0, 65_535, nameof(HttpPort));
+            if (!System.Net.IPAddress.TryParse(BindAddress, out System.Net.IPAddress? address))
+            {
+                throw new ArgumentException("BindAddress must be an IP address.", nameof(BindAddress));
+            }
+
+            if (!System.Net.IPAddress.IsLoopback(address) && ServerCertificate == null)
+            {
+                throw new ArgumentException(
+                    "A TLS certificate is required when binding TableService to a non-loopback address.",
+                    nameof(ServerCertificate));
+            }
+
+            if (RequireLobbyAdmission &&
+                (!Uri.TryCreate(LobbyAdmissionBaseUrl, UriKind.Absolute, out Uri? lobbyUri) ||
+                 lobbyUri.Scheme != Uri.UriSchemeHttps ||
+                 string.IsNullOrWhiteSpace(LobbyAdmissionSharedKey) || LobbyAdmissionSharedKey.Length < 32))
+            {
+                throw new ArgumentException(
+                    "Online Lobby admission requires an HTTPS LobbyAdmissionBaseUrl and a shared key of at least 32 characters.",
+                    nameof(LobbyAdmissionBaseUrl));
+            }
+
+            if (!string.IsNullOrWhiteSpace(LobbyAdmissionTlsRootCertificatePath) &&
+                !System.IO.File.Exists(LobbyAdmissionTlsRootCertificatePath))
+            {
+                throw new ArgumentException(
+                    "LobbyAdmissionTlsRootCertificatePath does not exist.",
+                    nameof(LobbyAdmissionTlsRootCertificatePath));
+            }
 
             // P5.4b-A: a Postgres-mode host REQUIRES a connection string here and a payload
             // key from this field or MAHJONG_TABLE_PG_PAYLOAD_KEY (refused inside

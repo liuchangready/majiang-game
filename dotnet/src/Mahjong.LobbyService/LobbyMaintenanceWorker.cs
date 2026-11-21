@@ -35,6 +35,7 @@ namespace Mahjong.LobbyService
                 {
                     await _lobby.ExpireOnceAsync(stoppingToken).ConfigureAwait(false);
                     await _lobby.RunMatchmakingOnceAsync(stoppingToken).ConfigureAwait(false);
+                    await _lobby.RetryPendingRoomRetirementsOnceAsync(stoppingToken).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
                 {

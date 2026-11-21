@@ -1,4 +1,6 @@
 using System;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -57,7 +59,8 @@ namespace Mahjong.LobbyService
             WebApplication app,
             LobbyApplication lobby,
             ITableTicketSigner tickets,
-            ILobbyClock clock)
+            ILobbyClock clock,
+            LobbyOptions? options = null)
         {
             app.MapGet("/v1/capabilities", async context =>
             {
@@ -266,7 +269,54 @@ namespace Mahjong.LobbyService
                 SetNoStore(context);
                 await WriteResponseAsync(context, response).ConfigureAwait(false);
             });
+
+            app.MapPost("/internal/table-admissions/consume", async context =>
+            {
+                string? configuredKey = options?.TableServiceAdmissionSharedKey;
+                if (string.IsNullOrWhiteSpace(configuredKey) ||
+                    !FixedTimeKeyEquals(configuredKey, context.Request.Headers["X-Table-Admission-Key"].ToString()))
+                {
+                    await WriteErrorAsync(context, 401, "SERVICE_UNAUTHENTICATED", "The service credential was rejected.")
+                        .ConfigureAwait(false);
+                    return;
+                }
+
+                AdmissionConsumeRequest request = await ReadJsonAsync<AdmissionConsumeRequest>(context)
+                    .ConfigureAwait(false);
+                if (!Enum.TryParse(request.Role, ignoreCase: true, out LobbyRole role))
+                {
+                    throw new LobbyException(400, "MALFORMED_REQUEST", "The admission role is invalid.");
+                }
+
+                await lobby.ConsumeTableTicketAsync(
+                    request.Ticket,
+                    new TableTicketExpectation(
+                        request.RoomId,
+                        request.AssignmentId,
+                        role,
+                        request.SeatId,
+                        request.AccountId),
+                    context.RequestAborted).ConfigureAwait(false);
+                SetNoStore(context);
+                context.Response.StatusCode = 204;
+            });
         }
+
+        private static bool FixedTimeKeyEquals(string expected, string actual)
+        {
+            byte[] expectedBytes = Encoding.UTF8.GetBytes(expected);
+            byte[] actualBytes = Encoding.UTF8.GetBytes(actual);
+            return expectedBytes.Length == actualBytes.Length &&
+                   CryptographicOperations.FixedTimeEquals(expectedBytes, actualBytes);
+        }
+
+        private sealed record AdmissionConsumeRequest(
+            string Ticket,
+            string RoomId,
+            string AssignmentId,
+            string AccountId,
+            string Role,
+            int? SeatId);
 
         private static async Task<LobbySessionInfo> AuthenticateAsync(LobbyApplication lobby, HttpContext context)
         {

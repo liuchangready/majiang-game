@@ -148,6 +148,11 @@ namespace Mahjong.LobbyService
             CancellationToken cancellationToken);
     }
 
+    public interface IRoomProjectionRetirer
+    {
+        Task RetireFinishedRoomAsync(string roomId, CancellationToken cancellationToken);
+    }
+
     public sealed class EmptyRoomProjectionReader : IRoomProjectionReader
     {
         public Task<PublicRoomProjectionBatch> ReadAsync(

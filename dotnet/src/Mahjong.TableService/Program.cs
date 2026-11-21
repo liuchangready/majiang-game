@@ -40,7 +40,11 @@ namespace Mahjong.TableService
             TableServiceHostRuntime runtime;
             try
             {
-                runtime = TableServiceWebHost.Build(options, keys, IPAddress.Loopback, options.HttpPort);
+                runtime = TableServiceWebHost.Build(
+                    options,
+                    keys,
+                    IPAddress.Parse(options.BindAddress),
+                    options.HttpPort);
             }
             catch (Exception ex)
             {
@@ -89,6 +93,12 @@ namespace Mahjong.TableService
             options.RoomTickIntervalMs = RequireInt("ROOM_TICK_INTERVAL_MS", options.RoomTickIntervalMs);
             options.LeaseTtlSeconds = RequireInt("LEASE_TTL_SECONDS", options.LeaseTtlSeconds);
             options.HttpPort = RequireInt("HTTP_PORT", options.HttpPort);
+            options.BindAddress = RequireString("BIND_ADDRESS", options.BindAddress);
+            options.RequireLobbyAdmission = RequireBool("REQUIRE_LOBBY_ADMISSION", options.RequireLobbyAdmission);
+            options.LobbyAdmissionBaseUrl = OptionalString("LOBBY_ADMISSION_BASE_URL");
+            options.LobbyAdmissionSharedKey = OptionalString("LOBBY_ADMISSION_SHARED_KEY");
+            options.LobbyAdmissionTlsRootCertificatePath = OptionalString("LOBBY_ADMISSION_TLS_ROOT_CERTIFICATE_PATH");
+            options.RejectFinishedAdmission = RequireBool("REJECT_FINISHED_ADMISSION", options.RejectFinishedAdmission);
             options.AdminDrainToken = OptionalString("ADMIN_DRAIN_TOKEN");
             options.ServerCertificate = LoadServerCertificate();
             options.StoreMode = RequireStoreMode();

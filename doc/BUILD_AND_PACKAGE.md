@@ -1,5 +1,7 @@
 # 编译与出包
 
+Windows x64 双进程远端大厅发布、Kestrel TLS、服务配置和真实 Client 接入步骤见[Windows 远端大厅 MVP](REMOTE_SERVER_WINDOWS_MVP.md)。该发布入口不会改变 Unity 本地 UI 默认使用 LocalHost 的行为。
+
 核对起点：清理前快照 `e074806a39a674b898120c828038efcd1b5c58d7`。以下命令在当前任务工作树根目录执行；先核对 HEAD、工作树状态和脚本参数。`D:/majiang` 的其他 checkout 可能有独立修改，不能直接在那里执行。
 
 ## 工具和构建前置

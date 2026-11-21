@@ -143,6 +143,86 @@ namespace Mahjong.TableService.Tests
         }
 
         [Fact]
+        public async Task RetirementWaitsForDelayedTerminalDeliveryThenReleasesCapacity()
+        {
+            var options = new TableServiceOptions { MaxRooms = 1, CloseGraceMs = 1_000 };
+            var registry = new InMemoryTableHostRegistry(
+                options,
+                new WireTableStreamContractCodec(),
+                FrozenUtcClock.Instance,
+                new FixedRoundSource(DealerTsumoRound));
+            RoomHost room = registry.GetOrAdd("room-retire-delivery");
+            var delayedEndpoint = new WireTableStreamSink(4, 64 * 1024, 32 * 1024);
+            room.TrackSink(delayedEndpoint);
+
+            TableOperationResult settled = await room.Actor.SubmitSettlementAsync(new TableSettlementRequest(
+                new TableSettlementIntent("room-retire-delivery-r1", TableSettlementAction.Tsumo, 0),
+                new RequestId("req-retire-delivery"),
+                new StateVersion(0),
+                room.OwnerEpoch,
+                new ControlEpoch(0),
+                scopeId: room.ServiceScope.ScopeId,
+                api: "SUBMIT_ACTION",
+                payloadSha256: TablePayloadSha256.Compute(Encoding.UTF8.GetBytes("retire-delivery"))));
+            Assert.Equal(TableOperationStatus.Accepted, settled.Status);
+            Assert.True(room.Actor.GetLatestSnapshotForObservation().IsFinished);
+
+            Task<bool> retiring = registry.RetireFinishedAsync(room.RoomId, CancellationToken.None);
+            Task<bool> duplicateRetire = registry.RetireFinishedAsync(room.RoomId, CancellationToken.None);
+            Assert.False(retiring.IsCompleted, "the room slot remains reserved while an admitted endpoint has not completed its terminal send");
+            Assert.Single(registry.Hosts);
+
+            // Deterministic transport gate: this represents the delayed serialized WSS send
+            // completion for one endpoint. Releasing it permits retirement to finish.
+            delayedEndpoint.CompleteTerminalDelivery(delivered: true);
+            bool[] retirementResults = await Task.WhenAll(retiring, duplicateRetire).WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.All(retirementResults, Assert.True);
+            Assert.Empty(registry.Hosts);
+
+            RoomHost replacement = registry.GetOrAdd("room-after-retirement");
+            Assert.Single(registry.Hosts);
+            await replacement.Actor.DisposeAsync();
+        }
+
+        [Fact]
+        public async Task DisconnectedTerminalEndpointCannotHoldRoomCapacityIndefinitely()
+        {
+            var options = new TableServiceOptions { MaxRooms = 1, CloseGraceMs = 500 };
+            var registry = new InMemoryTableHostRegistry(
+                options,
+                new WireTableStreamContractCodec(),
+                FrozenUtcClock.Instance,
+                new FixedRoundSource(DealerTsumoRound));
+            RoomHost room = registry.GetOrAdd("room-retire-disconnected");
+            var disconnectedEndpoint = new WireTableStreamSink(4, 64 * 1024, 32 * 1024);
+            room.TrackSink(disconnectedEndpoint);
+            TableOperationResult settled = await room.Actor.SubmitSettlementAsync(new TableSettlementRequest(
+                new TableSettlementIntent("room-retire-disconnected-r1", TableSettlementAction.Tsumo, 0),
+                new RequestId("req-retire-disconnected"),
+                new StateVersion(0), room.OwnerEpoch, new ControlEpoch(0),
+                scopeId: room.ServiceScope.ScopeId,
+                api: "SUBMIT_ACTION",
+                payloadSha256: TablePayloadSha256.Compute(Encoding.UTF8.GetBytes("retire-disconnected"))));
+            Assert.Equal(TableOperationStatus.Accepted, settled.Status);
+
+            var elapsed = Stopwatch.StartNew();
+            bool retired = await registry.RetireFinishedAsync(room.RoomId, CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            // RoomHost intentionally tracks streams weakly. Keep the simulated disconnected
+            // endpoint alive through the bounded drain so the test measures a stalled send,
+            // rather than allowing GC to erase the endpoint before retirement observes it.
+            GC.KeepAlive(disconnectedEndpoint);
+            elapsed.Stop();
+            Assert.True(retired);
+            Assert.InRange(elapsed.Elapsed, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(5));
+            Assert.Empty(registry.Hosts);
+
+            RoomHost replacement = registry.GetOrAdd("room-after-disconnect");
+            Assert.Single(registry.Hosts);
+            await replacement.Actor.DisposeAsync();
+        }
+
+        [Fact]
         public async Task Ron_FromTrustedWindow_GoesThroughRealMapperActorAndRoundEnd_WithFinalScores()
         {
             await using TableServiceTestHost host = await TableServiceTestHost.StartAsync(

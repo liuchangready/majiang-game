@@ -1,14 +1,14 @@
 # Mahjong.LobbyService (P5.3)
 
-状态：**P5.3 独立组件实现；不是 G1/G3 通过，不是全链迁移通过。** 基线 `fb6f751`，工作树 `wt/v5-p53`。V4 仍是生产基线。
+状态：**P5.3 独立组件记录属于历史状态；此文档不声明 G1/G3、全链迁移、G2、设备或部署验收。** 历史记录中的基线 `fb6f751` / 工作树 `wt/v5-p53` 不是当前源码身份。当前仓库指南定义 V5 Unity+C# 为可构建产品实现，V5 G2 尚未验收。
 
-本工程只实现大厅：受限游客会话、公开目录、建房/加房/观战、匹配状态机、assignment/席位预订、短期一次性 `TableTicket`、JWKS/轮换、幂等回执。它不依赖 `Mahjong.Domain` / `Mahjong.TableRuntime` / `Mahjong.Client` / TableService，也不读取私有牌局状态。
+本工程实现受限游客会话、公开目录、建房/加房/观战、匹配状态机、assignment/席位预订、短期一次性 `TableTicket`、JWKS/轮换和幂等回执。大厅不依赖 `Mahjong.Domain` / `Mahjong.TableRuntime` / `Mahjong.Client`，不读取私有牌局状态。
 
 ## 边界
 
 - 唯一共享编译依赖：`Mahjong.Contracts`（协议版本常量）。
 - 唯一桌侧输入：`IRoomProjectionReader` 的公开 `room_projection`（roomId/lifecycle/人数/版本/更新时间）。不读 `table_event`、手牌、牌山、种子、出千账本、租约或 `ownerEpoch`。
-- TableService 不由本服务同步调用；真实 WSS 握手/准入属于 P5.1，当前未联调。
+- 内存部署可配置 `Lobby:TableServiceBaseUrl`，通过只读 HTTPS 公开投影在 `reconcile` 与 admission 前观察桌服生命周期；可选 `Lobby:TableServiceTlsRootCertificatePath` 仅添加指定 CA 信任并仍校验证书名、有效期和链。携带服务凭证的调用不跟随重定向。配置 URL 时还必须设置 `Lobby:TableServiceAdmissionSharedKey`，由桌服在 WELCOME 前调用受保护的大厅内部消费端点，以当前 assignment 状态作权威准入检查。终局对账落库后，大厅把桌服 retire 放入独立重试队列；桌服在有界等待在线终态帧发送或识别失联流后回收内存 actor。
 - TableTicket 只带 `assignmentId`，**不带 TableService `ownerEpoch`**。TableService 在 WELCOME 下发它自己的代次。
 
 ## HTTP API（本地/入口前置 TLS）
@@ -27,6 +27,7 @@
 | `GET /v1/match/tickets/{id}` | 查询匹配（仅 owner） | 只读 |
 | `POST /v1/match/tickets/{id}/cancel` | 取消/已终态幂等返回 | `Idempotency-Key` |
 | `POST /v1/table-tickets` | 按 assignment 换取短期票据 | `Idempotency-Key` |
+| `POST /internal/table-admissions/consume` | TableService 内部服务认证；核验当前 assignment 并消费 jti；拒绝过期/替换票 | `jti` 唯一 |
 | `GET /.well-known/jwks.json` | 公钥集（无私有参数） | 只读 |
 | `GET /health/live`、`/health/ready` | 存活/就绪 | 只读 |
 
@@ -51,10 +52,10 @@
 ### 房间终态对账（R4 修复）
 
 - 同 `rulesetVersion` 的公开投影 `CLOSED`/`FINISHED` 是权威终态信号：先在一个存储事务中把 `lobby.room.state` 单调置为 `CLOSED`、写 `closed_at`，并取消该房所有 `RESERVED|CONFIRMED` assignment，再让准入/票据操作以 `409 ROOM_CLOSED` 拒绝。
-- `JoinRoomAsync`/`SpectateRoomAsync`/`IssueTableTicketAsync`/`ConsumeTableTicketAsync` 在应用端口都执行该检查；已签发旧票据在关闭后消费会被拒绝，且不会写入 `table_ticket_consumption` 或 `table_confirmed_at`。HTTP join 只是其中一层，不是唯一防线。
+- `JoinRoomAsync`/`SpectateRoomAsync`/`IssueTableTicketAsync`/`ConsumeTableTicketAsync` 在应用端口都执行该检查；已签发旧票据在关闭、预留过期或 assignment 被替换后消费会被拒绝，HTTP join 只是其中一层，不是唯一防线。
 - `POST /v1/rooms/{id}/reconcile` 提供显式对账端口；重复调用幂等，终态落库后缺失/失败/旧 `OPEN|PLAYING` 投影不能重新开放房间。`CLOSED`/`FINISHED` 仅在与房间 `rulesetVersion` 相同时生效。
 - 对账幂等摘要只由稳定请求语义（操作名 + roomId）决定，**不包含**投影/终态等可变服务端观察。相同账号/roomId/requestId 的重试始终回放首次已提交响应，即使期间由其他请求完成终态关闭；新的观察必须使用新 requestId。同 key 换房间或换操作仍是 `REQUEST_ID_CONFLICT`。
-- 缺失/读取失败的投影仍是明确的最终一致降级：不关闭房间、不伪造终态，目录/详情标 `projectionStale=true`，准入继续按 lobby 自有状态处理。该边界不是 TableService 强一致保证。
+- 缺失/读取失败的投影仍是明确的最终一致降级：不关闭房间、不伪造终态，目录/详情标 `projectionStale=true`，准入继续按 lobby 自有状态处理。TableService 内存投影在配置 `TableServiceBaseUrl` 后可被读取，但 lobby/table 双进程内存状态仍不具备跨重启一致性。
 - 显式对账端点需要 bearer session + `Idempotency-Key`；它只依据公开投影和 lobby 自身状态，不读取 TableService 私有状态。
 - **回执优先（R6）**：Join/Spectate/Issue 等有副作用入口先按认证 principal + requestId + 稳定 payload digest 查询 `TryReplayAsync`；已提交回执在读取房间/assignment/投影前直接回放，终态后同 key 仍返回原 201/同 body，HTTP 带 `Idempotent-Replayed: true`。只有首次执行才读取可变状态；新 key 才执行终态拒绝。回放不新建 assignment、不签新 jti、不复活票据；旧票据 Consume 仍返回 `ROOM_CLOSED`。
 - 终态释放后全局 placement 栅栏解除，账号可加入其他房间；`CLOSED` 房间会从公开目录隐藏。
@@ -84,7 +85,7 @@ protocol_major  ruleset_version  projection_version
 
 - 签发同时持久化 `lobby.table_ticket` 行（jti/assignment/account/room/role/seat/exp/kid），不是纯无状态 JWT。
 - 新票据签发会把同 assignment 的旧活跃票据标记 `superseded_at`；重连用新票据，不延长旧票据。
-- `TableTicketConsumer`（应用端口，当前无公网 HTTP 路由）在**同一存储事务**内校验票据记录、assignment 席位、匹配票据，写 `table_ticket_consumption(jti 唯一)` 并确认 assignment/`table_confirmed_at`。重复 jti 返回 `TICKET_ALREADY_CONSUMED`；换新票据重连可再次消费，但不会产生第二个活跃席位。
+- `TableTicketConsumer` 在**同一存储事务**内校验票据记录、当前 assignment 席位、匹配票据和 reservation expiry，写 `table_ticket_consumption(jti 唯一)` 并确认 assignment/`table_confirmed_at`。配置内存远端大厅时，受共享服务密钥保护的内部 HTTP route 只供 TableService 调用。重复 jti 返回 `TICKET_ALREADY_CONSUMED`；换新票据重连可再次消费，但不会产生第二个活跃席位。
 - JWKS 只暴露 `kty/use/alg/kid/crv/x/y`；轮换保留旧公钥至 overlap 结束，`Retire` 后旧票据 `TICKET_KEY_UNKNOWN`。密钥不落日志/客户端。
 
 ## 存储与事务
@@ -95,6 +96,7 @@ protocol_major  ruleset_version  projection_version
 - `PostgresLobbyStore`：Npgsql 8.0.9 + PostgreSQL（timestamptz/部分唯一索引）。命令、回执、房间/assignment、匹配、票据消费同一事务；`lobby.request_receipt` 唯一键 + advisory lock；active seat/account/assignment 唯一部分索引是最终防双预订栅栏；票据/assignment/匹配行使用 `FOR UPDATE`（统一 assignment → ticket → match 锁序）。
 - 迁移：`Migrations/001_lobby.sql`（schema `lobby`）。`Lobby:AutoMigrate=true` 仅用于受控环境显式执行；默认关闭。
 - 公开投影读取：`PostgresRoomProjectionReader` 只 SELECT `{ProjectionSchema}.room_projection` 的公开列；表由 P5.1/TableService 拥有，本迁移不创建。
+- 内存远端大厅：`HttpRoomProjectionReader` 读取 TableService `/internal/rooms/{roomId}/projection`；桌服输出 room lifecycle、座位/观战数、公开版本、规则版本和时间，不返回身份、手牌、分数、事件详情或种子。Room projection 来自 actor 无锁发布快照且有界并发；只有大厅将终态 `CLOSED` 落库后才会发起带服务密钥的 `/internal/rooms/{roomId}/retire`。桌服回收 actor/席位资源，同时保留最长 ticket TTL + skew 的 room tombstone；旧有效窗内票据不能重新创建该房，票据过期后由严格 validator 拒绝。
 
 ## 临时产品限制（未替产品定案）
 
@@ -120,7 +122,7 @@ $env:MAHJONG_LOBBY_TEST_POSTGRES='Host=...;Database=...;Username=...;Password=..
 D:\Unity\dotnet\dotnet.exe test dotnet/tests/Mahjong.LobbyService.Tests/Mahjong.LobbyService.Tests.csproj -c Release
 ```
 
-生产启动必须提供 `Lobby:TicketPrivateKeyPem`（或密钥库等价物）；`Production` 下内存存储和临时密钥被拒绝。HTTPS 由受控入口终止，本任务未配置证书/反向代理。
+生产启动必须提供 `Lobby:TicketPrivateKeyPem`（或密钥库等价物）；`Production` 下内存存储默认拒绝，只有设置 `AllowInMemoryStorageInProduction=true` 才能用于明确接受易失状态的部署。Lobby HTTPS 证书可由 Kestrel 标准配置提供。Windows 双服务发布、证书、票据键和真实 Client 接入步骤见 [Windows 远端大厅 MVP](../../../doc/REMOTE_SERVER_WINDOWS_MVP.md)。
 
 ## 已覆盖 / 未覆盖
 
@@ -130,7 +132,7 @@ D:\Unity\dotnet\dotnet.exe test dotnet/tests/Mahjong.LobbyService.Tests/Mahjong.
 
 - 真实 PostgreSQL 事务/唯一约束/锁序/迁移执行：未设置 `MAHJONG_LOBBY_TEST_POSTGRES`，测试显式 Skip；不能把内存测试称为持久化通过。
 - 真实 HTTPS/TLS、反向代理、证书轮换、公网入口：未运行。
-- 真实 TableService WSS 握手/准入/租约/ownerEpoch 校验：P5.1 未完成，未联调。
+- P5.1 WSS/票据/会话隔离和 P5.4b B2 终态覆盖由对应 TableService/Client/B2 测试证明；本 README 不将组件结果表述为 G2、Unity、设备、公网或上线验收。
 - 观战推送/WSS `/v1/lobby`、观战延迟、离线推送：未实现。
 - 会话刷新/登出/删号、账号/资产/OIDC、数据保留清理/导出、限流、审计导出：未实现。
 - 游客 bootstrap 丢失后的恢复/迁移：未实现；以新 bootstrap 创建新身份，不把 deviceId 当恢复凭据。
