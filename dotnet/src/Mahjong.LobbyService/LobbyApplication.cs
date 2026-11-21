@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -20,6 +21,8 @@ namespace Mahjong.LobbyService
         private readonly LobbyOptions _options;
         private readonly IRoomProjectionReader _projections;
         private readonly ILogger<LobbyApplication>? _logger;
+        private readonly ConcurrentDictionary<string, byte> _pendingRoomRetirements =
+            new ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
 
         public LobbyApplication(
             ILobbyStore store,
@@ -65,6 +68,43 @@ namespace Mahjong.LobbyService
             });
 
         public ILobbyStore Store => _store;
+
+        /// <summary>Retries terminal runtime cleanup independently from the request that committed CLOSED.</summary>
+        public async Task RetryPendingRoomRetirementsOnceAsync(CancellationToken cancellationToken)
+        {
+            if (_projections is not IRoomProjectionRetirer retirer)
+            {
+                return;
+            }
+
+            foreach (string roomId in _pendingRoomRetirements.Keys.Take(16))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await TryRetireRoomRuntimeAsync(retirer, roomId, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        private async Task TryRetireRoomRuntimeAsync(
+            IRoomProjectionRetirer retirer,
+            string roomId,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                await retirer.RetireFinishedRoomAsync(roomId, cancellationToken).ConfigureAwait(false);
+                _pendingRoomRetirements.TryRemove(roomId, out _);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                _logger?.LogWarning(
+                    "Finished table runtime retirement remains pending. Error={ErrorType}",
+                    exception.GetType().Name);
+            }
+        }
 
         public async Task<LobbySessionInfo> AuthenticateAsync(string? sessionToken, CancellationToken cancellationToken)
         {
@@ -168,7 +208,7 @@ namespace Mahjong.LobbyService
             {
                 return await _projections.ReadAsync(roomIds, cancellationToken).ConfigureAwait(false);
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 throw;
             }

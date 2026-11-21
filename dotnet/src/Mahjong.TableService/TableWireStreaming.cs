@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
@@ -69,10 +70,13 @@ namespace Mahjong.TableService
         private readonly WireTableStreamSink _sink;
         private int _released;
 
-        internal WireStreamFrameLease(WireTableStreamSink sink, byte[] payload)
+        private readonly bool _terminal;
+
+        internal WireStreamFrameLease(WireTableStreamSink sink, byte[] payload, bool terminal)
         {
             _sink = sink;
             Payload = payload;
+            _terminal = terminal;
         }
 
         public byte[] Payload { get; }
@@ -85,11 +89,15 @@ namespace Mahjong.TableService
         /// Releases the frame's reserved bytes back to the sink budget. Exactly once: send
         /// completion, a send fault and cancellation all funnel through this single release.
         /// </summary>
-        public void Release()
+        public void Release(bool delivered)
         {
             if (Interlocked.Exchange(ref _released, 1) == 0)
             {
                 _sink.ReleaseInflight(Payload.Length);
+                if (_terminal)
+                {
+                    _sink.CompleteTerminalDelivery(delivered);
+                }
             }
         }
     }
@@ -133,6 +141,9 @@ namespace Mahjong.TableService
         private TaskCompletionSource<TableStreamFrame>? _captureSource;
         private TableStreamFrame? _capturedFullSnapshot;
         private bool _terminating;
+        private byte[]? _terminalPayload;
+        private readonly TaskCompletionSource<bool> _terminalDelivery =
+            new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         /// <summary>Mutable bytes still held in this host channel; only advanced under the gate.</summary>
         private int _queuedBytes;
@@ -290,17 +301,28 @@ namespace Mahjong.TableService
                 _queuedBytes += length;
             }
 
-            return new ValueTask(WriteAndReserveAsync(payload, length, cancellationToken));
+            bool terminal = frame.Events.Any(item => item.Type == ProtocolEventType.RoundEnded);
+            if (terminal)
+            {
+                Interlocked.CompareExchange(ref _terminalPayload, payload, null);
+            }
+
+            return new ValueTask(WriteAndReserveAsync(payload, length, terminal, cancellationToken));
         }
 
         private async Task WriteAndReserveAsync(
             byte[] payload,
             int length,
+            bool terminal,
             CancellationToken cancellationToken)
         {
             try
             {
                 await _outbound.Writer.WriteAsync(payload, cancellationToken).ConfigureAwait(false);
+                if (terminal)
+                {
+                    await _terminalDelivery.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+                }
             }
             catch
             {
@@ -456,6 +478,7 @@ namespace Mahjong.TableService
                 reasonCode,
                 detail);
             _termination = termination;
+            _terminalDelivery.TrySetResult(false);
             Terminated?.Invoke(termination);
         }
 
@@ -586,6 +609,7 @@ namespace Mahjong.TableService
             }
 
             _termination = termination;
+            _terminalDelivery.TrySetResult(false);
             Terminated?.Invoke(termination);
         }
 
@@ -616,13 +640,20 @@ namespace Mahjong.TableService
                 }
 
                 _sink.MoveToInflight(payload.Length);
-                item = new WireStreamFrameLease(_sink, payload);
+                item = new WireStreamFrameLease(
+                    _sink,
+                    payload,
+                    ReferenceEquals(payload, Volatile.Read(ref _sink._terminalPayload)));
                 return true;
             }
 
             public override ValueTask<bool> WaitToReadAsync(CancellationToken cancellationToken = default) =>
                 _inner.WaitToReadAsync(cancellationToken);
         }
+
+        internal Task<bool> WaitForTerminalDeliveryAsync() => _terminalDelivery.Task;
+
+        internal void CompleteTerminalDelivery(bool delivered) => _terminalDelivery.TrySetResult(delivered);
     }
 
     public enum TableBeamSwapResolutionStatus : byte

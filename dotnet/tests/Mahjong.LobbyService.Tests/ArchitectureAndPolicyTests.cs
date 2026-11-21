@@ -96,5 +96,17 @@ namespace Mahjong.LobbyService.Tests
             var options = new LobbyOptions { StorageProvider = "Postgres" };
             Assert.Throws<LobbyOptionsException>(() => options.Validate("Development"));
         }
+
+        [Fact]
+        public void CredentialedTableServiceUrlRejectsPlainHttp()
+        {
+            var options = new LobbyOptions
+            {
+                TableServiceBaseUrl = "http://127.0.0.1:5184",
+                TableServiceAdmissionSharedKey = new string('k', 48)
+            };
+
+            Assert.Throws<LobbyOptionsException>(() => options.Validate("Development"));
+        }
     }
 }

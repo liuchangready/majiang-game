@@ -81,6 +81,68 @@ namespace Mahjong.LobbyService.Tests
         }
 
         [Fact]
+        public async Task InternalProjectionTimeoutDegradesToLobbyOwnedRoomSummary()
+        {
+            await using LobbyFixture fixture = LobbyFixture.Create(projections: new FailingProjectionReader(
+                new TaskCanceledException("simulated HttpClient timeout")));
+            GuestSessionView host = await fixture.CreateGuestAsync("projection-timeout-host");
+            CreateRoomView room = await fixture.CreateRoomAsync(host);
+
+            LobbyResponse response = await fixture.Application.GetRoomAsync(room.Room.RoomId, CancellationToken.None);
+            Assert.Equal(200, response.StatusCode);
+            RoomSummaryView summary = LobbyJson.Deserialize<RoomSummaryView>(response.Json);
+            Assert.Equal(room.Room.RoomId, summary.RoomId);
+            Assert.Equal("OPEN", summary.State);
+            Assert.True(summary.ProjectionStale);
+        }
+
+        [Fact]
+        public async Task CallerCancellationStillPropagatesFromProjectionRead()
+        {
+            using var cancellation = new CancellationTokenSource();
+            await using LobbyFixture fixture = LobbyFixture.Create(projections: new CallerCancellingProjectionReader(cancellation));
+            GuestSessionView host = await fixture.CreateGuestAsync("projection-cancel-host");
+            CreateRoomView room = await fixture.CreateRoomAsync(host);
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => fixture.Application.GetRoomAsync(room.Room.RoomId, cancellation.Token));
+        }
+
+        private sealed class FailingProjectionReader : IRoomProjectionReader
+        {
+            private readonly Exception _failure;
+
+            public FailingProjectionReader(Exception failure) => _failure = failure;
+
+            public Task<PublicRoomProjectionBatch> ReadAsync(
+                IReadOnlyList<string> roomIds,
+                CancellationToken cancellationToken)
+            {
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    return Task.FromCanceled<PublicRoomProjectionBatch>(cancellationToken);
+                }
+
+                return Task.FromException<PublicRoomProjectionBatch>(_failure);
+            }
+        }
+
+        private sealed class CallerCancellingProjectionReader : IRoomProjectionReader
+        {
+            private readonly CancellationTokenSource _cancellation;
+
+            public CallerCancellingProjectionReader(CancellationTokenSource cancellation) => _cancellation = cancellation;
+
+            public Task<PublicRoomProjectionBatch> ReadAsync(
+                IReadOnlyList<string> roomIds,
+                CancellationToken cancellationToken)
+            {
+                _cancellation.Cancel();
+                return Task.FromCanceled<PublicRoomProjectionBatch>(cancellationToken);
+            }
+        }
+
+        [Fact]
         public async Task TicketIssuanceIsRejectedAfterTerminalProjection()
         {
             var projection = new MutableProjectionReader();
@@ -524,6 +586,76 @@ namespace Mahjong.LobbyService.Tests
         }
 
         [Fact]
+        public async Task FailedRetirementIsRetriedOnSameKeyWhileReceiptRemainsStable()
+        {
+            var projection = new RetryRetirementProjectionReader();
+            await using LobbyFixture fixture = LobbyFixture.Create(projections: projection);
+            GuestSessionView host = await fixture.CreateGuestAsync("retire-retry-host");
+            CreateRoomView room = await fixture.CreateRoomAsync(host);
+            LobbySessionInfo session = await fixture.AuthenticateAsync(host);
+            projection.Set(room.Room.RoomId, "CLOSED", fixture.Clock.UtcNow.AddSeconds(1));
+            projection.FailRetirementCount = 1;
+            string key = LobbyFixture.NewRequestId();
+
+            LobbyResponse first = await fixture.Application.ReconcileRoomAsync(session.Account, room.Room.RoomId, key, default);
+            Assert.Equal(1, projection.RetirementAttempts);
+            Assert.False(projection.Retired);
+
+            LobbyResponse retry = await fixture.Application.ReconcileRoomAsync(session.Account, room.Room.RoomId, key, default);
+            Assert.True(retry.Replayed);
+            Assert.Equal(first.StatusCode, retry.StatusCode);
+            Assert.Equal(first.Json, retry.Json);
+            Assert.Equal(2, projection.RetirementAttempts);
+            Assert.True(projection.Retired);
+        }
+
+        [Fact]
+        public async Task PendingRetirementIsRetriedByMaintenanceWithoutAnotherClientKey()
+        {
+            var projection = new RetryRetirementProjectionReader();
+            await using LobbyFixture fixture = LobbyFixture.Create(projections: projection);
+            GuestSessionView host = await fixture.CreateGuestAsync("retire-maintenance-host");
+            CreateRoomView room = await fixture.CreateRoomAsync(host);
+            LobbySessionInfo session = await fixture.AuthenticateAsync(host);
+            projection.Set(room.Room.RoomId, "CLOSED", fixture.Clock.UtcNow.AddSeconds(1));
+            projection.FailRetirementCount = 1;
+
+            await fixture.Application.ReconcileRoomAsync(
+                session.Account, room.Room.RoomId, LobbyFixture.NewRequestId(), default);
+            Assert.False(projection.Retired);
+
+            await fixture.Application.RetryPendingRoomRetirementsOnceAsync(default);
+            Assert.Equal(2, projection.RetirementAttempts);
+            Assert.True(projection.Retired);
+        }
+
+        [Fact]
+        public async Task CallerCancellationAfterClosedCommitLeavesSameKeyRetirementRetryable()
+        {
+            var projection = new RetryRetirementProjectionReader();
+            await using LobbyFixture fixture = LobbyFixture.Create(projections: projection);
+            GuestSessionView host = await fixture.CreateGuestAsync("retire-cancel-host");
+            CreateRoomView room = await fixture.CreateRoomAsync(host);
+            LobbySessionInfo session = await fixture.AuthenticateAsync(host);
+            projection.Set(room.Room.RoomId, "CLOSED", fixture.Clock.UtcNow.AddSeconds(1));
+            using var cancellation = new CancellationTokenSource();
+            projection.CancelNextRetirement = cancellation;
+            string key = LobbyFixture.NewRequestId();
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => fixture.Application.ReconcileRoomAsync(
+                session.Account, room.Room.RoomId, key, cancellation.Token));
+            LobbyRoomSnapshot? closed = await fixture.Application.Store.FindRoomSnapshotAsync(
+                room.Room.RoomId, fixture.Clock.UtcNow, default);
+            Assert.Equal(LobbyRoomState.Closed, closed!.Room.State);
+            Assert.False(projection.Retired);
+
+            LobbyResponse retry = await fixture.Application.ReconcileRoomAsync(session.Account, room.Room.RoomId, key, default);
+            Assert.True(retry.Replayed);
+            Assert.Equal(2, projection.RetirementAttempts);
+            Assert.True(projection.Retired);
+        }
+
+        [Fact]
         public async Task SameReconcileKeyForDifferentOperationIsARealConflict()
         {
             var projection = new MutableProjectionReader();
@@ -648,6 +780,41 @@ namespace Mahjong.LobbyService.Tests
                     .Select(id => _items[id])
                     .ToList();
                 return Task.FromResult(new PublicRoomProjectionBatch(items));
+            }
+        }
+
+        private sealed class RetryRetirementProjectionReader : IRoomProjectionReader, IRoomProjectionRetirer
+        {
+            private readonly MutableProjectionReader _inner = new MutableProjectionReader();
+            public int FailRetirementCount { get; set; }
+            public int RetirementAttempts { get; private set; }
+            public bool Retired { get; private set; }
+            public CancellationTokenSource? CancelNextRetirement { get; set; }
+
+            public void Set(string roomId, string lifecycle, DateTimeOffset updatedAt) => _inner.Set(roomId, lifecycle, updatedAt);
+            public Task<PublicRoomProjectionBatch> ReadAsync(IReadOnlyList<string> roomIds, CancellationToken cancellationToken) =>
+                _inner.ReadAsync(roomIds, cancellationToken);
+
+            public Task RetireFinishedRoomAsync(string roomId, CancellationToken cancellationToken)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                RetirementAttempts++;
+                CancellationTokenSource? cancel = CancelNextRetirement;
+                CancelNextRetirement = null;
+                if (cancel != null)
+                {
+                    cancel.Cancel();
+                    return Task.FromCanceled(cancel.Token);
+                }
+
+                if (FailRetirementCount > 0)
+                {
+                    FailRetirementCount--;
+                    return Task.FromException(new TaskCanceledException("simulated retirement request timeout"));
+                }
+
+                Retired = true;
+                return Task.CompletedTask;
             }
         }
     }

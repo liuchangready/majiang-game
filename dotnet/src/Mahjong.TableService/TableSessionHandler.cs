@@ -36,6 +36,7 @@ namespace Mahjong.TableService
         private readonly DrainState _drain;
         private readonly TableTicketValidator _validator;
         private readonly ITicketConsumptionRegistry _consumption;
+        private readonly ITableTicketAdmissionAuthority _admissionAuthority;
         private readonly ITableSessionDirectory _sessions;
         private readonly ITableHostRegistry _hosts;
         private readonly ILogger _logger;
@@ -44,6 +45,7 @@ namespace Mahjong.TableService
         // Connection state (written once by admission; read-only afterwards).
         private TableConnectionIdentity? _identity;
         private RoomHost? _host;
+        private RoomHostAdmissionReservation? _admissionReservation;
         private WireTableStreamSink? _sink;
         private TableStreamHandle? _handle;
         private string? _sessionShort;
@@ -131,7 +133,8 @@ namespace Mahjong.TableService
             ITableSessionDirectory sessions,
             ITableHostRegistry hosts,
             ILogger logger,
-            long connectionEpoch)
+            long connectionEpoch,
+            ITableTicketAdmissionAuthority? admissionAuthority = null)
         {
             _ws = webSocket ?? throw new ArgumentNullException(nameof(webSocket));
             _admissionRoom = admissionRoom;
@@ -139,6 +142,7 @@ namespace Mahjong.TableService
             _drain = drain ?? throw new ArgumentNullException(nameof(drain));
             _validator = validator ?? throw new ArgumentNullException(nameof(validator));
             _consumption = consumption ?? throw new ArgumentNullException(nameof(consumption));
+            _admissionAuthority = admissionAuthority ?? new LocalTicketAdmissionAuthority();
             _sessions = sessions ?? throw new ArgumentNullException(nameof(sessions));
             _hosts = hosts ?? throw new ArgumentNullException(nameof(hosts));
             _logger = logger;
@@ -335,6 +339,7 @@ namespace Mahjong.TableService
             finally
             {
                 await TeardownAsync().ConfigureAwait(false);
+                await ReleaseAdmissionReservationAsync().ConfigureAwait(false);
                 // The peer's close echo (when the peer sends one) is consumed by the
                 // session's OWN parked read — a second concurrent ReceiveAsync on the
                 // same socket is illegal, so the classic drain below can only run once
@@ -663,16 +668,18 @@ namespace Mahjong.TableService
                             // release path covers success, fault and cancellation alike.
                             while (_sink!.Reader.TryRead(out WireStreamFrameLease? lease))
                             {
+                                bool delivered = false;
                                 try
                                 {
                                     await SendFrameOrFailAsync(
                                         lease.Payload,
                                         WebSocketMessageType.Binary,
                                         stopping).ConfigureAwait(false);
+                                    delivered = true;
                                 }
                                 finally
                                 {
-                                    lease.Release();
+                                    lease.Release(delivered);
                                 }
                             }
 
@@ -932,12 +939,15 @@ namespace Mahjong.TableService
             {
                 // Durable admission is REAL async work (bootstrap/cold-recovery database
                 // I/O): await it on the receive chain — never block this thread on it.
-                host = await _hosts.GetOrAddAsync(_admissionRoom).ConfigureAwait(false);
+                _admissionReservation = await _hosts.BeginAdmissionAsync(_admissionRoom).ConfigureAwait(false);
+                host = _admissionReservation.Host;
             }
-            catch (TableServiceCapacityException)
+            catch (TableServiceCapacityException capacity)
             {
-                LogRedacted("admission refused", "code", "SERVER_BUSY", "room", _admissionRoom);
-                throw new AdmissionClosedException(Directive(ProtocolErrorCode.ServerBusy));
+                bool retired = string.Equals(capacity.Code, "ROOM_RETIRED", StringComparison.Ordinal);
+                LogRedacted("admission refused", "code", retired ? "ROOM_RETIRED" : "SERVER_BUSY", "room", _admissionRoom);
+                throw new AdmissionClosedException(Directive(
+                    retired ? ProtocolErrorCode.InvalidToken : ProtocolErrorCode.ServerBusy));
             }
 
             if (host.AdmissionStopped)
@@ -980,6 +990,12 @@ namespace Mahjong.TableService
                 throw new AdmissionClosedException(Directive(ProtocolErrorCode.LeaseLost));
             }
 
+            if (_options.RejectFinishedAdmission && authority.IsFinished)
+            {
+                LogRedacted("admission refused after RoundEnd", "room", _admissionRoom);
+                throw new AdmissionClosedException(Directive(ProtocolErrorCode.InvalidToken));
+            }
+
             // 6. One-time consumption + seat uniqueness reserves ???PROVISIONAL. Every refusal
             // here has zero side effects.
             TicketConsumptionOutcome consumed = _consumption.Consume(ticket, sessionId, DateTimeOffset.UtcNow);
@@ -992,6 +1008,30 @@ namespace Mahjong.TableService
             // From here every failure rolls the transaction back through Release(sessionId).
             try
             {
+                bool authorized;
+                try
+                {
+                    authorized = await _admissionAuthority.ConfirmCurrentAssignmentAsync(
+                        ticket,
+                        hello.Ticket,
+                        stopping).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (stopping.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception authorityFault)
+                {
+                    LogRedacted("lobby admission authority unavailable", "code", Short(authorityFault.GetType().Name), "room", _admissionRoom);
+                    throw new AdmissionClosedException(Directive(ProtocolErrorCode.ServerBusy));
+                }
+
+                if (!authorized)
+                {
+                    LogRedacted("lobby rejected stale assignment", "room", _admissionRoom);
+                    throw new AdmissionClosedException(Directive(ProtocolErrorCode.InvalidToken));
+                }
+
                 // Register BEFORE the commit (the displaced side must always be reachable by
                 // the committing side ???the handover race the review pinned).
                 _sessions.Register(sessionId, OnDisplacedByNewConnection);
@@ -1126,6 +1166,8 @@ namespace Mahjong.TableService
 
                 _welcomeSent = true;
                 _issuedScopeId = null;
+                _admissionReservation?.MarkWelcomeDelivered();
+                await ReleaseAdmissionReservationAsync().ConfigureAwait(false);
 
                 // Only after the WELCOME is delivered does THIS admission resolve the seat
                 // handover (D-1-03 round 5): EVICT-ON-WELCOME is the registry's own
@@ -1210,6 +1252,16 @@ namespace Mahjong.TableService
                 // transaction back: no hanging seats, subscriptions or sessions.
                 _consumption.Release(sessionId);
                 throw;
+            }
+        }
+
+        private async Task ReleaseAdmissionReservationAsync()
+        {
+            RoomHostAdmissionReservation? reservation = _admissionReservation;
+            _admissionReservation = null;
+            if (reservation != null)
+            {
+                await reservation.DisposeAsync().ConfigureAwait(false);
             }
         }
 

@@ -91,7 +91,7 @@ namespace Mahjong.TableService
 
             builder.WebHost.ConfigureKestrel(kestrel =>
             {
-                IPAddress address = bindAddress ?? IPAddress.Loopback;
+                IPAddress address = bindAddress ?? IPAddress.Parse(options.BindAddress);
                 kestrel.Listen(address, bindPort, listen =>
                 {
                     listen.Protocols = HttpProtocols.Http1;
@@ -106,9 +106,20 @@ namespace Mahjong.TableService
             builder.Services.AddSingleton(options);
             builder.Services.AddSingleton(ticketKeys);
             builder.Services.AddSingleton<TableTicketValidator>();
+            if (options.RequireLobbyAdmission)
+            {
+                builder.Services.AddSingleton<LobbyTicketAdmissionAuthority>();
+                builder.Services.AddSingleton<ITableTicketAdmissionAuthority>(sp =>
+                    sp.GetRequiredService<LobbyTicketAdmissionAuthority>());
+            }
+            else
+            {
+                builder.Services.AddSingleton<ITableTicketAdmissionAuthority, LocalTicketAdmissionAuthority>();
+            }
             builder.Services.AddSingleton<DrainState>();
-            builder.Services.AddSingleton<ITicketConsumptionRegistry>(_ =>
-                new InMemoryTicketConsumptionRegistry(options));
+            builder.Services.AddSingleton(new SemaphoreSlim(8, 8));
+            var ticketConsumption = new InMemoryTicketConsumptionRegistry(options);
+            builder.Services.AddSingleton<ITicketConsumptionRegistry>(ticketConsumption);
             builder.Services.AddSingleton<ITableSessionDirectory, InMemorySessionDirectory>();
             builder.Services.AddSingleton<ITableStreamContractCodec, WireTableStreamContractCodec>();
             ITableClock clock = testClock ?? SystemTableClock.Instance;
@@ -168,7 +179,8 @@ namespace Mahjong.TableService
                     options,
                     new WireTableStreamContractCodec(),
                     clock,
-                    roundSource ?? CryptographicTableRoundSource.Instance);
+                    roundSource ?? CryptographicTableRoundSource.Instance,
+                    ticketConsumption);
             }
 
             builder.Services.AddSingleton<ITableHostRegistry>(hostRegistry);
@@ -219,6 +231,8 @@ namespace Mahjong.TableService
                 ITableSessionDirectory sessions =
                     context.RequestServices.GetRequiredService<ITableSessionDirectory>();
                 ITableHostRegistry hosts = context.RequestServices.GetRequiredService<ITableHostRegistry>();
+                ITableTicketAdmissionAuthority admissionAuthority =
+                    context.RequestServices.GetRequiredService<ITableTicketAdmissionAuthority>();
                 ILogger<TableSessionHandler> logger =
                     context.RequestServices.GetRequiredService<ILogger<TableSessionHandler>>();
 
@@ -233,8 +247,100 @@ namespace Mahjong.TableService
                     sessions,
                     hosts,
                     logger,
-                    connectionEpoch);
+                    connectionEpoch,
+                    admissionAuthority);
                 await handler.RunAsync(context.RequestAborted).ConfigureAwait(false);
+            });
+
+            // Lobby reconciliation reads only this public lifecycle/occupancy projection.
+            // It is deliberately separate from player snapshots and never returns scores,
+            // hands, event payloads, seeds or ticket/session identities.
+            app.MapGet("/internal/rooms/{roomId}/projection", async (HttpContext context) =>
+            {
+                SemaphoreSlim projectionLimit = context.RequestServices.GetRequiredService<SemaphoreSlim>();
+                if (!await projectionLimit.WaitAsync(0, context.RequestAborted).ConfigureAwait(false))
+                {
+                    context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+                    context.Response.Headers.RetryAfter = "1";
+                    return;
+                }
+
+                try
+                {
+                string roomId = (string)context.Request.RouteValues["roomId"]!;
+                if (!IsValidRoomId(roomId))
+                {
+                    context.Response.StatusCode = StatusCodes.Status400BadRequest;
+                    return;
+                }
+
+                ITableHostRegistry hosts = context.RequestServices.GetRequiredService<ITableHostRegistry>();
+                if (!hosts.TryGet(roomId, out RoomHost? host) || host == null)
+                {
+                    context.Response.StatusCode = StatusCodes.Status404NotFound;
+                    return;
+                }
+
+                TableSnapshot snapshot = host.Actor.GetLatestSnapshotForObservation();
+                bool terminal = snapshot.IsFinished ||
+                                snapshot.Lifecycle == TableActorLifecycle.Closed ||
+                                snapshot.Lifecycle == TableActorLifecycle.Faulted;
+                ITicketConsumptionRegistry registry =
+                    context.RequestServices.GetRequiredService<ITicketConsumptionRegistry>();
+                (int seats, int spectators) = registry is InMemoryTicketConsumptionRegistry memory
+                    ? memory.GetRoomOccupancy(roomId)
+                    : (0, 0);
+                context.Response.ContentType = "application/json; charset=utf-8";
+                await System.Text.Json.JsonSerializer.SerializeAsync(
+                    context.Response.Body,
+                    new
+                    {
+                        roomId,
+                        lifecycle = terminal ? "FINISHED" : "PLAYING",
+                        seatsOccupied = seats,
+                        spectatorCount = spectators,
+                        publicVersion = snapshot.StateVersion.Value,
+                        rulesetVersion = ProtocolConstants.RulesetVersion,
+                        updatedAt = DateTimeOffset.UtcNow
+                    },
+                    cancellationToken: context.RequestAborted).ConfigureAwait(false);
+                }
+                finally
+                {
+                    projectionLimit.Release();
+                }
+            });
+
+            app.MapPost("/internal/rooms/{roomId}/retire", async (HttpContext context) =>
+            {
+                if (!options.RequireLobbyAdmission ||
+                    !IsConstantTimeTokenMatch(
+                        context.Request.Headers["X-Table-Admission-Key"].ToString(),
+                        options.LobbyAdmissionSharedKey ?? string.Empty))
+                {
+                    context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                    return;
+                }
+
+                string roomId = (string)context.Request.RouteValues["roomId"]!;
+                if (!IsValidRoomId(roomId))
+                {
+                    context.Response.StatusCode = StatusCodes.Status400BadRequest;
+                    return;
+                }
+
+                ITableHostRegistry hosts = context.RequestServices.GetRequiredService<ITableHostRegistry>();
+                if (!hosts.TryGet(roomId, out _))
+                {
+                    context.Response.StatusCode = StatusCodes.Status204NoContent;
+                    return;
+                }
+
+                bool retired = await hosts.RetireFinishedAsync(roomId, context.RequestAborted)
+                    .ConfigureAwait(false);
+                context.Response.StatusCode = retired
+                    ? StatusCodes.Status204NoContent
+                    : StatusCodes.Status409Conflict;
             });
 
             app.MapGet(LivePath, (HttpContext context) =>

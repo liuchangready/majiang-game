@@ -27,7 +27,12 @@ ILobbyStore store = lobbyOptions.UsesPostgres
 
 IRoomProjectionReader projections = lobbyOptions.UsesPostgres
     ? new PostgresRoomProjectionReader(lobbyOptions.PostgresConnectionString!, lobbyOptions.ProjectionSchema)
-    : new EmptyRoomProjectionReader();
+    : !string.IsNullOrWhiteSpace(lobbyOptions.TableServiceBaseUrl)
+        ? new HttpRoomProjectionReader(
+            lobbyOptions.TableServiceBaseUrl!,
+            lobbyOptions.TableServiceTlsRootCertificatePath,
+            lobbyOptions.TableServiceAdmissionSharedKey)
+        : new EmptyRoomProjectionReader();
 
 builder.Services.AddSingleton(lobbyOptions);
 builder.Services.AddSingleton<ILobbyStore>(store);
@@ -40,7 +45,7 @@ builder.Services.AddHostedService<LobbyMaintenanceWorker>();
 WebApplication app = builder.Build();
 LobbyHttp.UseErrorHandling(app);
 LobbyApplication lobby = app.Services.GetRequiredService<LobbyApplication>();
-LobbyHttp.Map(app, lobby, signer, clock);
+LobbyHttp.Map(app, lobby, signer, clock, lobbyOptions);
 
 try
 {

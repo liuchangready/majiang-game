@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 
 namespace Mahjong.TableService
 {
@@ -203,6 +204,9 @@ namespace Mahjong.TableService
         /// (its WELCOME did arrive) must never be reverted by a post-hoc failure. Idempotent.
         /// </summary>
         void RollbackSeatHandover(string sessionId);
+
+        /// <summary>Drop per-room in-memory admission state after a terminal room is tombstoned.</summary>
+        void ForgetRoom(string roomId);
     }
 
     /// <summary>In-memory P5.1 implementation. Cross-instance uniqueness arrives with P5.2.</summary>
@@ -707,6 +711,58 @@ namespace Mahjong.TableService
 
                 sessionId = null;
                 return false;
+            }
+        }
+
+        /// <summary>Read-only counts for the lobby's public room projection.</summary>
+        public (int SeatsOccupied, int SpectatorCount) GetRoomOccupancy(string roomId)
+        {
+            lock (_gate)
+            {
+                int seats = 0;
+                string prefix = roomId + "#";
+                foreach (KeyValuePair<string, SeatLease> entry in _seatBindings)
+                {
+                    if (entry.Key.StartsWith(prefix, StringComparison.Ordinal) && LiveOwner(entry.Value) != null)
+                    {
+                        seats++;
+                    }
+                }
+
+                _spectatorCounts.TryGetValue(roomId, out int spectators);
+                return (seats, spectators);
+            }
+        }
+
+        public void ForgetRoom(string roomId)
+        {
+            lock (_gate)
+            {
+                string prefix = roomId + "#";
+                foreach (string key in _seatBindings.Keys.Where(key => key.StartsWith(prefix, StringComparison.Ordinal)).ToArray())
+                {
+                    _seatBindings.Remove(key);
+                }
+
+                foreach (string jti in _consumedJtis.Where(pair => string.Equals(pair.Value.RoomId, roomId, StringComparison.Ordinal))
+                             .Select(pair => pair.Key).ToArray())
+                {
+                    _consumedJtis.Remove(jti);
+                }
+
+                foreach (string assignmentId in _assignments.Where(pair => string.Equals(pair.Value.RoomId, roomId, StringComparison.Ordinal))
+                             .Select(pair => pair.Key).ToArray())
+                {
+                    _assignments.Remove(assignmentId);
+                }
+
+                foreach (string sessionId in _sessions.Where(pair => string.Equals(pair.Value.RoomId, roomId, StringComparison.Ordinal))
+                             .Select(pair => pair.Key).ToArray())
+                {
+                    _sessions.Remove(sessionId);
+                }
+
+                _spectatorCounts.Remove(roomId);
             }
         }
 

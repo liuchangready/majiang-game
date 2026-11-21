@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
 
 namespace Mahjong.LobbyService
 {
@@ -40,6 +41,12 @@ namespace Mahjong.LobbyService
                 .ConfigureAwait(false);
             if (replay != null)
             {
+                if (IsClosedReconcileResponse(replay) && _projections is IRoomProjectionRetirer replayRetirer)
+                {
+                    _pendingRoomRetirements[id] = 0;
+                    await TryRetireRoomRuntimeAsync(replayRetirer, id, cancellationToken).ConfigureAwait(false);
+                }
+
                 return replay;
             }
 
@@ -55,7 +62,7 @@ namespace Mahjong.LobbyService
             bool terminal = snapshot.Room.State == LobbyRoomState.Closed ||
                             IsTerminalProjection(projection, snapshot.Room.RulesetVersion);
 
-            return await _store.ExecuteIdempotentAsync(
+            LobbyResponse response = await _store.ExecuteIdempotentAsync(
                 key,
                 digest,
                 now,
@@ -91,6 +98,32 @@ namespace Mahjong.LobbyService
                     return new LobbyResponse(200, LobbyJson.Serialize(summary));
                 },
                 cancellationToken).ConfigureAwait(false);
+
+            if (terminal && _projections is IRoomProjectionRetirer retirer)
+            {
+                // The durable lobby receipt and room state are authoritative; cleanup is
+                // queued before attempting the side effect so cancellation/unknown response
+                // remains independently retryable with the same idempotency key.
+                _pendingRoomRetirements[id] = 0;
+                await TryRetireRoomRuntimeAsync(retirer, id, cancellationToken).ConfigureAwait(false);
+            }
+
+            return response;
+        }
+
+        private static bool IsClosedReconcileResponse(LobbyResponse response)
+        {
+            try
+            {
+                return string.Equals(
+                    LobbyJson.Deserialize<RoomSummaryView>(response.Json).State,
+                    "CLOSED",
+                    StringComparison.Ordinal);
+            }
+            catch (Exception)
+            {
+                return false;
+            }
         }
 
         private async Task<bool> EnsureTerminalRoomReconciledAsync(

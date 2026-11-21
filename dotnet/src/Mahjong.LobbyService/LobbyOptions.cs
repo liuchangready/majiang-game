@@ -54,6 +54,15 @@ namespace Mahjong.LobbyService
 
         public string ProjectionSchema { get; set; } = "table_runtime";
 
+        /// <summary>Optional public projection endpoint used when Lobby storage is in-memory.</summary>
+        public string? TableServiceBaseUrl { get; set; }
+
+        /// <summary>Optional PEM/DER root for a private TableService TLS CA; never disables peer validation.</summary>
+        public string? TableServiceTlsRootCertificatePath { get; set; }
+
+        /// <summary>Shared service credential for TableService admission callbacks and room retirement.</summary>
+        public string? TableServiceAdmissionSharedKey { get; set; }
+
         public bool OidcEnabled { get; set; }
 
         public string TicketIssuer { get; set; } = "mahjong-lobby";
@@ -181,6 +190,27 @@ namespace Mahjong.LobbyService
             if (!IsSafeSqlIdentifier(ProjectionSchema))
             {
                 throw new LobbyOptionsException("Lobby:ProjectionSchema must be a lowercase SQL identifier.");
+            }
+
+            if (!string.IsNullOrWhiteSpace(TableServiceBaseUrl) &&
+                (!Uri.TryCreate(TableServiceBaseUrl, UriKind.Absolute, out Uri? tableServiceUri) ||
+                 tableServiceUri.Scheme != Uri.UriSchemeHttps))
+            {
+                throw new LobbyOptionsException("Lobby:TableServiceBaseUrl must be an absolute HTTPS URL because it carries the table-service credential.");
+            }
+
+            if (!string.IsNullOrWhiteSpace(TableServiceTlsRootCertificatePath) &&
+                !System.IO.File.Exists(TableServiceTlsRootCertificatePath))
+            {
+                throw new LobbyOptionsException("Lobby:TableServiceTlsRootCertificatePath does not exist.");
+            }
+
+            if (!string.IsNullOrWhiteSpace(TableServiceBaseUrl) &&
+                (string.IsNullOrWhiteSpace(TableServiceAdmissionSharedKey) ||
+                 TableServiceAdmissionSharedKey.Length < 32))
+            {
+                throw new LobbyOptionsException(
+                    "Lobby:TableServiceAdmissionSharedKey of at least 32 characters is required when TableServiceBaseUrl is configured.");
             }
         }
 

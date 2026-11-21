@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
@@ -290,6 +291,34 @@ namespace Mahjong.TableService
             }
         }
 
+        internal async Task<bool> DrainTerminalDeliveriesAsync(CancellationToken deadline)
+        {
+            Task<bool>[] pending;
+            lock (_sinkGate)
+            {
+                pending = _liveSinks
+                    .Select(reference => reference.TryGetTarget(out WireTableStreamSink? sink) ? sink : null)
+                    .Where(sink => sink != null)
+                    .Select(sink => sink!.WaitForTerminalDeliveryAsync())
+                    .ToArray();
+            }
+
+            if (pending.Length == 0)
+            {
+                return true;
+            }
+
+            try
+            {
+                bool[] delivered = await Task.WhenAll(pending).WaitAsync(deadline).ConfigureAwait(false);
+                return delivered.All(value => value);
+            }
+            catch (OperationCanceledException) when (deadline.IsCancellationRequested)
+            {
+                return false;
+            }
+        }
+
         /// <summary>Actor callback: a stream died (slow consumer, oversize, stale fences, actor fault).</summary>
         public void OnStreamTerminated(TableStreamTermination termination)
         {
@@ -392,6 +421,7 @@ namespace Mahjong.TableService
             var actorOptions = new TableActorOptions
             {
                 RoomId = roomId,
+                RejectFinishedSubscriptions = options.RejectFinishedAdmission,
                 InitialControllers = InitialControllers(),
                 InitialOwnerEpoch = initialOwnerEpoch,
                 DecisionClockConfig = ServiceDecisionClockConfig,
@@ -571,9 +601,43 @@ namespace Mahjong.TableService
         /// </summary>
         Task<RoomHost> GetOrAddAsync(string roomId) => Task.FromResult(GetOrAdd(roomId));
 
+        async Task<RoomHostAdmissionReservation> BeginAdmissionAsync(string roomId)
+        {
+            RoomHost host = await GetOrAddAsync(roomId).ConfigureAwait(false);
+            return new RoomHostAdmissionReservation(host, null);
+        }
+
         bool TryGet(string roomId, out RoomHost? host);
 
+        Task<bool> RetireFinishedAsync(string roomId, CancellationToken cancellationToken) =>
+            Task.FromResult(false);
+
         IEnumerable<RoomHost> Hosts { get; }
+    }
+
+    public sealed class RoomHostAdmissionReservation : IAsyncDisposable
+    {
+        private readonly Func<bool, Task>? _finish;
+        private int _completed;
+        private bool _accepted;
+
+        internal RoomHostAdmissionReservation(RoomHost host, Func<bool, Task>? finish)
+        {
+            Host = host;
+            _finish = finish;
+        }
+
+        public RoomHost Host { get; }
+
+        public void MarkWelcomeDelivered() => _accepted = true;
+
+        public async ValueTask DisposeAsync()
+        {
+            if (Interlocked.Exchange(ref _completed, 1) == 0 && _finish != null)
+            {
+                await _finish(_accepted).ConfigureAwait(false);
+            }
+        }
     }
 
     public sealed class InMemoryTableHostRegistry : ITableHostRegistry
@@ -589,22 +653,35 @@ namespace Mahjong.TableService
         /// store/lease bootstrap inside the lock is in-memory, short and synchronous.
         /// </summary>
         private readonly object _createGate = new object();
+        private readonly ConcurrentDictionary<string, Task<bool>> _retirements =
+            new ConcurrentDictionary<string, Task<bool>>(StringComparer.Ordinal);
+        private readonly Dictionary<string, DateTimeOffset> _retiredRooms = new Dictionary<string, DateTimeOffset>(StringComparer.Ordinal);
+        private readonly Dictionary<string, AdmissionState> _admissionStates = new Dictionary<string, AdmissionState>(StringComparer.Ordinal);
+
+        private sealed class AdmissionState
+        {
+            public int Pending;
+            public bool EverAdmitted;
+        }
 
         private readonly TableServiceOptions _options;
         private readonly ITableStreamContractCodec _codec;
         private readonly ITableClock _clock;
         private readonly ITableRoundSource? _roundSource;
+        private readonly ITicketConsumptionRegistry? _ticketConsumption;
 
         public InMemoryTableHostRegistry(
             TableServiceOptions options,
             ITableStreamContractCodec codec,
             ITableClock clock,
-            ITableRoundSource? roundSource = null)
+            ITableRoundSource? roundSource = null,
+            ITicketConsumptionRegistry? ticketConsumption = null)
         {
             _options = options ?? throw new ArgumentNullException(nameof(options));
             _codec = codec ?? throw new ArgumentNullException(nameof(codec));
             _clock = clock ?? throw new ArgumentNullException(nameof(clock));
             _roundSource = roundSource;
+            _ticketConsumption = ticketConsumption;
         }
 
         public IEnumerable<RoomHost> Hosts => _hosts.Values;
@@ -654,9 +731,142 @@ namespace Mahjong.TableService
                     return found;
                 }
 
+                PruneRetiredRoomsLocked(DateTimeOffset.UtcNow);
+                if (_retiredRooms.ContainsKey(roomId))
+                {
+                    throw new TableServiceCapacityException("ROOM_RETIRED", "The room reached its terminal RoundEnd and cannot be recreated.");
+                }
+
                 RoomHost created = CreateHostLocked(roomId);
                 _hosts[roomId] = created;
+                _admissionStates[roomId] = new AdmissionState();
                 return created;
+            }
+        }
+
+        public Task<RoomHostAdmissionReservation> BeginAdmissionAsync(string roomId)
+        {
+            RoomHost host;
+            lock (_createGate)
+            {
+                host = GetOrAdd(roomId);
+                if (!_admissionStates.TryGetValue(roomId, out AdmissionState? state))
+                {
+                    state = new AdmissionState { EverAdmitted = true };
+                    _admissionStates[roomId] = state;
+                }
+
+                checked { state.Pending++; }
+            }
+
+            return Task.FromResult(new RoomHostAdmissionReservation(
+                host,
+                accepted => FinishAdmissionAsync(roomId, host, accepted)));
+        }
+
+        private async Task FinishAdmissionAsync(string roomId, RoomHost host, bool accepted)
+        {
+            bool release = false;
+            lock (_createGate)
+            {
+                if (!_admissionStates.TryGetValue(roomId, out AdmissionState? state) || state.Pending <= 0)
+                {
+                    return;
+                }
+
+                state.Pending--;
+                state.EverAdmitted |= accepted;
+                if (state.Pending == 0 && !state.EverAdmitted &&
+                    _hosts.TryGetValue(roomId, out RoomHost? current) && ReferenceEquals(current, host))
+                {
+                    _hosts.TryRemove(roomId, out _);
+                    _admissionStates.Remove(roomId);
+                    host.StopAdmission("UNUSED_ADMISSION");
+                    release = true;
+                }
+            }
+
+            if (release)
+            {
+                await host.Actor.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+
+        public Task<bool> RetireFinishedAsync(string roomId, CancellationToken cancellationToken)
+        {
+            if (!_hosts.TryGetValue(roomId, out RoomHost? host) || host == null)
+            {
+                return Task.FromResult(false);
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!host.Actor.GetLatestSnapshotForObservation().IsFinished)
+            {
+                return Task.FromResult(false);
+            }
+
+            Task<bool> retirement;
+            lock (_createGate)
+            {
+                if (_retirements.TryGetValue(roomId, out retirement!))
+                {
+                    return retirement.WaitAsync(cancellationToken);
+                }
+
+                if (!_hosts.TryGetValue(roomId, out RoomHost? current) || !ReferenceEquals(current, host))
+                {
+                    return Task.FromResult(false);
+                }
+
+                host.StopAdmission("ROUND_FINISHED");
+                retirement = Task.Run(() => RetireCoreAsync(roomId, host));
+                _retirements[roomId] = retirement;
+            }
+
+            return retirement.WaitAsync(cancellationToken);
+        }
+
+        private async Task<bool> RetireCoreAsync(string roomId, RoomHost host)
+        {
+            // Each admitted live stream gets an event-driven, bounded opportunity for its
+            // authoritative RoundEnd frame to finish the serialized WebSocket write. A lost
+            // or stalled connection cannot hold a room slot indefinitely.
+            using (var drain = new CancellationTokenSource(TimeSpan.FromMilliseconds(
+                       Math.Clamp(_options.CloseGraceMs * 2, 2_000, 10_000))))
+            {
+                await host.DrainTerminalDeliveriesAsync(drain.Token).ConfigureAwait(false);
+            }
+
+            lock (_createGate)
+            {
+                if (_hosts.TryGetValue(roomId, out RoomHost? current) && ReferenceEquals(current, host))
+                {
+                    _hosts.TryRemove(roomId, out _);
+                    _admissionStates.Remove(roomId);
+                    _retiredRooms[roomId] = DateTimeOffset.UtcNow.AddSeconds(
+                        _options.TicketMaxTtlSeconds + _options.ClockSkewSeconds);
+                    PruneRetiredRoomsLocked(DateTimeOffset.UtcNow);
+                    _ticketConsumption?.ForgetRoom(roomId);
+                }
+            }
+
+            try
+            {
+                await host.Actor.DisposeAsync().ConfigureAwait(false);
+            }
+            finally
+            {
+                _retirements.TryRemove(roomId, out _);
+            }
+
+            return true;
+        }
+
+        private void PruneRetiredRoomsLocked(DateTimeOffset now)
+        {
+            foreach (string roomId in _retiredRooms.Where(pair => pair.Value <= now).Select(pair => pair.Key).ToArray())
+            {
+                _retiredRooms.Remove(roomId);
             }
         }
 
