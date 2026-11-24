@@ -267,11 +267,13 @@ namespace Mahjong.TableRuntime
             string? windowId,
             long deadlineMillis,
             long createdAtMillis,
-            string? bootId = null)
+            string? bootId = null,
+            uint? thirdTileId = null)
         {
             OfferId = ProtocolText.RequireId(offerId, nameof(offerId));
             FirstTileId = TableProjectionCopy.Tile(firstTileId, nameof(firstTileId));
             SecondTileId = TableProjectionCopy.Tile(secondTileId, nameof(secondTileId));
+            if (thirdTileId.HasValue) ThirdTileId = TableProjectionCopy.Tile(thirdTileId.Value, nameof(thirdTileId));
             WindowId = TableProjectionCopy.OptionalId(windowId);
             DrawKind = drawKind;
             CreatedTurnNumber = createdTurnNumber;
@@ -288,6 +290,8 @@ namespace Mahjong.TableRuntime
         public uint FirstTileId { get; }
 
         public uint SecondTileId { get; }
+
+        public uint? ThirdTileId { get; }
 
         public int CreatedTurnNumber { get; }
 
@@ -1406,7 +1410,8 @@ namespace Mahjong.TableRuntime
                 offer.WindowId,
                 offer.DeadlineMillis,
                 offer.CreatedAtMillis,
-                offer.BootId);
+                offer.BootId,
+                offer.ThirdTile.HasValue ? unchecked((uint)offer.ThirdTile.Value.Value) : (uint?)null);
         }
 
         private static TableOwnerSleeveBloomReservationView? MapReservation(SleeveBloomReservation? reservation)

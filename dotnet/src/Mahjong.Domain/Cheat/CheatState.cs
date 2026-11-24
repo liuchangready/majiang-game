@@ -128,14 +128,26 @@ namespace Mahjong.Domain.Cheat
     /// </summary>
     public sealed class CheatState
     {
-        public CheatState(CheatLedger ledger, TileMarkState tileMarks, SleeveBloomState sleeveBloom, BeamSwapState beamSwap)
+        public CheatState(
+            CheatLedger ledger,
+            TileMarkState tileMarks,
+            SleeveBloomState sleeveBloom,
+            BeamSwapState beamSwap,
+            string playerCharacterId = PlayerCharacterIds.Player,
+            int characterTraitsVersion = PlayerCharacterIds.CurrentTraitsVersion)
         {
             Ledger = ledger ?? throw new ArgumentNullException(nameof(ledger));
             TileMarks = tileMarks ?? throw new ArgumentNullException(nameof(tileMarks));
             SleeveBloom = sleeveBloom ?? throw new ArgumentNullException(nameof(sleeveBloom));
             BeamSwap = beamSwap ?? throw new ArgumentNullException(nameof(beamSwap));
+            if (!PlayerCharacterIds.IsSupported(playerCharacterId))
+                throw new ArgumentOutOfRangeException(nameof(playerCharacterId), playerCharacterId, "Unsupported player character ID.");
+            if (characterTraitsVersion != PlayerCharacterIds.CurrentTraitsVersion)
+                throw new ArgumentOutOfRangeException(nameof(characterTraitsVersion), characterTraitsVersion, "Unsupported character traits version.");
+            PlayerCharacterId = playerCharacterId;
+            CharacterTraitsVersion = characterTraitsVersion;
             Version = ledger.Version + tileMarks.Version + sleeveBloom.Version + beamSwap.Version;
-            Fingerprint = ComputeFingerprint(ledger, tileMarks, sleeveBloom, beamSwap);
+            Fingerprint = ComputeFingerprint(ledger, tileMarks, sleeveBloom, beamSwap, playerCharacterId, characterTraitsVersion);
         }
 
         public CheatLedger Ledger { get; }
@@ -146,11 +158,15 @@ namespace Mahjong.Domain.Cheat
 
         public BeamSwapState BeamSwap { get; }
 
+        public string PlayerCharacterId { get; }
+
+        public int CharacterTraitsVersion { get; }
+
         public long Version { get; }
 
         public ulong Fingerprint { get; }
 
-        public static CheatState Initialize(CheatEconomyConfig economy)
+        public static CheatState Initialize(CheatEconomyConfig economy, string playerCharacterId = PlayerCharacterIds.Player)
         {
             if (economy == null)
             {
@@ -161,20 +177,24 @@ namespace Mahjong.Domain.Cheat
                 CheatLedger.Initialize(economy),
                 new TileMarkState(),
                 new SleeveBloomState(),
-                new BeamSwapState());
+                new BeamSwapState(),
+                playerCharacterId);
         }
 
         public CheatState WithLedger(CheatLedger ledger) =>
-            new CheatState(ledger, TileMarks, SleeveBloom, BeamSwap);
+            new CheatState(ledger, TileMarks, SleeveBloom, BeamSwap, PlayerCharacterId, CharacterTraitsVersion);
 
         public CheatState WithTileMarks(TileMarkState tileMarks) =>
-            new CheatState(Ledger, tileMarks, SleeveBloom, BeamSwap);
+            new CheatState(Ledger, tileMarks, SleeveBloom, BeamSwap, PlayerCharacterId, CharacterTraitsVersion);
 
         public CheatState WithSleeveBloom(SleeveBloomState sleeveBloom) =>
-            new CheatState(Ledger, TileMarks, sleeveBloom, BeamSwap);
+            new CheatState(Ledger, TileMarks, sleeveBloom, BeamSwap, PlayerCharacterId, CharacterTraitsVersion);
 
         public CheatState WithBeamSwap(BeamSwapState beamSwap) =>
-            new CheatState(Ledger, TileMarks, SleeveBloom, beamSwap);
+            new CheatState(Ledger, TileMarks, SleeveBloom, beamSwap, PlayerCharacterId, CharacterTraitsVersion);
+
+        public CheatState WithPlayerCharacter(string playerCharacterId, int traitsVersion = PlayerCharacterIds.CurrentTraitsVersion) =>
+            new CheatState(Ledger, TileMarks, SleeveBloom, BeamSwap, playerCharacterId, traitsVersion);
 
         /// <summary>Seat-whitelisted private projection; other seats observe none of this.</summary>
         public CheatPrivateView ViewFor(int seat)
@@ -225,10 +245,17 @@ namespace Mahjong.Domain.Cheat
             CheatLedger ledger,
             TileMarkState tileMarks,
             SleeveBloomState sleeveBloom,
-            BeamSwapState beamSwap)
+            BeamSwapState beamSwap,
+            string playerCharacterId,
+            int characterTraitsVersion)
         {
             ulong hash = FnvOffsetBasis;
             hash = MixByte(hash, (byte)'C');
+            if (playerCharacterId != PlayerCharacterIds.Player || characterTraitsVersion != PlayerCharacterIds.CurrentTraitsVersion)
+            {
+                hash = MixString(hash, playerCharacterId);
+                hash = MixValue(hash, (uint)characterTraitsVersion);
+            }
 
             hash = MixValue(hash, (ulong)ledger.Version);
             for (int i = 0; i < ledger.Balances.Count; i++)
@@ -301,6 +328,11 @@ namespace Mahjong.Domain.Cheat
                 hash = MixString(hash, immediate.BootId);
                 hash = MixOfferTile(hash, immediate.FirstTile);
                 hash = MixOfferTile(hash, immediate.SecondTile);
+                if (immediate.ThirdTile.HasValue)
+                {
+                    hash = MixByte(hash, 1);
+                    hash = MixOfferTile(hash, immediate.ThirdTile.Value);
+                }
             }
 
             hash = MixValue(hash, (ulong)(uint)sleeveBloom.OffTurnOffers.Count);
@@ -318,6 +350,11 @@ namespace Mahjong.Domain.Cheat
                 hash = MixString(hash, offer.BootId);
                 hash = MixOfferTile(hash, offer.FirstTile);
                 hash = MixOfferTile(hash, offer.SecondTile);
+                if (offer.ThirdTile.HasValue)
+                {
+                    hash = MixByte(hash, 1);
+                    hash = MixOfferTile(hash, offer.ThirdTile.Value);
+                }
             }
 
             hash = MixValue(hash, (ulong)(uint)sleeveBloom.Reservations.Count);

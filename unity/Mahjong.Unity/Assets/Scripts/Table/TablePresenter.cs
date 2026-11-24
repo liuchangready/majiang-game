@@ -94,6 +94,7 @@ namespace Mahjong.Unity.Table
         [SerializeField] private Button? _sleeveSwapButton;
         [SerializeField] private Button? _sleevePassButton;
         [SerializeField] private Button? _cancelSleeveButton;
+        private Button? _sleeveThirdButton;
 
         [Header("BeamSwap Sub-dialog")]
         [SerializeField] private GameObject? _beamSwapDialog;
@@ -347,6 +348,7 @@ namespace Mahjong.Unity.Table
         {
             Unbind();
             ClearAll();
+            if (_sleeveThirdButton != null) Destroy(_sleeveThirdButton.gameObject);
         }
 
         private void OnApplicationPause(bool paused)
@@ -1501,6 +1503,8 @@ namespace Mahjong.Unity.Table
             if (_cancelSleeveButton != null)
                 _cancelSleeveButton.onClick.AddListener(CloseSleeveBloomDialog);
 
+            EnsureSleeveThirdButton();
+
             for (int b = 0; b < _beamSlotButtons.Length; b++)
             {
                 int slotIndex = b;
@@ -1995,7 +1999,15 @@ namespace Mahjong.Unity.Table
             {
                 string first = sleeve.FirstTileId.HasValue ? TileTextHelper.FormatTile(sleeve.FirstTileId.Value) : "无";
                 string second = sleeve.SecondTileId.HasValue ? TileTextHelper.FormatTile(sleeve.SecondTileId.Value) : "无";
-                _sleeveTileDisplayText.text = $"袖牌1: {first} | 袖牌2: {second}";
+                string third = sleeve.ThirdTileId.HasValue ? " | 候选3: " + TileTextHelper.FormatTile(sleeve.ThirdTileId.Value) : string.Empty;
+                _sleeveTileDisplayText.text = $"候选1: {first} | 候选2: {second}{third}";
+            }
+            SetSleeveChoiceButtonLabel(_sleeveStoreButton, sleeve.FirstTileId, "候选1");
+            SetSleeveChoiceButtonLabel(_sleeveSwapButton, sleeve.SecondTileId, "候选2");
+            if (_sleeveThirdButton != null)
+            {
+                _sleeveThirdButton.gameObject.SetActive(sleeve.ThirdTileId.HasValue);
+                SetSleeveChoiceButtonLabel(_sleeveThirdButton, sleeve.ThirdTileId, "候选3");
             }
 
             if (_sleeveBloomStatusText != null)
@@ -2012,7 +2024,9 @@ namespace Mahjong.Unity.Table
 
         public void OnSleeveChoiceClicked(string choice)
         {
-            var enumChoice = string.Equals(choice, "SWAP", StringComparison.OrdinalIgnoreCase) ||
+            var enumChoice = string.Equals(choice, "THIRD", StringComparison.OrdinalIgnoreCase)
+                ? SleeveBloomChoice.Third
+                : string.Equals(choice, "SWAP", StringComparison.OrdinalIgnoreCase) ||
                              string.Equals(choice, "SECOND", StringComparison.OrdinalIgnoreCase)
                 ? SleeveBloomChoice.Second
                 : SleeveBloomChoice.First;
@@ -2021,7 +2035,13 @@ namespace Mahjong.Unity.Table
 
         public void OnSleeveChoiceClicked(SleeveBloomChoice choice)
         {
-            GameObject? btnTarget = choice == SleeveBloomChoice.First ? _sleeveStoreButton?.gameObject : _sleeveSwapButton?.gameObject;
+            GameObject? btnTarget = choice switch
+            {
+                SleeveBloomChoice.First => _sleeveStoreButton?.gameObject,
+                SleeveBloomChoice.Second => _sleeveSwapButton?.gameObject,
+                SleeveBloomChoice.Third => _sleeveThirdButton?.gameObject,
+                _ => null
+            };
             if (!ConsumeInputLifecycle(btnTarget)) return;
             var cheat = _latestView?.Own?.Cheat;
             var sleeve = cheat?.ImmediateSleeveBloom ?? cheat?.OffTurnSleeveBloom;
@@ -2073,13 +2093,41 @@ namespace Mahjong.Unity.Table
             {
                 string first = sleeve.FirstTileId.HasValue ? TileTextHelper.FormatTile(sleeve.FirstTileId.Value) : "无";
                 string second = sleeve.SecondTileId.HasValue ? TileTextHelper.FormatTile(sleeve.SecondTileId.Value) : "无";
-                _sleeveTileDisplayText.text = $"袖牌1: {first} | 袖牌2: {second}";
+                string third = sleeve.ThirdTileId.HasValue ? " | 候选3: " + TileTextHelper.FormatTile(sleeve.ThirdTileId.Value) : string.Empty;
+                _sleeveTileDisplayText.text = $"候选1: {first} | 候选2: {second}{third}";
+                SetSleeveChoiceButtonLabel(_sleeveStoreButton, sleeve.FirstTileId, "候选1");
+                SetSleeveChoiceButtonLabel(_sleeveSwapButton, sleeve.SecondTileId, "候选2");
+                if (_sleeveThirdButton != null)
+                {
+                    _sleeveThirdButton.gameObject.SetActive(sleeve.ThirdTileId.HasValue);
+                    SetSleeveChoiceButtonLabel(_sleeveThirdButton, sleeve.ThirdTileId, "候选3");
+                }
             }
 
             if (_sleeveBloomStatusText != null && _sleeveBloomDialog != null && _sleeveBloomDialog.activeSelf)
             {
                 _sleeveBloomStatusText.text = $"绝技类型: {FormatSleeveMode(sleeve.Mode)} ({FormatSleeveDrawKind(sleeve.DrawKind)})";
             }
+        }
+
+        private void EnsureSleeveThirdButton()
+        {
+            if (_sleeveThirdButton != null || _sleeveSwapButton == null) return;
+            _sleeveThirdButton = Instantiate(_sleeveSwapButton, _sleeveSwapButton.transform.parent);
+            _sleeveThirdButton.name = "SleeveBloomCandidate3";
+            _sleeveThirdButton.onClick.RemoveAllListeners();
+            _sleeveThirdButton.onClick.AddListener(() => OnSleeveChoiceClicked(SleeveBloomChoice.Third));
+            RectTransform rect = _sleeveThirdButton.GetComponent<RectTransform>();
+            RectTransform source = _sleeveSwapButton.GetComponent<RectTransform>();
+            if (rect != null && source != null) rect.anchoredPosition = source.anchoredPosition + new Vector2(0f, -58f);
+            _sleeveThirdButton.gameObject.SetActive(false);
+        }
+
+        private static void SetSleeveChoiceButtonLabel(Button? button, uint? tileId, string prefix)
+        {
+            if (button == null || !tileId.HasValue) return;
+            TextMeshProUGUI? label = button.GetComponentInChildren<TextMeshProUGUI>();
+            if (label != null) label.text = prefix + ": " + TileTextHelper.FormatTile(tileId.Value);
         }
 
         public void OpenBeamSwapDialog()

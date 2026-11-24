@@ -2217,6 +2217,30 @@ namespace Mahjong.TableRuntime.Tests
             Assert.Contains(pass.Events, e => e.Type == RoundEventType.WallExhausted);
         }
 
+        [Fact]
+        public void cheat_checkpoint_roundtrips_octopus_third_and_reads_legacy_as_player()
+        {
+            CheatState octopus = V32Fixtures.Cheat(InitialPoints)
+                .WithPlayerCharacter(PlayerCharacterIds.Octopus)
+                .WithSleeveBloom(new SleeveBloomState().WithImmediateOffer(new SleeveBloomOffer(
+                    "octopus-offer", 0, Mahjong.Domain.Cheat.SleeveBloomDrawKind.Normal, new TileId(0), new TileId(1), 1,
+                    SleeveBloomOfferMode.Immediate, thirdTile: new TileId(2))));
+            byte[] current = TableCheatLedgerCheckpointCodec.Encode(TableCheatLedgerCheckpoint.FromCheatState(octopus));
+            CheatState recovered = TableCheatLedgerCheckpointCodec.Decode(current).RestoreCheatState();
+            Assert.Equal(PlayerCharacterIds.Octopus, recovered.PlayerCharacterId);
+            Assert.Equal(PlayerCharacterIds.CurrentTraitsVersion, recovered.CharacterTraitsVersion);
+            Assert.Equal(new TileId(2), recovered.SleeveBloom.ImmediateOffer!.ThirdTile);
+            Assert.Equal(octopus.Fingerprint, recovered.Fingerprint);
+
+            byte[] legacy = TableCheatLedgerCheckpointCodec.Encode(
+                TableCheatLedgerCheckpoint.FromCheatState(V32Fixtures.Cheat(InitialPoints)));
+            Array.Resize(ref legacy, legacy.Length - 11); // old v4 has no character ID/version trailer
+            Buffer.BlockCopy(BitConverter.GetBytes(4), 0, legacy, 4, sizeof(int));
+            CheatState oldSave = TableCheatLedgerCheckpointCodec.Decode(legacy).RestoreCheatState();
+            Assert.Equal(PlayerCharacterIds.Player, oldSave.PlayerCharacterId);
+            Assert.Equal(PlayerCharacterIds.CurrentTraitsVersion, oldSave.CharacterTraitsVersion);
+        }
+
         private static ActorHarness CreateHarness(int cheatRequestBindingCapacity = 8192)
         {
             var clock = new ManualTableClock { Now = 1000L };

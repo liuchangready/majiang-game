@@ -109,6 +109,7 @@ namespace Mahjong.Unity.App
         private LocalTableRoom? _room;
         private Task? _roomCloseTask;
         private string? _nextScenario;
+        private string _nextCharacterId = "player";
 
         public LocalTableChannelFactory(
             AppConfig config,
@@ -371,9 +372,13 @@ namespace Mahjong.Unity.App
         }
 
         /// <summary>Bind the next standalone Lite game to a fresh room and optional manual fixture.</summary>
-        public async Task PrepareLocalLiteGameAsync(string? scenarioId, CancellationToken cancellationToken)
+        public Task PrepareLocalLiteGameAsync(string? scenarioId, CancellationToken cancellationToken) =>
+            PrepareLocalLiteGameAsync(scenarioId, "player", cancellationToken);
+
+        public async Task PrepareLocalLiteGameAsync(string? scenarioId, string characterId, CancellationToken cancellationToken)
         {
             if (scenarioId != null) LocalPlayerActionScenario.ValidateScenario(scenarioId);
+            if (characterId != "player" && characterId != "octopus") throw new ArgumentOutOfRangeException(nameof(characterId));
             await _roomGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
@@ -382,6 +387,7 @@ namespace Mahjong.Unity.App
                 Interlocked.Exchange(ref _playerActionScenario, null);
                 _roomId = "local-lite-" + Guid.NewGuid().ToString("N");
                 _nextScenario = scenarioId;
+                _nextCharacterId = characterId;
             }
             finally { _roomGate.Release(); }
         }
@@ -398,6 +404,7 @@ namespace Mahjong.Unity.App
                     RoomId = _roomId,
                     RulesetVersion = 1,
                     OwnerInstanceId = _ownerInstanceId,
+                    PlayerCharacterId = _nextCharacterId,
                     LeaseDuration = _leaseDuration,
                     AutoFlushInterval = TimeSpan.FromMilliseconds(500),
                     Ai = new LocalAiOptions

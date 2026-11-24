@@ -763,6 +763,8 @@ namespace Mahjong.Contracts.Wire
                 CreatedTurnNumber = source.CreatedTurnNumber,
                 DrawKind = MapSleeveBloomDrawKind(source.DrawKind)
             };
+            if (source.ThirdTileId.HasValue)
+                view.ThirdTileId = RequireTile(source.ThirdTileId.Value, "sleeve_bloom.third_tile_id");
             if (source.ReservedTileId.HasValue)
             {
                 view.ReservedTileId = RequireTile(source.ReservedTileId.Value, "sleeve_bloom.reserved_tile_id");

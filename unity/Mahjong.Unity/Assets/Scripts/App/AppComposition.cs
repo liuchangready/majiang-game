@@ -194,7 +194,10 @@ namespace Mahjong.Unity.App
             }
         }
 
-        public Task PrepareLocalLiteGameAsync(string? scenarioId, CancellationToken cancellationToken)
+        public Task PrepareLocalLiteGameAsync(string? scenarioId, CancellationToken cancellationToken) =>
+            PrepareLocalLiteGameAsync(scenarioId, "player", cancellationToken);
+
+        public Task PrepareLocalLiteGameAsync(string? scenarioId, string characterId, CancellationToken cancellationToken)
         {
             if (!Config.localLiteMode) return Task.CompletedTask;
             lock (_gate)
@@ -203,7 +206,7 @@ namespace Mahjong.Unity.App
                     return Task.FromException(new InvalidOperationException("A Lite game can only be prepared after the previous session has closed."));
             }
             return ChannelFactory is LocalTableChannelFactory local
-                ? local.PrepareLocalLiteGameAsync(scenarioId, cancellationToken)
+                ? local.PrepareLocalLiteGameAsync(scenarioId, characterId, cancellationToken)
                 : Task.FromException(new InvalidOperationException("The Lite local host is unavailable."));
         }
 

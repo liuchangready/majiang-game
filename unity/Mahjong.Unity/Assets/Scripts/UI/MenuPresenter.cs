@@ -21,6 +21,8 @@ namespace Mahjong.Unity.UI
         private FocusRouter _focusRouter = new FocusRouter();
         private Button? _testButton;
         private readonly List<Button> _scenarioButtons = new List<Button>();
+        private readonly List<Button> _characterButtons = new List<Button>();
+        private string _selectedCharacterId = "player";
         private bool _scenarioListOpen;
         private bool _starting;
 
@@ -102,6 +104,8 @@ namespace Mahjong.Unity.UI
             if (_testButton != null) _testButton.onClick.RemoveListener(OnTestClicked);
             foreach (Button button in _scenarioButtons) Destroy(button.gameObject);
             _scenarioButtons.Clear();
+            foreach (Button button in _characterButtons) Destroy(button.gameObject);
+            _characterButtons.Clear();
             if (_testButton != null) Destroy(_testButton.gameObject);
         }
 
@@ -118,7 +122,7 @@ namespace Mahjong.Unity.UI
             Debug.Log("PLAY_BUTTON_CLICKED: Opening lobby...");
             if (_localLiteMode)
             {
-                _ = StartLiteGameAsync(null);
+                _ = StartLiteGameAsync(null, _selectedCharacterId);
                 return;
             }
             if (_navigation != null)
@@ -151,6 +155,23 @@ namespace Mahjong.Unity.UI
             RectTransform testRect = _testButton.GetComponent<RectTransform>();
             if (testRect != null) testRect.anchoredPosition = new Vector2(0f, 0f);
             _testButton.transform.SetSiblingIndex(_playButton.transform.GetSiblingIndex() + 1);
+
+            string[] characterIds = { "player", "octopus" };
+            string[] characterLabels = { "\u724C\u624B", "\u516B\u722A\u9C7C" };
+            for (int i = 0; i < characterIds.Length; i++)
+            {
+                int index = i;
+                Button option = Instantiate(_playButton, _playButton.transform.parent);
+                option.name = "LocalLiteCharacter-" + characterIds[i];
+                option.onClick.RemoveAllListeners();
+                option.onClick.AddListener(() => OnCharacterClicked(characterIds[index]));
+                if (!SetWindowsSystemFontLabel(option, characterLabels[i]))
+                    SetLabel(option, i == 0 ? "Player" : "Octopus");
+                RectTransform rect = option.GetComponent<RectTransform>();
+                if (rect != null) rect.anchoredPosition = new Vector2((i == 0 ? -1f : 1f) * 115f, 140f);
+                _characterButtons.Add(option);
+            }
+            UpdateCharacterLabels();
 
             string[] ids = { "pon", "chi", "riichi", "closed-kan", "dealer-tsumo" };
             string[] labels = { "碰", "吃", "立直", "暗杠", "庄家自摸" };
@@ -222,7 +243,27 @@ namespace Mahjong.Unity.UI
         private void OnScenarioClicked(string scenarioId)
         {
             if (_starting || !UiInputLifecycle.Instance.ConsumeClickOrSubmit(EventSystemTarget(scenarioId))) return;
-            _ = StartLiteGameAsync(scenarioId);
+            _ = StartLiteGameAsync(scenarioId, _selectedCharacterId);
+        }
+
+        private void OnCharacterClicked(string characterId)
+        {
+            Button? button = _characterButtons.Find(value => value.name == "LocalLiteCharacter-" + characterId);
+            if (_starting || !UiInputLifecycle.Instance.ConsumeClickOrSubmit(button != null ? button.gameObject : null)) return;
+            _selectedCharacterId = characterId == "octopus" ? "octopus" : "player";
+            UpdateCharacterLabels();
+        }
+
+        private void UpdateCharacterLabels()
+        {
+            string[] ids = { "player", "octopus" };
+            string[] labels = { "\u724C\u624B", "\u516B\u722A\u9C7C" };
+            for (int i = 0; i < _characterButtons.Count; i++)
+            {
+                bool selected = ids[i] == _selectedCharacterId;
+                if (!SetWindowsSystemFontLabel(_characterButtons[i], (selected ? "\u2713 " : string.Empty) + labels[i]))
+                    SetLabel(_characterButtons[i], (selected ? "> " : string.Empty) + (i == 0 ? "Player" : "Octopus"));
+            }
         }
 
         private GameObject? EventSystemTarget(string scenarioId)
@@ -232,7 +273,7 @@ namespace Mahjong.Unity.UI
             return null;
         }
 
-        private async Task StartLiteGameAsync(string? scenarioId)
+        private async Task StartLiteGameAsync(string? scenarioId, string characterId = "player")
         {
             if (_starting) return;
             if (_navigation is not ILocalLiteNavigation liteNavigation)
@@ -247,7 +288,7 @@ namespace Mahjong.Unity.UI
             if (_titleText != null) _titleText.text = scenarioId == null ? "Creating a new round..." : "Preparing test case...";
             try
             {
-                LocalGameStartResult result = await liteNavigation.StartLocalGameAsync(scenarioId);
+                LocalGameStartResult result = await liteNavigation.StartLocalGameAsync(scenarioId, characterId);
                 if (result.Status == LocalGameStartStatus.Started)
                 {
                 LocalLiteRunContext.RecordStage(scenarioId, "table");
@@ -275,6 +316,7 @@ namespace Mahjong.Unity.UI
             if (_testButton != null) _testButton.interactable = value;
             if (_quitButton != null) _quitButton.interactable = value;
             foreach (Button button in _scenarioButtons) button.interactable = value;
+            foreach (Button button in _characterButtons) button.interactable = value;
         }
 
         public void OnQuitClicked()

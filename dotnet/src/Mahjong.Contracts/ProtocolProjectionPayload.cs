@@ -198,7 +198,8 @@ namespace Mahjong.Contracts
             string? windowId,
             uint? reservedTileId,
             uint createdTurnNumber,
-            ProjectionSleeveBloomDrawKind drawKind)
+            ProjectionSleeveBloomDrawKind drawKind,
+            uint? thirdTileId = null)
         {
             OfferId = ProtocolText.RequireId(offerId, nameof(offerId));
             if (mode == ProjectionSleeveBloomMode.Unspecified)
@@ -213,6 +214,12 @@ namespace Mahjong.Contracts
 
             FirstTileId = ProjectionPayloadValidation.Tile(firstTileId, nameof(firstTileId));
             SecondTileId = ProjectionPayloadValidation.Tile(secondTileId, nameof(secondTileId));
+            if (thirdTileId.HasValue)
+            {
+                ThirdTileId = ProjectionPayloadValidation.Tile(thirdTileId.Value, nameof(thirdTileId));
+                if (ThirdTileId == FirstTileId || ThirdTileId == SecondTileId)
+                    throw new ArgumentException("Sleeve-bloom candidates must be distinct.", nameof(thirdTileId));
+            }
             if (FirstTileId == SecondTileId)
             {
                 throw new ArgumentException("Sleeve-bloom candidates must be distinct.", nameof(secondTileId));
@@ -265,6 +272,8 @@ namespace Mahjong.Contracts
         public uint FirstTileId { get; }
 
         public uint SecondTileId { get; }
+
+        public uint? ThirdTileId { get; }
 
         /// <summary>False when the source offer has no deadline (an immediate offer).</summary>
         public bool HasDeadline { get; }

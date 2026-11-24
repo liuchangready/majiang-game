@@ -299,6 +299,7 @@ namespace Mahjong.Domain.Cheat
             }
 
             TileId secondTile;
+            TileId? thirdTile = null;
             if (drawKind == SleeveBloomDrawKind.Normal)
             {
                 if (activationInput.IsFrozen)
@@ -319,6 +320,13 @@ namespace Mahjong.Domain.Cheat
                     }
 
                     secondTile = map.TileAt(TilePosition.Wall(secondIndex));
+                }
+
+                IReadOnlyList<int> available = AvailableWallIndices(map, sleeve);
+                if (available.Count > 1 && seat == 0 && PlayerCharacterRules.GrantsThirdSleeveCandidate(
+                    state.PlayerCharacterId, state.CharacterTraitsVersion, context.RoundId, seat, context.TurnNumber, requestId))
+                {
+                    thirdTile = map.TileAt(TilePosition.Wall(available[1]));
                 }
             }
             else
@@ -346,7 +354,8 @@ namespace Mahjong.Domain.Cheat
                 secondTile,
                 context.TurnNumber,
                 SleeveBloomOfferMode.Immediate,
-                bootId: context.BootId);
+                bootId: context.BootId,
+                thirdTile: thirdTile);
             CheatState next = charged
                 .WithSleeveBloom(sleeve.WithImmediateOffer(offer).WithUsedOnTurn(context.TurnNumber));
             return CheatTransition.Applied(next, null, new[] { chargeEvent });
@@ -384,6 +393,8 @@ namespace Mahjong.Domain.Cheat
             {
                 return CheatTransition.Rejected(CheatErrorCode.OfferMismatch, "Offer id does not match the pending offer.");
             }
+            if (keep != SleeveBloomKeep.First && keep != SleeveBloomKeep.Second && keep != SleeveBloomKeep.Third)
+                return CheatTransition.Rejected(CheatErrorCode.InvalidSelection, "The sleeve bloom choice is invalid.");
 
             if (offer.CreatedTurnNumber != context.TurnNumber)
             {
@@ -402,16 +413,25 @@ namespace Mahjong.Domain.Cheat
             }
 
             TilePositionMap? nextMap = null;
-            if (keep == SleeveBloomKeep.Second)
+            if (keep == SleeveBloomKeep.Third && !offer.ThirdTile.HasValue)
+            {
+                return CheatTransition.Rejected(CheatErrorCode.InvalidSelection, "The third sleeve bloom candidate is unavailable.");
+            }
+
+            if (keep == SleeveBloomKeep.Second || keep == SleeveBloomKeep.Third)
             {
                 if (offer.DrawKind == SleeveBloomDrawKind.Normal)
                 {
-                    int candidateIndex = WallSlotOfTile(map, offer.SecondTile);
+                    TileId candidate = keep == SleeveBloomKeep.Second ? offer.SecondTile : offer.ThirdTile!.Value;
+                    int candidateOrdinal = keep == SleeveBloomKeep.Second ? 0 : 1;
+                    IReadOnlyList<int> available = AvailableWallIndices(map, state.SleeveBloom);
+                    int candidateIndex = WallSlotOfTile(map, candidate);
                     if (candidateIndex < 0 || candidateIndex >= map.WallEndExclusive ||
-                        map.PositionOf(offer.SecondTile).Zone != TileZone.Wall ||
-                        candidateIndex != FindFirstAvailableWallIndex(map, state.SleeveBloom))
+                        map.PositionOf(candidate).Zone != TileZone.Wall ||
+                        available.Count <= candidateOrdinal || candidateIndex != available[candidateOrdinal] ||
+                        !map.TileAt(TilePosition.Wall(candidateIndex)).Equals(candidate))
                     {
-                        return ClearStaleSleeveOffer(state, seat, offer.OfferId, "The frozen second candidate drifted from the live wall.");
+                        return ClearStaleSleeveOffer(state, seat, offer.OfferId, "The selected candidate drifted from the live wall.");
                     }
 
                     TransitionResult move = map.SwapHandWithWall(seat, drawnTile, candidateIndex);
@@ -424,6 +444,8 @@ namespace Mahjong.Domain.Cheat
                 }
                 else
                 {
+                    if (keep == SleeveBloomKeep.Third)
+                        return CheatTransition.Rejected(CheatErrorCode.InvalidSelection, "A third rinshan candidate is unavailable.");
                     CheatTransition? failure = CheckRinshanSwapFeasible(map, drawnTile);
                     if (failure != null)
                     {
@@ -541,6 +563,10 @@ namespace Mahjong.Domain.Cheat
 
             TileId firstTile = map.TileAt(TilePosition.Wall(available[0]));
             TileId secondTile = map.TileAt(TilePosition.Wall(available[1]));
+            TileId? thirdTile = available.Count > 2 && seat == 0 && PlayerCharacterRules.GrantsThirdSleeveCandidate(
+                state.PlayerCharacterId, state.CharacterTraitsVersion, context.RoundId, seat, context.TurnNumber, requestId)
+                ? map.TileAt(TilePosition.Wall(available[2]))
+                : (TileId?)null;
 
             CheatState? charged = Charge(state, economy, seat, EntryId("bloom-offturn", seat, requestId), cost, "SLEEVE_BLOOM", out CheatEvent chargeEvent, out CheatTransition? chargeFailure);
             if (charged == null)
@@ -559,7 +585,8 @@ namespace Mahjong.Domain.Cheat
                 issuedWindowId,
                 context.NowMillis + sleeveConfig.OffTurnChoiceMillis,
                 context.NowMillis,
-                context.BootId);
+                context.BootId,
+                thirdTile);
             CheatState next = charged.WithSleeveBloom(charged.SleeveBloom.WithOffTurnOffer(offer));
             return CheatTransition.Applied(next, null, new[] { chargeEvent });
         }
@@ -601,11 +628,18 @@ namespace Mahjong.Domain.Cheat
                 }
             }
 
+            if (keep != SleeveBloomKeep.First && keep != SleeveBloomKeep.Second && keep != SleeveBloomKeep.Third)
+                return CheatTransition.Rejected(CheatErrorCode.InvalidSelection, "The sleeve bloom choice is invalid.");
+            if (keep == SleeveBloomKeep.Third && !offer.ThirdTile.HasValue)
+                return CheatTransition.Rejected(CheatErrorCode.InvalidSelection, "The third sleeve bloom candidate is unavailable.");
+
             int firstSlot = WallSlotOfTile(map, offer.FirstTile);
             int secondSlot = WallSlotOfTile(map, offer.SecondTile);
             bool firstLive = firstSlot >= 0 && map.PositionOf(offer.FirstTile).Zone == TileZone.Wall;
             bool secondLive = secondSlot >= 0 && map.PositionOf(offer.SecondTile).Zone == TileZone.Wall;
-            if (!firstLive || !secondLive)
+            bool thirdLive = !offer.ThirdTile.HasValue ||
+                (WallSlotOfTile(map, offer.ThirdTile.Value) >= 0 && map.PositionOf(offer.ThirdTile.Value).Zone == TileZone.Wall);
+            if (!firstLive || !secondLive || !thirdLive)
             {
                 // V4 (golden sbo-choose-stale-*): off-turn drift is a plain rejection — the
                 // offer stays pending until the deadline sweep forces FIRST.

@@ -468,9 +468,9 @@ namespace Mahjong.Unity.Table
                 return Reject(TableInteractionCodes.SelectionExpired, "The sleeve-bloom offer deadline has expired.");
             }
 
-            if (choice != SleeveBloomChoice.First && choice != SleeveBloomChoice.Second)
+            if (choice != SleeveBloomChoice.First && choice != SleeveBloomChoice.Second && choice != SleeveBloomChoice.Third)
             {
-                return Reject(TableInteractionCodes.NotACandidate, "The sleeve-bloom choice must be FIRST or SECOND.");
+                return Reject(TableInteractionCodes.NotACandidate, "The sleeve-bloom choice is invalid.");
             }
 
             if (choice == SleeveBloomChoice.First && !offer.FirstTileId.HasValue)
@@ -481,6 +481,10 @@ namespace Mahjong.Unity.Table
             if (choice == SleeveBloomChoice.Second && !offer.SecondTileId.HasValue)
             {
                 return Reject(TableInteractionCodes.NotACandidate, "The second sleeve-bloom candidate is absent.");
+            }
+            if (choice == SleeveBloomChoice.Third && !offer.ThirdTileId.HasValue)
+            {
+                return Reject(TableInteractionCodes.NotACandidate, "The third sleeve-bloom candidate is absent.");
             }
 
             _selection = new TableSelection(

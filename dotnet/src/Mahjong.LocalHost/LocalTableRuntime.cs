@@ -394,7 +394,7 @@ namespace Mahjong.LocalHost
                 DecisionClockConfig = new DecisionClockConfig(20_000L, 3_000L, ReserveScope.Round),
                 CheatEconomy = LocalSnapshotFacts.CheatEconomy,
                 SleeveBloomConfig = LocalSnapshotFacts.SleeveBloom,
-                InitialCheatState = LocalSnapshotFacts.InitialCheatState,
+                InitialCheatState = LocalSnapshotFacts.CreateInitialCheatState(options),
                 FuritenCommitted = snapshot =>
                 {
                     for (int seat = 0; seat < 4; seat++)
@@ -416,8 +416,8 @@ namespace Mahjong.LocalHost
                 environment.ResolveId(),
                 options.RulesetVersion,
                 options.RoomId);
-            durable.CheatStateProvider = () => LocalSnapshotFacts.InitialCheatState;
-            durable.CheatLedgerProvider = () => LocalSnapshotFacts.InitialCheatState.Ledger;
+            durable.CheatStateProvider = () => LocalSnapshotFacts.CreateInitialCheatState(options);
+            durable.CheatLedgerProvider = () => LocalSnapshotFacts.CreateInitialCheatState(options).Ledger;
             durable.ProjectionFactsProvider = facts.Capture;
             durable.RecoveryStateSink = new LocalRecoverySink(options.RoomId);
             durable.RequireCommittedFacts = true;
@@ -1449,7 +1449,13 @@ namespace Mahjong.LocalHost
 
         private static SleeveBloomKeep MapKeep(uint choice)
         {
-            return choice == (uint)SleeveBloomChoice.First ? SleeveBloomKeep.First : SleeveBloomKeep.Second;
+            return choice switch
+            {
+                (uint)SleeveBloomChoice.First => SleeveBloomKeep.First,
+                (uint)SleeveBloomChoice.Second => SleeveBloomKeep.Second,
+                (uint)SleeveBloomChoice.Third => SleeveBloomKeep.Third,
+                _ => throw new InvalidDataException("Sleeve-bloom choice is invalid.")
+            };
         }
 
         private async Task<TableOperationResult> SubmitSettlementAsync(

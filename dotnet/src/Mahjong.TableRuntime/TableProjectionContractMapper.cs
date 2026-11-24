@@ -862,7 +862,8 @@ namespace Mahjong.TableRuntime
                 offer.WindowId,
                 null,
                 unchecked((uint)offer.CreatedTurnNumber),
-                MapDrawKind(offer.DrawKind));
+                MapDrawKind(offer.DrawKind),
+                offer.ThirdTileId);
         }
 
         private static BeamSwapView MapBeamSwap(TableOwnerBeamSwapOfferView offer)

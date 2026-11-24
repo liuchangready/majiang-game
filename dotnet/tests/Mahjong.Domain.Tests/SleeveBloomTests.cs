@@ -832,4 +832,172 @@ namespace Mahjong.Domain.Tests
             Assert.False(idle.Changed); // replay: no offer for the seat
         }
     }
+
+    public class SleeveBloomCharacterTraitTests
+    {
+        private static string FindRequest(bool hit)
+        {
+            for (int i = 0; i < 10_000; i++)
+            {
+                string request = "octopus-" + i;
+                bool actual = PlayerCharacterRules.GrantsThirdSleeveCandidate(
+                    PlayerCharacterIds.Octopus,
+                    PlayerCharacterIds.CurrentTraitsVersion,
+                    CheatTestBench.RoundId,
+                    0,
+                    1,
+                    request);
+                if (actual == hit) return request;
+            }
+            throw new InvalidOperationException("Could not find a deterministic SleeveBloom hit/miss request.");
+        }
+
+        private static CheatState OctopusState() =>
+            CheatTestBench.InitialState().WithPlayerCharacter(PlayerCharacterIds.Octopus);
+
+        [Fact]
+        public void TraitThreshold_IsExactlyTenBucketsOutOfOneHundred()
+        {
+            Assert.False(PlayerCharacterRules.IsSleeveBloomThirdCandidateHit(-1));
+            Assert.True(PlayerCharacterRules.IsSleeveBloomThirdCandidateHit(0));
+            Assert.True(PlayerCharacterRules.IsSleeveBloomThirdCandidateHit(9));
+            Assert.False(PlayerCharacterRules.IsSleeveBloomThirdCandidateHit(10));
+            Assert.False(PlayerCharacterRules.IsSleeveBloomThirdCandidateHit(99));
+            Assert.False(PlayerCharacterRules.IsSleeveBloomThirdCandidateHit(100));
+        }
+
+        [Fact]
+        public void ImmediatePath_HitCreatesThirdAndOnlySelectedTileMoves_Once()
+        {
+            TilePositionMap map = CheatTestBench.OpeningAfterNormalDraw(0, out TileId drawn, out TileId second);
+            CheatTurnContext context = CheatTestBench.Context(0, RoundPhase.CheatWindow, SleeveBloomDrawKind.Normal);
+            string request = FindRequest(hit: true);
+            string repeat = FindRequest(hit: true);
+            Assert.Equal(request, repeat);
+
+            CheatTransition activation = CheatSubmission.ActivateSleeveBloomWithFrozenInput(
+                OctopusState(), map, context, CheatTestBench.Economy(), CheatTestBench.Sleeve(), 0, request,
+                SleeveBloomActivationInput.Unspecified);
+
+            Assert.True(activation.Success, activation.Message);
+            SleeveBloomOffer offer = activation.State!.SleeveBloom.ImmediateOffer!;
+            Assert.Equal(drawn, offer.FirstTile);
+            Assert.Equal(second, offer.SecondTile);
+            Assert.True(offer.ThirdTile.HasValue);
+            Assert.Equal(30, activation.State.Ledger.BalanceOf(0));
+            Assert.Single(activation.State.Ledger.Entries);
+
+            CheatTransition selected = CheatSubmission.ChooseSleeveBloom(
+                activation.State, map, context, 0, offer.OfferId, SleeveBloomKeep.Third);
+            Assert.True(selected.Success, selected.Message);
+            Assert.Null(selected.State!.SleeveBloom.ImmediateOffer);
+            Assert.Equal(30, selected.State.Ledger.BalanceOf(0));
+            Assert.Single(selected.State.Ledger.Entries);
+            CheatTestBench.AssertConserved(selected.Map!);
+            Assert.True(selected.Map!.PositionOf(offer.ThirdTile!.Value).Zone == TileZone.Hand);
+        }
+
+        [Fact]
+        public void BasicCharacterMissAndCandidateShortageKeepTwoOptions()
+        {
+            TilePositionMap map = CheatTestBench.OpeningAfterNormalDraw(0, out _, out _);
+            CheatTurnContext context = CheatTestBench.Context(0, RoundPhase.CheatWindow, SleeveBloomDrawKind.Normal);
+            string miss = FindRequest(hit: false);
+            CheatTransition missed = CheatSubmission.ActivateSleeveBloom(
+                OctopusState(), map, context, CheatTestBench.Economy(), CheatTestBench.Sleeve(), 0, miss);
+            CheatTransition basic = CheatSubmission.ActivateSleeveBloom(
+                CheatTestBench.InitialState().WithPlayerCharacter(PlayerCharacterIds.Player), map, context,
+                CheatTestBench.Economy(), CheatTestBench.Sleeve(), 0, FindRequest(hit: true));
+            Assert.True(missed.Success);
+            Assert.True(basic.Success);
+            Assert.Null(missed.State!.SleeveBloom.ImmediateOffer!.ThirdTile);
+            Assert.Null(basic.State!.SleeveBloom.ImmediateOffer!.ThirdTile);
+            Assert.Equal(30, missed.State.Ledger.BalanceOf(0));
+
+            TilePositionMap shortWall = map;
+            while (shortWall.WallRemaining > 1)
+            {
+                TileId drawn = shortWall.DrawnTile!.Value.Tile;
+                shortWall = shortWall.Discard(0, drawn).RequireState();
+                shortWall = shortWall.DrawFromWall(0).RequireState();
+            }
+            CheatTransition shortOffer = CheatSubmission.ActivateSleeveBloom(
+                OctopusState(), shortWall, context, CheatTestBench.Economy(), CheatTestBench.Sleeve(), 0,
+                FindRequest(hit: true));
+            Assert.True(shortOffer.Success, shortOffer.Message);
+            Assert.Null(shortOffer.State!.SleeveBloom.ImmediateOffer!.ThirdTile);
+            CheatTestBench.AssertConserved(shortWall);
+        }
+
+        [Fact]
+        public void OffTurnPath_ThirdSelectionReservesOneTile_TimeoutFallsBackToFirst()
+        {
+            TilePositionMap map = CheatTestBench.CraftedOpening();
+            CheatState state = OctopusState();
+            SleeveBloomState sleeve = state.SleeveBloom.WithOpenedWindow(0, 1, out string windowId);
+            state = state.WithSleeveBloom(sleeve);
+            CheatTurnContext context = CheatTestBench.Context(1, RoundPhase.Discard, SleeveBloomDrawKind.DealExtra);
+            string request = FindRequest(hit: true);
+            CheatTransition activation = CheatSubmission.ActivateOffTurnSleeveBloom(
+                state, map, context, CheatTestBench.Economy(), CheatTestBench.Sleeve(), 0, request, windowId);
+            Assert.True(activation.Success, activation.Message);
+            SleeveBloomOffer offer = activation.State!.SleeveBloom.OffTurnOfferFor(0)!;
+            Assert.True(offer.ThirdTile.HasValue);
+
+            CheatTransition selected = CheatSubmission.ChooseOffTurnSleeveBloom(
+                activation.State, map, context, 0, offer.OfferId, SleeveBloomKeep.Third);
+            Assert.True(selected.Success, selected.Message);
+            Assert.Equal(offer.ThirdTile!.Value, selected.State!.SleeveBloom.ReservationFor(0)!.Tile);
+            Assert.Null(selected.State.SleeveBloom.OffTurnOfferFor(0));
+            Assert.Equal(30, selected.State.Ledger.BalanceOf(0));
+            CheatTestBench.AssertConserved(map);
+
+            CheatState timeoutState = OctopusState().WithSleeveBloom(
+                OctopusState().SleeveBloom.WithOpenedWindow(0, 1, out string timeoutWindow));
+            CheatTurnContext late = CheatTestBench.Context(1, RoundPhase.Discard, SleeveBloomDrawKind.DealExtra, now: 1_000);
+            CheatTransition timedActivation = CheatSubmission.ActivateOffTurnSleeveBloom(
+                timeoutState, map, late, CheatTestBench.Economy(), CheatTestBench.Sleeve(), 0, FindRequest(hit: true), timeoutWindow);
+            Assert.True(timedActivation.Success);
+            SleeveBloomOffer timedOffer = timedActivation.State!.SleeveBloom.OffTurnOfferFor(0)!;
+            CheatTurnContext expired = CheatTestBench.Context(1, RoundPhase.Discard, SleeveBloomDrawKind.DealExtra, now: timedOffer.DeadlineMillis);
+            CheatTransition timedChoice = CheatSubmission.ChooseOffTurnSleeveBloom(
+                timedActivation.State, map, expired, 0, timedOffer.OfferId, SleeveBloomKeep.Third);
+            Assert.False(timedChoice.Success);
+            Assert.Equal(CheatErrorCode.DeadlineExpired, timedChoice.Error);
+            Assert.Equal(timedOffer.FirstTile, timedChoice.State!.SleeveBloom.ReservationFor(0)!.Tile);
+            Assert.Equal(30, timedChoice.State.Ledger.BalanceOf(0));
+        }
+
+        [Fact]
+        public void ThirdChoiceWithoutThirdCandidateIsRejectedWithoutChargeOrStateChange()
+        {
+            TilePositionMap map = CheatTestBench.OpeningAfterNormalDraw(0, out _, out _);
+            CheatTurnContext context = CheatTestBench.Context(0, RoundPhase.CheatWindow, SleeveBloomDrawKind.Normal);
+            CheatTransition activation = CheatSubmission.ActivateSleeveBloom(
+                CheatTestBench.InitialState(), map, context, CheatTestBench.Economy(), CheatTestBench.Sleeve(), 0, FindRequest(hit: false));
+            SleeveBloomOffer offer = activation.State!.SleeveBloom.ImmediateOffer!;
+            CheatTransition rejected = CheatSubmission.ChooseSleeveBloom(
+                activation.State, map, context, 0, offer.OfferId, SleeveBloomKeep.Third);
+            Assert.False(rejected.Success);
+            Assert.Equal(CheatErrorCode.InvalidSelection, rejected.Error);
+            Assert.Null(rejected.State);
+            Assert.Equal(30, activation.State.Ledger.BalanceOf(0));
+        }
+
+        [Fact]
+        public void ThirdCandidateIsPresentOnlyInTheOwnerPrivateView()
+        {
+            TilePositionMap map = CheatTestBench.OpeningAfterNormalDraw(0, out _, out _);
+            CheatTurnContext context = CheatTestBench.Context(0, RoundPhase.CheatWindow, SleeveBloomDrawKind.Normal);
+            CheatTransition activation = CheatSubmission.ActivateSleeveBloom(
+                OctopusState(), map, context, CheatTestBench.Economy(), CheatTestBench.Sleeve(), 0, FindRequest(hit: true));
+            Assert.True(activation.Success, activation.Message);
+
+            Assert.NotNull(activation.State!.ViewFor(0).ImmediateOffer!.ThirdTile);
+            Assert.Null(activation.State.ViewFor(1).ImmediateOffer);
+            Assert.Null(activation.State.ViewFor(2).ImmediateOffer);
+            Assert.Null(activation.State.ViewFor(3).ImmediateOffer);
+            Assert.Empty(activation.State.PublicSnapshot.GetType().GetProperties());
+        }
+    }
 }

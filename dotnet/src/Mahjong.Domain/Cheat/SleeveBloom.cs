@@ -23,7 +23,8 @@ namespace Mahjong.Domain.Cheat
     public enum SleeveBloomKeep : byte
     {
         First = 0,
-        Second = 1
+        Second = 1,
+        Third = 2
     }
 
     /// <summary>Caller-supplied sleeve bloom configuration (V4 <c>SleeveBloomConfig</c>).</summary>
@@ -64,7 +65,8 @@ namespace Mahjong.Domain.Cheat
             string? windowId = null,
             long deadlineMillis = 0,
             long createdAtMillis = 0,
-            string? bootId = null)
+            string? bootId = null,
+            TileId? thirdTile = null)
         {
             if (string.IsNullOrWhiteSpace(offerId))
             {
@@ -79,6 +81,10 @@ namespace Mahjong.Domain.Cheat
             if (firstTile.Equals(secondTile))
             {
                 throw new ArgumentException("Sleeve bloom candidates must be distinct tiles.", nameof(secondTile));
+            }
+            if (thirdTile.HasValue && (thirdTile.Value.Equals(firstTile) || thirdTile.Value.Equals(secondTile)))
+            {
+                throw new ArgumentException("Sleeve bloom candidates must be distinct tiles.", nameof(thirdTile));
             }
 
             if (createdTurnNumber < 0)
@@ -120,6 +126,7 @@ namespace Mahjong.Domain.Cheat
             DeadlineMillis = deadlineMillis;
             CreatedAtMillis = createdAtMillis;
             BootId = bootId ?? string.Empty;
+            ThirdTile = thirdTile;
         }
 
         public string OfferId { get; }
@@ -146,6 +153,8 @@ namespace Mahjong.Domain.Cheat
         /// <summary>Boot instance that supplied the monotonic deadline domain.</summary>
         public string BootId { get; }
 
+        public TileId? ThirdTile { get; }
+
         public bool Equals(SleeveBloomOffer? other) =>
             other != null &&
             OfferId == other.OfferId &&
@@ -158,7 +167,8 @@ namespace Mahjong.Domain.Cheat
             WindowId == other.WindowId &&
             DeadlineMillis == other.DeadlineMillis &&
             CreatedAtMillis == other.CreatedAtMillis &&
-            BootId == other.BootId;
+            BootId == other.BootId &&
+            Nullable.Equals(ThirdTile, other.ThirdTile);
 
         public override bool Equals(object? obj) => obj is SleeveBloomOffer other && Equals(other);
 
@@ -167,7 +177,8 @@ namespace Mahjong.Domain.Cheat
             int hash = ((OfferId.GetHashCode(StringComparison.Ordinal) * 31 + Seat) * 31 +
                         FirstTile.Value) * 31 + SecondTile.Value;
             hash = hash * 31 + CreatedTurnNumber;
-            return hash * 31 + BootId.GetHashCode(StringComparison.Ordinal);
+            hash = hash * 31 + BootId.GetHashCode(StringComparison.Ordinal);
+            return hash * 31 + (ThirdTile.HasValue ? ThirdTile.Value.Value : -1);
         }
 
         public override string ToString() =>
@@ -535,7 +546,13 @@ namespace Mahjong.Domain.Cheat
                 return false;
             }
 
-            TileId chosen = keep == SleeveBloomKeep.First ? offer.FirstTile : offer.SecondTile;
+            TileId chosen = keep switch
+            {
+                SleeveBloomKeep.First => offer.FirstTile,
+                SleeveBloomKeep.Second => offer.SecondTile,
+                SleeveBloomKeep.Third when offer.ThirdTile.HasValue => offer.ThirdTile.Value,
+                _ => throw new ArgumentOutOfRangeException(nameof(keep), keep, "The selected sleeve candidate is unavailable.")
+            };
             reservation = new SleeveBloomReservation(seat, offer.OfferId, chosen, offer.WindowId, offer.CreatedAtMillis);
             next = Next(ImmediateOffer, OffersWithout(seat), ReservationsWith(reservation), (string?[])_windowIds.Clone(), WindowSeq, UsedOnTurn);
             return true;

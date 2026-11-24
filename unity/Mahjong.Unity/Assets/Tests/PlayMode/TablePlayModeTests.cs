@@ -1236,6 +1236,61 @@ namespace Mahjong.Unity.Tests.PlayMode
         }
 
         [UnityTest]
+        public IEnumerator OctopusThirdSleeveCandidate_IsShownAndClickedThroughClientOutbox()
+        {
+            yield return LoadAndBindTableSceneAsync(false);
+            var snap = CreatePlayerBaselineEnvelope(stateVersion: 2, hasDecision: false).SyncResponse.Player;
+            snap.Cursor.ProjectionSeq = 2;
+            snap.PrivateView.Cheat.SleeveBloom = new SleeveBloomView
+            {
+                OfferId = "octopus-third-offer",
+                Mode = "IMMEDIATE",
+                DrawKind = SleeveBloomDrawKind.Normal,
+                FirstTileId = 0,
+                SecondTileId = 4,
+                ThirdTileId = 8
+            };
+            _presenter!.OnSessionViewChanged(this, FormalProbeView(snap));
+            _presenter.OpenSleeveBloomDialog();
+
+            Button third = FormalButton("SleeveBloomCandidate3");
+            Assert.IsTrue(third.gameObject.activeInHierarchy, "third choice should only appear for a confirmed third candidate");
+            FormalClick(third);
+            for (int i = 0; i < 30; i++) yield return null;
+
+            Assert.AreEqual(1, GetUnresolvedOutboxCount(), "third choice must submit through the canonical Client outbox");
+            TableCommandIntent intent = _presenter.InteractionState.Pending!.Intent;
+            Assert.AreEqual(CommandKind.SubmitSleeveBloomChoice, intent.Kind);
+            Assert.AreEqual(
+                CommandPayloadFactory.SubmitSleeveBloomChoice("octopus-third-offer", SleeveBloomChoice.Third).Digest,
+                intent.Command.Payload.Digest);
+        }
+
+        [UnityTest]
+        public IEnumerator SleeveBloomThirdCandidate_IsHiddenAndRejectedWhenProjectionOmitsIt()
+        {
+            yield return LoadAndBindTableSceneAsync(false);
+            var snap = CreatePlayerBaselineEnvelope(stateVersion: 2, hasDecision: false).SyncResponse.Player;
+            snap.Cursor.ProjectionSeq = 2;
+            snap.PrivateView.Cheat.SleeveBloom = new SleeveBloomView
+            {
+                OfferId = "two-candidate-offer",
+                Mode = "IMMEDIATE",
+                DrawKind = SleeveBloomDrawKind.Normal,
+                FirstTileId = 0,
+                SecondTileId = 4
+            };
+            _presenter!.OnSessionViewChanged(this, FormalProbeView(snap));
+            _presenter.OpenSleeveBloomDialog();
+
+            Button third = FormalButton("SleeveBloomCandidate3");
+            Assert.IsFalse(third.gameObject.activeInHierarchy, "third choice must remain hidden when the confirmed offer has two candidates");
+            _presenter.OnSleeveChoiceClicked(SleeveBloomChoice.Third);
+            for (int i = 0; i < 20; i++) yield return null;
+            Assert.AreEqual(0, GetUnresolvedOutboxCount(), "unavailable third choice must not reach the Client outbox");
+        }
+
+        [UnityTest]
         public IEnumerator R4FormalProbe05_RebindToCurrentNonBaselineMustResume()
         {
             yield return LoadAndBindTableSceneAsync();

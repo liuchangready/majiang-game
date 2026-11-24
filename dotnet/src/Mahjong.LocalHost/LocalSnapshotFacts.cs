@@ -130,7 +130,7 @@ namespace Mahjong.LocalHost
                 utc,
                 boot);
 
-            CheatState cheat = InitialCheatState;
+            CheatState cheat = CreateInitialCheatState(options);
             TileMarkTransition registration = cheat.TileMarks.RegisterDealtRound(round.RoundId);
             if (!registration.Success)
             {
@@ -170,6 +170,9 @@ namespace Mahjong.LocalHost
                 Array.Empty<TableEventRecord>(),
                 Array.Empty<TableCommandBinding>());
         }
+
+        internal static CheatState CreateInitialCheatState(LocalTableHostOptions options) =>
+            CheatState.Initialize(CheatEconomy, options.PlayerCharacterId);
 
         public TableProjectionContextData Capture(TableProjectionContextRequest request)
         {

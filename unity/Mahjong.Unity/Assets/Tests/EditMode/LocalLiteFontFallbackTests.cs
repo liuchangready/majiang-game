@@ -7,6 +7,7 @@ using System.Reflection;
 using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
+using System.Threading.Tasks;
 
 namespace Mahjong.Unity.Tests.EditMode
 {
@@ -43,6 +44,10 @@ namespace Mahjong.Unity.Tests.EditMode
                 AssertVisibleLabel(quit.gameObject, "Exit");
                 Button test = root.transform.Find("LocalLiteTestButton")!.GetComponent<Button>();
                 AssertVisibleLabel(test.gameObject, "Test cases");
+                Button player = root.transform.Find("LocalLiteCharacter-player")!.GetComponent<Button>();
+                Button octopus = root.transform.Find("LocalLiteCharacter-octopus")!.GetComponent<Button>();
+                AssertVisibleLabel(player.gameObject, "> Player");
+                AssertVisibleLabel(octopus.gameObject, "Octopus");
 
                 Button back = MakeButton(root.transform, "SettlementBack", "template");
                 var settlement = root.AddComponent<SettlementPresenter>();
@@ -65,10 +70,13 @@ namespace Mahjong.Unity.Tests.EditMode
             LocalLiteRunContext.ResetForTest();
             string root = System.IO.Path.Combine(Application.temporaryCachePath, "lite-run-context-" + System.Guid.NewGuid().ToString("N"));
             LocalLiteRunContext.Initialize(root, "test", "build", "identity");
+            LocalLiteRunContext.SetCharacter("octopus");
+            StringAssert.Contains("\"characterId\":\"octopus\"", System.IO.File.ReadAllText(System.IO.Path.Combine(root, "run.json")));
             Assert.IsTrue(LocalLiteRunContext.RecordStage("pon", "table"));
             Assert.IsTrue(LocalLiteRunContext.RecordStage(null, "starting"));
             Assert.AreEqual("random", LocalLiteRunContext.CurrentCaseId);
             StringAssert.Contains("\"caseId\":\"random\"", System.IO.File.ReadAllText(System.IO.Path.Combine(root, "current-case.json")));
+            StringAssert.Contains("\"characterId\":\"octopus\"", System.IO.File.ReadAllText(System.IO.Path.Combine(root, "current-case.json")));
 
             string blocker = System.IO.Path.Combine(root, "file-is-not-a-directory");
             System.IO.File.WriteAllText(blocker, "kept");
@@ -76,6 +84,57 @@ namespace Mahjong.Unity.Tests.EditMode
             Assert.IsFalse(LocalLiteRunContext.RecordStage("chi", "starting"));
             Assert.AreEqual("LOCAL_LITE_DIAGNOSTICS_UNAVAILABLE", LocalLiteRunContext.LastFailure);
             LocalLiteRunContext.ResetForTest();
+        }
+
+        [Test]
+        public async Task LiteMenu_ClickedOctopusFlowsIntoLocalStart()
+        {
+            UiInputLifecycle.ResetForTest();
+            FontFallbackResolver.WindowsSystemFontProviderForTest = (_, _) => null;
+            var root = new GameObject("LiteCharacterStart");
+            try
+            {
+                Button play = MakeButton(root.transform, "Play", "template");
+                Button quit = MakeButton(root.transform, "Quit", "template");
+                var menu = root.AddComponent<MenuPresenter>();
+                var navigation = new LiteNavigationStub();
+                menu.Initialize(navigation, true);
+                Set(menu, "_playButton", play);
+                Set(menu, "_quitButton", quit);
+                Invoke(menu, "ConfigureLiteMenu");
+
+                Button octopus = root.transform.Find("LocalLiteCharacter-octopus")!.GetComponent<Button>();
+                octopus.onClick.Invoke();
+                Assert.AreEqual("octopus", typeof(MenuPresenter).GetField("_selectedCharacterId", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(menu));
+
+                menu.OnPlayClicked();
+                await Task.Yield();
+                Assert.AreEqual("octopus", navigation.StartedCharacterId);
+            }
+            finally
+            {
+                FontFallbackResolver.WindowsSystemFontProviderForTest = null;
+                UiInputLifecycle.ResetForTest();
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        private sealed class LiteNavigationStub : IAppNavigation, ILocalLiteNavigation
+        {
+            public string? StartedCharacterId { get; private set; }
+            public bool IsLocalGameStartAvailable => true;
+            public void OpenLobby() { }
+            public void BackToMenu() { }
+            public void RequestQuit() { }
+            public Task<LocalGameStartResult> StartLocalGameAsync() => Task.FromResult(LocalGameStartResult.Started());
+            public Task<LocalGameStartResult> StartLocalGameAsync(string? scenarioId) => Task.FromResult(LocalGameStartResult.Started());
+            public Task<LocalGameStartResult> StartLocalGameAsync(string? scenarioId, string characterId)
+            {
+                StartedCharacterId = characterId;
+                return Task.FromResult(LocalGameStartResult.Started());
+            }
+            public Task<LocalGameStartResult> RestartLocalGameAsync() => Task.FromResult(LocalGameStartResult.Started());
+            public Task<bool> ReturnToMenuLiteAsync() => Task.FromResult(true);
         }
 
         private static Button MakeButton(Transform parent, string name, string label)

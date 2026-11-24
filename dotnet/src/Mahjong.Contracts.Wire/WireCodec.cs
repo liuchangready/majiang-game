@@ -1934,10 +1934,14 @@ namespace Mahjong.Contracts.Wire
 
             RequireTile(offer.FirstTileId, name + ".first_tile_id");
             RequireTile(offer.SecondTileId, name + ".second_tile_id");
+            if (offer.HasThirdTileId) RequireTile(offer.ThirdTileId, name + ".third_tile_id");
             if (offer.FirstTileId == offer.SecondTileId)
             {
                 throw StrictError(name + " candidates must be distinct.");
             }
+            if (offer.HasThirdTileId &&
+                (offer.ThirdTileId == offer.FirstTileId || offer.ThirdTileId == offer.SecondTileId))
+                throw StrictError(name + " candidates must be distinct.");
 
             if (offer.HasReservedTileId)
             {

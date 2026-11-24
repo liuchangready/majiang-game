@@ -620,7 +620,8 @@ namespace Mahjong.TableRuntime
 
     public static class TableCheatLedgerCheckpointCodec
     {
-        public const int FormatVersion = 4;
+        public const int FormatVersion = 5;
+        private const int LegacyFormatVersion = 4;
         private const int Magic = 0x4D4A4C43; // MJLC
 
         public static byte[] Encode(TableCheatLedgerCheckpoint checkpoint)
@@ -664,6 +665,8 @@ namespace Mahjong.TableRuntime
                 WriteTileMarks(writer, state.TileMarks);
                 WriteSleeveBloom(writer, state.SleeveBloom);
                 WriteBeamSwap(writer, state.BeamSwap);
+                writer.Write(state.PlayerCharacterId);
+                writer.Write(state.CharacterTraitsVersion);
 
                 writer.Flush();
                 return stream.ToArray();
@@ -686,7 +689,7 @@ namespace Mahjong.TableRuntime
                 }
 
                 int schema = reader.ReadInt32();
-                if (schema != FormatVersion)
+                if (schema != LegacyFormatVersion && schema != FormatVersion)
                 {
                     throw new InvalidDataException("Unsupported cheat checkpoint schema " + schema + ".");
                 }
@@ -720,15 +723,19 @@ namespace Mahjong.TableRuntime
                 // Replays the real ledger entries and verifies balances before returning.
                 CheatLedger ledger = CheatLedger.FromSnapshot(initial, balances, entries);
                 TileMarkState tileMarks = ReadTileMarks(reader);
-                SleeveBloomState sleeve = ReadSleeveBloom(reader);
+                SleeveBloomState sleeve = ReadSleeveBloom(reader, schema >= FormatVersion);
                 BeamSwapState beam = ReadBeamSwap(reader);
+                string characterId = schema >= FormatVersion ? reader.ReadString() : PlayerCharacterIds.Player;
+                int characterTraitsVersion = schema >= FormatVersion
+                    ? reader.ReadInt32()
+                    : PlayerCharacterIds.CurrentTraitsVersion;
 
                 if (stream.Position != payload.Length)
                 {
                     throw new InvalidDataException("Cheat checkpoint payload has trailing bytes.");
                 }
 
-                var state = new CheatState(ledger, tileMarks, sleeve, beam);
+                var state = new CheatState(ledger, tileMarks, sleeve, beam, characterId, characterTraitsVersion);
                 if (state.Version != totalVersion || state.Fingerprint != fingerprint)
                 {
                     throw new InvalidDataException(
@@ -840,17 +847,17 @@ namespace Mahjong.TableRuntime
             }
         }
 
-        private static SleeveBloomState ReadSleeveBloom(BinaryReader reader)
+        private static SleeveBloomState ReadSleeveBloom(BinaryReader reader, bool includesThirdCandidate)
         {
             long version = reader.ReadInt64();
             int windowSeq = reader.ReadInt32();
             int usedOnTurn = reader.ReadInt32();
-            SleeveBloomOffer? immediate = ReadOffer(reader);
+            SleeveBloomOffer? immediate = ReadOffer(reader, includesThirdCandidate);
             int offerCount = ReadCount(reader, 4, "off-turn offer");
             var offers = new SleeveBloomOffer[offerCount];
             for (int i = 0; i < offerCount; i++)
             {
-                offers[i] = ReadOffer(reader) ??
+                offers[i] = ReadOffer(reader, includesThirdCandidate) ??
                     throw new InvalidDataException("An off-turn offer slot cannot be empty.");
             }
 
@@ -894,9 +901,11 @@ namespace Mahjong.TableRuntime
             writer.Write(offer.DeadlineMillis);
             writer.Write(offer.CreatedAtMillis);
             writer.Write(offer.BootId);
+            writer.Write(offer.ThirdTile.HasValue);
+            if (offer.ThirdTile.HasValue) writer.Write(offer.ThirdTile.Value.Value);
         }
 
-        private static SleeveBloomOffer? ReadOffer(BinaryReader reader)
+        private static SleeveBloomOffer? ReadOffer(BinaryReader reader, bool includesThirdCandidate)
         {
             if (!reader.ReadBoolean())
             {
@@ -924,6 +933,9 @@ namespace Mahjong.TableRuntime
             long deadline = reader.ReadInt64();
             long createdAt = reader.ReadInt64();
             string bootId = reader.ReadString();
+            TileId? third = includesThirdCandidate && reader.ReadBoolean()
+                ? new TileId(reader.ReadInt32())
+                : (TileId?)null;
             return new SleeveBloomOffer(
                 offerId,
                 seat,
@@ -935,7 +947,8 @@ namespace Mahjong.TableRuntime
                 windowId,
                 deadline,
                 createdAt,
-                bootId);
+                bootId,
+                third);
         }
 
         private static void WriteBeamSwap(BinaryWriter writer, BeamSwapState state)

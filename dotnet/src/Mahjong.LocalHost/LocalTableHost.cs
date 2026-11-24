@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Security.Cryptography;
 using Mahjong.Client;
+using Mahjong.Domain.Cheat;
 using Mahjong.TableRuntime;
 
 namespace Mahjong.LocalHost
@@ -56,6 +57,8 @@ namespace Mahjong.LocalHost
         public LocalHostEnvironment? Environment { get; set; }
 
         public LocalTableSeatPlan SeatPlan { get; set; } = LocalTableSeatPlan.SingleHumanSeatZero;
+
+        public string PlayerCharacterId { get; set; } = PlayerCharacterIds.Player;
 
         /// <summary>AI profile and seeded cheat configuration for automated seats.</summary>
         public LocalAiOptions Ai { get; set; } = new LocalAiOptions();
@@ -120,6 +123,9 @@ namespace Mahjong.LocalHost
             {
                 throw new LocalTableException(LocalTableErrorKind.InvalidOptions, "SeatPlan or spectator limit is invalid.");
             }
+
+            if (!PlayerCharacterIds.IsSupported(PlayerCharacterId))
+                throw new LocalTableException(LocalTableErrorKind.InvalidOptions, "PlayerCharacterId is unsupported.");
 
             if (Ai == null)
             {

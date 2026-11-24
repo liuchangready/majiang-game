@@ -598,6 +598,7 @@ message SleeveBloomView {
   string mode = 2;
   optional uint32 first_tile_id = 3;
   optional uint32 second_tile_id = 4;
+  optional uint32 third_tile_id = 18;
   int64 deadline_remaining_ms = 5;
   string window_id = 6;
   optional uint32 reserved_tile_id = 7;

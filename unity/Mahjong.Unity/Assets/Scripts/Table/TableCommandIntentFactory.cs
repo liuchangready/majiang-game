@@ -345,10 +345,14 @@ namespace Mahjong.Unity.Table
             {
                 throw Unavailable("CHOICE_NOT_AVAILABLE", "The second sleeve-bloom candidate is absent.");
             }
-
-            if (choice != SleeveBloomChoice.First && choice != SleeveBloomChoice.Second)
+            if (choice == SleeveBloomChoice.Third && !offer.ThirdTileId.HasValue)
             {
-                throw Unavailable("CHOICE_NOT_AVAILABLE", "The sleeve-bloom choice must be FIRST or SECOND.");
+                throw Unavailable("CHOICE_NOT_AVAILABLE", "The third sleeve-bloom candidate is absent.");
+            }
+
+            if (choice != SleeveBloomChoice.First && choice != SleeveBloomChoice.Second && choice != SleeveBloomChoice.Third)
+            {
+                throw Unavailable("CHOICE_NOT_AVAILABLE", "The sleeve-bloom choice is invalid.");
             }
 
             CommandKind kind = offTurn

@@ -568,6 +568,7 @@ namespace Mahjong.Unity.Table
             string mode,
             uint? firstTileId,
             uint? secondTileId,
+            uint? thirdTileId,
             PlayerCountdown? countdown,
             string windowId,
             uint? reservedTileId,
@@ -580,6 +581,7 @@ namespace Mahjong.Unity.Table
             Mode = mode ?? string.Empty;
             FirstTileId = firstTileId;
             SecondTileId = secondTileId;
+            ThirdTileId = thirdTileId;
             Countdown = countdown;
             WindowId = windowId ?? string.Empty;
             ReservedTileId = reservedTileId;
@@ -597,6 +599,8 @@ namespace Mahjong.Unity.Table
         public uint? FirstTileId { get; }
 
         public uint? SecondTileId { get; }
+
+        public uint? ThirdTileId { get; }
 
         public PlayerCountdown? Countdown { get; }
 

@@ -85,6 +85,7 @@ namespace Mahjong.Unity.UI
     public interface ILocalLiteNavigation
     {
         Task<LocalGameStartResult> StartLocalGameAsync(string? scenarioId);
+        Task<LocalGameStartResult> StartLocalGameAsync(string? scenarioId, string characterId);
         Task<LocalGameStartResult> RestartLocalGameAsync();
         Task<bool> ReturnToMenuLiteAsync();
     }

@@ -59,7 +59,8 @@ namespace Mahjong.Contracts
     {
         Unspecified = 0,
         First = 1,
-        Second = 2
+        Second = 2,
+        Third = 3
     }
 
     public enum BeamSwapChoice
@@ -349,7 +350,9 @@ namespace Mahjong.Contracts
                 case CommandKind.SubmitSleeveBloomOffTurnChoice:
                     RequireString(document, CommandPayloadFields.OfferId, "offerId");
                     uint bloomChoice = RequireUInt32(document, CommandPayloadFields.Choice, "choice");
-                    if (bloomChoice != (uint)SleeveBloomChoice.First && bloomChoice != (uint)SleeveBloomChoice.Second)
+                    if (bloomChoice != (uint)SleeveBloomChoice.First &&
+                        bloomChoice != (uint)SleeveBloomChoice.Second &&
+                        bloomChoice != (uint)SleeveBloomChoice.Third)
                     {
                         throw new CommandValidationException("sleeve bloom choice must be FIRST or SECOND.");
                     }

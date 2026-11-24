@@ -17,6 +17,7 @@ namespace Mahjong.Unity.UI
             public string runId = string.Empty;
             public string startedUtc = string.Empty;
             public string buildIdentity = string.Empty;
+            public string characterId = "player";
         }
 
         [Serializable]
@@ -25,12 +26,14 @@ namespace Mahjong.Unity.UI
             public string utc = string.Empty;
             public string caseId = string.Empty;
             public string stage = string.Empty;
+            public string characterId = "player";
         }
 
         public static bool Enabled { get; private set; }
         public static string? RunRoot { get; private set; }
         public static string CurrentCaseId { get; private set; } = "random";
         public static string CurrentStage { get; private set; } = "boot";
+        public static string CurrentCharacterId { get; private set; } = "player";
         public static string? LastFailure { get; private set; }
         public static string? LastPublicError { get; private set; }
 
@@ -43,6 +46,8 @@ namespace Mahjong.Unity.UI
             RunRoot = null;
             CurrentCaseId = "random";
             CurrentStage = "boot";
+            CurrentCharacterId = "player";
+            _record = null;
             LastFailure = null;
             LastPublicError = null;
         }
@@ -60,8 +65,10 @@ namespace Mahjong.Unity.UI
                     buildGuid = buildGuid,
                     runId = runId,
                     startedUtc = DateTime.UtcNow.ToString("o"),
-                    buildIdentity = buildIdentity
+                    buildIdentity = buildIdentity,
+                    characterId = CurrentCharacterId
                 };
+                _record = record;
                 Directory.CreateDirectory(Path.Combine(RunRoot, "logs"));
                 File.WriteAllText(Path.Combine(RunRoot, "run.json"), JsonUtility.ToJson(record) + "\n");
                 LastFailure = null;
@@ -76,6 +83,18 @@ namespace Mahjong.Unity.UI
             }
         }
 
+        private static RunRecord? _record;
+
+        public static void SetCharacter(string characterId)
+        {
+            CurrentCharacterId = characterId == "octopus" ? "octopus" : "player";
+            if (_record == null || string.IsNullOrWhiteSpace(RunRoot)) return;
+            _record.characterId = CurrentCharacterId;
+            try { File.WriteAllText(Path.Combine(RunRoot, "run.json"), JsonUtility.ToJson(_record) + "\n"); }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+            { LastFailure = "LOCAL_LITE_DIAGNOSTICS_UNAVAILABLE"; }
+        }
+
         public static bool RecordStage(string? caseId, string stage)
         {
             string? root = RunRoot;
@@ -88,7 +107,8 @@ namespace Mahjong.Unity.UI
                 {
                     utc = DateTime.UtcNow.ToString("o"),
                     caseId = CurrentCaseId,
-                    stage = stage
+                    stage = stage,
+                    characterId = CurrentCharacterId
                 }) + "\n";
                 Directory.CreateDirectory(Path.Combine(root, "logs"));
                 File.AppendAllText(Path.Combine(root, "logs", "cases.jsonl"), line);

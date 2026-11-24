@@ -611,6 +611,7 @@ namespace Mahjong.Unity.Table
                 source.Mode,
                 source.HasFirstTileId ? source.FirstTileId : (uint?)null,
                 source.HasSecondTileId ? source.SecondTileId : (uint?)null,
+                source.HasThirdTileId ? source.ThirdTileId : (uint?)null,
                 source.HasDeadline ? new PlayerCountdown(source.DeadlineRemainingMs, now) : null,
                 source.WindowId,
                 source.HasReservedTileId ? source.ReservedTileId : (uint?)null,

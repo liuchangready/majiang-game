@@ -28,6 +28,7 @@ namespace Mahjong.Unity.App
         private bool _isTransitioning;
         private int _startInFlight;
         private long _navigationGeneration;
+        private string _lastCharacterId = "player";
 
         public event Action<SceneId>? SceneLoaded;
 
@@ -85,7 +86,7 @@ namespace Mahjong.Unity.App
                 return _composition.IsTerminal
                     ? TerminalStartResult()
                     : LocalGameStartResult.Busy();
-            LocalGameStartResult restarted = await StartLocalGameAsync(null);
+            LocalGameStartResult restarted = await StartLocalGameAsync(null, _lastCharacterId);
             if (restarted.Status != LocalGameStartStatus.Started)
             {
                 string error = restarted.StableErrorCode ?? restarted.Status.ToString();
@@ -97,8 +98,14 @@ namespace Mahjong.Unity.App
 
         public Task<bool> ReturnToMenuLiteAsync() => ReturnToMenuAsync();
 
-        public async Task<LocalGameStartResult> StartLocalGameAsync(string? scenarioId)
+        public Task<LocalGameStartResult> StartLocalGameAsync(string? scenarioId) =>
+            StartLocalGameAsync(scenarioId, "player");
+
+        public async Task<LocalGameStartResult> StartLocalGameAsync(string? scenarioId, string characterId)
         {
+            if (characterId != "player" && characterId != "octopus")
+                return LocalGameStartResult.Failed(LocalGameStartResult.UnexpectedFailureCode);
+            _lastCharacterId = characterId;
             // One owner per router. The second concurrent call is rejected before it
             // can enter AppComposition, load a scene or run any shutdown/cleanup.
             if (Interlocked.CompareExchange(ref _startInFlight, 1, 0) != 0)
@@ -121,6 +128,7 @@ namespace Mahjong.Unity.App
             if (_composition.Config.localLiteMode)
             {
                 LocalLiteRunContext.SetPublicError(null);
+                LocalLiteRunContext.SetCharacter(characterId);
                 if (!LocalLiteRunContext.RecordStage(scenarioId, "starting"))
                 {
                     LocalLiteRunContext.SetPublicError("LOCAL_LITE_DIAGNOSTICS_UNAVAILABLE");
@@ -146,7 +154,7 @@ namespace Mahjong.Unity.App
 
                 try
                 {
-                    await _composition.PrepareLocalLiteGameAsync(scenarioId, CancellationToken.None);
+                    await _composition.PrepareLocalLiteGameAsync(scenarioId, characterId, CancellationToken.None);
                     await _composition.OpenLocalSessionAsync(CancellationToken.None);
                 }
                 catch (LocalTableUnavailableException)
