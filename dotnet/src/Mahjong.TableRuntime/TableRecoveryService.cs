@@ -517,6 +517,8 @@ namespace Mahjong.TableRuntime
                     RoundStateMachine next;
                     IReadOnlyList<RoundEvent> expectedRound;
                     IReadOnlyList<RoundCheatEvent> expectedCheat = Array.Empty<RoundCheatEvent>();
+                    CheatState? preCommandCheat = cheat;
+                    RoundCheatCommand? replayedCheatCommand = null;
                     if (journal.SchemaVersion == RoundCommandCodec.FormatVersion)
                     {
                         RoundCommand command = RoundCommandCodec.Decode(journal.CommandPayload);
@@ -805,6 +807,7 @@ namespace Mahjong.TableRuntime
                         }
 
                         RoundCheatJournal cheatJournal = TableCheatCommandCodec.Decode(journal.CommandPayload);
+                        replayedCheatCommand = cheatJournal.Command;
                         CheatTurnContext context = BuildRecoveryCheatContext(
                             round,
                             cheat,
@@ -974,7 +977,16 @@ namespace Mahjong.TableRuntime
                     {
                         RoundCheatEvent expected = expectedCheat[i];
                         TableEventRecord stored = cheatStored[i];
-                        if (stored.Cheat == null ||
+                        bool exactResultTile = Nullable.Equals(stored.Cheat?.ResultTile, expected.ResultTile);
+                        bool legacyThirdFirstTile = !exactResultTile &&
+                            IsLegacyThirdFirstResultTile(
+                                stored,
+                                expected,
+                                journal.SchemaVersion,
+                                replayedCheatCommand,
+                                preCommandCheat);
+                        if (stored.EventSchema != 1 ||
+                            stored.Cheat == null ||
                             stored.Type != RoundEventType.CheatApplied ||
                             stored.Ordinal != expectedRound.Count + i ||
                             stored.Seat != expected.Value.Seat ||
@@ -982,7 +994,7 @@ namespace Mahjong.TableRuntime
                             !string.Equals(stored.Cheat.OfferId, expected.OfferId, StringComparison.Ordinal) ||
                             stored.Cheat.Keep != expected.Keep ||
                             stored.Cheat.Action != expected.Action ||
-                            !Nullable.Equals(stored.Cheat.ResultTile, expected.ResultTile) ||
+                            (!exactResultTile && !legacyThirdFirstTile) ||
                             !Nullable.Equals(stored.Cheat.HandTile, expected.HandTile) ||
                             stored.Cheat.TargetSlot != expected.TargetSlot ||
                             stored.Cheat.TurnNumber != expected.TurnNumber)
@@ -993,6 +1005,10 @@ namespace Mahjong.TableRuntime
                         }
 
                         VerifyRecoveryFact(stored, next, version, expectedRound.Count + i);
+                        if (legacyThirdFirstTile)
+                        {
+                            NormalizeHistoryCheatResultTile(fullHistory, stored.Seq, expected.ResultTile);
+                        }
                     }
 
                     round = next;
@@ -1411,6 +1427,98 @@ namespace Mahjong.TableRuntime
                 outboxPresent);
 
             return TableRecoveryResult.Success(baseline, report);
+        }
+
+        private static bool IsLegacyThirdFirstResultTile(
+            TableEventRecord stored,
+            RoundCheatEvent expected,
+            int journalSchemaVersion,
+            RoundCheatCommand? command,
+            CheatState? preCommandCheat)
+        {
+            if (stored.EventSchema != 1 ||
+                stored.Cheat == null ||
+                journalSchemaVersion != 2 ||
+                command == null ||
+                preCommandCheat == null)
+            {
+                return false;
+            }
+
+            if (expected.Value.Kind != CheatEventKind.SleeveBloomResolved ||
+                expected.Keep != SleeveBloomKeep.Third ||
+                string.IsNullOrEmpty(expected.OfferId) ||
+                !expected.ResultTile.HasValue)
+            {
+                return false;
+            }
+
+            SleeveBloomOffer? offer = null;
+            if (command.Action == RoundCheatAction.SubmitSleeveBloomChoice)
+            {
+                SleeveBloomOffer? immediate = preCommandCheat.SleeveBloom.ImmediateOffer;
+                if (immediate != null &&
+                    immediate.Seat == expected.Value.Seat &&
+                    string.Equals(immediate.OfferId, expected.OfferId, StringComparison.Ordinal))
+                {
+                    offer = immediate;
+                }
+            }
+            else if (command.Action == RoundCheatAction.SubmitSleeveBloomOffTurnChoice)
+            {
+                SleeveBloomOffer? offTurn = preCommandCheat.SleeveBloom.OffTurnOfferFor(expected.Value.Seat);
+                if (offTurn != null &&
+                    string.Equals(offTurn.OfferId, expected.OfferId, StringComparison.Ordinal))
+                {
+                    offer = offTurn;
+                }
+            }
+
+            if (offer == null ||
+                !offer.ThirdTile.HasValue ||
+                !Nullable.Equals(expected.ResultTile, offer.ThirdTile))
+            {
+                return false;
+            }
+
+            return Nullable.Equals(stored.Cheat.ResultTile, offer.FirstTile);
+        }
+
+        private static void NormalizeHistoryCheatResultTile(
+            List<TableEventRecord> history,
+            EventSeq seq,
+            TileId? resultTile)
+        {
+            for (int i = history.Count - 1; i >= 0; i--)
+            {
+                TableEventRecord record = history[i];
+                if (!record.Seq.Equals(seq) || record.Cheat == null)
+                {
+                    continue;
+                }
+
+                TableCheatEventRecord cheat = record.Cheat;
+                history[i] = new TableEventRecord(
+                    record.Seq,
+                    record.CommandVersion,
+                    record.Ordinal,
+                    record.Type,
+                    record.Seat,
+                    record.Tile,
+                    record.Detail,
+                    record.EventSchema,
+                    record.Payload,
+                    new TableCheatEventRecord(
+                        cheat.Event,
+                        cheat.OfferId,
+                        cheat.Keep,
+                        cheat.Action,
+                        resultTile,
+                        cheat.HandTile,
+                        cheat.TargetSlot,
+                        cheat.TurnNumber));
+                return;
+            }
         }
 
         private static bool BytesEqual(byte[] left, byte[] right)
