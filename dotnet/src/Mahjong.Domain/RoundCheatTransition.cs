@@ -1379,7 +1379,13 @@ namespace Mahjong.Domain
 
                 if (offer != null)
                 {
-                    resultTile = keep == SleeveBloomKeep.Second ? offer.SecondTile : offer.FirstTile;
+                    resultTile = keep switch
+                    {
+                        SleeveBloomKeep.First => offer.FirstTile,
+                        SleeveBloomKeep.Second => offer.SecondTile,
+                        SleeveBloomKeep.Third => offer.ThirdTile,
+                        _ => null
+                    };
                 }
             }
 

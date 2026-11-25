@@ -2241,6 +2241,961 @@ namespace Mahjong.TableRuntime.Tests
             Assert.Equal(PlayerCharacterIds.CurrentTraitsVersion, oldSave.CharacterTraitsVersion);
         }
 
+        [Fact]
+        public async Task octopus_immediate_sleeve_bloom_third_emits_matching_authoritative_result_tile()
+        {
+            var codec = new StrictWireStreamCodec();
+            var source = new TestProjectionSource
+            {
+                EventFactsFactory = request => WireEventFacts.Build(request)
+            };
+            var streamOptions = new TableStreamOptions
+            {
+                Encoder = new ContractsStreamFrameEncoder(codec),
+                TerminationSink = new RecordingStreamTerminationSink()
+            };
+            var clock = new ManualTableClock { Now = 1000L };
+            var commitPort = new RecordingCommitPort();
+            var publicationSink = new RecordingPublicationSink(commitPort);
+            RoundStateMachine round = P31Fixtures.Dealt("round-1");
+            CheatState cheat = V32Fixtures.WithRegisteredRound(V32Fixtures.Cheat(InitialPoints), round.RoundId)
+                .WithPlayerCharacter(PlayerCharacterIds.Octopus);
+            var options = new TableActorOptions
+            {
+                RoomId = "room-1",
+                MailboxCapacity = 16,
+                ControlReserve = 16,
+                DecisionClockConfig = new DecisionClockConfig(1000L, 0L, ReserveScope.Round),
+                InitialControllers = P31Fixtures.Controllers(
+                    SeatControllerKind.RemoteHuman,
+                    SeatControllerKind.RemoteHuman,
+                    SeatControllerKind.RemoteHuman,
+                    SeatControllerKind.RemoteHuman),
+                CheatEconomy = V32Fixtures.Economy(InitialPoints),
+                SleeveBloomConfig = V32Fixtures.SleeveConfig(),
+                InitialCheatState = cheat
+            };
+            await using var actor = new TableActor(
+                options,
+                round,
+                commitPort,
+                clock,
+                publicationSink,
+                null,
+                source,
+                streamOptions);
+
+            var owner = new RecordingStreamSink();
+            var other = new RecordingStreamSink();
+            var spectator = new RecordingStreamSink();
+            Assert.Equal(TableStreamControlStatus.Subscribed, (await actor.SubscribeStreamAsync(
+                Subscribe(round, TableStreamAudience.ForSeat(0), "owner", owner),
+                TestContext.Current.CancellationToken)).Status);
+            Assert.Equal(TableStreamControlStatus.Subscribed, (await actor.SubscribeStreamAsync(
+                Subscribe(round, TableStreamAudience.ForSeat(1), "other", other),
+                TestContext.Current.CancellationToken)).Status);
+            Assert.Equal(TableStreamControlStatus.Subscribed, (await actor.SubscribeStreamAsync(
+                Subscribe(round, TableStreamAudience.Spectator, "spectator", spectator),
+                TestContext.Current.CancellationToken)).Status);
+            await owner.WaitForCountAsync(1);
+            await other.WaitForCountAsync(1);
+            await spectator.WaitForCountAsync(1);
+
+            IReadOnlyList<TableCommandEnvelope> chain = P31Fixtures.BuildDiscardChain(round, 4);
+            for (int i = 0; i < 4; i++)
+            {
+                Assert.Equal(TableOperationStatus.Accepted,
+                    (await SubmitActorRoundAsync(actor, chain[i], i, "d" + i)).Status);
+            }
+
+            RoundStateMachine seat0DrawRound = GetRound(actor);
+            Assert.Equal(0, seat0DrawRound.CurrentSeat);
+            Assert.Equal(RoundPhase.CheatWindow, seat0DrawRound.Phase);
+            int turnNumber = CountActorDrawTurns(seat0DrawRound);
+            string hitRequest = FindOctopusRequest(seat0DrawRound.RoundId, 0, turnNumber, hit: true);
+
+            TableOperationResult activation = await actor.SubmitCheatAsync(
+                Cheat(round.RoundId, 0, RoundCheatAction.SubmitSleeveBloom, hitRequest, RoundCheatPayload.SleeveBloom(), 4, hitRequest),
+                TestContext.Current.CancellationToken);
+            Assert.Equal(TableOperationStatus.Accepted, activation.Status);
+
+            SleeveBloomOffer offer = GetCheat(actor)!.SleeveBloom.ImmediateOffer!;
+            Assert.True(offer.ThirdTile.HasValue);
+
+            TableCheatCommandEnvelope thirdEnvelope = Cheat(
+                round.RoundId,
+                0,
+                RoundCheatAction.SubmitSleeveBloomChoice,
+                "sb-choice-third",
+                RoundCheatPayload.SleeveBloomChoice(offer.OfferId, SleeveBloomKeep.Third),
+                5,
+                "sb-choice-third");
+            TableOperationResult choice = await actor.SubmitCheatAsync(
+                thirdEnvelope,
+                TestContext.Current.CancellationToken);
+            Assert.Equal(TableOperationStatus.Accepted, choice.Status);
+
+            TableEventRecord resolvedRecord = Assert.Single(
+                choice.Events,
+                e => e.Cheat?.Event.Kind == CheatEventKind.SleeveBloomResolved);
+            Assert.Equal(SleeveBloomKeep.Third, resolvedRecord.Cheat!.Keep);
+            Assert.Equal(offer.OfferId, resolvedRecord.Cheat.OfferId);
+            Assert.Equal(offer.ThirdTile!.Value, resolvedRecord.Cheat.ResultTile);
+            Assert.Equal(offer.ThirdTile.Value, GetRound(actor).Tiles.DrawnTile!.Value.Tile);
+            Assert.Equal(TileZone.Hand, GetRound(actor).Tiles.PositionOf(offer.ThirdTile.Value).Zone);
+            Assert.True(TilePositionMap.Validate(GetRound(actor).Tiles).IsValid);
+            Assert.Equal(990, GetCheat(actor)!.Ledger.BalanceOf(0));
+
+            // Idempotent replay returns exact receipt without re-charging.
+            TableOperationResult replay = await actor.SubmitCheatAsync(
+                thirdEnvelope,
+                TestContext.Current.CancellationToken);
+            Assert.Same(choice, replay);
+            Assert.Equal(990, GetCheat(actor)!.Ledger.BalanceOf(0));
+
+            await owner.WaitForCountAsync(7);
+            await other.WaitForCountAsync(7);
+            await spectator.WaitForCountAsync(7);
+
+            var ownerEvents = new List<EventEnvelope>();
+            for (int i = 0; i < owner.Frames.Count; i++)
+            {
+                ownerEvents.AddRange(StrictWireStreamCodec.DecodeAndStrict(
+                    owner.Frames[i].EncodedPayload!).PlayerUpdate.VisibleEvents);
+            }
+
+            SleeveBloomResolved resolvedWire = ownerEvents
+                .Single(e => e.EventCase == EventEnvelope.EventOneofCase.SleeveBloomResolved)
+                .SleeveBloomResolved;
+            Assert.Equal(offer.OfferId, resolvedWire.OfferId);
+            Assert.False(resolvedWire.KeptFirst);
+            Assert.True(resolvedWire.HasResultTileId);
+            Assert.Equal((uint)offer.ThirdTile.Value.Value, resolvedWire.ResultTileId);
+
+            string spectatorWire = System.Text.Encoding.UTF8.GetString(
+                spectator.Frames[spectator.Frames.Count - 1].EncodedPayload!);
+            string otherWire = System.Text.Encoding.UTF8.GetString(
+                other.Frames[other.Frames.Count - 1].EncodedPayload!);
+            Assert.DoesNotContain(offer.OfferId, spectatorWire);
+            Assert.DoesNotContain(offer.OfferId, otherWire);
+
+            // Ordinary character offer must still reject Third without state change.
+            await using ActorHarness plain = CreateHarness();
+            IReadOnlyList<TableCommandEnvelope> plainChain = P31Fixtures.BuildDiscardChain(plain.InitialRound, 4);
+            for (int i = 0; i < 4; i++)
+            {
+                Assert.Equal(TableOperationStatus.Accepted,
+                    (await SubmitRoundAsync(plain, plainChain[i], i, "pd" + i)).Status);
+            }
+
+            RoundStateMachine plainDraw = GetRound(plain.Actor);
+            int plainTurn = CountActorDrawTurns(plainDraw);
+            string plainHit = FindOctopusRequest(plainDraw.RoundId, 0, plainTurn, hit: true);
+            TableOperationResult plainActivation = await plain.Actor.SubmitCheatAsync(
+                Cheat(plainDraw.RoundId, 0, RoundCheatAction.SubmitSleeveBloom, plainHit, RoundCheatPayload.SleeveBloom(), 4, plainHit),
+                TestContext.Current.CancellationToken);
+            Assert.Equal(TableOperationStatus.Accepted, plainActivation.Status);
+            SleeveBloomOffer plainOffer = GetCheat(plain.Actor)!.SleeveBloom.ImmediateOffer!;
+            Assert.Null(plainOffer.ThirdTile);
+
+            TableOperationResult plainThird = await plain.Actor.SubmitCheatAsync(
+                Cheat(plainDraw.RoundId, 0, RoundCheatAction.SubmitSleeveBloomChoice, "plain-third",
+                    RoundCheatPayload.SleeveBloomChoice(plainOffer.OfferId, SleeveBloomKeep.Third), 5, "plain-third"),
+                TestContext.Current.CancellationToken);
+            Assert.Equal(TableOperationStatus.Rejected, plainThird.Status);
+            Assert.Equal(
+                TableRuntimeReasonCode.FromCheat(RoundCheatErrorCode.CheatRejected, CheatErrorCode.InvalidSelection),
+                plainThird.ReasonCode);
+            Assert.NotNull(GetCheat(plain.Actor)!.SleeveBloom.ImmediateOffer);
+            Assert.Equal(5UL, (await plain.GetSnapshotAsync()).StateVersion.Value);
+        }
+
+        [Fact]
+        public async Task octopus_off_turn_sleeve_bloom_third_emits_matching_result_tile_and_delivers_third()
+        {
+            var codec = new StrictWireStreamCodec();
+            var source = new TestProjectionSource
+            {
+                EventFactsFactory = request => WireEventFacts.Build(request)
+            };
+            var streamOptions = new TableStreamOptions
+            {
+                Encoder = new ContractsStreamFrameEncoder(codec),
+                TerminationSink = new RecordingStreamTerminationSink()
+            };
+            var clock = new ManualTableClock { Now = 1000L };
+            var commitPort = new RecordingCommitPort();
+            var publicationSink = new RecordingPublicationSink(commitPort);
+            RoundStateMachine round = P31Fixtures.Dealt("round-1");
+            CheatState cheat = V32Fixtures.WithRegisteredRound(V32Fixtures.Cheat(InitialPoints), round.RoundId)
+                .WithPlayerCharacter(PlayerCharacterIds.Octopus);
+            var options = new TableActorOptions
+            {
+                RoomId = "room-1",
+                MailboxCapacity = 16,
+                ControlReserve = 16,
+                DecisionClockConfig = new DecisionClockConfig(1000L, 0L, ReserveScope.Round),
+                InitialControllers = P31Fixtures.Controllers(
+                    SeatControllerKind.RemoteHuman,
+                    SeatControllerKind.RemoteHuman,
+                    SeatControllerKind.RemoteHuman,
+                    SeatControllerKind.RemoteHuman),
+                CheatEconomy = V32Fixtures.Economy(InitialPoints),
+                SleeveBloomConfig = V32Fixtures.SleeveConfig(),
+                InitialCheatState = cheat
+            };
+            await using var actor = new TableActor(
+                options,
+                round,
+                commitPort,
+                clock,
+                publicationSink,
+                null,
+                source,
+                streamOptions);
+
+            var owner = new RecordingStreamSink();
+            var other = new RecordingStreamSink();
+            var spectator = new RecordingStreamSink();
+            Assert.Equal(TableStreamControlStatus.Subscribed, (await actor.SubscribeStreamAsync(
+                Subscribe(round, TableStreamAudience.ForSeat(0), "owner", owner),
+                TestContext.Current.CancellationToken)).Status);
+            Assert.Equal(TableStreamControlStatus.Subscribed, (await actor.SubscribeStreamAsync(
+                Subscribe(round, TableStreamAudience.ForSeat(1), "other", other),
+                TestContext.Current.CancellationToken)).Status);
+            Assert.Equal(TableStreamControlStatus.Subscribed, (await actor.SubscribeStreamAsync(
+                Subscribe(round, TableStreamAudience.Spectator, "spectator", spectator),
+                TestContext.Current.CancellationToken)).Status);
+            await owner.WaitForCountAsync(1);
+            await other.WaitForCountAsync(1);
+            await spectator.WaitForCountAsync(1);
+
+            IReadOnlyList<TableCommandEnvelope> chain = P31Fixtures.BuildDiscardChain(round, 4);
+            Assert.Equal(TableOperationStatus.Accepted,
+                (await SubmitActorRoundAsync(actor, chain[0], 0, "d0")).Status);
+
+            RoundStateMachine afterDiscard = GetRound(actor);
+            int offTurnNumber = CountActorDrawTurns(afterDiscard);
+            string hitRequest = FindOctopusRequest(afterDiscard.RoundId, 0, offTurnNumber, hit: true);
+
+            TableOperationResult activation = await actor.SubmitCheatAsync(
+                Cheat(round.RoundId, 0, RoundCheatAction.SubmitSleeveBloomOffTurn, hitRequest,
+                    RoundCheatPayload.OffTurn("bloom-window-0-0-0"), 1, hitRequest),
+                TestContext.Current.CancellationToken);
+            Assert.Equal(TableOperationStatus.Accepted, activation.Status);
+            SleeveBloomOffer offer = GetCheat(actor)!.SleeveBloom.OffTurnOfferFor(0)!;
+            Assert.True(offer.ThirdTile.HasValue);
+
+            TableOperationResult choice = await actor.SubmitCheatAsync(
+                Cheat(round.RoundId, 0, RoundCheatAction.SubmitSleeveBloomOffTurnChoice, "off-choice-third",
+                    RoundCheatPayload.OffTurnChoice(offer.OfferId, SleeveBloomKeep.Third), 2, "off-choice-third"),
+                TestContext.Current.CancellationToken);
+            Assert.Equal(TableOperationStatus.Accepted, choice.Status);
+
+            TableEventRecord resolvedRecord = Assert.Single(
+                choice.Events,
+                e => e.Cheat?.Event.Kind == CheatEventKind.SleeveBloomResolved);
+            Assert.Equal(SleeveBloomKeep.Third, resolvedRecord.Cheat!.Keep);
+            Assert.Equal(offer.OfferId, resolvedRecord.Cheat.OfferId);
+            Assert.Equal(offer.ThirdTile!.Value, resolvedRecord.Cheat.ResultTile);
+            Assert.Equal(offer.ThirdTile.Value, GetCheat(actor)!.SleeveBloom.ReservationFor(0)!.Tile);
+            Assert.Equal(990, GetCheat(actor)!.Ledger.BalanceOf(0));
+
+            await owner.WaitForCountAsync(4);
+            await other.WaitForCountAsync(4);
+            await spectator.WaitForCountAsync(4);
+
+            var ownerEvents = new List<EventEnvelope>();
+            for (int i = 0; i < owner.Frames.Count; i++)
+            {
+                ownerEvents.AddRange(StrictWireStreamCodec.DecodeAndStrict(
+                    owner.Frames[i].EncodedPayload!).PlayerUpdate.VisibleEvents);
+            }
+
+            SleeveBloomResolved resolvedWire = ownerEvents
+                .Single(e => e.EventCase == EventEnvelope.EventOneofCase.SleeveBloomResolved)
+                .SleeveBloomResolved;
+            Assert.Equal(offer.OfferId, resolvedWire.OfferId);
+            Assert.False(resolvedWire.KeptFirst);
+            Assert.True(resolvedWire.HasResultTileId);
+            Assert.Equal((uint)offer.ThirdTile.Value.Value, resolvedWire.ResultTileId);
+
+            string spectatorWire = System.Text.Encoding.UTF8.GetString(
+                spectator.Frames[spectator.Frames.Count - 1].EncodedPayload!);
+            string otherWire = System.Text.Encoding.UTF8.GetString(
+                other.Frames[other.Frames.Count - 1].EncodedPayload!);
+            Assert.DoesNotContain(offer.OfferId, spectatorWire);
+            Assert.DoesNotContain(offer.OfferId, otherWire);
+
+            // Deliver reserved third candidate on seat 0's next normal draw without a second charge.
+            Assert.Equal(TableOperationStatus.Accepted, (await SubmitActorRoundAsync(actor, chain[1], 3, "d1")).Status);
+            Assert.Equal(TableOperationStatus.Accepted, (await SubmitActorRoundAsync(actor, chain[2], 4, "d2")).Status);
+            TableOperationResult delivery = await SubmitActorRoundAsync(actor, chain[3], 5, "d3");
+            Assert.Equal(TableOperationStatus.Accepted, delivery.Status);
+
+            TableEventRecord drawn = Assert.Single(delivery.Events, e => e.Type == RoundEventType.TileDrawn);
+            Assert.Equal(0, drawn.Seat);
+            Assert.Equal(offer.ThirdTile.Value, drawn.Tile);
+            Assert.Equal(offer.ThirdTile.Value, GetRound(actor).Tiles.DrawnTile!.Value.Tile);
+            Assert.Equal(990, GetCheat(actor)!.Ledger.BalanceOf(0));
+            Assert.True(TilePositionMap.Validate(GetRound(actor).Tiles).IsValid);
+
+            // Off-turn timeout still falls back to FirstTile even for Octopus offer.
+            RoundStateMachine timeoutRound = P31Fixtures.Dealt("round-timeout");
+            CheatState timeoutCheat = V32Fixtures.WithRegisteredRound(V32Fixtures.Cheat(InitialPoints), timeoutRound.RoundId)
+                .WithPlayerCharacter(PlayerCharacterIds.Octopus);
+            var timeoutClock = new ManualTableClock { Now = 1000L };
+            var timeoutCommit = new RecordingCommitPort();
+            var timeoutSink = new RecordingPublicationSink(timeoutCommit);
+            await using var timeoutActor = new TableActor(
+                new TableActorOptions
+                {
+                    RoomId = "room-timeout",
+                    MailboxCapacity = 16,
+                    ControlReserve = 16,
+                    DecisionClockConfig = new DecisionClockConfig(1000L, 0L, ReserveScope.Round),
+                    InitialControllers = P31Fixtures.Controllers(
+                        SeatControllerKind.Computer,
+                        SeatControllerKind.Computer,
+                        SeatControllerKind.Computer,
+                        SeatControllerKind.Computer),
+                    CheatEconomy = V32Fixtures.Economy(InitialPoints),
+                    SleeveBloomConfig = V32Fixtures.SleeveConfig(),
+                    InitialCheatState = timeoutCheat
+                },
+                timeoutRound,
+                timeoutCommit,
+                timeoutClock,
+                timeoutSink);
+
+            IReadOnlyList<TableCommandEnvelope> timeoutChain = P31Fixtures.BuildDiscardChain(timeoutRound, 1);
+            Assert.Equal(TableOperationStatus.Accepted,
+                (await SubmitActorRoundAsync(timeoutActor, timeoutChain[0], 0, "td0")).Status);
+            RoundStateMachine afterTimeoutDiscard = GetRound(timeoutActor);
+            string timeoutHit = FindOctopusRequest(afterTimeoutDiscard.RoundId, 0, CountActorDrawTurns(afterTimeoutDiscard), hit: true);
+            Assert.Equal(TableOperationStatus.Accepted, (await timeoutActor.SubmitCheatAsync(
+                Cheat(timeoutRound.RoundId, 0, RoundCheatAction.SubmitSleeveBloomOffTurn, timeoutHit,
+                    RoundCheatPayload.OffTurn("bloom-window-0-0-0"), 1, timeoutHit),
+                TestContext.Current.CancellationToken)).Status);
+            SleeveBloomOffer timeoutOffer = GetCheat(timeoutActor)!.SleeveBloom.OffTurnOfferFor(0)!;
+            Assert.True(timeoutOffer.ThirdTile.HasValue);
+
+            timeoutClock.Now = 8000L;
+            TableOperationResult expired = await timeoutActor.SubmitCheatAsync(
+                Cheat(timeoutRound.RoundId, 0, RoundCheatAction.SubmitSleeveBloomOffTurnChoice, "off-late-third",
+                    RoundCheatPayload.OffTurnChoice(timeoutOffer.OfferId, SleeveBloomKeep.Third), 2, "off-late-third"),
+                TestContext.Current.CancellationToken);
+            Assert.Equal(TableOperationStatus.Rejected, expired.Status);
+            Assert.Equal(TableRuntimeReasonCode.DeadlineExpired, expired.ReasonCode);
+            TableEventRecord forced = Assert.Single(
+                expired.Events,
+                e => e.Cheat?.Event.Kind == CheatEventKind.SleeveBloomResolved);
+            Assert.Equal(SleeveBloomKeep.First, forced.Cheat!.Keep);
+            Assert.Equal(timeoutOffer.FirstTile, forced.Cheat.ResultTile);
+            Assert.Equal(timeoutOffer.FirstTile, GetCheat(timeoutActor)!.SleeveBloom.ReservationFor(0)!.Tile);
+        }
+
+        [Theory]
+        [InlineData(false, false)]
+        [InlineData(true, false)]
+        [InlineData(false, true)]
+        [InlineData(true, true)]
+        public async Task third_choice_cold_recovery_supports_current_and_legacy_first_for_both_modes(
+            bool offTurn,
+            bool legacyResult)
+        {
+            var ct = TestContext.Current.CancellationToken;
+            var codec = new StrictWireStreamCodec();
+            var streamOptions = new TableStreamOptions
+            {
+                Encoder = new ContractsStreamFrameEncoder(codec),
+                TerminationSink = new RecordingStreamTerminationSink()
+            };
+            RoundStateMachine round = P31Fixtures.Dealt("round-1");
+            CheatState cheat = V32Fixtures.WithRegisteredRound(V32Fixtures.Cheat(InitialPoints), round.RoundId)
+                .WithPlayerCharacter(PlayerCharacterIds.Octopus);
+            await using DurableHarness h = await DurableHarness.CreateAsync(
+                ledger: cheat.Ledger,
+                initialCheckpoint: WithCheat(DurableHarness.InitialCheckpoint(round, cheat.Ledger), cheat),
+                configure: options =>
+                {
+                    options.CheatEconomy = V32Fixtures.Economy(InitialPoints);
+                    options.SleeveBloomConfig = V32Fixtures.SleeveConfig();
+                    options.InitialCheatState = cheat;
+                },
+                streamOptions: streamOptions);
+
+            int version = offTurn ? 1 : 4;
+            var chain = P31Fixtures.BuildDiscardChain(round, 4);
+            for (int i = 0; i < version; i++)
+            {
+                Assert.Equal(
+                    TableOperationStatus.Accepted,
+                    (await h.SubmitAsync(DurableRound(h.Scope, chain[i].Command, i, "rec-r-" + i))).Status);
+            }
+
+            string request = FindOctopusRequest(round.RoundId, 0, CountActorDrawTurns(GetRound(h.Actor)), true);
+            TableOperationResult activated = await h.Actor.SubmitCheatAsync(
+                DurableCheat(
+                    round.RoundId,
+                    0,
+                    offTurn ? RoundCheatAction.SubmitSleeveBloomOffTurn : RoundCheatAction.SubmitSleeveBloom,
+                    request,
+                    offTurn ? RoundCheatPayload.OffTurn("bloom-window-0-0-0") : RoundCheatPayload.SleeveBloom(),
+                    version,
+                    h.Scope),
+                ct);
+            Assert.True(activated.Status == TableOperationStatus.Accepted, activated.ReasonCode + " " + activated.Detail);
+
+            SleeveBloomState bloom = GetCheat(h.Actor)!.SleeveBloom;
+            SleeveBloomOffer offer = (offTurn ? bloom.OffTurnOfferFor(0) : bloom.ImmediateOffer)!;
+            Assert.True(offer.ThirdTile.HasValue);
+
+            await h.SaveCheckpointAsync();
+
+            TableOperationResult chosen = await h.Actor.SubmitCheatAsync(
+                DurableCheat(
+                    round.RoundId,
+                    0,
+                    offTurn ? RoundCheatAction.SubmitSleeveBloomOffTurnChoice : RoundCheatAction.SubmitSleeveBloomChoice,
+                    "third",
+                    offTurn
+                        ? RoundCheatPayload.OffTurnChoice(offer.OfferId, SleeveBloomKeep.Third)
+                        : RoundCheatPayload.SleeveBloomChoice(offer.OfferId, SleeveBloomKeep.Third),
+                    version + 1,
+                    h.Scope),
+                ct);
+            Assert.True(chosen.Status == TableOperationStatus.Accepted, chosen.ReasonCode + " " + chosen.Detail);
+
+            TableEventRecord resolved = Assert.Single(
+                chosen.Events,
+                row => row.Cheat?.Event.Kind == CheatEventKind.SleeveBloomResolved);
+            TableCheatEventRecord c = resolved.Cheat!;
+            Assert.Equal(offer.ThirdTile, c.ResultTile);
+            Assert.NotEqual(offer.FirstTile, c.ResultTile);
+
+            if (legacyResult)
+            {
+                RewriteStoredEvent(
+                    h.Store,
+                    resolved.Seq,
+                    row => new TableEventRecord(
+                        row.Seq,
+                        row.CommandVersion,
+                        row.Ordinal,
+                        row.Type,
+                        row.Seat,
+                        row.Tile,
+                        row.Detail,
+                        row.EventSchema,
+                        row.Payload,
+                        new TableCheatEventRecord(
+                            c.Event,
+                            c.OfferId,
+                            c.Keep,
+                            c.Action,
+                            offer.FirstTile,
+                            c.HandTile,
+                            c.TargetSlot,
+                            c.TurnNumber)));
+            }
+
+            TableRecoveryResult result = await h.Actor.RecoverFromStoreAsync(ct);
+            Assert.True(
+                result.Recovered,
+                "offTurn=" + offTurn + " legacy=" + legacyResult + " " + result.ReasonCode + " " + result.Detail);
+            Assert.Equal((ulong)(version + 2), result.Report!.FinalStateVersion.Value);
+            Assert.Equal(990, GetCheat(h.Actor)!.Ledger.BalanceOf(0));
+
+            if (offTurn)
+            {
+                Assert.Equal(offer.ThirdTile.Value, GetCheat(h.Actor)!.SleeveBloom.ReservationFor(0)!.Tile);
+            }
+            else
+            {
+                Assert.Equal(offer.ThirdTile.Value, GetRound(h.Actor).Tiles.DrawnTile!.Value.Tile);
+                Assert.Equal(TileZone.Hand, GetRound(h.Actor).Tiles.PositionOf(offer.ThirdTile.Value).Zone);
+            }
+
+            Assert.True(TilePositionMap.Validate(GetRound(h.Actor).Tiles).IsValid);
+
+            // Normalized committed log ensures subsequent checkpoint history/facts carry the true ThirdTile.
+            TableCheckpoint nextCheckpoint = await h.SaveCheckpointAsync();
+            IReadOnlyList<TableEventRecord> savedHistory = TableCommittedHistoryCodec.Decode(
+                nextCheckpoint.CommittedHistoryPayload!);
+            TableEventRecord savedResolved = Assert.Single(
+                savedHistory,
+                row => row.Seq.Equals(resolved.Seq));
+            Assert.Equal(offer.ThirdTile, savedResolved.Cheat!.ResultTile);
+            TableProjectionContextData savedFacts = TableProjectionFactsCodec.Decode(
+                nextCheckpoint.CommittedFactsPayload!,
+                round.RoundId,
+                nextCheckpoint.StateVersion);
+            TableProjectionEventFact savedFact = Assert.Single(
+                savedFacts.EventFacts,
+                fact => fact.EventSeq.Equals(resolved.Seq));
+            Assert.Equal((uint)offer.ThirdTile.Value.Value, savedFact.Facts.ResultTileId);
+
+            TableRecoveryResult secondRecovery = await h.Actor.RecoverFromStoreAsync(ct);
+            Assert.True(secondRecovery.Recovered, secondRecovery.ReasonCode + " " + secondRecovery.Detail);
+        }
+
+        [Theory]
+        [InlineData(false, "second-tile")]
+        [InlineData(true, "second-tile")]
+        [InlineData(false, "arbitrary-tile")]
+        [InlineData(true, "arbitrary-tile")]
+        [InlineData(false, "null-tile")]
+        [InlineData(true, "null-tile")]
+        [InlineData(false, "wrong-schema")]
+        [InlineData(true, "wrong-schema")]
+        [InlineData(false, "offer-mismatch")]
+        [InlineData(true, "offer-mismatch")]
+        [InlineData(false, "owner-mismatch")]
+        [InlineData(true, "owner-mismatch")]
+        [InlineData(false, "keep-first-with-third-tile")]
+        [InlineData(true, "keep-first-with-third-tile")]
+        [InlineData(false, "keep-second-with-first-tile")]
+        [InlineData(true, "keep-second-with-first-tile")]
+        [InlineData(true, "expiry-sweep-with-third-tile")]
+        [InlineData(false, "beam-swap-tampered")]
+        public async Task third_choice_cold_recovery_rejects_invalid_result_tiles_and_non_legacy_records(
+            bool offTurn,
+            string mode)
+        {
+            var ct = TestContext.Current.CancellationToken;
+            var codec = new StrictWireStreamCodec();
+            var streamOptions = new TableStreamOptions
+            {
+                Encoder = new ContractsStreamFrameEncoder(codec),
+                TerminationSink = new RecordingStreamTerminationSink()
+            };
+            RoundStateMachine round = P31Fixtures.Dealt("round-1");
+            CheatState cheat = V32Fixtures.WithRegisteredRound(V32Fixtures.Cheat(InitialPoints), round.RoundId)
+                .WithPlayerCharacter(PlayerCharacterIds.Octopus);
+            await using DurableHarness h = await DurableHarness.CreateAsync(
+                ledger: cheat.Ledger,
+                initialCheckpoint: WithCheat(DurableHarness.InitialCheckpoint(round, cheat.Ledger), cheat),
+                configure: options =>
+                {
+                    options.CheatEconomy = V32Fixtures.Economy(InitialPoints);
+                    options.SleeveBloomConfig = V32Fixtures.SleeveConfig();
+                    options.InitialCheatState = cheat;
+                },
+                streamOptions: streamOptions);
+
+            int version = offTurn ? 1 : 4;
+            var chain = P31Fixtures.BuildDiscardChain(round, 4);
+            for (int i = 0; i < version; i++)
+            {
+                Assert.Equal(
+                    TableOperationStatus.Accepted,
+                    (await h.SubmitAsync(DurableRound(h.Scope, chain[i].Command, i, "neg-r-" + i))).Status);
+            }
+
+            if (mode == "beam-swap-tampered")
+            {
+                TableOperationResult beamActivated = await h.Actor.SubmitCheatAsync(
+                    DurableCheat(round.RoundId, 0, RoundCheatAction.SubmitBeamSwap, "beam-1",
+                        RoundCheatPayload.BeamSwap(), version, h.Scope),
+                    ct);
+                Assert.Equal(TableOperationStatus.Accepted, beamActivated.Status);
+                BeamSwapOffer beamOffer = GetCheat(h.Actor)!.BeamSwap.Offer!;
+                await h.SaveCheckpointAsync();
+
+                TableOperationResult beamChosen = await h.Actor.SubmitCheatAsync(
+                    DurableCheat(round.RoundId, 0, RoundCheatAction.SubmitBeamSwapChoice, "beam-c",
+                        RoundCheatPayload.BeamSwapChoice(beamOffer.OfferId, BeamSwapAction.KeepOriginal, null, null),
+                        version + 1, h.Scope),
+                    ct);
+                Assert.Equal(TableOperationStatus.Accepted, beamChosen.Status);
+                TableEventRecord beamRow = Assert.Single(
+                    beamChosen.Events,
+                    row => row.Cheat?.Event.Kind == CheatEventKind.BeamSwapResolved);
+                RewriteStoredEvent(
+                    h.Store,
+                    beamRow.Seq,
+                    row => new TableEventRecord(
+                        row.Seq, row.CommandVersion, row.Ordinal, row.Type, row.Seat, row.Tile, row.Detail,
+                        row.EventSchema, row.Payload,
+                        new TableCheatEventRecord(
+                            row.Cheat!.Event, row.Cheat.OfferId, row.Cheat.Keep, row.Cheat.Action,
+                            beamOffer.DrawnTileId, row.Cheat.HandTile, row.Cheat.TargetSlot, row.Cheat.TurnNumber)));
+
+                TableRecoveryResult beamResult = await h.Actor.RecoverFromStoreAsync(ct);
+                Assert.Equal(TableRecoveryStatus.Failed, beamResult.Status);
+                Assert.Equal(TableRuntimeReasonCode.RecoveryReplayMismatch, beamResult.ReasonCode);
+                return;
+            }
+
+            string request = FindOctopusRequest(round.RoundId, 0, CountActorDrawTurns(GetRound(h.Actor)), true);
+            TableOperationResult activated = await h.Actor.SubmitCheatAsync(
+                DurableCheat(
+                    round.RoundId,
+                    0,
+                    offTurn ? RoundCheatAction.SubmitSleeveBloomOffTurn : RoundCheatAction.SubmitSleeveBloom,
+                    request,
+                    offTurn ? RoundCheatPayload.OffTurn("bloom-window-0-0-0") : RoundCheatPayload.SleeveBloom(),
+                    version,
+                    h.Scope),
+                ct);
+            Assert.Equal(TableOperationStatus.Accepted, activated.Status);
+            SleeveBloomState bloom = GetCheat(h.Actor)!.SleeveBloom;
+            SleeveBloomOffer offer = (offTurn ? bloom.OffTurnOfferFor(0) : bloom.ImmediateOffer)!;
+            Assert.True(offer.ThirdTile.HasValue);
+
+            await h.SaveCheckpointAsync();
+
+            TableEventRecord targetRow;
+            if (mode == "expiry-sweep-with-third-tile")
+            {
+                h.Clock.Now = 8_000L;
+                TableTickResult ticked = await h.Actor.TickAsync(cancellationToken: ct);
+                Assert.Equal(TableOperationStatus.Accepted, ticked.Status);
+                IReadOnlyList<TableEventRecord> afterEvents = await h.Store.LoadEventsAfterAsync(
+                    DurableHarness.Room,
+                    new EventSeq(0),
+                    ct);
+                targetRow = afterEvents.Last(row => row.Cheat?.Event.Kind == CheatEventKind.SleeveBloomResolved);
+            }
+            else
+            {
+                SleeveBloomKeep keepChoice = mode switch
+                {
+                    "keep-first-with-third-tile" => SleeveBloomKeep.First,
+                    "keep-second-with-first-tile" => SleeveBloomKeep.Second,
+                    _ => SleeveBloomKeep.Third
+                };
+                TableOperationResult chosen = await h.Actor.SubmitCheatAsync(
+                    DurableCheat(
+                        round.RoundId,
+                        0,
+                        offTurn ? RoundCheatAction.SubmitSleeveBloomOffTurnChoice : RoundCheatAction.SubmitSleeveBloomChoice,
+                        "neg-choice-" + mode,
+                        offTurn
+                            ? RoundCheatPayload.OffTurnChoice(offer.OfferId, keepChoice)
+                            : RoundCheatPayload.SleeveBloomChoice(offer.OfferId, keepChoice),
+                        version + 1,
+                        h.Scope),
+                    ct);
+                Assert.Equal(TableOperationStatus.Accepted, chosen.Status);
+                targetRow = Assert.Single(
+                    chosen.Events,
+                    row => row.Cheat?.Event.Kind == CheatEventKind.SleeveBloomResolved);
+            }
+
+            TileId arbitraryOtherTile = Enumerable.Range(0, TileId.Count)
+                .Select(value => new TileId(value))
+                .First(tile =>
+                    !tile.Equals(offer.FirstTile) &&
+                    !tile.Equals(offer.SecondTile) &&
+                    !tile.Equals(offer.ThirdTile.Value));
+
+            RewriteStoredEvent(h.Store, targetRow.Seq, row =>
+            {
+                TableCheatEventRecord c = row.Cheat!;
+                return mode switch
+                {
+                    "second-tile" => new TableEventRecord(
+                        row.Seq, row.CommandVersion, row.Ordinal, row.Type, row.Seat, row.Tile, row.Detail,
+                        row.EventSchema, row.Payload,
+                        new TableCheatEventRecord(c.Event, c.OfferId, c.Keep, c.Action, offer.SecondTile, c.HandTile, c.TargetSlot, c.TurnNumber)),
+                    "arbitrary-tile" => new TableEventRecord(
+                        row.Seq, row.CommandVersion, row.Ordinal, row.Type, row.Seat, row.Tile, row.Detail,
+                        row.EventSchema, row.Payload,
+                        new TableCheatEventRecord(c.Event, c.OfferId, c.Keep, c.Action, arbitraryOtherTile, c.HandTile, c.TargetSlot, c.TurnNumber)),
+                    "null-tile" => new TableEventRecord(
+                        row.Seq, row.CommandVersion, row.Ordinal, row.Type, row.Seat, row.Tile, row.Detail,
+                        row.EventSchema, row.Payload,
+                        new TableCheatEventRecord(c.Event, c.OfferId, c.Keep, c.Action, null, c.HandTile, c.TargetSlot, c.TurnNumber)),
+                    "wrong-schema" => new TableEventRecord(
+                        row.Seq, row.CommandVersion, row.Ordinal, row.Type, row.Seat, row.Tile, row.Detail,
+                        2, row.Payload,
+                        new TableCheatEventRecord(c.Event, c.OfferId, c.Keep, c.Action, offer.FirstTile, c.HandTile, c.TargetSlot, c.TurnNumber)),
+                    "offer-mismatch" => new TableEventRecord(
+                        row.Seq, row.CommandVersion, row.Ordinal, row.Type, row.Seat, row.Tile, row.Detail,
+                        row.EventSchema, row.Payload,
+                        new TableCheatEventRecord(c.Event, "wrong-offer", c.Keep, c.Action, offer.FirstTile, c.HandTile, c.TargetSlot, c.TurnNumber)),
+                    "owner-mismatch" => new TableEventRecord(
+                        row.Seq, row.CommandVersion, row.Ordinal, row.Type, 1, row.Tile, row.Detail,
+                        row.EventSchema, row.Payload,
+                        new TableCheatEventRecord(
+                            CheatEvent.Restore(
+                                c.Event.Kind,
+                                1,
+                                c.Event.EntryId,
+                                c.Event.Amount,
+                                c.Event.NewBalance,
+                                c.Event.OfferId,
+                                c.Event.GroupId,
+                                c.Event.Keep,
+                                c.Event.Action,
+                                c.Event.Reason),
+                            c.OfferId, c.Keep, c.Action, offer.FirstTile, c.HandTile, c.TargetSlot, c.TurnNumber)),
+                    "keep-first-with-third-tile" => new TableEventRecord(
+                        row.Seq, row.CommandVersion, row.Ordinal, row.Type, row.Seat, row.Tile, row.Detail,
+                        row.EventSchema, row.Payload,
+                        new TableCheatEventRecord(c.Event, c.OfferId, c.Keep, c.Action, offer.ThirdTile, c.HandTile, c.TargetSlot, c.TurnNumber)),
+                    "keep-second-with-first-tile" => new TableEventRecord(
+                        row.Seq, row.CommandVersion, row.Ordinal, row.Type, row.Seat, row.Tile, row.Detail,
+                        row.EventSchema, row.Payload,
+                        new TableCheatEventRecord(c.Event, c.OfferId, c.Keep, c.Action, offer.FirstTile, c.HandTile, c.TargetSlot, c.TurnNumber)),
+                    "expiry-sweep-with-third-tile" => new TableEventRecord(
+                        row.Seq, row.CommandVersion, row.Ordinal, row.Type, row.Seat, row.Tile, row.Detail,
+                        row.EventSchema, row.Payload,
+                        new TableCheatEventRecord(c.Event, c.OfferId, c.Keep, c.Action, offer.ThirdTile, c.HandTile, c.TargetSlot, c.TurnNumber)),
+                    _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, null)
+                };
+            });
+
+            TableRecoveryResult result = await h.Actor.RecoverFromStoreAsync(ct);
+            Assert.Equal(TableRecoveryStatus.Failed, result.Status);
+            Assert.Equal(TableRuntimeReasonCode.RecoveryReplayMismatch, result.ReasonCode);
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task legacy_checkpoint_history_with_third_first_result_recovers_with_physical_third_and_projects_cleanly(
+            bool offTurn)
+        {
+            var ct = TestContext.Current.CancellationToken;
+            var codec = new StrictWireStreamCodec();
+            var streamOptions = new TableStreamOptions
+            {
+                Encoder = new ContractsStreamFrameEncoder(codec),
+                TerminationSink = new RecordingStreamTerminationSink()
+            };
+            RoundStateMachine round = P31Fixtures.Dealt("round-1");
+            CheatState cheat = V32Fixtures.WithRegisteredRound(V32Fixtures.Cheat(InitialPoints), round.RoundId)
+                .WithPlayerCharacter(PlayerCharacterIds.Octopus);
+            await using DurableHarness h = await DurableHarness.CreateAsync(
+                ledger: cheat.Ledger,
+                initialCheckpoint: WithCheat(DurableHarness.InitialCheckpoint(round, cheat.Ledger), cheat),
+                configure: options =>
+                {
+                    options.CheatEconomy = V32Fixtures.Economy(InitialPoints);
+                    options.SleeveBloomConfig = V32Fixtures.SleeveConfig();
+                    options.InitialCheatState = cheat;
+                },
+                streamOptions: streamOptions);
+
+            int version = offTurn ? 1 : 4;
+            var chain = P31Fixtures.BuildDiscardChain(round, 4);
+            for (int i = 0; i < version; i++)
+            {
+                Assert.Equal(
+                    TableOperationStatus.Accepted,
+                    (await h.SubmitAsync(DurableRound(h.Scope, chain[i].Command, i, "cp-r-" + i))).Status);
+            }
+
+            string request = FindOctopusRequest(round.RoundId, 0, CountActorDrawTurns(GetRound(h.Actor)), true);
+            TableOperationResult activated = await h.Actor.SubmitCheatAsync(
+                DurableCheat(
+                    round.RoundId,
+                    0,
+                    offTurn ? RoundCheatAction.SubmitSleeveBloomOffTurn : RoundCheatAction.SubmitSleeveBloom,
+                    request,
+                    offTurn ? RoundCheatPayload.OffTurn("bloom-window-0-0-0") : RoundCheatPayload.SleeveBloom(),
+                    version,
+                    h.Scope),
+                ct);
+            Assert.Equal(TableOperationStatus.Accepted, activated.Status);
+            SleeveBloomState bloom = GetCheat(h.Actor)!.SleeveBloom;
+            SleeveBloomOffer offer = (offTurn ? bloom.OffTurnOfferFor(0) : bloom.ImmediateOffer)!;
+            Assert.True(offer.ThirdTile.HasValue);
+
+            TableOperationResult chosen = await h.Actor.SubmitCheatAsync(
+                DurableCheat(
+                    round.RoundId,
+                    0,
+                    offTurn ? RoundCheatAction.SubmitSleeveBloomOffTurnChoice : RoundCheatAction.SubmitSleeveBloomChoice,
+                    "cp-third",
+                    offTurn
+                        ? RoundCheatPayload.OffTurnChoice(offer.OfferId, SleeveBloomKeep.Third)
+                        : RoundCheatPayload.SleeveBloomChoice(offer.OfferId, SleeveBloomKeep.Third),
+                    version + 1,
+                    h.Scope),
+                ct);
+            Assert.Equal(TableOperationStatus.Accepted, chosen.Status);
+            TableEventRecord resolved = Assert.Single(
+                chosen.Events,
+                row => row.Cheat?.Event.Kind == CheatEventKind.SleeveBloomResolved);
+
+            TableCheckpoint checkpoint = await h.SaveCheckpointAsync();
+            TableEventRecord[] legacyHistory = TableCommittedHistoryCodec.Decode(checkpoint.CommittedHistoryPayload!)
+                .Select(row =>
+                {
+                    if (!row.Seq.Equals(resolved.Seq))
+                    {
+                        return row;
+                    }
+
+                    TableCheatEventRecord c = row.Cheat!;
+                    return new TableEventRecord(
+                        row.Seq, row.CommandVersion, row.Ordinal, row.Type, row.Seat, row.Tile, row.Detail,
+                        row.EventSchema, row.Payload,
+                        new TableCheatEventRecord(
+                            c.Event, c.OfferId, c.Keep, c.Action, offer.FirstTile, c.HandTile, c.TargetSlot, c.TurnNumber));
+                })
+                .ToArray();
+            byte[] legacyHistoryBytes = TableCommittedHistoryCodec.Encode(legacyHistory);
+
+            TableProjectionContextData originalFacts = TableProjectionFactsCodec.Decode(
+                checkpoint.CommittedFactsPayload!,
+                round.RoundId,
+                checkpoint.StateVersion);
+            var legacyEventFacts = originalFacts.EventFacts
+                .Select(fact => fact.EventSeq.Equals(resolved.Seq)
+                    ? new TableProjectionEventFact(
+                        fact.Type,
+                        fact.EventSeq,
+                        fact.CommandVersion,
+                        fact.EventOrdinal,
+                        new TableProjectionEventFacts(
+                            turnNumber: fact.Facts.TurnNumber,
+                            offerId: fact.Facts.OfferId,
+                            keptFirst: fact.Facts.KeptFirst,
+                            resultTileId: (uint)offer.FirstTile.Value))
+                    : fact)
+                .ToArray();
+            byte[] legacyFactsBytes = TableProjectionFactsCodec.Encode(new TableProjectionContextData(
+                originalFacts.RoundId,
+                originalFacts.StateVersion,
+                originalFacts.SessionVersion,
+                originalFacts.Cheat,
+                originalFacts.PublicFacts,
+                originalFacts.PrivateFacts,
+                originalFacts.Session,
+                originalFacts.Policy,
+                legacyEventFacts,
+                originalFacts.ConcealedMeldFacts));
+
+            var legacyCheckpoint = new TableCheckpoint(
+                checkpoint.RoomId,
+                checkpoint.StateVersion,
+                checkpoint.LastEventSeq,
+                checkpoint.StateFingerprint,
+                checkpoint.RulesetVersion,
+                checkpoint.StatePayload,
+                checkpoint.StatePayloadSha256,
+                checkpoint.ControlVersion,
+                checkpoint.ControlPayload,
+                checkpoint.ControlPayloadSha256,
+                checkpoint.TimingPayload,
+                checkpoint.TimingPayloadSha256,
+                checkpoint.CheatPayload,
+                checkpoint.CheatPayloadSha256,
+                legacyFactsBytes,
+                TablePayloadSha256.Compute(legacyFactsBytes),
+                checkpoint.CreatedAtUtcMs,
+                checkpoint.BootId,
+                checkpoint.SchemaVersion,
+                checkpoint.TimingVersion,
+                checkpoint.CapturedMonotonicMillis,
+                legacyHistoryBytes,
+                TablePayloadSha256.Compute(legacyHistoryBytes),
+                checkpoint.CommittedCommandBindingsPayload,
+                checkpoint.CommittedCommandBindingsPayloadSha256);
+
+            Assert.True(
+                TableCheckpointValidator.TryValidate(legacyCheckpoint, out string reasonCode, out string detail),
+                reasonCode + " " + detail);
+            h.Store.ReplaceCheckpointForTest(DurableHarness.Room, legacyCheckpoint);
+
+            TableRecoveryResult recovered = await h.Actor.RecoverFromStoreAsync(ct);
+            Assert.True(recovered.Recovered, recovered.ReasonCode + " " + recovered.Detail);
+
+            if (offTurn)
+            {
+                Assert.Equal(offer.ThirdTile.Value, GetCheat(h.Actor)!.SleeveBloom.ReservationFor(0)!.Tile);
+            }
+            else
+            {
+                Assert.Equal(offer.ThirdTile.Value, GetRound(h.Actor).Tiles.DrawnTile!.Value.Tile);
+                Assert.Equal(TileZone.Hand, GetRound(h.Actor).Tiles.PositionOf(offer.ThirdTile.Value).Zone);
+            }
+
+            var ownerSink = new RecordingStreamSink();
+            TableStreamControlResult subscribed = await h.Actor.SubscribeStreamAsync(
+                new TableStreamSubscribeRequest(
+                    new TableStreamIdentity(
+                        new SessionId("owner-cp-rec"),
+                        TableStreamAudience.ForSeat(0),
+                        new BindingEpoch(1),
+                        new SyncEpoch(1)),
+                    recovered.Report!.CurrentOwnerEpoch,
+                    h.Actor.RecoveryGeneration,
+                    ownerSink,
+                    new RoundId(round.RoundId),
+                    new ControlEpoch(0)),
+                ct);
+            Assert.Equal(TableStreamControlStatus.Subscribed, subscribed.Status);
+            await ownerSink.WaitForCountAsync(1);
+            PlayerUpdate playerUpdate = StrictWireStreamCodec.DecodeAndStrict(
+                ownerSink.Frames[0].EncodedPayload!).PlayerUpdate;
+            Assert.Equal(990L, playerUpdate.Snapshot.PrivateView.Cheat.CheatPoints);
+            if (offTurn)
+            {
+                Assert.Equal((uint)offer.ThirdTile.Value.Value,
+                    playerUpdate.Snapshot.PrivateView.Cheat.SleeveBloomReservation.TileId);
+            }
+            else
+            {
+                Assert.Equal((uint)offer.ThirdTile.Value.Value,
+                    playerUpdate.Snapshot.PrivateView.DrawnTileId);
+            }
+        }
+
+        private static void RewriteStoredEvent(
+            InMemoryTableStore store,
+            EventSeq seq,
+            Func<TableEventRecord, TableEventRecord> rewrite)
+        {
+            var events = (Dictionary<string, List<TableEventRecord>>)typeof(InMemoryTableStore)
+                .GetField("_events", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .GetValue(store)!;
+            List<TableEventRecord> rows = events[DurableHarness.Room];
+            int index = rows.FindIndex(row => row.Seq.Equals(seq));
+            Assert.True(index >= 0);
+            rows[index] = rewrite(rows[index]);
+        }
+
+        private static int CountActorDrawTurns(RoundStateMachine round)
+        {
+            int turns = 0;
+            for (int i = 0; i < round.Events.Count; i++)
+            {
+                if (round.Events[i].Type == RoundEventType.TileDrawn ||
+                    round.Events[i].Type == RoundEventType.RinshanDrawn)
+                {
+                    turns++;
+                }
+            }
+
+            return turns;
+        }
+
+        private static string FindOctopusRequest(string roundId, int seat, int turnNumber, bool hit)
+        {
+            for (int i = 0; i < 10_000; i++)
+            {
+                string request = "octopus-actor-" + seat + "-" + turnNumber + "-" + i;
+                if (PlayerCharacterRules.GrantsThirdSleeveCandidate(
+                    PlayerCharacterIds.Octopus,
+                    PlayerCharacterIds.CurrentTraitsVersion,
+                    roundId,
+                    seat,
+                    turnNumber,
+                    request) == hit)
+                {
+                    return request;
+                }
+            }
+
+            throw new InvalidOperationException("Could not find a deterministic SleeveBloom hit/miss request.");
+        }
+
         private static ActorHarness CreateHarness(int cheatRequestBindingCapacity = 8192)
         {
             var clock = new ManualTableClock { Now = 1000L };
