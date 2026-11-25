@@ -17,7 +17,7 @@ namespace Mahjong.Protocol.Tests
 {
     public sealed class SchemaCompatibilityTests
     {
-        private const string ExpectedSchemaFingerprint = "efcdb08d49fa430ac70cc1f61c1d6b9c13806bfb558e0f3be2639c3399123796";
+        private const string ExpectedSchemaFingerprint = "17a7cc0aba45fd2381f0a21f6e31fa5d2d882c78a082dd8861ea3a7e63b2d31f";
 
         [Fact]
         public void EnvelopeFieldNumbersAreStable()
@@ -136,7 +136,7 @@ namespace Mahjong.Protocol.Tests
             {
                 (1, "offer_id"), (2, "mode"), (3, "first_tile_id"), (4, "second_tile_id"),
                 (5, "deadline_remaining_ms"), (6, "window_id"), (7, "reserved_tile_id"),
-                (15, "created_turn_number"), (16, "draw_kind"), (17, "has_deadline")
+                (15, "created_turn_number"), (16, "draw_kind"), (17, "has_deadline"), (18, "third_tile_id")
             });
             AssertFields(SleeveBloomReservationView.Descriptor, new (int, string)[]
             {
