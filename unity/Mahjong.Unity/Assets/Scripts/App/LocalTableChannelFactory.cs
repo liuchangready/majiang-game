@@ -101,6 +101,15 @@ namespace Mahjong.Unity.App
 #if UNITY_EDITOR
         private readonly Func<ITableChannel, ITableChannel>? _channelDecoratorForTest;
         private readonly Func<Func<Task>, Task>? _roomDisposeForTest;
+        public string? LiteFixtureRoundIdForTest { get; set; }
+
+        public async Task<(string StateVersion, string Audit)> ReadPhysicalAuditForTestAsync(CancellationToken cancellationToken)
+        {
+            LocalTableRecoveryCapture capture = await LocalTableHost
+                .CaptureRecoveryAsync(_saveDirectory, cancellationToken).ConfigureAwait(false);
+            return (capture.Facts.StateVersion, LocalPlayerActionScenario.ReadPhysicalAudit(
+                capture.AuthoritySaveBytes, capture.CheatStatePayload));
+        }
 #endif
         private readonly SemaphoreSlim _matchGate = new SemaphoreSlim(1, 1);
         private readonly SemaphoreSlim _roomGate = new SemaphoreSlim(1, 1);
@@ -424,6 +433,9 @@ namespace Mahjong.Unity.App
                     if (_localLiteMode)
                     {
                         string uniqueRoundId = "c04-" + scenario + "-lite-" + Guid.NewGuid().ToString("N");
+#if UNITY_EDITOR
+                        uniqueRoundId = LiteFixtureRoundIdForTest ?? uniqueRoundId;
+#endif
                         LocalPlayerActionScenario.ConfigureHostOptions(options, scenario!, uniqueRoundId);
                     }
                     else

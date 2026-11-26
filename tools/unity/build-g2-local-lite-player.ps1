@@ -182,6 +182,7 @@ try {
         'Mahjong.Unity.Tests.PlayMode.TablePlayModeTests.LiteArmedKanDrawSubmitsSleeveBloomOnlyOnDrawConfirmation'
         'Mahjong.Unity.Tests.PlayMode.TablePlayModeTests.LiteRiichiPreselectionWaitsForTheOwnersDraw'
         'Mahjong.Unity.Tests.PlayMode.LocalHostCompositionPlayModeTests.BusyRejectedStart_DoesNotOverwriteLastCharacterForRestart'
+        'Mahjong.Unity.Tests.PlayMode.LocalHostCompositionPlayModeTests.LiteOctopus_MenuToThirdRinshanChoice_ChargesOnceAndReturnsUnkeptTiles'
     )
     $charFilter = $requiredCharacterTests -join ';'
     $charXml = Join-Path $RunRoot 'playmode-character.xml'

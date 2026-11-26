@@ -2,13 +2,17 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using UnityEngine;
+using UnityEngine.EventSystems;
 using UnityEngine.SceneManagement;
 using UnityEngine.TestTools;
+using UnityEngine.UI;
 using Mahjong.Client;
 using Mahjong.Contracts;
 using Mahjong.Unity.App;
@@ -510,6 +514,143 @@ namespace Mahjong.Unity.Tests.PlayMode
             LocalLiteRunContext.ResetForTest();
             ResetAppRoot();
         }
+
+#if UNITY_EDITOR
+        private AppRoot? _octopusApp;
+
+        [UnityTest]
+        public IEnumerator LiteOctopus_MenuToThirdRinshanChoice_ChargesOnceAndReturnsUnkeptTiles()
+        {
+            ResetAppRoot();
+            LocalLiteRunContext.ResetForTest();
+            string root = NewRealRoot();
+            LocalLiteRunContext.Initialize(Path.Combine(root, "lite-run"), "test", "test", "octopus-playmode");
+            AppConfig config = RealConfig();
+            config.localLiteMode = true;
+            AppRoot app = _octopusApp = AppRoot.EnsureInitialized(config, null, root);
+            var factory = (LocalTableChannelFactory)app.Composition.ChannelFactory;
+            // The existing closed-kan wall under this round ID hits the real Octopus roll.
+            const string roundId = "c04-closed-kan-lite-octopus-26";
+            factory.LiteFixtureRoundIdForTest = roundId;
+
+            Task<bool> menu = app.Router.LoadAsync(SceneId.Menu);
+            yield return WaitUntil(() => menu.IsCompleted, 20f, "Lite menu");
+            Assert.IsTrue(menu.Result);
+            yield return null;
+            SubmitLiteButton("LocalLiteCharacter-octopus");
+            yield return null;
+            SubmitLiteButton("LocalLiteTestButton");
+            yield return null;
+            SubmitLiteButton("LocalLiteScenario-closed-kan");
+            yield return WaitUntil(() => app.Router.CurrentScene == SceneId.Table, 30f, "Octopus table");
+            yield return WaitForRealSnapshot(app.Composition, 30f);
+
+            SessionCoordinator coordinator = app.Composition.SessionCoordinator!;
+            var mapper = new PlayerTableProjectionMapper(new SystemTableClientClock());
+            TablePresenter presenter = UnityEngine.Object.FindFirstObjectByType<TablePresenter>();
+            Assert.IsNotNull(presenter);
+            PlayerTableViewState View() => mapper.Project(coordinator.Current);
+            yield return WaitUntil(() => GameObject.Find("KanButton") != null, 10f, "closed-kan button");
+            PlayerTableViewState opening = View();
+            Assert.AreEqual(roundId, opening.Identity.RoundId);
+            Assert.AreEqual("octopus", LocalLiteRunContext.CurrentCharacterId);
+            Assert.That(opening.Own!.Cheat!.Ledger, Is.Empty);
+            long startingPoints = opening.Own.Cheat.CheatPoints;
+
+            SubmitLiteButton("KanButton");
+            yield return WaitUntil(() => View().Board.Phase == PlayerGamePhase.KanDraw &&
+                GameObject.Find("SleeveBloomButton") != null && GameObject.Find("DiscardButton") != null,
+                10f, "player's replacement draw confirmation");
+            PlayerTableViewState pending = View();
+            Assert.IsNull(pending.Own!.DrawnTileId);
+
+            SubmitLiteButton("SleeveBloomButton");
+            yield return null;
+            PlayerTableViewState armed = View();
+            Assert.AreEqual(pending.Identity.StateVersion, armed.Identity.StateVersion);
+            Assert.AreEqual(startingPoints, armed.Own!.Cheat!.CheatPoints);
+            Assert.IsNull(armed.Own.Cheat.ImmediateSleeveBloom);
+            SubmitLiteButton("DiscardButton");
+
+            yield return WaitUntil(() => GameObject.Find("SleeveBloomCandidate3") != null,
+                10f, "third Octopus candidate from the real LocalHost");
+            PlayerTableViewState offered = View();
+            PlayerCheatState offeredCheat = offered.Own!.Cheat!;
+            PlayerSleeveBloomState offer = offeredCheat.ImmediateSleeveBloom!;
+            Assert.AreEqual(PlayerSleeveBloomDrawKind.Rinshan, offer.DrawKind);
+            Assert.AreEqual(73u, offer.FirstTileId);
+            Assert.AreEqual(123u, offer.SecondTileId);
+            Assert.AreEqual(124u, offer.ThirdTileId);
+            Assert.AreEqual(startingPoints - 10L, offeredCheat.CheatPoints);
+            PlayerCheatLedgerEntryState charge = offeredCheat.Ledger.Single();
+            Assert.AreEqual(-10L, charge.Amount);
+
+            yield return WaitUntil(() => presenter.InteractionState.Pending == null, 10f, "paid draw acknowledgment");
+            TableReceiptResolvedEventArgs? choiceReceipt = null;
+            void OnReceipt(object? sender, TableReceiptResolvedEventArgs receipt)
+            {
+                if (receipt.Command.Kind == CommandKind.SubmitSleeveBloomChoice) choiceReceipt = receipt;
+            }
+
+            coordinator.ReceiptResolved += OnReceipt;
+            try
+            {
+                SubmitLiteButton("SleeveBloomCandidate3");
+                Assert.That(choiceReceipt != null || presenter.InteractionState.Pending?.Intent.Kind == CommandKind.SubmitSleeveBloomChoice,
+                    Is.True, () => "Third choice did not submit. UI status: " +
+                        GameObject.Find("StatusBanner")?.GetComponent<TMPro.TMP_Text>()?.text);
+                yield return WaitUntil(() => choiceReceipt != null, 10f, "third choice receipt");
+                Assert.AreEqual(ReceiptStatus.Applied, choiceReceipt!.Resolution.ReceiptStatus, choiceReceipt.Resolution.ReasonCode);
+            }
+            finally
+            {
+                coordinator.ReceiptResolved -= OnReceipt;
+            }
+            yield return WaitUntil(() => View().Own?.DrawnTileId == 124u &&
+                View().Own?.Cheat?.ImmediateSleeveBloom == null, 10f, "committed third tile");
+            PlayerTableViewState chosen = View();
+            Assert.AreEqual(offered.Identity.StateVersion + 1UL, chosen.Identity.StateVersion);
+            Assert.AreEqual(offered.Board.WallRemaining, chosen.Board.WallRemaining);
+            Assert.AreEqual(startingPoints - 10L, chosen.Own!.Cheat!.CheatPoints);
+            Assert.AreEqual(charge.EntryId, chosen.Own.Cheat.Ledger.Single().EntryId);
+
+            using var auditTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            var audit = factory.ReadPhysicalAuditForTestAsync(auditTimeout.Token);
+            yield return WaitUntil(() => audit.IsCompleted, 10f, "post-choice physical audit");
+            Assert.AreEqual(chosen.Identity.StateVersion.ToString(CultureInfo.InvariantCulture), audit.Result.StateVersion);
+            string[] tiles = audit.Result.Audit.Split('\n');
+            Assert.That(tiles, Has.Length.EqualTo(136));
+            CollectionAssert.Contains(tiles, "tile|073|DEADWALL|-1|2");
+            CollectionAssert.Contains(tiles, "tile|123|DEADWALL|-1|1");
+            StringAssert.StartsWith("tile|124|HAND|0|", tiles.Single(line => line.StartsWith("tile|124|", StringComparison.Ordinal)));
+        }
+
+        [UnityTearDown]
+        public IEnumerator CleanupOctopusRoom()
+        {
+            AppRoot? app = _octopusApp;
+            if (app == null) yield break;
+            _octopusApp = null;
+            try
+            {
+                yield return Cleanup(app.Router, app.Composition);
+            }
+            finally
+            {
+                LocalLiteRunContext.ResetForTest();
+                ResetAppRoot();
+            }
+        }
+
+        private static void SubmitLiteButton(string name)
+        {
+            Button? button = GameObject.Find(name)?.GetComponent<Button>();
+            Assert.That(button, Is.Not.Null, name);
+            Assert.IsTrue(button!.IsInteractable(), name);
+            Assert.IsTrue(ExecuteEvents.Execute(button.gameObject, new BaseEventData(EventSystem.current),
+                ExecuteEvents.submitHandler), name);
+        }
+#endif
 
     }
 }
