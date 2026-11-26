@@ -128,6 +128,9 @@ namespace Mahjong.Domain.Cheat
     /// </summary>
     public sealed class CheatState
     {
+        private readonly ReadOnlyCollection<string> _characterIds;
+        private readonly ReadOnlyCollection<int> _characterTraitsVersions;
+
         public CheatState(
             CheatLedger ledger,
             TileMarkState tileMarks,
@@ -135,19 +138,84 @@ namespace Mahjong.Domain.Cheat
             BeamSwapState beamSwap,
             string playerCharacterId = PlayerCharacterIds.Player,
             int characterTraitsVersion = PlayerCharacterIds.CurrentTraitsVersion)
+            : this(
+                ledger,
+                tileMarks,
+                sleeveBloom,
+                beamSwap,
+                new[]
+                {
+                    playerCharacterId,
+                    PlayerCharacterIds.Player,
+                    PlayerCharacterIds.Player,
+                    PlayerCharacterIds.Player
+                },
+                new[]
+                {
+                    characterTraitsVersion,
+                    PlayerCharacterIds.CurrentTraitsVersion,
+                    PlayerCharacterIds.CurrentTraitsVersion,
+                    PlayerCharacterIds.CurrentTraitsVersion
+                })
+        {
+        }
+
+        public CheatState(
+            CheatLedger ledger,
+            TileMarkState tileMarks,
+            SleeveBloomState sleeveBloom,
+            BeamSwapState beamSwap,
+            IReadOnlyList<string> characterIds,
+            IReadOnlyList<int>? characterTraitsVersions = null)
         {
             Ledger = ledger ?? throw new ArgumentNullException(nameof(ledger));
             TileMarks = tileMarks ?? throw new ArgumentNullException(nameof(tileMarks));
             SleeveBloom = sleeveBloom ?? throw new ArgumentNullException(nameof(sleeveBloom));
             BeamSwap = beamSwap ?? throw new ArgumentNullException(nameof(beamSwap));
-            if (!PlayerCharacterIds.IsSupported(playerCharacterId))
-                throw new ArgumentOutOfRangeException(nameof(playerCharacterId), playerCharacterId, "Unsupported player character ID.");
-            if (characterTraitsVersion != PlayerCharacterIds.CurrentTraitsVersion)
-                throw new ArgumentOutOfRangeException(nameof(characterTraitsVersion), characterTraitsVersion, "Unsupported character traits version.");
-            PlayerCharacterId = playerCharacterId;
-            CharacterTraitsVersion = characterTraitsVersion;
+            if (characterIds == null)
+            {
+                throw new ArgumentNullException(nameof(characterIds));
+            }
+
+            if (characterIds.Count != 4)
+            {
+                throw new ArgumentException("Character ids must contain exactly 4 seats.", nameof(characterIds));
+            }
+
+            if (characterTraitsVersions != null && characterTraitsVersions.Count != 4)
+            {
+                throw new ArgumentException("Character traits versions must contain exactly 4 seats.", nameof(characterTraitsVersions));
+            }
+
+            var copiedIds = new string[4];
+            var copiedVersions = new int[4];
+            for (int seat = 0; seat < 4; seat++)
+            {
+                string id = characterIds[seat];
+                if (string.IsNullOrEmpty(id) || !PlayerCharacterIds.IsSupported(id))
+                {
+                    throw new ArgumentOutOfRangeException(nameof(characterIds), id, "Unsupported player character ID.");
+                }
+
+                int traitsVersion = characterTraitsVersions != null
+                    ? characterTraitsVersions[seat]
+                    : PlayerCharacterIds.CurrentTraitsVersion;
+                if (traitsVersion != PlayerCharacterIds.CurrentTraitsVersion)
+                {
+                    throw new ArgumentOutOfRangeException(
+                        nameof(characterTraitsVersions),
+                        traitsVersion,
+                        "Unsupported character traits version.");
+                }
+
+                copiedIds[seat] = id;
+                copiedVersions[seat] = traitsVersion;
+            }
+
+            _characterIds = Array.AsReadOnly(copiedIds);
+            _characterTraitsVersions = Array.AsReadOnly(copiedVersions);
             Version = ledger.Version + tileMarks.Version + sleeveBloom.Version + beamSwap.Version;
-            Fingerprint = ComputeFingerprint(ledger, tileMarks, sleeveBloom, beamSwap, playerCharacterId, characterTraitsVersion);
+            Fingerprint = ComputeFingerprint(ledger, tileMarks, sleeveBloom, beamSwap, _characterIds, _characterTraitsVersions);
         }
 
         public CheatLedger Ledger { get; }
@@ -158,9 +226,33 @@ namespace Mahjong.Domain.Cheat
 
         public BeamSwapState BeamSwap { get; }
 
-        public string PlayerCharacterId { get; }
+        public IReadOnlyList<string> CharacterIds => _characterIds;
 
-        public int CharacterTraitsVersion { get; }
+        public IReadOnlyList<int> CharacterTraitsVersions => _characterTraitsVersions;
+
+        public string PlayerCharacterId => _characterIds[0];
+
+        public int CharacterTraitsVersion => _characterTraitsVersions[0];
+
+        public string CharacterIdOf(int seat)
+        {
+            if (seat < 0 || seat > 3)
+            {
+                throw new ArgumentOutOfRangeException(nameof(seat), seat, "Seat must be 0..3.");
+            }
+
+            return _characterIds[seat];
+        }
+
+        public int CharacterTraitsVersionOf(int seat)
+        {
+            if (seat < 0 || seat > 3)
+            {
+                throw new ArgumentOutOfRangeException(nameof(seat), seat, "Seat must be 0..3.");
+            }
+
+            return _characterTraitsVersions[seat];
+        }
 
         public long Version { get; }
 
@@ -181,20 +273,62 @@ namespace Mahjong.Domain.Cheat
                 playerCharacterId);
         }
 
+        public static CheatState Initialize(
+            CheatEconomyConfig economy,
+            IReadOnlyList<string> characterIds,
+            IReadOnlyList<int>? characterTraitsVersions = null)
+        {
+            if (economy == null)
+            {
+                throw new ArgumentNullException(nameof(economy));
+            }
+
+            return new CheatState(
+                CheatLedger.Initialize(economy),
+                new TileMarkState(),
+                new SleeveBloomState(),
+                new BeamSwapState(),
+                characterIds,
+                characterTraitsVersions);
+        }
+
         public CheatState WithLedger(CheatLedger ledger) =>
-            new CheatState(ledger, TileMarks, SleeveBloom, BeamSwap, PlayerCharacterId, CharacterTraitsVersion);
+            new CheatState(ledger, TileMarks, SleeveBloom, BeamSwap, _characterIds, _characterTraitsVersions);
 
         public CheatState WithTileMarks(TileMarkState tileMarks) =>
-            new CheatState(Ledger, tileMarks, SleeveBloom, BeamSwap, PlayerCharacterId, CharacterTraitsVersion);
+            new CheatState(Ledger, tileMarks, SleeveBloom, BeamSwap, _characterIds, _characterTraitsVersions);
 
         public CheatState WithSleeveBloom(SleeveBloomState sleeveBloom) =>
-            new CheatState(Ledger, TileMarks, sleeveBloom, BeamSwap, PlayerCharacterId, CharacterTraitsVersion);
+            new CheatState(Ledger, TileMarks, sleeveBloom, BeamSwap, _characterIds, _characterTraitsVersions);
 
         public CheatState WithBeamSwap(BeamSwapState beamSwap) =>
-            new CheatState(Ledger, TileMarks, SleeveBloom, beamSwap, PlayerCharacterId, CharacterTraitsVersion);
+            new CheatState(Ledger, TileMarks, SleeveBloom, beamSwap, _characterIds, _characterTraitsVersions);
 
         public CheatState WithPlayerCharacter(string playerCharacterId, int traitsVersion = PlayerCharacterIds.CurrentTraitsVersion) =>
-            new CheatState(Ledger, TileMarks, SleeveBloom, BeamSwap, playerCharacterId, traitsVersion);
+            WithCharacter(0, playerCharacterId, traitsVersion);
+
+        public CheatState WithCharacter(int seat, string characterId, int traitsVersion = PlayerCharacterIds.CurrentTraitsVersion)
+        {
+            if (seat < 0 || seat > 3)
+            {
+                throw new ArgumentOutOfRangeException(nameof(seat), seat, "Seat must be 0..3.");
+            }
+
+            var nextIds = new string[4];
+            var nextVersions = new int[4];
+            for (int i = 0; i < 4; i++)
+            {
+                nextIds[i] = _characterIds[i];
+                nextVersions[i] = _characterTraitsVersions[i];
+            }
+
+            nextIds[seat] = characterId;
+            nextVersions[seat] = traitsVersion;
+            return new CheatState(Ledger, TileMarks, SleeveBloom, BeamSwap, nextIds, nextVersions);
+        }
+
+        public CheatState WithCharacters(IReadOnlyList<string> characterIds, IReadOnlyList<int>? characterTraitsVersions = null) =>
+            new CheatState(Ledger, TileMarks, SleeveBloom, BeamSwap, characterIds, characterTraitsVersions);
 
         /// <summary>Seat-whitelisted private projection; other seats observe none of this.</summary>
         public CheatPrivateView ViewFor(int seat)
@@ -246,15 +380,38 @@ namespace Mahjong.Domain.Cheat
             TileMarkState tileMarks,
             SleeveBloomState sleeveBloom,
             BeamSwapState beamSwap,
-            string playerCharacterId,
-            int characterTraitsVersion)
+            IReadOnlyList<string> characterIds,
+            IReadOnlyList<int> characterTraitsVersions)
         {
             ulong hash = FnvOffsetBasis;
             hash = MixByte(hash, (byte)'C');
-            if (playerCharacterId != PlayerCharacterIds.Player || characterTraitsVersion != PlayerCharacterIds.CurrentTraitsVersion)
+            bool hasOtherSeatOverride = false;
+            for (int seat = 1; seat < 4; seat++)
             {
-                hash = MixString(hash, playerCharacterId);
-                hash = MixValue(hash, (uint)characterTraitsVersion);
+                if (characterIds[seat] != PlayerCharacterIds.Player ||
+                    characterTraitsVersions[seat] != PlayerCharacterIds.CurrentTraitsVersion)
+                {
+                    hasOtherSeatOverride = true;
+                    break;
+                }
+            }
+
+            if (hasOtherSeatOverride)
+            {
+                // Distinct 4-seat marker (high bit set so it cannot collide with any string length or ledger version).
+                hash = MixValue(hash, 0xFFFFFFFFFFFFFFFEUL);
+                for (int seat = 0; seat < 4; seat++)
+                {
+                    hash = MixValue(hash, (ulong)(uint)seat);
+                    hash = MixString(hash, characterIds[seat]);
+                    hash = MixValue(hash, (ulong)(uint)characterTraitsVersions[seat]);
+                }
+            }
+            else if (characterIds[0] != PlayerCharacterIds.Player ||
+                     characterTraitsVersions[0] != PlayerCharacterIds.CurrentTraitsVersion)
+            {
+                hash = MixString(hash, characterIds[0]);
+                hash = MixValue(hash, (ulong)(uint)characterTraitsVersions[0]);
             }
 
             hash = MixValue(hash, (ulong)ledger.Version);

@@ -92,9 +92,21 @@ namespace Mahjong.LocalHost
                     return DecodeSave(payload);
                 }
             }
-            catch (EndOfStreamException exception)
+            catch (InvalidDataException)
             {
-                throw new InvalidDataException("Local save is truncated.", exception);
+                throw;
+            }
+            catch (IOException exception)
+            {
+                throw new InvalidDataException("Local save is truncated or malformed.", exception);
+            }
+            catch (FormatException exception)
+            {
+                throw new InvalidDataException("Local save is truncated or malformed.", exception);
+            }
+            catch (ArgumentException exception)
+            {
+                throw new InvalidDataException("Local save is truncated or malformed.", exception);
             }
         }
 
@@ -466,9 +478,21 @@ namespace Mahjong.LocalHost
                         bindingsHash);
                 }
             }
-            catch (EndOfStreamException exception)
+            catch (InvalidDataException)
             {
-                throw new InvalidDataException("Checkpoint blob is truncated.", exception);
+                throw;
+            }
+            catch (IOException exception)
+            {
+                throw new InvalidDataException("Checkpoint blob is truncated or malformed.", exception);
+            }
+            catch (FormatException exception)
+            {
+                throw new InvalidDataException("Checkpoint blob is truncated or malformed.", exception);
+            }
+            catch (ArgumentException exception)
+            {
+                throw new InvalidDataException("Checkpoint blob is truncated or malformed.", exception);
             }
         }
 

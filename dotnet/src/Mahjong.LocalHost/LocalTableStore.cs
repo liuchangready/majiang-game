@@ -273,10 +273,11 @@ namespace Mahjong.LocalHost
                 return null;
             }
 
+            LocalSave save;
             try
             {
                 byte[] bytes = _files.ReadAllBytes(path);
-                return LocalSaveCodec.DecodeEnvelope(bytes);
+                save = LocalSaveCodec.DecodeEnvelope(bytes);
             }
             catch (InvalidDataException exception) when (
                 exception.Message.IndexOf("not supported", StringComparison.OrdinalIgnoreCase) >= 0)
@@ -309,6 +310,53 @@ namespace Mahjong.LocalHost
                 error = exception.GetType().Name + ": " + exception.Message;
                 return null;
             }
+
+            if (!TryVerifyBaseCheckpoint(save, out error))
+            {
+                return null;
+            }
+
+            return save;
+        }
+
+        private static bool TryVerifyBaseCheckpoint(LocalSave save, out string? error)
+        {
+            error = null;
+            TableCheckpoint checkpoint;
+            try
+            {
+                checkpoint = LocalSaveCodec.DecodeCheckpoint(save.BaseCheckpointBlob);
+            }
+            catch (Exception exception) when (
+                exception is InvalidDataException ||
+                exception is ArgumentException ||
+                exception is InvalidOperationException)
+            {
+                error = exception.GetType().Name + ": " + exception.Message;
+                return false;
+            }
+
+            if (checkpoint.StatePayloadSha256 != TablePayloadSha256.Compute(checkpoint.StatePayload) ||
+                checkpoint.ControlPayloadSha256 != TablePayloadSha256.Compute(checkpoint.ControlPayload) ||
+                checkpoint.TimingPayloadSha256 != TablePayloadSha256.Compute(checkpoint.TimingPayload) ||
+                (checkpoint.CheatPayload != null &&
+                 (!checkpoint.CheatPayloadSha256.HasValue ||
+                  checkpoint.CheatPayloadSha256.Value != TablePayloadSha256.Compute(checkpoint.CheatPayload))) ||
+                (checkpoint.CommittedFactsPayload != null &&
+                 (!checkpoint.CommittedFactsPayloadSha256.HasValue ||
+                  checkpoint.CommittedFactsPayloadSha256.Value != TablePayloadSha256.Compute(checkpoint.CommittedFactsPayload))))
+            {
+                error = "InvalidDataException: Checkpoint payload SHA-256 verification failed.";
+                return false;
+            }
+
+            if (!TableCheckpointValidator.TryValidate(checkpoint, out string reasonCode, out string detail))
+            {
+                error = "InvalidDataException: " + reasonCode + ": " + detail;
+                return false;
+            }
+
+            return true;
         }
 
         private async ValueTask HydrateInnerStoreAsync(CancellationToken cancellationToken)

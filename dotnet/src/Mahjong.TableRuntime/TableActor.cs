@@ -363,6 +363,30 @@ namespace Mahjong.TableRuntime
                 ? _cheat.SleeveBloom.ImmediateOffer
                 : null;
 
+        /// <summary>Host-only read of the four frozen seat rule character IDs.</summary>
+        public IReadOnlyList<string> GetSeatCharacterIdsForHost() =>
+            _cheat?.CharacterIds ?? DefaultSeatCharacterIds;
+
+        /// <summary>Host-only read of the four frozen seat character traits versions.</summary>
+        public IReadOnlyList<int> GetSeatCharacterTraitsVersionsForHost() =>
+            _cheat?.CharacterTraitsVersions ?? DefaultSeatCharacterTraitsVersions;
+
+        private static readonly IReadOnlyList<string> DefaultSeatCharacterIds = Array.AsReadOnly(new[]
+        {
+            PlayerCharacterIds.Player,
+            PlayerCharacterIds.Player,
+            PlayerCharacterIds.Player,
+            PlayerCharacterIds.Player
+        });
+
+        private static readonly IReadOnlyList<int> DefaultSeatCharacterTraitsVersions = Array.AsReadOnly(new[]
+        {
+            PlayerCharacterIds.CurrentTraitsVersion,
+            PlayerCharacterIds.CurrentTraitsVersion,
+            PlayerCharacterIds.CurrentTraitsVersion,
+            PlayerCharacterIds.CurrentTraitsVersion
+        });
+
         /// <summary>A null choice leaves the legal riichi kan alternatives to the player.</summary>
         public SleeveBloomKeep? GetAutomaticRiichiSleeveChoiceForHost(int seat)
         {
