@@ -105,7 +105,6 @@ namespace Mahjong.Unity.App
         {
             if (characterId != "player" && characterId != "octopus")
                 return LocalGameStartResult.Failed(LocalGameStartResult.UnexpectedFailureCode);
-            _lastCharacterId = characterId;
             // One owner per router. The second concurrent call is rejected before it
             // can enter AppComposition, load a scene or run any shutdown/cleanup.
             if (Interlocked.CompareExchange(ref _startInFlight, 1, 0) != 0)
@@ -242,6 +241,7 @@ namespace Mahjong.Unity.App
                     return TerminalStartResult();
                 }
 
+                _lastCharacterId = characterId;
                 if (_composition.Config.localLiteMode)
                     LocalLiteRunContext.RecordStage(scenarioId, "table");
 

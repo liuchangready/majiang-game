@@ -736,7 +736,13 @@ namespace Mahjong.TableService
 
         private static SleeveBloomKeep ParseKeep(uint choice)
         {
-            return choice == (uint)SleeveBloomChoice.Second ? SleeveBloomKeep.Second : SleeveBloomKeep.First;
+            return choice switch
+            {
+                (uint)SleeveBloomChoice.First => SleeveBloomKeep.First,
+                (uint)SleeveBloomChoice.Second => SleeveBloomKeep.Second,
+                (uint)SleeveBloomChoice.Third => SleeveBloomKeep.Third,
+                _ => throw new CanonicalEncodingException("Sleeve bloom choice must be FIRST, SECOND, or THIRD.")
+            };
         }
 
         /// <summary>

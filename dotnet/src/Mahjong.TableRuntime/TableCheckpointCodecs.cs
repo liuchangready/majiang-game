@@ -492,9 +492,15 @@ namespace Mahjong.TableRuntime
             InitialPoints = initialPoints;
             _balances = new ReadOnlyCollection<int>(balances);
             _entries = new ReadOnlyCollection<CheatLedgerEntry>(entries);
+            FormatSchemaVersion = TableCheatLedgerCheckpointCodec.FormatVersion;
         }
 
         public TableCheatLedgerCheckpoint(CheatState state)
+            : this(state, TableCheatLedgerCheckpointCodec.FormatVersion)
+        {
+        }
+
+        internal TableCheatLedgerCheckpoint(CheatState state, int formatSchemaVersion)
         {
             if (state == null)
             {
@@ -508,6 +514,7 @@ namespace Mahjong.TableRuntime
             TotalVersion = state.Version;
             Fingerprint = state.Fingerprint;
             _state = state;
+            FormatSchemaVersion = formatSchemaVersion;
         }
 
         public int InitialPoints { get; }
@@ -521,6 +528,8 @@ namespace Mahjong.TableRuntime
 
         /// <summary>CheatState fingerprint for the modeled aggregate.</summary>
         public ulong Fingerprint { get; }
+
+        internal int FormatSchemaVersion { get; }
 
         internal CheatState? FullState => _state;
 
@@ -620,7 +629,8 @@ namespace Mahjong.TableRuntime
 
     public static class TableCheatLedgerCheckpointCodec
     {
-        public const int FormatVersion = 5;
+        public const int FormatVersion = 6;
+        internal const int ThirdTileAndCharacterSchemaVersion = 5;
         private const int LegacyFormatVersion = 4;
         private const int Magic = 0x4D4A4C43; // MJLC
 
@@ -689,7 +699,9 @@ namespace Mahjong.TableRuntime
                 }
 
                 int schema = reader.ReadInt32();
-                if (schema != LegacyFormatVersion && schema != FormatVersion)
+                if (schema != LegacyFormatVersion &&
+                    schema != ThirdTileAndCharacterSchemaVersion &&
+                    schema != FormatVersion)
                 {
                     throw new InvalidDataException("Unsupported cheat checkpoint schema " + schema + ".");
                 }
@@ -723,10 +735,11 @@ namespace Mahjong.TableRuntime
                 // Replays the real ledger entries and verifies balances before returning.
                 CheatLedger ledger = CheatLedger.FromSnapshot(initial, balances, entries);
                 TileMarkState tileMarks = ReadTileMarks(reader);
-                SleeveBloomState sleeve = ReadSleeveBloom(reader, schema >= FormatVersion);
+                bool hasCharacterFields = schema >= ThirdTileAndCharacterSchemaVersion;
+                SleeveBloomState sleeve = ReadSleeveBloom(reader, hasCharacterFields);
                 BeamSwapState beam = ReadBeamSwap(reader);
-                string characterId = schema >= FormatVersion ? reader.ReadString() : PlayerCharacterIds.Player;
-                int characterTraitsVersion = schema >= FormatVersion
+                string characterId = hasCharacterFields ? reader.ReadString() : PlayerCharacterIds.Player;
+                int characterTraitsVersion = hasCharacterFields
                     ? reader.ReadInt32()
                     : PlayerCharacterIds.CurrentTraitsVersion;
 
@@ -742,7 +755,7 @@ namespace Mahjong.TableRuntime
                         "Cheat checkpoint version/fingerprint does not match its full private state.");
                 }
 
-                return new TableCheatLedgerCheckpoint(state);
+                return new TableCheatLedgerCheckpoint(state, schema);
             }
         }
 

@@ -470,5 +470,46 @@ namespace Mahjong.Unity.Tests.PlayMode
             yield return Cleanup(app.Router, composition);
         }
 
+        [UnityTest]
+        public IEnumerator BusyRejectedStart_DoesNotOverwriteLastCharacterForRestart()
+        {
+            ResetAppRoot();
+            LocalLiteRunContext.ResetForTest();
+            AppConfig config = RealConfig();
+            config.localLiteMode = true;
+            AppRoot app = AppRoot.EnsureInitialized(config, null, NewRealRoot());
+            AppComposition composition = app.Composition;
+            AppRouter router = app.Router;
+
+            Task<bool> lobby = router.LoadAsync(SceneId.Lobby);
+            yield return WaitUntil(() => lobby.IsCompleted, 20f, "Lobby load");
+            Assert.IsTrue(lobby.Result);
+
+            Task<LocalGameStartResult> octopusStart = router.StartLocalGameAsync(null, "octopus");
+            Task<LocalGameStartResult> busyPlayerStart = router.StartLocalGameAsync(null, "player");
+            Assert.IsTrue(busyPlayerStart.IsCompleted, "concurrent player start must reject synchronously as Busy");
+            Assert.AreEqual(LocalGameStartStatus.Busy, busyPlayerStart.Result.Status);
+
+            yield return WaitUntil(() => octopusStart.IsCompleted, 60f, "octopus start completion");
+            Assert.AreEqual(LocalGameStartStatus.Started, octopusStart.Result.Status);
+            yield return WaitForRealSnapshot(composition, 60f);
+
+            var lastCharField = typeof(AppRouter).GetField("_lastCharacterId",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+            Assert.AreEqual("octopus", lastCharField.GetValue(router),
+                "Busy-rejected player start must never overwrite the active octopus character.");
+
+            Task<LocalGameStartResult> restarted = router.RestartLocalGameAsync();
+            yield return WaitUntil(() => restarted.IsCompleted, 60f, "restart completion");
+            Assert.AreEqual(LocalGameStartStatus.Started, restarted.Result.Status);
+            yield return WaitForRealSnapshot(composition, 60f);
+            Assert.AreEqual("octopus", lastCharField.GetValue(router));
+            Assert.AreEqual("octopus", LocalLiteRunContext.CurrentCharacterId);
+
+            yield return Cleanup(router, composition);
+            LocalLiteRunContext.ResetForTest();
+            ResetAppRoot();
+        }
+
     }
 }

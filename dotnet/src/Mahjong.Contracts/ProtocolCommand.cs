@@ -354,7 +354,7 @@ namespace Mahjong.Contracts
                         bloomChoice != (uint)SleeveBloomChoice.Second &&
                         bloomChoice != (uint)SleeveBloomChoice.Third)
                     {
-                        throw new CommandValidationException("sleeve bloom choice must be FIRST or SECOND.");
+                        throw new CommandValidationException("sleeve bloom choice must be FIRST, SECOND, or THIRD.");
                     }
 
                     break;

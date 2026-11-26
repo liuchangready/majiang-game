@@ -25,6 +25,8 @@ namespace Mahjong.Unity.UI
         private string _selectedCharacterId = "player";
         private bool _scenarioListOpen;
         private bool _starting;
+        private bool _started;
+        private bool _liteConfigured;
 
         public void Initialize(IAppNavigation navigation) => Initialize(navigation, false);
 
@@ -32,6 +34,10 @@ namespace Mahjong.Unity.UI
         {
             _navigation = navigation;
             _localLiteMode = localLiteMode;
+            if (_started && _localLiteMode && !_liteConfigured)
+            {
+                ConfigureLiteMenu();
+            }
         }
 
         public void ShowLiteError(string error)
@@ -42,8 +48,9 @@ namespace Mahjong.Unity.UI
 
         private void Start()
         {
+            _started = true;
             Debug.Log("MENU_PRESENTER_STARTED");
-            if (_localLiteMode) ConfigureLiteMenu();
+            if (_localLiteMode && !_liteConfigured) ConfigureLiteMenu();
             if (_playButton != null)
             {
                 _playButton.onClick.AddListener(OnPlayClicked);
@@ -133,17 +140,19 @@ namespace Mahjong.Unity.UI
 
         private void ConfigureLiteMenu()
         {
+            if (_liteConfigured) return;
+            _liteConfigured = true;
             if (_titleText != null) _titleText.text = "G2 Local Lite v" + Application.version;
             SetLabel(_playButton, "开始一局");
             SetLabel(_quitButton, "退出");
             if (_playButton == null) return;
 
             RectTransform playRect = _playButton.GetComponent<RectTransform>();
-            if (playRect != null) playRect.anchoredPosition += new Vector2(0f, 70f);
+            if (playRect != null) playRect.anchoredPosition = new Vector2(0f, 16f);
             if (_quitButton != null)
             {
                 RectTransform quitRect = _quitButton.GetComponent<RectTransform>();
-                if (quitRect != null) quitRect.anchoredPosition = new Vector2(0f, -100f);
+                if (quitRect != null) quitRect.anchoredPosition = new Vector2(0f, -184f);
             }
 
             _testButton = Instantiate(_playButton, _playButton.transform.parent);
@@ -153,7 +162,7 @@ namespace Mahjong.Unity.UI
             if (!SetWindowsSystemFontLabel(_testButton, "\u6D4B\u8BD5\u5C40\u9762"))
                 SetLabel(_testButton, "Test cases");
             RectTransform testRect = _testButton.GetComponent<RectTransform>();
-            if (testRect != null) testRect.anchoredPosition = new Vector2(0f, 0f);
+            if (testRect != null) testRect.anchoredPosition = new Vector2(0f, -84f);
             _testButton.transform.SetSiblingIndex(_playButton.transform.GetSiblingIndex() + 1);
 
             string[] characterIds = { "player", "octopus" };
@@ -165,10 +174,14 @@ namespace Mahjong.Unity.UI
                 option.name = "LocalLiteCharacter-" + characterIds[i];
                 option.onClick.RemoveAllListeners();
                 option.onClick.AddListener(() => OnCharacterClicked(characterIds[index]));
+                RectTransform rect = option.GetComponent<RectTransform>();
+                if (rect != null)
+                {
+                    rect.sizeDelta = new Vector2(190f, 56f);
+                    rect.anchoredPosition = new Vector2((i == 0 ? -1f : 1f) * 105f, 100f);
+                }
                 if (!SetWindowsSystemFontLabel(option, characterLabels[i]))
                     SetLabel(option, i == 0 ? "Player" : "Octopus");
-                RectTransform rect = option.GetComponent<RectTransform>();
-                if (rect != null) rect.anchoredPosition = new Vector2((i == 0 ? -1f : 1f) * 115f, 140f);
                 _characterButtons.Add(option);
             }
             UpdateCharacterLabels();
@@ -182,10 +195,14 @@ namespace Mahjong.Unity.UI
                 option.name = "LocalLiteScenario-" + ids[i];
                 option.onClick.RemoveAllListeners();
                 option.onClick.AddListener(() => OnScenarioClicked(ids[index]));
+                RectTransform rect = option.GetComponent<RectTransform>();
+                if (rect != null)
+                {
+                    rect.sizeDelta = new Vector2(220f, 44f);
+                    rect.anchoredPosition = new Vector2(335f, 100f - 52f * i);
+                }
                 if (!SetWindowsSystemFontLabel(option, labels[i]))
                     SetLabel(option, new[] { "Pon", "Chi", "Riichi", "Closed kan", "Dealer tsumo" }[i]);
-                RectTransform rect = option.GetComponent<RectTransform>();
-                if (rect != null) rect.anchoredPosition = new Vector2(245f, 100f - 52f * i);
                 option.gameObject.SetActive(false);
                 _scenarioButtons.Add(option);
             }
@@ -201,7 +218,16 @@ namespace Mahjong.Unity.UI
         private static void SetLabel(Button? button, string label)
         {
             TMP_Text? text = button != null ? button.GetComponentInChildren<TMP_Text>(true) : null;
-            if (text != null) text.text = label;
+            if (text == null) return;
+            text.text = label;
+            text.enabled = true;
+            Transform? fallback = text.transform.Find("LocalLiteSystemFontLabel");
+            if (fallback != null)
+            {
+                fallback.gameObject.SetActive(false);
+                UnityEngine.UI.Text? fallbackText = fallback.GetComponent<UnityEngine.UI.Text>();
+                if (fallbackText != null) fallbackText.enabled = false;
+            }
         }
 
         private static bool SetWindowsSystemFontLabel(Button button, string label)
@@ -210,25 +236,49 @@ namespace Mahjong.Unity.UI
             if (source == null) return false;
             source.text = label;
             source.enabled = true;
-            int size = Mathf.Max(1, Mathf.RoundToInt(source.fontSize));
+            Transform? existing = source.transform.Find("LocalLiteSystemFontLabel");
+            int sourceSize = Mathf.Max(1, Mathf.RoundToInt(source.fontSize));
+            RectTransform? buttonRect = button.GetComponent<RectTransform>();
+            int size = buttonRect != null && buttonRect.sizeDelta.y > 0f && buttonRect.sizeDelta.y < 60f
+                ? Mathf.Min(sourceSize, 24)
+                : sourceSize;
             Font? font = FontFallbackResolver.CreateWindowsSystemFont(label, size);
-            if (font == null) return false;
+            if (font == null)
+            {
+                if (existing != null)
+                {
+                    existing.gameObject.SetActive(false);
+                    UnityEngine.UI.Text? existingText = existing.GetComponent<UnityEngine.UI.Text>();
+                    if (existingText != null) existingText.enabled = false;
+                }
+                return false;
+            }
 
             source.enabled = false;
-            var labelObject = new GameObject("LocalLiteSystemFontLabel", typeof(RectTransform), typeof(UnityEngine.UI.Text));
-            labelObject.transform.SetParent(source.transform, false);
+            GameObject labelObject;
+            if (existing != null)
+            {
+                labelObject = existing.gameObject;
+                labelObject.SetActive(true);
+            }
+            else
+            {
+                labelObject = new GameObject("LocalLiteSystemFontLabel", typeof(RectTransform), typeof(UnityEngine.UI.Text));
+                labelObject.transform.SetParent(source.transform, false);
+            }
             RectTransform rect = (RectTransform)labelObject.transform;
             rect.anchorMin = Vector2.zero;
             rect.anchorMax = Vector2.one;
             rect.offsetMin = Vector2.zero;
             rect.offsetMax = Vector2.zero;
-            UnityEngine.UI.Text text = labelObject.GetComponent<UnityEngine.UI.Text>();
+            UnityEngine.UI.Text text = labelObject.GetComponent<UnityEngine.UI.Text>() ?? labelObject.AddComponent<UnityEngine.UI.Text>();
             text.font = font;
             text.fontSize = size;
             text.color = source.color;
             text.alignment = TextAnchor.MiddleCenter;
             text.raycastTarget = false;
             text.text = label;
+            text.enabled = true;
             return true;
         }
 

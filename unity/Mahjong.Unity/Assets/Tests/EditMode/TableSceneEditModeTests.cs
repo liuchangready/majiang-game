@@ -445,7 +445,7 @@ namespace Mahjong.Unity.Tests.EditMode
             var sleeveDlg = CreateUiObject("SleeveBloomDialog", designRootGo.transform);
             var slRect = sleeveDlg.GetComponent<RectTransform>();
             slRect.anchoredPosition = Vector2.zero;
-            slRect.sizeDelta = new Vector2(450, 180);
+            slRect.sizeDelta = new Vector2(450, 240);
             var slBg = sleeveDlg.AddComponent<Image>();
             slBg.color = new Color(0.18f, 0.12f, 0.22f, 0.95f);
 
