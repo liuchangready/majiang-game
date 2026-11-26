@@ -173,6 +173,39 @@ try {
     Write-Stage "PLAYMODE_COMPONENT_PASS tests=$($playCases.Count) failures=0 xml=$playXml; automated Client host regression only, not physical mouse evidence"
     Restore-UnityRunNoise
 
+    $stage = 'PLAYMODE_CHARACTER_REGRESSION'
+    $requiredCharacterTests = @(
+        'Mahjong.Unity.Tests.PlayMode.TablePlayModeTests.LiteMenu_CharacterButtonsAndPlayButton_AreIndependentRaycastTargets_AndOctopusStartsLocalGame'
+        'Mahjong.Unity.Tests.PlayMode.TablePlayModeTests.OctopusThirdSleeveCandidate_IsShownAndClickedThroughClientOutbox'
+        'Mahjong.Unity.Tests.PlayMode.TablePlayModeTests.SleeveBloomThirdCandidate_IsHiddenAndRejectedWhenProjectionOmitsIt'
+        'Mahjong.Unity.Tests.PlayMode.LocalHostCompositionPlayModeTests.BusyRejectedStart_DoesNotOverwriteLastCharacterForRestart'
+    )
+    $charFilter = $requiredCharacterTests -join ';'
+    $charXml = Join-Path $RunRoot 'playmode-character.xml'
+    $charArgs = @('-batchmode','-projectPath',(Quote-Arg $unityProject),'-runTests','-testPlatform','PlayMode',
+        '-testFilter',(Quote-Arg $charFilter),'-testResults',(Quote-Arg $charXml),
+        '-logFile',(Quote-Arg (Join-Path $logs 'unity-playmode-character.log'))) -join ' '
+    $charPlay = Invoke-Bounded $UnityPath $charArgs 'unity-playmode-character' 900
+    if ($charPlay.exitCode -ne 0 -or -not (Test-Path -LiteralPath $charXml -PathType Leaf))
+        { throw "Unity PlayMode character regression failed or produced no XML (native exit $($charPlay.exitCode))." }
+    [xml]$charResult = Get-Content -LiteralPath $charXml -Raw -Encoding UTF8
+    $charCases = @($charResult.SelectNodes('//test-case'))
+    $charFailures = @($charResult.SelectNodes('//test-case[@result != "Passed"]'))
+    $charNames = @($charCases | ForEach-Object { [string]$_.fullname })
+    $missingCharTests = @($requiredCharacterTests | Where-Object { $charNames -notcontains $_ })
+    $unexpectedCharTests = @($charNames | Where-Object { $requiredCharacterTests -notcontains $_ })
+    $duplicateCharTests = @($charNames | Group-Object | Where-Object { $_.Count -ne 1 } | ForEach-Object { $_.Name })
+    if ($charCases.Count -ne $requiredCharacterTests.Count -or
+        $charFailures.Count -ne 0 -or
+        $missingCharTests.Count -ne 0 -or
+        $unexpectedCharTests.Count -ne 0 -or
+        $duplicateCharTests.Count -ne 0)
+    {
+        throw ("PlayMode character XML did not prove unique pass of all 4 required tests: cases=$($charCases.Count) failures=$($charFailures.Count) missing=$($missingCharTests -join ',') unexpected=$($unexpectedCharTests -join ',') duplicates=$($duplicateCharTests -join ',')")
+    }
+    Write-Stage "PLAYMODE_CHARACTER_PASS tests=$($charCases.Count) failures=0 xml=$charXml"
+    Restore-UnityRunNoise
+
     $stage = 'FREEZE_SOURCE'
     $head = (& git -C $repo rev-parse HEAD).Trim()
     if ($LASTEXITCODE -ne 0 -or $head -notmatch '^[0-9a-f]{40}$') { throw 'Cannot resolve source HEAD.' }

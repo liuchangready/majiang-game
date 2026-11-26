@@ -673,6 +673,34 @@ namespace Mahjong.Domain.Cheat
         {
             for (int i = 0; i < _offTurnOffers.Length; i++)
             {
+                TileId? third = _offTurnOffers[i].ThirdTile;
+                if (_offTurnOffers[i].FirstTile.Equals(tile) ||
+                    _offTurnOffers[i].SecondTile.Equals(tile) ||
+                    (third.HasValue && third.GetValueOrDefault().Equals(tile)))
+                {
+                    return true;
+                }
+            }
+
+            for (int i = 0; i < _reservations.Length; i++)
+            {
+                if (_reservations[i].Tile.Equals(tile))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Pre-fix v5 wall protection predicate (First/Second/reservations only) used exclusively
+        /// when cold-recovering legacy v5 journals where an off-turn third candidate was legally drawn.
+        /// </summary>
+        public bool IsProtectedTileWithoutOffTurnThird(TileId tile)
+        {
+            for (int i = 0; i < _offTurnOffers.Length; i++)
+            {
                 if (_offTurnOffers[i].FirstTile.Equals(tile) || _offTurnOffers[i].SecondTile.Equals(tile))
                 {
                     return true;

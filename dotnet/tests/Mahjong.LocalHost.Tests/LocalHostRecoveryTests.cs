@@ -1359,5 +1359,203 @@ using PlayerSnapshot = Mahjong.Contracts.Wire.PlayerSnapshot;
                 await CloseAsync(restored, reopened);
             }
         }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task OctopusLegacyFirstResultTileInLocalSaveColdRecoversToThirdWhileWrongTileRejects(bool offTurn)
+        {
+            await using var harness = new P41Harness();
+            harness.Options.AutoPlay = false;
+            harness.Options.PlayerCharacterId = PlayerCharacterIds.Octopus;
+            CancellationToken ct = TestContext.Current.CancellationToken;
+
+            TileId firstTile;
+            TileId secondTile;
+            TileId thirdTile;
+            string roundId;
+            EventSeq resolvedSeq;
+
+            await using (LocalTableRuntime runtime = await LocalTableRuntime.OpenAsync(harness.Options, ct))
+            {
+                TableActor actor = runtime.ActorForTest;
+                RoundStateMachine round = actor.GetRoundStateForHost();
+                roundId = round.RoundId;
+                var storeField = typeof(LocalTableRuntime).GetField(
+                    "_store",
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                var localStore = (LocalTableStore)storeField!.GetValue(runtime)!;
+                TableScopeRecord scope = localStore.IssueScope(
+                    "local-test-seat0",
+                    TableScopeRole.Player,
+                    P41Harness.RoomId,
+                    (ulong)harness.Clock.UtcNowMs,
+                    (ulong)harness.Clock.UtcNowMs + 600_000UL,
+                    "scope-local-octopus");
+
+                int discards = offTurn ? 1 : 4;
+                for (int i = 0; i < discards; i++)
+                {
+                    RoundStateMachine current = actor.GetRoundStateForHost();
+                    TileId drawnTile = current.Tiles.DrawnTile!.Value.Tile;
+                    TablePayloadSha256 stepDigest = TablePayloadSha256.Compute(
+                        System.Text.Encoding.UTF8.GetBytes("DISCARD|" + i + "|" + drawnTile.Value));
+                    TableOperationResult step = await actor.SubmitAsync(
+                        new TableCommandEnvelope(
+                            RoundCommand.Discard(roundId, current.CurrentSeat, drawnTile),
+                            new RequestId("loc-d-" + i),
+                            new StateVersion((ulong)i),
+                            new OwnerEpoch(1),
+                            new ControlEpoch(0),
+                            null,
+                            0L,
+                            scope.ScopeId,
+                            "ROUND",
+                            stepDigest),
+                        ct);
+                    Assert.True(step.Status == TableOperationStatus.Accepted, step.ReasonCode + " " + step.Detail);
+                }
+
+                RoundStateMachine readyRound = actor.GetRoundStateForHost();
+                int turnNumber = readyRound.Events.Count(e =>
+                    e.Type == RoundEventType.TileDrawn || e.Type == RoundEventType.RinshanDrawn);
+                string hitRequest = FindOctopusLocalRequest(readyRound.RoundId, 0, turnNumber);
+
+                TablePayloadSha256 activateDigest = TablePayloadSha256.Compute(
+                    System.Text.Encoding.UTF8.GetBytes("ACTIVATE|" + hitRequest));
+                TableOperationResult activated = await actor.SubmitCheatAsync(
+                    new TableCheatCommandEnvelope(
+                        new RoundCheatCommand(
+                            roundId,
+                            0,
+                            offTurn ? RoundCheatAction.SubmitSleeveBloomOffTurn : RoundCheatAction.SubmitSleeveBloom,
+                            hitRequest,
+                            offTurn ? RoundCheatPayload.OffTurn("bloom-window-0-0-0") : RoundCheatPayload.SleeveBloom()),
+                        new RequestId(hitRequest),
+                        new StateVersion((ulong)discards),
+                        new OwnerEpoch(1),
+                        new ControlEpoch(0),
+                        null,
+                        0L,
+                        scope.ScopeId,
+                        "CHEAT",
+                        activateDigest),
+                    ct);
+                Assert.Equal(TableOperationStatus.Accepted, activated.Status);
+
+                var cheatField = typeof(TableActor).GetField(
+                    "_cheat",
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                var cheatState = (CheatState)cheatField!.GetValue(actor)!;
+                SleeveBloomOffer offer = (offTurn
+                    ? cheatState.SleeveBloom.OffTurnOfferFor(0)
+                    : cheatState.SleeveBloom.ImmediateOffer)!;
+                Assert.True(offer.ThirdTile.HasValue);
+                firstTile = offer.FirstTile;
+                secondTile = offer.SecondTile;
+                thirdTile = offer.ThirdTile.Value;
+
+                TablePayloadSha256 choiceDigest = TablePayloadSha256.Compute(
+                    System.Text.Encoding.UTF8.GetBytes("CHOICE|" + offer.OfferId));
+                TableOperationResult chosen = await actor.SubmitCheatAsync(
+                    new TableCheatCommandEnvelope(
+                        new RoundCheatCommand(
+                            roundId,
+                            0,
+                            offTurn
+                                ? RoundCheatAction.SubmitSleeveBloomOffTurnChoice
+                                : RoundCheatAction.SubmitSleeveBloomChoice,
+                            "local-third",
+                            offTurn
+                                ? RoundCheatPayload.OffTurnChoice(offer.OfferId, SleeveBloomKeep.Third)
+                                : RoundCheatPayload.SleeveBloomChoice(offer.OfferId, SleeveBloomKeep.Third)),
+                        new RequestId("local-third"),
+                        new StateVersion((ulong)(discards + 1)),
+                        new OwnerEpoch(1),
+                        new ControlEpoch(0),
+                        null,
+                        0L,
+                        scope.ScopeId,
+                        "CHEAT",
+                        choiceDigest),
+                    ct);
+                Assert.Equal(TableOperationStatus.Accepted, chosen.Status);
+                resolvedSeq = Assert.Single(
+                    chosen.Events,
+                    e => e.Cheat?.Event.Kind == CheatEventKind.SleeveBloomResolved).Seq;
+            }
+
+            // Rewrite the persisted local save's SleeveBloomResolved ResultTile to legacy FirstTile.
+            RewriteLocalSaveResultTile(harness, resolvedSeq, firstTile);
+
+            harness.Clock.UtcNowMs += 500L;
+            harness.Clock.MonotonicMillis += 500L;
+            await using (LocalTableRuntime recovered = await LocalTableRuntime.OpenAsync(harness.Options, ct))
+            {
+                RoundStateMachine recoveredRound = recovered.ActorForTest.GetRoundStateForHost();
+                var cheatField = typeof(TableActor).GetField(
+                    "_cheat",
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                var recoveredCheat = (CheatState)cheatField!.GetValue(recovered.ActorForTest)!;
+                if (offTurn)
+                {
+                    Assert.Equal(thirdTile, recoveredCheat.SleeveBloom.ReservationFor(0)!.Tile);
+                }
+                else
+                {
+                    Assert.Equal(thirdTile, recoveredRound.Tiles.DrawnTile!.Value.Tile);
+                }
+
+                Assert.True(TilePositionMap.Validate(recoveredRound.Tiles).IsValid);
+            }
+
+            // Any other ResultTile (such as SecondTile) must still fail closed as CorruptState.
+            RewriteLocalSaveResultTile(harness, resolvedSeq, secondTile);
+            harness.Clock.UtcNowMs += 500L;
+            harness.Clock.MonotonicMillis += 500L;
+            LocalTableException rejected = await Assert.ThrowsAsync<LocalTableException>(
+                async () => await LocalTableRuntime.OpenAsync(harness.Options, ct));
+            Assert.Equal(LocalTableErrorKind.CorruptState, rejected.ErrorKind);
+        }
+
+        private static void RewriteLocalSaveResultTile(P41Harness harness, EventSeq seq, TileId replacementTile)
+        {
+            LocalSave save = LocalSaveCodec.DecodeEnvelope(File.ReadAllBytes(harness.SavePath));
+            int index = save.EventJournals.FindIndex(e => e.Seq.Equals(seq));
+            Assert.True(index >= 0);
+            TableEventRecord row = save.EventJournals[index];
+            TableCheatEventRecord c = row.Cheat!;
+            save.EventJournals[index] = new TableEventRecord(
+                row.Seq, row.CommandVersion, row.Ordinal, row.Type, row.Seat, row.Tile, row.Detail,
+                row.EventSchema, row.Payload,
+                new TableCheatEventRecord(
+                    c.Event, c.OfferId, c.Keep, c.Action, replacementTile, c.HandTile, c.TargetSlot, c.TurnNumber));
+            byte[] encoded = LocalSaveCodec.EncodeEnvelope(save);
+            File.WriteAllBytes(harness.SavePath, encoded);
+            if (File.Exists(harness.BackupPath))
+            {
+                File.WriteAllBytes(harness.BackupPath, encoded);
+            }
+        }
+
+        private static string FindOctopusLocalRequest(string roundId, int seat, int turnNumber)
+        {
+            for (int i = 0; i < 10_000; i++)
+            {
+                string request = "octopus-local-" + seat + "-" + turnNumber + "-" + i;
+                if (PlayerCharacterRules.GrantsThirdSleeveCandidate(
+                    PlayerCharacterIds.Octopus,
+                    PlayerCharacterIds.CurrentTraitsVersion,
+                    roundId,
+                    seat,
+                    turnNumber,
+                    request))
+                {
+                    return request;
+                }
+            }
+
+            throw new InvalidOperationException("Could not find a deterministic SleeveBloom hit request.");
+        }
     }
 }

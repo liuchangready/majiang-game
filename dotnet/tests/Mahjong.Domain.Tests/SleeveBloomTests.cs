@@ -999,5 +999,474 @@ namespace Mahjong.Domain.Tests
             Assert.Null(activation.State.ViewFor(3).ImmediateOffer);
             Assert.Empty(activation.State.PublicSnapshot.GetType().GetProperties());
         }
+
+        private static string FindRequestFor(string roundId, int seat, int turnNumber, bool hit)
+        {
+            for (int i = 0; i < 10_000; i++)
+            {
+                string request = "octopus-bridge-" + seat + "-" + turnNumber + "-" + i;
+                bool actual = PlayerCharacterRules.GrantsThirdSleeveCandidate(
+                    PlayerCharacterIds.Octopus,
+                    PlayerCharacterIds.CurrentTraitsVersion,
+                    roundId,
+                    seat,
+                    turnNumber,
+                    request);
+                if (actual == hit) return request;
+            }
+            throw new InvalidOperationException("Could not find a deterministic SleeveBloom hit/miss request.");
+        }
+
+        private static RoundStateMachine CreateNormalDrawRoundForSeatZero()
+        {
+            RoundStateMachine round = RoundStateMachine.CreateDealt(
+                P13.Spec(CheatTestBench.RoundId),
+                CheatTestBench.CraftedOpening(),
+                RoundPhase.CheatWindow);
+            for (int i = 0; i < 4; i++)
+            {
+                RoundTransition discard = round.Execute(
+                    RoundCommand.Discard(round.RoundId, round.CurrentSeat, round.Tiles.DrawnTile!.Value.Tile));
+                Assert.True(discard.IsAccepted);
+                round = discard.State!;
+            }
+            Assert.Equal(0, round.CurrentSeat);
+            Assert.Equal(RoundPhase.CheatWindow, round.Phase);
+            return round;
+        }
+
+        private static int CountDrawTurns(RoundStateMachine round)
+        {
+            int turns = 0;
+            for (int i = 0; i < round.Events.Count; i++)
+            {
+                if (round.Events[i].Type == RoundEventType.TileDrawn ||
+                    round.Events[i].Type == RoundEventType.RinshanDrawn)
+                {
+                    turns++;
+                }
+            }
+            return turns;
+        }
+
+        [Fact]
+        public void RoundBridge_ImmediatePath_FirstSecondThird_AndTimeout_EmitMatchingResultTile()
+        {
+            RoundStateMachine baseRound = CreateNormalDrawRoundForSeatZero();
+            int turn = CountDrawTurns(baseRound);
+            CheatTurnContext context = CheatTestBench.Context(0, RoundPhase.CheatWindow, SleeveBloomDrawKind.Normal, turn: turn);
+            string hitRequest = FindRequestFor(baseRound.RoundId, 0, turn, hit: true);
+
+            RoundCheatPreparation activation = RoundCheatTransition.Prepare(
+                baseRound,
+                OctopusState(),
+                new RoundCheatCommand(baseRound.RoundId, 0, RoundCheatAction.SubmitSleeveBloom, hitRequest, RoundCheatPayload.SleeveBloom()),
+                context,
+                CheatTestBench.Economy(),
+                CheatTestBench.Sleeve());
+            Assert.True(activation.IsReady, activation.Message);
+            Assert.True(activation.Change!.Accepted);
+            SleeveBloomOffer offer = activation.Change.CheatState.SleeveBloom.ImmediateOffer!;
+            Assert.True(offer.ThirdTile.HasValue);
+            Assert.Equal(30, activation.Change.CheatState.Ledger.BalanceOf(0));
+
+            RoundStateMachine activeRound = activation.Change.RoundChange.NextState;
+            CheatState activeCheat = activation.Change.CheatState;
+
+            foreach (SleeveBloomKeep keep in new[] { SleeveBloomKeep.First, SleeveBloomKeep.Second, SleeveBloomKeep.Third })
+            {
+                RoundCheatPreparation choice = RoundCheatTransition.Prepare(
+                    activeRound,
+                    activeCheat,
+                    new RoundCheatCommand(
+                        activeRound.RoundId,
+                        0,
+                        RoundCheatAction.SubmitSleeveBloomChoice,
+                        "choose-" + keep,
+                        RoundCheatPayload.SleeveBloomChoice(offer.OfferId, keep)),
+                    context,
+                    CheatTestBench.Economy(),
+                    CheatTestBench.Sleeve());
+                Assert.True(choice.IsReady, keep + ": " + choice.Message);
+                Assert.True(choice.Change!.Accepted);
+                RoundCheatEvent resolved = Assert.Single(choice.Change.Events, e => e.Value.Kind == CheatEventKind.SleeveBloomResolved);
+                TileId expectedTile = keep switch
+                {
+                    SleeveBloomKeep.First => offer.FirstTile,
+                    SleeveBloomKeep.Second => offer.SecondTile,
+                    _ => offer.ThirdTile!.Value
+                };
+                Assert.Equal(keep, resolved.Keep);
+                Assert.Equal(offer.OfferId, resolved.OfferId);
+                Assert.Equal(expectedTile, resolved.ResultTile);
+                RoundStateMachine nextRound = choice.Change.RoundChange.NextState;
+                Assert.Equal(expectedTile, nextRound.Tiles.DrawnTile!.Value.Tile);
+                Assert.Equal(TileZone.Hand, nextRound.Tiles.PositionOf(expectedTile).Zone);
+                Assert.Null(choice.Change.CheatState.SleeveBloom.ImmediateOffer);
+                Assert.Equal(30, choice.Change.CheatState.Ledger.BalanceOf(0));
+                CheatTestBench.AssertConserved(nextRound.Tiles);
+            }
+
+            RoundCheatPreparation expired = RoundCheatTransition.ExpireImmediate(activeRound, activeCheat, context, 0);
+            Assert.True(expired.IsReady, expired.Message);
+            RoundCheatEvent expiredEvent = Assert.Single(expired.Change!.Events, e => e.Value.Kind == CheatEventKind.SleeveBloomResolved);
+            Assert.Equal(SleeveBloomKeep.First, expiredEvent.Keep);
+            Assert.Equal(offer.FirstTile, expiredEvent.ResultTile);
+
+            // Ordinary two-candidate offer still rejects Third while preserving First/Second.
+            RoundCheatPreparation plainActivation = RoundCheatTransition.Prepare(
+                baseRound,
+                CheatTestBench.InitialState(),
+                new RoundCheatCommand(baseRound.RoundId, 0, RoundCheatAction.SubmitSleeveBloom, hitRequest, RoundCheatPayload.SleeveBloom()),
+                context,
+                CheatTestBench.Economy(),
+                CheatTestBench.Sleeve());
+            Assert.True(plainActivation.IsReady);
+            SleeveBloomOffer plainOffer = plainActivation.Change!.CheatState.SleeveBloom.ImmediateOffer!;
+            Assert.Null(plainOffer.ThirdTile);
+
+            RoundCheatPreparation rejectedThird = RoundCheatTransition.Prepare(
+                plainActivation.Change.RoundChange.NextState,
+                plainActivation.Change.CheatState,
+                new RoundCheatCommand(
+                    baseRound.RoundId,
+                    0,
+                    RoundCheatAction.SubmitSleeveBloomChoice,
+                    "plain-third",
+                    RoundCheatPayload.SleeveBloomChoice(plainOffer.OfferId, SleeveBloomKeep.Third)),
+                context,
+                CheatTestBench.Economy(),
+                CheatTestBench.Sleeve());
+            Assert.False(rejectedThird.IsReady);
+            Assert.Equal(CheatErrorCode.InvalidSelection, rejectedThird.CheatError);
+        }
+
+        [Fact]
+        public void RoundBridge_OffTurnPath_FirstSecondThird_AndTimeout_EmitMatchingResultTileAndDeliver()
+        {
+            RoundStateMachine round = RoundStateMachine.CreateDealt(
+                P13.Spec(CheatTestBench.RoundId),
+                CheatTestBench.CraftedOpening(),
+                RoundPhase.CheatWindow);
+            int openTurn = CountDrawTurns(round);
+            CheatTurnContext openContext = CheatTestBench.Context(0, RoundPhase.CheatWindow, SleeveBloomDrawKind.DealExtra, turn: openTurn);
+            RoundCheatPreparation opened = RoundCheatTransition.PrepareCommandWithOfferSettlement(
+                round,
+                OctopusState(),
+                RoundCommand.Discard(round.RoundId, 0, round.Tiles.DrawnTile!.Value.Tile),
+                openContext,
+                isProtectedWallTile: null,
+                openDiscardWindow: true);
+            Assert.True(opened.IsReady, opened.Message);
+            RoundStateMachine afterDiscard = opened.Change!.RoundChange.NextState;
+            CheatState afterWindow = opened.Change.CheatState;
+            string windowId = afterWindow.SleeveBloom.WindowIdFor(0)!;
+            int offTurnNumber = CountDrawTurns(afterDiscard);
+            CheatTurnContext offTurnContext = CheatTestBench.Context(
+                afterDiscard.CurrentSeat,
+                afterDiscard.Phase,
+                SleeveBloomDrawKind.Normal,
+                turn: offTurnNumber,
+                now: 1_000L);
+            string hitRequest = FindRequestFor(afterDiscard.RoundId, 0, offTurnNumber, hit: true);
+
+            RoundCheatPreparation activation = RoundCheatTransition.Prepare(
+                afterDiscard,
+                afterWindow,
+                new RoundCheatCommand(
+                    afterDiscard.RoundId,
+                    0,
+                    RoundCheatAction.SubmitSleeveBloomOffTurn,
+                    hitRequest,
+                    RoundCheatPayload.OffTurn(windowId)),
+                offTurnContext,
+                CheatTestBench.Economy(),
+                CheatTestBench.Sleeve());
+            Assert.True(activation.IsReady, activation.Message);
+            Assert.True(activation.Change!.Accepted);
+            SleeveBloomOffer offer = activation.Change.CheatState.SleeveBloom.OffTurnOfferFor(0)!;
+            Assert.True(offer.ThirdTile.HasValue);
+            Assert.Equal(30, activation.Change.CheatState.Ledger.BalanceOf(0));
+
+            RoundStateMachine activeRound = activation.Change.RoundChange.NextState;
+            CheatState activeCheat = activation.Change.CheatState;
+
+            foreach (SleeveBloomKeep keep in new[] { SleeveBloomKeep.First, SleeveBloomKeep.Second, SleeveBloomKeep.Third })
+            {
+                RoundCheatPreparation choice = RoundCheatTransition.Prepare(
+                    activeRound,
+                    activeCheat,
+                    new RoundCheatCommand(
+                        activeRound.RoundId,
+                        0,
+                        RoundCheatAction.SubmitSleeveBloomOffTurnChoice,
+                        "off-choose-" + keep,
+                        RoundCheatPayload.OffTurnChoice(offer.OfferId, keep)),
+                    offTurnContext,
+                    CheatTestBench.Economy(),
+                    CheatTestBench.Sleeve());
+                Assert.True(choice.IsReady, keep + ": " + choice.Message);
+                Assert.True(choice.Change!.Accepted);
+                RoundCheatEvent resolved = Assert.Single(choice.Change.Events, e => e.Value.Kind == CheatEventKind.SleeveBloomResolved);
+                TileId expectedTile = keep switch
+                {
+                    SleeveBloomKeep.First => offer.FirstTile,
+                    SleeveBloomKeep.Second => offer.SecondTile,
+                    _ => offer.ThirdTile!.Value
+                };
+                Assert.Equal(keep, resolved.Keep);
+                Assert.Equal(offer.OfferId, resolved.OfferId);
+                Assert.Equal(expectedTile, resolved.ResultTile);
+                Assert.Equal(expectedTile, choice.Change.CheatState.SleeveBloom.ReservationFor(0)!.Tile);
+                Assert.Null(choice.Change.CheatState.SleeveBloom.OffTurnOfferFor(0));
+                Assert.Equal(30, choice.Change.CheatState.Ledger.BalanceOf(0));
+
+                if (keep == SleeveBloomKeep.Third)
+                {
+                    RoundStateMachine walkRound = choice.Change.RoundChange.NextState;
+                    CheatState walkCheat = choice.Change.CheatState;
+                    while (walkRound.CurrentSeat != 3)
+                    {
+                        RoundTransition step = walkRound.Execute(
+                            RoundCommand.Discard(walkRound.RoundId, walkRound.CurrentSeat, walkRound.Tiles.DrawnTile!.Value.Tile));
+                        Assert.True(step.IsAccepted);
+                        walkRound = step.State!;
+                    }
+
+                    RoundCheatPreparation delivered = RoundCheatTransition.PrepareDiscardDelivery(
+                        walkRound,
+                        walkCheat,
+                        RoundCommand.Discard(walkRound.RoundId, 3, walkRound.Tiles.DrawnTile!.Value.Tile),
+                        2_000L);
+                    Assert.True(delivered.IsReady, delivered.Message);
+                    RoundStateMachine seat0Draw = delivered.Change!.RoundChange.NextState;
+                    Assert.Equal(0, seat0Draw.CurrentSeat);
+                    Assert.Equal(expectedTile, seat0Draw.Tiles.DrawnTile!.Value.Tile);
+                    Assert.Equal(30, delivered.Change.CheatState.Ledger.BalanceOf(0));
+                    CheatTestBench.AssertConserved(seat0Draw.Tiles);
+                }
+            }
+
+            // Timeout fallback resolves to FirstTile.
+            CheatTurnContext expiredContext = CheatTestBench.Context(
+                afterDiscard.CurrentSeat,
+                afterDiscard.Phase,
+                SleeveBloomDrawKind.Normal,
+                turn: offTurnNumber,
+                now: offer.DeadlineMillis);
+            RoundCheatPreparation expiredChoice = RoundCheatTransition.Prepare(
+                activeRound,
+                activeCheat,
+                new RoundCheatCommand(
+                    activeRound.RoundId,
+                    0,
+                    RoundCheatAction.SubmitSleeveBloomOffTurnChoice,
+                    "off-expired",
+                    RoundCheatPayload.OffTurnChoice(offer.OfferId, SleeveBloomKeep.Third)),
+                expiredContext,
+                CheatTestBench.Economy(),
+                CheatTestBench.Sleeve());
+            Assert.True(expiredChoice.IsReady);
+            Assert.False(expiredChoice.Change!.Accepted);
+            Assert.Equal(CheatErrorCode.DeadlineExpired, expiredChoice.Change.Error);
+            RoundCheatEvent expiredEvent = Assert.Single(expiredChoice.Change.Events, e => e.Value.Kind == CheatEventKind.SleeveBloomResolved);
+            Assert.Equal(SleeveBloomKeep.First, expiredEvent.Keep);
+            Assert.Equal(offer.FirstTile, expiredEvent.ResultTile);
+            Assert.Equal(offer.FirstTile, expiredChoice.Change.CheatState.SleeveBloom.ReservationFor(0)!.Tile);
+
+            // Ordinary two-candidate off-turn offer rejects Third.
+            RoundCheatPreparation plainOpened = RoundCheatTransition.PrepareCommandWithOfferSettlement(
+                round,
+                CheatTestBench.InitialState(),
+                RoundCommand.Discard(round.RoundId, 0, round.Tiles.DrawnTile!.Value.Tile),
+                openContext,
+                isProtectedWallTile: null,
+                openDiscardWindow: true);
+            Assert.True(plainOpened.IsReady);
+            string plainWindow = plainOpened.Change!.CheatState.SleeveBloom.WindowIdFor(0)!;
+            RoundCheatPreparation plainActivation = RoundCheatTransition.Prepare(
+                plainOpened.Change.RoundChange.NextState,
+                plainOpened.Change.CheatState,
+                new RoundCheatCommand(
+                    afterDiscard.RoundId,
+                    0,
+                    RoundCheatAction.SubmitSleeveBloomOffTurn,
+                    hitRequest,
+                    RoundCheatPayload.OffTurn(plainWindow)),
+                offTurnContext,
+                CheatTestBench.Economy(),
+                CheatTestBench.Sleeve());
+            Assert.True(plainActivation.IsReady);
+            SleeveBloomOffer plainOffer = plainActivation.Change!.CheatState.SleeveBloom.OffTurnOfferFor(0)!;
+            Assert.Null(plainOffer.ThirdTile);
+
+            RoundCheatPreparation plainRejected = RoundCheatTransition.Prepare(
+                plainActivation.Change.RoundChange.NextState,
+                plainActivation.Change.CheatState,
+                new RoundCheatCommand(
+                    afterDiscard.RoundId,
+                    0,
+                    RoundCheatAction.SubmitSleeveBloomOffTurnChoice,
+                    "plain-off-third",
+                    RoundCheatPayload.OffTurnChoice(plainOffer.OfferId, SleeveBloomKeep.Third)),
+                offTurnContext,
+                CheatTestBench.Economy(),
+                CheatTestBench.Sleeve());
+            Assert.False(plainRejected.IsReady);
+            Assert.Equal(CheatErrorCode.InvalidSelection, plainRejected.CheatError);
+        }
+
+        [Fact]
+        public void OffTurnThreeCandidateOffer_ProtectsThirdTileFromDrawsAndBeamSwap_UntilChoiceAndDelivery()
+        {
+            RoundStateMachine dealt = RoundStateMachine.CreateDealt(
+                P13.Spec(CheatTestBench.RoundId),
+                CheatTestBench.CraftedOpening(),
+                RoundPhase.CheatWindow);
+            int openTurn = CountDrawTurns(dealt);
+            CheatTurnContext openContext = CheatTestBench.Context(
+                0,
+                RoundPhase.CheatWindow,
+                SleeveBloomDrawKind.DealExtra,
+                turn: openTurn);
+            RoundCheatPreparation opened = RoundCheatTransition.PrepareCommandWithOfferSettlement(
+                dealt,
+                OctopusState(),
+                RoundCommand.Discard(dealt.RoundId, 0, dealt.Tiles.DrawnTile!.Value.Tile),
+                openContext,
+                isProtectedWallTile: null,
+                openDiscardWindow: true);
+            Assert.True(opened.IsReady, opened.Message);
+
+            RoundStateMachine afterDiscard = opened.Change!.RoundChange.NextState;
+            CheatState afterWindow = opened.Change.CheatState;
+            string windowId = afterWindow.SleeveBloom.WindowIdFor(0)!;
+            int offTurnNumber = CountDrawTurns(afterDiscard);
+            CheatTurnContext offTurnContext = CheatTestBench.Context(
+                afterDiscard.CurrentSeat,
+                afterDiscard.Phase,
+                SleeveBloomDrawKind.Normal,
+                turn: offTurnNumber,
+                now: 1_000L);
+            string hitRequest = FindRequestFor(afterDiscard.RoundId, 0, offTurnNumber, hit: true);
+
+            RoundCheatPreparation activation = RoundCheatTransition.Prepare(
+                afterDiscard,
+                afterWindow,
+                new RoundCheatCommand(
+                    afterDiscard.RoundId,
+                    0,
+                    RoundCheatAction.SubmitSleeveBloomOffTurn,
+                    hitRequest,
+                    RoundCheatPayload.OffTurn(windowId)),
+                offTurnContext,
+                CheatTestBench.Economy(),
+                CheatTestBench.Sleeve());
+            Assert.True(activation.IsReady, activation.Message);
+
+            RoundStateMachine activeRound = activation.Change!.RoundChange.NextState;
+            CheatState activeCheat = activation.Change.CheatState;
+            SleeveBloomOffer offer = activeCheat.SleeveBloom.OffTurnOfferFor(0)!;
+            Assert.True(offer.ThirdTile.HasValue);
+
+            Assert.True(activeCheat.SleeveBloom.IsProtectedTile(offer.FirstTile));
+            Assert.True(activeCheat.SleeveBloom.IsProtectedTile(offer.SecondTile));
+            Assert.True(activeCheat.SleeveBloom.IsProtectedTile(offer.ThirdTile.Value));
+            Assert.True(activeCheat.SleeveBloom.IsProtectedTileWithoutOffTurnThird(offer.FirstTile));
+            Assert.True(activeCheat.SleeveBloom.IsProtectedTileWithoutOffTurnThird(offer.SecondTile));
+            Assert.False(activeCheat.SleeveBloom.IsProtectedTileWithoutOffTurnThird(offer.ThirdTile.Value));
+
+            // Next seat normal draws and beam swap candidates must skip all 3 protected tiles.
+            TilePositionMap seat1Drawn = activeRound.Tiles;
+            TileId drawn1 = seat1Drawn.DrawnTile!.Value.Tile;
+            Assert.NotEqual(offer.FirstTile, drawn1);
+            Assert.NotEqual(offer.SecondTile, drawn1);
+            Assert.NotEqual(offer.ThirdTile.Value, drawn1);
+
+            CheatTurnContext seat1BeamCtx = CheatTestBench.Context(
+                1, RoundPhase.CheatWindow, SleeveBloomDrawKind.Normal, turn: offTurnNumber, now: 1_100L);
+            CheatTransition seat1Beam = CheatSubmission.ActivateBeamSwap(
+                activeCheat, seat1Drawn, seat1BeamCtx, CheatTestBench.Economy(), CheatTestBench.Sleeve(), "beam-seat1", 1);
+            Assert.True(seat1Beam.Success, seat1Beam.Message);
+            foreach (BeamSwapCandidate c in seat1Beam.State!.BeamSwap.Offer!.Candidates)
+            {
+                Assert.NotEqual(offer.FirstTile, c.Tile);
+                Assert.NotEqual(offer.SecondTile, c.Tile);
+                Assert.NotEqual(offer.ThirdTile.Value, c.Tile);
+            }
+
+            TilePositionMap seat2Drawn = seat1Drawn
+                .Discard(1, drawn1).RequireState()
+                .DrawFromWall(2, tile => activeCheat.SleeveBloom.IsProtectedTile(tile))
+                .RequireState();
+            TileId drawn2 = seat2Drawn.DrawnTile!.Value.Tile;
+            Assert.NotEqual(offer.ThirdTile.Value, drawn2);
+
+            // Replacement draws must likewise never consume the protected third tile if a replacement reaches the live wall.
+            TilePositionMap beforeKan = seat2Drawn.Discard(2, drawn2).RequireState();
+            TransitionResult kanDraw = beforeKan.DrawReplacement(3, tile => activeCheat.SleeveBloom.IsProtectedTile(tile));
+            Assert.True(kanDraw.IsSuccess);
+            Assert.NotEqual(offer.ThirdTile.Value, kanDraw.State!.DrawnTile!.Value.Tile);
+
+            // Seat 0 chooses Third before deadline against the advanced map: succeeds & reserves ThirdTile once.
+            CheatTransition chosen = CheatSubmission.ChooseOffTurnSleeveBloom(
+                activeCheat,
+                beforeKan,
+                CheatTestBench.Context(2, RoundPhase.Draw, SleeveBloomDrawKind.Normal, turn: offTurnNumber + 2, now: offer.DeadlineMillis - 1),
+                0,
+                offer.OfferId,
+                SleeveBloomKeep.Third);
+            Assert.True(chosen.Success, chosen.Message);
+            Assert.Equal(offer.ThirdTile.Value, chosen.State!.SleeveBloom.ReservationFor(0)!.Tile);
+            Assert.Equal(30, chosen.State.Ledger.BalanceOf(0));
+
+            TilePositionMap beforeSeat0Draw = beforeKan.DrawFromWall(3).RequireState();
+            beforeSeat0Draw = beforeSeat0Draw.Discard(3, beforeSeat0Draw.DrawnTile!.Value.Tile).RequireState();
+            CheatTransition delivered = CheatSubmission.DeliverSleeveBloomReservation(
+                chosen.State,
+                beforeSeat0Draw,
+                CheatTestBench.Context(0, RoundPhase.Draw, SleeveBloomDrawKind.Normal, turn: offTurnNumber + 3),
+                0);
+            Assert.True(delivered.Success, delivered.Message);
+            Assert.Equal(TileZone.Hand, delivered.Map!.PositionOf(offer.ThirdTile.Value).Zone);
+            Assert.Equal(30, delivered.State!.Ledger.BalanceOf(0));
+            CheatTestBench.AssertConserved(delivered.Map);
+        }
+
+        [Fact]
+        public void OffTurnThreeCandidateOffer_WhenOnlyThreeCandidatesRemainInWall_BlocksNormalDrawFromStealingThem()
+        {
+            TilePositionMap map = CheatTestBench.CraftedOpening();
+            TileId dealerDrawn = map.DrawnTile!.Value.Tile;
+            map = map.Discard(0, dealerDrawn).RequireState();
+
+            // Exhaust all live-wall slots except the last 3 tiles.
+            int seat = 1;
+            while (map.WallEndExclusive - map.WallPointer > 3)
+            {
+                map = map.DrawFromWall(seat).RequireState();
+                map = map.Discard(seat, map.DrawnTile!.Value.Tile).RequireState();
+                seat = (seat + 1) % 4;
+            }
+
+            CheatState state = OctopusState();
+            state = state.WithSleeveBloom(state.SleeveBloom.WithOpenedWindow(0, 1, out string windowId));
+            string hitRequest = FindRequestFor(CheatTestBench.RoundId, 0, 1, hit: true);
+            CheatTransition activated = CheatSubmission.ActivateOffTurnSleeveBloom(
+                state,
+                map,
+                CheatTestBench.Context(seat, RoundPhase.Discard, SleeveBloomDrawKind.Normal, turn: 1, now: 1_000L),
+                CheatTestBench.Economy(),
+                CheatTestBench.Sleeve(),
+                0,
+                hitRequest,
+                windowId);
+            Assert.True(activated.Success, activated.Message);
+            Assert.True(activated.State!.SleeveBloom.OffTurnOfferFor(0)!.ThirdTile.HasValue);
+
+            TransitionResult nextDraw = map.DrawFromWall(seat, tile => activated.State.SleeveBloom.IsProtectedTile(tile));
+            Assert.False(nextDraw.IsSuccess);
+            CheatTestBench.AssertConserved(map);
+        }
     }
 }

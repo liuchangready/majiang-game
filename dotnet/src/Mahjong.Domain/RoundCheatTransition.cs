@@ -509,7 +509,21 @@ namespace Mahjong.Domain
             RoundCheatCommand command,
             CheatTurnContext context,
             CheatEconomyConfig economy,
-            SleeveBloomConfig sleeveConfig)
+            SleeveBloomConfig sleeveConfig) =>
+            Prepare(round, cheat, command, context, economy, sleeveConfig, protectOffTurnThird: true);
+
+        /// <summary>
+        /// Prepares a cheat command using configurable off-turn third protection.
+        /// Passing <c>protectOffTurnThird: false</c> is reserved exclusively for legacy v5 journal recovery.
+        /// </summary>
+        public static RoundCheatPreparation Prepare(
+            RoundStateMachine round,
+            CheatState? cheat,
+            RoundCheatCommand command,
+            CheatTurnContext context,
+            CheatEconomyConfig economy,
+            SleeveBloomConfig sleeveConfig,
+            bool protectOffTurnThird)
         {
             if (round == null) throw new ArgumentNullException(nameof(round));
             if (command == null) throw new ArgumentNullException(nameof(command));
@@ -545,7 +559,10 @@ namespace Mahjong.Domain
                     // second search; the rinshan path already carries full dead-wall evidence.
                     SleeveBloomActivationInput activationInput =
                         context.LastDrawKind == SleeveBloomDrawKind.Normal
-                            ? SleeveBloomActivationInput.FromAuthoritativeState(round.Tiles, before.SleeveBloom)
+                            ? SleeveBloomActivationInput.FromAuthoritativeState(
+                                round.Tiles,
+                                before.SleeveBloom,
+                                protectOffTurnThird)
                             : SleeveBloomActivationInput.Unspecified;
                     transition = CheatSubmission.ActivateSleeveBloomWithFrozenInput(
                         before,
@@ -555,7 +572,8 @@ namespace Mahjong.Domain
                         sleeveConfig,
                         command.Seat,
                         command.RequestId,
-                        activationInput);
+                        activationInput,
+                        protectOffTurnThird);
                     break;
                 case RoundCheatAction.SubmitSleeveBloomChoice:
                     transition = CheatSubmission.ChooseSleeveBloom(
@@ -564,7 +582,8 @@ namespace Mahjong.Domain
                         context,
                         command.Seat,
                         command.Payload.OfferId!,
-                        command.Payload.Keep!.Value);
+                        command.Payload.Keep!.Value,
+                        protectOffTurnThird);
                     break;
                 case RoundCheatAction.SubmitSleeveBloomOffTurn:
                     transition = CheatSubmission.ActivateOffTurnSleeveBloom(
@@ -575,7 +594,8 @@ namespace Mahjong.Domain
                         sleeveConfig,
                         command.Seat,
                         command.RequestId,
-                        command.Payload.WindowId!);
+                        command.Payload.WindowId!,
+                        protectOffTurnThird);
                     break;
                 case RoundCheatAction.SubmitSleeveBloomOffTurnChoice:
                     transition = CheatSubmission.ChooseOffTurnSleeveBloom(
@@ -594,7 +614,8 @@ namespace Mahjong.Domain
                         economy,
                         sleeveConfig,
                         command.RequestId,
-                        command.Seat);
+                        command.Seat,
+                        protectOffTurnThird);
                     break;
                 case RoundCheatAction.SubmitBeamSwapChoice:
                     transition = CheatSubmission.ChooseBeamSwap(
@@ -1379,7 +1400,13 @@ namespace Mahjong.Domain
 
                 if (offer != null)
                 {
-                    resultTile = keep == SleeveBloomKeep.Second ? offer.SecondTile : offer.FirstTile;
+                    resultTile = keep switch
+                    {
+                        SleeveBloomKeep.First => offer.FirstTile,
+                        SleeveBloomKeep.Second => offer.SecondTile,
+                        SleeveBloomKeep.Third => offer.ThirdTile,
+                        _ => null
+                    };
                 }
             }
 
