@@ -629,12 +629,29 @@ namespace Mahjong.TableRuntime
 
     public static class TableCheatLedgerCheckpointCodec
     {
-        public const int FormatVersion = 6;
+        public const int FormatVersion = 7;
+        internal const int LegacySingleCharacterSchemaVersion = 6;
         internal const int ThirdTileAndCharacterSchemaVersion = 5;
         private const int LegacyFormatVersion = 4;
         private const int Magic = 0x4D4A4C43; // MJLC
 
-        public static byte[] Encode(TableCheatLedgerCheckpoint checkpoint)
+        public static byte[] Encode(TableCheatLedgerCheckpoint checkpoint) =>
+            EncodeCore(checkpoint, FormatVersion);
+
+        internal static byte[] EncodeWithSchema(TableCheatLedgerCheckpoint checkpoint, int schema)
+        {
+            if (schema != LegacyFormatVersion &&
+                schema != ThirdTileAndCharacterSchemaVersion &&
+                schema != LegacySingleCharacterSchemaVersion &&
+                schema != FormatVersion)
+            {
+                throw new ArgumentOutOfRangeException(nameof(schema), schema, "Unsupported cheat checkpoint schema.");
+            }
+
+            return EncodeCore(checkpoint, schema);
+        }
+
+        private static byte[] EncodeCore(TableCheatLedgerCheckpoint checkpoint, int schema)
         {
             if (checkpoint == null)
             {
@@ -648,11 +665,12 @@ namespace Mahjong.TableRuntime
                     new SleeveBloomState(),
                     new BeamSwapState());
 
+            bool includeThirdCandidate = schema >= ThirdTileAndCharacterSchemaVersion;
             using (var stream = new MemoryStream())
             using (var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true))
             {
                 writer.Write(Magic);
-                writer.Write(FormatVersion);
+                writer.Write(schema);
                 writer.Write(checkpoint.TotalVersion);
                 writer.Write(checkpoint.Fingerprint);
                 writer.Write(checkpoint.InitialPoints);
@@ -673,10 +691,43 @@ namespace Mahjong.TableRuntime
                 }
 
                 WriteTileMarks(writer, state.TileMarks);
-                WriteSleeveBloom(writer, state.SleeveBloom);
+                WriteSleeveBloom(writer, state.SleeveBloom, includeThirdCandidate);
                 WriteBeamSwap(writer, state.BeamSwap);
-                writer.Write(state.PlayerCharacterId);
-                writer.Write(state.CharacterTraitsVersion);
+                if (schema == ThirdTileAndCharacterSchemaVersion || schema == LegacySingleCharacterSchemaVersion)
+                {
+                    for (int seat = 1; seat < 4; seat++)
+                    {
+                        if (state.CharacterIdOf(seat) != PlayerCharacterIds.Player ||
+                            state.CharacterTraitsVersionOf(seat) != PlayerCharacterIds.CurrentTraitsVersion)
+                        {
+                            throw new InvalidOperationException(
+                                "Legacy single-character cheat checkpoint schema cannot encode non-default seats 1..3.");
+                        }
+                    }
+
+                    writer.Write(state.CharacterIdOf(0));
+                    writer.Write(state.CharacterTraitsVersionOf(0));
+                }
+                else if (schema == FormatVersion)
+                {
+                    for (int seat = 0; seat < 4; seat++)
+                    {
+                        writer.Write(state.CharacterIdOf(seat));
+                        writer.Write(state.CharacterTraitsVersionOf(seat));
+                    }
+                }
+                else
+                {
+                    for (int seat = 0; seat < 4; seat++)
+                    {
+                        if (state.CharacterIdOf(seat) != PlayerCharacterIds.Player ||
+                            state.CharacterTraitsVersionOf(seat) != PlayerCharacterIds.CurrentTraitsVersion)
+                        {
+                            throw new InvalidOperationException(
+                                "Legacy schema 4 cheat checkpoint cannot encode non-default character identities.");
+                        }
+                    }
+                }
 
                 writer.Flush();
                 return stream.ToArray();
@@ -690,72 +741,176 @@ namespace Mahjong.TableRuntime
                 throw new InvalidDataException("Cheat checkpoint payload is empty or truncated.");
             }
 
-            using (var stream = new MemoryStream(payload, writable: false))
-            using (var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: true))
+            try
             {
-                if (reader.ReadInt32() != Magic)
+                using (var stream = new MemoryStream(payload, writable: false))
+                using (var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: true))
                 {
-                    throw new InvalidDataException("Cheat checkpoint magic is invalid.");
+                    if (reader.ReadInt32() != Magic)
+                    {
+                        throw new InvalidDataException("Cheat checkpoint magic is invalid.");
+                    }
+
+                    int schema = reader.ReadInt32();
+                    if (schema != LegacyFormatVersion &&
+                        schema != ThirdTileAndCharacterSchemaVersion &&
+                        schema != LegacySingleCharacterSchemaVersion &&
+                        schema != FormatVersion)
+                    {
+                        throw new InvalidDataException("Unsupported cheat checkpoint schema " + schema + ".");
+                    }
+
+                    long totalVersion = reader.ReadInt64();
+                    ulong fingerprint = reader.ReadUInt64();
+                    int initial = reader.ReadInt32();
+                    var balances = new int[4];
+                    for (int seat = 0; seat < 4; seat++)
+                    {
+                        balances[seat] = reader.ReadInt32();
+                    }
+
+                    int count = reader.ReadInt32();
+                    if (count < 0 || count > 100000)
+                    {
+                        throw new InvalidDataException("Cheat checkpoint entry count is invalid.");
+                    }
+
+                    var entries = new CheatLedgerEntry[count];
+                    for (int i = 0; i < count; i++)
+                    {
+                        entries[i] = new CheatLedgerEntry(
+                            reader.ReadString(),
+                            reader.ReadInt32(),
+                            reader.ReadInt32(),
+                            reader.ReadInt32(),
+                            reader.ReadString());
+                    }
+
+                    // Replays the real ledger entries and verifies balances before returning.
+                    CheatLedger ledger = CheatLedger.FromSnapshot(initial, balances, entries);
+                    TileMarkState tileMarks = ReadTileMarks(reader);
+                    bool includesThirdCandidate = schema >= ThirdTileAndCharacterSchemaVersion;
+                    SleeveBloomState sleeve = ReadSleeveBloom(reader, includesThirdCandidate);
+                    BeamSwapState beam = ReadBeamSwap(reader);
+
+                    CheatState state;
+                    if (schema == LegacyFormatVersion)
+                    {
+                        if (stream.Position != payload.Length)
+                        {
+                            throw new InvalidDataException("Cheat checkpoint payload has trailing bytes.");
+                        }
+
+                        var legacy = new CheatState(
+                            ledger,
+                            tileMarks,
+                            sleeve,
+                            beam,
+                            PlayerCharacterIds.Player,
+                            PlayerCharacterIds.CurrentTraitsVersion);
+                        if (legacy.Version != totalVersion || legacy.Fingerprint != fingerprint)
+                        {
+                            throw new InvalidDataException(
+                                "Cheat checkpoint version/fingerprint does not match its full private state.");
+                        }
+
+                        state = legacy.WithCharacters(
+                            new[]
+                            {
+                                PlayerCharacterIds.Player,
+                                PlayerCharacterIds.Player,
+                                PlayerCharacterIds.Player,
+                                PlayerCharacterIds.Player
+                            });
+                    }
+                    else if (schema == ThirdTileAndCharacterSchemaVersion || schema == LegacySingleCharacterSchemaVersion)
+                    {
+                        string characterId = reader.ReadString();
+                        int characterTraitsVersion = reader.ReadInt32();
+                        if (stream.Position != payload.Length)
+                        {
+                            throw new InvalidDataException("Cheat checkpoint payload has trailing bytes.");
+                        }
+
+                        if (!PlayerCharacterIds.IsSupported(characterId) ||
+                            characterTraitsVersion != PlayerCharacterIds.CurrentTraitsVersion)
+                        {
+                            throw new InvalidDataException("Cheat checkpoint character identity or traits version is invalid.");
+                        }
+
+                        var legacy = new CheatState(ledger, tileMarks, sleeve, beam, characterId, characterTraitsVersion);
+                        if (legacy.Version != totalVersion || legacy.Fingerprint != fingerprint)
+                        {
+                            throw new InvalidDataException(
+                                "Cheat checkpoint version/fingerprint does not match its full private state.");
+                        }
+
+                        state = legacy.WithCharacters(
+                            new[]
+                            {
+                                characterId,
+                                PlayerCharacterIds.Player,
+                                PlayerCharacterIds.Player,
+                                PlayerCharacterIds.Player
+                            },
+                            new[]
+                            {
+                                characterTraitsVersion,
+                                PlayerCharacterIds.CurrentTraitsVersion,
+                                PlayerCharacterIds.CurrentTraitsVersion,
+                                PlayerCharacterIds.CurrentTraitsVersion
+                            });
+                    }
+                    else
+                    {
+                        var characterIds = new string[4];
+                        var characterTraitsVersions = new int[4];
+                        for (int seat = 0; seat < 4; seat++)
+                        {
+                            characterIds[seat] = reader.ReadString();
+                            characterTraitsVersions[seat] = reader.ReadInt32();
+                        }
+
+                        if (stream.Position != payload.Length)
+                        {
+                            throw new InvalidDataException("Cheat checkpoint payload has trailing bytes.");
+                        }
+
+                        for (int seat = 0; seat < 4; seat++)
+                        {
+                            if (!PlayerCharacterIds.IsSupported(characterIds[seat]) ||
+                                characterTraitsVersions[seat] != PlayerCharacterIds.CurrentTraitsVersion)
+                            {
+                                throw new InvalidDataException("Cheat checkpoint character identity or traits version is invalid.");
+                            }
+                        }
+
+                        state = new CheatState(ledger, tileMarks, sleeve, beam, characterIds, characterTraitsVersions);
+                        if (state.Version != totalVersion || state.Fingerprint != fingerprint)
+                        {
+                            throw new InvalidDataException(
+                                "Cheat checkpoint version/fingerprint does not match its full private state.");
+                        }
+                    }
+
+                    return new TableCheatLedgerCheckpoint(state, schema);
                 }
-
-                int schema = reader.ReadInt32();
-                if (schema != LegacyFormatVersion &&
-                    schema != ThirdTileAndCharacterSchemaVersion &&
-                    schema != FormatVersion)
-                {
-                    throw new InvalidDataException("Unsupported cheat checkpoint schema " + schema + ".");
-                }
-
-                long totalVersion = reader.ReadInt64();
-                ulong fingerprint = reader.ReadUInt64();
-                int initial = reader.ReadInt32();
-                var balances = new int[4];
-                for (int seat = 0; seat < 4; seat++)
-                {
-                    balances[seat] = reader.ReadInt32();
-                }
-
-                int count = reader.ReadInt32();
-                if (count < 0 || count > 100000)
-                {
-                    throw new InvalidDataException("Cheat checkpoint entry count is invalid.");
-                }
-
-                var entries = new CheatLedgerEntry[count];
-                for (int i = 0; i < count; i++)
-                {
-                    entries[i] = new CheatLedgerEntry(
-                        reader.ReadString(),
-                        reader.ReadInt32(),
-                        reader.ReadInt32(),
-                        reader.ReadInt32(),
-                        reader.ReadString());
-                }
-
-                // Replays the real ledger entries and verifies balances before returning.
-                CheatLedger ledger = CheatLedger.FromSnapshot(initial, balances, entries);
-                TileMarkState tileMarks = ReadTileMarks(reader);
-                bool hasCharacterFields = schema >= ThirdTileAndCharacterSchemaVersion;
-                SleeveBloomState sleeve = ReadSleeveBloom(reader, hasCharacterFields);
-                BeamSwapState beam = ReadBeamSwap(reader);
-                string characterId = hasCharacterFields ? reader.ReadString() : PlayerCharacterIds.Player;
-                int characterTraitsVersion = hasCharacterFields
-                    ? reader.ReadInt32()
-                    : PlayerCharacterIds.CurrentTraitsVersion;
-
-                if (stream.Position != payload.Length)
-                {
-                    throw new InvalidDataException("Cheat checkpoint payload has trailing bytes.");
-                }
-
-                var state = new CheatState(ledger, tileMarks, sleeve, beam, characterId, characterTraitsVersion);
-                if (state.Version != totalVersion || state.Fingerprint != fingerprint)
-                {
-                    throw new InvalidDataException(
-                        "Cheat checkpoint version/fingerprint does not match its full private state.");
-                }
-
-                return new TableCheatLedgerCheckpoint(state, schema);
+            }
+            catch (InvalidDataException)
+            {
+                throw;
+            }
+            catch (IOException exception)
+            {
+                throw new InvalidDataException("Cheat checkpoint payload is truncated or malformed.", exception);
+            }
+            catch (FormatException exception)
+            {
+                throw new InvalidDataException("Cheat checkpoint payload is truncated or malformed.", exception);
+            }
+            catch (ArgumentException exception)
+            {
+                throw new InvalidDataException("Cheat checkpoint payload is truncated or malformed.", exception);
             }
         }
 
@@ -831,16 +986,16 @@ namespace Mahjong.TableRuntime
             return TileMarkState.Restore(version, dealtOrdinal, dealt, settled, groups);
         }
 
-        private static void WriteSleeveBloom(BinaryWriter writer, SleeveBloomState state)
+        private static void WriteSleeveBloom(BinaryWriter writer, SleeveBloomState state, bool includeThirdCandidate)
         {
             writer.Write(state.Version);
             writer.Write(state.WindowSeq);
             writer.Write(state.UsedOnTurn);
-            WriteOffer(writer, state.ImmediateOffer);
+            WriteOffer(writer, state.ImmediateOffer, includeThirdCandidate);
             writer.Write(state.OffTurnOffers.Count);
             for (int i = 0; i < state.OffTurnOffers.Count; i++)
             {
-                WriteOffer(writer, state.OffTurnOffers[i]);
+                WriteOffer(writer, state.OffTurnOffers[i], includeThirdCandidate);
             }
 
             writer.Write(state.Reservations.Count);
@@ -895,7 +1050,7 @@ namespace Mahjong.TableRuntime
             return SleeveBloomState.Restore(immediate, offers, reservations, windows, windowSeq, usedOnTurn, version);
         }
 
-        private static void WriteOffer(BinaryWriter writer, SleeveBloomOffer? offer)
+        private static void WriteOffer(BinaryWriter writer, SleeveBloomOffer? offer, bool includeThirdCandidate)
         {
             writer.Write(offer != null);
             if (offer == null)
@@ -914,8 +1069,15 @@ namespace Mahjong.TableRuntime
             writer.Write(offer.DeadlineMillis);
             writer.Write(offer.CreatedAtMillis);
             writer.Write(offer.BootId);
-            writer.Write(offer.ThirdTile.HasValue);
-            if (offer.ThirdTile.HasValue) writer.Write(offer.ThirdTile.Value.Value);
+            if (includeThirdCandidate)
+            {
+                writer.Write(offer.ThirdTile.HasValue);
+                if (offer.ThirdTile.HasValue) writer.Write(offer.ThirdTile.Value.Value);
+            }
+            else if (offer.ThirdTile.HasValue)
+            {
+                throw new InvalidOperationException("Legacy schema 4 cheat checkpoint cannot encode a third sleeve candidate.");
+            }
         }
 
         private static SleeveBloomOffer? ReadOffer(BinaryReader reader, bool includesThirdCandidate)

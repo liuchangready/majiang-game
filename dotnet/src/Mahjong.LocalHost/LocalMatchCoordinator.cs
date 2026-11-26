@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using Mahjong.Client;
 using Mahjong.Contracts;
 using Mahjong.Domain;
+using Mahjong.Domain.Cheat;
 using Mahjong.TableRuntime;
 
 namespace Mahjong.LocalHost
@@ -25,6 +26,12 @@ namespace Mahjong.LocalHost
 
         /// <summary>Seat plan for every new round; all-computer is supported for automation.</summary>
         public LocalTableSeatPlan SeatPlan { get; set; } = LocalTableSeatPlan.SingleHumanSeatZero;
+
+        public string PlayerCharacterId { get; set; } = PlayerCharacterIds.Player;
+
+        public IReadOnlyList<string>? CharacterIds { get; set; }
+
+        public IReadOnlyList<int>? CharacterTraitsVersions { get; set; }
 
         public LocalAiOptions Ai { get; set; } = new LocalAiOptions();
 
@@ -48,6 +55,7 @@ namespace Mahjong.LocalHost
             }
 
             Ai.Validate();
+            LocalCharacterConfig.Validate(PlayerCharacterId, CharacterIds, CharacterTraitsVersions);
             if (string.IsNullOrWhiteSpace(MatchId) || MatchId.Length > 64)
             {
                 throw new LocalTableException(LocalTableErrorKind.InvalidOptions, "MatchId must be 1..64 characters.");
@@ -68,6 +76,12 @@ namespace Mahjong.LocalHost
                 throw new LocalTableException(LocalTableErrorKind.InvalidOptions, "RulesetVersion must be positive.");
             }
         }
+
+        internal string[] ResolveCharacterIds() =>
+            LocalCharacterConfig.ResolveCharacterIds(PlayerCharacterId, CharacterIds);
+
+        internal int[] ResolveCharacterTraitsVersions() =>
+            LocalCharacterConfig.ResolveCharacterTraitsVersions(CharacterTraitsVersions);
     }
 
     /// <summary>One match round handle. The caller owns the returned channel/session.</summary>
@@ -107,7 +121,59 @@ namespace Mahjong.LocalHost
             string finishReason,
             IReadOnlyList<RankingEntry> rankings,
             IReadOnlyList<LocalMatchRoundRecord> records)
+            : this(
+                matchId,
+                ordinal,
+                roundId,
+                dealerSeat,
+                roundWind,
+                roundNumber,
+                honba,
+                scores,
+                finalScores,
+                riichiSticks,
+                finished,
+                finishReason,
+                rankings,
+                records,
+                DefaultCharacterIds,
+                DefaultCharacterTraitsVersions)
         {
+        }
+
+        public LocalMatchSnapshot(
+            string matchId,
+            int ordinal,
+            string roundId,
+            int dealerSeat,
+            int roundWind,
+            int roundNumber,
+            int honba,
+            IReadOnlyList<long> scores,
+            IReadOnlyList<long> finalScores,
+            int riichiSticks,
+            bool finished,
+            string finishReason,
+            IReadOnlyList<RankingEntry> rankings,
+            IReadOnlyList<LocalMatchRoundRecord> records,
+            IReadOnlyList<string> characterIds,
+            IReadOnlyList<int> characterTraitsVersions)
+        {
+            if (characterIds == null) throw new ArgumentNullException(nameof(characterIds));
+            if (characterTraitsVersions == null) throw new ArgumentNullException(nameof(characterTraitsVersions));
+            if (characterIds.Count != 4 || characterTraitsVersions.Count != 4)
+            {
+                throw new ArgumentException("Character configuration must contain exactly 4 seats.");
+            }
+
+            var copiedIds = new string[4];
+            var copiedVersions = new int[4];
+            for (int seat = 0; seat < 4; seat++)
+            {
+                copiedIds[seat] = characterIds[seat];
+                copiedVersions[seat] = characterTraitsVersions[seat];
+            }
+
             MatchId = matchId;
             Ordinal = ordinal;
             RoundId = roundId;
@@ -122,7 +188,25 @@ namespace Mahjong.LocalHost
             FinishReason = finishReason;
             Rankings = rankings;
             Records = records;
+            CharacterIds = Array.AsReadOnly(copiedIds);
+            CharacterTraitsVersions = Array.AsReadOnly(copiedVersions);
         }
+
+        private static readonly IReadOnlyList<string> DefaultCharacterIds = Array.AsReadOnly(new[]
+        {
+            PlayerCharacterIds.Player,
+            PlayerCharacterIds.Player,
+            PlayerCharacterIds.Player,
+            PlayerCharacterIds.Player
+        });
+
+        private static readonly IReadOnlyList<int> DefaultCharacterTraitsVersions = Array.AsReadOnly(new[]
+        {
+            PlayerCharacterIds.CurrentTraitsVersion,
+            PlayerCharacterIds.CurrentTraitsVersion,
+            PlayerCharacterIds.CurrentTraitsVersion,
+            PlayerCharacterIds.CurrentTraitsVersion
+        });
 
         public string MatchId { get; }
         public int Ordinal { get; }
@@ -138,6 +222,8 @@ namespace Mahjong.LocalHost
         public string FinishReason { get; }
         public IReadOnlyList<RankingEntry> Rankings { get; }
         public IReadOnlyList<LocalMatchRoundRecord> Records { get; }
+        public IReadOnlyList<string> CharacterIds { get; }
+        public IReadOnlyList<int> CharacterTraitsVersions { get; }
 
         /// <summary>
         /// Domain-free final seat order for presentation/Unity consumers that must not
@@ -276,7 +362,10 @@ namespace Mahjong.LocalHost
                 LocalHostEnvironment environment = options.Environment ?? LocalHostEnvironment.System;
                 var facts = new LocalSnapshotFacts(environment, environment.ResolveClock());
                 LocalMatchState? loaded = LocalMatchStateCodec.Load(statePath);
-                LocalMatchState state = loaded ?? LocalMatchState.Create(options.MatchId);
+                LocalMatchState state = loaded ?? LocalMatchState.Create(
+                    options.MatchId,
+                    options.ResolveCharacterIds(),
+                    options.ResolveCharacterTraitsVersions());
                 if (loaded == null)
                 {
                     LocalMatchStateCodec.Save(statePath, state, 0);
@@ -450,6 +539,9 @@ namespace Mahjong.LocalHost
                 LeaseDuration = _options.LeaseDuration,
                 Environment = _options.Environment,
                 SeatPlan = _options.SeatPlan,
+                PlayerCharacterId = state.CharacterIds[0],
+                CharacterIds = Array.AsReadOnly(LocalMatchState.CopyStrings(state.CharacterIds)),
+                CharacterTraitsVersions = Array.AsReadOnly(LocalMatchState.CopyInts(state.CharacterTraitsVersions)),
                 Ai = _options.Ai,
                 AiDecisionObserver = _options.AiDecisionObserver
             };
@@ -625,9 +717,20 @@ namespace Mahjong.LocalHost
         public string FinishReason { get; private set; } = string.Empty;
         public List<RankingEntry> Rankings { get; private set; } = new List<RankingEntry>();
         public List<LocalMatchRoundRecord> Records { get; private set; } = new List<LocalMatchRoundRecord>();
+        public string[] CharacterIds { get; private set; } = DefaultCharacterIds();
+        public int[] CharacterTraitsVersions { get; private set; } = DefaultCharacterTraitsVersions();
 
-        public static LocalMatchState Create(string matchId)
+        public static LocalMatchState Create(
+            string matchId,
+            IReadOnlyList<string>? characterIds = null,
+            IReadOnlyList<int>? characterTraitsVersions = null)
         {
+            string[] resolvedIds = LocalCharacterConfig.ResolveCharacterIds(
+                PlayerCharacterIds.Player,
+                characterIds);
+            int[] resolvedVersions = LocalCharacterConfig.ResolveCharacterTraitsVersions(characterTraitsVersions);
+            LocalCharacterConfig.Validate(resolvedIds[0], resolvedIds, resolvedVersions);
+
             var state = new LocalMatchState
             {
                 MatchId = matchId,
@@ -638,7 +741,9 @@ namespace Mahjong.LocalHost
                 RoundNumber = 0,
                 Honba = 0,
                 RiichiSticks = 0,
-                Scores = new long[] { 25_000L, 25_000L, 25_000L, 25_000L }
+                Scores = new long[] { 25_000L, 25_000L, 25_000L, 25_000L },
+                CharacterIds = resolvedIds,
+                CharacterTraitsVersions = resolvedVersions
             };
             state.CurrentRoomId = matchId + "-r1";
             state.CurrentRoundId = matchId + "-r1";
@@ -697,7 +802,9 @@ namespace Mahjong.LocalHost
                 RiichiSticks = result.RemainingRiichiSticks,
                 Scores = Copy(result.FinalScores),
                 FinalScores = Array.Empty<long>(),
-                Records = records
+                Records = records,
+                CharacterIds = CopyStrings(CharacterIds),
+                CharacterTraitsVersions = CopyInts(CharacterTraitsVersions)
             };
 
             if (next is ProgressionResult.NextRound nextRound)
@@ -738,7 +845,9 @@ namespace Mahjong.LocalHost
                 Finished,
                 FinishReason,
                 new List<RankingEntry>(Rankings),
-                new List<LocalMatchRoundRecord>(Records));
+                new List<LocalMatchRoundRecord>(Records),
+                Array.AsReadOnly(CopyStrings(CharacterIds)),
+                Array.AsReadOnly(CopyInts(CharacterTraitsVersions)));
         }
 
         internal void Restore(
@@ -757,7 +866,46 @@ namespace Mahjong.LocalHost
             bool finished,
             string finishReason,
             List<RankingEntry> rankings,
-            List<LocalMatchRoundRecord> records)
+            List<LocalMatchRoundRecord> records) =>
+            Restore(
+                matchId,
+                version,
+                ordinal,
+                roomId,
+                roundId,
+                dealer,
+                wind,
+                number,
+                honba,
+                sticks,
+                scores,
+                finalScores,
+                finished,
+                finishReason,
+                rankings,
+                records,
+                DefaultCharacterIds(),
+                DefaultCharacterTraitsVersions());
+
+        internal void Restore(
+            string matchId,
+            int version,
+            int ordinal,
+            string roomId,
+            string roundId,
+            int dealer,
+            int wind,
+            int number,
+            int honba,
+            int sticks,
+            long[] scores,
+            long[] finalScores,
+            bool finished,
+            string finishReason,
+            List<RankingEntry> rankings,
+            List<LocalMatchRoundRecord> records,
+            string[] characterIds,
+            int[] characterTraitsVersions)
         {
             MatchId = matchId;
             Version = version;
@@ -775,6 +923,46 @@ namespace Mahjong.LocalHost
             FinishReason = finishReason;
             Rankings = rankings;
             Records = records;
+            CharacterIds = CopyStrings(characterIds);
+            CharacterTraitsVersions = CopyInts(characterTraitsVersions);
+        }
+
+        private static string[] DefaultCharacterIds() => new[]
+        {
+            PlayerCharacterIds.Player,
+            PlayerCharacterIds.Player,
+            PlayerCharacterIds.Player,
+            PlayerCharacterIds.Player
+        };
+
+        private static int[] DefaultCharacterTraitsVersions() => new[]
+        {
+            PlayerCharacterIds.CurrentTraitsVersion,
+            PlayerCharacterIds.CurrentTraitsVersion,
+            PlayerCharacterIds.CurrentTraitsVersion,
+            PlayerCharacterIds.CurrentTraitsVersion
+        };
+
+        internal static string[] CopyStrings(IReadOnlyList<string> values)
+        {
+            var copy = new string[values.Count];
+            for (int i = 0; i < values.Count; i++)
+            {
+                copy[i] = values[i];
+            }
+
+            return copy;
+        }
+
+        internal static int[] CopyInts(IReadOnlyList<int> values)
+        {
+            var copy = new int[values.Count];
+            for (int i = 0; i < values.Count; i++)
+            {
+                copy[i] = values[i];
+            }
+
+            return copy;
         }
 
         private static long[] Copy(IReadOnlyList<long> values)
@@ -792,7 +980,8 @@ namespace Mahjong.LocalHost
     internal static class LocalMatchStateCodec
     {
         private const int Magic = 0x4D415443; // MATC
-        private const int EnvelopeVersion = 1;
+        private const int LegacyEnvelopeVersion = 1;
+        private const int EnvelopeVersion = 2;
         private static readonly UTF8Encoding Utf8 = new UTF8Encoding(false, true);
 
         public static LocalMatchState? Load(string path)
@@ -1009,6 +1198,12 @@ namespace Mahjong.LocalHost
                     writer.Write(record.RemainingRiichiSticks);
                 }
 
+                for (int seat = 0; seat < 4; seat++)
+                {
+                    writer.Write(state.CharacterIds[seat]);
+                    writer.Write(state.CharacterTraitsVersions[seat]);
+                }
+
                 writer.Flush();
                 return stream.ToArray();
             }
@@ -1021,113 +1216,192 @@ namespace Mahjong.LocalHost
                 throw new InvalidDataException("The match state is truncated.");
             }
 
-            using (var stream = new MemoryStream(bytes, false))
-            using (var reader = new BinaryReader(stream, Utf8, true))
+            try
             {
-                if (reader.ReadInt32() != Magic || reader.ReadInt32() != EnvelopeVersion)
+                using (var stream = new MemoryStream(bytes, false))
+                using (var reader = new BinaryReader(stream, Utf8, true))
                 {
-                    throw new InvalidDataException("The match state envelope is invalid.");
+                    int magic = reader.ReadInt32();
+                    int envelopeVersion = reader.ReadInt32();
+                    if (magic != Magic ||
+                        (envelopeVersion != LegacyEnvelopeVersion && envelopeVersion != EnvelopeVersion))
+                    {
+                        throw new InvalidDataException("The match state envelope is invalid.");
+                    }
+
+                    int length = reader.ReadInt32();
+                    if (length <= 0 || length > bytes.Length - 44)
+                    {
+                        throw new InvalidDataException("The match state payload length is invalid.");
+                    }
+
+                    byte[] expected = reader.ReadBytes(32);
+                    byte[] payload = reader.ReadBytes(length);
+                    if (stream.Position != bytes.Length)
+                    {
+                        throw new InvalidDataException("The match state envelope has trailing bytes.");
+                    }
+
+                    if (payload.Length != length ||
+                        TablePayloadSha256.Compute(payload).ToArray().AsSpan().SequenceEqual(expected) == false)
+                    {
+                        throw new InvalidDataException("The match state checksum does not match.");
+                    }
+
+                    using (var body = new MemoryStream(payload, false))
+                    using (var bodyReader = new BinaryReader(body, Utf8, true))
+                    {
+                        string matchId = bodyReader.ReadString();
+                        int version = bodyReader.ReadInt32();
+                        int ordinal = bodyReader.ReadInt32();
+                        string roomId = bodyReader.ReadString();
+                        string roundId = bodyReader.ReadString();
+                        int dealer = bodyReader.ReadInt32();
+                        int wind = bodyReader.ReadInt32();
+                        int number = bodyReader.ReadInt32();
+                        int honba = bodyReader.ReadInt32();
+                        int sticks = bodyReader.ReadInt32();
+                        long[] scores = ReadScores(bodyReader);
+                        long[] finalScores = ReadScores(bodyReader);
+                        bool finished = bodyReader.ReadBoolean();
+                        string reason = bodyReader.ReadString();
+                        int rankCount = bodyReader.ReadInt32();
+                        var rankings = new List<RankingEntry>(rankCount);
+                        for (int i = 0; i < rankCount; i++)
+                        {
+                            rankings.Add(new RankingEntry(
+                                bodyReader.ReadInt32(),
+                                bodyReader.ReadInt32(),
+                                bodyReader.ReadInt64()));
+                        }
+
+                        int recordCount = bodyReader.ReadInt32();
+                        var records = new List<LocalMatchRoundRecord>(recordCount);
+                        for (int i = 0; i < recordCount; i++)
+                        {
+                            string recordRound = bodyReader.ReadString();
+                            string resultId = bodyReader.ReadString();
+                            var kind = (RoundOutcomeKind)bodyReader.ReadByte();
+                            int winner = bodyReader.ReadInt32();
+                            int loser = bodyReader.ReadInt32();
+                            long[] recordScores = ReadScores(bodyReader);
+                            int recordSticks = bodyReader.ReadInt32();
+                            records.Add(new LocalMatchRoundRecord(
+                                recordRound,
+                                resultId,
+                                kind,
+                                winner,
+                                loser,
+                                recordScores,
+                                recordSticks));
+                        }
+
+                        string[] characterIds;
+                        int[] characterTraitsVersions;
+                        if (envelopeVersion == LegacyEnvelopeVersion)
+                        {
+                            if (body.Position != payload.Length)
+                            {
+                                throw new InvalidDataException("The legacy match state payload has trailing bytes.");
+                            }
+
+                            characterIds = new[]
+                            {
+                                PlayerCharacterIds.Player,
+                                PlayerCharacterIds.Player,
+                                PlayerCharacterIds.Player,
+                                PlayerCharacterIds.Player
+                            };
+                            characterTraitsVersions = new[]
+                            {
+                                PlayerCharacterIds.CurrentTraitsVersion,
+                                PlayerCharacterIds.CurrentTraitsVersion,
+                                PlayerCharacterIds.CurrentTraitsVersion,
+                                PlayerCharacterIds.CurrentTraitsVersion
+                            };
+                        }
+                        else
+                        {
+                            characterIds = new string[4];
+                            characterTraitsVersions = new int[4];
+                            for (int seat = 0; seat < 4; seat++)
+                            {
+                                characterIds[seat] = bodyReader.ReadString();
+                                characterTraitsVersions[seat] = bodyReader.ReadInt32();
+                            }
+
+                            if (body.Position != payload.Length)
+                            {
+                                throw new InvalidDataException("The match state payload has trailing bytes.");
+                            }
+
+                            for (int seat = 0; seat < 4; seat++)
+                            {
+                                if (!PlayerCharacterIds.IsSupported(characterIds[seat]) ||
+                                    characterTraitsVersions[seat] != PlayerCharacterIds.CurrentTraitsVersion)
+                                {
+                                    throw new InvalidDataException(
+                                        "The match state character identity or traits version is invalid.");
+                                }
+                            }
+                        }
+
+                        if (scores.Length != 4 || finalScores.Length != 0 && finalScores.Length != 4)
+                        {
+                            throw new InvalidDataException("The match state score cardinality is invalid.");
+                        }
+
+                        long sum = 0;
+                        for (int i = 0; i < scores.Length; i++)
+                        {
+                            sum += scores[i];
+                        }
+
+                        long tableTotal = checked(sum + ((long)sticks * 1000L));
+                        if (tableTotal != 100_000L)
+                        {
+                            throw new InvalidDataException("The match state scores + riichi sticks violate zero-sum conservation.");
+                        }
+
+                        var state = new LocalMatchState();
+                        state.Restore(
+                            matchId,
+                            version,
+                            ordinal,
+                            roomId,
+                            roundId,
+                            dealer,
+                            wind,
+                            number,
+                            honba,
+                            sticks,
+                            scores,
+                            finalScores,
+                            finished,
+                            reason,
+                            rankings,
+                            records,
+                            characterIds,
+                            characterTraitsVersions);
+                        return state;
+                    }
                 }
-
-                int length = reader.ReadInt32();
-                if (length <= 0 || length > bytes.Length - 44)
-                {
-                    throw new InvalidDataException("The match state payload length is invalid.");
-                }
-
-                byte[] expected = reader.ReadBytes(32);
-                byte[] payload = reader.ReadBytes(length);
-                if (payload.Length != length ||
-                    TablePayloadSha256.Compute(payload).ToArray().AsSpan().SequenceEqual(expected) == false)
-                {
-                    throw new InvalidDataException("The match state checksum does not match.");
-                }
-
-                using (var body = new MemoryStream(payload, false))
-                using (var bodyReader = new BinaryReader(body, Utf8, true))
-                {
-                    string matchId = bodyReader.ReadString();
-                    int version = bodyReader.ReadInt32();
-                    int ordinal = bodyReader.ReadInt32();
-                    string roomId = bodyReader.ReadString();
-                    string roundId = bodyReader.ReadString();
-                    int dealer = bodyReader.ReadInt32();
-                    int wind = bodyReader.ReadInt32();
-                    int number = bodyReader.ReadInt32();
-                    int honba = bodyReader.ReadInt32();
-                    int sticks = bodyReader.ReadInt32();
-                    long[] scores = ReadScores(bodyReader);
-                    long[] finalScores = ReadScores(bodyReader);
-                    bool finished = bodyReader.ReadBoolean();
-                    string reason = bodyReader.ReadString();
-                    int rankCount = bodyReader.ReadInt32();
-                    var rankings = new List<RankingEntry>(rankCount);
-                    for (int i = 0; i < rankCount; i++)
-                    {
-                        rankings.Add(new RankingEntry(
-                            bodyReader.ReadInt32(),
-                            bodyReader.ReadInt32(),
-                            bodyReader.ReadInt64()));
-                    }
-
-                    int recordCount = bodyReader.ReadInt32();
-                    var records = new List<LocalMatchRoundRecord>(recordCount);
-                    for (int i = 0; i < recordCount; i++)
-                    {
-                        string recordRound = bodyReader.ReadString();
-                        string resultId = bodyReader.ReadString();
-                        var kind = (RoundOutcomeKind)bodyReader.ReadByte();
-                        int winner = bodyReader.ReadInt32();
-                        int loser = bodyReader.ReadInt32();
-                        long[] recordScores = ReadScores(bodyReader);
-                        int recordSticks = bodyReader.ReadInt32();
-                        records.Add(new LocalMatchRoundRecord(
-                            recordRound,
-                            resultId,
-                            kind,
-                            winner,
-                            loser,
-                            recordScores,
-                            recordSticks));
-                    }
-
-                    if (scores.Length != 4 || finalScores.Length != 0 && finalScores.Length != 4)
-                    {
-                        throw new InvalidDataException("The match state score cardinality is invalid.");
-                    }
-
-                    long sum = 0;
-                    for (int i = 0; i < scores.Length; i++)
-                    {
-                        sum += scores[i];
-                    }
-
-                    long tableTotal = checked(sum + ((long)sticks * 1000L));
-                    if (tableTotal != 100_000L)
-                    {
-                        throw new InvalidDataException("The match state scores + riichi sticks violate zero-sum conservation.");
-                    }
-
-                    var state = new LocalMatchState();
-                    state.Restore(
-                        matchId,
-                        version,
-                        ordinal,
-                        roomId,
-                        roundId,
-                        dealer,
-                        wind,
-                        number,
-                        honba,
-                        sticks,
-                        scores,
-                        finalScores,
-                        finished,
-                        reason,
-                        rankings,
-                        records);
-                    return state;
-                }
+            }
+            catch (InvalidDataException)
+            {
+                throw;
+            }
+            catch (IOException exception)
+            {
+                throw new InvalidDataException("The match state is truncated or malformed.", exception);
+            }
+            catch (FormatException exception)
+            {
+                throw new InvalidDataException("The match state is truncated or malformed.", exception);
+            }
+            catch (ArgumentException exception)
+            {
+                throw new InvalidDataException("The match state is truncated or malformed.", exception);
             }
         }
 

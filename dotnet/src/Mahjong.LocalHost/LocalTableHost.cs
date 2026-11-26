@@ -60,6 +60,10 @@ namespace Mahjong.LocalHost
 
         public string PlayerCharacterId { get; set; } = PlayerCharacterIds.Player;
 
+        public IReadOnlyList<string>? CharacterIds { get; set; }
+
+        public IReadOnlyList<int>? CharacterTraitsVersions { get; set; }
+
         public bool ConfirmSeatZeroDraw { get; set; }
 
         /// <summary>AI profile and seeded cheat configuration for automated seats.</summary>
@@ -126,8 +130,7 @@ namespace Mahjong.LocalHost
                 throw new LocalTableException(LocalTableErrorKind.InvalidOptions, "SeatPlan or spectator limit is invalid.");
             }
 
-            if (!PlayerCharacterIds.IsSupported(PlayerCharacterId))
-                throw new LocalTableException(LocalTableErrorKind.InvalidOptions, "PlayerCharacterId is unsupported.");
+            LocalCharacterConfig.Validate(PlayerCharacterId, CharacterIds, CharacterTraitsVersions);
 
             if (Ai == null)
             {
@@ -138,6 +141,12 @@ namespace Mahjong.LocalHost
 
             LocalTableHostPaths.ResolveSaveDirectory(SaveDirectory);
         }
+
+        internal string[] ResolveCharacterIds() =>
+            LocalCharacterConfig.ResolveCharacterIds(PlayerCharacterId, CharacterIds);
+
+        internal int[] ResolveCharacterTraitsVersions() =>
+            LocalCharacterConfig.ResolveCharacterTraitsVersions(CharacterTraitsVersions);
 
         private static bool IsSafeRoomId(string value)
         {
@@ -160,6 +169,111 @@ namespace Mahjong.LocalHost
             }
 
             return true;
+        }
+    }
+
+    internal static class LocalCharacterConfig
+    {
+        public static void Validate(
+            string playerCharacterId,
+            IReadOnlyList<string>? characterIds,
+            IReadOnlyList<int>? characterTraitsVersions)
+        {
+            if (string.IsNullOrEmpty(playerCharacterId) || !PlayerCharacterIds.IsSupported(playerCharacterId))
+            {
+                throw new LocalTableException(LocalTableErrorKind.InvalidOptions, "PlayerCharacterId is unsupported.");
+            }
+
+            if (characterIds != null)
+            {
+                if (characterIds.Count != 4)
+                {
+                    throw new LocalTableException(LocalTableErrorKind.InvalidOptions, "CharacterIds must contain exactly 4 seats.");
+                }
+
+                for (int seat = 0; seat < 4; seat++)
+                {
+                    string id = characterIds[seat];
+                    if (string.IsNullOrEmpty(id) || !PlayerCharacterIds.IsSupported(id))
+                    {
+                        throw new LocalTableException(
+                            LocalTableErrorKind.InvalidOptions,
+                            "CharacterIds[" + seat + "] is unsupported.");
+                    }
+                }
+
+                if (!string.Equals(playerCharacterId, PlayerCharacterIds.Player, StringComparison.Ordinal) &&
+                    !string.Equals(playerCharacterId, characterIds[0], StringComparison.Ordinal))
+                {
+                    throw new LocalTableException(
+                        LocalTableErrorKind.InvalidOptions,
+                        "PlayerCharacterId conflicts with CharacterIds[0].");
+                }
+            }
+
+            if (characterTraitsVersions != null)
+            {
+                if (characterTraitsVersions.Count != 4)
+                {
+                    throw new LocalTableException(
+                        LocalTableErrorKind.InvalidOptions,
+                        "CharacterTraitsVersions must contain exactly 4 seats.");
+                }
+
+                for (int seat = 0; seat < 4; seat++)
+                {
+                    if (characterTraitsVersions[seat] != PlayerCharacterIds.CurrentTraitsVersion)
+                    {
+                        throw new LocalTableException(
+                            LocalTableErrorKind.InvalidOptions,
+                            "CharacterTraitsVersions[" + seat + "] is unsupported.");
+                    }
+                }
+            }
+        }
+
+        public static string[] ResolveCharacterIds(string playerCharacterId, IReadOnlyList<string>? characterIds)
+        {
+            if (characterIds != null)
+            {
+                var resolved = new string[4];
+                for (int seat = 0; seat < 4; seat++)
+                {
+                    resolved[seat] = characterIds[seat];
+                }
+
+                return resolved;
+            }
+
+            return new[]
+            {
+                playerCharacterId,
+                PlayerCharacterIds.Player,
+                PlayerCharacterIds.Player,
+                PlayerCharacterIds.Player
+            };
+        }
+
+        public static int[] ResolveCharacterTraitsVersions(IReadOnlyList<int>? characterTraitsVersions)
+        {
+            if (characterTraitsVersions != null)
+            {
+                var resolved = new int[4];
+                for (int seat = 0; seat < 4; seat++)
+                {
+                    resolved[seat] = characterTraitsVersions[seat];
+                }
+
+                return resolved;
+            }
+
+            return new[]
+            {
+                PlayerCharacterIds.CurrentTraitsVersion,
+                PlayerCharacterIds.CurrentTraitsVersion,
+                PlayerCharacterIds.CurrentTraitsVersion,
+                PlayerCharacterIds.CurrentTraitsVersion
+            };
         }
     }
 

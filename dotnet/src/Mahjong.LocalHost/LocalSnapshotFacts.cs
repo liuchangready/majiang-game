@@ -103,12 +103,19 @@ namespace Mahjong.LocalHost
             return RoundStateMachine.CreateDealt(spec, dealt, RoundPhase.CheatWindow);
         }
 
-        public TableCheckpoint CreateInitialCheckpoint(LocalTableHostOptions options, RoundStateMachine round)
+        public TableCheckpoint CreateInitialCheckpoint(LocalTableHostOptions options, RoundStateMachine round) =>
+            CreateInitialCheckpoint(options, round, CreateInitialCheatState(options));
+
+        internal TableCheckpoint CreateInitialCheckpoint(
+            LocalTableHostOptions options,
+            RoundStateMachine round,
+            CheatState initialCheat)
         {
             // Only the frozen C04 fixtures are composed from legally pre-advanced
             // Domain history before LocalHost owns a durable event stream. Keep all
             // ordinary LocalHost and existing test-fixture composition at version 0.
             if (round == null) throw new ArgumentNullException(nameof(round));
+            if (initialCheat == null) throw new ArgumentNullException(nameof(initialCheat));
             ulong initialVersion = round.RoundId.StartsWith("c04-", StringComparison.Ordinal)
                 ? checked((ulong)round.Version)
                 : 0UL;
@@ -131,7 +138,7 @@ namespace Mahjong.LocalHost
                 utc,
                 boot);
 
-            CheatState cheat = CreateInitialCheatState(options);
+            CheatState cheat = initialCheat;
             TileMarkTransition registration = cheat.TileMarks.RegisterDealtRound(round.RoundId);
             if (!registration.Success)
             {
@@ -173,7 +180,10 @@ namespace Mahjong.LocalHost
         }
 
         internal static CheatState CreateInitialCheatState(LocalTableHostOptions options) =>
-            CheatState.Initialize(CheatEconomy, options.PlayerCharacterId);
+            CheatState.Initialize(
+                CheatEconomy,
+                options.ResolveCharacterIds(),
+                options.ResolveCharacterTraitsVersions());
 
         public TableProjectionContextData Capture(TableProjectionContextRequest request)
         {
