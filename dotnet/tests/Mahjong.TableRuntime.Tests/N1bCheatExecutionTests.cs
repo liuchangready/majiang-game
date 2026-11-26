@@ -2226,19 +2226,35 @@ namespace Mahjong.TableRuntime.Tests
                     "octopus-offer", 0, Mahjong.Domain.Cheat.SleeveBloomDrawKind.Normal, new TileId(0), new TileId(1), 1,
                     SleeveBloomOfferMode.Immediate, thirdTile: new TileId(2))));
             byte[] current = TableCheatLedgerCheckpointCodec.Encode(TableCheatLedgerCheckpoint.FromCheatState(octopus));
-            CheatState recovered = TableCheatLedgerCheckpointCodec.Decode(current).RestoreCheatState();
+            TableCheatLedgerCheckpoint decodedCurrent = TableCheatLedgerCheckpointCodec.Decode(current);
+            Assert.Equal(TableCheatLedgerCheckpointCodec.FormatVersion, decodedCurrent.FormatSchemaVersion);
+            CheatState recovered = decodedCurrent.RestoreCheatState();
             Assert.Equal(PlayerCharacterIds.Octopus, recovered.PlayerCharacterId);
             Assert.Equal(PlayerCharacterIds.CurrentTraitsVersion, recovered.CharacterTraitsVersion);
             Assert.Equal(new TileId(2), recovered.SleeveBloom.ImmediateOffer!.ThirdTile);
             Assert.Equal(octopus.Fingerprint, recovered.Fingerprint);
 
-            byte[] legacy = TableCheatLedgerCheckpointCodec.Encode(
-                TableCheatLedgerCheckpoint.FromCheatState(V32Fixtures.Cheat(InitialPoints)));
-            Array.Resize(ref legacy, legacy.Length - 11); // old v4 has no character ID/version trailer
-            Buffer.BlockCopy(BitConverter.GetBytes(4), 0, legacy, 4, sizeof(int));
-            CheatState oldSave = TableCheatLedgerCheckpointCodec.Decode(legacy).RestoreCheatState();
-            Assert.Equal(PlayerCharacterIds.Player, oldSave.PlayerCharacterId);
-            Assert.Equal(PlayerCharacterIds.CurrentTraitsVersion, oldSave.CharacterTraitsVersion);
+            CheatState legacyDefault = V32Fixtures.Cheat(InitialPoints);
+            byte[] legacy4 = TableCheatLedgerCheckpointCodec.EncodeWithSchema(
+                TableCheatLedgerCheckpoint.FromCheatState(legacyDefault), 4);
+            CheatState oldSave4 = TableCheatLedgerCheckpointCodec.Decode(legacy4).RestoreCheatState();
+            Assert.Equal(PlayerCharacterIds.Player, oldSave4.PlayerCharacterId);
+            Assert.Equal(PlayerCharacterIds.CurrentTraitsVersion, oldSave4.CharacterTraitsVersion);
+            Assert.Equal(legacyDefault.Fingerprint, oldSave4.Fingerprint);
+
+            byte[] legacy5 = TableCheatLedgerCheckpointCodec.EncodeWithSchema(
+                TableCheatLedgerCheckpoint.FromCheatState(octopus), 5);
+            CheatState oldSave5 = TableCheatLedgerCheckpointCodec.Decode(legacy5).RestoreCheatState();
+            Assert.Equal(PlayerCharacterIds.Octopus, oldSave5.CharacterIdOf(0));
+            Assert.Equal(PlayerCharacterIds.Player, oldSave5.CharacterIdOf(1));
+            Assert.Equal(octopus.Fingerprint, oldSave5.Fingerprint);
+
+            byte[] legacy6 = TableCheatLedgerCheckpointCodec.EncodeWithSchema(
+                TableCheatLedgerCheckpoint.FromCheatState(octopus), 6);
+            CheatState oldSave6 = TableCheatLedgerCheckpointCodec.Decode(legacy6).RestoreCheatState();
+            Assert.Equal(PlayerCharacterIds.Octopus, oldSave6.CharacterIdOf(0));
+            Assert.Equal(PlayerCharacterIds.Player, oldSave6.CharacterIdOf(1));
+            Assert.Equal(octopus.Fingerprint, oldSave6.Fingerprint);
         }
 
         [Fact]
@@ -3071,8 +3087,8 @@ namespace Mahjong.TableRuntime.Tests
                 legacyEventFacts,
                 originalFacts.ConcealedMeldFacts));
 
-            byte[] legacyCheatPayload = (byte[])checkpoint.CheatPayload!.Clone();
-            BitConverter.TryWriteBytes(legacyCheatPayload.AsSpan(4, 4), 5);
+            byte[] legacyCheatPayload = TableCheatLedgerCheckpointCodec.EncodeWithSchema(
+                TableCheatLedgerCheckpointCodec.Decode(checkpoint.CheatPayload!), 5);
 
             var legacyCheckpoint = new TableCheckpoint(
                 checkpoint.RoomId,
@@ -3336,8 +3352,8 @@ namespace Mahjong.TableRuntime.Tests
                 TableCheckpoint cpBeam = await h.SaveCheckpointAsync();
                 if (mode == "v5-legacy-third-swapped")
                 {
-                    byte[] legacyBeam = (byte[])cpBeam.CheatPayload!.Clone();
-                    BitConverter.TryWriteBytes(legacyBeam.AsSpan(4, 4), 5);
+                    byte[] legacyBeam = TableCheatLedgerCheckpointCodec.EncodeWithSchema(
+                        TableCheatLedgerCheckpointCodec.Decode(cpBeam.CheatPayload!), 5);
                     cpBeam = new TableCheckpoint(
                         cpBeam.RoomId, cpBeam.StateVersion, cpBeam.LastEventSeq, cpBeam.StateFingerprint, cpBeam.RulesetVersion,
                         cpBeam.StatePayload, cpBeam.StatePayloadSha256, cpBeam.ControlVersion, cpBeam.ControlPayload, cpBeam.ControlPayloadSha256,
@@ -3386,8 +3402,8 @@ namespace Mahjong.TableRuntime.Tests
             TableCheckpoint cp = await h.SaveCheckpointAsync();
             if (mode.StartsWith("v5-", StringComparison.Ordinal))
             {
-                byte[] v5CheatPayload = (byte[])cp.CheatPayload!.Clone();
-                BitConverter.TryWriteBytes(v5CheatPayload.AsSpan(4, 4), 5);
+                byte[] v5CheatPayload = TableCheatLedgerCheckpointCodec.EncodeWithSchema(
+                    TableCheatLedgerCheckpointCodec.Decode(cp.CheatPayload!), 5);
                 cp = new TableCheckpoint(
                     cp.RoomId, cp.StateVersion, cp.LastEventSeq, cp.StateFingerprint, cp.RulesetVersion,
                     cp.StatePayload, cp.StatePayloadSha256,
@@ -3766,11 +3782,10 @@ namespace Mahjong.TableRuntime.Tests
                         _ => offer.FirstTile
                     };
 
-                    byte[] cheatPayload = (byte[])cp.CheatPayload!.Clone();
-                    if (downgradeCheatV5)
-                    {
-                        BitConverter.TryWriteBytes(cheatPayload.AsSpan(4, 4), 5);
-                    }
+                    byte[] cheatPayload = downgradeCheatV5
+                        ? TableCheatLedgerCheckpointCodec.EncodeWithSchema(
+                            TableCheatLedgerCheckpointCodec.Decode(cp.CheatPayload!), 5)
+                        : (byte[])cp.CheatPayload!.Clone();
 
                     byte[] historyBytes = cp.CommittedHistoryPayload!;
                     if (patchHistory)

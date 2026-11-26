@@ -350,8 +350,8 @@ namespace Mahjong.Domain.Cheat
                 }
 
                 IReadOnlyList<int> available = AvailableWallIndices(map, sleeve, protectOffTurnThird);
-                if (available.Count > 1 && seat == 0 && PlayerCharacterRules.GrantsThirdSleeveCandidate(
-                    state.PlayerCharacterId, state.CharacterTraitsVersion, context.RoundId, seat, context.TurnNumber, traitInput))
+                if (available.Count > 1 && PlayerCharacterRules.GrantsThirdSleeveCandidate(
+                    state.CharacterIdOf(seat), state.CharacterTraitsVersionOf(seat), context.RoundId, seat, context.TurnNumber, traitInput))
                 {
                     thirdTile = map.TileAt(TilePosition.Wall(available[1]));
                 }
@@ -365,10 +365,10 @@ namespace Mahjong.Domain.Cheat
                 }
 
                 secondTile = map.TileAt(TilePosition.DeadWall(map.RinshanPointer));
-                if (confirmedDraw && seat == 0 && map.RinshanPointer < 3 &&
+                if (confirmedDraw && map.RinshanPointer < 3 &&
                     map.TryGetTileAt(TilePosition.DeadWall(map.RinshanPointer + 1), out TileId extra) &&
                     PlayerCharacterRules.GrantsThirdSleeveCandidate(
-                        state.PlayerCharacterId, state.CharacterTraitsVersion, context.RoundId, seat, context.TurnNumber, traitInput))
+                        state.CharacterIdOf(seat), state.CharacterTraitsVersionOf(seat), context.RoundId, seat, context.TurnNumber, traitInput))
                 {
                     thirdTile = extra;
                 }
@@ -634,8 +634,8 @@ namespace Mahjong.Domain.Cheat
 
             TileId firstTile = map.TileAt(TilePosition.Wall(available[0]));
             TileId secondTile = map.TileAt(TilePosition.Wall(available[1]));
-            TileId? thirdTile = available.Count > 2 && seat == 0 && PlayerCharacterRules.GrantsThirdSleeveCandidate(
-                state.PlayerCharacterId, state.CharacterTraitsVersion, context.RoundId, seat, context.TurnNumber, requestId)
+            TileId? thirdTile = available.Count > 2 && PlayerCharacterRules.GrantsThirdSleeveCandidate(
+                state.CharacterIdOf(seat), state.CharacterTraitsVersionOf(seat), context.RoundId, seat, context.TurnNumber, requestId)
                 ? map.TileAt(TilePosition.Wall(available[2]))
                 : (TileId?)null;
 

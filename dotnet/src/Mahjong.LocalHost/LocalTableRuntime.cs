@@ -142,6 +142,13 @@ namespace Mahjong.LocalHost
             LocalTableRoom? room,
             CancellationToken cancellationToken)
         {
+            if (options == null)
+            {
+                throw new ArgumentNullException(nameof(options));
+            }
+
+            options.Validate();
+            CheatState frozenInitialCheat = LocalSnapshotFacts.CreateInitialCheatState(options);
             LocalHostEnvironment environment = options.Environment ?? LocalHostEnvironment.System;
             ITableClock clock = environment.ResolveClock();
             LocalTableStore store = await LocalTableStore.OpenAsync(options, clock, options.FileSystemForTest, cancellationToken)
@@ -174,7 +181,7 @@ namespace Mahjong.LocalHost
                     // that already has progress/open decisions must keep ticking on its
                     // persisted deadlines; a genuinely fresh room still waits for bindings.
                     room?.InitializeControl(controllers, alreadyStarted);
-                    actor = CreateActor(options, environment, clock, store, facts, round, checkpoint, controllers, temporaryFuriten, riichiFuriten);
+                    actor = CreateActor(options, environment, clock, store, facts, round, checkpoint, controllers, temporaryFuriten, riichiFuriten, frozenInitialCheat);
                     facts.SettlementProvider = () => actor.LastSettlementCalculation;
                     TableRecoveryResult recovered = await actor.RecoverFromStoreAsync(cancellationToken).ConfigureAwait(false);
                     if (!recovered.Recovered)
@@ -188,11 +195,11 @@ namespace Mahjong.LocalHost
                 else
                 {
                     RoundStateMachine round = options.InitialRound ?? facts.CreateInitialRound(options);
-                    TableCheckpoint checkpoint = facts.CreateInitialCheckpoint(options, round);
+                    TableCheckpoint checkpoint = facts.CreateInitialCheckpoint(options, round, frozenInitialCheat);
                     SeatControllerKind[] controllers = ControllersFromSeatPlan(options);
                     room?.InitializeControl(controllers, alreadyStarted: false);
                     await store.CreateRoomAsync(checkpoint, cancellationToken).ConfigureAwait(false);
-                    actor = CreateActor(options, environment, clock, store, facts, round, checkpoint, controllers, temporaryFuriten, riichiFuriten);
+                    actor = CreateActor(options, environment, clock, store, facts, round, checkpoint, controllers, temporaryFuriten, riichiFuriten, frozenInitialCheat);
                     facts.SettlementProvider = () => actor.LastSettlementCalculation;
                 }
 
@@ -377,7 +384,8 @@ namespace Mahjong.LocalHost
             TableCheckpoint checkpoint,
             IReadOnlyList<SeatControllerKind> initialControllers,
             bool[] temporaryFuriten,
-            bool[] riichiFuriten)
+            bool[] riichiFuriten,
+            CheatState frozenInitialCheat)
         {
             var controllers = new Dictionary<int, SeatControllerKind>(4);
             for (int seat = 0; seat < 4; seat++) controllers[seat] = initialControllers[seat];
@@ -394,7 +402,7 @@ namespace Mahjong.LocalHost
                 DecisionClockConfig = new DecisionClockConfig(20_000L, 3_000L, ReserveScope.Round),
                 CheatEconomy = LocalSnapshotFacts.CheatEconomy,
                 SleeveBloomConfig = LocalSnapshotFacts.SleeveBloom,
-                InitialCheatState = LocalSnapshotFacts.CreateInitialCheatState(options),
+                InitialCheatState = frozenInitialCheat,
                 FuritenCommitted = snapshot =>
                 {
                     for (int seat = 0; seat < 4; seat++)
@@ -416,8 +424,8 @@ namespace Mahjong.LocalHost
                 environment.ResolveId(),
                 options.RulesetVersion,
                 options.RoomId);
-            durable.CheatStateProvider = () => LocalSnapshotFacts.CreateInitialCheatState(options);
-            durable.CheatLedgerProvider = () => LocalSnapshotFacts.CreateInitialCheatState(options).Ledger;
+            durable.CheatStateProvider = () => frozenInitialCheat;
+            durable.CheatLedgerProvider = () => frozenInitialCheat.Ledger;
             durable.ProjectionFactsProvider = facts.Capture;
             durable.RecoveryStateSink = new LocalRecoverySink(options.RoomId);
             durable.RequireCommittedFacts = true;
