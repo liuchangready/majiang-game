@@ -891,6 +891,54 @@ namespace Mahjong.Unity.Tests.PlayMode
             ExecuteEvents.Execute(b.gameObject, e, ExecuteEvents.pointerClickHandler);
         }
 
+        private static Vector2 ButtonScreenCenter(Canvas canvas, Button button)
+        {
+            var rect = button.GetComponent<RectTransform>();
+            var camera = canvas.renderMode == RenderMode.ScreenSpaceOverlay ? null : canvas.worldCamera;
+            Vector3 worldCenter = rect.TransformPoint(rect.rect.center);
+            return RectTransformUtility.WorldToScreenPoint(camera, worldCenter);
+        }
+
+        private static bool RaycastHitsTarget(Vector2 screenPoint, GameObject target, out List<RaycastResult> results)
+        {
+            results = new List<RaycastResult>();
+            var pointer = new PointerEventData(EventSystem.current) { position = screenPoint };
+            EventSystem.current.RaycastAll(pointer, results);
+            return results.Count > 0 &&
+                   (results[0].gameObject == target || results[0].gameObject.transform.IsChildOf(target.transform));
+        }
+
+        private static void RaycastAndClickButton(Canvas canvas, Button button)
+        {
+            Vector2 center = ButtonScreenCenter(canvas, button);
+            Assert.IsTrue(
+                RaycastHitsTarget(center, button.gameObject, out var results),
+                $"Expected raycast at {center} to hit {button.name}, top hit was {(results.Count > 0 ? results[0].gameObject.name : "<none>")}");
+            var pointer = new PointerEventData(EventSystem.current)
+            {
+                button = PointerEventData.InputButton.Left,
+                pointerId = -1,
+                position = center
+            };
+            ExecuteEvents.Execute(button.gameObject, pointer, ExecuteEvents.pointerDownHandler);
+            ExecuteEvents.Execute(button.gameObject, pointer, ExecuteEvents.pointerUpHandler);
+            ExecuteEvents.Execute(button.gameObject, pointer, ExecuteEvents.pointerClickHandler);
+        }
+
+        private static void AssertButtonContainedInPanel(Canvas canvas, RectTransform panel, RectTransform button)
+        {
+            var camera = canvas.renderMode == RenderMode.ScreenSpaceOverlay ? null : canvas.worldCamera;
+            var corners = new Vector3[4];
+            button.GetWorldCorners(corners);
+            for (int i = 0; i < corners.Length; i++)
+            {
+                Vector2 screenCorner = RectTransformUtility.WorldToScreenPoint(camera, corners[i]);
+                Assert.IsTrue(
+                    RectTransformUtility.RectangleContainsScreenPoint(panel, screenCorner, camera),
+                    $"Corner {i} ({screenCorner}) of {button.name} extends outside {panel.name}.");
+            }
+        }
+
         [UnityTest]
         public IEnumerator R2FormalProbe01_RealAppliedReceipt_MustReleasePresenterPending()
         {
@@ -1252,10 +1300,15 @@ namespace Mahjong.Unity.Tests.PlayMode
             };
             _presenter!.OnSessionViewChanged(this, FormalProbeView(snap));
             _presenter.OpenSleeveBloomDialog();
+            yield return null;
+            Canvas.ForceUpdateCanvases();
 
+            var dialog = FormalField<GameObject>("_sleeveBloomDialog");
             Button third = FormalButton("SleeveBloomCandidate3");
+            Assert.IsTrue(dialog.activeInHierarchy);
             Assert.IsTrue(third.gameObject.activeInHierarchy, "third choice should only appear for a confirmed third candidate");
-            FormalClick(third);
+            AssertButtonContainedInPanel(_canvas!, dialog.GetComponent<RectTransform>(), third.GetComponent<RectTransform>());
+            RaycastAndClickButton(_canvas!, third);
             for (int i = 0; i < 30; i++) yield return null;
 
             Assert.AreEqual(1, GetUnresolvedOutboxCount(), "third choice must submit through the canonical Client outbox");
@@ -1282,12 +1335,107 @@ namespace Mahjong.Unity.Tests.PlayMode
             };
             _presenter!.OnSessionViewChanged(this, FormalProbeView(snap));
             _presenter.OpenSleeveBloomDialog();
+            yield return null;
+            Canvas.ForceUpdateCanvases();
 
             Button third = FormalButton("SleeveBloomCandidate3");
             Assert.IsFalse(third.gameObject.activeInHierarchy, "third choice must remain hidden when the confirmed offer has two candidates");
+            Vector2 hiddenCenter = ButtonScreenCenter(_canvas!, third);
+            Assert.IsFalse(
+                RaycastHitsTarget(hiddenCenter, third.gameObject, out _),
+                "hidden third candidate button must not intercept pointer raycasts");
             _presenter.OnSleeveChoiceClicked(SleeveBloomChoice.Third);
             for (int i = 0; i < 20; i++) yield return null;
             Assert.AreEqual(0, GetUnresolvedOutboxCount(), "unavailable third choice must not reach the Client outbox");
+        }
+
+        private sealed class RecordingLiteMenuNavigation : IAppNavigation, ILocalLiteNavigation
+        {
+            public string? StartedScenarioId { get; private set; }
+            public string? StartedCharacterId { get; private set; }
+            public bool IsLocalGameStartAvailable => true;
+            public void OpenLobby() { }
+            public void BackToMenu() { }
+            public void RequestQuit() { }
+            public Task<LocalGameStartResult> StartLocalGameAsync() => StartLocalGameAsync(null);
+            public Task<LocalGameStartResult> StartLocalGameAsync(string? scenarioId) =>
+                StartLocalGameAsync(scenarioId, "player");
+            public Task<LocalGameStartResult> StartLocalGameAsync(string? scenarioId, string characterId)
+            {
+                StartedScenarioId = scenarioId;
+                StartedCharacterId = characterId;
+                return Task.FromResult(LocalGameStartResult.Started());
+            }
+            public Task<LocalGameStartResult> RestartLocalGameAsync() => Task.FromResult(LocalGameStartResult.Started());
+            public Task<bool> ReturnToMenuLiteAsync() => Task.FromResult(true);
+        }
+
+        [UnityTest]
+        public IEnumerator LiteMenu_CharacterButtonsAndPlayButton_AreIndependentRaycastTargets_AndOctopusStartsLocalGame()
+        {
+            foreach (AppRoot existing in UnityEngine.Object.FindObjectsByType<AppRoot>(
+                         FindObjectsInactive.Include,
+                         FindObjectsSortMode.None))
+            {
+                UnityEngine.Object.DestroyImmediate(existing.gameObject);
+            }
+
+            var root = AppRoot.EnsureInitialized(new AppConfig { localLiteMode = true });
+            Task<bool> loadTask = root.Router.LoadAsync(SceneId.Menu);
+            while (!loadTask.IsCompleted) yield return null;
+            Assert.IsTrue(loadTask.Result, "Failed to load real Menu scene");
+            yield return null;
+            Canvas.ForceUpdateCanvases();
+
+            var menu = UnityEngine.Object.FindFirstObjectByType<MenuPresenter>();
+            Assert.IsNotNull(menu, "MenuPresenter must exist in Menu scene");
+            var canvas = menu!.GetComponentInParent<Canvas>();
+            Assert.IsNotNull(canvas, "Menu Canvas must exist");
+
+            var recordingNav = new RecordingLiteMenuNavigation();
+            menu.Initialize(recordingNav, true);
+            yield return null;
+            Canvas.ForceUpdateCanvases();
+
+            Button[] canvasButtons = canvas!.GetComponentsInChildren<Button>(true);
+            Button playButton = Array.Find(canvasButtons, b => b.name == "PlayButton")!;
+            Button testButton = Array.Find(canvasButtons, b => b.name == "LocalLiteTestButton")!;
+            Button quitButton = Array.Find(canvasButtons, b => b.name == "QuitButton")!;
+            Button playerBtn = Array.Find(canvasButtons, b => b.name == "LocalLiteCharacter-player")!;
+            Button octopusBtn = Array.Find(canvasButtons, b => b.name == "LocalLiteCharacter-octopus")!;
+            Assert.IsNotNull(playButton);
+            Assert.IsNotNull(testButton);
+            Assert.IsNotNull(quitButton);
+            Assert.IsNotNull(playerBtn);
+            Assert.IsNotNull(octopusBtn);
+
+            foreach (Button target in new[] { playButton, testButton, quitButton, playerBtn, octopusBtn })
+            {
+                Vector2 center = ButtonScreenCenter(canvas!, target);
+                Assert.IsTrue(
+                    RaycastHitsTarget(center, target.gameObject, out var hits),
+                    $"Expected raycast at {center} on {target.name}, actual top={(hits.Count > 0 ? hits[0].gameObject.name : "<none>")}");
+            }
+
+            // Switch player -> octopus via genuine EventSystem raycast+pointer click, then click PlayButton center.
+            RaycastAndClickButton(canvas!, octopusBtn);
+            yield return null;
+            RaycastAndClickButton(canvas!, playerBtn);
+            yield return null;
+            RaycastAndClickButton(canvas!, octopusBtn);
+            yield return null;
+
+            RaycastAndClickButton(canvas!, playButton);
+            yield return null;
+            Assert.AreEqual("octopus", recordingNav.StartedCharacterId);
+            Assert.IsNull(recordingNav.StartedScenarioId);
+
+            foreach (AppRoot existing in UnityEngine.Object.FindObjectsByType<AppRoot>(
+                         FindObjectsInactive.Include,
+                         FindObjectsSortMode.None))
+            {
+                UnityEngine.Object.DestroyImmediate(existing.gameObject);
+            }
         }
 
         [UnityTest]

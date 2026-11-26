@@ -119,6 +119,71 @@ namespace Mahjong.Unity.Tests.EditMode
             }
         }
 
+        [TestCase(true)]
+        [TestCase(false)]
+        public void LiteMenu_RepeatedCharacterSwitches_ReuseSingleLabelAndUniqueMarker(bool windowsFontAvailable)
+        {
+            FontFallbackResolver.WindowsSystemFontProviderForTest = windowsFontAvailable
+                ? null
+                : ((_, _) => null);
+            var root = new GameObject("LiteSwitchLabels");
+            try
+            {
+                Button play = MakeButton(root.transform, "Play", "template");
+                Button quit = MakeButton(root.transform, "Quit", "template");
+                var menu = root.AddComponent<MenuPresenter>();
+                Set(menu, "_playButton", play);
+                Set(menu, "_quitButton", quit);
+                Invoke(menu, "ConfigureLiteMenu");
+
+                Button player = root.transform.Find("LocalLiteCharacter-player")!.GetComponent<Button>();
+                Button octopus = root.transform.Find("LocalLiteCharacter-octopus")!.GetComponent<Button>();
+
+                string expectedPlayerActive = windowsFontAvailable ? "\u2713 \u724C\u624B" : "> Player";
+                string expectedPlayerInactive = windowsFontAvailable ? "\u724C\u624B" : "Player";
+                string expectedOctopusActive = windowsFontAvailable ? "\u2713 \u516B\u722A\u9C7C" : "> Octopus";
+                string expectedOctopusInactive = windowsFontAvailable ? "\u516B\u722A\u9C7C" : "Octopus";
+
+                AssertVisibleLabel(player.gameObject, expectedPlayerActive);
+                AssertVisibleLabel(octopus.gameObject, expectedOctopusInactive);
+
+                for (int cycle = 0; cycle < 3; cycle++)
+                {
+                    octopus.onClick.Invoke();
+                    AssertSingleReusableLabel(player.gameObject, expectedPlayerInactive, windowsFontAvailable);
+                    AssertSingleReusableLabel(octopus.gameObject, expectedOctopusActive, windowsFontAvailable);
+
+                    player.onClick.Invoke();
+                    AssertSingleReusableLabel(player.gameObject, expectedPlayerActive, windowsFontAvailable);
+                    AssertSingleReusableLabel(octopus.gameObject, expectedOctopusInactive, windowsFontAvailable);
+                }
+            }
+            finally
+            {
+                FontFallbackResolver.WindowsSystemFontProviderForTest = null;
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        private static void AssertSingleReusableLabel(GameObject button, string expected, bool windowsFontAvailable)
+        {
+            AssertVisibleLabel(button, expected);
+            int legacyNodes = 0;
+            foreach (Transform child in button.GetComponentsInChildren<Transform>(true))
+            {
+                if (child.name == "LocalLiteSystemFontLabel")
+                {
+                    legacyNodes++;
+                }
+            }
+
+            Assert.LessOrEqual(legacyNodes, 1, button.name + " must reuse at most one LocalLiteSystemFontLabel child");
+            if (windowsFontAvailable)
+            {
+                Assert.AreEqual(1, legacyNodes, button.name + " should reuse its single LocalLiteSystemFontLabel node");
+            }
+        }
+
         private sealed class LiteNavigationStub : IAppNavigation, ILocalLiteNavigation
         {
             public string? StartedCharacterId { get; private set; }

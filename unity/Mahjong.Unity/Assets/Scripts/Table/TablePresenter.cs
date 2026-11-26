@@ -2112,6 +2112,14 @@ namespace Mahjong.Unity.Table
 
         private void EnsureSleeveThirdButton()
         {
+            if (_sleeveBloomDialog != null)
+            {
+                RectTransform? dialogRect = _sleeveBloomDialog.GetComponent<RectTransform>();
+                if (dialogRect != null && dialogRect.sizeDelta.y < 240f)
+                {
+                    dialogRect.sizeDelta = new Vector2(dialogRect.sizeDelta.x, 240f);
+                }
+            }
             if (_sleeveThirdButton != null || _sleeveSwapButton == null) return;
             _sleeveThirdButton = Instantiate(_sleeveSwapButton, _sleeveSwapButton.transform.parent);
             _sleeveThirdButton.name = "SleeveBloomCandidate3";
@@ -2119,7 +2127,7 @@ namespace Mahjong.Unity.Table
             _sleeveThirdButton.onClick.AddListener(() => OnSleeveChoiceClicked(SleeveBloomChoice.Third));
             RectTransform rect = _sleeveThirdButton.GetComponent<RectTransform>();
             RectTransform source = _sleeveSwapButton.GetComponent<RectTransform>();
-            if (rect != null && source != null) rect.anchoredPosition = source.anchoredPosition + new Vector2(0f, -58f);
+            if (rect != null && source != null) rect.anchoredPosition = source.anchoredPosition + new Vector2(0f, -46f);
             _sleeveThirdButton.gameObject.SetActive(false);
         }
 

@@ -253,7 +253,31 @@ namespace Mahjong.Domain.Cheat
             SleeveBloomConfig sleeveConfig,
             int seat,
             string requestId,
-            SleeveBloomActivationInput activationInput)
+            SleeveBloomActivationInput activationInput) =>
+            ActivateSleeveBloomWithFrozenInput(
+                state,
+                map,
+                context,
+                economy,
+                sleeveConfig,
+                seat,
+                requestId,
+                activationInput,
+                protectOffTurnThird: true);
+
+        /// <summary>
+        /// Immediate sleeve bloom activation with configurable off-turn third protection for legacy v5 journal recovery.
+        /// </summary>
+        public static CheatTransition ActivateSleeveBloomWithFrozenInput(
+            CheatState state,
+            TilePositionMap map,
+            CheatTurnContext context,
+            CheatEconomyConfig economy,
+            SleeveBloomConfig sleeveConfig,
+            int seat,
+            string requestId,
+            SleeveBloomActivationInput activationInput,
+            bool protectOffTurnThird)
         {
             if (state == null) throw new ArgumentNullException(nameof(state));
             if (map == null) throw new ArgumentNullException(nameof(map));
@@ -305,7 +329,7 @@ namespace Mahjong.Domain.Cheat
                 if (activationInput.IsFrozen)
                 {
                     CheatTransition? frozenFailure = ResolveFrozenNormalWallCandidate(
-                        map, sleeve, activationInput, out secondTile);
+                        map, sleeve, activationInput, out secondTile, protectOffTurnThird);
                     if (frozenFailure != null)
                     {
                         return frozenFailure;
@@ -313,7 +337,7 @@ namespace Mahjong.Domain.Cheat
                 }
                 else
                 {
-                    int secondIndex = FindFirstAvailableWallIndex(map, sleeve);
+                    int secondIndex = FindFirstAvailableWallIndex(map, sleeve, protectOffTurnThird);
                     if (secondIndex < 0)
                     {
                         return CheatTransition.Rejected(CheatErrorCode.NoWallCandidate, "No available live-wall tile for the second candidate.");
@@ -322,7 +346,7 @@ namespace Mahjong.Domain.Cheat
                     secondTile = map.TileAt(TilePosition.Wall(secondIndex));
                 }
 
-                IReadOnlyList<int> available = AvailableWallIndices(map, sleeve);
+                IReadOnlyList<int> available = AvailableWallIndices(map, sleeve, protectOffTurnThird);
                 if (available.Count > 1 && seat == 0 && PlayerCharacterRules.GrantsThirdSleeveCandidate(
                     state.PlayerCharacterId, state.CharacterTraitsVersion, context.RoundId, seat, context.TurnNumber, requestId))
                 {
@@ -375,7 +399,20 @@ namespace Mahjong.Domain.Cheat
             CheatTurnContext context,
             int seat,
             string offerId,
-            SleeveBloomKeep keep)
+            SleeveBloomKeep keep) =>
+            ChooseSleeveBloom(state, map, context, seat, offerId, keep, protectOffTurnThird: true);
+
+        /// <summary>
+        /// Resolves the immediate offer with configurable off-turn third protection for legacy v5 journal recovery.
+        /// </summary>
+        public static CheatTransition ChooseSleeveBloom(
+            CheatState state,
+            TilePositionMap map,
+            CheatTurnContext context,
+            int seat,
+            string offerId,
+            SleeveBloomKeep keep,
+            bool protectOffTurnThird)
         {
             if (state == null) throw new ArgumentNullException(nameof(state));
             if (map == null) throw new ArgumentNullException(nameof(map));
@@ -424,7 +461,7 @@ namespace Mahjong.Domain.Cheat
                 {
                     TileId candidate = keep == SleeveBloomKeep.Second ? offer.SecondTile : offer.ThirdTile!.Value;
                     int candidateOrdinal = keep == SleeveBloomKeep.Second ? 0 : 1;
-                    IReadOnlyList<int> available = AvailableWallIndices(map, state.SleeveBloom);
+                    IReadOnlyList<int> available = AvailableWallIndices(map, state.SleeveBloom, protectOffTurnThird);
                     int candidateIndex = WallSlotOfTile(map, candidate);
                     if (candidateIndex < 0 || candidateIndex >= map.WallEndExclusive ||
                         map.PositionOf(candidate).Zone != TileZone.Wall ||
@@ -510,7 +547,31 @@ namespace Mahjong.Domain.Cheat
             SleeveBloomConfig sleeveConfig,
             int seat,
             string requestId,
-            string requestWindowId)
+            string requestWindowId) =>
+            ActivateOffTurnSleeveBloom(
+                state,
+                map,
+                context,
+                economy,
+                sleeveConfig,
+                seat,
+                requestId,
+                requestWindowId,
+                protectOffTurnThird: true);
+
+        /// <summary>
+        /// Activates an off-turn sleeve bloom with configurable off-turn third protection for legacy v5 journal recovery.
+        /// </summary>
+        public static CheatTransition ActivateOffTurnSleeveBloom(
+            CheatState state,
+            TilePositionMap map,
+            CheatTurnContext context,
+            CheatEconomyConfig economy,
+            SleeveBloomConfig sleeveConfig,
+            int seat,
+            string requestId,
+            string requestWindowId,
+            bool protectOffTurnThird)
         {
             if (state == null) throw new ArgumentNullException(nameof(state));
             if (map == null) throw new ArgumentNullException(nameof(map));
@@ -555,7 +616,7 @@ namespace Mahjong.Domain.Cheat
 
             if (state.BeamSwap.Offer != null) return CheatTransition.Rejected(CheatErrorCode.OtherOfferPending, "A beam swap offer is already pending.");
 
-            IReadOnlyList<int> available = AvailableWallIndices(map, state.SleeveBloom);
+            IReadOnlyList<int> available = AvailableWallIndices(map, state.SleeveBloom, protectOffTurnThird);
             if (available.Count < 2)
             {
                 return CheatTransition.Rejected(CheatErrorCode.WallEmpty, "Fewer than two live-wall tiles are available.");
@@ -830,7 +891,29 @@ namespace Mahjong.Domain.Cheat
             CheatEconomyConfig economy,
             SleeveBloomConfig sleeveConfig,
             string requestId,
-            int seat)
+            int seat) =>
+            ActivateBeamSwap(
+                state,
+                map,
+                context,
+                economy,
+                sleeveConfig,
+                requestId,
+                seat,
+                protectOffTurnThird: true);
+
+        /// <summary>
+        /// Activates beam swap with configurable off-turn third protection for legacy v5 journal recovery.
+        /// </summary>
+        public static CheatTransition ActivateBeamSwap(
+            CheatState state,
+            TilePositionMap map,
+            CheatTurnContext context,
+            CheatEconomyConfig economy,
+            SleeveBloomConfig sleeveConfig,
+            string requestId,
+            int seat,
+            bool protectOffTurnThird)
         {
             if (state == null) throw new ArgumentNullException(nameof(state));
             if (map == null) throw new ArgumentNullException(nameof(map));
@@ -901,7 +984,10 @@ namespace Mahjong.Domain.Cheat
                         return CheatTransition.Rejected(CheatErrorCode.NoWallCandidate, "Live-wall slot " + i + " is not a wall tile.");
                     }
 
-                    if (state.SleeveBloom.IsProtectedTile(tile))
+                    bool protectedTile = protectOffTurnThird
+                        ? state.SleeveBloom.IsProtectedTile(tile)
+                        : state.SleeveBloom.IsProtectedTileWithoutOffTurnThird(tile);
+                    if (protectedTile)
                     {
                         continue;
                     }
@@ -1271,7 +1357,8 @@ namespace Mahjong.Domain.Cheat
             TilePositionMap map,
             SleeveBloomState sleeve,
             SleeveBloomActivationInput activationInput,
-            out TileId candidate)
+            out TileId candidate,
+            bool protectOffTurnThird)
         {
             candidate = default;
 
@@ -1293,7 +1380,10 @@ namespace Mahjong.Domain.Cheat
                     "The frozen next-wall candidate " + frozen + " is outside the live wall bounds.");
             }
 
-            if (sleeve.IsProtectedTile(frozen))
+            bool frozenProtected = protectOffTurnThird
+                ? sleeve.IsProtectedTile(frozen)
+                : sleeve.IsProtectedTileWithoutOffTurnThird(frozen);
+            if (frozenProtected)
             {
                 return CheatTransition.Rejected(
                     CheatErrorCode.NoWallCandidate,
@@ -1301,7 +1391,7 @@ namespace Mahjong.Domain.Cheat
             }
 
             if (!SleeveBloomActivationInput.TryResolveFirstAvailableWallCandidate(
-                    map, sleeve, out TileId authoritative, out int authoritativeIndex) ||
+                    map, sleeve, out TileId authoritative, out int authoritativeIndex, protectOffTurnThird) ||
                 !authoritative.Equals(frozen) ||
                 authoritativeIndex != position.Index)
             {
@@ -1322,15 +1412,27 @@ namespace Mahjong.Domain.Cheat
             return null;
         }
 
-        private static int FindFirstAvailableWallIndex(TilePositionMap map, SleeveBloomState sleeve)
+        private static int FindFirstAvailableWallIndex(
+            TilePositionMap map,
+            SleeveBloomState sleeve,
+            bool protectOffTurnThird = true)
         {
             return SleeveBloomActivationInput.TryResolveFirstAvailableWallCandidate(
-                map, sleeve, out _, out int index)
+                map, sleeve, out _, out int index, protectOffTurnThird)
                 ? index
                 : -1;
         }
 
-        private static IReadOnlyList<int> AvailableWallIndices(TilePositionMap map, SleeveBloomState sleeve)
+        public static IReadOnlyList<int> AvailableWallIndices(TilePositionMap map, SleeveBloomState sleeve) =>
+            AvailableWallIndices(map, sleeve, protectOffTurnThird: true);
+
+        /// <summary>
+        /// Enumerates available live-wall slot indices with configurable off-turn third protection.
+        /// </summary>
+        public static IReadOnlyList<int> AvailableWallIndices(
+            TilePositionMap map,
+            SleeveBloomState sleeve,
+            bool protectOffTurnThird)
         {
             var indices = new List<int>();
             for (int i = 0; i < map.WallEndExclusive; i++)
@@ -1345,7 +1447,10 @@ namespace Mahjong.Domain.Cheat
                     continue;
                 }
 
-                if (sleeve.IsProtectedTile(tile))
+                bool protectedTile = protectOffTurnThird
+                    ? sleeve.IsProtectedTile(tile)
+                    : sleeve.IsProtectedTileWithoutOffTurnThird(tile);
+                if (protectedTile)
                 {
                     continue;
                 }

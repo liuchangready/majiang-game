@@ -58,12 +58,22 @@ namespace Mahjong.Domain.Cheat
         /// </summary>
         public static SleeveBloomActivationInput FromAuthoritativeState(
             TilePositionMap map,
-            SleeveBloomState sleeve)
+            SleeveBloomState sleeve) =>
+            FromAuthoritativeState(map, sleeve, protectOffTurnThird: true);
+
+        /// <summary>
+        /// Builds frozen evidence with configurable off-turn third-candidate protection.
+        /// Passing <c>protectOffTurnThird: false</c> is reserved exclusively for legacy v5 journal recovery.
+        /// </summary>
+        public static SleeveBloomActivationInput FromAuthoritativeState(
+            TilePositionMap map,
+            SleeveBloomState sleeve,
+            bool protectOffTurnThird)
         {
             if (map == null) throw new ArgumentNullException(nameof(map));
             if (sleeve == null) throw new ArgumentNullException(nameof(sleeve));
 
-            return TryResolveFirstAvailableWallCandidate(map, sleeve, out TileId candidate, out _)
+            return TryResolveFirstAvailableWallCandidate(map, sleeve, out TileId candidate, out _, protectOffTurnThird)
                 ? Frozen(candidate, true)
                 : Frozen(null, false);
         }
@@ -77,7 +87,23 @@ namespace Mahjong.Domain.Cheat
             TilePositionMap map,
             SleeveBloomState sleeve,
             out TileId candidate,
-            out int wallIndex)
+            out int wallIndex) =>
+            TryResolveFirstAvailableWallCandidate(
+                map,
+                sleeve,
+                out candidate,
+                out wallIndex,
+                protectOffTurnThird: true);
+
+        /// <summary>
+        /// Resolves V4's next available live-wall tile with configurable off-turn third protection.
+        /// </summary>
+        public static bool TryResolveFirstAvailableWallCandidate(
+            TilePositionMap map,
+            SleeveBloomState sleeve,
+            out TileId candidate,
+            out int wallIndex,
+            bool protectOffTurnThird)
         {
             if (map == null) throw new ArgumentNullException(nameof(map));
             if (sleeve == null) throw new ArgumentNullException(nameof(sleeve));
@@ -94,7 +120,10 @@ namespace Mahjong.Domain.Cheat
                     continue;
                 }
 
-                if (sleeve.IsProtectedTile(tile))
+                bool protectedTile = protectOffTurnThird
+                    ? sleeve.IsProtectedTile(tile)
+                    : sleeve.IsProtectedTileWithoutOffTurnThird(tile);
+                if (protectedTile)
                 {
                     continue;
                 }
