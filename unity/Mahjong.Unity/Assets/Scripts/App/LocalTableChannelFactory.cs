@@ -405,6 +405,7 @@ namespace Mahjong.Unity.App
                     RulesetVersion = 1,
                     OwnerInstanceId = _ownerInstanceId,
                     PlayerCharacterId = _nextCharacterId,
+                    ConfirmSeatZeroDraw = _localLiteMode,
                     LeaseDuration = _leaseDuration,
                     AutoFlushInterval = TimeSpan.FromMilliseconds(500),
                     Ai = new LocalAiOptions

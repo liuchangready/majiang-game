@@ -538,6 +538,13 @@ namespace Mahjong.Domain
             }
 
             CheatState before = cheat!;
+            if (round.Spec.ConfirmSeatZeroDraw && command.Action == RoundCheatAction.SubmitSleeveBloomOffTurn)
+                return RoundCheatPreparation.Rejected(RoundCheatErrorCode.CheatRejected, CheatErrorCode.Disabled,
+                    "This table activates sleeve bloom on the player's confirmed draw.");
+
+            if (round.Spec.ConfirmsDraw(command.Seat) && command.Action == RoundCheatAction.SubmitSleeveBloom)
+                return PrepareConfirmedSleeveDraw(round, before, command, context, economy, sleeveConfig, protectOffTurnThird);
+
             CheatTransition transition;
             switch (command.Action)
             {
@@ -636,6 +643,50 @@ namespace Mahjong.Domain
             }
 
             return Materialize(round, before, command, context, transition);
+        }
+
+        private static RoundCheatPreparation PrepareConfirmedSleeveDraw(
+            RoundStateMachine round,
+            CheatState cheat,
+            RoundCheatCommand command,
+            CheatTurnContext context,
+            CheatEconomyConfig economy,
+            SleeveBloomConfig config,
+            bool protectOffTurnThird)
+        {
+            if (round.Phase != RoundPhase.Draw && round.Phase != RoundPhase.KanDraw)
+                return RoundCheatPreparation.Rejected(RoundCheatErrorCode.CheatRejected, CheatErrorCode.WrongPhase,
+                    "Sleeve bloom must be confirmed before the draw.");
+
+            RoundPreparation draw = round.Prepare(RoundCommand.Draw(round.RoundId, command.Seat), cheat.SleeveBloom.IsProtectedTile);
+            if (!draw.IsReady)
+                return RoundCheatPreparation.Rejected(RoundCheatErrorCode.CheatRejected, CheatErrorCode.WrongPhase, draw.Error!.Message);
+
+            RoundStateMachine drawn = draw.Change!.NextState;
+            var drawnContext = new CheatTurnContext(command.Seat, drawn.Phase, false, drawn.RiichiDeclared,
+                CountDrawTurns(drawn), drawn.RoundId, context.RoundOrdinal, CheatSubmission.DrawKindOf(drawn.Tiles),
+                context.NowMillis, context.BootId);
+            CheatTransition activation = CheatSubmission.ActivateSleeveBloomWithFrozenInput(
+                cheat, drawn.Tiles, drawnContext, economy, config, command.Seat, command.RequestId,
+                SleeveBloomActivationInput.Unspecified, protectOffTurnThird, confirmedDraw: true);
+            if (!activation.Success)
+            {
+                if (activation.Error == CheatErrorCode.NoWallCandidate || activation.Error == CheatErrorCode.InsufficientFunds)
+                    return RoundCheatPreparation.Ready(new RoundCheatChange(draw.Change, cheat, Array.Empty<RoundCheatEvent>(),
+                        true, CheatErrorCode.None, string.Empty));
+
+                return RoundCheatPreparation.Rejected(RoundCheatErrorCode.CheatRejected, activation.Error, activation.Message!);
+            }
+
+            var events = new List<RoundEvent>(draw.Change.AddedEvents)
+            {
+                new RoundEvent(RoundEventType.CheatApplied, 0, command.Seat, null, "SubmitSleeveBloom:OK")
+            };
+            RoundPreparation composed = round.PrepareCheatComposed(drawn.Tiles, drawn.Phase, command.Seat, null, events);
+            var privateEvents = new List<RoundCheatEvent>(activation.Events.Count);
+            foreach (CheatEvent value in activation.Events) privateEvents.Add(Wrap(value, command, cheat, drawnContext));
+            return RoundCheatPreparation.Ready(new RoundCheatChange(composed.Change!, activation.State!, privateEvents,
+                true, CheatErrorCode.None, string.Empty));
         }
 
         /// <summary>

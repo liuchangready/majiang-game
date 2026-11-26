@@ -1372,14 +1372,17 @@ namespace Mahjong.Domain
         /// caller cannot substitute an arbitrary hand tile. RinshanPointer 1..3 also bounds
         /// the physical kan/rinshan draws: slot 4 is exhausted and has no next slot.
         /// </summary>
-        public TransitionResult SwapDrawnWithNextRinshan(int seat, TileId drawnTile)
+        public TransitionResult SwapDrawnWithNextRinshan(int seat, TileId drawnTile) =>
+            SwapDrawnWithRinshan(seat, drawnTile, RinshanPointer);
+
+        internal TransitionResult SwapDrawnWithRinshan(int seat, TileId drawnTile, int slot)
         {
             if (seat < 0 || seat > 3)
             {
                 return TransitionResult.Failure(TransitionErrorCode.InvalidSeat, "Seat must be 0..3.");
             }
 
-            if (RinshanPointer < 1 || RinshanPointer >= 4)
+            if (RinshanPointer < 1 || slot < RinshanPointer || slot >= 4)
             {
                 return TransitionResult.Failure(
                     TransitionErrorCode.DeadWallExhausted,
@@ -1424,7 +1427,7 @@ namespace Mahjong.Domain
                     "Recorded rinshan slot " + evidence.DeadWallIndex + " is not empty.");
             }
 
-            if (!TryGetTileAt(TilePosition.DeadWall(RinshanPointer), out TileId nextRinshan))
+            if (!TryGetTileAt(TilePosition.DeadWall(slot), out TileId nextRinshan))
             {
                 return TransitionResult.Failure(
                     TransitionErrorCode.MissingTile,
@@ -1434,8 +1437,8 @@ namespace Mahjong.Domain
             return Apply(
                 new[]
                 {
-                    new TileMove(drawnTile, handPosition, TilePosition.DeadWall(RinshanPointer)),
-                    new TileMove(nextRinshan, TilePosition.DeadWall(RinshanPointer), handPosition)
+                    new TileMove(drawnTile, handPosition, TilePosition.DeadWall(slot)),
+                    new TileMove(nextRinshan, TilePosition.DeadWall(slot), handPosition)
                 },
                 WallPointer,
                 WallEndExclusive,

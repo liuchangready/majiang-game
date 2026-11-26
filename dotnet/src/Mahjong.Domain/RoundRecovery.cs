@@ -554,6 +554,7 @@ namespace Mahjong.Domain
     public static class RoundRecoveryCodec
     {
         public const int FormatVersion = 2;
+        private const int ConfirmedDrawFormatVersion = 3;
         private const int Magic = 0x4D4A5231; // MJR1
 
         public static byte[] Encode(RoundRecoveryState state)
@@ -567,7 +568,7 @@ namespace Mahjong.Domain
             using (var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true))
             {
                 writer.Write(Magic);
-                writer.Write(FormatVersion);
+                writer.Write(state.Spec.ConfirmSeatZeroDraw ? ConfirmedDrawFormatVersion : FormatVersion);
                 WriteSpec(writer, state.Spec);
                 writer.Write(state.Version);
                 writer.Write((byte)state.Phase);
@@ -626,12 +627,12 @@ namespace Mahjong.Domain
                 }
 
                 int version = reader.ReadInt32();
-                if (version != FormatVersion)
+                if (version != FormatVersion && version != ConfirmedDrawFormatVersion)
                 {
                     throw new InvalidDataException("Unsupported round recovery schema " + version + ".");
                 }
 
-                RoundSpec spec = ReadSpec(reader);
+                RoundSpec spec = ReadSpec(reader, version == ConfirmedDrawFormatVersion);
                 long roundVersion = reader.ReadInt64();
                 byte phaseByte = reader.ReadByte();
                 if (!Enum.IsDefined(typeof(RoundPhase), phaseByte))
@@ -743,7 +744,7 @@ namespace Mahjong.Domain
             }
         }
 
-        private static RoundSpec ReadSpec(BinaryReader reader)
+        private static RoundSpec ReadSpec(BinaryReader reader, bool confirmSeatZeroDraw)
         {
             string roundId = ReadString(reader);
             int dealerSeat = reader.ReadInt32();
@@ -763,7 +764,7 @@ namespace Mahjong.Domain
                 scores[i] = reader.ReadInt64();
             }
 
-            return new RoundSpec(roundId, dealerSeat, roundWind, roundNumber, honba, scores, riichi);
+            return new RoundSpec(roundId, dealerSeat, roundWind, roundNumber, honba, scores, riichi, confirmSeatZeroDraw);
         }
 
         private static void WriteTiles(BinaryWriter writer, TilePositionMap tiles)

@@ -178,6 +178,9 @@ try {
         'Mahjong.Unity.Tests.PlayMode.TablePlayModeTests.LiteMenu_CharacterButtonsAndPlayButton_AreIndependentRaycastTargets_AndOctopusStartsLocalGame'
         'Mahjong.Unity.Tests.PlayMode.TablePlayModeTests.OctopusThirdSleeveCandidate_IsShownAndClickedThroughClientOutbox'
         'Mahjong.Unity.Tests.PlayMode.TablePlayModeTests.SleeveBloomThirdCandidate_IsHiddenAndRejectedWhenProjectionOmitsIt'
+        'Mahjong.Unity.Tests.PlayMode.TablePlayModeTests.LiteSleevePreselectionCanBeCancelledBeforeAnOrdinaryDraw'
+        'Mahjong.Unity.Tests.PlayMode.TablePlayModeTests.LiteArmedKanDrawSubmitsSleeveBloomOnlyOnDrawConfirmation'
+        'Mahjong.Unity.Tests.PlayMode.TablePlayModeTests.LiteRiichiPreselectionWaitsForTheOwnersDraw'
         'Mahjong.Unity.Tests.PlayMode.LocalHostCompositionPlayModeTests.BusyRejectedStart_DoesNotOverwriteLastCharacterForRestart'
     )
     $charFilter = $requiredCharacterTests -join ';'
@@ -201,7 +204,7 @@ try {
         $unexpectedCharTests.Count -ne 0 -or
         $duplicateCharTests.Count -ne 0)
     {
-        throw ("PlayMode character XML did not prove unique pass of all 4 required tests: cases=$($charCases.Count) failures=$($charFailures.Count) missing=$($missingCharTests -join ',') unexpected=$($unexpectedCharTests -join ',') duplicates=$($duplicateCharTests -join ',')")
+        throw ("PlayMode character XML did not prove unique pass of all $($requiredCharacterTests.Count) required tests: cases=$($charCases.Count) failures=$($charFailures.Count) missing=$($missingCharTests -join ',') unexpected=$($unexpectedCharTests -join ',') duplicates=$($duplicateCharTests -join ',')")
     }
     Write-Stage "PLAYMODE_CHARACTER_PASS tests=$($charCases.Count) failures=0 xml=$charXml"
     Restore-UnityRunNoise

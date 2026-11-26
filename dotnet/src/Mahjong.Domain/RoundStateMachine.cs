@@ -444,7 +444,8 @@ namespace Mahjong.Domain
         internal RoundPreparation PrepareDraw(int seat, Func<TileId, bool>? isProtected)
         {
             CheckSeat(seat);
-            if (Phase != RoundPhase.Draw || Window != null)
+            bool kanDraw = Phase == RoundPhase.KanDraw && Spec.ConfirmsDraw(seat);
+            if ((Phase != RoundPhase.Draw && !kanDraw) || Window != null)
             {
                 throw new RoundRuleViolation(
                     RoundTransitionErrorCode.WrongPhase,
@@ -458,14 +459,14 @@ namespace Mahjong.Domain
                     "Seat " + seat + " is not the current player (" + CurrentSeat + ").");
             }
 
-            TransitionResult drawn = Tiles.DrawFromWall(seat, isProtected);
+            TransitionResult drawn = kanDraw ? Tiles.DrawReplacement(seat, isProtected) : Tiles.DrawFromWall(seat, isProtected);
             if (!drawn.IsSuccess)
             {
                 throw FromTileError(drawn);
             }
 
             var events = new List<RoundEvent>();
-            Add(events, RoundEventType.TileDrawn, seat, drawn.ResultTile, null);
+            Add(events, kanDraw ? RoundEventType.RinshanDrawn : RoundEventType.TileDrawn, seat, drawn.ResultTile, null);
             return Build(drawn.State!, RoundPhase.CheatWindow, seat, null, null, events);
         }
 
@@ -919,28 +920,13 @@ namespace Mahjong.Domain
 
             Add(events, RoundEventType.DoraRevealed, -1, dora.ResultTile, null);
             Add(events, RoundEventType.KanDeclared, command.Seat, tiles[0], "CLOSED_KAN");
-            TransitionResult replacement = dora.State!.DrawReplacement(command.Seat, isProtectedWallTile);
-            if (!replacement.IsSuccess)
-            {
-                throw FromTileError(replacement);
-            }
-
-            Add(events, RoundEventType.RinshanDrawn, command.Seat, replacement.ResultTile, null);
             IReadOnlyList<RoundMeld> melds = AppendMeld(new RoundMeld(
                 RoundMeldKind.ClosedKan,
                 command.Seat,
                 command.Seat,
                 tiles[0],
                 tiles));
-            return Build(
-                replacement.State!,
-                RoundPhase.CheatWindow,
-                command.Seat,
-                null,
-                null,
-                events,
-                melds: melds,
-                pendingKanDoraCount: 0);
+            return PrepareKanDraw(dora.State!, command.Seat, events, melds, 0, isProtectedWallTile);
         }
 
         private RoundPreparation PrepareRiichi(
@@ -1439,22 +1425,7 @@ namespace Mahjong.Domain
                 window.TargetTile,
                 tiles));
             Add(events, RoundEventType.KanDeclared, claim.Seat, window.TargetTile, "OPEN_KAN");
-            TransitionResult replacement = afterPending.DrawReplacement(claim.Seat, isProtectedWallTile);
-            if (!replacement.IsSuccess)
-            {
-                throw FromTileError(replacement);
-            }
-
-            Add(events, RoundEventType.RinshanDrawn, claim.Seat, replacement.ResultTile, null);
-            return Build(
-                replacement.State!,
-                RoundPhase.CheatWindow,
-                claim.Seat,
-                null,
-                null,
-                events,
-                melds: melds,
-                pendingKanDoraCount: 1);
+            return PrepareKanDraw(afterPending, claim.Seat, events, melds, 1, isProtectedWallTile);
         }
 
         private RoundPreparation CommitAddedKan(
@@ -1467,7 +1438,24 @@ namespace Mahjong.Domain
             TilePositionMap afterPending = RevealPendingKanDora(afterKan, events, out _);
             IReadOnlyList<RoundMeld> melds = MeldsWithAddedKan(seat, tile);
             Add(events, RoundEventType.KanDeclared, seat, tile, "ADDED_KAN");
-            TransitionResult replacement = afterPending.DrawReplacement(seat, isProtectedWallTile);
+            return PrepareKanDraw(afterPending, seat, events, melds, 1, isProtectedWallTile);
+        }
+
+        private RoundPreparation PrepareKanDraw(
+            TilePositionMap afterKan,
+            int seat,
+            List<RoundEvent> events,
+            IReadOnlyList<RoundMeld> melds,
+            int pendingKanDoraCount,
+            Func<TileId, bool>? isProtectedWallTile)
+        {
+            if (Spec.ConfirmsDraw(seat))
+            {
+                return Build(afterKan, RoundPhase.KanDraw, seat, null, null, events,
+                    melds: melds, pendingKanDoraCount: pendingKanDoraCount);
+            }
+
+            TransitionResult replacement = afterKan.DrawReplacement(seat, isProtectedWallTile);
             if (!replacement.IsSuccess)
             {
                 throw FromTileError(replacement);
@@ -1483,7 +1471,7 @@ namespace Mahjong.Domain
                 null,
                 events,
                 melds: melds,
-                pendingKanDoraCount: 1);
+                pendingKanDoraCount: pendingKanDoraCount);
         }
 
         private TilePositionMap RevealPendingKanDora(
@@ -1535,7 +1523,7 @@ namespace Mahjong.Domain
                     pendingKanDoraCount: pendingKanDoraCount);
             }
 
-            if (deferAutomaticDraw != null && deferAutomaticDraw(nextSeat))
+            if (Spec.ConfirmsDraw(nextSeat) || (deferAutomaticDraw != null && deferAutomaticDraw(nextSeat)))
             {
                 return Build(
                     currentTiles,
@@ -2363,6 +2351,7 @@ namespace Mahjong.Domain
             MixInt(RoundNumber);
             MixInt(HonbaSticks);
             MixInt(Spec.RiichiSticks);
+            if (Spec.ConfirmSeatZeroDraw) MixInt(1);
             for (int i = 0; i < Spec.Scores.Count; i++)
             {
                 MixLong(Spec.Scores[i]);

@@ -1284,6 +1284,87 @@ namespace Mahjong.Unity.Tests.PlayMode
         }
 
         [UnityTest]
+        public IEnumerator LiteSleevePreselectionCanBeCancelledBeforeAnOrdinaryDraw() => LiteConfirmDraw(cancel: true);
+
+        [UnityTest]
+        public IEnumerator LiteArmedKanDrawSubmitsSleeveBloomOnlyOnDrawConfirmation() => LiteConfirmDraw(cancel: false);
+
+        [UnityTest]
+        public IEnumerator LiteRiichiPreselectionWaitsForTheOwnersDraw() => LiteConfirmDraw(cancel: false, preselectOffTurn: true);
+
+        private IEnumerator LiteConfirmDraw(bool cancel, bool preselectOffTurn = false)
+        {
+            yield return LoadAndBindTableSceneAsync(false);
+            LocalLiteRunContext.Initialize(
+                Path.Combine(Path.GetTempPath(), "mahjong-confirm-draw-" + Guid.NewGuid().ToString("N")), "test", "test", "test");
+            try
+            {
+                Button sleeve = FormalButton("SleeveBloomButton");
+                if (preselectOffTurn)
+                {
+                    var foreignDiscard = CreatePlayerBaselineEnvelope(stateVersion: 2, hasDecision: false).SyncResponse.Player;
+                    foreignDiscard.Cursor.ProjectionSeq = 2;
+                    foreignDiscard.PublicView.Board.CurrentSeat = 1;
+                    foreignDiscard.PublicView.Board.Players[0].Riichi = true;
+                    foreignDiscard.PrivateView.ClearDrawnTileId();
+                    _presenter!.OnSessionViewChanged(this, FormalProbeView(foreignDiscard));
+                    yield return null;
+                    Canvas.ForceUpdateCanvases();
+                    RaycastAndClickButton(_canvas!, sleeve);
+                    Assert.AreEqual(0, GetUnresolvedOutboxCount());
+
+                    var awaitingDecision = foreignDiscard.Clone();
+                    awaitingDecision.StateVersion = 3;
+                    awaitingDecision.Cursor.ProjectionSeq = 3;
+                    awaitingDecision.PublicView.Board.CurrentSeat = 0;
+                    awaitingDecision.PublicView.Board.Phase = GamePhase.Draw;
+                    _presenter.OnSessionViewChanged(this, FormalProbeView(awaitingDecision));
+                }
+
+                ulong version = preselectOffTurn ? 4UL : 2UL;
+                var snapshot = CreatePlayerBaselineEnvelope(stateVersion: version).SyncResponse.Player;
+                snapshot.Cursor.ProjectionSeq = version;
+                snapshot.PublicView.Board.Phase = cancel || preselectOffTurn ? GamePhase.Draw : GamePhase.KanDraw;
+                snapshot.PublicView.Board.Players[0].Riichi = preselectOffTurn;
+                snapshot.PrivateView.ClearDrawnTileId();
+                snapshot.PrivateView.Decision.Actions.Clear();
+                snapshot.PrivateView.Decision.Actions.Add(new LegalActionView
+                {
+                    ActionType = (uint)ProtocolActionType.DrawTile,
+                    OptionId = "draw"
+                });
+                _presenter!.OnSessionViewChanged(this, FormalProbeView(snapshot));
+                yield return null;
+                Canvas.ForceUpdateCanvases();
+
+                Button draw = FormalButton("DiscardButton");
+                Assert.IsTrue(sleeve.gameObject.activeInHierarchy);
+                Assert.IsTrue(draw.gameObject.activeInHierarchy);
+                if (!preselectOffTurn)
+                {
+                    RaycastAndClickButton(_canvas!, sleeve);
+                    yield return null;
+                }
+                if (cancel)
+                {
+                    RaycastAndClickButton(_canvas!, sleeve);
+                    yield return null;
+                }
+                Assert.AreEqual(0, GetUnresolvedOutboxCount(), "Preselection and cancellation must not submit a paid command.");
+                RaycastAndClickButton(_canvas!, draw);
+                for (int i = 0; i < 30; i++) yield return null;
+
+                Assert.AreEqual(1, GetUnresolvedOutboxCount());
+                Assert.AreEqual(cancel ? CommandKind.SubmitAction : CommandKind.SubmitSleeveBloom,
+                    _presenter.InteractionState.Pending!.Intent.Kind);
+            }
+            finally
+            {
+                LocalLiteRunContext.ResetForTest();
+            }
+        }
+
+        [UnityTest]
         public IEnumerator OctopusThirdSleeveCandidate_IsShownAndClickedThroughClientOutbox()
         {
             yield return LoadAndBindTableSceneAsync(false);

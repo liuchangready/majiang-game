@@ -1,9 +1,12 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Mahjong.Client;
 using Mahjong.Contracts;
+using Mahjong.Domain;
+using Mahjong.TableRuntime;
 using Xunit;
 using PlayerSnapshot = Mahjong.Contracts.Wire.PlayerSnapshot;
 
@@ -11,6 +14,138 @@ namespace Mahjong.LocalHost.Tests
 {
     public sealed class LocalHostCheatTests
     {
+        [Theory]
+        [InlineData("ordinary")]
+        [InlineData("riichi-win")]
+        [InlineData("riichi-miss")]
+        [InlineData("riichi-kan")]
+        public async Task ConfirmedSleeveDrawUsesTheRealLocalClientAndRiichiRules(string scenario)
+        {
+            await using var harness = new P41Harness();
+            harness.Options.ConfirmSeatZeroDraw = true;
+            harness.Options.AutoPlay = false;
+            const string roundId = "c04-confirmed-sleeve";
+            var spec = new RoundSpec(roundId, 0, 1, 0, 0,
+                new long[] { 25000, 25000, 25000, 25000 }, 0, confirmSeatZeroDraw: true);
+            bool riichi = scenario != "ordinary";
+            RecordedRandomDraw wall = riichi ? CreateRiichiSleeveWall(roundId, scenario) : RecordedRandomDraw.Standard(roundId);
+            harness.Options.InitialRound = RoundStateMachine.CreateDealt(spec, TilePositionMap.CreateDealt(wall, 0));
+
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            (ITableChannel channel, TableSession session) = await OpenAsync(harness, ct);
+            using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            pumpCts.CancelAfter(TimeSpan.FromSeconds(12));
+            Task pump = Task.Run(async () =>
+            {
+                try { while (!pumpCts.IsCancellationRequested) await session.PumpOnceAsync(pumpCts.Token); }
+                catch (OperationCanceledException) when (pumpCts.IsCancellationRequested) { }
+            }, ct);
+            try
+            {
+                LocalTableRuntime runtime = ((LocalTableChannel)channel).RuntimeForMatch!;
+                var storeField = typeof(LocalTableRuntime).GetField(
+                    "_store", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                var store = (LocalTableStore)storeField!.GetValue(runtime)!;
+                TableScopeRecord scope = store.IssueScope("confirmed-fixture", TableScopeRole.Player, P41Harness.RoomId,
+                    (ulong)harness.Clock.UtcNowMs, (ulong)harness.Clock.UtcNowMs + 60000, "confirmed-fixture-scope");
+                for (int i = 0; i < 4; i++)
+                {
+                    RoundStateMachine current = runtime.ActorForTest.GetRoundStateForHost();
+                    TileId tile = current.Tiles.DrawnTile!.Value.Tile;
+                    RoundCommand action = i == 0 && riichi
+                        ? RoundCommand.Riichi(roundId, current.CurrentSeat, tile)
+                        : RoundCommand.Discard(roundId, current.CurrentSeat, tile);
+                    string key = "confirmed-prelude-" + i;
+                    string? pendingId = runtime.ActorForTest.GetPendingDecisionId(current.CurrentSeat);
+                    TableOperationResult accepted = await runtime.ActorForTest.SubmitAsync(new TableCommandEnvelope(
+                        action, new RequestId(key), new StateVersion((ulong)i), new OwnerEpoch(1), new ControlEpoch(0),
+                        pendingId == null ? (DecisionId?)null : new DecisionId(pendingId), 0L, scope.ScopeId, "ROUND",
+                        TablePayloadSha256.Compute(System.Text.Encoding.UTF8.GetBytes(key))), pumpCts.Token);
+                    Assert.True(accepted.Status == TableOperationStatus.Accepted, accepted.ReasonCode + " " + accepted.Detail);
+                }
+                runtime.DriverForTest.Start();
+                while (session.PlayerSnapshot!.PublicView.Board.Phase != Mahjong.Contracts.Wire.GamePhase.Draw ||
+                       session.PlayerSnapshot!.PrivateView.Decision == null)
+                    await Task.Delay(10, pumpCts.Token);
+                PlayerSnapshot pending = session.PlayerSnapshot!;
+                Assert.Equal(Mahjong.Contracts.Wire.GamePhase.Draw, pending.PublicView.Board.Phase);
+                Assert.False(pending.PrivateView.HasDrawnTileId);
+                Assert.Contains(pending.PrivateView.Decision.Actions, action => action.ActionType == (uint)ProtocolActionType.DrawTile);
+                Assert.Equal(120, pending.PrivateView.Cheat.CheatPoints);
+
+                var command = new ProtocolCommand(CommandKind.SubmitSleeveBloom,
+                    CommandPayloadFactory.SubmitSleeveBloom(roundId, pending.PrivateView.Decision.DecisionId, 0),
+                    new RequestId("confirmed-client-bloom"), session.Binding!.Scope.ScopeId,
+                    new StateVersion(pending.StateVersion), new RoundId(roundId),
+                    new DecisionId(pending.PrivateView.Decision.DecisionId), new ControlEpoch(0));
+                PlayerSnapshot drawn = await SubmitAndWaitAsync(session, command, pending, "paid draw", pumpCts.Token);
+                Assert.Equal(110, drawn.PrivateView.Cheat.CheatPoints);
+                Assert.Single(drawn.PrivateView.Cheat.LedgerEntries);
+                Assert.Equal(string.Empty, drawn.PrivateView.Cheat.WindowId);
+                if (scenario == "riichi-win")
+                {
+                    Assert.Null(drawn.PrivateView.Cheat.SleeveBloom);
+                    for (int i = 0; i < 250 && session.PlayerSnapshot!.PublicView.Board.Phase != Mahjong.Contracts.Wire.GamePhase.RoundEnd; i++)
+                        await Task.Delay(10, pumpCts.Token);
+                    Assert.True(session.PlayerSnapshot!.PublicView.Board.Phase == Mahjong.Contracts.Wire.GamePhase.RoundEnd,
+                        "phase=" + session.PlayerSnapshot.PublicView.Board.Phase +
+                        " draw=" + session.PlayerSnapshot.PrivateView.DrawnTileId +
+                        " version=" + session.PlayerSnapshot.StateVersion + " " +
+                        runtime.DriverForTest.DescribeDriverForTest());
+                    Assert.True(session.PlayerSnapshot!.PublicView.Board.Scores[0].Score > 25000);
+                }
+                else if (scenario == "riichi-miss")
+                {
+                    Assert.Null(drawn.PrivateView.Cheat.SleeveBloom);
+                    while (!session.PlayerSnapshot!.PublicView.Board.Players[0].Discards.Any(d => d.TileId == 132))
+                        await Task.Delay(10, pumpCts.Token);
+                    Assert.Single(session.PlayerSnapshot!.PrivateView.Cheat.LedgerEntries);
+                }
+                else
+                {
+                    Assert.NotNull(drawn.PrivateView.Cheat.SleeveBloom);
+                    Assert.Equal(drawn.PrivateView.DrawnTileId, drawn.PrivateView.Cheat.SleeveBloom.FirstTileId);
+                    Assert.Equal(pending.PublicView.Board.WallRemaining - 1, drawn.PublicView.Board.WallRemaining);
+                    if (scenario == "riichi-kan")
+                        Assert.Equal(3u, drawn.PrivateView.Cheat.SleeveBloom.SecondTileId);
+                }
+            }
+            finally
+            {
+                pumpCts.Cancel();
+                await pump;
+                await session.CloseAsync("TEST_DONE", CancellationToken.None);
+                await channel.CloseAsync(new TableChannelCloseReason("TEST_DONE", true), CancellationToken.None);
+            }
+
+            if (scenario == "ordinary")
+            {
+                harness.Clock.UtcNowMs += 500L;
+                harness.Clock.MonotonicMillis += 500L;
+                await using LocalTableRuntime reopened = await LocalTableRuntime.OpenAsync(harness.Options, ct);
+                Assert.Single(reopened.ActorForTest.GetCheatLedgerForHost().Entries);
+                Assert.True(reopened.ActorForTest.GetRoundStateForHost().Spec.ConfirmSeatZeroDraw);
+                Assert.NotNull(reopened.ActorForTest.GetConfirmedSleeveOfferForHost(0));
+            }
+        }
+
+        private static RecordedRandomDraw CreateRiichiSleeveWall(string roundId, string scenario)
+        {
+            int[] hand = scenario == "riichi-kan"
+                ? new[] { 0, 1, 2, 40, 44, 48, 80, 84, 88, 124, 125, 92, 96 }
+                : new[] { 124, 125, 126, 4, 8, 48, 52, 56, 92, 96, 100, 16, 17 };
+            int[] slots = { 0, 1, 2, 3, 16, 17, 18, 19, 32, 33, 34, 35, 48 };
+            var fixedOrder = new Dictionary<int, int>
+            {
+                { 52, 133 }, { 56, 132 }, { 57, scenario == "riichi-win" ? 12 : scenario == "riichi-kan" ? 3 : 134 }
+            };
+            for (int i = 0; i < slots.Length; i++) fixedOrder.Add(slots[i], hand[i]);
+            var remaining = new Queue<int>(Enumerable.Range(0, TileId.Count).Except(fixedOrder.Values));
+            return RecordedRandomDraw.Create(roundId + "-wall",
+                Enumerable.Range(0, TileId.Count)
+                    .Select(slot => new TileId(fixedOrder.TryGetValue(slot, out int tile) ? tile : remaining.Dequeue())).ToArray());
+        }
+
         [Fact]
         public async Task TileMarkIsSubmittedThroughTheClientAndProjectsPrivately()
         {

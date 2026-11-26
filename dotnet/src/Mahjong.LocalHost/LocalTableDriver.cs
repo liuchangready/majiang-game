@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Mahjong.Contracts;
 using Mahjong.Domain;
+using Mahjong.Domain.Cheat;
 using Mahjong.TableRuntime;
 using Mahjong.Ai;
 
@@ -308,17 +309,19 @@ namespace Mahjong.LocalHost
             {
                 case RoundPhase.Draw:
                 case RoundPhase.KanDraw:
-                    if (_aiSeats[seat])
+                    RoundStateMachine drawRound = _actor.GetRoundStateForHost();
+                    if (drawRound.Tiles.WallRemaining == 0 && (_aiSeats[seat] || drawRound.Spec.ConfirmsDraw(seat)))
                     {
-                        RoundStateMachine round = _actor.GetRoundStateForHost();
-                        if (round.Tiles.WallRemaining == 0)
-                        {
-                            await SubmitExhaustiveDrawAsync(snapshot, seat).ConfigureAwait(false);
-                        }
-                        else
-                        {
-                            await SubmitDrawAsync(snapshot, seat).ConfigureAwait(false);
-                        }
+                        await SubmitExhaustiveDrawAsync(snapshot, seat).ConfigureAwait(false);
+                    }
+                    else if (_aiSeats[seat])
+                    {
+                        await SubmitDrawAsync(snapshot, seat).ConfigureAwait(false);
+                    }
+                    else if (drawRound.Spec.ConfirmsDraw(seat) && (_canOpenHumanDecision?.Invoke(seat) ?? true))
+                    {
+                        await OpenDecisionAsync(snapshot, seat, new[] { new LegalActionOption(LegalActionKind.Draw, seat) }, null)
+                            .ConfigureAwait(false);
                     }
 
                     break;
@@ -326,12 +329,14 @@ namespace Mahjong.LocalHost
                 case RoundPhase.CheatWindow:
                 case RoundPhase.Discard:
                 {
+                    RoundStateMachine round = _actor.GetRoundStateForHost();
+                    if (await ResolveRiichiSleeveAsync(snapshot, round, seat).ConfigureAwait(false)) break;
+
                     if (!_aiSeats[seat] && _actor.HasActiveCheatOffer(seat))
                     {
                         break;
                     }
 
-                    RoundStateMachine round = _actor.GetRoundStateForHost();
                     if (round.IsFinished)
                     {
                         return;
@@ -442,6 +447,52 @@ namespace Mahjong.LocalHost
             {
                 await SubmitExhaustiveDrawAsync(snapshot, seat).ConfigureAwait(false);
             }
+        }
+
+        private async Task<bool> ResolveRiichiSleeveAsync(TableSnapshot snapshot, RoundStateMachine round, int seat)
+        {
+            if (round.Phase != RoundPhase.CheatWindow || !round.Spec.ConfirmsDraw(seat) || !round.IsRiichi(seat))
+                return false;
+
+            SleeveBloomOffer? offer = _actor.GetConfirmedSleeveOfferForHost(seat);
+            if (offer != null)
+            {
+                SleeveBloomKeep? keep = _actor.GetAutomaticRiichiSleeveChoiceForHost(seat);
+                if (!keep.HasValue) return false;
+
+                string requestId = "local-auto-sleeve-" + snapshot.StateVersion.Value.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                var command = new RoundCheatCommand(round.RoundId, seat, RoundCheatAction.SubmitSleeveBloomChoice,
+                    requestId, RoundCheatPayload.SleeveBloomChoice(offer.OfferId, keep.Value));
+                var request = new TableCheatCommandEnvelope(command, new RequestId(requestId), snapshot.StateVersion,
+                    _store.LeaseEpoch, new ControlEpoch(unchecked((ulong)ControlEpoch(snapshot, seat))), null,
+                    _actor.RecoveryGeneration, _scopes[seat], "AUTO_SLEEVE_CHOICE",
+                    TablePayloadSha256.Compute(System.Text.Encoding.UTF8.GetBytes(offer.OfferId + "|" + keep.Value)));
+                await _actor.SubmitCheatAsync(request, _stop.Token).ConfigureAwait(false);
+                return true;
+            }
+
+            if (round.Events.Count == 0 || round.Events[round.Events.Count - 1].Type != RoundEventType.CheatApplied ||
+                round.Events[round.Events.Count - 1].Detail != "SubmitSleeveBloomChoice:OK")
+                return false;
+
+            IReadOnlyList<LegalActionOption> candidates = LocalCandidateProvider.DeriveTurnCandidates(
+                round, seat, _temporaryFuriten, _riichiFuriten);
+            if (candidates.Any(option => option.Kind == LegalActionKind.Tsumo))
+            {
+                TableOperationResult result = await SubmitSettlementAsync(snapshot, seat, TableSettlementAction.Tsumo, null).ConfigureAwait(false);
+                _lastOpenResultForTest = result.Status + ":" + result.ReasonCode + ":" + result.Detail;
+                return true;
+            }
+
+            if (candidates.Any(option => option.Kind == LegalActionKind.Kan) || !round.Tiles.DrawnTile.HasValue)
+                return false;
+
+            TileId discard = round.Tiles.DrawnTile.Value.Tile;
+            IReadOnlyList<int> eligible = LocalCandidateProvider.DeriveEligibleSeatsForDiscard(
+                round, seat, discard, _temporaryFuriten, _riichiFuriten);
+            await SubmitAsync(snapshot, seat, RoundCommand.Discard(round.RoundId, seat, discard, eligible),
+                "AUTO_SLEEVE_TSUMOGIRI").ConfigureAwait(false);
+            return true;
         }
 
         private async Task<bool> OpenDecisionAsync(

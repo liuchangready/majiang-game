@@ -358,6 +358,64 @@ namespace Mahjong.TableRuntime
                     _cheat.BeamSwap.Offer?.Seat == seat);
         }
 
+        public SleeveBloomOffer? GetConfirmedSleeveOfferForHost(int seat) =>
+            _round.Spec.ConfirmsDraw(seat) && _cheat?.SleeveBloom.ImmediateOffer?.Seat == seat
+                ? _cheat.SleeveBloom.ImmediateOffer
+                : null;
+
+        /// <summary>A null choice leaves the legal riichi kan alternatives to the player.</summary>
+        public SleeveBloomKeep? GetAutomaticRiichiSleeveChoiceForHost(int seat)
+        {
+            RoundStateMachine round = _round;
+            CheatState? cheat = _cheat;
+            SleeveBloomOffer? offer = cheat?.SleeveBloom.ImmediateOffer;
+            if (!round.Spec.ConfirmsDraw(seat) || !round.IsRiichi(seat) || offer?.Seat != seat ||
+                _cheatEconomy == null || _sleeveConfig == null || _settlementFactsPort == null)
+                return null;
+
+            var intent = new TableSettlementIntent(round.RoundId, TableSettlementAction.Tsumo, seat);
+            var source = new TableSettlementSourceRef(round.RoundId, round.Version, round.SourceFingerprint);
+            TableSettlementHostFacts host = _settlementFactsPort.Resolve(source, intent);
+            var context = new CheatTurnContext(seat, round.Phase, false, round.RiichiDeclared,
+                offer.CreatedTurnNumber, round.RoundId, cheat!.TileMarks.DealtRoundOrdinal, offer.DrawKind, 0L, offer.BootId);
+            SleeveBloomKeep? best = null;
+            long bestScore = long.MinValue;
+            bool canKan = false;
+            for (int i = 0; i < (offer.ThirdTile.HasValue ? 3 : 2); i++)
+            {
+                var keep = (SleeveBloomKeep)i;
+                var probe = new RoundCheatCommand(round.RoundId, seat, RoundCheatAction.SubmitSleeveBloomChoice,
+                    "sleeve-preview", RoundCheatPayload.SleeveBloomChoice(offer.OfferId, keep));
+                RoundCheatChange? candidate = RoundCheatTransition.Prepare(round, cheat, probe, context, _cheatEconomy, _sleeveConfig).Change;
+                if (candidate == null || !candidate.Accepted) continue;
+                RoundStateMachine selected = candidate.RoundChange.NextState;
+                var previewHost = new TableSettlementHostFacts(
+                    new TableSettlementSourceRef(selected.RoundId, selected.Version, selected.SourceFingerprint), host.Seats);
+                try
+                {
+                    RoundSettlementFacts facts = TableSettlementFactBuilder.Build(
+                        selected, intent, previewHost, "sleeve-preview", _clockPort.UtcNowMs, 0L);
+                    long score = RoundSettlementCalculator.CalculateTsumo(selected, facts).Settlement.FinalScores[seat];
+                    if (score > bestScore)
+                    {
+                        bestScore = score;
+                        best = keep;
+                    }
+                }
+                catch (RoundSettlementRejectedException)
+                {
+                    TileId drawn = selected.Tiles.DrawnTile!.Value.Tile;
+                    var matching = new List<TileId>(4);
+                    foreach (TileId tile in selected.Tiles.TilesInZone(TileZone.Hand, seat))
+                        if (tile.TypeIndex == drawn.TypeIndex) matching.Add(tile);
+                    canKan |= matching.Count == 4 && selected.Prepare(
+                        RoundCommand.ClosedKan(selected.RoundId, seat, matching[0], matching[1], matching[2], matching[3])).IsReady;
+                }
+            }
+
+            return best ?? (canKan ? (SleeveBloomKeep?)null : SleeveBloomKeep.First);
+        }
+
         /// <summary>Host-only last accepted N-2 calculation; immutable authority evidence.</summary>
         public Mahjong.Domain.Rules.RoundSettlementCalculation? LastSettlementCalculation =>
             _lastSettlementCalculation;
@@ -2297,6 +2355,15 @@ namespace Mahjong.TableRuntime
                     "No authoritative cheat aggregate/economy/sleeve configuration is wired into this actor.");
             }
 
+            if (command.Action == RoundCheatAction.SubmitSleeveBloomChoice &&
+                GetAutomaticRiichiSleeveChoiceForHost(command.Seat) is SleeveBloomKeep automaticKeep &&
+                command.Payload.Keep != automaticKeep)
+            {
+                return TableOperationResult.Rejected(_stateVersion,
+                    TableRuntimeReasonCode.FromCheat(RoundCheatErrorCode.CheatRejected, CheatErrorCode.InvalidSelection),
+                    "This riichi sleeve bloom has an automatic choice.");
+            }
+
             CheatTurnContext context = BuildCheatContext(now);
             RoundCheatPreparation preparation;
             try
@@ -2334,11 +2401,14 @@ namespace Mahjong.TableRuntime
             }
 
             RoundCheatChange change = preparation.Change!;
+            RoundCommand? confirmedDraw = _round.Spec.ConfirmsDraw(command.Seat) && command.Action == RoundCheatAction.SubmitSleeveBloom
+                ? RoundCommand.Draw(_round.RoundId, command.Seat)
+                : null;
             return await CommitCheatAndInstallAsync(
                 change,
                 roundEnvelope: null,
                 envelope,
-                roundCommand: null,
+                roundCommand: confirmedDraw,
                 command,
                 systemJournal: null,
                 context,
@@ -2421,6 +2491,9 @@ namespace Mahjong.TableRuntime
                 return false;
             }
 
+            if (_round.Spec.ConfirmsDraw(command.Seat) && command.Action == RoundCheatAction.SubmitSleeveBloomChoice)
+                return false;
+
             SleeveBloomOffer? offer = command.Action == RoundCheatAction.SubmitSleeveBloomChoice
                 ? cheat.SleeveBloom.ImmediateOffer
                 : command.Action == RoundCheatAction.SubmitSleeveBloomOffTurnChoice
@@ -2447,6 +2520,7 @@ namespace Mahjong.TableRuntime
         internal static bool ShouldDeliverDeferredDraw(RoundChange change)
         {
             return change.NextState.Phase == RoundPhase.Draw &&
+                   !change.NextState.Spec.ConfirmsDraw(change.NextState.CurrentSeat) &&
                    change.NextState.Tiles.WallRemaining > 0;
         }
 
@@ -7842,6 +7916,8 @@ namespace Mahjong.TableRuntime
         {
             switch (action.Kind)
             {
+                case LegalActionKind.Draw:
+                    return RoundCommand.Draw(_round.RoundId, action.Seat);
                 case LegalActionKind.Pass:
                     return RoundCommand.Pass(_round.RoundId, action.Seat);
                 case LegalActionKind.Discard:
@@ -8945,6 +9021,8 @@ namespace Mahjong.TableRuntime
         {
             switch (kind)
             {
+                case LegalActionKind.Draw:
+                    return ProtocolActionType.DrawTile;
                 case LegalActionKind.Pass:
                     return ProtocolActionType.Pass;
                 case LegalActionKind.Discard:
@@ -9050,7 +9128,12 @@ namespace Mahjong.TableRuntime
                 data.PrivateFacts,
                 capture.Decisions,
                 capture.EventInputs,
-                data.Session);
+                data.Session)
+            {
+                HideOffTurnSleeveWindow = _round.Spec.ConfirmSeatZeroDraw,
+                HideImmediateSleeveOffer = !identity.Audience.IsSpectator &&
+                    GetAutomaticRiichiSleeveChoiceForHost(identity.Audience.Seat).HasValue
+            };
 
             IReadOnlyList<TableProjectedEvent> events = committedEvents == null
                 ? Array.Empty<TableProjectedEvent>()

@@ -277,7 +277,8 @@ namespace Mahjong.Domain.Cheat
             int seat,
             string requestId,
             SleeveBloomActivationInput activationInput,
-            bool protectOffTurnThird)
+            bool protectOffTurnThird,
+            bool confirmedDraw = false)
         {
             if (state == null) throw new ArgumentNullException(nameof(state));
             if (map == null) throw new ArgumentNullException(nameof(map));
@@ -324,6 +325,8 @@ namespace Mahjong.Domain.Cheat
 
             TileId secondTile;
             TileId? thirdTile = null;
+            // A confirmed draw uses authoritative tile evidence instead of a client-selected request ID.
+            string traitInput = confirmedDraw ? TileStateHash.Format(map.StateHash) : requestId;
             if (drawKind == SleeveBloomDrawKind.Normal)
             {
                 if (activationInput.IsFrozen)
@@ -348,7 +351,7 @@ namespace Mahjong.Domain.Cheat
 
                 IReadOnlyList<int> available = AvailableWallIndices(map, sleeve, protectOffTurnThird);
                 if (available.Count > 1 && seat == 0 && PlayerCharacterRules.GrantsThirdSleeveCandidate(
-                    state.PlayerCharacterId, state.CharacterTraitsVersion, context.RoundId, seat, context.TurnNumber, requestId))
+                    state.PlayerCharacterId, state.CharacterTraitsVersion, context.RoundId, seat, context.TurnNumber, traitInput))
                 {
                     thirdTile = map.TileAt(TilePosition.Wall(available[1]));
                 }
@@ -362,6 +365,13 @@ namespace Mahjong.Domain.Cheat
                 }
 
                 secondTile = map.TileAt(TilePosition.DeadWall(map.RinshanPointer));
+                if (confirmedDraw && seat == 0 && map.RinshanPointer < 3 &&
+                    map.TryGetTileAt(TilePosition.DeadWall(map.RinshanPointer + 1), out TileId extra) &&
+                    PlayerCharacterRules.GrantsThirdSleeveCandidate(
+                        state.PlayerCharacterId, state.CharacterTraitsVersion, context.RoundId, seat, context.TurnNumber, traitInput))
+                {
+                    thirdTile = extra;
+                }
             }
 
             CheatState? charged = Charge(state, economy, seat, EntryId("bloom", seat, requestId), cost, "SLEEVE_BLOOM", out CheatEvent chargeEvent, out CheatTransition? chargeFailure);
@@ -481,8 +491,6 @@ namespace Mahjong.Domain.Cheat
                 }
                 else
                 {
-                    if (keep == SleeveBloomKeep.Third)
-                        return CheatTransition.Rejected(CheatErrorCode.InvalidSelection, "A third rinshan candidate is unavailable.");
                     CheatTransition? failure = CheckRinshanSwapFeasible(map, drawnTile);
                     if (failure != null)
                     {
@@ -491,12 +499,14 @@ namespace Mahjong.Domain.Cheat
                             : failure;
                     }
 
-                    if (!map.TileAt(TilePosition.DeadWall(map.RinshanPointer)).Equals(offer.SecondTile))
+                    int slot = map.RinshanPointer + (keep == SleeveBloomKeep.Third ? 1 : 0);
+                    TileId expected = keep == SleeveBloomKeep.Third ? offer.ThirdTile!.Value : offer.SecondTile;
+                    if (slot >= 4 || !map.TryGetTileAt(TilePosition.DeadWall(slot), out TileId candidate) || candidate != expected)
                     {
                         return ClearStaleSleeveOffer(state, seat, offer.OfferId, "The frozen rinshan candidate drifted.");
                     }
 
-                    TransitionResult move = map.SwapDrawnWithNextRinshan(seat, drawnTile);
+                    TransitionResult move = map.SwapDrawnWithRinshan(seat, drawnTile, slot);
                     if (!move.IsSuccess)
                     {
                         return CheatTransition.Rejected(CheatErrorCode.PhysicalMoveFailed, "Rinshan swap failed: " + move.Error!.Message);
@@ -1304,7 +1314,7 @@ namespace Mahjong.Domain.Cheat
             phase == RoundPhase.ResponseWindow ||
             phase == RoundPhase.ChankanWindow;
 
-        private static SleeveBloomDrawKind DrawKindOf(TilePositionMap map)
+        internal static SleeveBloomDrawKind DrawKindOf(TilePositionMap map)
         {
             if (!map.DrawnTile.HasValue)
             {

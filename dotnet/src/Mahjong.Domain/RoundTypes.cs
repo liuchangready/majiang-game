@@ -235,7 +235,8 @@ namespace Mahjong.Domain
             int roundNumber,
             int honbaSticks,
             IReadOnlyList<long> scores,
-            int riichiSticks)
+            int riichiSticks,
+            bool confirmSeatZeroDraw = false)
         {
             RoundId = string.IsNullOrWhiteSpace(roundId)
                 ? throw new ArgumentException("roundId cannot be blank.", nameof(roundId))
@@ -271,9 +272,14 @@ namespace Mahjong.Domain
             RoundNumber = roundNumber;
             HonbaSticks = honbaSticks;
             RiichiSticks = riichiSticks;
+            ConfirmSeatZeroDraw = confirmSeatZeroDraw;
         }
 
         public string RoundId { get; }
+
+        public bool ConfirmSeatZeroDraw { get; }
+
+        public bool ConfirmsDraw(int seat) => ConfirmSeatZeroDraw && seat == 0;
 
         public int DealerSeat { get; }
 

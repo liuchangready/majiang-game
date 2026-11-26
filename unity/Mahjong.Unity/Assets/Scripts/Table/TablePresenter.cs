@@ -157,6 +157,7 @@ namespace Mahjong.Unity.Table
         private PlayerBeamSwapCandidateState? _selectedBeamCandidate;
         private bool _seeThrough;
         private string? _currentSleeveOfferId;
+        private bool _sleeveBeforeDraw;
         private string? _currentBeamOfferId;
 
         // Context tracking for decision & cheat invalidation
@@ -1210,7 +1211,10 @@ namespace Mahjong.Unity.Table
             bool discardSelected = _interactionState.Selection.Kind == TableSelectionKind.Action &&
                                    _interactionState.Selection.Action != null &&
                                    _interactionState.Selection.Action.Action == PlayerActionKind.DiscardTile;
-            SetButtonActive(_discardButton, canDiscard && discardSelected);
+            bool canDraw = FindDrawOption(view) != null;
+            SetButtonActive(_discardButton, canDraw || (canDiscard && discardSelected));
+            if (LocalLiteRunContext.Enabled)
+                SetActionLabel(_discardButton, canDraw ? "摸牌" : "出牌");
             SetButtonActive(_chiButton, canChi);
             SetButtonActive(_ponButton, canPon);
             SetButtonActive(_kanButton, canKan);
@@ -1233,13 +1237,25 @@ namespace Mahjong.Unity.Table
         {
             if (LocalLiteRunContext.Enabled)
             {
-                if (_cheatPanelRoot != null) _cheatPanelRoot.SetActive(false);
-                if (_cheatPointsText != null) _cheatPointsText.text = string.Empty;
+                var own = view.Own;
+                bool human = view.Identity.IsPrivateAuthorized && own?.Control?.ControlledByComputer == false &&
+                             !HasPendingControl();
+                var offer = human ? own?.Cheat?.ImmediateSleeveBloom : null;
+                bool canSelect = human && CanPreselectSleeve(view);
+                if (!human || view.Board.Phase == PlayerGamePhase.RoundEnd || view.Board.Phase == PlayerGamePhase.MatchEnd ||
+                    (view.Board.CurrentSeat == view.Identity.Seat && own?.DrawnTileId.HasValue == true))
+                    _sleeveBeforeDraw = false;
+                if (_cheatPanelRoot != null) _cheatPanelRoot.SetActive(canSelect || offer != null);
+                if (_cheatPointsText != null)
+                    _cheatPointsText.text = own?.Cheat == null ? string.Empty : $"出千点数: {own.Cheat.CheatPoints}";
                 SetButtonActive(_tileMarkButton, false);
-                SetButtonActive(_sleeveBloomButton, false);
+                SetButtonActive(_sleeveBloomButton, canSelect || offer != null);
+                SetActionLabel(_sleeveBloomButton, offer != null ? "选择袖牌" :
+                    _sleeveBeforeDraw ? "取消袖里藏花" : "预选袖里藏花");
                 SetButtonActive(_beamSwapButton, false);
                 SetButtonActive(_preparationButton, false);
-                CloseAllCheatDialogs();
+                if (offer != null && _sleeveBloomDialog != null) _sleeveBloomDialog.SetActive(true);
+                UpdateSleeveBloomDialog(offer);
                 return;
             }
 
@@ -1281,6 +1297,32 @@ namespace Mahjong.Unity.Table
             UpdateSleeveBloomDialog(sleeveState);
             UpdateBeamSwapDialog(cheat.BeamSwap);
             UpdatePreparationDialog(cheat.Preparation);
+        }
+
+        private static PlayerLegalActionState? FindDrawOption(PlayerTableViewState view)
+        {
+            if (!LocalLiteRunContext.Enabled || view.Board.CurrentSeat != view.Identity.Seat ||
+                (view.Board.Phase != PlayerGamePhase.Draw && view.Board.Phase != PlayerGamePhase.KanDraw) ||
+                view.Own?.Decision == null)
+                return null;
+
+            foreach (PlayerLegalActionState choice in view.Own.Decision.Candidates)
+                if (choice.Action == PlayerActionKind.DrawTile) return choice;
+            return null;
+        }
+
+        private static bool CanPreselectSleeve(PlayerTableViewState view) =>
+            view.Own?.Cheat != null &&
+            (FindDrawOption(view) != null ||
+             (view.Seat(view.Identity.Seat)?.Riichi == true &&
+              view.Board.CurrentSeat != view.Identity.Seat &&
+              (view.Board.Phase == PlayerGamePhase.CheatWindow || view.Board.Phase == PlayerGamePhase.Discard ||
+               view.Board.Phase == PlayerGamePhase.ResponseWindow)));
+
+        private static void SetActionLabel(Button? button, string value)
+        {
+            TMP_Text? label = button != null ? button.GetComponentInChildren<TMP_Text>(true) : null;
+            if (label != null && label.text != value) label.text = value;
         }
 
         private void RenderSettlementNavigation(PlayerTableViewState view)
@@ -1688,9 +1730,20 @@ namespace Mahjong.Unity.Table
             var ownerContext = BuildOwnerContext();
             if (ownerContext == null) return;
 
-            var outcome = _interactionState.BuildIntent(TableIntentKind.SubmitAction, ownerContext);
+            TableIntentKind intent = TableIntentKind.SubmitAction;
+            PlayerLegalActionState? draw = FindDrawOption(_latestView);
+            if (draw != null)
+            {
+                if (_sleeveBeforeDraw)
+                    intent = TableIntentKind.SubmitSleeveBloom;
+                else if (!_interactionState.SelectAction(draw).Accepted)
+                    return;
+            }
+
+            var outcome = _interactionState.BuildIntent(intent, ownerContext);
             if (outcome.Accepted && outcome.Intent != null)
             {
+                if (draw != null) _sleeveBeforeDraw = false;
                 SubmitIntentAsync(outcome.Intent);
             }
             else
@@ -1960,6 +2013,16 @@ namespace Mahjong.Unity.Table
             if (!ConsumeInputLifecycle(_sleeveBloomButton?.gameObject)) return;
             var cheat = _latestView?.Own?.Cheat;
             if (cheat == null) return;
+
+            if (LocalLiteRunContext.Enabled && cheat.ImmediateSleeveBloom == null)
+            {
+                if (_latestView != null && CanPreselectSleeve(_latestView))
+                {
+                    _sleeveBeforeDraw = !_sleeveBeforeDraw;
+                    RenderCheats(_latestView);
+                }
+                return;
+            }
 
             var sleeve = cheat.ImmediateSleeveBloom ?? cheat.OffTurnSleeveBloom;
             if (sleeve == null)
@@ -2916,6 +2979,7 @@ namespace Mahjong.Unity.Table
             _lastDecisionId = null;
             _lastControlEpoch = null;
             _lastRoundId = null;
+            _sleeveBeforeDraw = false;
             _lastOwnerEpoch = null;
             SetControlButtons(visible: false, claimInteractable: false, releaseInteractable: false);
             SetControlStatus(string.Empty);

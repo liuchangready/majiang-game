@@ -98,7 +98,8 @@ namespace Mahjong.LocalHost
                 roundNumber,
                 honba,
                 scores,
-                riichiSticks);
+                riichiSticks,
+                options.ConfirmSeatZeroDraw);
             return RoundStateMachine.CreateDealt(spec, dealt, RoundPhase.CheatWindow);
         }
 

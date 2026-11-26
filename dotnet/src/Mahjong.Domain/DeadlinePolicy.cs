@@ -15,7 +15,8 @@ namespace Mahjong.Domain
         Kan = 6,
         Riichi = 7,
         Cheat = 8,
-        Other = 9
+        Other = 9,
+        Draw = 10
     }
 
     public sealed class LegalActionOption
@@ -318,10 +319,12 @@ namespace Mahjong.Domain
             LegalActionOption? pass = null;
             LegalActionOption? tsumogiri = null;
             LegalActionOption? lowestDiscard = null;
+            LegalActionOption? draw = null;
 
             for (int i = 0; i < decision.Candidates.Count; i++)
             {
                 LegalActionOption candidate = decision.Candidates[i];
+                if (candidate.Kind == LegalActionKind.Draw) draw = candidate;
                 if (candidate.Kind == LegalActionKind.Pass && pass == null)
                 {
                     pass = candidate;
@@ -356,7 +359,7 @@ namespace Mahjong.Domain
                 return tsumogiri;
             }
 
-            return lowestDiscard;
+            return lowestDiscard ?? draw;
         }
     }
 

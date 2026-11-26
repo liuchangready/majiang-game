@@ -60,6 +60,8 @@ namespace Mahjong.LocalHost
 
         public string PlayerCharacterId { get; set; } = PlayerCharacterIds.Player;
 
+        public bool ConfirmSeatZeroDraw { get; set; }
+
         /// <summary>AI profile and seeded cheat configuration for automated seats.</summary>
         public LocalAiOptions Ai { get; set; } = new LocalAiOptions();
 

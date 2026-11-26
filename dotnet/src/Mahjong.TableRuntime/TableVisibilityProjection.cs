@@ -811,7 +811,7 @@ namespace Mahjong.TableRuntime
             }
 
             CheatPrivateView cheatView = RequireCheat(cheat).ViewFor(seat);
-            TableOwnerCheatView ownerCheat = BuildOwnerCheat(cheatView, seat);
+            TableOwnerCheatView ownerCheat = BuildOwnerCheat(cheatView, seat, context);
             return new TableOwnerPrivateView(
                 seat,
                 closed,
@@ -1272,7 +1272,7 @@ namespace Mahjong.TableRuntime
             PrivateCheatView contractCheat = BuildContractCheat(
                 cheatView,
                 privateFacts != null && privateFacts.HasPreparation,
-                seat);
+                seat, context);
 
             PlayerControlView? contractControl = control == null
                 ? null
@@ -1294,7 +1294,7 @@ namespace Mahjong.TableRuntime
                 contractControl);
         }
 
-        private static PrivateCheatView BuildContractCheat(CheatPrivateView view, bool hasPreparation, int seat)
+        private static PrivateCheatView BuildContractCheat(CheatPrivateView view, bool hasPreparation, int seat, TableProjectionContext context)
         {
             if (view.Seat != seat)
             {
@@ -1321,10 +1321,10 @@ namespace Mahjong.TableRuntime
                     StableReason(entry.Reason)));
             }
 
-            bool hasSleeve = view.ImmediateOffer != null ||
+            bool hasSleeve = (!context.HideImmediateSleeveOffer && view.ImmediateOffer != null) ||
                              view.OffTurnOffer != null ||
                              view.Reservation != null ||
-                             !string.IsNullOrEmpty(view.WindowId);
+                             (!context.HideOffTurnSleeveWindow && !string.IsNullOrEmpty(view.WindowId));
             return new PrivateCheatView(
                 view.Balance,
                 ledger,
@@ -1334,7 +1334,7 @@ namespace Mahjong.TableRuntime
                 hasPreparation);
         }
 
-        private static TableOwnerCheatView BuildOwnerCheat(CheatPrivateView view, int seat)
+        private static TableOwnerCheatView BuildOwnerCheat(CheatPrivateView view, int seat, TableProjectionContext context)
         {
             if (view.Seat != seat)
             {
@@ -1386,10 +1386,10 @@ namespace Mahjong.TableRuntime
                 view.Balance,
                 ledger,
                 marks,
-                MapOffer(view.ImmediateOffer),
+                context.HideImmediateSleeveOffer ? null : MapOffer(view.ImmediateOffer),
                 MapOffer(view.OffTurnOffer),
                 MapReservation(view.Reservation),
-                view.WindowId,
+                context.HideOffTurnSleeveWindow ? null : view.WindowId,
                 MapBeamOffer(view.BeamSwapOffer));
         }
 

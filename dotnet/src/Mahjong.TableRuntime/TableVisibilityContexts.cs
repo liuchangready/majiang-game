@@ -374,6 +374,10 @@ namespace Mahjong.TableRuntime
 
         public TableProjectionPolicy Policy { get; }
 
+        internal bool HideOffTurnSleeveWindow { get; set; }
+
+        internal bool HideImmediateSleeveOffer { get; set; }
+
         public IReadOnlyList<ClockView> Clocks => _clocks;
 
         public IReadOnlyList<TableSeatPublicFacts> PublicFacts => _publicFacts;
