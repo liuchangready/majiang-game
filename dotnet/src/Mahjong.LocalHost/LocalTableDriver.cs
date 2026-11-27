@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using Mahjong.Contracts;
 using Mahjong.Domain;
 using Mahjong.Domain.Cheat;
+using Mahjong.Domain.Rules;
 using Mahjong.TableRuntime;
 using Mahjong.Ai;
 
@@ -51,6 +52,12 @@ namespace Mahjong.LocalHost
 
         /// <summary>Opt-in evidence hook for a real AI choice, before its normal authority submission.</summary>
         internal Action<int, Mahjong.Ai.AiObservation, LegalActionOption>? AiDecisionChosenForTest { get; set; }
+
+        /// <summary>Test-only callback with the authoritative result of a captured AI submission.</summary>
+        internal Action<int, Mahjong.Ai.AiObservation, TableOperationResult>? AiSubmitCompletedForTest { get; set; }
+
+        /// <summary>Test-only strategy override for driving exact legal candidate choices through LocalTableDriver.</summary>
+        internal IAiStrategy? StrategyForTest { get; set; }
 
         public LocalTableDriver(
             TableActor actor,
@@ -276,27 +283,47 @@ namespace Mahjong.LocalHost
             // Authorized cheat candidates are captured and submitted inside the actor's serial
             // queue. At most one cheat action is admitted per driver iteration so an offer and
             // the following ordinary action remain separate, observable decisions.
-            if (_cheatStrategy != null && _cheatStrategy.CheatPolicy.Enabled)
+            bool cheatsEnabled = _cheatStrategy != null && _cheatStrategy.CheatPolicy.Enabled;
+            RoundStateMachine? currentRoundForCheat = null;
+            for (int i = 0; i < 4; i++)
             {
-                for (int i = 0; i < 4; i++)
+                if (!_aiSeats[i])
                 {
-                    if (!_aiSeats[i])
+                    continue;
+                }
+
+                bool hasPaidOffer = _actor.HasActiveCheatOffer(i);
+                if (!cheatsEnabled && !hasPaidOffer)
+                {
+                    continue;
+                }
+
+                if (snapshot.Phase == RoundPhase.CheatWindow && i == snapshot.CurrentSeat)
+                {
+                    currentRoundForCheat ??= _actor.GetRoundStateForHost();
+                    if (currentRoundForCheat.Spec.ConfirmsDraw(i) &&
+                        currentRoundForCheat.IsRiichi(i) &&
+                        _actor.GetConfirmedSleeveOfferForHost(i) != null)
                     {
                         continue;
                     }
+                }
 
+                if (_cheatStrategy != null)
+                {
                     // A reconstructed driver must continue the current round's budget from
                     // the authoritative ledger, not from an empty in-memory counter.
                     _cheatStrategy.RestoreRoundSpend(
                         snapshot.RoundId,
                         i,
                         _actor.GetAiCheatSpentThisRound(i));
-                    bool takeoverMaySpend = _takeoverSeats[i] &&
-                        _cheatStrategy.CheatPolicy.TakeoverMaySpend;
-                    if (await TryAiCheatAsync(i, snapshot, takeoverMaySpend).ConfigureAwait(false))
-                    {
-                        return;
-                    }
+                }
+
+                bool takeoverMaySpend = _takeoverSeats[i] &&
+                    (_cheatStrategy?.CheatPolicy.TakeoverMaySpend ?? false);
+                if (await TryAiCheatAsync(i, snapshot, takeoverMaySpend).ConfigureAwait(false))
+                {
+                    return;
                 }
             }
 
@@ -560,13 +587,44 @@ namespace Mahjong.LocalHost
                 return false;
             }
 
-            string? optionId = _cheatStrategy!.ChooseCheat(view);
+            if (!view.IsOfferChoice && (_cheatStrategy == null || !_cheatStrategy.CheatPolicy.Enabled))
+            {
+                return false;
+            }
+
+            string? optionId = _cheatStrategy != null && _cheatStrategy.CheatPolicy.Enabled
+                ? _cheatStrategy.ChooseCheat(view)
+                : null;
+            if (optionId == null && view.IsOfferChoice)
+            {
+                for (int i = 0; i < view.Options.Count; i++)
+                {
+                    if (view.Options[i].IsSafeDefault)
+                    {
+                        optionId = view.Options[i].OptionId;
+                        break;
+                    }
+                }
+            }
+
             if (optionId == null)
             {
                 return false;
             }
 
             TableAiCheatPlan? plan = captured.Opportunity.PlanFor(optionId);
+            if (plan == null && view.IsOfferChoice)
+            {
+                for (int i = 0; i < view.Options.Count; i++)
+                {
+                    if (view.Options[i].IsSafeDefault)
+                    {
+                        plan = captured.Opportunity.PlanFor(view.Options[i].OptionId);
+                        break;
+                    }
+                }
+            }
+
             if (plan == null)
             {
                 Observe(
@@ -663,11 +721,12 @@ namespace Mahjong.LocalHost
             Mahjong.Ai.AiObservation observation = captured.Observation;
             LegalActionOption? chosen = null;
 
-            if (_aiStrategy != null)
+            IAiStrategy? strategy = StrategyForTest ?? _aiStrategy;
+            if (strategy != null)
             {
                 try
                 {
-                    chosen = _aiStrategy.Decide(observation, _stop.Token).Action;
+                    chosen = strategy.Decide(observation, _stop.Token).Action;
                 }
                 catch (Exception exception) when (exception is not OperationCanceledException)
                 {
@@ -782,6 +841,9 @@ namespace Mahjong.LocalHost
                 return;
             }
 
+            var intent = new Mahjong.Ai.CommandIntent(observation, chosen, "local-ai", 1);
+            _ = new Mahjong.Ai.AiDecision(observation, intent, 1.0d);
+
             AiDecisionChosenForTest?.Invoke(seat, observation, chosen);
             Observe(
                 observation.RoundId,
@@ -800,141 +862,211 @@ namespace Mahjong.LocalHost
                 await BeforeAiSubmitForTest(seat, observation).ConfigureAwait(false);
             }
 
-            string? pendingId = _actor.GetPendingDecisionId(seat);
-            DecisionId? decId = pendingId != null ? new DecisionId(pendingId) : (DecisionId?)null;
             RoundStateMachine round = _actor.GetRoundStateForHost();
-            TableSnapshot snapshot = await _actor.GetSnapshotAsync(_stop.Token).ConfigureAwait(false);
-
-            if (chosen.Kind == LegalActionKind.Discard && chosen.Tile.HasValue)
+            string roundId = observation.RoundId;
+            RoundCommand? command = null;
+            TableOperationResult? submitResult = null;
+            switch (chosen.Kind)
             {
-                IReadOnlyList<int> eligible = LocalCandidateProvider.DeriveEligibleSeatsForDiscard(
-                    round,
-                    seat,
-                    chosen.Tile.Value,
-                    _temporaryFuriten,
-                    _riichiFuriten);
-                RoundCommand command = RoundCommand.Discard(snapshot.RoundId, seat, chosen.Tile.Value, eligible);
-                await SubmitAsync(snapshot, seat, command, "AI_DISCARD", decId).ConfigureAwait(false);
-            }
-            else if (chosen.Kind == LegalActionKind.Pass)
-            {
-                RoundCommand command = RoundCommand.Pass(snapshot.RoundId, seat);
-                await SubmitAsync(snapshot, seat, command, "AI_PASS", decId).ConfigureAwait(false);
-            }
-            else if (chosen.Kind == LegalActionKind.Riichi && chosen.Tile.HasValue)
-            {
-                IReadOnlyList<int> eligible = LocalCandidateProvider.DeriveEligibleSeatsForDiscard(
-                    round,
-                    seat,
-                    chosen.Tile.Value,
-                    _temporaryFuriten,
-                    _riichiFuriten);
-                RoundCommand command = RoundCommand.Riichi(
-                    snapshot.RoundId,
-                    seat,
-                    chosen.Tile.Value,
-                    eligible);
-                await SubmitAsync(snapshot, seat, command, "AI_RIICHI", decId).ConfigureAwait(false);
-            }
-            else if (chosen.Kind == LegalActionKind.Chi && chosen.Tiles.Count == 3)
-            {
-                RoundCommand command = RoundCommand.Chi(
-                    snapshot.RoundId,
-                    seat,
-                    chosen.Tiles[0],
-                    chosen.Tiles[1],
-                    chosen.Tiles[2]);
-                await SubmitAsync(snapshot, seat, command, "AI_CHI", decId).ConfigureAwait(false);
-            }
-            else if (chosen.Kind == LegalActionKind.Kan &&
-                     chosen.OptionId != null &&
-                     chosen.OptionId.StartsWith("closed-kan", StringComparison.Ordinal) &&
-                     chosen.Tiles.Count == 4)
-            {
-                RoundCommand command = RoundCommand.ClosedKan(
-                    snapshot.RoundId,
-                    seat,
-                    chosen.Tiles[0],
-                    chosen.Tiles[1],
-                    chosen.Tiles[2],
-                    chosen.Tiles[3]);
-                await SubmitAsync(snapshot, seat, command, "AI_CLOSED_KAN", decId).ConfigureAwait(false);
-            }
-            else if (chosen.Kind == LegalActionKind.Kan &&
-                     chosen.OptionId != null &&
-                     chosen.OptionId.StartsWith("open-kan", StringComparison.Ordinal) &&
-                     chosen.Tiles.Count == 4)
-            {
-                RoundCommand command = RoundCommand.OpenKan(
-                    snapshot.RoundId,
-                    seat,
-                    chosen.Tiles[0],
-                    chosen.Tiles[1],
-                    chosen.Tiles[2],
-                    chosen.Tiles[3]);
-                await SubmitAsync(snapshot, seat, command, "AI_OPEN_KAN", decId).ConfigureAwait(false);
-            }
-            else if (chosen.Kind == LegalActionKind.Tsumo)
-            {
-                await SubmitSettlementAsync(snapshot, seat, TableSettlementAction.Tsumo, decId).ConfigureAwait(false);
-            }
-            else if (chosen.Kind == LegalActionKind.Ron)
-            {
-                await SubmitSettlementAsync(snapshot, seat, TableSettlementAction.Ron, decId).ConfigureAwait(false);
-            }
-            else if (chosen.Kind == LegalActionKind.Pon)
-            {
-                RoundResponseWindow? window = round.Window;
-                if (window != null)
+                case LegalActionKind.Discard when chosen.Tile.HasValue:
                 {
-                    IReadOnlyList<TileId> hand = round.Tiles.TilesInZone(TileZone.Hand, seat);
-                    var matched = new List<TileId>(2);
-                    for (int i = 0; i < hand.Count && matched.Count < 2; i++)
-                    {
-                        if (hand[i].SameType(window.TargetTile))
-                        {
-                            matched.Add(hand[i]);
-                        }
-                    }
-
-                    if (matched.Count == 2)
-                    {
-                        RoundCommand command = RoundCommand.Pon(
-                            snapshot.RoundId,
-                            seat,
-                            window.TargetTile,
-                            matched[0],
-                            matched[1]);
-                        await SubmitAsync(snapshot, seat, command, "AI_PON", decId).ConfigureAwait(false);
-                    }
+                    IReadOnlyList<int> eligible = LocalCandidateProvider.DeriveEligibleSeatsForDiscard(
+                        round,
+                        seat,
+                        chosen.Tile.Value,
+                        _temporaryFuriten,
+                        _riichiFuriten);
+                    command = RoundCommand.Discard(roundId, seat, chosen.Tile.Value, eligible);
+                    break;
                 }
+                case LegalActionKind.Riichi when chosen.Tile.HasValue:
+                {
+                    IReadOnlyList<int> eligible = LocalCandidateProvider.DeriveEligibleSeatsForDiscard(
+                        round,
+                        seat,
+                        chosen.Tile.Value,
+                        _temporaryFuriten,
+                        _riichiFuriten);
+                    command = RoundCommand.Riichi(roundId, seat, chosen.Tile.Value, eligible);
+                    break;
+                }
+                case LegalActionKind.Pass:
+                    command = RoundCommand.Pass(roundId, seat);
+                    break;
+                case LegalActionKind.Draw:
+                    command = RoundCommand.Draw(roundId, seat);
+                    break;
+                case LegalActionKind.Chi when chosen.Tiles.Count == 3:
+                    command = RoundCommand.Chi(roundId, seat, chosen.Tiles[0], chosen.Tiles[1], chosen.Tiles[2]);
+                    break;
+                case LegalActionKind.Pon when chosen.Tiles.Count == 3:
+                    command = RoundCommand.Pon(roundId, seat, chosen.Tiles[0], chosen.Tiles[1], chosen.Tiles[2]);
+                    break;
+                case LegalActionKind.Kan when chosen.OptionId != null &&
+                    chosen.OptionId.StartsWith("closed-kan", StringComparison.Ordinal) &&
+                    chosen.Tiles.Count == 4:
+                    command = RoundCommand.ClosedKan(
+                        roundId, seat, chosen.Tiles[0], chosen.Tiles[1], chosen.Tiles[2], chosen.Tiles[3]);
+                    break;
+                case LegalActionKind.Kan when chosen.OptionId != null &&
+                    chosen.OptionId.StartsWith("open-kan", StringComparison.Ordinal) &&
+                    chosen.Tiles.Count == 4:
+                    command = RoundCommand.OpenKan(
+                        roundId, seat, chosen.Tiles[0], chosen.Tiles[1], chosen.Tiles[2], chosen.Tiles[3]);
+                    break;
+                case LegalActionKind.Kan when chosen.OptionId != null &&
+                    chosen.OptionId.StartsWith("added-kan", StringComparison.Ordinal) &&
+                    chosen.Tile.HasValue:
+                {
+                    IReadOnlyList<int> eligible = LocalCandidateProvider.DeriveEligibleSeatsForAddedKan(
+                        round,
+                        seat,
+                        chosen.Tile.Value,
+                        _temporaryFuriten,
+                        _riichiFuriten);
+                    command = RoundCommand.AddedKan(roundId, seat, chosen.Tile.Value, eligible);
+                    break;
+                }
+                case LegalActionKind.Tsumo:
+                    submitResult = await SubmitCapturedSettlementAsync(captured, TableSettlementAction.Tsumo)
+                        .ConfigureAwait(false);
+                    break;
+                case LegalActionKind.Ron:
+                    submitResult = await SubmitCapturedSettlementAsync(captured, TableSettlementAction.Ron)
+                        .ConfigureAwait(false);
+                    break;
+                case LegalActionKind.Other when observation.BasicContext != null &&
+                    observation.BasicContext.TryGetFacts(chosen, out BasicCandidateFacts otherFacts) &&
+                    otherFacts.AbortiveDraw == BasicAbortiveDrawKind.NineTerminals:
+                    submitResult = await SubmitCapturedSettlementAsync(
+                            captured,
+                            TableSettlementAction.AbortiveDraw,
+                            SettlementAbortiveDrawReason.NineTerminals)
+                        .ConfigureAwait(false);
+                    break;
             }
-            else if (chosen.Kind == LegalActionKind.Kan &&
-                     chosen.OptionId != null &&
-                     chosen.OptionId.StartsWith("added-kan", StringComparison.Ordinal) &&
-                     chosen.Tile.HasValue)
+
+            if (command != null)
             {
-                IReadOnlyList<int> eligible = LocalCandidateProvider.DeriveEligibleSeatsForAddedKan(
-                    round,
-                    seat,
-                    chosen.Tile.Value,
-                    _temporaryFuriten,
-                    _riichiFuriten);
-                RoundCommand command = RoundCommand.AddedKan(
-                    snapshot.RoundId,
-                    seat,
-                    chosen.Tile.Value,
-                    eligible);
-                await SubmitAsync(snapshot, seat, command, "AI_ADDED_KAN", decId).ConfigureAwait(false);
+                submitResult = await SubmitCapturedAiCommandAsync(
+                        captured,
+                        command,
+                        CapturedCommandApi(chosen))
+                    .ConfigureAwait(false);
             }
-            else
+
+            if (submitResult != null)
             {
-                var intent = new Mahjong.Ai.CommandIntent(observation, chosen, "local-ai", 1);
-                var decision = new Mahjong.Ai.AiDecision(observation, intent, 1.0d);
-                await _actor.CompleteAiAsync(decision, _stop.Token).ConfigureAwait(false);
+                AiSubmitCompletedForTest?.Invoke(seat, observation, submitResult);
+                bool accepted = submitResult.Status == TableOperationStatus.Accepted ||
+                                submitResult.Status == TableOperationStatus.Replayed;
+                Observe(
+                    observation.RoundId,
+                    seat,
+                    observation.Phase,
+                    (ulong)observation.StateVersion,
+                    accepted ? "ordinary" : "ordinary-rejected",
+                    chosen.OptionId ?? chosen.Kind.ToString(),
+                    "mahjong",
+                    accepted ? "accepted" : "rejected",
+                    submitResult.ReasonCode,
+                    submitResult.Detail ?? string.Empty);
             }
 
             _lastDecisionKeys[seat] = string.Empty;
+        }
+
+        private static string CapturedCommandApi(LegalActionOption chosen)
+        {
+            switch (chosen.Kind)
+            {
+                case LegalActionKind.Discard:
+                    return "AI_DISCARD";
+                case LegalActionKind.Riichi:
+                    return "AI_RIICHI";
+                case LegalActionKind.Pass:
+                    return "AI_PASS";
+                case LegalActionKind.Draw:
+                    return "AI_DRAW";
+                case LegalActionKind.Chi:
+                    return "AI_CHI";
+                case LegalActionKind.Pon:
+                    return "AI_PON";
+                case LegalActionKind.Kan when chosen.OptionId != null &&
+                    chosen.OptionId.StartsWith("closed-kan", StringComparison.Ordinal):
+                    return "AI_CLOSED_KAN";
+                case LegalActionKind.Kan when chosen.OptionId != null &&
+                    chosen.OptionId.StartsWith("open-kan", StringComparison.Ordinal):
+                    return "AI_OPEN_KAN";
+                case LegalActionKind.Kan when chosen.OptionId != null &&
+                    chosen.OptionId.StartsWith("added-kan", StringComparison.Ordinal):
+                    return "AI_ADDED_KAN";
+                default:
+                    return "AI_" + chosen.Kind.ToString().ToUpperInvariant();
+            }
+        }
+
+        private async Task<TableOperationResult> SubmitCapturedAiCommandAsync(
+            TableAiObservationResult captured,
+            RoundCommand command,
+            string api)
+        {
+            Mahjong.Ai.AiObservation observation = captured.Observation!;
+            var decisionId = new DecisionId(observation.DecisionKey.DecisionId);
+            string requestId = "local-ai-" + Interlocked.Increment(ref _requestCounter)
+                .ToString(System.Globalization.CultureInfo.InvariantCulture);
+            byte[] business = System.Text.Encoding.UTF8.GetBytes(
+                api + "|" + requestId + "|" + observation.RoundId + "|" + observation.StateVersion +
+                "|" + observation.Seat + "|" + command.Action + "|" +
+                (command.Tile?.Value.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "-") + "|" +
+                (command.MeldTiles == null || command.MeldTiles.Count == 0
+                    ? "-"
+                    : string.Join(",", command.MeldTiles.Select(t => t.Value))));
+            var envelope = new TableCommandEnvelope(
+                command,
+                new RequestId(requestId),
+                new StateVersion((ulong)observation.StateVersion),
+                captured.OwnerEpoch,
+                new ControlEpoch(unchecked((ulong)observation.ControlEpoch)),
+                decisionId,
+                captured.RecoveryGeneration,
+                _scopes[observation.Seat],
+                api,
+                TablePayloadSha256.Compute(business),
+                observation.DecisionDeadlineMillis);
+            return await _actor.SubmitAsync(envelope, _stop.Token).ConfigureAwait(false);
+        }
+
+        private async Task<TableOperationResult> SubmitCapturedSettlementAsync(
+            TableAiObservationResult captured,
+            TableSettlementAction action,
+            SettlementAbortiveDrawReason? abortiveReason = null)
+        {
+            Mahjong.Ai.AiObservation observation = captured.Observation!;
+            var decisionId = new DecisionId(observation.DecisionKey.DecisionId);
+            string requestId = "local-ai-settle-" + Interlocked.Increment(ref _requestCounter)
+                .ToString(System.Globalization.CultureInfo.InvariantCulture);
+            string api = action == TableSettlementAction.Tsumo
+                ? "AI_TSUMO"
+                : action == TableSettlementAction.Ron
+                    ? "AI_RON"
+                    : "AI_ABORTIVE_DRAW";
+            byte[] business = System.Text.Encoding.UTF8.GetBytes(
+                api + "|" + requestId + "|" + observation.RoundId + "|" + observation.StateVersion +
+                "|" + observation.Seat + "|" + (abortiveReason?.ToString() ?? "-"));
+            var request = new TableSettlementRequest(
+                new TableSettlementIntent(observation.RoundId, action, observation.Seat, abortiveReason),
+                new RequestId(requestId),
+                new StateVersion((ulong)observation.StateVersion),
+                captured.OwnerEpoch,
+                new ControlEpoch(unchecked((ulong)observation.ControlEpoch)),
+                decisionId,
+                captured.RecoveryGeneration,
+                _scopes[observation.Seat],
+                api,
+                TablePayloadSha256.Compute(business),
+                observation.DecisionDeadlineMillis);
+            return await _actor.SubmitSettlementAsync(request, _stop.Token).ConfigureAwait(false);
         }
 
         private async Task SubmitExhaustiveDrawAsync(TableSnapshot snapshot, int seat)
@@ -961,6 +1093,7 @@ namespace Mahjong.LocalHost
             TableOperationResult result = await _actor.SubmitSettlementAsync(request, _stop.Token).ConfigureAwait(false);
             if (result.Status != TableOperationStatus.Accepted && result.Status != TableOperationStatus.Replayed)
             {
+                _lastOpenResultForTest = "exhaust:" + result.Status + ":" + result.ReasonCode + ":" + result.Detail;
             }
         }
 
