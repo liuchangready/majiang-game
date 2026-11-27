@@ -210,7 +210,8 @@ namespace Mahjong.TableRuntime
             long recoveryGeneration = 0L,
             RequestScopeId? scopeId = null,
             string? api = null,
-            TablePayloadSha256? payloadSha256 = null)
+            TablePayloadSha256? payloadSha256 = null,
+            long? decisionDeadlineMillis = null)
         {
             Command = command ?? throw new ArgumentNullException(nameof(command));
             if (requestId.IsEmpty)
@@ -224,6 +225,14 @@ namespace Mahjong.TableRuntime
                     nameof(recoveryGeneration),
                     recoveryGeneration,
                     "Recovery generation must be non-negative.");
+            }
+
+            if (decisionDeadlineMillis < 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(decisionDeadlineMillis),
+                    decisionDeadlineMillis,
+                    "Decision deadline must be non-negative.");
             }
 
             bool hasScope = scopeId.HasValue && !scopeId.Value.IsEmpty;
@@ -241,6 +250,7 @@ namespace Mahjong.TableRuntime
             ControlEpoch = controlEpoch;
             DecisionId = decisionId;
             RecoveryGeneration = recoveryGeneration;
+            DecisionDeadlineMillis = decisionDeadlineMillis;
             ScopeId = hasScope ? scopeId : (RequestScopeId?)null;
             Api = hasApi ? TableDurableReceipt.RequireApi(api!) : null;
             PayloadSha256 = hasDigest ? payloadSha256 : (TablePayloadSha256?)null;
@@ -264,6 +274,8 @@ namespace Mahjong.TableRuntime
         /// was already in flight before recovery cannot mutate the new baseline.
         /// </summary>
         public long RecoveryGeneration { get; }
+
+        public long? DecisionDeadlineMillis { get; }
 
         /// <summary>Host-issued scope; never a client-selected authorization field.</summary>
         public RequestScopeId? ScopeId { get; }
@@ -295,7 +307,10 @@ namespace Mahjong.TableRuntime
             long recoveryGeneration = 0L,
             RequestScopeId? scopeId = null,
             string? api = null,
-            TablePayloadSha256? payloadSha256 = null)
+            TablePayloadSha256? payloadSha256 = null,
+            long? decisionDeadlineMillis = null,
+            long? offerDeadlineMillis = null,
+            string? windowId = null)
         {
             CheatCommand = cheatCommand ?? throw new ArgumentNullException(nameof(cheatCommand));
             if (requestId.IsEmpty)
@@ -311,12 +326,31 @@ namespace Mahjong.TableRuntime
                     "Recovery generation must be non-negative.");
             }
 
+            if (decisionDeadlineMillis < 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(decisionDeadlineMillis),
+                    decisionDeadlineMillis,
+                    "Decision deadline must be non-negative.");
+            }
+
+            if (offerDeadlineMillis < 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(offerDeadlineMillis),
+                    offerDeadlineMillis,
+                    "Offer deadline must be non-negative.");
+            }
+
             RequestId = requestId;
             ExpectedStateVersion = expectedStateVersion;
             OwnerEpoch = ownerEpoch;
             ControlEpoch = controlEpoch;
             DecisionId = decisionId;
             RecoveryGeneration = recoveryGeneration;
+            DecisionDeadlineMillis = decisionDeadlineMillis;
+            OfferDeadlineMillis = offerDeadlineMillis;
+            WindowId = string.IsNullOrWhiteSpace(windowId) ? null : windowId;
 
             bool hasScope = scopeId.HasValue && !scopeId.Value.IsEmpty;
             bool hasApi = !string.IsNullOrEmpty(api);
@@ -345,6 +379,12 @@ namespace Mahjong.TableRuntime
         public DecisionId? DecisionId { get; }
 
         public long RecoveryGeneration { get; }
+
+        public long? DecisionDeadlineMillis { get; }
+
+        public long? OfferDeadlineMillis { get; }
+
+        public string? WindowId { get; }
 
         public RequestScopeId? ScopeId { get; }
 

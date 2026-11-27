@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Mahjong.Ai;
 using Mahjong.Client;
 using Mahjong.Contracts;
 using Mahjong.Domain;
@@ -20,6 +21,143 @@ using PlayerSnapshot = Mahjong.Contracts.Wire.PlayerSnapshot;
 
     public sealed class LocalHostRecoveryTests
     {
+        [Fact]
+        public async Task CapturedAiDiscardAfterWindowChangesIsRejectedWithoutSecondMutation()
+        {
+            await using var harness = new P41Harness();
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            (ITableChannel channel, TableSession session) = await OpenSessionAsync(harness, ct);
+            using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            pumpCts.CancelAfter(TimeSpan.FromSeconds(15));
+            Task pump = PumpAsync(session, pumpCts.Token);
+            LocalTableRuntime runtime = ((LocalTableChannel)channel).RuntimeForMatch!;
+            var selected = new TaskCompletionSource<(AiObservation Observation, LegalActionOption Action)>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var seat1Submitted = new TaskCompletionSource<TableOperationResult>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var releaseSubsequent = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            int holdDiscard = 0;
+            int blockSubsequent = 0;
+            runtime.DriverForTest.AiDecisionChosenForTest = (seat, observation, action) =>
+            {
+                if (seat == 1 && action.Kind == LegalActionKind.Discard &&
+                    Interlocked.CompareExchange(ref holdDiscard, 1, 0) == 0)
+                {
+                    selected.TrySetResult((observation, action));
+                }
+            };
+            runtime.DriverForTest.BeforeAiSubmitForTest = async (seat, _) =>
+            {
+                if (seat == 1 && Volatile.Read(ref holdDiscard) == 1)
+                {
+                    await release.Task.ConfigureAwait(false);
+                }
+                else if (Volatile.Read(ref blockSubsequent) == 1)
+                {
+                    await releaseSubsequent.Task.ConfigureAwait(false);
+                }
+            };
+            runtime.DriverForTest.AiSubmitCompletedForTest = (seat, observation, result) =>
+            {
+                if (seat == 1 && Volatile.Read(ref holdDiscard) == 1)
+                {
+                    seat1Submitted.TrySetResult(result);
+                }
+            };
+
+            try
+            {
+                PlayerSnapshot baseline = session.PlayerSnapshot!;
+                await SubmitDiscardAsync(
+                    session, baseline, baseline.PrivateView.ClosedTiles[0], "ai-window-advance", ct);
+                (AiObservation observation, LegalActionOption chosen) =
+                    await LocalHostCommandTests.WithTimeoutAsync(selected.Task, pumpCts.Token);
+                Assert.Equal(LegalActionKind.Discard, chosen.Kind);
+                Assert.True(chosen.Tile.HasValue);
+
+                RoundStateMachine before = runtime.ActorForTest.GetRoundStateForHost();
+                LegalActionOption alternate = runtime.ActorForTest.GetPendingDecisionCandidates(1).First(
+                    option => option.Kind == LegalActionKind.Discard && option.Tile.HasValue && option.Tile != chosen.Tile);
+                IReadOnlyList<int> eligible = LocalCandidateProvider.DeriveEligibleSeatsForDiscard(
+                    before, 1, alternate.Tile!.Value, null, null);
+                RoundCommand command = RoundCommand.Discard(
+                    observation.RoundId, 1, alternate.Tile.Value, eligible);
+                TableSnapshot authority = await runtime.ActorForTest.GetSnapshotAsync(ct);
+                ulong nowUtc = (ulong)Math.Max(0L, harness.Clock.UtcNowMs);
+                TableScopeRecord issuedScope = runtime.StoreForTest.IssueScope(
+                    "local-" + P41Harness.RoomId + "-seat1",
+                    TableScopeRole.Player,
+                    P41Harness.RoomId,
+                    nowUtc,
+                    nowUtc + 600_000UL,
+                    "test-ai-window-advance");
+                string requestId = "test-ai-window-advance";
+                byte[] payload = System.Text.Encoding.UTF8.GetBytes(requestId + "|" + alternate.Tile.Value.Value);
+                var envelope = new TableCommandEnvelope(
+                    command,
+                    new RequestId(requestId),
+                    new StateVersion((ulong)observation.StateVersion),
+                    authority.OwnerEpoch,
+                    new ControlEpoch(unchecked((ulong)observation.ControlEpoch)),
+                    new DecisionId(observation.DecisionKey.DecisionId),
+                    runtime.ActorForTest.RecoveryGeneration,
+                    issuedScope.ScopeId,
+                    "ROUND",
+                    TablePayloadSha256.Compute(payload));
+                TableOperationResult advanced = await runtime.ActorForTest.SubmitAsync(envelope, ct);
+                Assert.True(
+                    advanced.Status == TableOperationStatus.Accepted,
+                    advanced.Status + " " + advanced.ReasonCode + ": " + advanced.Detail);
+
+                TableSnapshot afterAdvance = await runtime.ActorForTest.GetSnapshotAsync(ct);
+                ulong committedVersion = afterAdvance.StateVersion.Value;
+                TableCheatLedgerSnapshot ledgerBefore = runtime.ActorForTest.GetCheatLedgerForHost();
+                Interlocked.Exchange(ref blockSubsequent, 1);
+
+                release.TrySetResult(true);
+                TableOperationResult rejectedAi = await LocalHostCommandTests.WithTimeoutAsync(
+                    seat1Submitted.Task, pumpCts.Token);
+                Assert.Equal(TableOperationStatus.Rejected, rejectedAi.Status);
+                Assert.True(
+                    rejectedAi.ReasonCode == TableRuntimeReasonCode.StaleStateVersion ||
+                    rejectedAi.ReasonCode == TableRuntimeReasonCode.DecisionMismatch,
+                    rejectedAi.ReasonCode + ": " + rejectedAi.Detail);
+
+                Interlocked.Exchange(ref holdDiscard, 2);
+                releaseSubsequent.TrySetResult(true);
+                await runtime.DriverForTest.StopAsync();
+                runtime.DriverForTest.BeforeAiSubmitForTest = null;
+                runtime.DriverForTest.AiDecisionChosenForTest = null;
+                runtime.DriverForTest.AiSubmitCompletedForTest = null;
+
+                TableSnapshot final = await runtime.ActorForTest.GetSnapshotAsync(ct);
+                Assert.Equal(committedVersion, final.StateVersion.Value);
+                RoundStateMachine after = runtime.ActorForTest.GetRoundStateForHost();
+                Assert.Equal(1, after.Events.Count(evt =>
+                    evt.Type == RoundEventType.TileDiscarded && evt.Seat == 1));
+                Assert.Contains(after.Events, evt =>
+                    evt.Type == RoundEventType.TileDiscarded && evt.Seat == 1 && evt.Tile == alternate.Tile);
+                Assert.DoesNotContain(after.Events, evt =>
+                    evt.Type == RoundEventType.TileDiscarded && evt.Seat == 1 && evt.Tile == chosen.Tile);
+                Assert.Equal(136, TilePositionMap.Validate(after.Tiles).AssignedCount);
+                TableCheatLedgerSnapshot ledgerAfter = runtime.ActorForTest.GetCheatLedgerForHost();
+                Assert.Equal(ledgerBefore.Balances, ledgerAfter.Balances);
+                Assert.Equal(ledgerBefore.Entries.Count, ledgerAfter.Entries.Count);
+            }
+            finally
+            {
+                release.TrySetResult(true);
+                releaseSubsequent.TrySetResult(true);
+                runtime.DriverForTest.BeforeAiSubmitForTest = null;
+                runtime.DriverForTest.AiDecisionChosenForTest = null;
+                runtime.DriverForTest.AiSubmitCompletedForTest = null;
+                pumpCts.Cancel();
+                await pump;
+                await CloseAsync(session, channel);
+            }
+        }
+
         [Fact]
         public async Task ColdRestartRestoresCommittedStateVersion()
         {

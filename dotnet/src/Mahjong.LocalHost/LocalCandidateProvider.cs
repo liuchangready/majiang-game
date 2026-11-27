@@ -450,11 +450,11 @@ namespace Mahjong.LocalHost
                 round.Melds.All(m => m.Seat != seat || !m.IsOpen) &&
                 hand.Count % 3 == 2)
             {
-                var testedTypes = new HashSet<int>();
+                var testedKeys = new HashSet<(int TypeIndex, bool IsRedFive)>();
                 for (int i = 0; i < hand.Count; i++)
                 {
                     TileId t = hand[i];
-                    if (!testedTypes.Add(t.TypeIndex))
+                    if (!testedKeys.Add((t.TypeIndex, t.IsRedFive)))
                     {
                         continue;
                     }

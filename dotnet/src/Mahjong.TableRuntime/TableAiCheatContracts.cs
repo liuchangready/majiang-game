@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using Mahjong.Ai;
+using Mahjong.Contracts;
 
 namespace Mahjong.TableRuntime
 {
@@ -33,7 +34,16 @@ namespace Mahjong.TableRuntime
     {
         private readonly ReadOnlyCollection<TableAiCheatPlan> _plans;
 
-        internal TableAiCheatOpportunity(AiCheatOpportunity view, IReadOnlyList<TableAiCheatPlan> plans)
+        internal TableAiCheatOpportunity(
+            AiCheatOpportunity view,
+            IReadOnlyList<TableAiCheatPlan> plans,
+            DecisionId? decisionId = null,
+            long? deadlineMillis = null,
+            long? offerDeadlineMillis = null,
+            string? offerId = null,
+            string? windowId = null,
+            long recoveryGeneration = 0L,
+            OwnerEpoch ownerEpoch = default)
         {
             View = view ?? throw new ArgumentNullException(nameof(view));
             if (plans == null)
@@ -48,6 +58,13 @@ namespace Mahjong.TableRuntime
             }
 
             _plans = new ReadOnlyCollection<TableAiCheatPlan>(copy);
+            DecisionId = decisionId;
+            DeadlineMillis = deadlineMillis;
+            OfferDeadlineMillis = offerDeadlineMillis;
+            OfferId = offerId;
+            WindowId = windowId;
+            RecoveryGeneration = recoveryGeneration;
+            OwnerEpoch = ownerEpoch;
         }
 
         public AiCheatOpportunity View { get; }
@@ -59,6 +76,20 @@ namespace Mahjong.TableRuntime
         public long StateVersion => View.StateVersion;
 
         public long ControlEpoch => View.ControlEpoch;
+
+        public DecisionId? DecisionId { get; }
+
+        public long? DeadlineMillis { get; }
+
+        public long? OfferDeadlineMillis { get; }
+
+        public string? OfferId { get; }
+
+        public string? WindowId { get; }
+
+        public long RecoveryGeneration { get; }
+
+        public OwnerEpoch OwnerEpoch { get; }
 
         public IReadOnlyList<TableAiCheatPlan> Plans => _plans;
 
