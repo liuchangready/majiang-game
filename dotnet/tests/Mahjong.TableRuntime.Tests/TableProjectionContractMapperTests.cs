@@ -399,5 +399,101 @@ namespace Mahjong.TableRuntime.Tests
                 source.Tiles.DrawnTile);
             return RoundStateMachine.CreateDealt(source.Spec, map, source.Phase);
         }
+
+        [Fact]
+        public void beam_swap_owner_and_wire_projection_redact_unmarked_tiles_and_cannot_be_bypassed()
+        {
+            RoundStateMachine round = P31Fixtures.Dealt("round-beam-privacy");
+            CheatState baseCheat = V32Fixtures.WithRegisteredRound(V32Fixtures.Cheat(), round.RoundId);
+            var offer = new BeamSwapOffer(
+                "beam-privacy-0",
+                0,
+                BeamSwapWindow.Wall,
+                new[]
+                {
+                    new BeamSwapCandidate(new TileId(8), BeamSwapSlot.Wall(54)),
+                    new BeamSwapCandidate(new TileId(11), BeamSwapSlot.Wall(55))
+                },
+                new[] { new TileId(9) },
+                new TileId(10),
+                1);
+            // Seat 1 marking TileId(8) must never authorize Seat 0 to see TileId(8).
+            TileMarkTransition seat1Mark = baseCheat.TileMarks.AddGroup(new TileMarkGroup(
+                "seat1-group",
+                1,
+                new[] { new TileId(8), new TileId(12), new TileId(13), new TileId(14) },
+                round.RoundId,
+                1));
+            Assert.True(seat1Mark.Success);
+            CheatState unmarkedForSeat0 = baseCheat
+                .WithTileMarks(seat1Mark.State)
+                .WithBeamSwap(baseCheat.BeamSwap.WithOffer(offer));
+
+            TableProjectionContext context = V32Fixtures.Context(round);
+            var time = new TableProjectionTimeContext(1200);
+
+            TableOwnerPrivateView ownerUnmarked = TableVisibilityProjection.ProjectOwnerPrivate(
+                round, unmarkedForSeat0, 0, context);
+            Assert.All(ownerUnmarked.Cheat.BeamSwapOffer!.Candidates, c => Assert.Null(c.TileId));
+
+            PlayerSnapshotView seat0Snap = TableVisibilityProjection.ProjectPlayerSnapshot(
+                round, unmarkedForSeat0, 0, context);
+            PlayerSnapshotView contractUnmarked = TableProjectionContractMapper.MapPlayerSnapshot(
+                seat0Snap, ownerUnmarked, time);
+            Assert.All(contractUnmarked.Private.Cheat!.OwnerBeamSwap!.Candidates, c => Assert.False(c.TileId.HasValue));
+
+            Mahjong.Contracts.Wire.PlayerSnapshot wireUnmarked =
+                Mahjong.Contracts.Wire.ProjectionWireMapper.MapPlayerSnapshot(contractUnmarked);
+            Assert.All(wireUnmarked.PrivateView.Cheat.BeamSwap.Candidates, c => Assert.False(c.HasTileId));
+
+            // Now Seat 0 marks TileId(8) only; Wall(54) reveals 8 while Wall(55)=11 stays hidden.
+            TileMarkTransition seat0Mark = unmarkedForSeat0.TileMarks.AddGroup(new TileMarkGroup(
+                "seat0-group",
+                0,
+                new[] { new TileId(8), new TileId(20), new TileId(21), new TileId(22) },
+                round.RoundId,
+                1));
+            Assert.True(seat0Mark.Success);
+            CheatState markedSeat0 = unmarkedForSeat0.WithTileMarks(seat0Mark.State);
+
+            TableOwnerPrivateView ownerMarked = TableVisibilityProjection.ProjectOwnerPrivate(
+                round, markedSeat0, 0, context);
+            Assert.Equal(8u, ownerMarked.Cheat.BeamSwapOffer!.Candidates[0].TileId);
+            Assert.Null(ownerMarked.Cheat.BeamSwapOffer.Candidates[1].TileId);
+
+            PlayerSnapshotView contractMarked = TableProjectionContractMapper.MapPlayerSnapshot(
+                TableVisibilityProjection.ProjectPlayerSnapshot(round, markedSeat0, 0, context),
+                ownerMarked,
+                time);
+            Mahjong.Contracts.Wire.PlayerSnapshot wireMarked =
+                Mahjong.Contracts.Wire.ProjectionWireMapper.MapPlayerSnapshot(contractMarked);
+            Assert.True(wireMarked.PrivateView.Cheat.BeamSwap.Candidates[0].HasTileId);
+            Assert.Equal(8u, wireMarked.PrivateView.Cheat.BeamSwap.Candidates[0].TileId);
+            Assert.False(wireMarked.PrivateView.Cheat.BeamSwap.Candidates[1].HasTileId);
+
+            // Defense-in-depth: even an unredacted TableOwnerBeamSwapOfferView cannot bypass MapBeamSwap.
+            var unredactedOwnerCheat = new TableOwnerCheatView(
+                100,
+                ownerMarked.Cheat.Ledger,
+                ownerMarked.Cheat.MarkGroups,
+                null,
+                null,
+                null,
+                null,
+                new TableOwnerBeamSwapOfferView(
+                    "beam-bypass",
+                    BeamSwapWindow.Wall,
+                    new[]
+                    {
+                        new TableOwnerBeamSwapCandidateView(8u, BeamSwapSlotKind.WallSlot, 54),
+                        new TableOwnerBeamSwapCandidateView(11u, BeamSwapSlotKind.WallSlot, 55)
+                    },
+                    new[] { 9u },
+                    10u,
+                    1));
+            PrivateCheatView mappedBypass = TableProjectionContractMapper.MapOwnerCheat(unredactedOwnerCheat, time);
+            Assert.Equal(8u, mappedBypass.OwnerBeamSwap!.Candidates[0].TileId);
+            Assert.Null(mappedBypass.OwnerBeamSwap.Candidates[1].TileId);
+        }
     }
 }

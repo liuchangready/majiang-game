@@ -1123,6 +1123,161 @@ namespace Mahjong.LocalHost.Tests
             Assert.Equal(payloadSha256.ToUpperInvariant(), fact.PayloadSha256.ToUpperInvariant());
         }
 
+        [Fact]
+        public async Task BeamSwapPlayerSnapshotHidesUnmarkedCandidatesAndRevealsOnlyOwnMarkedTile()
+        {
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            await using var harness = new C04ScenarioHarness(
+                LocalPlayerCheatScenarioKind.AuthorizedThreeCheats);
+            (ITableChannel channel, TableSession session) = await harness.OpenAsync(ct);
+            using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            pumpCts.CancelAfter(TimeSpan.FromSeconds(90));
+            Task pump = PumpAsync(session, pumpCts.Token);
+            try
+            {
+                PlayerSnapshot dealExtraTurn = await WaitForSeatZeroCheatWindowAsync(session, pumpCts.Token);
+                await DiscardAsync(session, dealExtraTurn, 120u, pumpCts.Token);
+                PlayerSnapshot turn1 = await AdvanceToNextSeatZeroTurnAsync(
+                    session,
+                    dealExtraTurn.StateVersion,
+                    pumpCts.Token);
+                Assert.True(turn1.PrivateView.HasDrawnTileId);
+
+                // 1. Before any TileMark, all BeamSwap candidates on PlayerSnapshot must have HasTileId == false.
+                CheatReceipt beam1 = await harness.SubmitCheatAsync(
+                    session,
+                    turn1,
+                    CommandKind.SubmitBeamSwap,
+                    CommandPayloadFactory.SubmitBeamSwap(
+                        turn1.RoundId,
+                        turn1.PrivateView.Decision.DecisionId,
+                        turn1.PrivateView.Decision.ControlEpoch),
+                    "c04-beam-privacy-unmarked",
+                    pumpCts.Token);
+                AssertApplied(beam1);
+                PlayerSnapshot afterBeam1 = await WaitForCheatPointsAsync(session, 110, pumpCts.Token);
+                var offer1 = afterBeam1.PrivateView.Cheat.BeamSwap!;
+                Assert.True(
+                    afterBeam1.PrivateView.Cheat.TileMark == null ||
+                    afterBeam1.PrivateView.Cheat.TileMark.Groups.Count == 0);
+                Assert.NotEmpty(offer1.Candidates);
+                Assert.All(offer1.Candidates, c => Assert.False(c.HasTileId));
+
+                CheatReceipt keep1 = await harness.SubmitCheatAsync(
+                    session,
+                    afterBeam1,
+                    CommandKind.SubmitBeamSwapChoice,
+                    CommandPayloadFactory.SubmitBeamSwapChoice(offer1.OfferId, BeamSwapChoice.KeepOriginal),
+                    "c04-beam-privacy-keep1",
+                    pumpCts.Token);
+                AssertApplied(keep1);
+                PlayerSnapshot afterKeep1 = await WaitForNoBeamOfferAsync(session, pumpCts.Token);
+                await DiscardAsync(session, afterKeep1, afterKeep1.PrivateView.DrawnTileId, pumpCts.Token);
+
+                // 2. Mark 4 hand tiles, swap one marked tile into a deeper wall slot so it stays inside
+                // the BeamSwap window on Seat 0's next draw, and verify ONLY that marked slot reveals TileId.
+                PlayerSnapshot turn2 = await AdvanceToNextSeatZeroTurnAsync(
+                    session,
+                    afterKeep1.StateVersion,
+                    pumpCts.Token);
+                uint[] markTiles = LocalPlayerCheatScenario.ProposedTileMarkTileIds.ToArray();
+                uint swappedMarkedTile = markTiles[0];
+                CheatReceipt markReceipt = await harness.SubmitCheatAsync(
+                    session,
+                    turn2,
+                    CommandKind.SubmitTileMark,
+                    CommandPayloadFactory.SubmitTileMark(
+                        turn2.RoundId,
+                        turn2.PrivateView.Decision.DecisionId,
+                        turn2.PrivateView.Decision.ControlEpoch,
+                        markTiles),
+                    "c04-beam-privacy-tilemark",
+                    pumpCts.Token);
+                AssertApplied(markReceipt);
+                PlayerSnapshot afterMark = await WaitForCheatPointsAsync(session, 109, pumpCts.Token);
+
+                CheatReceipt beam2 = await harness.SubmitCheatAsync(
+                    session,
+                    afterMark,
+                    CommandKind.SubmitBeamSwap,
+                    CommandPayloadFactory.SubmitBeamSwap(
+                        afterMark.RoundId,
+                        afterMark.PrivateView.Decision.DecisionId,
+                        afterMark.PrivateView.Decision.ControlEpoch),
+                    "c04-beam-privacy-act2",
+                    pumpCts.Token);
+                AssertApplied(beam2);
+                PlayerSnapshot afterBeam2 = await WaitForCheatPointsAsync(session, 99, pumpCts.Token);
+                var offer2 = afterBeam2.PrivateView.Cheat.BeamSwap!;
+                Assert.All(offer2.Candidates, c => Assert.False(c.HasTileId));
+                Assert.Contains(swappedMarkedTile, offer2.SelectableHandTileIds);
+
+                int deepIndex = Math.Min(5, offer2.Candidates.Count - 1);
+                uint targetSlot = offer2.Candidates[deepIndex].Slot;
+                CheatReceipt swap2 = await harness.SubmitCheatAsync(
+                    session,
+                    afterBeam2,
+                    CommandKind.SubmitBeamSwapChoice,
+                    CommandPayloadFactory.SubmitBeamSwapChoice(
+                        offer2.OfferId,
+                        BeamSwapChoice.Swap,
+                        swappedMarkedTile,
+                        targetSlot),
+                    "c04-beam-privacy-swap2",
+                    pumpCts.Token);
+                AssertApplied(swap2);
+                PlayerSnapshot afterSwap2 = await WaitForNoBeamOfferAsync(session, pumpCts.Token);
+                await DiscardAsync(session, afterSwap2, afterSwap2.PrivateView.DrawnTileId, pumpCts.Token);
+
+                PlayerSnapshot turn3 = await AdvanceToNextSeatZeroTurnAsync(
+                    session,
+                    afterSwap2.StateVersion,
+                    pumpCts.Token);
+                CheatReceipt beam3 = await harness.SubmitCheatAsync(
+                    session,
+                    turn3,
+                    CommandKind.SubmitBeamSwap,
+                    CommandPayloadFactory.SubmitBeamSwap(
+                        turn3.RoundId,
+                        turn3.PrivateView.Decision.DecisionId,
+                        turn3.PrivateView.Decision.ControlEpoch),
+                    "c04-beam-privacy-act3",
+                    pumpCts.Token);
+                AssertApplied(beam3);
+                PlayerSnapshot afterBeam3 = await WaitForCheatPointsAsync(session, 89, pumpCts.Token);
+                var offer3 = afterBeam3.PrivateView.Cheat.BeamSwap!;
+                var revealed = offer3.Candidates.Where(c => c.HasTileId).ToList();
+                var hidden = offer3.Candidates.Where(c => !c.HasTileId).ToList();
+                var revealedCandidate = Assert.Single(revealed);
+                Assert.Equal(swappedMarkedTile, revealedCandidate.TileId);
+                Assert.Equal(targetSlot, revealedCandidate.Slot);
+                Assert.Equal(offer3.Candidates.Count - 1, hidden.Count);
+
+                CheatReceipt keep3 = await harness.SubmitCheatAsync(
+                    session,
+                    afterBeam3,
+                    CommandKind.SubmitBeamSwapChoice,
+                    CommandPayloadFactory.SubmitBeamSwapChoice(offer3.OfferId, BeamSwapChoice.KeepOriginal),
+                    "c04-beam-privacy-keep3",
+                    pumpCts.Token);
+                AssertApplied(keep3);
+                await WaitForNoBeamOfferAsync(session, pumpCts.Token);
+
+                LocalTableRecoveryFacts final = await CaptureFactsAsync(harness, pumpCts.Token);
+                AssertPhysical(final);
+                Assert.Equal(4, final.Ledger.EntryCount);
+                Assert.Equal(449, final.Ledger.Points);
+                Assert.Equal(new[] { 89, 120, 120, 120 }, final.Ledger.Balances.ToArray());
+
+                pumpCts.Cancel();
+                await pump;
+            }
+            finally
+            {
+                await harness.CloseAsync(session, channel);
+            }
+        }
+
         private static void AssertRequestRejected(
             LocalTableRecoveryFacts facts,
             string requestId,

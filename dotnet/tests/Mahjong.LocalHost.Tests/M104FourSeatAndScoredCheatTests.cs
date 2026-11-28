@@ -1241,91 +1241,150 @@ namespace Mahjong.LocalHost.Tests
                 enabled: true, maxSpendPerRound: 0, reservePoints: 0)));
 
             // Verify a real persisted paid offer IS still settled via IsSafeDefault when reopened with
-            // disabled capabilities / Enabled=false / MaxSpendPerRound=0!
+            // all paid initiation disabled (Enabled=false / CapabilityToggles all false / MaxSpendPerRound=0),
+            // even after Seat 1 advances through its post-offer window and completes its turn!
             AiCheatPolicy[] offerBlockPolicies =
             {
                 new AiCheatPolicy(enabled: false, maxSpendPerRound: 60),
-                new AiCheatPolicy(enabled: true, maxSpendPerRound: 60, capabilityToggles: new Dictionary<string, bool> { ["sleeve_bloom"] = false }),
+                new AiCheatPolicy(
+                    enabled: true,
+                    maxSpendPerRound: 60,
+                    capabilityToggles: new Dictionary<string, bool>
+                    {
+                        ["sleeve_bloom"] = false,
+                        ["tile_mark"] = false,
+                        ["beam_swap"] = false
+                    }),
                 new AiCheatPolicy(enabled: true, maxSpendPerRound: 0)
             };
 
             foreach (AiCheatPolicy settlePolicy in offerBlockPolicies)
             {
-                await using var h = new P41Harness();
-                h.Options.SeatPlan = LocalTableSeatPlan.FromHumanSeats(Array.Empty<int>());
-                h.Options.CharacterIds = characters;
-                h.Options.InitialRound = BuildSeat1ScoredCheatStartRound("round-offer-gate-" + Guid.NewGuid().ToString("N"));
-                h.Options.AutoPlay = false;
-                h.Options.Ai = new LocalAiOptions
+                (int spent, int balance, int assignedCount, bool stillHasOffer, LocalAiDecisionRecord[] s1Records) =
+                    await RunPersistedOfferSettleTurnAsync(characters, settlePolicy, ct);
+                Assert.False(stillHasOffer);
+                Assert.Equal(10, spent);
+                Assert.Equal(110, balance);
+                Assert.Equal(136, assignedCount);
+                Assert.Contains(s1Records, r =>
+                    r.DecisionKind == "cheat" && r.CapabilityId == "sleeve_bloom" && r.Status == "accepted");
+            }
+        }
+
+        [Fact]
+        public async Task HostCheatPolicyPartialCapabilityToggleAllowsEnabledTileMarkAfterSafeSettle()
+        {
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            string[] characters = { "player", "octopus", "player", "player" };
+            // Disabling only sleeve_bloom while leaving tile_mark enabled and maxSpendPerRound=60
+            // safely settles the persisted sleeve_bloom offer AND deterministically permits tile_mark
+            // (up to 3 marks of cost 1 => spent 13 by end of turn; the prior Task.Delay(20) race
+            // could stop mid-sequence right after the first mark at 11).
+            var partialPolicy = new AiCheatPolicy(
+                enabled: true,
+                maxSpendPerRound: 60,
+                capabilityToggles: new Dictionary<string, bool> { ["sleeve_bloom"] = false });
+            (int spent, int balance, int assignedCount, bool stillHasOffer, LocalAiDecisionRecord[] s1Records) =
+                await RunPersistedOfferSettleTurnAsync(characters, partialPolicy, ct);
+
+            Assert.False(stillHasOffer);
+            Assert.Equal(13, spent);
+            Assert.Equal(107, balance);
+            Assert.Equal(136, assignedCount);
+            Assert.Contains(s1Records, r =>
+                r.DecisionKind == "cheat" && r.CapabilityId == "sleeve_bloom" && r.Status == "accepted");
+            Assert.Equal(3, s1Records.Count(r =>
+                r.DecisionKind == "cheat" && r.CapabilityId == "tile_mark" && r.OptionCost == 1 && r.Status == "accepted"));
+        }
+
+        private static async Task<(int Spent, int Balance, int AssignedCount, bool StillHasOffer, LocalAiDecisionRecord[] Seat1Records)>
+            RunPersistedOfferSettleTurnAsync(
+                string[] characters,
+                AiCheatPolicy settlePolicy,
+                CancellationToken ct)
+        {
+            await using var h = new P41Harness();
+            h.Options.SeatPlan = LocalTableSeatPlan.FromHumanSeats(Array.Empty<int>());
+            h.Options.CharacterIds = characters;
+            h.Options.InitialRound = BuildSeat1ScoredCheatStartRound("round-offer-gate-" + Guid.NewGuid().ToString("N"));
+            h.Options.AutoPlay = false;
+            h.Options.Ai = new LocalAiOptions
+            {
+                SeatProfiles = new[]
                 {
-                    SeatProfiles = new[]
+                    CharacterAiProfile.CreateBasic("s0"),
+                    CharacterAiProfile.CreateScoredBasic(
+                        "s1-open-offer",
+                        style: new CharacterStyle(aggression: 0.9, cheatAggression: 0.9),
+                        cheatPolicy: new AiCheatPolicy(enabled: true, maxSpendPerRound: 10, capabilityToggles: new Dictionary<string, bool> { ["tile_mark"] = false })),
+                    CharacterAiProfile.CreateBasic("s2"),
+                    CharacterAiProfile.CreateBasic("s3")
+                }
+            };
+
+            string realOfferId;
+            var openedTcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            await using (LocalTableRoom room = await LocalTableHost.OpenRoomAsync(h.Options, ct))
+            {
+                LocalTableRuntime rt = room.AuthorityForTest;
+                rt.DriverForTest.BeforeAiCheatScoreOrSubmitForTest = async (seat, opp, stopToken) =>
+                {
+                    if (seat == 1 && opp.View.IsOfferChoice && !string.IsNullOrEmpty(opp.OfferId))
                     {
-                        CharacterAiProfile.CreateBasic("s0"),
-                        CharacterAiProfile.CreateScoredBasic(
-                            "s1-open-offer",
-                            style: new CharacterStyle(aggression: 0.9, cheatAggression: 0.9),
-                            cheatPolicy: new AiCheatPolicy(enabled: true, maxSpendPerRound: 10, capabilityToggles: new Dictionary<string, bool> { ["tile_mark"] = false })),
-                        CharacterAiProfile.CreateBasic("s2"),
-                        CharacterAiProfile.CreateBasic("s3")
+                        openedTcs.TrySetResult(opp.OfferId!);
+                        try { await Task.Delay(Timeout.InfiniteTimeSpan, stopToken).ConfigureAwait(false); }
+                        catch (OperationCanceledException) { }
                     }
                 };
+                rt.DriverForTest.Start();
+                realOfferId = await LocalHostCommandTests.WithTimeoutAsync(openedTcs.Task, ct);
+                await rt.DriverForTest.StopAsync();
+                Assert.Equal(10, rt.ActorForTest.GetAiCheatSpentThisRound(1));
+            }
 
-                string realOfferId;
-                var openedTcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
-                await using (LocalTableRoom room = await LocalTableHost.OpenRoomAsync(h.Options, ct))
+            var observer = new RecordingObserver();
+            h.Options.OwnerInstanceId = "owner-offer-settle";
+            h.Options.AiDecisionObserver = observer;
+            h.Options.Ai = new LocalAiOptions
+            {
+                SeatProfiles = new[]
                 {
-                    LocalTableRuntime rt = room.AuthorityForTest;
-                    rt.DriverForTest.BeforeAiCheatScoreOrSubmitForTest = async (seat, opp, stopToken) =>
-                    {
-                        if (seat == 1 && opp.View.IsOfferChoice && !string.IsNullOrEmpty(opp.OfferId))
-                        {
-                            openedTcs.TrySetResult(opp.OfferId!);
-                            try { await Task.Delay(Timeout.InfiniteTimeSpan, stopToken).ConfigureAwait(false); }
-                            catch (OperationCanceledException) { }
-                        }
-                    };
-                    rt.DriverForTest.Start();
-                    realOfferId = await LocalHostCommandTests.WithTimeoutAsync(openedTcs.Task, ct);
-                    await rt.DriverForTest.StopAsync();
-                    Assert.Equal(10, rt.ActorForTest.GetAiCheatSpentThisRound(1));
+                    CharacterAiProfile.CreateBasic("s0"),
+                    CharacterAiProfile.CreateScoredBasic("s1-restricted-settle", cheatPolicy: settlePolicy),
+                    CharacterAiProfile.CreateBasic("s2"),
+                    CharacterAiProfile.CreateBasic("s3")
                 }
-
-                var observer = new RecordingObserver();
-                h.Options.OwnerInstanceId = "owner-offer-settle";
-                h.Options.AiDecisionObserver = observer;
-                h.Options.Ai = new LocalAiOptions
+            };
+            await using (LocalTableRoom reopened = await LocalTableHost.OpenRoomAsync(h.Options, ct))
+            {
+                LocalTableRuntime rt2 = reopened.AuthorityForTest;
+                Assert.True(rt2.ActorForTest.HasActiveCheatOffer(1));
+                var s1TurnDone = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                rt2.DriverForTest.BeforeAiCheatScoreOrSubmitForTest = (seat, opp, _) =>
                 {
-                    SeatProfiles = new[]
+                    if (seat == 1 && opp.View.IsOfferChoice) Assert.Equal(realOfferId, opp.OfferId);
+                    return Task.CompletedTask;
+                };
+                rt2.DriverForTest.AiSubmitCompletedForTest = (seat, _, result) =>
+                {
+                    if (seat == 1 &&
+                        result.Status == TableOperationStatus.Accepted &&
+                        rt2.ActorForTest.GetRoundStateForHost().CurrentSeat != 1 &&
+                        !rt2.ActorForTest.HasActiveCheatOffer(1))
                     {
-                        CharacterAiProfile.CreateBasic("s0"),
-                        CharacterAiProfile.CreateScoredBasic("s1-restricted-settle", cheatPolicy: settlePolicy),
-                        CharacterAiProfile.CreateBasic("s2"),
-                        CharacterAiProfile.CreateBasic("s3")
+                        s1TurnDone.TrySetResult(true);
                     }
                 };
-                await using (LocalTableRoom reopened = await LocalTableHost.OpenRoomAsync(h.Options, ct))
-                {
-                    LocalTableRuntime rt2 = reopened.AuthorityForTest;
-                    Assert.True(rt2.ActorForTest.HasActiveCheatOffer(1));
-                    rt2.DriverForTest.BeforeAiCheatScoreOrSubmitForTest = (seat, opp, _) =>
-                    {
-                        if (seat == 1 && opp.View.IsOfferChoice) Assert.Equal(realOfferId, opp.OfferId);
-                        return Task.CompletedTask;
-                    };
-                    rt2.DriverForTest.Start();
-                    for (int i = 0; i < 100 && rt2.ActorForTest.HasActiveCheatOffer(1); i++)
-                    {
-                        await Task.Delay(20, ct);
-                    }
-                    await rt2.DriverForTest.StopAsync();
+                rt2.DriverForTest.Start();
+                await LocalHostCommandTests.WithTimeoutAsync(s1TurnDone.Task, ct);
+                await rt2.DriverForTest.StopAsync();
 
-                    Assert.False(rt2.ActorForTest.HasActiveCheatOffer(1));
-                    Assert.Equal(10, rt2.ActorForTest.GetAiCheatSpentThisRound(1));
-                    Assert.Equal(110, rt2.ActorForTest.GetCheatLedgerForHost().Balances[1]);
-                    Assert.Equal(136, TilePositionMap.Validate(rt2.ActorForTest.GetRoundStateForHost().Tiles).AssignedCount);
-                    Assert.Contains(observer.Snapshot(), r =>
-                        r.Seat == 1 && r.DecisionKind == "cheat" && r.CapabilityId == "sleeve_bloom" && r.Status == "accepted");
-                }
+                return (
+                    rt2.ActorForTest.GetAiCheatSpentThisRound(1),
+                    rt2.ActorForTest.GetCheatLedgerForHost().Balances[1],
+                    TilePositionMap.Validate(rt2.ActorForTest.GetRoundStateForHost().Tiles).AssignedCount,
+                    rt2.ActorForTest.HasActiveCheatOffer(1),
+                    observer.Snapshot().Where(r => r.Seat == 1).ToArray());
             }
         }
 

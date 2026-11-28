@@ -369,14 +369,14 @@ namespace Mahjong.TableRuntime
 
     public sealed class TableOwnerBeamSwapCandidateView
     {
-        public TableOwnerBeamSwapCandidateView(uint tileId, BeamSwapSlotKind slotKind, int slotIndex)
+        public TableOwnerBeamSwapCandidateView(uint? tileId, BeamSwapSlotKind slotKind, int slotIndex)
         {
-            TileId = TableProjectionCopy.Tile(tileId, nameof(tileId));
+            TileId = tileId.HasValue ? TableProjectionCopy.Tile(tileId.Value, nameof(tileId)) : (uint?)null;
             SlotKind = slotKind;
             SlotIndex = slotIndex;
         }
 
-        public uint TileId { get; }
+        public uint? TileId { get; }
 
         public BeamSwapSlotKind SlotKind { get; }
 
@@ -1358,6 +1358,7 @@ namespace Mahjong.TableRuntime
             }
 
             var marks = new List<TableOwnerMarkGroupView>(view.MarkGroups.Count);
+            var authorizedMarkedTiles = new HashSet<int>();
             for (int i = 0; i < view.MarkGroups.Count; i++)
             {
                 TileMarkGroup group = view.MarkGroups[i];
@@ -1372,6 +1373,7 @@ namespace Mahjong.TableRuntime
                 for (int t = 0; t < group.TileIds.Count; t++)
                 {
                     tiles.Add(unchecked((uint)group.TileIds[t].Value));
+                    authorizedMarkedTiles.Add(group.TileIds[t].Value);
                 }
 
                 marks.Add(new TableOwnerMarkGroupView(
@@ -1390,7 +1392,7 @@ namespace Mahjong.TableRuntime
                 MapOffer(view.OffTurnOffer),
                 MapReservation(view.Reservation),
                 context.HideOffTurnSleeveWindow ? null : view.WindowId,
-                MapBeamOffer(view.BeamSwapOffer));
+                MapBeamOffer(view.BeamSwapOffer, authorizedMarkedTiles));
         }
 
         private static TableOwnerSleeveBloomOfferView? MapOffer(SleeveBloomOffer? offer)
@@ -1428,7 +1430,9 @@ namespace Mahjong.TableRuntime
                 reservation.CreatedAtMillis);
         }
 
-        private static TableOwnerBeamSwapOfferView? MapBeamOffer(BeamSwapOffer? offer)
+        private static TableOwnerBeamSwapOfferView? MapBeamOffer(
+            BeamSwapOffer? offer,
+            HashSet<int> authorizedMarkedTiles)
         {
             if (offer == null)
             {
@@ -1439,8 +1443,11 @@ namespace Mahjong.TableRuntime
             for (int i = 0; i < offer.Candidates.Count; i++)
             {
                 BeamSwapCandidate candidate = offer.Candidates[i];
+                uint? visibleTileId = authorizedMarkedTiles.Contains(candidate.Tile.Value)
+                    ? unchecked((uint)candidate.Tile.Value)
+                    : (uint?)null;
                 candidates.Add(new TableOwnerBeamSwapCandidateView(
-                    unchecked((uint)candidate.Tile.Value),
+                    visibleTileId,
                     candidate.Slot.Kind,
                     candidate.Slot.Index));
             }
