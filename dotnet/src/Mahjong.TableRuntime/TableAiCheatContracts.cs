@@ -21,6 +21,9 @@ namespace Mahjong.TableRuntime
 
         public AiCheatOption Option { get; }
 
+        /// <summary>Opaque correlation id bound to this prepared plan's envelope.</summary>
+        public string RequestId => Envelope.RequestId.Value;
+
         /// <summary>Host-only command built from the same frozen snapshot as the option.</summary>
         internal TableCheatCommandEnvelope Envelope { get; }
     }

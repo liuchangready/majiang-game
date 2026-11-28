@@ -21,6 +21,27 @@ namespace Mahjong.LocalHost
         public int SpentPoints { get; }
     }
 
+    /// <summary>Cheat usage aggregated by seat and ledger reason (for example seat 1, TILE_MARK).</summary>
+    public sealed class LocalSeatCheatUsage
+    {
+        public LocalSeatCheatUsage(int seat, string reason, int count, int spentPoints)
+        {
+            Seat = seat;
+            Reason = reason ?? string.Empty;
+            Count = count;
+            SpentPoints = spentPoints;
+        }
+
+        public int Seat { get; }
+
+        public string Reason { get; }
+
+        public int Count { get; }
+
+        /// <summary>Positive points charged to this seat for this reason (ledger amounts are negative).</summary>
+        public int SpentPoints { get; }
+    }
+
     /// <summary>
     /// Read-only per-round summary returned by an open local table. It carries only public
     /// settlement facts, physical conservation evidence and aggregate cheat accounting; it
@@ -44,6 +65,43 @@ namespace Mahjong.LocalHost
             IReadOnlyList<string> conservationErrors,
             IReadOnlyList<int> cheatBalances,
             IReadOnlyList<LocalCheatUsage> cheatUsage)
+            : this(
+                roomId,
+                roundId,
+                finished,
+                phase,
+                stateVersion,
+                outcomeCode,
+                winnerSeat,
+                loserSeat,
+                finalScores,
+                remainingRiichiSticks,
+                wallAssignedCount,
+                wallConserved,
+                conservationErrors,
+                cheatBalances,
+                cheatUsage,
+                seatCheatUsage: null)
+        {
+        }
+
+        public LocalRoundSummary(
+            string roomId,
+            string roundId,
+            bool finished,
+            string phase,
+            long stateVersion,
+            string outcomeCode,
+            int winnerSeat,
+            int loserSeat,
+            IReadOnlyList<long> finalScores,
+            int remainingRiichiSticks,
+            int wallAssignedCount,
+            bool wallConserved,
+            IReadOnlyList<string> conservationErrors,
+            IReadOnlyList<int> cheatBalances,
+            IReadOnlyList<LocalCheatUsage> cheatUsage,
+            IReadOnlyList<LocalSeatCheatUsage>? seatCheatUsage)
         {
             RoomId = roomId ?? string.Empty;
             RoundId = roundId ?? string.Empty;
@@ -60,6 +118,7 @@ namespace Mahjong.LocalHost
             ConservationErrors = conservationErrors ?? Array.Empty<string>();
             CheatBalances = cheatBalances ?? Array.Empty<int>();
             CheatUsage = cheatUsage ?? Array.Empty<LocalCheatUsage>();
+            SeatCheatUsage = seatCheatUsage ?? Array.Empty<LocalSeatCheatUsage>();
         }
 
         public string RoomId { get; }
@@ -91,5 +150,7 @@ namespace Mahjong.LocalHost
         public IReadOnlyList<int> CheatBalances { get; }
 
         public IReadOnlyList<LocalCheatUsage> CheatUsage { get; }
+
+        public IReadOnlyList<LocalSeatCheatUsage> SeatCheatUsage { get; }
     }
 }
