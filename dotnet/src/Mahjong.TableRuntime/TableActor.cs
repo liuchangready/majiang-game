@@ -1507,6 +1507,16 @@ namespace Mahjong.TableRuntime
                 return identityError;
             }
 
+            TableOperationResult? deadlineError = ValidateAiDecisionDeadline(
+                command.Api,
+                command.DecisionDeadlineMillis,
+                command.Command.Seat,
+                pending);
+            if (deadlineError != null)
+            {
+                return deadlineError;
+            }
+
             if (command.Command.Action != RoundActionKind.DiscardTile &&
                 command.Command.Action != RoundActionKind.DrawTile)
             {
@@ -1983,6 +1993,16 @@ namespace Mahjong.TableRuntime
             if (identityError != null)
             {
                 return identityError;
+            }
+
+            TableOperationResult? deadlineError = ValidateAiDecisionDeadline(
+                request.Envelope.Api,
+                request.Envelope.DecisionDeadlineMillis,
+                authoritySeat,
+                pending);
+            if (deadlineError != null)
+            {
+                return deadlineError;
             }
 
             var source = new TableSettlementSourceRef(
@@ -2719,6 +2739,29 @@ namespace Mahjong.TableRuntime
             }
 
             return null;
+        }
+
+        private TableOperationResult? ValidateAiDecisionDeadline(
+            string? api,
+            long? capturedDeadlineMillis,
+            int seat,
+            PendingDecision? pending)
+        {
+            if (api == null || !api.StartsWith("AI_", StringComparison.Ordinal))
+            {
+                return null;
+            }
+
+            DecisionTiming? timing = pending == null ? null : _decisionClock.Timing(seat);
+            if ((timing?.DeadlineMillis) == capturedDeadlineMillis)
+            {
+                return null;
+            }
+
+            return TableOperationResult.Rejected(
+                _stateVersion,
+                TableRuntimeReasonCode.DecisionMismatch,
+                "The AI command does not carry the captured decision deadline.");
         }
 
         private bool IsCurrentObservation(AiObservation observation)
@@ -6821,7 +6864,9 @@ namespace Mahjong.TableRuntime
                     string.Empty,
                     string.Empty,
                     true,
-                    observation);
+                    observation,
+                    _ownerEpoch,
+                    _recoveryGeneration);
             }
             catch (Exception exception)
             {
@@ -6912,10 +6957,33 @@ namespace Mahjong.TableRuntime
             var plans = new List<TableAiCheatPlan>();
             bool offerChoice = false;
             CheatState cheat = _cheat;
+            var marked = new HashSet<int>();
+            IReadOnlyList<TileId> markedTiles = cheat.TileMarks.MarkedTilesForSeat(seat);
+            for (int i = 0; i < markedTiles.Count; i++)
+            {
+                marked.Add(markedTiles[i].Value);
+            }
+
+            List<AiTileMarkGroupFacts> activeMarkGroups = BuildAiMarkGroups(seat, cheat.TileMarks);
+            List<TileId> markableHandTiles = new List<TileId>();
+            AiSleeveBloomDrawKind? sleeveDrawKind = null;
+            TileId? sleeveFirstTile = null;
+            TileId? sleeveSecondTile = null;
+            TileId? sleeveThirdTile = null;
+            AiBeamSwapWindow? beamWindow = null;
+            TileId? beamDrawnTile = null;
+            List<TileId> beamEligibleHandTiles = new List<TileId>();
+            List<AiBeamSwapCandidateFacts> beamCandidateFacts = new List<AiBeamSwapCandidateFacts>();
+
             SleeveBloomOffer? immediate = cheat.SleeveBloom.ImmediateOffer;
+            SleeveBloomOffer? offTurn = cheat.SleeveBloom.OffTurnOfferFor(seat);
             if (immediate != null && immediate.Seat == seat)
             {
                 offerChoice = true;
+                sleeveDrawKind = ToAiDrawKind(immediate.DrawKind);
+                sleeveFirstTile = immediate.FirstTile;
+                sleeveSecondTile = immediate.SecondTile;
+                sleeveThirdTile = immediate.ThirdTile;
                 long controlEpochForOffer = _control.GetState(seat).ControlEpoch;
                 plans.Add(AiCheatPlan(
                     seat,
@@ -6926,7 +6994,8 @@ namespace Mahjong.TableRuntime
                     true,
                     RoundCheatAction.SubmitSleeveBloomChoice,
                     RoundCheatPayload.SleeveBloomChoice(immediate.OfferId, SleeveBloomKeep.First),
-                    controlEpochForOffer));
+                    controlEpochForOffer,
+                    tileIds: new[] { immediate.FirstTile }));
                 plans.Add(AiCheatPlan(
                     seat,
                     "sleeve-second",
@@ -6936,20 +7005,83 @@ namespace Mahjong.TableRuntime
                     true,
                     RoundCheatAction.SubmitSleeveBloomChoice,
                     RoundCheatPayload.SleeveBloomChoice(immediate.OfferId, SleeveBloomKeep.Second),
-                    controlEpochForOffer));
+                    controlEpochForOffer,
+                    tileIds: new[] { immediate.SecondTile }));
+                if (immediate.ThirdTile.HasValue)
+                {
+                    plans.Add(AiCheatPlan(
+                        seat,
+                        "sleeve-third",
+                        "sleeve_bloom",
+                        0,
+                        false,
+                        true,
+                        RoundCheatAction.SubmitSleeveBloomChoice,
+                        RoundCheatPayload.SleeveBloomChoice(immediate.OfferId, SleeveBloomKeep.Third),
+                        controlEpochForOffer,
+                        tileIds: new[] { immediate.ThirdTile.Value }));
+                }
+            }
+            else if (offTurn != null)
+            {
+                offerChoice = true;
+                sleeveDrawKind = ToAiDrawKind(offTurn.DrawKind);
+                sleeveFirstTile = offTurn.FirstTile;
+                sleeveSecondTile = offTurn.SecondTile;
+                sleeveThirdTile = offTurn.ThirdTile;
+                long controlEpochForOffer = _control.GetState(seat).ControlEpoch;
+                plans.Add(AiCheatPlan(
+                    seat,
+                    "sleeve-first",
+                    "sleeve_bloom",
+                    0,
+                    true,
+                    true,
+                    RoundCheatAction.SubmitSleeveBloomOffTurnChoice,
+                    RoundCheatPayload.SleeveBloomChoice(offTurn.OfferId, SleeveBloomKeep.First),
+                    controlEpochForOffer,
+                    windowId: offTurn.WindowId,
+                    tileIds: new[] { offTurn.FirstTile }));
+                plans.Add(AiCheatPlan(
+                    seat,
+                    "sleeve-second",
+                    "sleeve_bloom",
+                    0,
+                    false,
+                    true,
+                    RoundCheatAction.SubmitSleeveBloomOffTurnChoice,
+                    RoundCheatPayload.SleeveBloomChoice(offTurn.OfferId, SleeveBloomKeep.Second),
+                    controlEpochForOffer,
+                    windowId: offTurn.WindowId,
+                    tileIds: new[] { offTurn.SecondTile }));
+                if (offTurn.ThirdTile.HasValue)
+                {
+                    plans.Add(AiCheatPlan(
+                        seat,
+                        "sleeve-third",
+                        "sleeve_bloom",
+                        0,
+                        false,
+                        true,
+                        RoundCheatAction.SubmitSleeveBloomOffTurnChoice,
+                        RoundCheatPayload.SleeveBloomChoice(offTurn.OfferId, SleeveBloomKeep.Third),
+                        controlEpochForOffer,
+                        windowId: offTurn.WindowId,
+                        tileIds: new[] { offTurn.ThirdTile.Value }));
+                }
             }
             else
             {
-                // Off-turn sleeve bloom activation is intentionally not offered. Its deferred
-                // delivery journal is a separate host path (the actor's internal discard
-                // delivery) and is out of scope for this AI feature; immediate sleeve bloom,
-                // tile mark and beam swap remain available.
+                // Off-turn sleeve bloom activation is intentionally deferred in M1. Only an
+                // already-paid offer is exposed above for authoritative resolution.
             }
 
             BeamSwapOffer? beam = cheat.BeamSwap.Offer;
             if (!offerChoice && beam != null && beam.Seat == seat)
             {
                 offerChoice = true;
+                beamWindow = beam.Window == BeamSwapWindow.Wall ? AiBeamSwapWindow.Wall : AiBeamSwapWindow.DeadWall;
+                beamDrawnTile = beam.DrawnTileId;
                 long controlEpochForOffer = _control.GetState(seat).ControlEpoch;
                 plans.Add(AiCheatPlan(
                     seat,
@@ -6961,24 +7093,90 @@ namespace Mahjong.TableRuntime
                     RoundCheatAction.SubmitBeamSwapChoice,
                     RoundCheatPayload.BeamSwapChoice(beam.OfferId, BeamSwapAction.KeepOriginal, null, null),
                     controlEpochForOffer));
-                if (beam.EligibleHandTileIds.Count > 0)
+
+                beamEligibleHandTiles.AddRange(beam.EligibleHandTileIds);
+                beamEligibleHandTiles.Sort((left, right) => left.Value.CompareTo(right.Value));
+
+                var sortedCandidates = new List<BeamSwapCandidate>(beam.Candidates);
+                sortedCandidates.Sort((left, right) =>
                 {
-                    TileId handTile = beam.EligibleHandTileIds[0];
-                    int swapCount = Math.Min(beam.Candidates.Count, 8);
-                    for (int i = 0; i < swapCount; i++)
+                    int slotKind = left.Slot.Kind.CompareTo(right.Slot.Kind);
+                    if (slotKind != 0)
                     {
-                        BeamSwapCandidate candidate = beam.Candidates[i];
-                        plans.Add(AiCheatPlan(
-                            seat,
-                            "beam-swap-" + i.ToString(CultureInfo.InvariantCulture),
-                            "beam_swap",
-                            0,
-                            false,
-                            true,
-                            RoundCheatAction.SubmitBeamSwapChoice,
-                            RoundCheatPayload.BeamSwapChoice(beam.OfferId, BeamSwapAction.Swap, handTile, candidate.Slot),
-                            controlEpochForOffer));
+                        return slotKind;
                     }
+
+                    return left.Slot.Index.CompareTo(right.Slot.Index);
+                });
+
+                for (int i = 0; i < sortedCandidates.Count; i++)
+                {
+                    BeamSwapCandidate candidate = sortedCandidates[i];
+                    bool isMarked = marked.Contains(candidate.Tile.Value);
+                    beamCandidateFacts.Add(new AiBeamSwapCandidateFacts(
+                        ToAiSlot(candidate.Slot),
+                        isMarked,
+                        isMarked ? candidate.Tile.Value : (int?)null));
+                }
+
+                var orderedPairs = new List<(bool Marked, TileId HandTile, BeamSwapCandidate Candidate)>(
+                    beamEligibleHandTiles.Count * sortedCandidates.Count);
+                for (int i = 0; i < sortedCandidates.Count; i++)
+                {
+                    BeamSwapCandidate candidate = sortedCandidates[i];
+                    bool isMarked = marked.Contains(candidate.Tile.Value);
+                    for (int h = 0; h < beamEligibleHandTiles.Count; h++)
+                    {
+                        orderedPairs.Add((isMarked, beamEligibleHandTiles[h], candidate));
+                    }
+                }
+
+                orderedPairs.Sort((left, right) =>
+                {
+                    int markedCmp = right.Marked.CompareTo(left.Marked);
+                    if (markedCmp != 0)
+                    {
+                        return markedCmp;
+                    }
+
+                    int kindCmp = left.Candidate.Slot.Kind.CompareTo(right.Candidate.Slot.Kind);
+                    if (kindCmp != 0)
+                    {
+                        return kindCmp;
+                    }
+
+                    int indexCmp = left.Candidate.Slot.Index.CompareTo(right.Candidate.Slot.Index);
+                    if (indexCmp != 0)
+                    {
+                        return indexCmp;
+                    }
+
+                    return left.HandTile.Value.CompareTo(right.HandTile.Value);
+                });
+
+                int swapLimit = Math.Min(orderedPairs.Count, 63);
+                for (int i = 0; i < swapLimit; i++)
+                {
+                    (bool isMarked, TileId handTile, BeamSwapCandidate candidate) = orderedPairs[i];
+                    AiBeamSwapSlotFacts aiSlot = ToAiSlot(candidate.Slot);
+                    string optionId = "beam-swap-" +
+                        handTile.Value.ToString(CultureInfo.InvariantCulture) + "-" +
+                        candidate.Slot.Kind + "-" +
+                        candidate.Slot.Index.ToString(CultureInfo.InvariantCulture);
+                    plans.Add(AiCheatPlan(
+                        seat,
+                        optionId,
+                        "beam_swap",
+                        0,
+                        false,
+                        true,
+                        RoundCheatAction.SubmitBeamSwapChoice,
+                        RoundCheatPayload.BeamSwapChoice(beam.OfferId, BeamSwapAction.Swap, handTile, candidate.Slot),
+                        controlEpochForOffer,
+                        tileIds: new[] { handTile },
+                        targetSlot: aiSlot,
+                        targetMarked: isMarked,
+                        targetTileId: isMarked ? candidate.Tile : (TileId?)null));
                 }
             }
 
@@ -6998,57 +7196,10 @@ namespace Mahjong.TableRuntime
                     _round.Tiles.PositionOf(drawn.Value.Tile).Seat == seat;
                 SleeveBloomDrawKind drawKind = DrawKindOf(_round.Tiles);
                 bool noSleeveOffer = cheat.SleeveBloom.ImmediateOffer == null &&
-                                     cheat.SleeveBloom.OffTurnOfferFor(seat) == null &&
-                                     cheat.SleeveBloom.ReservationFor(seat) == null;
+                                     cheat.SleeveBloom.OffTurnOfferFor(seat) == null;
                 bool noBeamOffer = cheat.BeamSwap.Offer == null;
                 bool trickAlreadyUsed = cheat.SleeveBloom.UsedOnTurn == turnNumber ||
                                         cheat.BeamSwap.UsedOnTurn == turnNumber;
-
-                if (currentSeat &&
-                    !responseOpen &&
-                    (_round.Phase == RoundPhase.CheatWindow || _round.Phase == RoundPhase.Discard) &&
-                    !riichi &&
-                    noSleeveOffer &&
-                    noBeamOffer &&
-                    _cheatEconomy.TryGetCost(CheatEconomyConfig.TileMarkCostKey, out int markCost) &&
-                    markCost > 0 &&
-                    points >= markCost &&
-                    cheat.TileMarks.GroupsForSeat(seat).Count < 3)
-                {
-                    var marked = new HashSet<int>();
-                    IReadOnlyList<TileId> markedTiles = cheat.TileMarks.MarkedTilesForSeat(seat);
-                    for (int i = 0; i < markedTiles.Count; i++)
-                    {
-                        marked.Add(markedTiles[i].Value);
-                    }
-
-                    if (marked.Count <= 8)
-                    {
-                        IReadOnlyList<TileId> hand = _round.Tiles.TilesInZone(TileZone.Hand, seat);
-                        var markTiles = new List<TileId>(4);
-                        for (int i = 0; i < hand.Count && markTiles.Count < 4; i++)
-                        {
-                            if (!marked.Contains(hand[i].Value))
-                            {
-                                markTiles.Add(hand[i]);
-                            }
-                        }
-
-                        if (markTiles.Count == 4)
-                        {
-                            plans.Add(AiCheatPlan(
-                                seat,
-                                "tile-mark",
-                                "tile_mark",
-                                markCost,
-                                false,
-                                false,
-                                RoundCheatAction.SubmitTileMark,
-                                RoundCheatPayload.TileMark("ai-grp-" + AiRequestId(seat, "tile-mark"), markTiles),
-                                _control.GetState(seat).ControlEpoch));
-                        }
-                    }
-                }
 
                 if (currentSeat &&
                     !responseOpen &&
@@ -7061,8 +7212,12 @@ namespace Mahjong.TableRuntime
                     _cheatEconomy.TryGetCost(CheatEconomyConfig.SleeveBloomCostKey, out int bloomCost) &&
                     bloomCost == 10 &&
                     points >= bloomCost &&
-                    (drawKind != SleeveBloomDrawKind.Normal || _round.Tiles.WallRemaining > 0))
+                    (drawKind == SleeveBloomDrawKind.Normal
+                        ? HasUnprotectedLiveWallTile(_round.Tiles, cheat.SleeveBloom)
+                        : _round.Tiles.RinshanPointer >= 1 && _round.Tiles.RinshanPointer <= 3 &&
+                          _round.Tiles.KanCount < 4))
                 {
+                    sleeveDrawKind ??= ToAiDrawKind(drawKind);
                     plans.Add(AiCheatPlan(
                         seat,
                         "sleeve-activate",
@@ -7072,7 +7227,8 @@ namespace Mahjong.TableRuntime
                         false,
                         RoundCheatAction.SubmitSleeveBloom,
                         RoundCheatPayload.SleeveBloom(),
-                        _control.GetState(seat).ControlEpoch));
+                        _control.GetState(seat).ControlEpoch,
+                        tileIds: new[] { drawn!.Value.Tile }));
                 }
 
                 if (currentSeat &&
@@ -7089,9 +7245,8 @@ namespace Mahjong.TableRuntime
                     points >= beamCost &&
                     HasEligibleBeamHand(seat, drawn!.Value.Tile) &&
                     (drawKind == SleeveBloomDrawKind.Normal
-                        ? _round.Tiles.WallRemaining > 0 && _round.Tiles.WallPointer < _round.Tiles.WallEndExclusive
-                        : _round.Tiles.RinshanPointer >= 1 && _round.Tiles.RinshanPointer <= 3 &&
-                          _round.Tiles.KanCount < 4))
+                        ? HasUnprotectedBeamWallCandidate(_round.Tiles, cheat.SleeveBloom)
+                        : HasBeamDeadWallCandidate(_round.Tiles)))
                 {
                     plans.Add(AiCheatPlan(
                         seat,
@@ -7104,6 +7259,69 @@ namespace Mahjong.TableRuntime
                         RoundCheatPayload.BeamSwap(),
                         _control.GetState(seat).ControlEpoch));
                 }
+
+                if (currentSeat &&
+                    !responseOpen &&
+                    (_round.Phase == RoundPhase.CheatWindow || _round.Phase == RoundPhase.Discard) &&
+                    !riichi &&
+                    noSleeveOffer &&
+                    noBeamOffer &&
+                    _cheatEconomy.TryGetCost(CheatEconomyConfig.TileMarkCostKey, out int markCost) &&
+                    markCost > 0 &&
+                    points >= markCost &&
+                    cheat.TileMarks.GroupsForSeat(seat).Count < 3)
+                {
+                    if (marked.Count <= 8)
+                    {
+                        IReadOnlyList<TileId> hand = _round.Tiles.TilesInZone(TileZone.Hand, seat);
+                        for (int i = 0; i < hand.Count; i++)
+                        {
+                            if (!marked.Contains(hand[i].Value))
+                            {
+                                markableHandTiles.Add(hand[i]);
+                            }
+                        }
+
+                        markableHandTiles.Sort((left, right) => left.Value.CompareTo(right.Value));
+                        int markControlEpoch = checked((int)_control.GetState(seat).ControlEpoch);
+                        long markControlEpochLong = _control.GetState(seat).ControlEpoch;
+                        for (int a = 0; a < markableHandTiles.Count - 3 && plans.Count < 64; a++)
+                        {
+                            for (int b = a + 1; b < markableHandTiles.Count - 2 && plans.Count < 64; b++)
+                            {
+                                for (int c = b + 1; c < markableHandTiles.Count - 1 && plans.Count < 64; c++)
+                                {
+                                    for (int d = c + 1; d < markableHandTiles.Count && plans.Count < 64; d++)
+                                    {
+                                        TileId[] group =
+                                        {
+                                            markableHandTiles[a],
+                                            markableHandTiles[b],
+                                            markableHandTiles[c],
+                                            markableHandTiles[d]
+                                        };
+                                        string suffix = group[0].Value.ToString(CultureInfo.InvariantCulture) + "-" +
+                                            group[1].Value.ToString(CultureInfo.InvariantCulture) + "-" +
+                                            group[2].Value.ToString(CultureInfo.InvariantCulture) + "-" +
+                                            group[3].Value.ToString(CultureInfo.InvariantCulture);
+                                        string optionId = "tile-mark-" + suffix;
+                                        plans.Add(AiCheatPlan(
+                                            seat,
+                                            optionId,
+                                            "tile_mark",
+                                            markCost,
+                                            false,
+                                            false,
+                                            RoundCheatAction.SubmitTileMark,
+                                            RoundCheatPayload.TileMark("ai-grp-" + AiRequestId(seat, optionId), group),
+                                            markControlEpochLong,
+                                            tileIds: group));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             var options = new List<AiCheatOption>(plans.Count);
@@ -7112,6 +7330,24 @@ namespace Mahjong.TableRuntime
                 options.Add(plans[i].Option);
             }
 
+            DecisionId? decisionId = null;
+            long? deadlineMillis = null;
+            if (_pending.TryGetValue(seat, out PendingDecision? pendingDecision))
+            {
+                decisionId = new DecisionId(pendingDecision.Key.DecisionId);
+                DecisionTiming? timing = _decisionClock.Timing(seat);
+                if (timing != null && timing.Key == pendingDecision.Key)
+                {
+                    deadlineMillis = timing.DeadlineMillis;
+                }
+            }
+
+            string? offerId = immediate?.Seat == seat
+                ? immediate.OfferId
+                : offTurn?.OfferId ?? (beam != null && beam.Seat == seat ? beam.OfferId : null);
+            long? offerDeadlineMillis = offTurn?.DeadlineMillis;
+            string? windowId = offTurn?.WindowId;
+
             var view = new AiCheatOpportunity(
                 seat,
                 _round.RoundId,
@@ -7119,12 +7355,81 @@ namespace Mahjong.TableRuntime
                 checked((long)_control.GetState(seat).ControlEpoch),
                 _cheat.Ledger.BalanceOf(seat),
                 offerChoice,
-                options);
+                options,
+                decisionId: decisionId?.Value,
+                decisionDeadlineMillis: deadlineMillis,
+                offerId: offerId,
+                windowId: windowId,
+                offerDeadlineMillis: offerDeadlineMillis,
+                recoveryGeneration: _recoveryGeneration,
+                sleeveDrawKind: sleeveDrawKind,
+                sleeveFirstTileId: sleeveFirstTile,
+                sleeveSecondTileId: sleeveSecondTile,
+                sleeveThirdTileId: sleeveThirdTile,
+                beamWindow: beamWindow,
+                beamDrawnTileId: beamDrawnTile,
+                beamEligibleHandTileIds: beamEligibleHandTiles,
+                beamCandidates: beamCandidateFacts,
+                markableHandTileIds: markableHandTiles,
+                activeTileMarkGroups: activeMarkGroups);
+            ScoredCheatVisibleContext visibleContext = BuildScoredVisibleContextForSeat(seat);
+            int spentThisRound = GetAiCheatSpentThisRound(seat);
+
             return new TableAiCheatCaptureResult(
                 TableAiCheatCaptureStatus.Captured,
                 string.Empty,
                 string.Empty,
-                new TableAiCheatOpportunity(view, plans));
+                new TableAiCheatOpportunity(
+                    view,
+                    plans,
+                    decisionId,
+                    deadlineMillis,
+                    offerDeadlineMillis,
+                    offerId,
+                    windowId,
+                    _recoveryGeneration,
+                    _ownerEpoch,
+                    visibleContext,
+                    spentThisRound));
+        }
+
+        private ScoredCheatVisibleContext BuildScoredVisibleContextForSeat(int seat)
+        {
+            IReadOnlyList<string> characterIds = GetSeatCharacterIdsForHost();
+            IReadOnlyList<TileId> ownHand = _round.Tiles.TilesInZone(TileZone.Hand, seat);
+            TileId? drawnTile = DrawnTileFor(seat);
+
+            var ownMelds = new List<AiVisibleMeld>();
+            var visibleMelds = new List<AiVisibleMeld>();
+            for (int i = 0; i < _round.Melds.Count; i++)
+            {
+                RoundMeld meld = _round.Melds[i];
+                if (meld.Seat == seat)
+                {
+                    ownMelds.Add(new AiVisibleMeld(meld.Seat, meld.Tiles));
+                }
+                else if (meld.Kind != RoundMeldKind.ClosedKan)
+                {
+                    // Closed kan identities belong strictly to their owning seat's private facts,
+                    // matching TableVisibilityProjection.
+                    visibleMelds.Add(new AiVisibleMeld(meld.Seat, meld.Tiles));
+                }
+            }
+
+            IReadOnlyList<AiVisibleDiscard> visibleDiscards = BuildVisibleDiscards();
+            return new ScoredCheatVisibleContext(
+                ownHandTileIds: ownHand,
+                ownDrawnTileId: drawnTile,
+                ownMelds: ownMelds,
+                visibleMelds: visibleMelds,
+                visibleDiscards: visibleDiscards,
+                visibleDoraIndicators: _round.Tiles.DoraIndicators,
+                scores: _round.Scores,
+                isRiichi: _round.IsRiichi(seat),
+                remainingWallCount: _round.Tiles.WallRemaining,
+                dealerSeat: _round.DealerSeat,
+                roundWind: _round.RoundWind,
+                characterId: characterIds[seat]);
         }
 
         private async ValueTask<TableOperationResult> ProcessAiCheatSubmitAsync(
@@ -7161,10 +7466,86 @@ namespace Mahjong.TableRuntime
                 envelope.DecisionId,
                 envelope.RecoveryGeneration,
                 now,
-                out _);
+                out PendingDecision? pending);
             if (identityError != null)
             {
                 return identityError;
+            }
+
+            DecisionTiming? capturedTiming = pending == null ? null : _decisionClock.Timing(command.Seat);
+            if ((capturedTiming?.DeadlineMillis) != envelope.DecisionDeadlineMillis)
+            {
+                return TableOperationResult.Rejected(
+                    _stateVersion,
+                    TableRuntimeReasonCode.DecisionMismatch,
+                    "The AI plan does not carry the captured decision deadline.");
+            }
+
+            SleeveBloomOffer? currentOffTurn = _cheat?.SleeveBloom.OffTurnOfferFor(command.Seat);
+            if (command.Action == RoundCheatAction.SubmitSleeveBloomOffTurnChoice)
+            {
+                if (currentOffTurn == null ||
+                    !string.Equals(currentOffTurn.WindowId, envelope.WindowId, StringComparison.Ordinal))
+                {
+                    return TableOperationResult.Rejected(
+                        _stateVersion,
+                        TableRuntimeReasonCode.StaleDecision,
+                        "The AI plan does not carry the captured offer window.");
+                }
+
+                if (currentOffTurn.DeadlineMillis != envelope.OfferDeadlineMillis)
+                {
+                    return TableOperationResult.Rejected(
+                        _stateVersion,
+                        TableRuntimeReasonCode.StaleDecision,
+                        "The AI plan does not carry the captured offer deadline.");
+                }
+
+                if (now >= currentOffTurn.DeadlineMillis)
+                {
+                    return TableOperationResult.Rejected(
+                        _stateVersion,
+                        TableRuntimeReasonCode.DeadlineExpired,
+                        "The offer deadline has been reached; authority timeout must resolve the offer.");
+                }
+            }
+            else if (envelope.WindowId != null || envelope.OfferDeadlineMillis.HasValue)
+            {
+                return TableOperationResult.Rejected(
+                    _stateVersion,
+                    TableRuntimeReasonCode.StaleDecision,
+                    "Only an off-turn choice may carry an offer window or offer deadline.");
+            }
+
+            string requestKey = envelope.RequestId.Value;
+            if (_cheatRequestBindings.TryGetValue(requestKey, out CheatRequestBinding? prior))
+            {
+                if (!Nullable.Equals(prior.ScopeId, envelope.ScopeId))
+                {
+                    return TableOperationResult.Rejected(
+                        _stateVersion,
+                        TableRuntimeReasonCode.CheatRequestIdConflict,
+                        "The AI cheat request id is already bound to another scope.");
+                }
+
+                if (!string.Equals(prior.Api, envelope.Api, StringComparison.Ordinal))
+                {
+                    return TableOperationResult.Conflict(
+                        "The same AI cheat request id was used with a different API.");
+                }
+
+                if (prior.Result != null &&
+                    envelope.PayloadSha256.HasValue &&
+                    prior.Payload != envelope.PayloadSha256.Value)
+                {
+                    return TableOperationResult.Conflict(
+                        "The same AI cheat request id was used with a different payload.");
+                }
+
+                return TableOperationResult.Rejected(
+                    _stateVersion,
+                    TableRuntimeReasonCode.CheatReplayed,
+                    "The AI cheat plan was already applied; no version, charge or physical move was repeated.");
             }
 
             if (!allowTakeoverPaidCheats &&
@@ -7207,13 +7588,21 @@ namespace Mahjong.TableRuntime
 
             if (!preparation.IsReady)
             {
+                if (string.Equals(preparation.Message, "CHEAT_REPLAYED", StringComparison.Ordinal))
+                {
+                    return TableOperationResult.Rejected(
+                        _stateVersion,
+                        TableRuntimeReasonCode.CheatReplayed,
+                        "The AI cheat request was already applied; no version, charge or physical move was repeated.");
+                }
+
                 return TableOperationResult.Rejected(
                     _stateVersion,
                     TableRuntimeReasonCode.FromCheat(preparation.Error, preparation.CheatError),
                     preparation.Message);
             }
 
-            return await CommitCheatAndInstallAsync(
+            TableOperationResult committed = await CommitCheatAndInstallAsync(
                 preparation.Change!,
                 roundEnvelope: null,
                 envelope,
@@ -7224,6 +7613,21 @@ namespace Mahjong.TableRuntime
                 pending: null,
                 decisionId: null,
                 now).ConfigureAwait(false);
+            if ((committed.Status == TableOperationStatus.Accepted ||
+                 committed.Status == TableOperationStatus.Replayed ||
+                 (committed.Status == TableOperationStatus.Rejected &&
+                  ShouldPersistRejection(committed.ReasonCode))) &&
+                envelope.HasDurableIdentity &&
+                _cheatRequestBindings.Count < _options.CheatRequestBindingCapacity)
+            {
+                _cheatRequestBindings[requestKey] = new CheatRequestBinding(
+                    envelope.ScopeId!.Value,
+                    envelope.Api!,
+                    envelope.PayloadSha256!.Value,
+                    committed);
+            }
+
+            return committed;
         }
 
         private TableAiCheatPlan AiCheatPlan(
@@ -7235,23 +7639,249 @@ namespace Mahjong.TableRuntime
             bool offerChoice,
             RoundCheatAction action,
             RoundCheatPayload payload,
-            long controlEpoch)
+            long controlEpoch,
+            string? windowId = null,
+            IReadOnlyList<TileId>? tileIds = null,
+            AiBeamSwapSlotFacts? targetSlot = null,
+            bool targetMarked = false,
+            TileId? targetTileId = null)
         {
             string requestId = AiRequestId(seat, optionId);
             var command = new RoundCheatCommand(_round.RoundId, seat, action, requestId, payload);
+            DecisionId? decisionId = _pending.TryGetValue(seat, out PendingDecision? pending)
+                ? new DecisionId(pending.Key.DecisionId)
+                : (DecisionId?)null;
+            long? decisionDeadlineMillis = pending != null &&
+                                           _decisionClock.Timing(seat) is DecisionTiming timed &&
+                                           timed.Key == pending.Key
+                ? timed.DeadlineMillis
+                : (long?)null;
+            long? offerDeadlineMillis = action == RoundCheatAction.SubmitSleeveBloomOffTurnChoice
+                ? _cheat?.SleeveBloom.OffTurnOfferFor(seat)?.DeadlineMillis
+                : null;
+            string canonicalDigestInput = BuildAiCheatDigestInput(command);
             var envelope = new TableCheatCommandEnvelope(
                 command,
                 new RequestId(requestId),
                 _stateVersion,
                 _ownerEpoch,
                 new ControlEpoch(unchecked((ulong)controlEpoch)),
+                decisionId: decisionId,
                 recoveryGeneration: _recoveryGeneration,
                 scopeId: new RequestScopeId("system"),
                 api: AiCheatApi,
-                payloadSha256: TablePayloadSha256.Compute(System.Text.Encoding.UTF8.GetBytes(requestId)));
+                payloadSha256: TablePayloadSha256.Compute(System.Text.Encoding.UTF8.GetBytes(canonicalDigestInput)),
+                decisionDeadlineMillis: decisionDeadlineMillis,
+                offerDeadlineMillis: offerDeadlineMillis,
+                windowId: windowId);
             return new TableAiCheatPlan(
-                new AiCheatOption(optionId, capabilityId, cost, safeDefault, offerChoice),
+                new AiCheatOption(
+                    optionId,
+                    capabilityId,
+                    cost,
+                    safeDefault,
+                    offerChoice,
+                    tileIds,
+                    targetSlot,
+                    targetMarked,
+                    targetTileId),
                 envelope);
+        }
+
+        private static string BuildAiCheatDigestInput(RoundCheatCommand command)
+        {
+            RoundCheatPayload p = command.Payload;
+            string tiles = p.Tiles == null
+                ? string.Empty
+                : string.Join(",", System.Linq.Enumerable.Select(p.Tiles, tile => tile.Value.ToString(CultureInfo.InvariantCulture)));
+            return string.Concat(
+                command.RequestId,
+                "|",
+                command.RoundId,
+                "|",
+                command.Seat.ToString(CultureInfo.InvariantCulture),
+                "|",
+                ((int)command.Action).ToString(CultureInfo.InvariantCulture),
+                "|",
+                p.GroupId ?? string.Empty,
+                "|",
+                p.OfferId ?? string.Empty,
+                "|",
+                p.Keep?.ToString() ?? string.Empty,
+                "|",
+                p.Action?.ToString() ?? string.Empty,
+                "|",
+                p.HandTile?.Value.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
+                "|",
+                p.TargetSlot?.Kind.ToString() ?? string.Empty,
+                ":",
+                p.TargetSlot?.Index.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
+                "|",
+                tiles);
+        }
+
+        private static AiSleeveBloomDrawKind ToAiDrawKind(SleeveBloomDrawKind kind)
+        {
+            switch (kind)
+            {
+                case SleeveBloomDrawKind.Normal:
+                    return AiSleeveBloomDrawKind.Normal;
+                case SleeveBloomDrawKind.Rinshan:
+                    return AiSleeveBloomDrawKind.Rinshan;
+                default:
+                    return AiSleeveBloomDrawKind.DealExtra;
+            }
+        }
+
+        private static AiBeamSwapSlotFacts ToAiSlot(BeamSwapSlot slot)
+        {
+            switch (slot.Kind)
+            {
+                case BeamSwapSlotKind.WallSlot:
+                    return new AiBeamSwapSlotFacts(AiBeamSwapSlotKind.WallSlot, slot.Index);
+                case BeamSwapSlotKind.DeadWallSlot:
+                    return new AiBeamSwapSlotFacts(AiBeamSwapSlotKind.DeadWallSlot, slot.Index);
+                default:
+                    return new AiBeamSwapSlotFacts(AiBeamSwapSlotKind.ReplacementSlot, slot.Index);
+            }
+        }
+
+        private List<AiTileMarkGroupFacts> BuildAiMarkGroups(int seat, TileMarkState marks)
+        {
+            IReadOnlyList<TileMarkGroup> groups = marks.GroupsForSeat(seat);
+            var result = new List<AiTileMarkGroupFacts>(groups.Count);
+            int currentOrdinal = marks.DealtRoundOrdinal;
+            for (int i = 0; i < groups.Count; i++)
+            {
+                TileMarkGroup group = groups[i];
+                var tileFacts = new List<AiMarkedTileFacts>(4);
+                for (int t = 0; t < group.TileIds.Count; t++)
+                {
+                    TileId tile = group.TileIds[t];
+                    TilePosition pos = _round.Tiles.PositionOf(tile);
+                    AiTileMarkArea area;
+                    int? tileSeat = null;
+                    AiRiverPositionFacts? river = null;
+                    switch (pos.Zone)
+                    {
+                        case TileZone.Hand:
+                            area = pos.Seat == seat ? AiTileMarkArea.OwnHand : AiTileMarkArea.OpponentHand;
+                            tileSeat = pos.Seat;
+                            break;
+                        case TileZone.Discard:
+                            area = AiTileMarkArea.Discard;
+                            tileSeat = pos.Seat;
+                            river = new AiRiverPositionFacts(_round.RoundId, pos.Seat, Math.Max(0, pos.Index));
+                            break;
+                        case TileZone.Meld:
+                            area = AiTileMarkArea.ExposedMeld;
+                            tileSeat = pos.Seat;
+                            break;
+                        case TileZone.DeadWall when System.Linq.Enumerable.Contains(_round.Tiles.DoraIndicators, tile):
+                            area = AiTileMarkArea.ExposedIndicator;
+                            break;
+                        default:
+                            area = AiTileMarkArea.NotVisible;
+                            break;
+                    }
+
+                    tileFacts.Add(new AiMarkedTileFacts(tile.Value, area, tileSeat, river));
+                }
+
+                int remaining = currentOrdinal > 0
+                    ? Math.Max(0, group.ExpiresAfterRoundOrdinal - currentOrdinal)
+                    : 0;
+                bool isLast = currentOrdinal > 0 && remaining == 1;
+                result.Add(new AiTileMarkGroupFacts(
+                    group.GroupId,
+                    group.CreatedRoundId,
+                    group.CreatedRoundOrdinal,
+                    group.ExpiresAfterRoundOrdinal,
+                    remaining,
+                    isLast,
+                    tileFacts));
+            }
+
+            return result;
+        }
+
+        private static bool HasUnprotectedLiveWallTile(TilePositionMap map, SleeveBloomState sleeve)
+        {
+            if (map.WallRemaining <= 0)
+            {
+                return false;
+            }
+
+            for (int i = map.WallPointer; i < map.WallEndExclusive; i++)
+            {
+                if (map.TryGetTileAt(TilePosition.Wall(i), out TileId tile) &&
+                    map.PositionOf(tile).Zone == TileZone.Wall &&
+                    !sleeve.IsProtectedTile(tile))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool HasUnprotectedBeamWallCandidate(TilePositionMap map, SleeveBloomState sleeve)
+        {
+            if (map.WallRemaining < 1 || map.WallPointer >= map.WallEndExclusive)
+            {
+                return false;
+            }
+
+            int end = Math.Min(map.WallPointer + 8, map.WallEndExclusive);
+            for (int i = map.WallPointer; i < end; i++)
+            {
+                if (map.TryGetTileAt(TilePosition.Wall(i), out TileId tile) &&
+                    map.PositionOf(tile).Zone == TileZone.Wall &&
+                    !sleeve.IsProtectedTile(tile))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool HasBeamDeadWallCandidate(TilePositionMap map)
+        {
+            if (map.RinshanPointer < 1 || map.RinshanPointer > 3 || map.KanCount >= 4)
+            {
+                return false;
+            }
+
+            for (int i = map.RinshanPointer; i <= 3; i++)
+            {
+                if (map.TryGetTileAt(TilePosition.DeadWall(i), out TileId tile) &&
+                    map.PositionOf(tile).Zone == TileZone.DeadWall)
+                {
+                    return true;
+                }
+            }
+
+            for (int i = 4; i < TilePositionMap.DeadWallSlotCount; i++)
+            {
+                if (map.TryGetTileAt(TilePosition.DeadWall(i), out TileId tile) &&
+                    map.PositionOf(tile).Zone == TileZone.DeadWall &&
+                    !System.Linq.Enumerable.Contains(map.DoraIndicators, tile))
+                {
+                    return true;
+                }
+            }
+
+            for (int i = 0; i < map.ReplacementCount; i++)
+            {
+                if (map.TryGetTileAt(TilePosition.DeadWallReplacement(i), out TileId tile) &&
+                    map.PositionOf(tile).Zone == TileZone.DeadWallReplacement)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private string AiRequestId(int seat, string optionId)

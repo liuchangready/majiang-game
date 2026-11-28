@@ -815,7 +815,10 @@ namespace Mahjong.Ai
             bool firstCanTsumo = false,
             bool secondCanTsumo = false,
             bool firstCanKan = false,
-            bool secondCanKan = false)
+            bool secondCanKan = false,
+            int? thirdTileId = null,
+            bool thirdCanTsumo = false,
+            bool thirdCanKan = false)
         {
             AiFrozenGuard.RequireText(offerId, nameof(offerId));
             AiFrozenGuard.CheckTileId(firstTileId, nameof(firstTileId));
@@ -823,6 +826,15 @@ namespace Mahjong.Ai
             if (firstTileId == secondTileId)
             {
                 throw new ArgumentException("Sleeve-bloom candidates must be distinct tiles.", nameof(secondTileId));
+            }
+
+            if (thirdTileId.HasValue)
+            {
+                AiFrozenGuard.CheckTileId(thirdTileId.Value, nameof(thirdTileId));
+                if (thirdTileId.Value == firstTileId || thirdTileId.Value == secondTileId)
+                {
+                    throw new ArgumentException("Sleeve-bloom candidates must be distinct tiles.", nameof(thirdTileId));
+                }
             }
 
             AiFrozenGuard.CheckDefined(drawKind, nameof(drawKind));
@@ -852,6 +864,7 @@ namespace Mahjong.Ai
             OfferId = offerId;
             FirstTileId = firstTileId;
             SecondTileId = secondTileId;
+            ThirdTileId = thirdTileId;
             DrawKind = drawKind;
             DeadlineMillis = deadlineMillis;
             DecisionId = decisionId;
@@ -860,8 +873,10 @@ namespace Mahjong.Ai
             WindowId = windowId;
             FirstCanTsumo = firstCanTsumo;
             SecondCanTsumo = secondCanTsumo;
+            ThirdCanTsumo = thirdCanTsumo;
             FirstCanKan = firstCanKan;
             SecondCanKan = secondCanKan;
+            ThirdCanKan = thirdCanKan;
         }
 
         public string OfferId { get; }
@@ -869,6 +884,8 @@ namespace Mahjong.Ai
         public int FirstTileId { get; }
 
         public int SecondTileId { get; }
+
+        public int? ThirdTileId { get; }
 
         public AiSleeveBloomDrawKind DrawKind { get; }
 
@@ -886,9 +903,13 @@ namespace Mahjong.Ai
 
         public bool SecondCanTsumo { get; }
 
+        public bool ThirdCanTsumo { get; }
+
         public bool FirstCanKan { get; }
 
         public bool SecondCanKan { get; }
+
+        public bool ThirdCanKan { get; }
 
         public AiSleeveBloomOfferFacts DeepCopy()
         {
@@ -905,7 +926,10 @@ namespace Mahjong.Ai
                 FirstCanTsumo,
                 SecondCanTsumo,
                 FirstCanKan,
-                SecondCanKan);
+                SecondCanKan,
+                ThirdTileId,
+                ThirdCanTsumo,
+                ThirdCanKan);
         }
     }
 

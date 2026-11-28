@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Threading;
+using Mahjong.Domain;
 
 namespace Mahjong.Ai
 {
@@ -63,12 +64,18 @@ namespace Mahjong.Ai
     /// </summary>
     public sealed class AiCheatOption
     {
+        private readonly ReadOnlyCollection<TileId> _tileIds;
+
         public AiCheatOption(
             string optionId,
             string capabilityId,
             int cost,
             bool isSafeDefault,
-            bool isOfferChoice)
+            bool isOfferChoice,
+            IReadOnlyList<TileId>? tileIds = null,
+            AiBeamSwapSlotFacts? targetSlot = null,
+            bool targetMarked = false,
+            TileId? targetTileId = null)
         {
             OptionId = AiGuard.RequireText(optionId, nameof(optionId));
             CapabilityId = AiGuard.RequireText(capabilityId, nameof(capabilityId));
@@ -77,9 +84,39 @@ namespace Mahjong.Ai
                 throw new ArgumentOutOfRangeException(nameof(cost), cost, "A cheat cost cannot be negative.");
             }
 
+            if (targetMarked)
+            {
+                if (!targetTileId.HasValue)
+                {
+                    throw new ArgumentException("targetTileId is required when targetMarked is true.", nameof(targetTileId));
+                }
+            }
+            else if (targetTileId.HasValue)
+            {
+                throw new ArgumentException("targetTileId must be null when targetMarked is false.", nameof(targetTileId));
+            }
+
+            TileId[] copy;
+            if (tileIds == null || tileIds.Count == 0)
+            {
+                copy = Array.Empty<TileId>();
+            }
+            else
+            {
+                copy = new TileId[tileIds.Count];
+                for (int i = 0; i < tileIds.Count; i++)
+                {
+                    copy[i] = tileIds[i];
+                }
+            }
+
             Cost = cost;
             IsSafeDefault = isSafeDefault;
             IsOfferChoice = isOfferChoice;
+            _tileIds = new ReadOnlyCollection<TileId>(copy);
+            TargetSlot = targetSlot;
+            TargetMarked = targetMarked;
+            TargetTileId = targetTileId;
         }
 
         public string OptionId { get; }
@@ -93,6 +130,18 @@ namespace Mahjong.Ai
 
         /// <summary>True when an already-paid offer must be resolved before the next action.</summary>
         public bool IsOfferChoice { get; }
+
+        /// <summary>Authorized visible physical tiles bound to this option (own hand or revealed sleeve candidate).</summary>
+        public IReadOnlyList<TileId> TileIds => _tileIds;
+
+        /// <summary>Frozen target slot for a beam-swap option, or null.</summary>
+        public AiBeamSwapSlotFacts? TargetSlot { get; }
+
+        /// <summary>Whether the target slot is revealed by an active own tile-mark group.</summary>
+        public bool TargetMarked { get; }
+
+        /// <summary>Target physical tile id when <see cref="TargetMarked"/> is true; always null for unmarked slots.</summary>
+        public TileId? TargetTileId { get; }
     }
 
     /// <summary>
@@ -103,6 +152,10 @@ namespace Mahjong.Ai
     public sealed class AiCheatOpportunity
     {
         private readonly ReadOnlyCollection<AiCheatOption> _options;
+        private readonly ReadOnlyCollection<TileId> _markableHandTileIds;
+        private readonly ReadOnlyCollection<AiTileMarkGroupFacts> _activeTileMarkGroups;
+        private readonly ReadOnlyCollection<TileId> _beamEligibleHandTileIds;
+        private readonly ReadOnlyCollection<AiBeamSwapCandidateFacts> _beamCandidates;
 
         public AiCheatOpportunity(
             int seat,
@@ -111,7 +164,23 @@ namespace Mahjong.Ai
             long controlEpoch,
             int cheatPoints,
             bool isOfferChoice,
-            IReadOnlyList<AiCheatOption> options)
+            IReadOnlyList<AiCheatOption> options,
+            string? decisionId = null,
+            long? decisionDeadlineMillis = null,
+            string? offerId = null,
+            string? windowId = null,
+            long? offerDeadlineMillis = null,
+            long recoveryGeneration = 0L,
+            AiSleeveBloomDrawKind? sleeveDrawKind = null,
+            TileId? sleeveFirstTileId = null,
+            TileId? sleeveSecondTileId = null,
+            TileId? sleeveThirdTileId = null,
+            AiBeamSwapWindow? beamWindow = null,
+            TileId? beamDrawnTileId = null,
+            IReadOnlyList<TileId>? beamEligibleHandTileIds = null,
+            IReadOnlyList<AiBeamSwapCandidateFacts>? beamCandidates = null,
+            IReadOnlyList<TileId>? markableHandTileIds = null,
+            IReadOnlyList<AiTileMarkGroupFacts>? activeTileMarkGroups = null)
         {
             AiGuard.CheckSeat(seat, nameof(seat));
             RoundId = AiGuard.RequireText(roundId, nameof(roundId));
@@ -121,6 +190,18 @@ namespace Mahjong.Ai
             {
                 throw new ArgumentOutOfRangeException(nameof(cheatPoints), cheatPoints, "Cheat points cannot be negative.");
             }
+
+            if (decisionDeadlineMillis.HasValue)
+            {
+                AiGuard.CheckNonNegative(decisionDeadlineMillis.Value, nameof(decisionDeadlineMillis));
+            }
+
+            if (offerDeadlineMillis.HasValue)
+            {
+                AiGuard.CheckNonNegative(offerDeadlineMillis.Value, nameof(offerDeadlineMillis));
+            }
+
+            AiGuard.CheckNonNegative(recoveryGeneration, nameof(recoveryGeneration));
 
             if (options == null)
             {
@@ -147,6 +228,22 @@ namespace Mahjong.Ai
             CheatPoints = cheatPoints;
             IsOfferChoice = isOfferChoice;
             _options = new ReadOnlyCollection<AiCheatOption>(copy);
+            DecisionId = string.IsNullOrWhiteSpace(decisionId) ? null : decisionId;
+            DeadlineMillis = decisionDeadlineMillis;
+            OfferId = string.IsNullOrWhiteSpace(offerId) ? null : offerId;
+            WindowId = string.IsNullOrWhiteSpace(windowId) ? null : windowId;
+            OfferDeadlineMillis = offerDeadlineMillis;
+            RecoveryGeneration = recoveryGeneration;
+            SleeveDrawKind = sleeveDrawKind;
+            SleeveFirstTileId = sleeveFirstTileId;
+            SleeveSecondTileId = sleeveSecondTileId;
+            SleeveThirdTileId = sleeveThirdTileId;
+            BeamWindow = beamWindow;
+            BeamDrawnTileId = beamDrawnTileId;
+            _markableHandTileIds = CopyTiles(markableHandTileIds);
+            _activeTileMarkGroups = CopyGroups(activeTileMarkGroups);
+            _beamEligibleHandTileIds = CopyTiles(beamEligibleHandTileIds);
+            _beamCandidates = CopyBeamCandidates(beamCandidates);
         }
 
         public int Seat { get; }
@@ -163,6 +260,91 @@ namespace Mahjong.Ai
         public bool IsOfferChoice { get; }
 
         public IReadOnlyList<AiCheatOption> Options => _options;
+
+        public string? DecisionId { get; }
+
+        public long? DeadlineMillis { get; }
+
+        public string? OfferId { get; }
+
+        public string? WindowId { get; }
+
+        public long? OfferDeadlineMillis { get; }
+
+        public long RecoveryGeneration { get; }
+
+        public AiSleeveBloomDrawKind? SleeveDrawKind { get; }
+
+        public TileId? SleeveFirstTileId { get; }
+
+        public TileId? SleeveSecondTileId { get; }
+
+        public TileId? SleeveThirdTileId { get; }
+
+        public AiBeamSwapWindow? BeamWindow { get; }
+
+        public TileId? BeamDrawnTileId { get; }
+
+        public IReadOnlyList<TileId> MarkableHandTileIds => _markableHandTileIds;
+
+        public IReadOnlyList<AiTileMarkGroupFacts> ActiveTileMarkGroups => _activeTileMarkGroups;
+
+        public IReadOnlyList<TileId> BeamEligibleHandTileIds => _beamEligibleHandTileIds;
+
+        public IReadOnlyList<AiBeamSwapCandidateFacts> BeamCandidates => _beamCandidates;
+
+        private static ReadOnlyCollection<TileId> CopyTiles(IReadOnlyList<TileId>? tiles)
+        {
+            if (tiles == null || tiles.Count == 0)
+            {
+                return new ReadOnlyCollection<TileId>(Array.Empty<TileId>());
+            }
+
+            var copy = new TileId[tiles.Count];
+            for (int i = 0; i < tiles.Count; i++)
+            {
+                copy[i] = tiles[i];
+            }
+
+            return new ReadOnlyCollection<TileId>(copy);
+        }
+
+        private static ReadOnlyCollection<AiTileMarkGroupFacts> CopyGroups(IReadOnlyList<AiTileMarkGroupFacts>? groups)
+        {
+            if (groups == null || groups.Count == 0)
+            {
+                return new ReadOnlyCollection<AiTileMarkGroupFacts>(Array.Empty<AiTileMarkGroupFacts>());
+            }
+
+            var copy = new AiTileMarkGroupFacts[groups.Count];
+            for (int i = 0; i < groups.Count; i++)
+            {
+                AiTileMarkGroupFacts group = groups[i] ??
+                    throw new ArgumentException("Tile-mark groups cannot contain null.", nameof(groups));
+                copy[i] = group.DeepCopy();
+            }
+
+            return new ReadOnlyCollection<AiTileMarkGroupFacts>(copy);
+        }
+
+        private static ReadOnlyCollection<AiBeamSwapCandidateFacts> CopyBeamCandidates(
+            IReadOnlyList<AiBeamSwapCandidateFacts>? candidates)
+        {
+            if (candidates == null || candidates.Count == 0)
+            {
+                return new ReadOnlyCollection<AiBeamSwapCandidateFacts>(Array.Empty<AiBeamSwapCandidateFacts>());
+            }
+
+            var copy = new AiBeamSwapCandidateFacts[candidates.Count];
+            for (int i = 0; i < candidates.Count; i++)
+            {
+                AiBeamSwapCandidateFacts candidate = candidates[i] ??
+                    throw new ArgumentException("Beam candidates cannot contain null.", nameof(candidates));
+                copy[i] = candidate.DeepCopy();
+            }
+
+            return new ReadOnlyCollection<AiBeamSwapCandidateFacts>(copy);
+        }
     }
 
     /// <summary>

@@ -569,13 +569,17 @@ namespace Mahjong.TableRuntime
             string reasonCode,
             string detail,
             bool admitted,
-            AiObservation? observation)
+            AiObservation? observation,
+            OwnerEpoch ownerEpoch = default,
+            long recoveryGeneration = 0L)
         {
             Status = status;
             ReasonCode = reasonCode ?? string.Empty;
             Detail = detail ?? string.Empty;
             Admitted = admitted;
             Observation = observation;
+            OwnerEpoch = ownerEpoch;
+            RecoveryGeneration = recoveryGeneration;
         }
 
         public TableAiObservationStatus Status { get; }
@@ -587,6 +591,11 @@ namespace Mahjong.TableRuntime
         public bool Admitted { get; }
 
         public AiObservation? Observation { get; }
+
+        /// <summary>Owner and recovery fences captured with the observation.</summary>
+        public OwnerEpoch OwnerEpoch { get; }
+
+        public long RecoveryGeneration { get; }
 
         public bool IsCaptured => Status == TableAiObservationStatus.Captured;
     }

@@ -81,7 +81,9 @@ namespace Mahjong.TableRuntime.Tests
             Assert.Empty(owner1.Cheat.MarkGroups);
             Assert.Null(owner1.Cheat.ImmediateOffer);
             Assert.NotNull(owner1.Cheat.BeamSwapOffer);
-            Assert.Equal(6u, owner1.Cheat.BeamSwapOffer!.Candidates[0].TileId);
+            Assert.Equal(BeamSwapSlotKind.WallSlot, owner1.Cheat.BeamSwapOffer!.Candidates[0].SlotKind);
+            Assert.Equal(54, owner1.Cheat.BeamSwapOffer.Candidates[0].SlotIndex);
+            Assert.Null(owner1.Cheat.BeamSwapOffer.Candidates[0].TileId);
             Assert.Equal(7u, owner1.Cheat.BeamSwapOffer.EligibleHandTileIds[0]);
 
             string publicDump = VisibilitySurface.Dump(publicSnapshot);

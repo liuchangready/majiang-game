@@ -48,6 +48,7 @@ namespace Mahjong.LocalHost
         public string RoomId => _options.RoomId;
         public string SaveDirectory => LocalTableHostPaths.ResolveSaveDirectory(_options.SaveDirectory);
         public LocalTableSeatPlan SeatPlan => _options.SeatPlan;
+        internal LocalTableRuntime AuthorityForTest => _authority!;
 
         public static async ValueTask<LocalTableRoom> OpenAsync(
             LocalTableHostOptions options,

@@ -4,6 +4,7 @@ using System.IO;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Mahjong.Ai;
 using Mahjong.Client;
 using Mahjong.Contracts;
 using Mahjong.Domain;
@@ -158,6 +159,45 @@ namespace Mahjong.LocalHost
             IReadOnlyList<LocalMatchRoundRecord> records,
             IReadOnlyList<string> characterIds,
             IReadOnlyList<int> characterTraitsVersions)
+            : this(
+                matchId,
+                ordinal,
+                roundId,
+                dealerSeat,
+                roundWind,
+                roundNumber,
+                honba,
+                scores,
+                finalScores,
+                riichiSticks,
+                finished,
+                finishReason,
+                rankings,
+                records,
+                characterIds,
+                characterTraitsVersions,
+                seatProfiles: null)
+        {
+        }
+
+        public LocalMatchSnapshot(
+            string matchId,
+            int ordinal,
+            string roundId,
+            int dealerSeat,
+            int roundWind,
+            int roundNumber,
+            int honba,
+            IReadOnlyList<long> scores,
+            IReadOnlyList<long> finalScores,
+            int riichiSticks,
+            bool finished,
+            string finishReason,
+            IReadOnlyList<RankingEntry> rankings,
+            IReadOnlyList<LocalMatchRoundRecord> records,
+            IReadOnlyList<string> characterIds,
+            IReadOnlyList<int> characterTraitsVersions,
+            IReadOnlyList<CharacterAiProfile>? seatProfiles)
         {
             if (characterIds == null) throw new ArgumentNullException(nameof(characterIds));
             if (characterTraitsVersions == null) throw new ArgumentNullException(nameof(characterTraitsVersions));
@@ -166,12 +206,38 @@ namespace Mahjong.LocalHost
                 throw new ArgumentException("Character configuration must contain exactly 4 seats.");
             }
 
+            if (seatProfiles != null && seatProfiles.Count != 4)
+            {
+                throw new ArgumentException("Seat AI profiles must contain exactly 4 seats.", nameof(seatProfiles));
+            }
+
             var copiedIds = new string[4];
             var copiedVersions = new int[4];
             for (int seat = 0; seat < 4; seat++)
             {
                 copiedIds[seat] = characterIds[seat];
                 copiedVersions[seat] = characterTraitsVersions[seat];
+            }
+
+            CharacterAiProfile[]? copiedProfiles = null;
+            string[] profileIds = new string[4];
+            if (seatProfiles != null)
+            {
+                copiedProfiles = new CharacterAiProfile[4];
+                for (int seat = 0; seat < 4; seat++)
+                {
+                    CharacterAiProfile p = seatProfiles[seat] ??
+                        throw new ArgumentException("Seat AI profile cannot be null.", nameof(seatProfiles));
+                    copiedProfiles[seat] = p;
+                    profileIds[seat] = p.ProfileId;
+                }
+            }
+            else
+            {
+                for (int seat = 0; seat < 4; seat++)
+                {
+                    profileIds[seat] = LocalAiProfiles.LegacyHeuristic;
+                }
             }
 
             MatchId = matchId;
@@ -190,6 +256,8 @@ namespace Mahjong.LocalHost
             Records = records;
             CharacterIds = Array.AsReadOnly(copiedIds);
             CharacterTraitsVersions = Array.AsReadOnly(copiedVersions);
+            SeatProfiles = copiedProfiles == null ? null : Array.AsReadOnly(copiedProfiles);
+            SeatProfileIds = Array.AsReadOnly(profileIds);
         }
 
         private static readonly IReadOnlyList<string> DefaultCharacterIds = Array.AsReadOnly(new[]
@@ -224,6 +292,8 @@ namespace Mahjong.LocalHost
         public IReadOnlyList<LocalMatchRoundRecord> Records { get; }
         public IReadOnlyList<string> CharacterIds { get; }
         public IReadOnlyList<int> CharacterTraitsVersions { get; }
+        public IReadOnlyList<CharacterAiProfile>? SeatProfiles { get; }
+        public IReadOnlyList<string> SeatProfileIds { get; }
 
         /// <summary>
         /// Domain-free final seat order for presentation/Unity consumers that must not
@@ -365,7 +435,8 @@ namespace Mahjong.LocalHost
                 LocalMatchState state = loaded ?? LocalMatchState.Create(
                     options.MatchId,
                     options.ResolveCharacterIds(),
-                    options.ResolveCharacterTraitsVersions());
+                    options.ResolveCharacterTraitsVersions(),
+                    options.Ai.SeatProfiles);
                 if (loaded == null)
                 {
                     LocalMatchStateCodec.Save(statePath, state, 0);
@@ -530,6 +601,12 @@ namespace Mahjong.LocalHost
                 LocalTableHostPaths.ResolveSaveDirectory(_options.SaveDirectory),
                 _options.MatchId,
                 "r" + state.Ordinal.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            LocalAiOptions roundAi = _options.Ai.Clone();
+            if (state.SeatProfiles != null)
+            {
+                roundAi.SeatProfiles = LocalMatchState.CopyProfiles(state.SeatProfiles);
+            }
+
             var roundOptions = new LocalTableHostOptions
             {
                 SaveDirectory = root,
@@ -542,7 +619,7 @@ namespace Mahjong.LocalHost
                 PlayerCharacterId = state.CharacterIds[0],
                 CharacterIds = Array.AsReadOnly(LocalMatchState.CopyStrings(state.CharacterIds)),
                 CharacterTraitsVersions = Array.AsReadOnly(LocalMatchState.CopyInts(state.CharacterTraitsVersions)),
-                Ai = _options.Ai,
+                Ai = roundAi,
                 AiDecisionObserver = _options.AiDecisionObserver
             };
             RoundStateMachine initialRound = _options.RoundFactory != null
@@ -719,11 +796,13 @@ namespace Mahjong.LocalHost
         public List<LocalMatchRoundRecord> Records { get; private set; } = new List<LocalMatchRoundRecord>();
         public string[] CharacterIds { get; private set; } = DefaultCharacterIds();
         public int[] CharacterTraitsVersions { get; private set; } = DefaultCharacterTraitsVersions();
+        public CharacterAiProfile[]? SeatProfiles { get; private set; }
 
         public static LocalMatchState Create(
             string matchId,
             IReadOnlyList<string>? characterIds = null,
-            IReadOnlyList<int>? characterTraitsVersions = null)
+            IReadOnlyList<int>? characterTraitsVersions = null,
+            IReadOnlyList<CharacterAiProfile>? seatProfiles = null)
         {
             string[] resolvedIds = LocalCharacterConfig.ResolveCharacterIds(
                 PlayerCharacterIds.Player,
@@ -743,7 +822,8 @@ namespace Mahjong.LocalHost
                 RiichiSticks = 0,
                 Scores = new long[] { 25_000L, 25_000L, 25_000L, 25_000L },
                 CharacterIds = resolvedIds,
-                CharacterTraitsVersions = resolvedVersions
+                CharacterTraitsVersions = resolvedVersions,
+                SeatProfiles = seatProfiles == null ? null : CopyProfiles(seatProfiles)
             };
             state.CurrentRoomId = matchId + "-r1";
             state.CurrentRoundId = matchId + "-r1";
@@ -804,7 +884,8 @@ namespace Mahjong.LocalHost
                 FinalScores = Array.Empty<long>(),
                 Records = records,
                 CharacterIds = CopyStrings(CharacterIds),
-                CharacterTraitsVersions = CopyInts(CharacterTraitsVersions)
+                CharacterTraitsVersions = CopyInts(CharacterTraitsVersions),
+                SeatProfiles = SeatProfiles == null ? null : CopyProfiles(SeatProfiles)
             };
 
             if (next is ProgressionResult.NextRound nextRound)
@@ -847,7 +928,8 @@ namespace Mahjong.LocalHost
                 new List<RankingEntry>(Rankings),
                 new List<LocalMatchRoundRecord>(Records),
                 Array.AsReadOnly(CopyStrings(CharacterIds)),
-                Array.AsReadOnly(CopyInts(CharacterTraitsVersions)));
+                Array.AsReadOnly(CopyInts(CharacterTraitsVersions)),
+                SeatProfiles == null ? null : Array.AsReadOnly(CopyProfiles(SeatProfiles)));
         }
 
         internal void Restore(
@@ -905,7 +987,8 @@ namespace Mahjong.LocalHost
             List<RankingEntry> rankings,
             List<LocalMatchRoundRecord> records,
             string[] characterIds,
-            int[] characterTraitsVersions)
+            int[] characterTraitsVersions,
+            CharacterAiProfile[]? seatProfiles = null)
         {
             MatchId = matchId;
             Version = version;
@@ -925,6 +1008,23 @@ namespace Mahjong.LocalHost
             Records = records;
             CharacterIds = CopyStrings(characterIds);
             CharacterTraitsVersions = CopyInts(characterTraitsVersions);
+            SeatProfiles = seatProfiles == null ? null : CopyProfiles(seatProfiles);
+        }
+
+        internal static CharacterAiProfile[] CopyProfiles(IReadOnlyList<CharacterAiProfile> profiles)
+        {
+            if (profiles.Count != 4)
+            {
+                throw new ArgumentException("Seat profiles must contain exactly 4 entries.", nameof(profiles));
+            }
+
+            var copy = new CharacterAiProfile[4];
+            for (int i = 0; i < 4; i++)
+            {
+                copy[i] = profiles[i] ?? throw new ArgumentException("Seat profile cannot be null.", nameof(profiles));
+            }
+
+            return copy;
         }
 
         private static string[] DefaultCharacterIds() => new[]
@@ -981,7 +1081,8 @@ namespace Mahjong.LocalHost
     {
         private const int Magic = 0x4D415443; // MATC
         private const int LegacyEnvelopeVersion = 1;
-        private const int EnvelopeVersion = 2;
+        private const int V2EnvelopeVersion = 2;
+        private const int EnvelopeVersion = 3;
         private static readonly UTF8Encoding Utf8 = new UTF8Encoding(false, true);
 
         public static LocalMatchState? Load(string path)
@@ -1204,6 +1305,16 @@ namespace Mahjong.LocalHost
                     writer.Write(state.CharacterTraitsVersions[seat]);
                 }
 
+                bool hasSeatProfiles = state.SeatProfiles != null;
+                writer.Write(hasSeatProfiles);
+                if (hasSeatProfiles)
+                {
+                    for (int seat = 0; seat < 4; seat++)
+                    {
+                        WriteProfile(writer, state.SeatProfiles![seat]);
+                    }
+                }
+
                 writer.Flush();
                 return stream.ToArray();
             }
@@ -1224,7 +1335,9 @@ namespace Mahjong.LocalHost
                     int magic = reader.ReadInt32();
                     int envelopeVersion = reader.ReadInt32();
                     if (magic != Magic ||
-                        (envelopeVersion != LegacyEnvelopeVersion && envelopeVersion != EnvelopeVersion))
+                        (envelopeVersion != LegacyEnvelopeVersion &&
+                         envelopeVersion != V2EnvelopeVersion &&
+                         envelopeVersion != EnvelopeVersion))
                     {
                         throw new InvalidDataException("The match state envelope is invalid.");
                     }
@@ -1298,6 +1411,7 @@ namespace Mahjong.LocalHost
 
                         string[] characterIds;
                         int[] characterTraitsVersions;
+                        CharacterAiProfile[]? seatProfiles = null;
                         if (envelopeVersion == LegacyEnvelopeVersion)
                         {
                             if (body.Position != payload.Length)
@@ -1328,6 +1442,19 @@ namespace Mahjong.LocalHost
                             {
                                 characterIds[seat] = bodyReader.ReadString();
                                 characterTraitsVersions[seat] = bodyReader.ReadInt32();
+                            }
+
+                            if (envelopeVersion == EnvelopeVersion)
+                            {
+                                bool hasSeatProfiles = bodyReader.ReadBoolean();
+                                if (hasSeatProfiles)
+                                {
+                                    seatProfiles = new CharacterAiProfile[4];
+                                    for (int seat = 0; seat < 4; seat++)
+                                    {
+                                        seatProfiles[seat] = ReadProfile(bodyReader);
+                                    }
+                                }
                             }
 
                             if (body.Position != payload.Length)
@@ -1382,7 +1509,8 @@ namespace Mahjong.LocalHost
                             rankings,
                             records,
                             characterIds,
-                            characterTraitsVersions);
+                            characterTraitsVersions,
+                            seatProfiles);
                         return state;
                     }
                 }
@@ -1429,6 +1557,106 @@ namespace Mahjong.LocalHost
             }
 
             return values;
+        }
+
+        private static void WriteProfile(BinaryWriter writer, CharacterAiProfile profile)
+        {
+            writer.Write(profile.ProfileId);
+            WriteNullableString(writer, profile.StrategyId);
+            WriteNullableString(writer, profile.ModelVersion);
+            WriteNullableString(writer, profile.FallbackStrategyId);
+            writer.Write(profile.Seed.HasValue);
+            if (profile.Seed.HasValue)
+            {
+                writer.Write(profile.Seed.Value);
+            }
+
+            writer.Write(profile.Style.Aggression);
+            writer.Write(profile.Style.MeldTendency);
+            writer.Write(profile.Style.FlushTendency);
+            writer.Write(profile.Style.Defense);
+            writer.Write(profile.Style.CheatAggression);
+
+            AiCheatPolicy p = profile.CheatPolicy;
+            writer.Write(p.Enabled);
+            writer.Write(p.MaxSpendPerRound);
+            writer.Write(p.ReservePoints);
+            writer.Write(p.RiskTolerance);
+            writer.Write(p.CandidateLimit);
+            writer.Write(p.TakeoverMaySpend);
+            writer.Write(p.CapabilityToggles.Count);
+            foreach (KeyValuePair<string, bool> toggle in p.CapabilityToggles)
+            {
+                writer.Write(toggle.Key);
+                writer.Write(toggle.Value);
+            }
+        }
+
+        private static CharacterAiProfile ReadProfile(BinaryReader reader)
+        {
+            string profileId = reader.ReadString();
+            string? strategyId = ReadNullableString(reader);
+            string? modelVersion = ReadNullableString(reader);
+            string? fallbackStrategyId = ReadNullableString(reader);
+            ulong? seed = reader.ReadBoolean() ? reader.ReadUInt64() : (ulong?)null;
+
+            double agg = reader.ReadDouble();
+            double meld = reader.ReadDouble();
+            double flush = reader.ReadDouble();
+            double def = reader.ReadDouble();
+            double cheatAgg = reader.ReadDouble();
+            var style = new CharacterStyle(agg, meld, flush, def, cheatAgg);
+
+            bool enabled = reader.ReadBoolean();
+            int maxSpend = reader.ReadInt32();
+            int reserve = reader.ReadInt32();
+            double risk = reader.ReadDouble();
+            int candLimit = reader.ReadInt32();
+            bool takeoverMaySpend = reader.ReadBoolean();
+            int toggleCount = reader.ReadInt32();
+            if (toggleCount < 0 || toggleCount > 64)
+            {
+                throw new InvalidDataException("The match state profile toggle count is invalid.");
+            }
+
+            var toggles = new Dictionary<string, bool>(toggleCount, StringComparer.Ordinal);
+            for (int i = 0; i < toggleCount; i++)
+            {
+                string key = reader.ReadString();
+                bool value = reader.ReadBoolean();
+                toggles.Add(key, value);
+            }
+
+            var policy = new AiCheatPolicy(
+                enabled,
+                maxSpend,
+                reserve,
+                risk,
+                candLimit,
+                takeoverMaySpend,
+                toggles);
+            return new CharacterAiProfile(
+                profileId,
+                strategyId,
+                style,
+                policy,
+                modelVersion,
+                fallbackStrategyId,
+                seed);
+        }
+
+        private static void WriteNullableString(BinaryWriter writer, string? value)
+        {
+            writer.Write(value != null);
+            if (value != null)
+            {
+                writer.Write(value);
+            }
+        }
+
+        private static string? ReadNullableString(BinaryReader reader)
+        {
+            return reader.ReadBoolean() ? reader.ReadString() : null;
         }
     }
 }

@@ -105,7 +105,8 @@ namespace Mahjong.TableRuntime
             long recoveryGeneration = 0L,
             RequestScopeId? scopeId = null,
             string? api = null,
-            TablePayloadSha256? payloadSha256 = null)
+            TablePayloadSha256? payloadSha256 = null,
+            long? decisionDeadlineMillis = null)
         {
             Intent = intent ?? throw new ArgumentNullException(nameof(intent));
             Envelope = new TableCommandEnvelope(
@@ -118,7 +119,8 @@ namespace Mahjong.TableRuntime
                 recoveryGeneration,
                 scopeId,
                 api,
-                payloadSha256);
+                payloadSha256,
+                decisionDeadlineMillis);
         }
 
         public TableSettlementIntent Intent { get; }
