@@ -37,6 +37,7 @@ namespace Mahjong.LocalHost
         private readonly bool[] _aiSeats = new bool[4];
         private readonly bool[] _takeoverSeats = new bool[4];
         private readonly string[] _lastDecisionKeys = new string[4];
+        private readonly string[] _lastCheatSkipKeys = new string[4];
         private readonly object _iterationGateForTest = new object();
         private TaskCompletionSource<long> _iterationCompletedForTest = NewIterationSignal();
         private long _completedIterationsForTest;
@@ -137,6 +138,7 @@ namespace Mahjong.LocalHost
                     fallbackStrategyId,
                     seedSalt: i + 4);
                 _lastDecisionKeys[i] = string.Empty;
+                _lastCheatSkipKeys[i] = string.Empty;
             }
         }
 
@@ -407,7 +409,8 @@ namespace Mahjong.LocalHost
                         return;
                     }
 
-                    await _actor.TickAsync(TableTickRequest.Empty, _stop.Token).ConfigureAwait(false);
+                    TableTickResult tickResult = await _actor.TickAsync(TableTickRequest.Empty, _stop.Token).ConfigureAwait(false);
+                    ObserveTickTimeouts(tickResult, snapshot);
                     await DriveOneAsync(snapshot).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
@@ -811,6 +814,10 @@ namespace Mahjong.LocalHost
                 return false;
             }
 
+            string legalCapabilities = SummarizeCheatCapabilities(view.Options);
+            string safeDefaultOptionId = FindSafeDefaultOptionId(view.Options);
+            bool hasThirdCandidate = view.SleeveThirdTileId.HasValue;
+
             // Rehydrate this seat's round budget from the same frozen mailbox capture
             // so budget checks and visible scoring facts share one consistent authority state.
             binding.RestoreRoundSpend(view.RoundId, seat, captured.Opportunity.SpentThisRound);
@@ -820,6 +827,17 @@ namespace Mahjong.LocalHost
                                        (view.IsOfferChoice || binding.EffectiveCheatPolicy.Enabled);
             if (!view.IsOfferChoice && !canRunCheatStrategy)
             {
+                ObserveCheatSkipOnce(
+                    snapshot,
+                    seat,
+                    view,
+                    captured.Opportunity.SpentThisRound,
+                    binding,
+                    legalCapabilities,
+                    safeDefaultOptionId,
+                    hasThirdCandidate,
+                    "CHEAT_DISABLED",
+                    "Seat policy or strategy disabled optional paid cheat activation.");
                 return false;
             }
 
@@ -836,34 +854,34 @@ namespace Mahjong.LocalHost
                 }
             }
 
-            if (optionId == null && view.IsOfferChoice)
+            bool usedSafeDefaultFallback = false;
+            if (optionId == null && view.IsOfferChoice && !string.IsNullOrEmpty(safeDefaultOptionId))
             {
-                for (int i = 0; i < view.Options.Count; i++)
-                {
-                    if (view.Options[i].IsSafeDefault)
-                    {
-                        optionId = view.Options[i].OptionId;
-                        break;
-                    }
-                }
+                optionId = safeDefaultOptionId;
+                usedSafeDefaultFallback = true;
             }
 
             if (optionId == null)
             {
+                ObserveCheatSkipOnce(
+                    snapshot,
+                    seat,
+                    view,
+                    captured.Opportunity.SpentThisRound,
+                    binding,
+                    legalCapabilities,
+                    safeDefaultOptionId,
+                    hasThirdCandidate,
+                    "STRATEGY_SKIPPED",
+                    "Strategy skipped optional paid cheat activation.");
                 return false;
             }
 
             TableAiCheatPlan? plan = captured.Opportunity.PlanFor(optionId);
-            if (plan == null && view.IsOfferChoice)
+            if (plan == null && view.IsOfferChoice && !string.IsNullOrEmpty(safeDefaultOptionId))
             {
-                for (int i = 0; i < view.Options.Count; i++)
-                {
-                    if (view.Options[i].IsSafeDefault)
-                    {
-                        plan = captured.Opportunity.PlanFor(view.Options[i].OptionId);
-                        break;
-                    }
-                }
+                plan = captured.Opportunity.PlanFor(safeDefaultOptionId);
+                usedSafeDefaultFallback = true;
             }
 
             if (plan == null)
@@ -878,18 +896,34 @@ namespace Mahjong.LocalHost
                     "OPTION_NOT_FOUND",
                     "The selected option is not in the captured plan list.",
                     binding.Profile.ProfileId,
-                    binding.EffectiveStrategyId);
+                    binding.EffectiveStrategyId,
+                    controlEpoch: view.ControlEpoch,
+                    recoveryGeneration: view.RecoveryGeneration,
+                    decisionId: view.DecisionId ?? string.Empty,
+                    offerId: view.OfferId ?? string.Empty,
+                    windowId: view.WindowId ?? string.Empty,
+                    isOfferChoice: view.IsOfferChoice,
+                    hasThirdCandidate: hasThirdCandidate,
+                    safeDefaultOptionId: safeDefaultOptionId,
+                    legalOptionCount: view.Options.Count,
+                    legalCapabilities: legalCapabilities,
+                    cheatPointsBefore: view.CheatPoints,
+                    spentThisRoundBefore: captured.Opportunity.SpentThisRound,
+                    receiptStatus: "OptionNotFound");
                 return false;
             }
 
+            _lastCheatSkipKeys[seat] = string.Empty;
             TableOperationResult result = await _actor
                 .SubmitAiCheatAsync(plan, allowTakeoverPaidCheats, _stop.Token)
                 .ConfigureAwait(false);
             bool accepted = result.Status == TableOperationStatus.Accepted ||
                             result.Status == TableOperationStatus.Replayed;
             Observe(
-                snapshot,
+                view.RoundId,
                 seat,
+                snapshot.Phase,
+                (ulong)view.StateVersion,
                 accepted ? "cheat" : "cheat-fallback",
                 plan.Option.OptionId,
                 plan.Option.CapabilityId,
@@ -897,8 +931,169 @@ namespace Mahjong.LocalHost
                 result.ReasonCode,
                 result.Detail ?? string.Empty,
                 binding.Profile.ProfileId,
-                binding.EffectiveStrategyId);
+                binding.EffectiveStrategyId,
+                controlEpoch: view.ControlEpoch,
+                recoveryGeneration: view.RecoveryGeneration,
+                decisionId: view.DecisionId ?? string.Empty,
+                requestId: result.Receipt?.RequestId.Value ?? plan.RequestId,
+                offerId: view.OfferId ?? string.Empty,
+                windowId: view.WindowId ?? string.Empty,
+                isOfferChoice: view.IsOfferChoice,
+                hasThirdCandidate: hasThirdCandidate,
+                safeDefaultOptionId: safeDefaultOptionId,
+                legalOptionCount: view.Options.Count,
+                legalCapabilities: legalCapabilities,
+                cheatPointsBefore: view.CheatPoints,
+                spentThisRoundBefore: captured.Opportunity.SpentThisRound,
+                optionCost: plan.Option.Cost,
+                authoritativeStateVersionAfter: checked((long)(result.CommandVersion?.Value ?? result.EvaluatedStateVersion.Value)),
+                eventSeq: result.LastEventSeq.HasValue ? checked((long)result.LastEventSeq.Value.Value) : (long?)null,
+                receiptStatus: result.Receipt?.Status.ToString() ?? result.Status.ToString(),
+                replayed: result.Replayed,
+                isDefaultResolution: usedSafeDefaultFallback);
             return accepted;
+        }
+
+        private void ObserveCheatSkipOnce(
+            TableSnapshot snapshot,
+            int seat,
+            AiCheatOpportunity view,
+            int spentThisRound,
+            SeatAiBinding binding,
+            string legalCapabilities,
+            string safeDefaultOptionId,
+            bool hasThirdCandidate,
+            string reasonCode,
+            string detail)
+        {
+            string skipKey = view.RoundId + "/" +
+                             view.StateVersion.ToString(System.Globalization.CultureInfo.InvariantCulture) + "/" +
+                             snapshot.Phase.ToString() + "/" +
+                             (view.IsOfferChoice ? "offer" : "act");
+            if (string.Equals(_lastCheatSkipKeys[seat], skipKey, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _lastCheatSkipKeys[seat] = skipKey;
+            Observe(
+                view.RoundId,
+                seat,
+                snapshot.Phase,
+                (ulong)view.StateVersion,
+                "cheat-skip",
+                "none",
+                "none",
+                "skipped",
+                reasonCode,
+                detail,
+                binding.Profile.ProfileId,
+                binding.EffectiveStrategyId,
+                controlEpoch: view.ControlEpoch,
+                recoveryGeneration: view.RecoveryGeneration,
+                decisionId: view.DecisionId ?? string.Empty,
+                offerId: view.OfferId ?? string.Empty,
+                windowId: view.WindowId ?? string.Empty,
+                isOfferChoice: view.IsOfferChoice,
+                hasThirdCandidate: hasThirdCandidate,
+                safeDefaultOptionId: safeDefaultOptionId,
+                legalOptionCount: view.Options.Count,
+                legalCapabilities: legalCapabilities,
+                cheatPointsBefore: view.CheatPoints,
+                spentThisRoundBefore: spentThisRound,
+                optionCost: 0,
+                receiptStatus: "Skipped");
+        }
+
+        private void ObserveTickTimeouts(TableTickResult tickResult, TableSnapshot snapshot)
+        {
+            if (_aiObserver == null || tickResult.Entries.Count == 0)
+            {
+                return;
+            }
+
+            for (int i = 0; i < tickResult.Entries.Count; i++)
+            {
+                TableTickEntry entry = tickResult.Entries[i];
+                if (entry.Kind != TickEntryKind.Timeout || entry.Transition == null)
+                {
+                    continue;
+                }
+
+                TableOperationResult transition = entry.Transition;
+                if (!transition.IsSuccess && transition.Receipt == null)
+                {
+                    continue;
+                }
+
+                int seat = entry.Seat;
+                SeatAiBinding? binding = seat is >= 0 and <= 3 ? GetActiveBinding(seat) : null;
+                Observe(
+                    snapshot.RoundId,
+                    seat,
+                    snapshot.Phase,
+                    transition.EvaluatedStateVersion.Value,
+                    "timeout-default",
+                    entry.Action?.OptionId ?? "timeout-default",
+                    entry.Action == null ? "cheat_offer" : "mahjong",
+                    transition.IsSuccess ? "accepted" : "rejected",
+                    transition.ReasonCode,
+                    entry.Detail,
+                    binding?.Profile.ProfileId ?? string.Empty,
+                    binding?.EffectiveStrategyId ?? string.Empty,
+                    controlEpoch: seat is >= 0 and <= 3 ? _controlEpochs[seat] : 0L,
+                    recoveryGeneration: _actor.RecoveryGeneration,
+                    decisionId: entry.DecisionId,
+                    requestId: transition.Receipt?.RequestId.Value ?? string.Empty,
+                    authoritativeStateVersionAfter: checked((long)(transition.CommandVersion?.Value ?? transition.EvaluatedStateVersion.Value)),
+                    eventSeq: transition.LastEventSeq.HasValue ? checked((long)transition.LastEventSeq.Value.Value) : (long?)null,
+                    receiptStatus: transition.Receipt?.Status.ToString() ?? transition.Status.ToString(),
+                    replayed: transition.Replayed,
+                    isDefaultResolution: true);
+            }
+        }
+
+        private static string SummarizeCheatCapabilities(IReadOnlyList<AiCheatOption> options)
+        {
+            var counts = new SortedDictionary<string, int>(StringComparer.Ordinal);
+            for (int i = 0; i < options.Count; i++)
+            {
+                string cap = options[i].CapabilityId;
+                counts.TryGetValue(cap, out int current);
+                counts[cap] = current + 1;
+            }
+
+            return string.Join(
+                ",",
+                counts.Select(kvp => kvp.Key + ":" + kvp.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+        }
+
+        private static string FindSafeDefaultOptionId(IReadOnlyList<AiCheatOption> options)
+        {
+            for (int i = 0; i < options.Count; i++)
+            {
+                if (options[i].IsSafeDefault)
+                {
+                    return options[i].OptionId;
+                }
+            }
+
+            return string.Empty;
+        }
+
+        private static string SummarizeOrdinaryCapabilities(IReadOnlyList<LegalActionOption> candidates)
+        {
+            var counts = new SortedDictionary<string, int>(StringComparer.Ordinal);
+            for (int i = 0; i < candidates.Count; i++)
+            {
+                string kind = candidates[i].Kind.ToString();
+                counts.TryGetValue(kind, out int current);
+                counts[kind] = current + 1;
+            }
+
+            return string.Join(
+                ",",
+                counts.Select(kvp => kvp.Key + ":" + kvp.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)));
         }
 
         private void Observe(
@@ -911,7 +1106,26 @@ namespace Mahjong.LocalHost
             string reasonCode,
             string detail,
             string profileId = "",
-            string strategyId = "")
+            string strategyId = "",
+            long controlEpoch = 0L,
+            long recoveryGeneration = 0L,
+            string decisionId = "",
+            string requestId = "",
+            string offerId = "",
+            string windowId = "",
+            bool isOfferChoice = false,
+            bool hasThirdCandidate = false,
+            string safeDefaultOptionId = "",
+            int legalOptionCount = 0,
+            string legalCapabilities = "",
+            int? cheatPointsBefore = null,
+            int? spentThisRoundBefore = null,
+            int? optionCost = null,
+            long? authoritativeStateVersionAfter = null,
+            long? eventSeq = null,
+            string receiptStatus = "",
+            bool replayed = false,
+            bool isDefaultResolution = false)
         {
             Observe(
                 snapshot.RoundId,
@@ -925,7 +1139,26 @@ namespace Mahjong.LocalHost
                 reasonCode,
                 detail,
                 profileId,
-                strategyId);
+                strategyId,
+                controlEpoch,
+                recoveryGeneration,
+                decisionId,
+                requestId,
+                offerId,
+                windowId,
+                isOfferChoice,
+                hasThirdCandidate,
+                safeDefaultOptionId,
+                legalOptionCount,
+                legalCapabilities,
+                cheatPointsBefore,
+                spentThisRoundBefore,
+                optionCost,
+                authoritativeStateVersionAfter,
+                eventSeq,
+                receiptStatus,
+                replayed,
+                isDefaultResolution);
         }
 
         private void Observe(
@@ -940,7 +1173,26 @@ namespace Mahjong.LocalHost
             string reasonCode,
             string detail,
             string profileId = "",
-            string strategyId = "")
+            string strategyId = "",
+            long controlEpoch = 0L,
+            long recoveryGeneration = 0L,
+            string decisionId = "",
+            string requestId = "",
+            string offerId = "",
+            string windowId = "",
+            bool isOfferChoice = false,
+            bool hasThirdCandidate = false,
+            string safeDefaultOptionId = "",
+            int legalOptionCount = 0,
+            string legalCapabilities = "",
+            int? cheatPointsBefore = null,
+            int? spentThisRoundBefore = null,
+            int? optionCost = null,
+            long? authoritativeStateVersionAfter = null,
+            long? eventSeq = null,
+            string receiptStatus = "",
+            bool replayed = false,
+            bool isDefaultResolution = false)
         {
             if (_aiObserver == null)
             {
@@ -959,7 +1211,26 @@ namespace Mahjong.LocalHost
                 detail ?? string.Empty,
                 checked((long)stateVersion),
                 profileId,
-                strategyId));
+                strategyId,
+                controlEpoch,
+                recoveryGeneration,
+                decisionId,
+                requestId,
+                offerId,
+                windowId,
+                isOfferChoice,
+                hasThirdCandidate,
+                safeDefaultOptionId,
+                legalOptionCount,
+                legalCapabilities,
+                cheatPointsBefore,
+                spentThisRoundBefore,
+                optionCost,
+                authoritativeStateVersionAfter,
+                eventSeq,
+                receiptStatus,
+                replayed,
+                isDefaultResolution));
         }
 
         private async Task CompleteAiDecisionAsync(int seat)
@@ -972,6 +1243,7 @@ namespace Mahjong.LocalHost
             }
 
             Mahjong.Ai.AiObservation observation = captured.Observation;
+            string legalKinds = SummarizeOrdinaryCapabilities(observation.LegalActions);
             LegalActionOption? chosen = null;
 
             SeatAiBinding binding = GetActiveBinding(seat);
@@ -998,7 +1270,13 @@ namespace Mahjong.LocalHost
                         "BASIC_STRATEGY_FALLBACK",
                         exception.GetType().Name + ": " + exception.Message,
                         observedProfileId,
-                        observedStrategyId);
+                        observedStrategyId,
+                        controlEpoch: observation.ControlEpoch,
+                        recoveryGeneration: captured.RecoveryGeneration,
+                        decisionId: observation.DecisionKey.DecisionId,
+                        legalOptionCount: observation.LegalActions.Count,
+                        legalCapabilities: legalKinds,
+                        receiptStatus: "Fallback");
                 }
             }
 
@@ -1115,7 +1393,12 @@ namespace Mahjong.LocalHost
                 string.Empty,
                 string.Empty,
                 observedProfileId,
-                observedStrategyId);
+                observedStrategyId,
+                controlEpoch: observation.ControlEpoch,
+                recoveryGeneration: captured.RecoveryGeneration,
+                decisionId: observation.DecisionKey.DecisionId,
+                legalOptionCount: observation.LegalActions.Count,
+                legalCapabilities: legalKinds);
 
             if (BeforeAiSubmitForTest != null)
             {
@@ -1126,6 +1409,7 @@ namespace Mahjong.LocalHost
             string roundId = observation.RoundId;
             RoundCommand? command = null;
             TableOperationResult? submitResult = null;
+            string submittedRequestId = string.Empty;
             switch (chosen.Kind)
             {
                 case LegalActionKind.Discard when chosen.Tile.HasValue:
@@ -1188,17 +1472,17 @@ namespace Mahjong.LocalHost
                     break;
                 }
                 case LegalActionKind.Tsumo:
-                    submitResult = await SubmitCapturedSettlementAsync(captured, TableSettlementAction.Tsumo)
+                    (submitResult, submittedRequestId) = await SubmitCapturedSettlementWithIdAsync(captured, TableSettlementAction.Tsumo)
                         .ConfigureAwait(false);
                     break;
                 case LegalActionKind.Ron:
-                    submitResult = await SubmitCapturedSettlementAsync(captured, TableSettlementAction.Ron)
+                    (submitResult, submittedRequestId) = await SubmitCapturedSettlementWithIdAsync(captured, TableSettlementAction.Ron)
                         .ConfigureAwait(false);
                     break;
                 case LegalActionKind.Other when observation.BasicContext != null &&
                     observation.BasicContext.TryGetFacts(chosen, out BasicCandidateFacts otherFacts) &&
                     otherFacts.AbortiveDraw == BasicAbortiveDrawKind.NineTerminals:
-                    submitResult = await SubmitCapturedSettlementAsync(
+                    (submitResult, submittedRequestId) = await SubmitCapturedSettlementWithIdAsync(
                             captured,
                             TableSettlementAction.AbortiveDraw,
                             SettlementAbortiveDrawReason.NineTerminals)
@@ -1208,7 +1492,7 @@ namespace Mahjong.LocalHost
 
             if (command != null)
             {
-                submitResult = await SubmitCapturedAiCommandAsync(
+                (submitResult, submittedRequestId) = await SubmitCapturedAiCommandWithIdAsync(
                         captured,
                         command,
                         CapturedCommandApi(chosen))
@@ -1232,7 +1516,17 @@ namespace Mahjong.LocalHost
                     submitResult.ReasonCode,
                     submitResult.Detail ?? string.Empty,
                     observedProfileId,
-                    observedStrategyId);
+                    observedStrategyId,
+                    controlEpoch: observation.ControlEpoch,
+                    recoveryGeneration: captured.RecoveryGeneration,
+                    decisionId: observation.DecisionKey.DecisionId,
+                    requestId: submitResult.Receipt?.RequestId.Value ?? submittedRequestId,
+                    legalOptionCount: observation.LegalActions.Count,
+                    legalCapabilities: legalKinds,
+                    authoritativeStateVersionAfter: checked((long)(submitResult.CommandVersion?.Value ?? submitResult.EvaluatedStateVersion.Value)),
+                    eventSeq: submitResult.LastEventSeq.HasValue ? checked((long)submitResult.LastEventSeq.Value.Value) : (long?)null,
+                    receiptStatus: submitResult.Receipt?.Status.ToString() ?? submitResult.Status.ToString(),
+                    replayed: submitResult.Replayed);
             }
 
             _lastDecisionKeys[seat] = string.Empty;
@@ -1268,7 +1562,7 @@ namespace Mahjong.LocalHost
             }
         }
 
-        private async Task<TableOperationResult> SubmitCapturedAiCommandAsync(
+        private async Task<(TableOperationResult Result, string RequestId)> SubmitCapturedAiCommandWithIdAsync(
             TableAiObservationResult captured,
             RoundCommand command,
             string api)
@@ -1296,10 +1590,11 @@ namespace Mahjong.LocalHost
                 api,
                 TablePayloadSha256.Compute(business),
                 observation.DecisionDeadlineMillis);
-            return await _actor.SubmitAsync(envelope, _stop.Token).ConfigureAwait(false);
+            TableOperationResult result = await _actor.SubmitAsync(envelope, _stop.Token).ConfigureAwait(false);
+            return (result, requestId);
         }
 
-        private async Task<TableOperationResult> SubmitCapturedSettlementAsync(
+        private async Task<(TableOperationResult Result, string RequestId)> SubmitCapturedSettlementWithIdAsync(
             TableAiObservationResult captured,
             TableSettlementAction action,
             SettlementAbortiveDrawReason? abortiveReason = null)
@@ -1328,7 +1623,8 @@ namespace Mahjong.LocalHost
                 api,
                 TablePayloadSha256.Compute(business),
                 observation.DecisionDeadlineMillis);
-            return await _actor.SubmitSettlementAsync(request, _stop.Token).ConfigureAwait(false);
+            TableOperationResult result = await _actor.SubmitSettlementAsync(request, _stop.Token).ConfigureAwait(false);
+            return (result, requestId);
         }
 
         private async Task SubmitExhaustiveDrawAsync(TableSnapshot snapshot, int seat)

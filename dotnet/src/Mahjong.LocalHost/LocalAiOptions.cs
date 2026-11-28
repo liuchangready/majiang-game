@@ -230,6 +230,73 @@ namespace Mahjong.LocalHost
             long stateVersion,
             string profileId,
             string strategyId)
+            : this(
+                roundId,
+                seat,
+                phase,
+                decisionKind,
+                optionId,
+                capabilityId,
+                status,
+                reasonCode,
+                detail,
+                stateVersion,
+                profileId,
+                strategyId,
+                controlEpoch: 0L,
+                recoveryGeneration: 0L,
+                decisionId: string.Empty,
+                requestId: string.Empty,
+                offerId: string.Empty,
+                windowId: string.Empty,
+                isOfferChoice: false,
+                hasThirdCandidate: false,
+                safeDefaultOptionId: string.Empty,
+                legalOptionCount: 0,
+                legalCapabilities: string.Empty,
+                cheatPointsBefore: null,
+                spentThisRoundBefore: null,
+                optionCost: null,
+                authoritativeStateVersionAfter: null,
+                eventSeq: null,
+                receiptStatus: string.Empty,
+                replayed: false,
+                isDefaultResolution: false)
+        {
+        }
+
+        public LocalAiDecisionRecord(
+            string roundId,
+            int seat,
+            string phase,
+            string decisionKind,
+            string optionId,
+            string capabilityId,
+            string status,
+            string reasonCode,
+            string detail,
+            long stateVersion,
+            string profileId,
+            string strategyId,
+            long controlEpoch,
+            long recoveryGeneration,
+            string decisionId,
+            string requestId,
+            string offerId,
+            string windowId,
+            bool isOfferChoice,
+            bool hasThirdCandidate,
+            string safeDefaultOptionId,
+            int legalOptionCount,
+            string legalCapabilities,
+            int? cheatPointsBefore,
+            int? spentThisRoundBefore,
+            int? optionCost,
+            long? authoritativeStateVersionAfter,
+            long? eventSeq,
+            string receiptStatus,
+            bool replayed,
+            bool isDefaultResolution)
         {
             RoundId = roundId ?? string.Empty;
             Seat = seat;
@@ -243,6 +310,25 @@ namespace Mahjong.LocalHost
             StateVersion = stateVersion;
             ProfileId = profileId ?? string.Empty;
             StrategyId = strategyId ?? string.Empty;
+            ControlEpoch = controlEpoch;
+            RecoveryGeneration = recoveryGeneration;
+            DecisionId = decisionId ?? string.Empty;
+            RequestId = requestId ?? string.Empty;
+            OfferId = offerId ?? string.Empty;
+            WindowId = windowId ?? string.Empty;
+            IsOfferChoice = isOfferChoice;
+            HasThirdCandidate = hasThirdCandidate;
+            SafeDefaultOptionId = safeDefaultOptionId ?? string.Empty;
+            LegalOptionCount = legalOptionCount;
+            LegalCapabilities = legalCapabilities ?? string.Empty;
+            CheatPointsBefore = cheatPointsBefore;
+            SpentThisRoundBefore = spentThisRoundBefore;
+            OptionCost = optionCost;
+            AuthoritativeStateVersionAfter = authoritativeStateVersionAfter;
+            EventSeq = eventSeq;
+            ReceiptStatus = receiptStatus ?? string.Empty;
+            Replayed = replayed;
+            IsDefaultResolution = isDefaultResolution;
         }
 
         public string RoundId { get; }
@@ -251,7 +337,7 @@ namespace Mahjong.LocalHost
 
         public string Phase { get; }
 
-        /// <summary><c>ordinary</c>, <c>cheat</c>, <c>cheat-fallback</c> or <c>strategy-fallback</c>.</summary>
+        /// <summary><c>ordinary</c>, <c>cheat</c>, <c>cheat-skip</c>, <c>cheat-fallback</c>, <c>timeout-default</c> or <c>strategy-fallback</c>.</summary>
         public string DecisionKind { get; }
 
         public string OptionId { get; }
@@ -270,6 +356,44 @@ namespace Mahjong.LocalHost
         public string ProfileId { get; }
 
         public string StrategyId { get; }
+
+        public long ControlEpoch { get; }
+
+        public long RecoveryGeneration { get; }
+
+        public string DecisionId { get; }
+
+        public string RequestId { get; }
+
+        public string OfferId { get; }
+
+        public string WindowId { get; }
+
+        public bool IsOfferChoice { get; }
+
+        public bool HasThirdCandidate { get; }
+
+        public string SafeDefaultOptionId { get; }
+
+        public int LegalOptionCount { get; }
+
+        public string LegalCapabilities { get; }
+
+        public int? CheatPointsBefore { get; }
+
+        public int? SpentThisRoundBefore { get; }
+
+        public int? OptionCost { get; }
+
+        public long? AuthoritativeStateVersionAfter { get; }
+
+        public long? EventSeq { get; }
+
+        public string ReceiptStatus { get; }
+
+        public bool Replayed { get; }
+
+        public bool IsDefaultResolution { get; }
     }
 
     /// <summary>Receives sanitized decision records; never hidden hands, wall order or seeds.</summary>

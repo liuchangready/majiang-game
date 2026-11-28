@@ -470,6 +470,7 @@ namespace Mahjong.LocalHost
             TableCheatLedgerSnapshot cheat = _actor.GetCheatLedgerForHost();
 
             var usageByReason = new Dictionary<string, (int Count, int Spent)>(StringComparer.Ordinal);
+            var usageBySeatAndReason = new Dictionary<(int Seat, string Reason), (int Count, int Spent)>();
             for (int i = 0; i < cheat.Entries.Count; i++)
             {
                 TableCheatLedgerEntryView entry = cheat.Entries[i];
@@ -480,6 +481,10 @@ namespace Mahjong.LocalHost
 
                 usageByReason.TryGetValue(entry.Reason, out (int Count, int Spent) current);
                 usageByReason[entry.Reason] = (current.Count + 1, current.Spent - entry.Amount);
+
+                var seatKey = (entry.Seat, entry.Reason);
+                usageBySeatAndReason.TryGetValue(seatKey, out (int Count, int Spent) seatCurrent);
+                usageBySeatAndReason[seatKey] = (seatCurrent.Count + 1, seatCurrent.Spent - entry.Amount);
             }
 
             var usage = new List<LocalCheatUsage>(usageByReason.Count);
@@ -489,6 +494,18 @@ namespace Mahjong.LocalHost
             }
 
             usage.Sort((left, right) => string.CompareOrdinal(left.Reason, right.Reason));
+
+            var seatUsage = new List<LocalSeatCheatUsage>(usageBySeatAndReason.Count);
+            foreach (KeyValuePair<(int Seat, string Reason), (int Count, int Spent)> entry in usageBySeatAndReason)
+            {
+                seatUsage.Add(new LocalSeatCheatUsage(entry.Key.Seat, entry.Key.Reason, entry.Value.Count, entry.Value.Spent));
+            }
+
+            seatUsage.Sort((left, right) =>
+            {
+                int seatCmp = left.Seat.CompareTo(right.Seat);
+                return seatCmp != 0 ? seatCmp : string.CompareOrdinal(left.Reason, right.Reason);
+            });
 
             var errors = new List<string>(conservation.Errors.Count);
             for (int i = 0; i < conservation.Errors.Count; i++)
@@ -511,7 +528,8 @@ namespace Mahjong.LocalHost
                 conservation.IsValid,
                 errors,
                 cheat.Balances,
-                usage);
+                usage,
+                seatUsage);
         }
 
         internal LocalTableStore StoreForTest => _store;
