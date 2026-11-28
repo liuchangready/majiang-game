@@ -7217,6 +7217,7 @@ namespace Mahjong.TableRuntime
                         : _round.Tiles.RinshanPointer >= 1 && _round.Tiles.RinshanPointer <= 3 &&
                           _round.Tiles.KanCount < 4))
                 {
+                    sleeveDrawKind ??= ToAiDrawKind(drawKind);
                     plans.Add(AiCheatPlan(
                         seat,
                         "sleeve-activate",
@@ -7371,6 +7372,9 @@ namespace Mahjong.TableRuntime
                 beamCandidates: beamCandidateFacts,
                 markableHandTileIds: markableHandTiles,
                 activeTileMarkGroups: activeMarkGroups);
+            ScoredCheatVisibleContext visibleContext = BuildScoredVisibleContextForSeat(seat);
+            int spentThisRound = GetAiCheatSpentThisRound(seat);
+
             return new TableAiCheatCaptureResult(
                 TableAiCheatCaptureStatus.Captured,
                 string.Empty,
@@ -7384,7 +7388,48 @@ namespace Mahjong.TableRuntime
                     offerId,
                     windowId,
                     _recoveryGeneration,
-                    _ownerEpoch));
+                    _ownerEpoch,
+                    visibleContext,
+                    spentThisRound));
+        }
+
+        private ScoredCheatVisibleContext BuildScoredVisibleContextForSeat(int seat)
+        {
+            IReadOnlyList<string> characterIds = GetSeatCharacterIdsForHost();
+            IReadOnlyList<TileId> ownHand = _round.Tiles.TilesInZone(TileZone.Hand, seat);
+            TileId? drawnTile = DrawnTileFor(seat);
+
+            var ownMelds = new List<AiVisibleMeld>();
+            var visibleMelds = new List<AiVisibleMeld>();
+            for (int i = 0; i < _round.Melds.Count; i++)
+            {
+                RoundMeld meld = _round.Melds[i];
+                if (meld.Seat == seat)
+                {
+                    ownMelds.Add(new AiVisibleMeld(meld.Seat, meld.Tiles));
+                }
+                else if (meld.Kind != RoundMeldKind.ClosedKan)
+                {
+                    // Closed kan identities belong strictly to their owning seat's private facts,
+                    // matching TableVisibilityProjection.
+                    visibleMelds.Add(new AiVisibleMeld(meld.Seat, meld.Tiles));
+                }
+            }
+
+            IReadOnlyList<AiVisibleDiscard> visibleDiscards = BuildVisibleDiscards();
+            return new ScoredCheatVisibleContext(
+                ownHandTileIds: ownHand,
+                ownDrawnTileId: drawnTile,
+                ownMelds: ownMelds,
+                visibleMelds: visibleMelds,
+                visibleDiscards: visibleDiscards,
+                visibleDoraIndicators: _round.Tiles.DoraIndicators,
+                scores: _round.Scores,
+                isRiichi: _round.IsRiichi(seat),
+                remainingWallCount: _round.Tiles.WallRemaining,
+                dealerSeat: _round.DealerSeat,
+                roundWind: _round.RoundWind,
+                characterId: characterIds[seat]);
         }
 
         private async ValueTask<TableOperationResult> ProcessAiCheatSubmitAsync(

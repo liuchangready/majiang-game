@@ -26,9 +26,10 @@ namespace Mahjong.TableRuntime
     }
 
     /// <summary>
-    /// Read-only per-seat cheat window captured from the authority queue. It contains only
-    /// authorized candidate metadata and the seat's own point balance; no GameState, wall
-    /// order, opponent hand or callback is exposed.
+    /// Read-only per-seat cheat window captured atomically from the serial authority queue.
+    /// Contains authorized candidate metadata, own seat spend this round, and filtered
+    /// visible scoring facts (own hand/melds and public open melds/discards/dora); never
+    /// wall order, opponent hands, other seats' closed kan tiles, or unmarked slots.
     /// </summary>
     public sealed class TableAiCheatOpportunity
     {
@@ -43,7 +44,9 @@ namespace Mahjong.TableRuntime
             string? offerId = null,
             string? windowId = null,
             long recoveryGeneration = 0L,
-            OwnerEpoch ownerEpoch = default)
+            OwnerEpoch ownerEpoch = default,
+            ScoredCheatVisibleContext? visibleContext = null,
+            int spentThisRound = 0)
         {
             View = view ?? throw new ArgumentNullException(nameof(view));
             if (plans == null)
@@ -65,6 +68,8 @@ namespace Mahjong.TableRuntime
             WindowId = windowId;
             RecoveryGeneration = recoveryGeneration;
             OwnerEpoch = ownerEpoch;
+            VisibleContext = visibleContext;
+            SpentThisRound = spentThisRound < 0 ? 0 : spentThisRound;
         }
 
         public AiCheatOpportunity View { get; }
@@ -90,6 +95,10 @@ namespace Mahjong.TableRuntime
         public long RecoveryGeneration { get; }
 
         public OwnerEpoch OwnerEpoch { get; }
+
+        public ScoredCheatVisibleContext? VisibleContext { get; }
+
+        public int SpentThisRound { get; }
 
         public IReadOnlyList<TableAiCheatPlan> Plans => _plans;
 
